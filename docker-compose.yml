@@ -2,11 +2,15 @@ version: "3.8"
 
 services:
   watermark-vault:
-    build: .
+    # Pull the pre-built image from GitHub Container Registry
+    # Replace 'zzm6899' with your actual GitHub username if forked
+    image: ghcr.io/zzm6899/watermark-vault:latest
     container_name: watermark-vault
     restart: unless-stopped
     ports:
       - "5066:5066"
-    # Optional: mount a volume if you want to persist any data
+    pull_policy: always
+
+    # Uncomment if you need persistent storage
     # volumes:
     #   - /mnt/your-pool/watermark-vault:/data

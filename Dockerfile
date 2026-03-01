@@ -1,18 +1,21 @@
-# Stage 1: Build
+# Stage 1: Build the React/Vite app
 FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-# Clone the repo
-RUN apk add --no-cache git && \
-    git clone https://github.com/zzm6899/watermark-vault.git .
+# Copy package files first for better layer caching
+COPY package*.json ./
+RUN npm ci
 
-# Install dependencies and build
-RUN npm install
+# Copy the rest of the source and build
+COPY . .
 RUN npm run build
 
 # Stage 2: Serve with nginx
 FROM nginx:alpine
+
+# Remove default config
+RUN rm /etc/nginx/conf.d/default.conf
 
 # Copy built assets
 COPY --from=builder /app/dist /usr/share/nginx/html
