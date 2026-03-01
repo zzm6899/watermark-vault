@@ -85,9 +85,14 @@ export default function Setup({ onComplete }: { onComplete: () => void }) {
       toast.error("Password must be at least 6 characters");
       return;
     }
-    const hash = await hashPassword(password);
-    setAdminCredentials({ username: username.trim(), passwordHash: hash });
-    setStep("profile");
+    try {
+      const hash = await hashPassword(password);
+      setAdminCredentials({ username: username.trim(), passwordHash: hash });
+      setStep("profile");
+    } catch (err) {
+      console.error("Setup hash error:", err);
+      toast.error("Failed to create account. Please try again.");
+    }
   };
 
   const handleProfileNext = () => {
