@@ -200,14 +200,26 @@ export function setSettings(s: AppSettings) {
   set(KEYS.SETTINGS, s);
 }
 
-// ── Password Hashing (simple SHA-256) ───────────────
+// ── Password Hashing (simple SHA-256 with fallback) ─
 export async function hashPassword(pw: string): Promise<string> {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(pw);
-  const hash = await crypto.subtle.digest("SHA-256", data);
-  return Array.from(new Uint8Array(hash))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
+  try {
+    if (crypto?.subtle) {
+      const encoder = new TextEncoder();
+      const data = encoder.encode(pw);
+      const hash = await crypto.subtle.digest("SHA-256", data);
+      return Array.from(new Uint8Array(hash))
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join("");
+    }
+  } catch {
+    // fallback below
+  }
+  // Simple fallback hash for non-secure contexts (e.g. HTTP Docker)
+  let h = 0;
+  for (let i = 0; i < pw.length; i++) {
+    h = ((h << 5) - h + pw.charCodeAt(i)) | 0;
+  }
+  return "fb_" + Math.abs(h).toString(16).padStart(8, "0");
 }
 
 // ── Photo Library ──────────────────────────────────
