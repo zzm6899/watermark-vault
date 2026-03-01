@@ -93,6 +93,26 @@ export function isServerMode(): boolean {
   return serverAvailable === true;
 }
 
+/** Fetch server-side storage stats (TrueNAS volume) */
+export async function getServerStorageStats(): Promise<{
+  totalBytes: number;
+  photoCount: number;
+  dbSizeBytes: number;
+  uploadsSizeBytes: number;
+  photoFiles: { name: string; size: number; modified: string }[];
+  disk: { totalBytes: number; usedBytes: number; availableBytes: number; mountPoint: string } | null;
+  dataDir: string;
+} | null> {
+  if (!(await checkServer())) return null;
+  try {
+    const res = await fetch("/api/storage");
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
 // ── Google Calendar ─────────────────────────────────────
 
 export async function getGoogleCalendarStatus(): Promise<{ configured: boolean; connected: boolean; email: string | null }> {
