@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { getAdminCredentials, hashPassword, login } from "@/lib/storage";
+import { syncFromServer } from "@/lib/api";
 
 export default function Login({ onLogin }: { onLogin: () => void }) {
   const [username, setUsername] = useState("");
@@ -13,9 +14,13 @@ export default function Login({ onLogin }: { onLogin: () => void }) {
   const handleLogin = async () => {
     setLoading(true);
     try {
+      // Sync from server first — ensures credentials are in localStorage
+      // after a container restart where localStorage is empty
+      await syncFromServer();
+
       const creds = getAdminCredentials();
       if (!creds) {
-        toast.error("No admin account found");
+        toast.error("No admin account set up. Please run setup first.");
         return;
       }
       const hash = await hashPassword(password);

@@ -16,10 +16,11 @@ import { useNavigate, useParams } from "react-router-dom";
 import {
   getProfile, setProfile, getEventTypes, setEventTypes, addEventType,
   deleteEventType, updateEventType, getBookings, deleteBooking,
-  updateBooking, getSettings, setSettings, logout,
+  updateBooking, getSettings, setSettings, logout, isLoggedIn, isSetupComplete,
   getAlbums, addAlbum, updateAlbum, deleteAlbum,
   getPhotoLibrary, setPhotoLibrary,
 } from "@/lib/storage";
+import Login from "@/pages/Login";
 import { compressImage, formatBytes, getLocalStorageUsage, generateThumbnail } from "@/lib/image-utils";
 import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar, getServerStorageStats } from "@/lib/api";
 import type {
@@ -73,6 +74,22 @@ export default function Admin() {
   const { tab: routeTab } = useParams<{ tab?: string }>();
   const resolvedTab = (routeTab && TAB_ROUTE_MAP[routeTab]) || "dashboard";
   const [activeTab, setActiveTabState] = useState<Tab>(resolvedTab);
+
+  // ── Auth state ───────────────────────────────────────
+  const [authed, setAuthed] = useState(() => isLoggedIn());
+
+  useEffect(() => {
+    if (!isSetupComplete()) {
+      navigate("/setup", { replace: true });
+    }
+  }, [navigate]);
+
+  // Redirect to setup if not configured
+  if (!isSetupComplete()) return null;
+  // Show Login inline — no separate route needed
+  if (!authed) {
+    return <Login onLogin={() => setAuthed(true)} />;
+  }
   
   const setActiveTab = (tab: Tab) => {
     setActiveTabState(tab);

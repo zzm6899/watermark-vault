@@ -2,7 +2,7 @@ import type {
   EventType, Booking, Album, Photo, ProfileSettings,
   AppSettings, AdminCredentials, BankTransferSettings,
 } from "./types";
-import { persistToServer, deleteFromServer } from "./api";
+import { persistToServer } from "./api";
 
 const KEYS = {
   SETUP_COMPLETE: "wv_setup_complete",
@@ -64,8 +64,8 @@ export function login() {
 }
 
 export function logout() {
+  // Only clear local session — server session key is ignored on sync anyway
   localStorage.removeItem(KEYS.SESSION);
-  deleteFromServer(KEYS.SESSION);
 }
 
 // ── Profile ─────────────────────────────────────────

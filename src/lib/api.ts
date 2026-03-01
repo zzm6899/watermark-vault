@@ -24,7 +24,10 @@ export async function syncFromServer(): Promise<boolean> {
     const res = await fetch("/api/store");
     if (!res.ok) return false;
     const data = await res.json();
+    const SESSION_KEY = "wv_session";
     for (const [key, value] of Object.entries(data)) {
+      // Never restore session from server — auth must always be re-done per browser
+      if (key === SESSION_KEY) continue;
       localStorage.setItem(key, JSON.stringify(value));
     }
     console.log("✅ Synced from server");
@@ -34,14 +37,47 @@ export async function syncFromServer(): Promise<boolean> {
   }
 }
 
-/** Fire-and-forget persist a key to the server */
+// Queue for writes that arrive before server availability is confirmed
+const _writeQueue: Array<{ key: string; value: unknown }> = [];
+let _flushScheduled = false;
+
+async function _flushQueue() {
+  if (!(await checkServer())) { _writeQueue.length = 0; return; }
+  while (_writeQueue.length > 0) {
+    const item = _writeQueue.shift()!;
+    fetch(`/api/store/${encodeURIComponent(item.key)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ value: item.value }),
+    }).catch(() => {});
+  }
+  _flushScheduled = false;
+}
+
+/** Fire-and-forget persist a key to the server.
+ *  If the server check hasn't completed yet, queues the write and flushes once it has. */
 export function persistToServer(key: string, value: unknown): void {
-  if (serverAvailable !== true) return;
-  fetch(`/api/store/${encodeURIComponent(key)}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ value }),
-  }).catch(() => { /* silent - localStorage is the source of truth for UI */ });
+  if (serverAvailable === true) {
+    // Fast path — server known available
+    fetch(`/api/store/${encodeURIComponent(key)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ value }),
+    }).catch(() => {});
+    return;
+  }
+  if (serverAvailable === false) return; // No server, drop write
+
+  // serverAvailable is null — queue and flush once check completes
+  // Deduplicate: if same key is already queued, replace it
+  const existing = _writeQueue.findIndex(w => w.key === key);
+  if (existing >= 0) _writeQueue[existing].value = value;
+  else _writeQueue.push({ key, value });
+
+  if (!_flushScheduled) {
+    _flushScheduled = true;
+    _flushQueue();
+  }
 }
 
 /** Fire-and-forget delete a key from the server */
