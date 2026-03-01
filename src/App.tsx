@@ -56,6 +56,7 @@ const App = () => {
             <Route path="/booking/modify/:bookingId" element={<BookingModify />} />
             <Route path="/admin" element={<AdminGuard />} />
             <Route path="/admin/:tab" element={<AdminGuard />} />
+            <Route path="/admin/storage" element={<AdminGuard />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </BrowserRouter>
