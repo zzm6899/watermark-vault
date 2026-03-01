@@ -5,6 +5,7 @@ import type { WatermarkPosition } from "@/lib/types";
 
 interface WatermarkedImageProps {
   src: string;
+  fullSrc?: string; // higher-res version to load after thumbnail
   title: string;
   selected?: boolean;
   onSelect?: () => void;
@@ -27,6 +28,7 @@ const positionClasses: Record<WatermarkPosition, string> = {
 
 export default function WatermarkedImage({
   src,
+  fullSrc,
   title,
   selected,
   onSelect,
@@ -38,6 +40,17 @@ export default function WatermarkedImage({
   watermarkOpacity = 15,
 }: WatermarkedImageProps) {
   const [loaded, setLoaded] = useState(false);
+  const [displaySrc, setDisplaySrc] = useState(src);
+
+  // After thumbnail loads, upgrade to full-res if available
+  const handleLoad = () => {
+    setLoaded(true);
+    if (fullSrc && fullSrc !== src) {
+      const img = new window.Image();
+      img.onload = () => setDisplaySrc(fullSrc);
+      img.src = fullSrc;
+    }
+  };
 
   const opacityValue = watermarkOpacity / 100;
 
@@ -108,12 +121,12 @@ export default function WatermarkedImage({
       onClick={onSelect}
     >
       <img
-        src={src}
+        src={displaySrc}
         alt={title}
         className={`w-full block transition-all duration-500 ${
           loaded ? "opacity-100" : "opacity-0"
         } group-hover:scale-[1.02]`}
-        onLoad={() => setLoaded(true)}
+        onLoad={handleLoad}
       />
 
       {renderWatermark()}
