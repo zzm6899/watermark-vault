@@ -245,8 +245,6 @@ function registerRoutes(app, store) {
     res.writeHead(200, { "Content-Type": "image/gif", "Content-Length": pixel.length, "Cache-Control": "no-store" });
     res.end(pixel);
   });
-}
-
 
   // Get email log for a booking (used by Admin page)
   app.get("/api/email/log/:bookingId", (req, res) => {
@@ -258,5 +256,6 @@ function registerRoutes(app, store) {
       res.json({ log: booking?.emailLog || [] });
     } catch { res.json({ log: [] }); }
   });
+}
 
 module.exports = { registerRoutes, getTransporter, getFromAddress, sendBookingConfirmationEmail };
