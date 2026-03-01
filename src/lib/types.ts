@@ -120,6 +120,7 @@ export interface AppSettings {
   bookingTimerMinutes: number;
   instagramFieldEnabled: boolean;
   notificationEmailTemplate: string;
+  discordWebhookUrl: string;
 }
 
 export interface AdminCredentials {
