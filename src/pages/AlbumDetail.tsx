@@ -6,8 +6,7 @@ import Header from "@/components/Header";
 import Footer from "@/components/Footer";
 import WatermarkedImage from "@/components/WatermarkedImage";
 import PurchasePanel from "@/components/PurchasePanel";
-import { sampleAlbums, defaultBankTransfer } from "@/lib/mock-data";
-import type { WatermarkPosition } from "@/lib/mock-data";
+import { getAlbumBySlug, getSettings } from "@/lib/storage";
 import { toast } from "sonner";
 import {
   Dialog,
@@ -19,14 +18,14 @@ import { Button } from "@/components/ui/button";
 
 export default function AlbumDetail() {
   const { albumId } = useParams();
-  const album = sampleAlbums.find((a) => a.id === albumId);
+  const album = albumId ? getAlbumBySlug(albumId) : undefined;
+  const settings = getSettings();
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [showBankTransfer, setShowBankTransfer] = useState(false);
   const [copiedField, setCopiedField] = useState<string | null>(null);
 
-  // These would come from admin settings in production
-  const watermarkPosition: WatermarkPosition = "center";
-  const bankTransfer = defaultBankTransfer;
+  const watermarkPosition = settings.watermarkPosition;
+  const bankTransfer = settings.bankTransfer;
 
   if (!album) {
     return (
@@ -99,20 +98,28 @@ export default function AlbumDetail() {
             </div>
           </motion.div>
 
-          <div className="masonry-grid">
-            {album.photos.map((photo, i) => (
-              <WatermarkedImage
-                key={photo.id}
-                src={photo.src}
-                title={photo.title}
-                selected={selectedIds.has(photo.id)}
-                onSelect={() => toggleSelect(photo.id)}
-                locked={selectedIds.size >= album.freeDownloads && !selectedIds.has(photo.id)}
-                index={i}
-                watermarkPosition={watermarkPosition}
-              />
-            ))}
-          </div>
+          {album.photos.length === 0 ? (
+            <div className="glass-panel rounded-xl p-12 text-center">
+              <p className="text-sm font-body text-muted-foreground">No photos uploaded yet.</p>
+            </div>
+          ) : (
+            <div className="masonry-grid">
+              {album.photos.map((photo, i) => (
+                <WatermarkedImage
+                  key={photo.id}
+                  src={photo.src}
+                  title={photo.title}
+                  selected={selectedIds.has(photo.id)}
+                  onSelect={() => toggleSelect(photo.id)}
+                  locked={selectedIds.size >= album.freeDownloads && !selectedIds.has(photo.id)}
+                  index={i}
+                  watermarkPosition={watermarkPosition}
+                  watermarkText={settings.watermarkText}
+                  watermarkImage={settings.watermarkImage}
+                />
+              ))}
+            </div>
+          )}
         </div>
       </section>
 

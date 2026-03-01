@@ -1,18 +1,19 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Clock, ChevronLeft, ChevronRight, ArrowLeft, Globe,
-  CalendarDays, Upload, CheckCircle2, AlertCircle, Camera
+  CalendarDays, Upload, CheckCircle2, AlertCircle, Camera,
+  MapPin, Calendar as CalendarIcon, ExternalLink
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import Footer from "@/components/Footer";
 import { toast } from "sonner";
-import { getEventTypes, getProfile, addBooking } from "@/lib/storage";
+import { getEventTypes, getProfile, addBooking, getBookings, getSettings, isSlotBooked } from "@/lib/storage";
 import type { EventType, QuestionField } from "@/lib/types";
 
-type Step = "event-select" | "duration-select" | "datetime" | "questions" | "confirmed";
+type Step = "event-select" | "datetime" | "questions" | "confirmed";
 
 function formatDuration(mins: number) {
   if (mins >= 60) {
@@ -62,6 +63,21 @@ function isDayAvailable(et: EventType, date: Date): boolean {
   return getAvailabilityForDate(et, date).length > 0;
 }
 
+function buildGoogleCalendarUrl(event: EventType, date: Date, time: string, duration: number): string {
+  const [h, m] = time.split(":").map(Number);
+  const start = new Date(date.getFullYear(), date.getMonth(), date.getDate(), h, m);
+  const end = new Date(start.getTime() + duration * 60000);
+  const fmt = (d: Date) => d.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
+  const params = new URLSearchParams({
+    action: "TEMPLATE",
+    text: event.title,
+    dates: `${fmt(start)}/${fmt(end)}`,
+    details: event.description || "",
+    location: event.location || "",
+  });
+  return `https://calendar.google.com/calendar/render?${params.toString()}`;
+}
+
 // ─── Question Field Renderer ─────────────────────────────────
 function QuestionInput({ field, value, onChange }: { field: QuestionField; value: string; onChange: (val: string) => void }) {
   switch (field.type) {
@@ -99,10 +115,32 @@ function QuestionInput({ field, value, onChange }: { field: QuestionField; value
   }
 }
 
+// ─── Timer Component ─────────────────────────────────────
+function BookingTimer({ minutes, onExpire }: { minutes: number; onExpire: () => void }) {
+  const [secondsLeft, setSecondsLeft] = useState(minutes * 60);
+  
+  useEffect(() => {
+    if (secondsLeft <= 0) { onExpire(); return; }
+    const t = setTimeout(() => setSecondsLeft(s => s - 1), 1000);
+    return () => clearTimeout(t);
+  }, [secondsLeft, onExpire]);
+
+  const m = Math.floor(secondsLeft / 60);
+  const s = secondsLeft % 60;
+  const isLow = secondsLeft < 120;
+
+  return (
+    <div className={`text-xs font-body tabular-nums ${isLow ? "text-destructive" : "text-muted-foreground"}`}>
+      ⏱ {m}:{s.toString().padStart(2, "0")} remaining
+    </div>
+  );
+}
+
 // ─── Main Component ──────────────────────────────────────────
 export default function Booking() {
   const profile = getProfile();
   const eventTypes = getEventTypes().filter((e) => e.active);
+  const settings = getSettings();
 
   const [step, setStep] = useState<Step>("event-select");
   const [selectedEvent, setSelectedEvent] = useState<EventType | null>(null);
@@ -114,20 +152,30 @@ export default function Booking() {
     return new Date(now.getFullYear(), now.getMonth());
   });
   const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [use24h, setUse24h] = useState(false);
+  const [timerActive, setTimerActive] = useState(false);
 
   const year = currentMonth.getFullYear();
   const month = currentMonth.getMonth();
   const daysInMonth = new Date(year, month + 1, 0).getDate();
-  const firstDayOfWeek = new Date(year, month, 1).getDay();
+  // Monday-start calendar
+  const firstDay = new Date(year, month, 1).getDay();
+  const blanks = Array.from({ length: (firstDay + 6) % 7 }, (_, i) => i);
   const days = Array.from({ length: daysInMonth }, (_, i) => i + 1);
-  const blanks = Array.from({ length: firstDayOfWeek }, (_, i) => i);
 
   const timeSlots = useMemo(() => {
     if (!selectedDate || !selectedDuration || !selectedEvent) return [];
+    const dateStr = toDateStr(selectedDate);
     const ranges = getAvailabilityForDate(selectedEvent, selectedDate);
     const allSlots: string[] = [];
     for (const range of ranges) {
-      allSlots.push(...generateTimeSlots(range.startTime, range.endTime, selectedDuration));
+      const slots = generateTimeSlots(range.startTime, range.endTime, selectedDuration);
+      for (const slot of slots) {
+        // Filter out already-booked slots
+        if (!isSlotBooked(dateStr, slot, selectedDuration)) {
+          allSlots.push(slot);
+        }
+      }
     }
     return allSlots;
   }, [selectedDate, selectedDuration, selectedEvent]);
@@ -137,35 +185,53 @@ export default function Booking() {
     setSelectedDate(null);
     setSelectedTime(null);
     setAnswers({});
-    if (ev.durations.length === 1) {
-      setSelectedDuration(ev.durations[0]);
-      setStep("datetime");
-    } else {
-      setSelectedDuration(null);
-      setStep("duration-select");
-    }
+    setSelectedDuration(ev.durations[0]);
+    setStep("datetime");
   };
 
-  const handleSelectDuration = (dur: number) => {
-    setSelectedDuration(dur);
-    setSelectedDate(null);
+  const handleTimerExpire = useCallback(() => {
+    toast.error("Booking timer expired. Please select a new time.");
     setSelectedTime(null);
-    setStep("datetime");
+    setTimerActive(false);
+  }, []);
+
+  const handleSelectTime = (time: string) => {
+    setSelectedTime(time);
+    setTimerActive(true);
   };
 
   const handleSubmitQuestions = () => {
     if (!selectedEvent || !selectedDate || !selectedTime || !selectedDuration) return;
+    
+    // Validate email field
+    const emailQuestion = selectedEvent.questions.find(q => q.label.toLowerCase().includes("email"));
+    if (emailQuestion) {
+      const emailValue = answers[emailQuestion.id] || "";
+      if (!emailValue.includes("@") || !emailValue.includes(".")) {
+        toast.error("Please enter a valid email address");
+        return;
+      }
+    }
+
     const missing = selectedEvent.questions.filter((q) => q.required && !answers[q.id]?.trim());
     if (missing.length > 0) {
       toast.error(`Please fill in: ${missing.map((q) => q.label).join(", ")}`);
       return;
     }
-    // Save booking to localStorage
+
+    // Double-check slot isn't taken
+    const dateStr = toDateStr(selectedDate);
+    if (isSlotBooked(dateStr, selectedTime, selectedDuration)) {
+      toast.error("This time slot was just booked by someone else. Please choose another.");
+      setSelectedTime(null);
+      return;
+    }
+
     const booking = {
       id: `bk-${Date.now()}`,
       clientName: answers["q1"] || "Client",
       clientEmail: answers["q2"] || "",
-      date: toDateStr(selectedDate),
+      date: dateStr,
       time: selectedTime,
       eventTypeId: selectedEvent.id,
       type: selectedEvent.title,
@@ -174,8 +240,12 @@ export default function Booking() {
       notes: "",
       answers,
       createdAt: new Date().toISOString(),
+      paymentStatus: "unpaid" as const,
+      paymentAmount: selectedEvent.price,
+      instagramHandle: answers[selectedEvent.questions.find(q => q.label.toLowerCase().includes("instagram"))?.id || ""] || "",
     };
     addBooking(booking);
+    setTimerActive(false);
     setStep("confirmed");
   };
 
@@ -186,17 +256,18 @@ export default function Booking() {
     setSelectedDate(null);
     setSelectedTime(null);
     setAnswers({});
+    setTimerActive(false);
   };
 
   return (
     <div className="min-h-screen bg-background">
-      <section className="pt-12 pb-24 min-h-screen">
-        <div className="container mx-auto px-4 max-w-3xl">
+      <section className="pt-8 pb-24 min-h-screen">
+        <div className="container mx-auto px-4">
           <AnimatePresence mode="wait">
 
             {/* ─── Step 1: Event List ─── */}
             {step === "event-select" && (
-              <motion.div key="event-select" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }}>
+              <motion.div key="event-select" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} className="max-w-2xl mx-auto">
                 {/* Profile Card */}
                 <div className="glass-panel rounded-xl p-6 mb-6">
                   <div className="flex items-center gap-3 mb-3">
@@ -223,22 +294,31 @@ export default function Booking() {
                   <div className="glass-panel rounded-xl divide-y divide-border/50">
                     {eventTypes.map((ev) => (
                       <button key={ev.id} onClick={() => handleSelectEvent(ev)} className="w-full text-left p-5 hover:bg-secondary/30 transition-colors first:rounded-t-xl last:rounded-b-xl">
-                        <h3 className="font-display text-base text-foreground mb-1">{ev.title}</h3>
-                        {ev.description && <p className="text-sm font-body text-muted-foreground leading-relaxed mb-3">{ev.description}</p>}
-                        <div className="flex flex-wrap items-center gap-2">
-                          {ev.durations.map((d) => (
-                            <span key={d} className="inline-flex items-center gap-1 text-xs font-body text-muted-foreground border border-border rounded-full px-2.5 py-1">
-                              <Clock className="w-3 h-3" />{formatDuration(d)}
-                            </span>
-                          ))}
-                          {ev.price > 0 && (
-                            <span className="text-xs font-body text-primary">${ev.price}</span>
-                          )}
-                          {ev.requiresConfirmation && (
-                            <span className="inline-flex items-center gap-1 text-xs font-body text-muted-foreground border border-border rounded-full px-2.5 py-1">
-                              <AlertCircle className="w-3 h-3" />May require confirmation
-                            </span>
-                          )}
+                        <div className="flex items-start gap-3">
+                          <div className="w-1.5 h-10 rounded-full bg-primary mt-0.5 flex-shrink-0" />
+                          <div className="flex-1">
+                            <h3 className="font-display text-base text-foreground mb-1">{ev.title}</h3>
+                            {ev.description && <p className="text-sm font-body text-muted-foreground leading-relaxed mb-3 whitespace-pre-line">{ev.description}</p>}
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="inline-flex items-center gap-1 text-xs font-body text-muted-foreground border border-border rounded-full px-2.5 py-1">
+                                <Clock className="w-3 h-3" />
+                                {ev.durations.map((d) => formatDuration(d)).join(" / ")}
+                              </span>
+                              {ev.price > 0 && (
+                                <span className="text-xs font-body text-primary">${ev.price}</span>
+                              )}
+                              {ev.requiresConfirmation && (
+                                <span className="inline-flex items-center gap-1 text-xs font-body text-muted-foreground border border-border rounded-full px-2.5 py-1">
+                                  <AlertCircle className="w-3 h-3" />Requires confirmation
+                                </span>
+                              )}
+                              {ev.location && (
+                                <span className="inline-flex items-center gap-1 text-xs font-body text-muted-foreground border border-border rounded-full px-2.5 py-1">
+                                  <MapPin className="w-3 h-3" />{ev.location}
+                                </span>
+                              )}
+                            </div>
+                          </div>
                         </div>
                       </button>
                     ))}
@@ -252,126 +332,171 @@ export default function Booking() {
               </motion.div>
             )}
 
-            {/* ─── Duration Select ─── */}
-            {step === "duration-select" && selectedEvent && (
-              <motion.div key="duration-select" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }}>
-                <button onClick={handleReset} className="inline-flex items-center gap-2 text-xs font-body tracking-wider uppercase text-muted-foreground hover:text-primary transition-colors mb-6">
-                  <ArrowLeft className="w-3.5 h-3.5" /> Back
-                </button>
-                <div className="glass-panel rounded-xl p-6 mb-6">
-                  <h2 className="font-display text-xl text-foreground mb-1">{selectedEvent.title}</h2>
-                  {selectedEvent.description && <p className="text-sm font-body text-muted-foreground leading-relaxed">{selectedEvent.description}</p>}
-                </div>
-                <div className="glass-panel rounded-xl p-6">
-                  <p className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-4">Select Duration</p>
-                  <div className="space-y-2">
-                    {selectedEvent.durations.map((d) => (
-                      <button key={d} onClick={() => handleSelectDuration(d)} className="w-full text-left p-4 rounded-lg border border-border hover:border-primary/50 transition-all flex items-center gap-3">
-                        <Clock className="w-4 h-4 text-muted-foreground" />
-                        <span className="text-sm font-body text-foreground">{formatDuration(d)}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </motion.div>
-            )}
-
-            {/* ─── Date & Time ─── */}
+            {/* ─── Date & Time (Cal.com Style) ─── */}
             {step === "datetime" && selectedEvent && selectedDuration && (
               <motion.div key="datetime" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }}>
-                <button onClick={() => { selectedEvent.durations.length > 1 ? setStep("duration-select") : handleReset(); }} className="inline-flex items-center gap-2 text-xs font-body tracking-wider uppercase text-muted-foreground hover:text-primary transition-colors mb-6">
-                  <ArrowLeft className="w-3.5 h-3.5" /> Back
-                </button>
+                <div className="max-w-[1100px] mx-auto">
+                  <button onClick={handleReset} className="inline-flex items-center gap-2 text-xs font-body tracking-wider uppercase text-muted-foreground hover:text-primary transition-colors mb-4">
+                    <ArrowLeft className="w-3.5 h-3.5" /> Back
+                  </button>
 
-                <div className="flex items-center gap-3 mb-6">
-                  <div className="w-1.5 h-12 rounded-full bg-primary" />
-                  <div>
-                    <h2 className="font-display text-xl text-foreground">{selectedEvent.title}</h2>
-                    <span className="text-sm font-body text-muted-foreground flex items-center gap-1.5">
-                      <Clock className="w-3.5 h-3.5" /> {formatDuration(selectedDuration)}
-                    </span>
-                  </div>
-                </div>
+                  <div className="glass-panel rounded-xl overflow-hidden">
+                    <div className="grid lg:grid-cols-[320px_1fr_240px] divide-y lg:divide-y-0 lg:divide-x divide-border/50">
+                      
+                      {/* Left: Event Info */}
+                      <div className="p-6 space-y-4">
+                        <div className="flex items-center gap-3 mb-2">
+                          <div className="w-10 h-10 rounded-full bg-primary/20 flex items-center justify-center overflow-hidden flex-shrink-0">
+                            {profile.avatar ? (
+                              <img src={profile.avatar} alt="" className="w-full h-full object-cover" />
+                            ) : (
+                              <Camera className="w-5 h-5 text-primary" />
+                            )}
+                          </div>
+                          <span className="text-xs font-body text-muted-foreground">{profile.name}</span>
+                        </div>
+                        <h2 className="font-display text-xl text-foreground">{selectedEvent.title}</h2>
+                        {selectedEvent.description && (
+                          <div className="text-sm font-body text-muted-foreground leading-relaxed max-h-48 overflow-y-auto pr-1 whitespace-pre-line">
+                            {selectedEvent.description}
+                          </div>
+                        )}
+                        
+                        {selectedEvent.requiresConfirmation && (
+                          <div className="flex items-center gap-2 text-xs font-body text-muted-foreground">
+                            <CheckCircle2 className="w-3.5 h-3.5" /> Requires confirmation
+                          </div>
+                        )}
 
-                <div className="grid md:grid-cols-[1fr_260px] gap-6">
-                  {/* Calendar */}
-                  <div className="glass-panel rounded-xl p-6">
-                    <div className="flex items-center justify-between mb-5">
-                      <button onClick={() => setCurrentMonth(new Date(year, month - 1))} className="text-muted-foreground hover:text-foreground transition-colors p-1">
-                        <ChevronLeft className="w-5 h-5" />
-                      </button>
-                      <h3 className="font-display text-base text-foreground">
-                        {currentMonth.toLocaleDateString("en-US", { month: "long", year: "numeric" })}
-                      </h3>
-                      <button onClick={() => setCurrentMonth(new Date(year, month + 1))} className="text-muted-foreground hover:text-foreground transition-colors p-1">
-                        <ChevronRight className="w-5 h-5" />
-                      </button>
-                    </div>
-
-                    <div className="grid grid-cols-7 gap-1 mb-2">
-                      {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((d) => (
-                        <div key={d} className="text-center text-[10px] font-body tracking-wider uppercase text-muted-foreground py-2">{d}</div>
-                      ))}
-                    </div>
-
-                    <div className="grid grid-cols-7 gap-1">
-                      {blanks.map((b) => <div key={`blank-${b}`} />)}
-                      {days.map((day) => {
-                        const date = new Date(year, month, day);
-                        const isSelected = selectedDate?.getDate() === day && selectedDate?.getMonth() === month && selectedDate?.getFullYear() === year;
-                        const isPast = date < new Date(new Date().setHours(0, 0, 0, 0));
-                        const isAvailable = !isPast && isDayAvailable(selectedEvent, date);
-                        return (
-                          <button key={day} disabled={!isAvailable} onClick={() => { setSelectedDate(date); setSelectedTime(null); }}
-                            className={`aspect-square rounded-lg text-sm font-body transition-all ${
-                              isSelected ? "bg-primary text-primary-foreground font-medium"
-                                : isAvailable ? "text-foreground hover:bg-secondary"
-                                : "text-muted-foreground/20 cursor-not-allowed"
-                            }`}
-                          >
-                            {day}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-
-                  {/* Time Slots */}
-                  <div>
-                    {selectedDate ? (
-                      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-                        <p className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-3">
-                          {selectedDate.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}
-                        </p>
-                        <div className="space-y-2 max-h-[400px] overflow-y-auto pr-1">
-                          {timeSlots.length > 0 ? (
-                            timeSlots.map((t) => (
-                              <button key={t} onClick={() => setSelectedTime(t)}
-                                className={`w-full text-sm font-body py-3 px-4 rounded-lg border transition-all text-left ${
-                                  selectedTime === t ? "bg-primary text-primary-foreground border-primary" : "border-border text-foreground hover:border-primary/50"
+                        {/* Duration Selector */}
+                        <div className="flex items-center gap-2">
+                          <Clock className="w-3.5 h-3.5 text-muted-foreground" />
+                          <div className="flex rounded-full border border-border overflow-hidden">
+                            {selectedEvent.durations.map((d) => (
+                              <button key={d} onClick={() => { setSelectedDuration(d); setSelectedTime(null); }}
+                                className={`px-4 py-1.5 text-xs font-body transition-all ${
+                                  selectedDuration === d ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground hover:bg-secondary"
                                 }`}
                               >
-                                {formatTime12(t)}
+                                {formatDuration(d)}
                               </button>
-                            ))
-                          ) : (
-                            <p className="text-sm font-body text-muted-foreground/50">No slots available</p>
-                          )}
+                            ))}
+                          </div>
                         </div>
-                        {selectedTime && (
-                          <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="mt-4">
-                            <Button onClick={() => setStep("questions")} className="w-full bg-primary text-primary-foreground hover:bg-primary/90 font-body tracking-wider uppercase text-xs py-5">
-                              Continue
-                            </Button>
-                          </motion.div>
+
+                        {selectedEvent.location && (
+                          <div className="flex items-center gap-2 text-xs font-body text-muted-foreground">
+                            <MapPin className="w-3.5 h-3.5" /> {selectedEvent.location}
+                          </div>
                         )}
-                      </motion.div>
-                    ) : (
-                      <div className="text-center py-12">
-                        <CalendarDays className="w-8 h-8 text-muted-foreground/30 mx-auto mb-3" />
-                        <p className="text-sm font-body text-muted-foreground/50">Select a date to view times</p>
+
+                        <div className="flex items-center gap-2 text-xs font-body text-muted-foreground">
+                          <Globe className="w-3.5 h-3.5" /> {profile.timezone}
+                        </div>
                       </div>
-                    )}
+
+                      {/* Center: Calendar */}
+                      <div className="p-6">
+                        <div className="flex items-center justify-between mb-5">
+                          <h3 className="font-display text-base text-foreground">
+                            <span className="text-primary">{currentMonth.toLocaleDateString("en-US", { month: "long" })}</span>{" "}
+                            {year}
+                          </h3>
+                          <div className="flex items-center gap-1">
+                            <button onClick={() => setCurrentMonth(new Date(year, month - 1))} className="text-muted-foreground hover:text-foreground transition-colors p-1.5 rounded-lg hover:bg-secondary">
+                              <ChevronLeft className="w-4 h-4" />
+                            </button>
+                            <button onClick={() => setCurrentMonth(new Date(year, month + 1))} className="text-muted-foreground hover:text-foreground transition-colors p-1.5 rounded-lg hover:bg-secondary">
+                              <ChevronRight className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-7 gap-1 mb-2">
+                          {["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"].map((d) => (
+                            <div key={d} className="text-center text-[10px] font-body tracking-wider uppercase text-muted-foreground py-2">{d}</div>
+                          ))}
+                        </div>
+
+                        <div className="grid grid-cols-7 gap-1">
+                          {blanks.map((b) => <div key={`blank-${b}`} />)}
+                          {days.map((day) => {
+                            const date = new Date(year, month, day);
+                            const isSelected = selectedDate?.getDate() === day && selectedDate?.getMonth() === month && selectedDate?.getFullYear() === year;
+                            const isPast = date < new Date(new Date().setHours(0, 0, 0, 0));
+                            const isAvailable = !isPast && isDayAvailable(selectedEvent, date);
+                            const isToday = toDateStr(date) === toDateStr(new Date());
+                            return (
+                              <button key={day} disabled={!isAvailable} onClick={() => { setSelectedDate(date); setSelectedTime(null); setTimerActive(false); }}
+                                className={`aspect-square rounded-lg text-sm font-body transition-all relative ${
+                                  isSelected ? "bg-primary text-primary-foreground font-medium ring-2 ring-primary ring-offset-2 ring-offset-background"
+                                    : isAvailable ? "text-foreground hover:bg-secondary"
+                                    : "text-muted-foreground/20 cursor-not-allowed"
+                                }`}
+                              >
+                                {day}
+                                {isToday && !isSelected && <span className="absolute bottom-1 left-1/2 -translate-x-1/2 w-1 h-1 rounded-full bg-primary" />}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Right: Time Slots */}
+                      <div className="p-4">
+                        {selectedDate ? (
+                          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+                            <div className="flex items-center justify-between mb-3">
+                              <p className="text-sm font-body font-medium text-foreground">
+                                {selectedDate.toLocaleDateString("en-US", { weekday: "short" })}{" "}
+                                {selectedDate.getDate()}
+                              </p>
+                              <div className="flex rounded-md border border-border overflow-hidden">
+                                <button onClick={() => setUse24h(false)} className={`px-2 py-0.5 text-[10px] font-body ${!use24h ? "bg-secondary text-foreground" : "text-muted-foreground"}`}>12h</button>
+                                <button onClick={() => setUse24h(true)} className={`px-2 py-0.5 text-[10px] font-body ${use24h ? "bg-secondary text-foreground" : "text-muted-foreground"}`}>24h</button>
+                              </div>
+                            </div>
+                            
+                            {timerActive && selectedTime && (
+                              <div className="mb-2">
+                                <BookingTimer minutes={settings.bookingTimerMinutes} onExpire={handleTimerExpire} />
+                              </div>
+                            )}
+                            
+                            <div className="space-y-1.5 max-h-[420px] overflow-y-auto pr-1">
+                              {timeSlots.length > 0 ? (
+                                timeSlots.map((t) => (
+                                  <button key={t} onClick={() => handleSelectTime(t)}
+                                    className={`w-full text-sm font-body py-2.5 px-4 rounded-lg border transition-all text-center ${
+                                      selectedTime === t ? "bg-primary text-primary-foreground border-primary" : "border-border text-foreground hover:border-primary/50"
+                                    }`}
+                                  >
+                                    <span className="flex items-center justify-center gap-2">
+                                      <span className="w-1.5 h-1.5 rounded-full bg-green-400" />
+                                      {use24h ? t : formatTime12(t)}
+                                    </span>
+                                  </button>
+                                ))
+                              ) : (
+                                <p className="text-sm font-body text-muted-foreground/50 text-center py-8">No slots available</p>
+                              )}
+                            </div>
+                            {selectedTime && (
+                              <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="mt-3">
+                                <Button onClick={() => setStep("questions")} className="w-full bg-primary text-primary-foreground hover:bg-primary/90 font-body tracking-wider uppercase text-xs py-5">
+                                  Continue
+                                </Button>
+                              </motion.div>
+                            )}
+                          </motion.div>
+                        ) : (
+                          <div className="text-center py-12">
+                            <CalendarDays className="w-8 h-8 text-muted-foreground/30 mx-auto mb-3" />
+                            <p className="text-xs font-body text-muted-foreground/50">Select a date</p>
+                          </div>
+                        )}
+                      </div>
+                    </div>
                   </div>
                 </div>
               </motion.div>
@@ -383,6 +508,12 @@ export default function Booking() {
                 <button onClick={() => setStep("datetime")} className="inline-flex items-center gap-2 text-xs font-body tracking-wider uppercase text-muted-foreground hover:text-primary transition-colors mb-6">
                   <ArrowLeft className="w-3.5 h-3.5" /> Back
                 </button>
+
+                {timerActive && (
+                  <div className="glass-panel rounded-lg p-3 mb-4 flex items-center justify-center">
+                    <BookingTimer minutes={settings.bookingTimerMinutes} onExpire={handleTimerExpire} />
+                  </div>
+                )}
 
                 <div className="glass-panel rounded-xl p-5 mb-6">
                   <div className="flex items-center gap-3 mb-3">
@@ -429,7 +560,7 @@ export default function Booking() {
                     {selectedEvent.requiresConfirmation ? "Booking Request Sent!" : "Booking Confirmed!"}
                   </h2>
                   <p className="text-sm font-body text-muted-foreground mb-6">
-                    {selectedEvent.requiresConfirmation ? "You'll receive a confirmation once approved." : "You'll receive a confirmation email shortly."}
+                    {selectedEvent.requiresConfirmation ? "You'll receive a confirmation once approved." : "You're all set!"}
                   </p>
                   <div className="border-t border-border/50 pt-4 space-y-2 text-left">
                     <div className="flex justify-between text-sm font-body"><span className="text-muted-foreground">Event</span><span className="text-foreground">{selectedEvent.title}</span></div>
@@ -437,9 +568,18 @@ export default function Booking() {
                     <div className="flex justify-between text-sm font-body"><span className="text-muted-foreground">Date</span><span className="text-foreground">{selectedDate.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}</span></div>
                     <div className="flex justify-between text-sm font-body"><span className="text-muted-foreground">Time</span><span className="text-primary font-medium">{formatTime12(selectedTime)}</span></div>
                   </div>
-                  <Button onClick={handleReset} variant="outline" className="mt-6 font-body text-xs tracking-wider uppercase border-border text-foreground">
-                    Book Another Session
-                  </Button>
+                  
+                  <div className="flex flex-col gap-3 mt-6">
+                    <a href={buildGoogleCalendarUrl(selectedEvent, selectedDate, selectedTime, selectedDuration)} target="_blank" rel="noopener noreferrer">
+                      <Button variant="outline" className="w-full font-body text-xs tracking-wider uppercase border-border text-foreground gap-2">
+                        <CalendarIcon className="w-4 h-4" /> Add to Google Calendar
+                        <ExternalLink className="w-3 h-3" />
+                      </Button>
+                    </a>
+                    <Button onClick={handleReset} variant="outline" className="w-full font-body text-xs tracking-wider uppercase border-border text-foreground">
+                      Book Another Session
+                    </Button>
+                  </div>
                 </div>
               </motion.div>
             )}
