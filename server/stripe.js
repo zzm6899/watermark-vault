@@ -10,7 +10,7 @@ function getStripe() {
   return stripeClient;
 }
 
-function registerRoutes(app) {
+function registerRoutes(app, store, sendBookingConfirmationEmail) {
   // ── Status ─────────────────────────────────────────
   app.get("/api/stripe/status", (_req, res) => {
     const configured = !!process.env.STRIPE_SECRET_KEY;
@@ -21,8 +21,15 @@ function registerRoutes(app) {
   app.post("/api/stripe/checkout/booking", async (req, res) => {
     const s = getStripe();
     if (!s) return res.status(400).json({ error: "Stripe not configured" });
-    const { bookingId, clientName, clientEmail, amount, eventTitle, successUrl, cancelUrl } = req.body;
+    const { bookingId, clientName, clientEmail, amount, eventTitle, modifyToken, successUrl, cancelUrl } = req.body;
     if (!amount || amount <= 0) return res.status(400).json({ error: "Invalid amount" });
+    const baseUrl = process.env.APP_BASE_URL || req.headers.origin || "";
+    const bookingSuccessUrl = successUrl || (modifyToken
+      ? `${baseUrl}/booking/modify/${modifyToken}?payment=success`
+      : `${baseUrl}/booking?success=1&bookingId=${bookingId}`);
+    const bookingCancelUrl = cancelUrl || (modifyToken
+      ? `${baseUrl}/booking/modify/${modifyToken}?payment=cancelled`
+      : `${baseUrl}/booking?cancelled=1`);
     try {
       const session = await s.checkout.sessions.create({
         payment_method_types: ["card"],
@@ -31,7 +38,7 @@ function registerRoutes(app) {
           price_data: {
             currency: "aud",
             product_data: {
-              name: `Deposit — ${eventTitle || "Booking"}`,
+              name: `${eventTitle || "Booking"}`,
               description: `Booking for ${clientName || "Client"}`,
             },
             unit_amount: Math.round(amount * 100),
@@ -39,9 +46,9 @@ function registerRoutes(app) {
           quantity: 1,
         }],
         mode: "payment",
-        success_url: successUrl || `${req.headers.origin || ""}/booking?success=1&bookingId=${bookingId}`,
-        cancel_url: cancelUrl || `${req.headers.origin || ""}/booking?cancelled=1`,
-        metadata: { bookingId, type: "booking-deposit" },
+        success_url: bookingSuccessUrl,
+        cancel_url: bookingCancelUrl,
+        metadata: { bookingId, modifyToken: modifyToken || "", type: "booking-deposit" },
       });
       res.json({ url: session.url, sessionId: session.id });
     } catch (err) {
@@ -120,12 +127,50 @@ function registerRoutes(app) {
           const bookings = db.bookings ? JSON.parse(db.bookings) : [];
           const idx = bookings.findIndex(b => b.id === metadata.bookingId);
           if (idx >= 0) {
-            bookings[idx].paymentStatus = "paid";
-            bookings[idx].depositPaidAt = new Date().toISOString();
-            bookings[idx].stripeSessionId = session.id;
+            const booking = bookings[idx];
+            const totalAmt = booking.paymentAmount || 0;
+            const depositAmt = booking.depositAmount || 0;
+            const amountPaid = session.amount_total ? session.amount_total / 100 : 0;
+
+            // If paying remaining balance (already deposit-paid), mark fully paid
+            // If first payment equals total, mark fully paid; otherwise deposit-paid
+            if (booking.paymentStatus === "deposit-paid") {
+              booking.paymentStatus = "paid";
+              console.log(`📝 Booking ${metadata.bookingId} remaining balance paid — Paid in Full`);
+            } else if (depositAmt > 0 && amountPaid < totalAmt) {
+              booking.paymentStatus = "deposit-paid";
+              booking.depositPaidAt = new Date().toISOString();
+              console.log(`📝 Booking ${metadata.bookingId} deposit paid`);
+            } else {
+              booking.paymentStatus = "paid";
+              console.log(`📝 Booking ${metadata.bookingId} paid in full`);
+            }
+
+            booking.stripeSessionId = session.id;
             db.bookings = JSON.stringify(bookings);
             fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
-            console.log(`📝 Booking ${metadata.bookingId} marked as paid`);
+
+            // Send confirmation email
+            if (sendBookingConfirmationEmail && booking.clientEmail) {
+              const eventTypes = db["event-types"] ? JSON.parse(db["event-types"]) : [];
+              const eventType = eventTypes.find(e => e.id === booking.eventTypeId) || {};
+              sendBookingConfirmationEmail({
+                to: booking.clientEmail,
+                clientName: booking.clientName,
+                eventTitle: booking.type || eventType.title || "Session",
+                date: booking.date,
+                time: booking.time,
+                duration: booking.duration,
+                location: eventType.location || "",
+                price: booking.paymentAmount || 0,
+                depositAmount: booking.depositAmount || 0,
+                paymentMethod: "stripe",
+                modifyToken: booking.modifyToken,
+                bookingId: booking.id,
+                appBaseUrl: process.env.APP_BASE_URL || "",
+                store,
+              }).catch(err => console.error("Email after Stripe payment failed:", err.message));
+            }
           }
         }
         

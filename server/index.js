@@ -4,7 +4,7 @@ const cors = require("cors");
 const path = require("path");
 const fs = require("fs");
 const { registerRoutes: registerGoogleCalendarRoutes } = require("./google-calendar");
-const { registerRoutes: registerEmailRoutes } = require("./email");
+const { registerRoutes: registerEmailRoutes, sendBookingConfirmationEmail } = require("./email");
 const { registerRoutes: registerStripeRoutes } = require("./stripe");
 
 const app = express();
@@ -32,6 +32,21 @@ function readDb() {
 function writeDb(data) {
   fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
 }
+
+// ── Store interface (passed to route modules that need DB access) ──
+const store = {
+  get: (key) => {
+    const db = readDb();
+    const val = db[key];
+    if (val === undefined || val === null) return null;
+    try { return JSON.parse(val); } catch { return val; }
+  },
+  set: (key, value) => {
+    const db = readDb();
+    db[key] = JSON.stringify(value);
+    writeDb(db);
+  },
+};
 
 app.use(cors());
 app.use(express.json({ limit: "50mb" }));
@@ -168,10 +183,10 @@ app.delete("/api/upload/:filename", (req, res) => {
 registerGoogleCalendarRoutes(app);
 
 // ── Email (SMTP) Integration ─────────────────────────
-registerEmailRoutes(app);
+registerEmailRoutes(app, store);
 
 // ── Stripe Payments ──────────────────────────────────
-registerStripeRoutes(app);
+registerStripeRoutes(app, store, sendBookingConfirmationEmail);
 
 // ── Serve uploaded photos ─────────────────────────────
 app.use("/uploads", express.static(UPLOADS_DIR, { maxAge: "7d" }));

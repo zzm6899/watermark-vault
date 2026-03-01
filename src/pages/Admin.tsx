@@ -30,7 +30,6 @@ import type {
 import WatermarkedImage from "@/components/WatermarkedImage";
 import ProgressiveImg from "@/components/ProgressiveImg";
 import { Slider } from "@/components/ui/slider";
-import RichTextEditor from "@/components/RichTextEditor";
 import sampleLandscape from "@/assets/sample-landscape.jpg";
 import samplePortrait from "@/assets/sample-portrait.jpg";
 import sampleWedding from "@/assets/sample-wedding.jpg";
@@ -162,6 +161,7 @@ function DashboardView() {
 
   const totalIncome = bookings.reduce((sum, b) => sum + (b.paymentAmount || 0), 0);
   const paidIncome = bookings.filter(b => b.paymentStatus === "paid").reduce((sum, b) => sum + (b.paymentAmount || 0), 0);
+  const depositPaidIncome = bookings.filter(b => b.paymentStatus === "deposit-paid").reduce((sum, b) => sum + (b.depositAmount || 0), 0);
   const unpaidIncome = bookings.filter(b => !b.paymentStatus || b.paymentStatus === "unpaid").reduce((sum, b) => sum + (b.paymentAmount || 0), 0);
   const pendingIncome = bookings.filter(b => b.paymentStatus === "pending-confirmation" || b.paymentStatus === "cash").reduce((sum, b) => sum + (b.paymentAmount || 0), 0);
 
@@ -356,7 +356,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
     toast.success(`Booking ${status}`);
   };
 
-  const handlePaymentChange = (bk: Booking, paymentStatus: PaymentStatus) => {
+  const handlePaymentChange = async (bk: Booking, paymentStatus: PaymentStatus) => {
     updateBooking({ ...bk, paymentStatus });
     setBookingsState(getBookings());
     toast.success(`Payment marked as ${paymentStatus}`);
@@ -378,7 +378,10 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
             const et = eventTypes.find(e => e.id === bk.eventTypeId);
             return (
               <div key={bk.id} className="glass-panel rounded-xl overflow-hidden">
-                <div className="p-4 cursor-pointer hover:bg-secondary/20 transition-colors" onClick={() => setExpandedId(isExpanded ? null : bk.id)}>
+                <div className="p-4 cursor-pointer hover:bg-secondary/20 transition-colors" onClick={async () => {
+                    if (!isExpanded) { await syncFromServer(); setBookingsState(getBookings()); }
+                    setExpandedId(isExpanded ? null : bk.id);
+                  }}>
                   <div className="flex items-center gap-4">
                     <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
                       <Users className="w-4 h-4 text-primary" />
@@ -401,9 +404,10 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                       <select value={bk.paymentStatus || "unpaid"} onChange={(e) => handlePaymentChange(bk, e.target.value as PaymentStatus)}
                         className="text-xs font-body px-2.5 py-1 rounded-full bg-secondary border border-border text-foreground cursor-pointer">
                         <option value="unpaid">Unpaid</option>
-                        <option value="paid">Paid</option>
+                        <option value="deposit-paid">Deposit Paid</option>
+                        <option value="paid">Paid in Full</option>
                         <option value="cash">Cash</option>
-                        <option value="pending-confirmation">Pending Confirm</option>
+                        <option value="pending-confirmation">Bank Transfer Pending</option>
                       </select>
                       <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-destructive" onClick={() => handleDelete(bk.id)}>
                         <Trash2 className="w-4 h-4" />
@@ -425,7 +429,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                       </div>
                       <div className="p-3 rounded-lg bg-secondary/50">
                         <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-1">Payment</p>
-                        <p className="text-sm font-body text-foreground">{bk.paymentStatus || "unpaid"}</p>
+                        <p className="text-sm font-body text-foreground">{bk.paymentStatus === "paid" ? "Paid in Full" : bk.paymentStatus === "deposit-paid" ? "Deposit Paid" : bk.paymentStatus === "pending-confirmation" ? "Bank Transfer Pending" : bk.paymentStatus || "Unpaid"}</p>
                       </div>
                     </div>
                     {bk.answers && Object.keys(bk.answers).length > 0 && (
@@ -444,6 +448,33 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                         </div>
                       </div>
                     )}
+                    {/* Email Log */}
+                    {bk.emailLog && bk.emailLog.length > 0 && (
+                      <div>
+                        <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-2">Email History</p>
+                        <div className="space-y-1.5">
+                          {bk.emailLog.map((log, i) => (
+                            <div key={i} className="flex items-center justify-between p-2 rounded-lg bg-secondary/30 border border-border/30">
+                              <div className="flex items-center gap-2">
+                                <div className={`w-1.5 h-1.5 rounded-full ${log.openedAt ? "bg-green-400" : "bg-muted-foreground/40"}`} />
+                                <div>
+                                  <p className="text-xs font-body text-foreground">{log.type === "booking-confirmation" ? "Booking Confirmation" : log.type === "payment-update" ? "Payment Update" : log.type}</p>
+                                  <p className="text-[10px] font-body text-muted-foreground">Sent {new Date(log.sentAt).toLocaleString()}</p>
+                                </div>
+                              </div>
+                              <div className="text-right">
+                                {log.openedAt ? (
+                                  <span className="text-[10px] font-body text-green-400">Opened {new Date(log.openedAt).toLocaleString()}</span>
+                                ) : (
+                                  <span className="text-[10px] font-body text-muted-foreground/50">Not opened</span>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
                     <div className="flex items-center gap-2 pt-1">
                       {bk.albumId ? (
                         <a href={`/gallery/${bk.albumId}`} target="_blank" rel="noopener noreferrer">
@@ -643,7 +674,7 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
       </div>
       <div>
         <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Description</label>
-        <RichTextEditor value={description} onChange={setDescription} placeholder="Describe this event type…" minHeight="80px" />
+        <Textarea value={description} onChange={(e) => setDescription(e.target.value)} className="bg-secondary border-border text-foreground font-body min-h-[60px]" />
       </div>
       <div>
         <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Location</label>
@@ -1803,7 +1834,7 @@ function ProfileView() {
           </div>
           <div>
             <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Bio</label>
-            <RichTextEditor value={profile.bio} onChange={(val) => setProfileState({ ...profile, bio: val })} placeholder="Write your bio…" minHeight="60px" />
+            <Textarea value={profile.bio} onChange={(e) => setProfileState({ ...profile, bio: e.target.value })} className="bg-secondary border-border text-foreground font-body min-h-[60px]" />
           </div>
           <div>
             <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Timezone</label>

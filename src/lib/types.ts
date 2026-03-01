@@ -1,6 +1,6 @@
 export type WatermarkPosition = "center" | "top-left" | "top-right" | "bottom-left" | "bottom-right" | "tiled";
 export type QuestionFieldType = "text" | "textarea" | "select" | "boolean" | "image-upload" | "instagram";
-export type PaymentStatus = "unpaid" | "paid" | "cash" | "pending-confirmation";
+export type PaymentStatus = "unpaid" | "deposit-paid" | "paid" | "cash" | "pending-confirmation";
 export type DownloadQuality = "2mb" | "5mb" | "original";
 
 export interface QuestionField {
@@ -71,6 +71,16 @@ export interface Booking {
   depositMethod?: "stripe" | "bank";
   depositPaidAt?: string;
   stripeSessionId?: string;
+  emailLog?: EmailLogEntry[];
+}
+
+export interface EmailLogEntry {
+  id: string;           // uuid — used for open-tracking pixel
+  type: "booking-confirmation" | "payment-update" | "reschedule" | "cancellation" | "manual";
+  sentAt: string;       // ISO
+  openedAt?: string;    // ISO — populated when tracking pixel is fetched
+  subject: string;
+  to: string;
 }
 
 export interface Photo {

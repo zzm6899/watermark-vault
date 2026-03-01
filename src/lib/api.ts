@@ -127,7 +127,12 @@ export async function getStripeStatus(): Promise<{ configured: boolean; publisha
 }
 
 export async function createBookingCheckout(params: {
-  bookingId: string; clientName: string; clientEmail: string; amount: number; eventTitle: string;
+  bookingId: string;
+  clientName: string;
+  clientEmail: string;
+  amount: number;
+  eventTitle: string;
+  modifyToken?: string;   // used to build the Stripe success redirect URL
 }): Promise<{ url?: string; error?: string }> {
   try {
     const res = await fetch("/api/stripe/checkout/booking", {
@@ -278,4 +283,19 @@ export async function sendBookingConfirmationEmail(params: {
   } catch {
     return { ok: false, error: "Network error" };
   }
+}
+
+// ── Email log ───────────────────────────────────────────────
+
+/** Fetch the email log for a specific booking (admin use) */
+export async function getBookingEmailLog(bookingId: string): Promise<{
+  id: string; type: string; sentAt: string; openedAt?: string; subject: string; to: string;
+}[]> {
+  if (!(await checkServer())) return [];
+  try {
+    const res = await fetch(`/api/email/log/${encodeURIComponent(bookingId)}`);
+    if (!res.ok) return [];
+    const data = await res.json();
+    return data.log || [];
+  } catch { return []; }
 }
