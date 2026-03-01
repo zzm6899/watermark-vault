@@ -1622,8 +1622,9 @@ function PhotosView() {
             <div key={p.id + p.source} className={`relative group aspect-square rounded-md overflow-hidden bg-secondary cursor-pointer border-2 transition-all ${selectedIds.has(p.id) ? "border-primary ring-2 ring-primary/20" : "border-transparent hover:border-border"}`}
               onClick={() => toggleSelect(p.id)}>
               <ProgressiveImg thumbSrc={p.thumbnail} fullSrc={p.src} alt={p.title} className="w-full h-full object-cover" loading="lazy" />
-              <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-background/80 to-transparent p-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                <p className="text-[9px] font-body text-muted-foreground truncate">{p.source}</p>
+              <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-background/80 to-transparent p-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                <p className="text-[9px] font-body text-foreground font-medium truncate">{p.title}</p>
+                <p className="text-[8px] font-body text-muted-foreground truncate">{p.source}</p>
               </div>
               {selectedIds.has(p.id) && (
                 <div className="absolute top-1 right-1 w-5 h-5 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-[10px] font-bold">✓</div>
