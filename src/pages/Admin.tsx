@@ -442,7 +442,7 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
     { id: "q2", label: "Email", type: "text", required: true, placeholder: "you@example.com" },
   ];
   if (currentSettings.instagramFieldEnabled) {
-    defaultQuestions.push({ id: "q-ig", label: "Instagram Handle", type: "text", required: false, placeholder: "@yourusername" });
+    defaultQuestions.push({ id: "q-ig", label: "Instagram Handle", type: "instagram", required: false, placeholder: "yourusername" });
   }
   const [questions, setQuestions] = useState<QuestionField[]>(eventType?.questions || defaultQuestions);
   const [recurring, setRecurring] = useState<AvailabilitySlot[]>(eventType?.availability?.recurring || []);
@@ -620,6 +620,7 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
                     <option value="select">Select</option>
                     <option value="boolean">Yes/No</option>
                     <option value="image-upload">Image Upload</option>
+                    <option value="instagram">Instagram Handle</option>
                   </select>
                   <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-destructive" onClick={() => setQuestions(questions.filter((_, i) => i !== idx))}>
                     <Trash2 className="w-3.5 h-3.5" />

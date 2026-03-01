@@ -3,14 +3,14 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   Clock, ChevronLeft, ChevronRight, ArrowLeft, Globe,
   CalendarDays, Upload, CheckCircle2, AlertCircle, Camera,
-  MapPin, Calendar as CalendarIcon, ExternalLink
+  MapPin, Calendar as CalendarIcon, ExternalLink, XCircle, Edit
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import Footer from "@/components/Footer";
 import { toast } from "sonner";
-import { getEventTypes, getProfile, addBooking, getBookings, getSettings, isSlotBooked } from "@/lib/storage";
+import { getEventTypes, getProfile, addBooking, getBookings, getSettings, isSlotBooked, updateBooking } from "@/lib/storage";
 import type { EventType, QuestionField } from "@/lib/types";
 
 type Step = "event-select" | "datetime" | "questions" | "confirmed";
@@ -87,6 +87,13 @@ function QuestionInput({ field, value, onChange }: { field: QuestionField; value
       return <Input value={value} onChange={(e) => onChange(e.target.value)} placeholder={field.placeholder} className="bg-secondary border-border text-foreground placeholder:text-muted-foreground/50 font-body" />;
     case "textarea":
       return <Textarea value={value} onChange={(e) => onChange(e.target.value)} placeholder={field.placeholder} className="bg-secondary border-border text-foreground placeholder:text-muted-foreground/50 font-body min-h-[80px]" />;
+    case "instagram":
+      return (
+        <div className="relative">
+          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground font-body text-sm">@</span>
+          <Input value={value.replace(/^@/, "")} onChange={(e) => onChange(e.target.value.replace(/^@/, ""))} placeholder="yourusername" className="bg-secondary border-border text-foreground placeholder:text-muted-foreground/50 font-body pl-7" />
+        </div>
+      );
     case "select":
       return (
         <select value={value} onChange={(e) => onChange(e.target.value)} className="w-full bg-secondary border border-border text-foreground font-body text-sm rounded-md px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-ring">
@@ -156,6 +163,7 @@ export default function Booking() {
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [use24h, setUse24h] = useState(false);
   const [timerActive, setTimerActive] = useState(false);
+  const [lastBookingId, setLastBookingId] = useState<string | null>(null);
 
   const year = currentMonth.getFullYear();
   const month = currentMonth.getMonth();
@@ -229,6 +237,7 @@ export default function Booking() {
       return;
     }
 
+    const modifyToken = `mod-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const booking = {
       id: `bk-${Date.now()}`,
       clientName: answers["q1"] || "Client",
@@ -244,9 +253,11 @@ export default function Booking() {
       createdAt: new Date().toISOString(),
       paymentStatus: "unpaid" as const,
       paymentAmount: selectedEvent.price,
-      instagramHandle: answers[selectedEvent.questions.find(q => q.label.toLowerCase().includes("instagram"))?.id || ""] || "",
+      instagramHandle: answers[selectedEvent.questions.find(q => q.type === "instagram" || q.label.toLowerCase().includes("instagram"))?.id || ""] || "",
+      modifyToken,
     };
     addBooking(booking);
+    setLastBookingId(booking.id);
     setTimerActive(false);
     setStep("confirmed");
   };
@@ -259,6 +270,7 @@ export default function Booking() {
     setSelectedTime(null);
     setAnswers({});
     setTimerActive(false);
+    setLastBookingId(null);
   };
 
   return (
@@ -554,7 +566,10 @@ export default function Booking() {
             )}
 
             {/* ─── Confirmation ─── */}
-            {step === "confirmed" && selectedEvent && selectedDate && selectedTime && selectedDuration && (
+            {step === "confirmed" && selectedEvent && selectedDate && selectedTime && selectedDuration && (() => {
+              const lastBooking = lastBookingId ? getBookings().find(b => b.id === lastBookingId) : null;
+              const modifyUrl = lastBooking?.modifyToken ? `${window.location.origin}/booking/modify/${lastBooking.modifyToken}` : null;
+              return (
               <motion.div key="confirmed" initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="max-w-md mx-auto text-center">
                 <div className="glass-panel rounded-xl p-8">
                   <CheckCircle2 className="w-12 h-12 text-green-400 mx-auto mb-4" />
@@ -578,13 +593,31 @@ export default function Booking() {
                         <ExternalLink className="w-3 h-3" />
                       </Button>
                     </a>
+                    {modifyUrl && (
+                      <a href={modifyUrl}>
+                        <Button variant="outline" className="w-full font-body text-xs tracking-wider uppercase border-border text-foreground gap-2">
+                          <Edit className="w-4 h-4" /> Modify Booking
+                        </Button>
+                      </a>
+                    )}
+                    {lastBooking && lastBooking.status !== "cancelled" && (
+                      <Button variant="outline" onClick={() => {
+                        if (!confirm("Are you sure you want to cancel this booking?")) return;
+                        updateBooking({ ...lastBooking, status: "cancelled" });
+                        toast.success("Booking cancelled");
+                        handleReset();
+                      }} className="w-full font-body text-xs tracking-wider uppercase border-destructive text-destructive hover:bg-destructive/10 gap-2">
+                        <XCircle className="w-4 h-4" /> Cancel Booking
+                      </Button>
+                    )}
                     <Button onClick={handleReset} variant="outline" className="w-full font-body text-xs tracking-wider uppercase border-border text-foreground">
                       Book Another Session
                     </Button>
                   </div>
                 </div>
               </motion.div>
-            )}
+              );
+            })()}
 
           </AnimatePresence>
         </div>
