@@ -180,6 +180,7 @@ const defaultSettings: AppSettings = {
   watermarkPosition: "center",
   watermarkText: "ZACMPHOTOS",
   watermarkImage: "",
+  watermarkOpacity: 15,
   defaultFreeDownloads: 5,
   defaultPricePerPhoto: 12,
   defaultPriceFullAlbum: 299,
