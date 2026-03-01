@@ -11,8 +11,7 @@ export default function Footer() {
             <span className="font-display text-base text-foreground">Lumière</span>
           </div>
           <div className="flex items-center gap-8 text-xs font-body tracking-widest uppercase text-muted-foreground">
-            <Link to="/gallery" className="hover:text-primary transition-colors">Portfolio</Link>
-            <Link to="/booking" className="hover:text-primary transition-colors">Booking</Link>
+            <Link to="/" className="hover:text-primary transition-colors">Booking</Link>
             <a href="mailto:hello@lumiere.photo" className="hover:text-primary transition-colors">Contact</a>
           </div>
           <p className="text-xs text-muted-foreground/50 font-body">

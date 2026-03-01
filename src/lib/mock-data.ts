@@ -4,6 +4,8 @@ import sampleLandscape from "@/assets/sample-landscape.jpg";
 import sampleEvent from "@/assets/sample-event.jpg";
 import sampleFood from "@/assets/sample-food.jpg";
 
+export type WatermarkPosition = "center" | "top-left" | "top-right" | "bottom-left" | "bottom-right" | "tiled";
+
 export interface Photo {
   id: string;
   src: string;
@@ -27,6 +29,33 @@ export interface Album {
   photos: Photo[];
   clientName?: string;
   bookingId?: string;
+  accessCode?: string;
+}
+
+export interface EventType {
+  id: string;
+  title: string;
+  description: string;
+  duration: number; // minutes
+  color: string; // tailwind-friendly accent
+  price: number;
+  active: boolean;
+}
+
+export interface AvailabilitySlot {
+  day: number; // 0=Sun, 6=Sat
+  startTime: string; // "09:00"
+  endTime: string; // "17:00"
+}
+
+export interface BankTransferSettings {
+  enabled: boolean;
+  accountName: string;
+  bsb: string;
+  accountNumber: string;
+  payId: string;
+  payIdType: "email" | "phone" | "abn";
+  instructions: string;
 }
 
 export interface Booking {
@@ -35,6 +64,7 @@ export interface Booking {
   clientEmail: string;
   date: string;
   time: string;
+  eventTypeId: string;
   type: string;
   status: "pending" | "confirmed" | "completed" | "cancelled";
   notes: string;
@@ -56,6 +86,73 @@ export const samplePhotos: Photo[] = [
   { id: "12", src: samplePortrait, title: "Editorial", width: 800, height: 1024 },
 ];
 
+export const sampleEventTypes: EventType[] = [
+  {
+    id: "et-1",
+    title: "Mini Session",
+    description: "Quick portrait or headshot session. Perfect for social media and professional profiles.",
+    duration: 15,
+    color: "primary",
+    price: 75,
+    active: true,
+  },
+  {
+    id: "et-2",
+    title: "Portrait Session",
+    description: "Full portrait session with outfit changes and multiple locations.",
+    duration: 40,
+    color: "primary",
+    price: 200,
+    active: true,
+  },
+  {
+    id: "et-3",
+    title: "Event Coverage",
+    description: "Corporate events, parties, and gatherings. Full event documentation.",
+    duration: 120,
+    color: "primary",
+    price: 500,
+    active: true,
+  },
+  {
+    id: "et-4",
+    title: "Wedding Package",
+    description: "Full day wedding coverage from preparation to reception.",
+    duration: 480,
+    color: "primary",
+    price: 2500,
+    active: true,
+  },
+  {
+    id: "et-5",
+    title: "Product Photography",
+    description: "Studio product shots for e-commerce and marketing materials.",
+    duration: 60,
+    color: "primary",
+    price: 300,
+    active: true,
+  },
+];
+
+export const defaultAvailability: AvailabilitySlot[] = [
+  { day: 1, startTime: "09:00", endTime: "17:00" },
+  { day: 2, startTime: "09:00", endTime: "17:00" },
+  { day: 3, startTime: "09:00", endTime: "17:00" },
+  { day: 4, startTime: "09:00", endTime: "17:00" },
+  { day: 5, startTime: "09:00", endTime: "17:00" },
+  { day: 6, startTime: "10:00", endTime: "14:00" },
+];
+
+export const defaultBankTransfer: BankTransferSettings = {
+  enabled: false,
+  accountName: "",
+  bsb: "",
+  accountNumber: "",
+  payId: "",
+  payIdType: "email",
+  instructions: "Please include your booking reference in the transfer description.",
+};
+
 export const sampleAlbums: Album[] = [
   {
     id: "wedding-emma-james",
@@ -67,9 +164,10 @@ export const sampleAlbums: Album[] = [
     freeDownloads: 5,
     pricePerPhoto: 12,
     priceFullAlbum: 299,
-    isPublic: true,
+    isPublic: false,
     clientName: "Emma Thompson",
     bookingId: "bk-1",
+    accessCode: "emma2025",
     photos: samplePhotos,
   },
   {
@@ -82,9 +180,10 @@ export const sampleAlbums: Album[] = [
     freeDownloads: 3,
     pricePerPhoto: 15,
     priceFullAlbum: 149,
-    isPublic: true,
+    isPublic: false,
     clientName: "Sarah Mitchell",
     bookingId: "bk-2",
+    accessCode: "sarah2025",
     photos: samplePhotos.slice(0, 8),
   },
   {
@@ -97,7 +196,8 @@ export const sampleAlbums: Album[] = [
     freeDownloads: 2,
     pricePerPhoto: 20,
     priceFullAlbum: 199,
-    isPublic: true,
+    isPublic: false,
+    accessCode: "horizons2025",
     photos: samplePhotos.slice(2, 10),
   },
   {
@@ -110,9 +210,10 @@ export const sampleAlbums: Album[] = [
     freeDownloads: 10,
     pricePerPhoto: 8,
     priceFullAlbum: 249,
-    isPublic: true,
+    isPublic: false,
     clientName: "TechCorp Inc.",
     bookingId: "bk-3",
+    accessCode: "gala2025",
     photos: samplePhotos,
   },
 ];
@@ -124,7 +225,8 @@ export const sampleBookings: Booking[] = [
     clientEmail: "emma@example.com",
     date: "2025-10-15",
     time: "14:00",
-    type: "Wedding",
+    eventTypeId: "et-4",
+    type: "Wedding Package",
     status: "completed",
     notes: "Estate gardens, 248 photos delivered",
     albumId: "wedding-emma-james",
@@ -135,7 +237,8 @@ export const sampleBookings: Booking[] = [
     clientEmail: "sarah@example.com",
     date: "2025-11-02",
     time: "10:00",
-    type: "Portrait",
+    eventTypeId: "et-2",
+    type: "Portrait Session",
     status: "completed",
     notes: "Studio session, editorial style",
     albumId: "portrait-session-sarah",
@@ -146,7 +249,8 @@ export const sampleBookings: Booking[] = [
     clientEmail: "events@techcorp.com",
     date: "2025-12-01",
     time: "18:00",
-    type: "Event",
+    eventTypeId: "et-3",
+    type: "Event Coverage",
     status: "completed",
     notes: "Annual gala, full coverage",
     albumId: "corporate-gala",
@@ -157,7 +261,8 @@ export const sampleBookings: Booking[] = [
     clientEmail: "lisa@example.com",
     date: "2026-03-15",
     time: "09:00",
-    type: "Wedding",
+    eventTypeId: "et-4",
+    type: "Wedding Package",
     status: "confirmed",
     notes: "Beach ceremony, engagement + wedding",
   },
@@ -167,7 +272,8 @@ export const sampleBookings: Booking[] = [
     clientEmail: "mark@example.com",
     date: "2026-03-22",
     time: "15:00",
-    type: "Portrait",
+    eventTypeId: "et-2",
+    type: "Portrait Session",
     status: "pending",
     notes: "Family portrait session",
   },
