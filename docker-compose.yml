@@ -11,5 +11,6 @@ services:
         target: 5066
     environment:
       - TZ=Australia/Sydney
+      - GOOGLE_API_CREDENTIALS={"web":{"client_id":"YOUR_CLIENT_ID","client_secret":"YOUR_SECRET","redirect_uris":["https://book.zacmclients.photos/api/integrations/googlecalendar/callback"]}}
     volumes:
       - /mnt/your-pool/apps/booking-gal/data:/data

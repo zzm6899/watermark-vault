@@ -21,7 +21,7 @@ import {
   getPhotoLibrary, setPhotoLibrary,
 } from "@/lib/storage";
 import { compressImage, formatBytes, getLocalStorageUsage } from "@/lib/image-utils";
-import { uploadPhotosToServer, isServerMode, deletePhotoFromServer } from "@/lib/api";
+import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar } from "@/lib/api";
 import type {
   EventType, QuestionField, AvailabilitySlot,
   ProfileSettings, AppSettings, Booking, WatermarkPosition,
@@ -1608,10 +1608,122 @@ function SettingsView() {
           </div>
         </div>
 
+        {/* Google Calendar */}
+        <GoogleCalendarSection />
+
         <Button onClick={handleSave} className="bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs tracking-wider uppercase gap-2">
           <Save className="w-4 h-4" /> Save All Settings
         </Button>
       </div>
     </motion.div>
+  );
+}
+
+// ─── Google Calendar Section ─────────────────────────
+function GoogleCalendarSection() {
+  const [status, setStatus] = useState<{ configured: boolean; connected: boolean; email: string | null }>({ configured: false, connected: false, email: null });
+  const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
+  const [calendars, setCalendars] = useState<{ id: string; summary: string; primary?: boolean }[]>([]);
+  const [selectedCalendar, setSelectedCalendar] = useState("primary");
+
+  useEffect(() => {
+    getGoogleCalendarStatus().then(s => {
+      setStatus(s);
+      setLoading(false);
+      if (s.connected) {
+        getGoogleCalendars().then(setCalendars);
+      }
+    });
+  }, []);
+
+  const handleConnect = async () => {
+    const url = await startGoogleCalendarAuth();
+    if (url) {
+      window.location.href = url;
+    } else {
+      toast.error("Google Calendar not configured. Add GOOGLE_API_CREDENTIALS to your Docker env.");
+    }
+  };
+
+  const handleDisconnect = async () => {
+    if (!confirm("Disconnect Google Calendar?")) return;
+    await disconnectGoogleCalendar();
+    setStatus({ configured: status.configured, connected: false, email: null });
+    setCalendars([]);
+    toast.success("Google Calendar disconnected");
+  };
+
+  const handleSyncAll = async () => {
+    setSyncing(true);
+    const bookings = getBookings();
+    const result = await syncAllBookingsToCalendar(bookings, selectedCalendar);
+    setSyncing(false);
+    if (result.ok) {
+      toast.success(`Synced ${result.created} bookings to Google Calendar${result.errors ? ` (${result.errors} failed)` : ""}`);
+    } else {
+      toast.error("Failed to sync bookings");
+    }
+  };
+
+  if (loading) return null;
+
+  return (
+    <div className="glass-panel rounded-xl p-6 space-y-4">
+      <h3 className="font-display text-base text-foreground flex items-center gap-2">
+        <Calendar className="w-4 h-4 text-primary" /> Google Calendar
+      </h3>
+
+      {!status.configured && !isServerMode() && (
+        <div className="p-4 rounded-lg bg-secondary/50 border border-border/50">
+          <p className="text-xs font-body text-muted-foreground">
+            Google Calendar sync requires the Docker backend. Add <code className="text-primary">GOOGLE_API_CREDENTIALS</code> to your Docker environment variables.
+          </p>
+        </div>
+      )}
+
+      {status.configured && !status.connected && (
+        <div className="p-4 rounded-lg bg-secondary/50 border border-border/50">
+          <p className="text-xs font-body text-muted-foreground mb-3">Connect your Google account to sync bookings to your calendar.</p>
+          <Button onClick={handleConnect} size="sm" className="gap-2 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs">
+            <Calendar className="w-4 h-4" /> Connect Google Calendar
+          </Button>
+        </div>
+      )}
+
+      {status.connected && (
+        <div className="space-y-3">
+          <div className="p-4 rounded-lg bg-green-500/5 border border-green-500/20 flex items-center justify-between">
+            <div>
+              <p className="text-sm font-body text-foreground font-medium flex items-center gap-2">
+                ✓ Connected
+              </p>
+              {status.email && <p className="text-xs font-body text-muted-foreground">{status.email}</p>}
+            </div>
+            <Button onClick={handleDisconnect} variant="ghost" size="sm" className="text-xs font-body text-destructive hover:bg-destructive/10">
+              Disconnect
+            </Button>
+          </div>
+
+          {calendars.length > 0 && (
+            <div>
+              <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Target Calendar</label>
+              <select value={selectedCalendar} onChange={(e) => setSelectedCalendar(e.target.value)}
+                className="w-full bg-secondary border border-border text-foreground font-body text-sm rounded-md px-3 py-2.5">
+                {calendars.map(c => (
+                  <option key={c.id} value={c.id}>{c.summary}{c.primary ? " (Primary)" : ""}</option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          <Button onClick={handleSyncAll} disabled={syncing} variant="outline" size="sm" className="gap-2 font-body text-xs border-border text-foreground">
+            <Calendar className="w-4 h-4" />
+            {syncing ? "Syncing..." : "Sync All Bookings"}
+          </Button>
+          <p className="text-[10px] font-body text-muted-foreground/50">New bookings are automatically synced when created.</p>
+        </div>
+      )}
+    </div>
   );
 }

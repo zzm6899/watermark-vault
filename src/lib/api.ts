@@ -92,3 +92,73 @@ export function deletePhotoFromServer(url: string): void {
 export function isServerMode(): boolean {
   return serverAvailable === true;
 }
+
+// ── Google Calendar ─────────────────────────────────────
+
+export async function getGoogleCalendarStatus(): Promise<{ configured: boolean; connected: boolean; email: string | null }> {
+  if (!(await checkServer())) return { configured: false, connected: false, email: null };
+  try {
+    const res = await fetch("/api/integrations/googlecalendar/status");
+    if (!res.ok) return { configured: false, connected: false, email: null };
+    return await res.json();
+  } catch {
+    return { configured: false, connected: false, email: null };
+  }
+}
+
+export async function startGoogleCalendarAuth(): Promise<string | null> {
+  try {
+    const res = await fetch("/api/integrations/googlecalendar/auth");
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.url || null;
+  } catch {
+    return null;
+  }
+}
+
+export async function disconnectGoogleCalendar(): Promise<boolean> {
+  try {
+    const res = await fetch("/api/integrations/googlecalendar/disconnect", { method: "POST" });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+export async function getGoogleCalendars(): Promise<{ id: string; summary: string; primary?: boolean }[]> {
+  try {
+    const res = await fetch("/api/integrations/googlecalendar/calendars");
+    if (!res.ok) return [];
+    const data = await res.json();
+    return data.calendars || [];
+  } catch {
+    return [];
+  }
+}
+
+export async function syncBookingToCalendar(booking: unknown, calendarId = "primary"): Promise<{ ok: boolean; eventId?: string }> {
+  try {
+    const res = await fetch("/api/integrations/googlecalendar/event", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ booking, calendarId }),
+    });
+    return await res.json();
+  } catch {
+    return { ok: false };
+  }
+}
+
+export async function syncAllBookingsToCalendar(bookings: unknown[], calendarId = "primary"): Promise<{ ok: boolean; created?: number; errors?: number }> {
+  try {
+    const res = await fetch("/api/integrations/googlecalendar/sync-all", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bookings, calendarId }),
+    });
+    return await res.json();
+  } catch {
+    return { ok: false };
+  }
+}

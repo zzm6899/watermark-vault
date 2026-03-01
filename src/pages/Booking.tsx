@@ -11,6 +11,7 @@ import { Textarea } from "@/components/ui/textarea";
 import Footer from "@/components/Footer";
 import { toast } from "sonner";
 import { getEventTypes, getProfile, addBooking, getBookings, getSettings, isSlotBooked, updateBooking } from "@/lib/storage";
+import { syncBookingToCalendar } from "@/lib/api";
 import type { EventType, QuestionField } from "@/lib/types";
 
 type Step = "event-select" | "datetime" | "questions" | "confirmed";
@@ -258,6 +259,8 @@ export default function Booking() {
       modifyToken,
     };
     addBooking(booking);
+    // Auto-sync to Google Calendar (fire-and-forget)
+    syncBookingToCalendar(booking).catch(() => {});
     setLastBookingId(booking.id);
     setTimerActive(false);
     setStep("confirmed");
