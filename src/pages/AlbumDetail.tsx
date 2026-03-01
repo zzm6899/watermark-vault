@@ -335,6 +335,7 @@ export default function AlbumDetail() {
                 <WatermarkedImage
                   key={photo.id}
                   src={photo.thumbnail || photo.src}
+                  fullSrc={photo.thumbnail ? photo.src : undefined}
                   title={photo.title}
                   selected={selectedIds.has(photo.id)}
                   onSelect={() => setLightboxIndex(i)}
