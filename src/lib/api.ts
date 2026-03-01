@@ -113,6 +113,41 @@ export async function getServerStorageStats(): Promise<{
   }
 }
 
+// ── Email (SMTP) ───────────────────────────────────────
+
+export async function getEmailStatus(): Promise<{ configured: boolean; host: string | null; user: string | null; from: string | null }> {
+  if (!(await checkServer())) return { configured: false, host: null, user: null, from: null };
+  try {
+    const res = await fetch("/api/email/status");
+    if (!res.ok) return { configured: false, host: null, user: null, from: null };
+    return await res.json();
+  } catch {
+    return { configured: false, host: null, user: null, from: null };
+  }
+}
+
+export async function testEmailConnection(): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch("/api/email/test", { method: "POST" });
+    return await res.json();
+  } catch {
+    return { ok: false, error: "Network error" };
+  }
+}
+
+export async function sendEmail(to: string, subject: string, html?: string, text?: string): Promise<{ ok: boolean; messageId?: string; error?: string }> {
+  try {
+    const res = await fetch("/api/email/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ to, subject, html, text }),
+    });
+    return await res.json();
+  } catch {
+    return { ok: false, error: "Network error" };
+  }
+}
+
 // ── Google Calendar ─────────────────────────────────────
 
 export async function getGoogleCalendarStatus(): Promise<{ configured: boolean; connected: boolean; email: string | null }> {
