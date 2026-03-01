@@ -8,14 +8,14 @@ export default function Footer() {
         <div className="flex flex-col md:flex-row items-center justify-between gap-6">
           <div className="flex items-center gap-2.5">
             <Camera className="w-4 h-4 text-primary" />
-            <span className="font-display text-base text-foreground">Lumière</span>
+            <span className="font-display text-base text-foreground">Zacmphotos</span>
           </div>
           <div className="flex items-center gap-8 text-xs font-body tracking-widest uppercase text-muted-foreground">
             <Link to="/" className="hover:text-primary transition-colors">Booking</Link>
-            <a href="mailto:hello@lumiere.photo" className="hover:text-primary transition-colors">Contact</a>
+            <a href="mailto:hello@zacmphotos.com" className="hover:text-primary transition-colors">Contact</a>
           </div>
           <p className="text-xs text-muted-foreground/50 font-body">
-            © 2026 Lumière Photography
+            © 2026 Zacmphotos
           </p>
         </div>
       </div>

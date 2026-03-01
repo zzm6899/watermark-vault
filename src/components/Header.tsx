@@ -17,7 +17,7 @@ export default function Header() {
         <Link to="/" className="flex items-center gap-2.5 group">
           <Camera className="w-5 h-5 text-primary transition-transform group-hover:rotate-12" />
           <span className="font-display text-lg tracking-wide text-foreground">
-            Lumière
+            Zacmphotos
           </span>
         </Link>
 

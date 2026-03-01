@@ -32,14 +32,27 @@ export interface Album {
   accessCode?: string;
 }
 
+export type QuestionFieldType = "text" | "textarea" | "select" | "boolean" | "image-upload";
+
+export interface QuestionField {
+  id: string;
+  label: string;
+  type: QuestionFieldType;
+  required: boolean;
+  placeholder?: string;
+  options?: string[]; // for select type
+}
+
 export interface EventType {
   id: string;
   title: string;
   description: string;
-  duration: number; // minutes
-  color: string; // tailwind-friendly accent
+  durations: number[]; // multiple duration options in minutes
+  color: string;
   price: number;
   active: boolean;
+  requiresConfirmation?: boolean;
+  questions: QuestionField[];
 }
 
 export interface AvailabilitySlot {
@@ -66,9 +79,11 @@ export interface Booking {
   time: string;
   eventTypeId: string;
   type: string;
+  duration: number;
   status: "pending" | "confirmed" | "completed" | "cancelled";
   notes: string;
   albumId?: string;
+  answers?: Record<string, string>;
 }
 
 export const samplePhotos: Photo[] = [
@@ -89,48 +104,68 @@ export const samplePhotos: Photo[] = [
 export const sampleEventTypes: EventType[] = [
   {
     id: "et-1",
-    title: "Mini Session",
-    description: "Quick portrait or headshot session. Perfect for social media and professional profiles.",
-    duration: 15,
+    title: "Animaga",
+    description: "Cosplay Photoshoot in the heart of Sydney! There's NO PHOTO LIMIT – while I value quality over quantity, how you make the most of this session is entirely up to you!",
+    durations: [25, 40],
     color: "primary",
     price: 75,
     active: true,
+    requiresConfirmation: true,
+    questions: [
+      { id: "q1", label: "Name", type: "text", required: true, placeholder: "Your full name" },
+      { id: "q2", label: "Email", type: "text", required: true, placeholder: "you@example.com" },
+      { id: "q3", label: "Instagram Username", type: "text", required: false, placeholder: "@yourusername" },
+      { id: "q4", label: "What character(s) will you be cosplaying?", type: "textarea", required: true, placeholder: "Describe your cosplay..." },
+      { id: "q5", label: "Do you have reference images?", type: "boolean", required: true },
+      { id: "q6", label: "Reference Images", type: "image-upload", required: false },
+      { id: "q7", label: "Experience Level", type: "select", required: false, options: ["First time", "Some experience", "Experienced", "Professional"] },
+      { id: "q8", label: "Additional Notes", type: "textarea", required: false, placeholder: "Anything else you'd like us to know..." },
+    ],
   },
   {
     id: "et-2",
     title: "Portrait Session",
     description: "Full portrait session with outfit changes and multiple locations.",
-    duration: 40,
+    durations: [30, 60],
     color: "primary",
     price: 200,
     active: true,
+    questions: [
+      { id: "q1", label: "Name", type: "text", required: true, placeholder: "Your full name" },
+      { id: "q2", label: "Email", type: "text", required: true, placeholder: "you@example.com" },
+      { id: "q3", label: "Instagram Username", type: "text", required: false, placeholder: "@yourusername" },
+      { id: "q4", label: "What style are you looking for?", type: "select", required: true, options: ["Natural / Candid", "Editorial", "Studio", "Outdoor"] },
+      { id: "q5", label: "Additional Notes", type: "textarea", required: false, placeholder: "Tell us about your vision..." },
+    ],
   },
   {
     id: "et-3",
     title: "Event Coverage",
     description: "Corporate events, parties, and gatherings. Full event documentation.",
-    duration: 120,
+    durations: [120, 240],
     color: "primary",
     price: 500,
     active: true,
+    questions: [
+      { id: "q1", label: "Name", type: "text", required: true, placeholder: "Your full name" },
+      { id: "q2", label: "Email", type: "text", required: true, placeholder: "you@example.com" },
+      { id: "q3", label: "Event Type", type: "select", required: true, options: ["Corporate", "Birthday", "Wedding", "Other"] },
+      { id: "q4", label: "Expected Number of Guests", type: "text", required: false, placeholder: "e.g. 50-100" },
+      { id: "q5", label: "Venue Details", type: "textarea", required: true, placeholder: "Address and any access details..." },
+    ],
   },
   {
     id: "et-4",
-    title: "Wedding Package",
-    description: "Full day wedding coverage from preparation to reception.",
-    duration: 480,
+    title: "Secret Meeting",
+    description: "",
+    durations: [15],
     color: "primary",
-    price: 2500,
+    price: 0,
     active: true,
-  },
-  {
-    id: "et-5",
-    title: "Product Photography",
-    description: "Studio product shots for e-commerce and marketing materials.",
-    duration: 60,
-    color: "primary",
-    price: 300,
-    active: true,
+    questions: [
+      { id: "q1", label: "Name", type: "text", required: true, placeholder: "Your full name" },
+      { id: "q2", label: "Email", type: "text", required: true, placeholder: "you@example.com" },
+    ],
   },
 ];
 
@@ -227,6 +262,7 @@ export const sampleBookings: Booking[] = [
     time: "14:00",
     eventTypeId: "et-4",
     type: "Wedding Package",
+    duration: 480,
     status: "completed",
     notes: "Estate gardens, 248 photos delivered",
     albumId: "wedding-emma-james",
@@ -239,6 +275,7 @@ export const sampleBookings: Booking[] = [
     time: "10:00",
     eventTypeId: "et-2",
     type: "Portrait Session",
+    duration: 60,
     status: "completed",
     notes: "Studio session, editorial style",
     albumId: "portrait-session-sarah",
@@ -251,6 +288,7 @@ export const sampleBookings: Booking[] = [
     time: "18:00",
     eventTypeId: "et-3",
     type: "Event Coverage",
+    duration: 240,
     status: "completed",
     notes: "Annual gala, full coverage",
     albumId: "corporate-gala",
@@ -261,8 +299,9 @@ export const sampleBookings: Booking[] = [
     clientEmail: "lisa@example.com",
     date: "2026-03-15",
     time: "09:00",
-    eventTypeId: "et-4",
-    type: "Wedding Package",
+    eventTypeId: "et-3",
+    type: "Event Coverage",
+    duration: 120,
     status: "confirmed",
     notes: "Beach ceremony, engagement + wedding",
   },
@@ -274,6 +313,7 @@ export const sampleBookings: Booking[] = [
     time: "15:00",
     eventTypeId: "et-2",
     type: "Portrait Session",
+    duration: 30,
     status: "pending",
     notes: "Family portrait session",
   },

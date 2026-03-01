@@ -271,7 +271,7 @@ function EventTypesView() {
                     <h3 className="font-display text-base text-foreground">{et.title}</h3>
                     <span className="text-xs font-body text-muted-foreground flex items-center gap-1">
                       <Clock className="w-3 h-3" />
-                      {et.duration >= 60 ? `${Math.floor(et.duration / 60)}h${et.duration % 60 > 0 ? ` ${et.duration % 60}m` : ""}` : `${et.duration}m`}
+                      {et.durations.map((d) => `${d >= 60 ? `${Math.floor(d / 60)}h${d % 60 > 0 ? ` ${d % 60}m` : ""}` : `${d}m`}`).join(", ")}
                     </span>
                   </div>
                   <p className="text-sm font-body text-muted-foreground mt-1">{et.description}</p>
@@ -376,7 +376,7 @@ function SettingsView() {
 
           <div>
             <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Watermark Text (fallback)</label>
-            <Input defaultValue="LUMIÈRE" className="bg-secondary border-border text-foreground font-body" />
+            <Input defaultValue="ZACMPHOTOS" className="bg-secondary border-border text-foreground font-body" />
           </div>
         </div>
 
