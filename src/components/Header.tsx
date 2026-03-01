@@ -4,10 +4,7 @@ import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 
 const navItems = [
-  { label: "Portfolio", path: "/gallery" },
-  { label: "Booking", path: "/booking" },
-  { label: "About", path: "/#about" },
-  { label: "Contact", path: "/#contact" },
+  { label: "Book a Session", path: "/" },
 ];
 
 export default function Header() {
