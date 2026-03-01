@@ -55,6 +55,7 @@ const App = () => {
             <Route path="/gallery/:albumId" element={<AlbumDetail />} />
             <Route path="/booking/modify/:bookingId" element={<BookingModify />} />
             <Route path="/admin" element={<AdminGuard />} />
+            <Route path="/admin/:tab" element={<AdminGuard />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </BrowserRouter>

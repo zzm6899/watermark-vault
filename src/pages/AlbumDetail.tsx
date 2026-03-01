@@ -1,13 +1,14 @@
 import { useParams } from "react-router-dom";
 import { useState, useCallback } from "react";
 import { motion } from "framer-motion";
-import { Info, Building2, Copy, Check as CheckIcon, Lock, Download, Grid, List, LayoutGrid } from "lucide-react";
+import { Info, Building2, Copy, Check as CheckIcon, Lock, Download, Grid, List, LayoutGrid, CreditCard } from "lucide-react";
 import Header from "@/components/Header";
 import Footer from "@/components/Footer";
 import WatermarkedImage from "@/components/WatermarkedImage";
 import PurchasePanel from "@/components/PurchasePanel";
 import { getAlbumBySlug, getSettings, updateAlbum } from "@/lib/storage";
 import { toast } from "sonner";
+import { resizeToTargetSize } from "@/lib/image-utils";
 import {
   Dialog,
   DialogContent,
@@ -17,7 +18,9 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import type { Album, AlbumDownloadRecord } from "@/lib/types";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Label } from "@/components/ui/label";
+import type { Album, AlbumDownloadRecord, DownloadQuality } from "@/lib/types";
 
 function getSessionKey(album: Album, pin: string): string {
   return pin || `session-${album.id}`;
@@ -34,6 +37,10 @@ export default function AlbumDetail() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [showBankTransfer, setShowBankTransfer] = useState(false);
   const [showBankTransferRequest, setShowBankTransferRequest] = useState(false);
+  const [showPaymentChoice, setShowPaymentChoice] = useState(false);
+  const [showDownloadOptions, setShowDownloadOptions] = useState(false);
+  const [downloadQuality, setDownloadQuality] = useState<DownloadQuality>("original");
+  const [downloading, setDownloading] = useState(false);
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [accessGranted, setAccessGranted] = useState(!album?.accessCode);
   const [pinInput, setPinInput] = useState("");
@@ -97,38 +104,90 @@ export default function AlbumDetail() {
     setTimeout(() => setCopiedField(null), 2000);
   };
 
-  const downloadPhoto = (photo: { src: string; title: string }) => {
-    const link = document.createElement("a");
-    link.href = photo.src;
-    link.download = `${photo.title}.jpg`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+  const downloadPhoto = async (photo: { src: string; title: string }, quality: DownloadQuality) => {
+    if (quality === "original") {
+      const link = document.createElement("a");
+      link.href = photo.src;
+      link.download = `${photo.title}.jpg`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } else {
+      const targetBytes = quality === "2mb" ? 2 * 1024 * 1024 : 5 * 1024 * 1024;
+      try {
+        const blob = await resizeToTargetSize(photo.src, targetBytes);
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = `${photo.title}_${quality}.jpg`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+      } catch {
+        // Fallback to original
+        const link = document.createElement("a");
+        link.href = photo.src;
+        link.download = `${photo.title}.jpg`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      }
+    }
   };
 
   const handleDownloadFree = () => {
+    setShowDownloadOptions(true);
+  };
+
+  const executeDownloadFree = async () => {
     const selected = album.photos.filter(p => selectedIds.has(p.id));
     const canDownload = Math.min(selected.length, freeRemaining);
     if (canDownload === 0) {
       toast.error("No free downloads remaining for this session");
       return;
     }
+    setDownloading(true);
     const toDownload = selected.slice(0, canDownload);
-    toDownload.forEach(p => downloadPhoto(p));
+    for (const p of toDownload) {
+      await downloadPhoto(p, downloadQuality);
+    }
 
-    // Track usage
     const updated = { ...album };
     updated.usedFreeDownloads = { ...(updated.usedFreeDownloads || {}), [sessionKey]: freeUsed + canDownload };
     updateAlbum(updated);
     refreshAlbum();
     setSelectedIds(new Set());
-    toast.success(`Downloaded ${canDownload} photo${canDownload !== 1 ? "s" : ""} (watermark removed)`);
+    setShowDownloadOptions(false);
+    setDownloading(false);
+    toast.success(`Downloaded ${canDownload} photo${canDownload !== 1 ? "s" : ""}`);
   };
 
-  const handleDownloadAll = () => {
+  const handleDownloadAll = async () => {
     if (!isFullyUnlocked) return;
-    album.photos.forEach(p => downloadPhoto(p));
-    toast.success(`Downloading all ${album.photos.length} photos`);
+    setShowDownloadOptions(true);
+  };
+
+  const executeDownloadAll = async () => {
+    setDownloading(true);
+    const photos = selectedIds.size > 0
+      ? album.photos.filter(p => selectedIds.has(p.id))
+      : album.photos;
+    for (const p of photos) {
+      await downloadPhoto(p, downloadQuality);
+    }
+    setSelectedIds(new Set());
+    setShowDownloadOptions(false);
+    setDownloading(false);
+    toast.success(`Downloaded ${photos.length} photos`);
+  };
+
+  const handlePurchaseSelected = () => {
+    setShowPaymentChoice(true);
+  };
+
+  const handlePurchaseAlbum = () => {
+    setShowPaymentChoice(true);
   };
 
   const handleBankTransferRequest = () => {
@@ -161,9 +220,11 @@ export default function AlbumDetail() {
     toast.success("Bank transfer request submitted! Pay using the details shown, then the photographer will unlock your photos.");
   };
 
-  // Display size from album or default
   const displaySize = album.displaySize || "medium";
   const gridClass = displaySize === "small" ? "masonry-grid-sm" : displaySize === "large" ? "masonry-grid-lg" : displaySize === "list" ? "masonry-grid-list" : "masonry-grid";
+
+  const paidCount = Math.max(0, selectedIds.size - freeRemaining);
+  const paidTotal = paidCount * album.pricePerPhoto;
 
   return (
     <div className="min-h-screen bg-background">
@@ -240,7 +301,7 @@ export default function AlbumDetail() {
               {album.photos.map((photo, i) => (
                 <WatermarkedImage
                   key={photo.id}
-                  src={photo.src}
+                  src={photo.thumbnail || photo.src}
                   title={photo.title}
                   selected={selectedIds.has(photo.id)}
                   onSelect={() => toggleSelect(photo.id)}
@@ -265,8 +326,8 @@ export default function AlbumDetail() {
           priceFullAlbum={album.priceFullAlbum}
           totalPhotos={album.photos.length}
           onDownloadFree={handleDownloadFree}
-          onPurchaseSelected={() => toast.info("Payment portal would open here — connect Stripe to enable")}
-          onPurchaseAlbum={() => toast.info("Full album purchase — connect Stripe to enable")}
+          onPurchaseSelected={handlePurchaseSelected}
+          onPurchaseAlbum={handlePurchaseAlbum}
           onBankTransfer={handleBankTransferRequest}
           bankTransferEnabled={bankTransfer.enabled}
         />
@@ -282,16 +343,105 @@ export default function AlbumDetail() {
             <p className="text-sm font-body text-foreground">
               <span className="font-semibold">{selectedIds.size}</span> photo{selectedIds.size !== 1 ? "s" : ""} selected
             </p>
-            <Button onClick={() => {
-              album.photos.filter(p => selectedIds.has(p.id)).forEach(p => downloadPhoto(p));
-              setSelectedIds(new Set());
-              toast.success(`Downloaded ${selectedIds.size} photos`);
-            }} size="sm" className="gap-2 bg-primary text-primary-foreground hover:bg-primary/90">
+            <Button onClick={() => setShowDownloadOptions(true)} size="sm" className="gap-2 bg-primary text-primary-foreground hover:bg-primary/90">
               <Download className="w-4 h-4" /> Download Selected
             </Button>
           </div>
         </motion.div>
       )}
+
+      {/* Download Quality Options */}
+      <Dialog open={showDownloadOptions} onOpenChange={setShowDownloadOptions}>
+        <DialogContent className="glass-panel border-border max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="font-display text-xl text-foreground flex items-center gap-2">
+              <Download className="w-5 h-5 text-primary" />
+              Download Quality
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 mt-2">
+            <RadioGroup value={downloadQuality} onValueChange={(v) => setDownloadQuality(v as DownloadQuality)}>
+              <div className="flex items-center space-x-3 p-3 rounded-lg bg-secondary hover:bg-secondary/80 cursor-pointer">
+                <RadioGroupItem value="2mb" id="q-2mb" />
+                <Label htmlFor="q-2mb" className="font-body text-sm cursor-pointer flex-1">
+                  <span className="text-foreground">Web Quality</span>
+                  <span className="text-xs text-muted-foreground block">~2 MB per photo · Fast download</span>
+                </Label>
+              </div>
+              <div className="flex items-center space-x-3 p-3 rounded-lg bg-secondary hover:bg-secondary/80 cursor-pointer">
+                <RadioGroupItem value="5mb" id="q-5mb" />
+                <Label htmlFor="q-5mb" className="font-body text-sm cursor-pointer flex-1">
+                  <span className="text-foreground">High Quality</span>
+                  <span className="text-xs text-muted-foreground block">~5 MB per photo · Print ready</span>
+                </Label>
+              </div>
+              <div className="flex items-center space-x-3 p-3 rounded-lg bg-secondary hover:bg-secondary/80 cursor-pointer">
+                <RadioGroupItem value="original" id="q-original" />
+                <Label htmlFor="q-original" className="font-body text-sm cursor-pointer flex-1">
+                  <span className="text-foreground">Original</span>
+                  <span className="text-xs text-muted-foreground block">Full resolution · Largest file size</span>
+                </Label>
+              </div>
+            </RadioGroup>
+            <Button
+              onClick={isFullyUnlocked && selectedIds.size === 0 ? executeDownloadAll : isFullyUnlocked ? executeDownloadAll : executeDownloadFree}
+              disabled={downloading}
+              className="w-full bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs tracking-wider uppercase gap-2"
+            >
+              <Download className="w-4 h-4" />
+              {downloading ? "Downloading..." : "Download"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Payment Method Choice */}
+      <Dialog open={showPaymentChoice} onOpenChange={setShowPaymentChoice}>
+        <DialogContent className="glass-panel border-border max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="font-display text-xl text-foreground">Choose Payment Method</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 mt-2">
+            <p className="text-sm font-body text-muted-foreground">
+              {selectedIds.size} photo{selectedIds.size !== 1 ? "s" : ""} selected
+              {paidCount > 0 && <> · <span className="text-primary font-medium">${paidTotal}</span></>}
+            </p>
+
+            {settings.stripeEnabled && (
+              <Button
+                onClick={() => {
+                  setShowPaymentChoice(false);
+                  toast.info("Stripe checkout would open here — connect Stripe to enable");
+                }}
+                className="w-full gap-3 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-sm h-12"
+              >
+                <CreditCard className="w-5 h-5" />
+                Pay with Card (Stripe)
+              </Button>
+            )}
+
+            {bankTransfer.enabled && (
+              <Button
+                onClick={() => {
+                  setShowPaymentChoice(false);
+                  handleBankTransferRequest();
+                }}
+                variant="outline"
+                className="w-full gap-3 border-border text-foreground hover:bg-secondary font-body text-sm h-12"
+              >
+                <Building2 className="w-5 h-5" />
+                Bank Transfer / PayID
+              </Button>
+            )}
+
+            {!settings.stripeEnabled && !bankTransfer.enabled && (
+              <div className="p-4 rounded-lg bg-secondary text-center">
+                <p className="text-sm font-body text-muted-foreground">No payment methods configured. Contact the photographer.</p>
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* Bank Transfer Details Dialog */}
       <Dialog open={showBankTransfer} onOpenChange={setShowBankTransfer}>

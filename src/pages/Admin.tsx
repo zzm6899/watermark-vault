@@ -12,7 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import {
   getProfile, setProfile, getEventTypes, setEventTypes, addEventType,
   deleteEventType, updateEventType, getBookings, deleteBooking,
@@ -20,7 +20,7 @@ import {
   getAlbums, addAlbum, updateAlbum, deleteAlbum,
   getPhotoLibrary, setPhotoLibrary,
 } from "@/lib/storage";
-import { compressImage, formatBytes, getLocalStorageUsage } from "@/lib/image-utils";
+import { compressImage, formatBytes, getLocalStorageUsage, generateThumbnail } from "@/lib/image-utils";
 import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar } from "@/lib/api";
 import type {
   EventType, QuestionField, AvailabilitySlot,
@@ -29,8 +29,23 @@ import type {
 } from "@/lib/types";
 import WatermarkedImage from "@/components/WatermarkedImage";
 import { Slider } from "@/components/ui/slider";
+import sampleLandscape from "@/assets/sample-landscape.jpg";
+import samplePortrait from "@/assets/sample-portrait.jpg";
+import sampleWedding from "@/assets/sample-wedding.jpg";
+import sampleEvent from "@/assets/sample-event.jpg";
+import sampleFood from "@/assets/sample-food.jpg";
 
-type Tab = "dashboard" | "bookings" | "event-types" | "albums" | "photos" | "profile" | "settings";
+type Tab = "dashboard" | "bookings" | "events" | "albums" | "photos" | "profile" | "settings";
+
+const TAB_ROUTE_MAP: Record<string, Tab> = {
+  dashboard: "dashboard",
+  bookings: "bookings",
+  events: "events",
+  albums: "albums",
+  photos: "photos",
+  profile: "profile",
+  settings: "settings",
+};
 
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
@@ -53,7 +68,14 @@ function slugify(text: string): string {
 
 export default function Admin() {
   const navigate = useNavigate();
-  const [activeTab, setActiveTab] = useState<Tab>("dashboard");
+  const { tab: routeTab } = useParams<{ tab?: string }>();
+  const resolvedTab = (routeTab && TAB_ROUTE_MAP[routeTab]) || "dashboard";
+  const [activeTab, setActiveTabState] = useState<Tab>(resolvedTab);
+  
+  const setActiveTab = (tab: Tab) => {
+    setActiveTabState(tab);
+    navigate(`/admin/${tab}`, { replace: true });
+  };
   const [prefillBookingId, setPrefillBookingId] = useState<string | null>(null);
 
   const handleLogout = () => {
@@ -69,7 +91,7 @@ export default function Admin() {
   const tabs = [
     { id: "dashboard" as Tab, label: "Dashboard", icon: LayoutDashboard },
     { id: "bookings" as Tab, label: "Bookings", icon: Calendar },
-    { id: "event-types" as Tab, label: "Events", icon: Clock },
+    { id: "events" as Tab, label: "Events", icon: Clock },
     { id: "albums" as Tab, label: "Albums", icon: Image },
     { id: "photos" as Tab, label: "Photos", icon: Upload },
     { id: "profile" as Tab, label: "Profile", icon: Camera },
@@ -116,7 +138,7 @@ export default function Admin() {
         <main className="flex-1 lg:ml-56 p-6 lg:p-8 mt-12 lg:mt-0">
           {activeTab === "dashboard" && <DashboardView />}
           {activeTab === "bookings" && <BookingsView onCreateAlbum={handleCreateAlbumForBooking} />}
-          {activeTab === "event-types" && <EventTypesView />}
+          {activeTab === "events" && <EventTypesView />}
           {activeTab === "albums" && <AlbumsView prefillBookingId={prefillBookingId} onClearPrefill={() => setPrefillBookingId(null)} />}
           {activeTab === "photos" && <PhotosView />}
           {activeTab === "profile" && <ProfileView />}
@@ -784,7 +806,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
           <p className="text-sm font-body text-muted-foreground">No albums yet. Create one to get started.</p>
         </div>
       ) : (
-        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
           {albums.map((alb) => (
             <div key={alb.id} className={`glass-panel rounded-xl overflow-hidden ${mergeMode ? "cursor-pointer" : ""} ${mergeSelection.has(alb.id) ? "ring-2 ring-primary" : ""}`}
               onClick={() => {
@@ -798,11 +820,11 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
               }}
             >
               {alb.coverImage && (
-                <div className="aspect-video bg-secondary overflow-hidden">
-                  <img src={alb.coverImage} alt={alb.title} className="w-full h-full object-cover" />
+                <div className="aspect-[16/9] bg-secondary overflow-hidden">
+                  <img src={alb.coverImage} alt={alb.title} className="w-full h-full object-cover" loading="lazy" />
                 </div>
               )}
-              <div className="p-4 space-y-2">
+              <div className="p-3 space-y-1">
                 <h3 className="font-display text-base text-foreground">{alb.title}</h3>
                 <p className="text-xs font-body text-muted-foreground">
                   {alb.photos.length} photos · {alb.freeDownloads} free · ${alb.pricePerPhoto}/photo
@@ -881,7 +903,8 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onCa
       });
       for (const r of results) {
         const id = r.id;
-        setPhotos(prev => [...prev, { id, src: r.url, title: r.originalName.replace(/\.[^.]+$/, ""), width: 800, height: 600 }]);
+        const thumb = await generateThumbnail(r.url).catch(() => undefined);
+        setPhotos(prev => [...prev, { id, src: r.url, thumbnail: thumb, title: r.originalName.replace(/\.[^.]+$/, ""), width: 800, height: 600 }]);
         if (!coverImage) setCoverImage(r.url);
       }
       setUploadStats(prev => prev ? { ...prev, done: fileArr.length, errors: fileArr.length - results.length, savedBytes: 0 } : null);
@@ -892,7 +915,8 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onCa
         try {
           const result = await compressImage(file);
           const id = `ph-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`;
-          setPhotos(prev => [...prev, { id, src: result.src, title: file.name.replace(/\.[^.]+$/, ""), width: result.width, height: result.height }]);
+          const thumb = await generateThumbnail(result.src).catch(() => undefined);
+          setPhotos(prev => [...prev, { id, src: result.src, thumbnail: thumb, title: file.name.replace(/\.[^.]+$/, ""), width: result.width, height: result.height }]);
           if (!coverImage) setCoverImage(result.src);
           setUploadStats(prev => prev ? { ...prev, done: prev.done + 1, savedBytes: prev.savedBytes + (result.originalSize - result.compressedSize) } : null);
         } catch {
@@ -1109,10 +1133,10 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onCa
           </div>
         )}
         {photos.length > 0 && (
-          <div className="grid grid-cols-6 gap-2 max-h-48 overflow-y-auto">
+          <div className="grid grid-cols-8 sm:grid-cols-10 gap-1.5 max-h-48 overflow-y-auto">
             {photos.map(p => (
               <div key={p.id} className="relative group aspect-square rounded-md overflow-hidden bg-secondary">
-                <img src={p.src} alt={p.title} className="w-full h-full object-cover" />
+                <img src={p.thumbnail || p.src} alt={p.title} className="w-full h-full object-cover" loading="lazy" />
                 <button onClick={() => setPhotos(photos.filter(pp => pp.id !== p.id))}
                   className="absolute top-1 right-1 w-5 h-5 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
                   <X className="w-3 h-3" />
@@ -1167,7 +1191,8 @@ function PhotosView() {
         setUploadStats(prev => prev ? { ...prev, done, total } : null);
       });
       for (const r of results) {
-        const photo: Photo = { id: r.id, src: r.url, title: r.originalName.replace(/\.[^.]+$/, ""), width: 800, height: 600 };
+        const thumb = await generateThumbnail(r.url).catch(() => undefined);
+        const photo: Photo = { id: r.id, src: r.url, thumbnail: thumb, title: r.originalName.replace(/\.[^.]+$/, ""), width: 800, height: 600 };
         setLibraryPhotosState(prev => {
           const updated = [...prev, photo];
           setPhotoLibrary(updated);
@@ -1180,7 +1205,8 @@ function PhotosView() {
       for (const file of fileArr) {
         try {
           const result = await compressImage(file);
-          const photo: Photo = { id: generateId("ph"), src: result.src, title: file.name.replace(/\.[^.]+$/, ""), width: result.width, height: result.height };
+          const thumb = await generateThumbnail(result.src).catch(() => undefined);
+          const photo: Photo = { id: generateId("ph"), src: result.src, thumbnail: thumb, title: file.name.replace(/\.[^.]+$/, ""), width: result.width, height: result.height };
           setLibraryPhotosState(prev => {
             const updated = [...prev, photo];
             setPhotoLibrary(updated);
@@ -1325,11 +1351,11 @@ function PhotosView() {
           <p className="text-sm font-body text-muted-foreground">No photos found.</p>
         </div>
       ) : (
-        <div className="grid grid-cols-4 sm:grid-cols-6 lg:grid-cols-8 gap-2">
+        <div className="grid grid-cols-6 sm:grid-cols-8 lg:grid-cols-10 xl:grid-cols-12 gap-1.5">
           {displayPhotos.map(p => (
-            <div key={p.id + p.source} className={`relative group aspect-square rounded-lg overflow-hidden bg-secondary cursor-pointer border-2 transition-all ${selectedIds.has(p.id) ? "border-primary ring-2 ring-primary/20" : "border-transparent hover:border-border"}`}
+            <div key={p.id + p.source} className={`relative group aspect-square rounded-md overflow-hidden bg-secondary cursor-pointer border-2 transition-all ${selectedIds.has(p.id) ? "border-primary ring-2 ring-primary/20" : "border-transparent hover:border-border"}`}
               onClick={() => toggleSelect(p.id)}>
-              <img src={p.src} alt={p.title} className="w-full h-full object-cover" />
+              <img src={p.thumbnail || p.src} alt={p.title} className="w-full h-full object-cover" loading="lazy" />
               <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-background/80 to-transparent p-1 opacity-0 group-hover:opacity-100 transition-opacity">
                 <p className="text-[9px] font-body text-muted-foreground truncate">{p.source}</p>
               </div>
@@ -1483,21 +1509,10 @@ function SettingsView() {
               className="mb-4"
             />
           </div>
-          {/* Live Preview */}
+          {/* Live Preview with Sample Image Selector */}
           <div>
             <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-3 block">Preview</label>
-            <div className="relative rounded-lg overflow-hidden bg-secondary aspect-video">
-              <img src="/placeholder.svg" alt="Preview" className="w-full h-full object-cover opacity-50" />
-              <WatermarkedImage
-                src="/placeholder.svg"
-                title="Preview"
-                watermarkPosition={settings.watermarkPosition}
-                watermarkText={settings.watermarkText}
-                watermarkImage={settings.watermarkImage}
-                watermarkOpacity={settings.watermarkOpacity}
-                index={0}
-              />
-            </div>
+            <WatermarkPreviewWithSamples settings={settings} />
           </div>
         </div>
 
@@ -1616,6 +1631,44 @@ function SettingsView() {
         </Button>
       </div>
     </motion.div>
+  );
+}
+
+// ─── Watermark Preview with Sample Images ───────────
+const SAMPLE_IMAGES = [
+  { src: sampleLandscape, label: "Landscape" },
+  { src: samplePortrait, label: "Portrait" },
+  { src: sampleWedding, label: "Wedding" },
+  { src: sampleEvent, label: "Event" },
+  { src: sampleFood, label: "Food" },
+];
+
+function WatermarkPreviewWithSamples({ settings }: { settings: AppSettings }) {
+  const [selectedSample, setSelectedSample] = useState(0);
+  const currentSrc = SAMPLE_IMAGES[selectedSample].src;
+
+  return (
+    <div className="space-y-3">
+      <div className="flex gap-2">
+        {SAMPLE_IMAGES.map((img, i) => (
+          <button key={i} onClick={() => setSelectedSample(i)}
+            className={`text-[10px] font-body px-2.5 py-1 rounded-full transition-all ${
+              selectedSample === i ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground hover:text-foreground"
+            }`}>{img.label}</button>
+        ))}
+      </div>
+      <div className="rounded-lg overflow-hidden bg-secondary">
+        <WatermarkedImage
+          src={currentSrc}
+          title="Preview"
+          watermarkPosition={settings.watermarkPosition}
+          watermarkText={settings.watermarkText}
+          watermarkImage={settings.watermarkImage}
+          watermarkOpacity={settings.watermarkOpacity}
+          index={0}
+        />
+      </div>
+    </div>
   );
 }
 

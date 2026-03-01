@@ -44,6 +44,87 @@ export function compressImage(
   });
 }
 
+/**
+ * Generate a small thumbnail from a data URL or image source.
+ * Used for fast grid rendering in admin and gallery views.
+ */
+export function generateThumbnail(
+  src: string,
+  maxSize = 300,
+  quality = 0.6
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const img = new window.Image();
+    img.crossOrigin = "anonymous";
+    img.onerror = () => reject(new Error("Failed to load image for thumbnail"));
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      let w = img.width;
+      let h = img.height;
+      if (w > h) {
+        if (w > maxSize) { h = Math.round((h * maxSize) / w); w = maxSize; }
+      } else {
+        if (h > maxSize) { w = Math.round((w * maxSize) / h); h = maxSize; }
+      }
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) { resolve(src); return; }
+      ctx.drawImage(img, 0, 0, w, h);
+      resolve(canvas.toDataURL("image/jpeg", quality));
+    };
+    img.src = src;
+  });
+}
+
+/**
+ * Resize an image to a target file size (approximate).
+ * Returns a blob URL for download.
+ */
+export function resizeToTargetSize(
+  src: string,
+  targetBytes: number
+): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    const img = new window.Image();
+    img.crossOrigin = "anonymous";
+    img.onerror = () => reject(new Error("Failed to load image"));
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) { reject(new Error("Canvas not supported")); return; }
+      ctx.drawImage(img, 0, 0);
+
+      // Binary search for quality that gets close to target size
+      let lo = 0.1, hi = 1.0, bestBlob: Blob | null = null;
+      const attempt = (quality: number): Promise<Blob> =>
+        new Promise((res) => canvas.toBlob((b) => res(b!), "image/jpeg", quality));
+
+      (async () => {
+        for (let i = 0; i < 8; i++) {
+          const mid = (lo + hi) / 2;
+          const blob = await attempt(mid);
+          bestBlob = blob;
+          if (blob.size > targetBytes) hi = mid;
+          else lo = mid;
+        }
+        // If still too large, scale down dimensions
+        if (bestBlob && bestBlob.size > targetBytes * 1.2) {
+          const scale = Math.sqrt(targetBytes / bestBlob.size);
+          canvas.width = Math.round(img.width * scale);
+          canvas.height = Math.round(img.height * scale);
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          bestBlob = await attempt(0.85);
+        }
+        resolve(bestBlob!);
+      })();
+    };
+    img.src = src;
+  });
+}
+
 export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;

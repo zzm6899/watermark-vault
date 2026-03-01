@@ -1,6 +1,7 @@
 export type WatermarkPosition = "center" | "top-left" | "top-right" | "bottom-left" | "bottom-right" | "tiled";
 export type QuestionFieldType = "text" | "textarea" | "select" | "boolean" | "image-upload" | "instagram";
 export type PaymentStatus = "unpaid" | "paid" | "cash" | "pending-confirmation";
+export type DownloadQuality = "2mb" | "5mb" | "original";
 
 export interface QuestionField {
   id: string;
@@ -66,6 +67,7 @@ export interface Booking {
 export interface Photo {
   id: string;
   src: string;
+  thumbnail?: string; // small preview for fast loading
   title: string;
   width: number;
   height: number;
