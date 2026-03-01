@@ -11,18 +11,25 @@ RUN npm install
 COPY . .
 RUN npm run build
 
-# Stage 2: Serve with nginx
-FROM nginx:alpine
+# Stage 2: Node.js server (serves React app + API)
+FROM node:20-alpine
 
-# Remove default config
-RUN rm /etc/nginx/conf.d/default.conf
+WORKDIR /app
 
-# Copy built assets
-COPY --from=builder /app/dist /usr/share/nginx/html
+# Install server dependencies
+COPY server/package.json server/
+RUN cd server && npm install --production
 
-# Custom nginx config to listen on port 5066
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+# Copy server code and built frontend
+COPY server/ server/
+COPY --from=builder /app/dist dist/
+
+# Create data directory
+RUN mkdir -p /data/uploads
 
 EXPOSE 5066
 
-CMD ["nginx", "-g", "daemon off;"]
+ENV PORT=5066
+ENV DATA_DIR=/data
+
+CMD ["node", "server/index.js"]

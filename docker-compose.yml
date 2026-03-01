@@ -11,6 +11,5 @@ services:
         target: 5066
     environment:
       - TZ=Australia/Sydney
-    # Uncomment for persistent storage if you add a backend DB later:
-    # volumes:
-    #   - /mnt/your-pool/apps/booking-gal/data:/data
+    volumes:
+      - /mnt/your-pool/apps/booking-gal/data:/data

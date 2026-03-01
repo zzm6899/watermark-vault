@@ -2,6 +2,7 @@ import type {
   EventType, Booking, Album, Photo, ProfileSettings,
   AppSettings, AdminCredentials, BankTransferSettings,
 } from "./types";
+import { persistToServer, deleteFromServer } from "./api";
 
 const KEYS = {
   SETUP_COMPLETE: "wv_setup_complete",
@@ -27,6 +28,7 @@ function get<T>(key: string, fallback: T): T {
 function set(key: string, value: unknown): boolean {
   try {
     localStorage.setItem(key, JSON.stringify(value));
+    persistToServer(key, value);
     return true;
   } catch (e) {
     console.error("localStorage save failed (quota?):", e);
@@ -63,6 +65,7 @@ export function login() {
 
 export function logout() {
   localStorage.removeItem(KEYS.SESSION);
+  deleteFromServer(KEYS.SESSION);
 }
 
 // ── Profile ─────────────────────────────────────────
