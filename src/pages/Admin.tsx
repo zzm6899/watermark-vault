@@ -28,6 +28,7 @@ import type {
   Album, Photo, PaymentStatus, AlbumDisplaySize, AlbumDownloadRecord, DownloadHistoryEntry,
 } from "@/lib/types";
 import WatermarkedImage from "@/components/WatermarkedImage";
+import ProgressiveImg from "@/components/ProgressiveImg";
 import { Slider } from "@/components/ui/slider";
 import sampleLandscape from "@/assets/sample-landscape.jpg";
 import samplePortrait from "@/assets/sample-portrait.jpg";
@@ -1225,7 +1226,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onCa
           <div className="grid grid-cols-8 sm:grid-cols-10 gap-1.5 max-h-48 overflow-y-auto">
             {photos.map(p => (
               <div key={p.id} className="relative group aspect-square rounded-md overflow-hidden bg-secondary">
-                <img src={p.thumbnail || p.src} alt={p.title} className="w-full h-full object-cover" loading="lazy" />
+                <ProgressiveImg thumbSrc={p.thumbnail} fullSrc={p.src} alt={p.title} className="w-full h-full object-cover" loading="lazy" />
                 <button onClick={() => setPhotos(photos.filter(pp => pp.id !== p.id))}
                   className="absolute top-1 right-1 w-5 h-5 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
                   <X className="w-3 h-3" />
@@ -1537,7 +1538,7 @@ function PhotosView() {
           {displayPhotos.map(p => (
             <div key={p.id + p.source} className={`relative group aspect-square rounded-md overflow-hidden bg-secondary cursor-pointer border-2 transition-all ${selectedIds.has(p.id) ? "border-primary ring-2 ring-primary/20" : "border-transparent hover:border-border"}`}
               onClick={() => toggleSelect(p.id)}>
-              <img src={p.thumbnail || p.src} alt={p.title} className="w-full h-full object-cover" loading="lazy" />
+              <ProgressiveImg thumbSrc={p.thumbnail} fullSrc={p.src} alt={p.title} className="w-full h-full object-cover" loading="lazy" />
               <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-background/80 to-transparent p-1 opacity-0 group-hover:opacity-100 transition-opacity">
                 <p className="text-[9px] font-body text-muted-foreground truncate">{p.source}</p>
               </div>
