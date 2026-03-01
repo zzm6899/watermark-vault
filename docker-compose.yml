@@ -1,30 +1,16 @@
-version: "3.8"
+name: watermark-vault
 
 services:
   watermark-vault:
-    image: ghcr.io/zzm6899/watermark-vault:latest
     container_name: watermark-vault
+    image: ghcr.io/zzm6899/watermark-vault:latest
     restart: unless-stopped
     ports:
-      - "5066:5066"
-    pull_policy: always
+      - protocol: tcp
+        published: 5066
+        target: 5066
     environment:
-      # ── Stripe (for future backend integration) ──
-      # VITE_STRIPE_PUBLISHABLE_KEY: "pk_live_your_key_here"
-      # STRIPE_SECRET_KEY: "sk_live_your_key_here"
-      #
-      # ── SMTP (for future email notification backend) ──
-      # SMTP_HOST: "smtp.gmail.com"
-      # SMTP_PORT: "587"
-      # SMTP_USER: "you@gmail.com"
-      # SMTP_PASS: "your_app_password"
-      # SMTP_FROM: "bookings@yourdomain.com"
-      #
-      # ── General ──
-      # APP_URL: "http://your-truenas-ip:5066"
-      TZ: "Australia/Sydney"
-
-    # Uncomment for persistent storage (localStorage is in-browser,
-    # but if you add a backend DB later this is where data lives)
+      - TZ=Australia/Sydney
+    # Uncomment for persistent storage if you add a backend DB later:
     # volumes:
-    #   - /mnt/your-pool/watermark-vault:/data
+    #   - /mnt/your-pool/apps/booking-gal/data:/data

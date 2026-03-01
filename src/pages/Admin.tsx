@@ -20,6 +20,7 @@ import {
   getAlbums, addAlbum, updateAlbum, deleteAlbum,
   getPhotoLibrary, setPhotoLibrary,
 } from "@/lib/storage";
+import { compressImage, formatBytes, getLocalStorageUsage } from "@/lib/image-utils";
 import type {
   EventType, QuestionField, AvailabilitySlot,
   ProfileSettings, AppSettings, Booking, WatermarkPosition,
@@ -860,19 +861,26 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onCa
   const [coverImage, setCoverImage] = useState(album?.coverImage || "");
   const [accessCode, setAccessCode] = useState(album?.accessCode || "");
 
-  const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const [uploadStats, setUploadStats] = useState<{ total: number; done: number; errors: number; savedBytes: number } | null>(null);
+
+  const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
-    if (!files) return;
-    Array.from(files).forEach(file => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const src = reader.result as string;
+    if (!files || files.length === 0) return;
+    const fileArr = Array.from(files);
+    setUploadStats({ total: fileArr.length, done: 0, errors: 0, savedBytes: 0 });
+
+    for (const file of fileArr) {
+      try {
+        const result = await compressImage(file);
         const id = `ph-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`;
-        setPhotos(prev => [...prev, { id, src, title: file.name.replace(/\.[^.]+$/, ""), width: 800, height: 600 }]);
-        if (!coverImage) setCoverImage(src);
-      };
-      reader.readAsDataURL(file);
-    });
+        setPhotos(prev => [...prev, { id, src: result.src, title: file.name.replace(/\.[^.]+$/, ""), width: result.width, height: result.height }]);
+        if (!coverImage) setCoverImage(result.src);
+        setUploadStats(prev => prev ? { ...prev, done: prev.done + 1, savedBytes: prev.savedBytes + (result.originalSize - result.compressedSize) } : null);
+      } catch {
+        setUploadStats(prev => prev ? { ...prev, done: prev.done + 1, errors: prev.errors + 1 } : null);
+        toast.error(`Failed to process: ${file.name}`);
+      }
+    }
   };
 
   const handleBookingLink = (bkId: string) => {
@@ -1002,6 +1010,19 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onCa
           <p className="text-[10px] font-body text-muted-foreground/50 mt-1">Multiple files supported</p>
           <input type="file" accept="image/*" multiple className="absolute inset-0 opacity-0 cursor-pointer" onChange={handlePhotoUpload} />
         </div>
+        {uploadStats && (
+          <div className="mb-3 p-3 rounded-lg bg-secondary/50 border border-border">
+            <div className="flex items-center justify-between text-xs font-body text-muted-foreground">
+              <span>Processed {uploadStats.done}/{uploadStats.total} photos{uploadStats.errors > 0 ? ` (${uploadStats.errors} failed)` : ""}</span>
+              {uploadStats.savedBytes > 0 && <span className="text-green-500">Saved {formatBytes(uploadStats.savedBytes)}</span>}
+            </div>
+            {uploadStats.done < uploadStats.total && (
+              <div className="mt-1.5 h-1.5 rounded-full bg-border overflow-hidden">
+                <div className="h-full bg-primary rounded-full transition-all" style={{ width: `${(uploadStats.done / uploadStats.total) * 100}%` }} />
+              </div>
+            )}
+          </div>
+        )}
         {photos.length > 0 && (
           <div className="grid grid-cols-6 gap-2 max-h-48 overflow-y-auto">
             {photos.map(p => (
@@ -1031,23 +1052,29 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onCa
 function PhotosView() {
   const [photos, setPhotosState] = useState<Photo[]>(getPhotoLibrary());
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [uploadStats, setUploadStats] = useState<{ total: number; done: number; errors: number; savedBytes: number } | null>(null);
 
-  const handleUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
-    if (!files) return;
-    Array.from(files).forEach(file => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const src = reader.result as string;
-        const photo: Photo = { id: generateId("ph"), src, title: file.name.replace(/\.[^.]+$/, ""), width: 800, height: 600 };
+    if (!files || files.length === 0) return;
+    const fileArr = Array.from(files);
+    setUploadStats({ total: fileArr.length, done: 0, errors: 0, savedBytes: 0 });
+
+    for (const file of fileArr) {
+      try {
+        const result = await compressImage(file);
+        const photo: Photo = { id: generateId("ph"), src: result.src, title: file.name.replace(/\.[^.]+$/, ""), width: result.width, height: result.height };
         setPhotosState(prev => {
           const updated = [...prev, photo];
           setPhotoLibrary(updated);
           return updated;
         });
-      };
-      reader.readAsDataURL(file);
-    });
+        setUploadStats(prev => prev ? { ...prev, done: prev.done + 1, savedBytes: prev.savedBytes + (result.originalSize - result.compressedSize) } : null);
+      } catch {
+        setUploadStats(prev => prev ? { ...prev, done: prev.done + 1, errors: prev.errors + 1 } : null);
+        toast.error(`Failed to process: ${file.name}`);
+      }
+    }
   };
 
   const toggleSelect = (id: string) => {
@@ -1106,6 +1133,19 @@ function PhotosView() {
           <p className="text-[10px] font-body text-muted-foreground/50 mt-1">Select photos then create albums from them</p>
           <input type="file" accept="image/*" multiple className="absolute inset-0 opacity-0 cursor-pointer" onChange={handleUpload} />
         </div>
+        {uploadStats && (
+          <div className="mt-3 p-3 rounded-lg bg-secondary/50 border border-border">
+            <div className="flex items-center justify-between text-xs font-body text-muted-foreground">
+              <span>Processed {uploadStats.done}/{uploadStats.total} photos{uploadStats.errors > 0 ? ` (${uploadStats.errors} failed)` : ""}</span>
+              {uploadStats.savedBytes > 0 && <span className="text-green-500">Saved {formatBytes(uploadStats.savedBytes)}</span>}
+            </div>
+            {uploadStats.done < uploadStats.total && (
+              <div className="mt-1.5 h-1.5 rounded-full bg-border overflow-hidden">
+                <div className="h-full bg-primary rounded-full transition-all" style={{ width: `${(uploadStats.done / uploadStats.total) * 100}%` }} />
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {photos.length === 0 ? (
