@@ -1318,11 +1318,66 @@ function PhotosView() {
     });
   };
 
-  const handleDeletePhoto = (id: string) => {
-    const updated = libraryPhotos.filter(p => p.id !== id);
-    setPhotoLibrary(updated);
-    setLibraryPhotosState(updated);
+  const handleDeletePhoto = (id: string, source: string) => {
+    if (source === "Library") {
+      const updated = libraryPhotos.filter(p => p.id !== id);
+      setPhotoLibrary(updated);
+      setLibraryPhotosState(updated);
+    } else {
+      // Remove from the album it belongs to
+      const alb = albums.find(a => a.title === source);
+      if (alb) {
+        const updated = { ...alb, photos: alb.photos.filter(p => p.id !== id), photoCount: alb.photos.length - 1 };
+        updateAlbum(updated);
+        setAlbumsState(getAlbums());
+      }
+    }
     setSelectedIds(prev => { const next = new Set(prev); next.delete(id); return next; });
+  };
+
+  const handleMassDelete = () => {
+    if (selectedIds.size === 0) return;
+    if (!confirm(`Delete ${selectedIds.size} selected photo(s)?`)) return;
+
+    // Separate by source
+    const libToDelete = new Set<string>();
+    const albumUpdates = new Map<string, Set<string>>(); // albumId -> photoIds to remove
+
+    for (const id of selectedIds) {
+      const photo = allPhotos.find(p => p.id === id);
+      if (!photo) continue;
+      if (photo.source === "Library") {
+        libToDelete.add(id);
+        const lp = libraryPhotos.find(p => p.id === id);
+        if (lp && isServerMode()) deletePhotoFromServer(lp.src);
+      } else {
+        const alb = albums.find(a => a.title === photo.source);
+        if (alb) {
+          if (!albumUpdates.has(alb.id)) albumUpdates.set(alb.id, new Set());
+          albumUpdates.get(alb.id)!.add(id);
+        }
+      }
+    }
+
+    // Delete from library
+    if (libToDelete.size > 0) {
+      const remaining = libraryPhotos.filter(p => !libToDelete.has(p.id));
+      setPhotoLibrary(remaining);
+      setLibraryPhotosState(remaining);
+    }
+
+    // Delete from albums
+    for (const [albumId, photoIds] of albumUpdates) {
+      const alb = albums.find(a => a.id === albumId);
+      if (alb) {
+        const updated = { ...alb, photos: alb.photos.filter(p => !photoIds.has(p.id)), photoCount: alb.photos.length - photoIds.size };
+        updateAlbum(updated);
+      }
+    }
+    if (albumUpdates.size > 0) setAlbumsState(getAlbums());
+
+    setSelectedIds(new Set());
+    toast.success(`Deleted ${selectedIds.size} photos`);
   };
 
   const handleCreateAlbumFromSelection = () => {
@@ -1375,19 +1430,7 @@ function PhotosView() {
         <div className="flex gap-2">
           {selectedIds.size > 0 && (
             <>
-              <Button size="sm" variant="outline" onClick={() => {
-                if (!confirm(`Delete ${selectedIds.size} selected photo(s) from library?`)) return;
-                const remaining = libraryPhotos.filter(p => !selectedIds.has(p.id));
-                setPhotoLibrary(remaining);
-                setLibraryPhotosState(remaining);
-                // Also delete from server if applicable
-                for (const id of selectedIds) {
-                  const photo = libraryPhotos.find(p => p.id === id);
-                  if (photo && isServerMode()) deletePhotoFromServer(photo.src);
-                }
-                setSelectedIds(new Set());
-                toast.success(`Deleted ${selectedIds.size} photos`);
-              }} className="gap-2 font-body text-xs border-destructive/30 text-destructive hover:bg-destructive/10">
+              <Button size="sm" variant="outline" onClick={handleMassDelete} className="gap-2 font-body text-xs border-destructive/30 text-destructive hover:bg-destructive/10">
                 <Trash2 className="w-4 h-4" /> Delete ({selectedIds.size})
               </Button>
               <Button size="sm" variant="ghost" onClick={() => setSelectedIds(new Set())} className="gap-1 font-body text-xs text-muted-foreground">
@@ -1475,12 +1518,10 @@ function PhotosView() {
               {selectedIds.has(p.id) && (
                 <div className="absolute top-1 right-1 w-5 h-5 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-[10px] font-bold">✓</div>
               )}
-              {p.source === "Library" && (
-                <button onClick={(e) => { e.stopPropagation(); handleDeletePhoto(p.id); }}
-                  className="absolute bottom-1 right-1 w-5 h-5 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                  <X className="w-3 h-3" />
-                </button>
-              )}
+              <button onClick={(e) => { e.stopPropagation(); handleDeletePhoto(p.id, p.source); }}
+                className="absolute bottom-1 right-1 w-5 h-5 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                <X className="w-3 h-3" />
+              </button>
             </div>
           ))}
         </div>
