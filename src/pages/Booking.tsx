@@ -14,8 +14,9 @@ import { toast } from "sonner";
 import { getEventTypes, getProfile, addBooking, getBookings, getSettings, isSlotBooked, updateBooking } from "@/lib/storage";
 import { syncBookingToCalendar, createBookingCheckout, getStripeStatus } from "@/lib/api";
 import type { EventType, QuestionField } from "@/lib/types";
+import { RichTextDisplay } from "@/components/RichTextEditor";
 
-type Step = "event-select" | "datetime" | "questions" | "confirmed";
+type Step = "event-select" | "datetime" | "questions" | "payment" | "confirmed";
 
 function formatDuration(mins: number) {
   if (mins >= 60) {
@@ -249,6 +250,13 @@ export default function Booking() {
       return;
     }
 
+    // Proceed to payment step
+    setStep("payment");
+  };
+
+  const handleCompletePayment = (paymentMethod: "stripe" | "bank" | "none") => {
+    if (!selectedEvent || !selectedDate || !selectedTime || !selectedDuration) return;
+
     const modifyToken = `mod-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const depositEnabled = selectedEvent.depositEnabled && selectedEvent.depositAmount && selectedEvent.depositAmount > 0;
     const depositAmt = depositEnabled
@@ -257,6 +265,7 @@ export default function Booking() {
         : (selectedEvent.depositAmount || 0)
       : 0;
 
+    const dateStr = toDateStr(selectedDate);
     const booking = {
       id: `bk-${Date.now()}`,
       clientName: answers["q1"] || "Client",
@@ -270,15 +279,15 @@ export default function Booking() {
       notes: "",
       answers,
       createdAt: new Date().toISOString(),
-      paymentStatus: "unpaid" as const,
+      paymentStatus: paymentMethod === "bank" ? "pending-confirmation" as const : "unpaid" as const,
       paymentAmount: selectedEvent.price,
       instagramHandle: answers[selectedEvent.questions.find(q => q.type === "instagram" || q.label.toLowerCase().includes("instagram"))?.id || ""] || "",
       modifyToken,
       depositRequired: depositEnabled || false,
       depositAmount: depositAmt,
+      depositMethod: paymentMethod === "none" ? undefined : paymentMethod,
     };
     addBooking(booking);
-    // Auto-sync to Google Calendar (fire-and-forget)
     syncBookingToCalendar(booking).catch(() => {});
     setLastBookingId(booking.id);
     setTimerActive(false);
@@ -294,6 +303,8 @@ export default function Booking() {
     setAnswers({});
     setTimerActive(false);
     setLastBookingId(null);
+    setShowBankDeposit(false);
+    setProcessingPayment(false);
   };
 
   return (
@@ -318,7 +329,7 @@ export default function Booking() {
                   </div>
                   <h1 className="font-display text-2xl text-foreground">{profile.name}</h1>
                   {profile.bio && (
-                    <p className="text-sm font-body text-muted-foreground mt-1">{profile.bio}</p>
+                    <RichTextDisplay html={profile.bio} className="mt-1" />
                   )}
                 </div>
 
@@ -335,7 +346,7 @@ export default function Booking() {
                           <div className="w-1.5 h-10 rounded-full bg-primary mt-0.5 flex-shrink-0" />
                           <div className="flex-1">
                             <h3 className="font-display text-base text-foreground mb-1">{ev.title}</h3>
-                            {ev.description && <p className="text-sm font-body text-muted-foreground leading-relaxed mb-3 whitespace-pre-line">{ev.description}</p>}
+                            {ev.description && <RichTextDisplay html={ev.description} className="mb-3 max-h-24 overflow-y-auto" />}
                             <div className="flex flex-wrap items-center gap-2">
                               <span className="inline-flex items-center gap-1 text-xs font-body text-muted-foreground border border-border rounded-full px-2.5 py-1">
                                 <Clock className="w-3 h-3" />
@@ -394,8 +405,8 @@ export default function Booking() {
                         </div>
                         <h2 className="font-display text-xl text-foreground">{selectedEvent.title}</h2>
                         {selectedEvent.description && (
-                          <div className="text-sm font-body text-muted-foreground leading-relaxed max-h-48 overflow-y-auto pr-1 whitespace-pre-line">
-                            {selectedEvent.description}
+                          <div className="text-sm font-body text-muted-foreground leading-relaxed max-h-48 overflow-y-auto pr-1">
+                            <RichTextDisplay html={selectedEvent.description} />
                           </div>
                         )}
                         
@@ -582,34 +593,60 @@ export default function Booking() {
                 </div>
 
                 <Button onClick={handleSubmitQuestions} size="lg" className="w-full mt-6 bg-primary text-primary-foreground hover:bg-primary/90 font-body tracking-wider uppercase text-xs py-6">
-                  Confirm Booking
+                  Continue to Payment
                 </Button>
                 <p className="text-center text-[10px] font-body text-muted-foreground/40 mt-4">By booking, you agree to our terms and conditions.</p>
               </motion.div>
             )}
 
-            {/* ─── Confirmation ─── */}
-            {step === "confirmed" && selectedEvent && selectedDate && selectedTime && selectedDuration && (() => {
-              const lastBooking = lastBookingId ? getBookings().find(b => b.id === lastBookingId) : null;
-              const modifyUrl = lastBooking?.modifyToken ? `${window.location.origin}/booking/modify/${lastBooking.modifyToken}` : null;
-              const depositRequired = selectedEvent.depositEnabled && selectedEvent.depositAmount && selectedEvent.depositAmount > 0;
-              const depositAmt = depositRequired
+            {/* ─── Payment Step ─── */}
+            {step === "payment" && selectedEvent && selectedDate && selectedTime && selectedDuration && (() => {
+              const depositEnabled = selectedEvent.depositEnabled && selectedEvent.depositAmount && selectedEvent.depositAmount > 0;
+              const depositAmt = depositEnabled
                 ? selectedEvent.depositType === "percentage"
                   ? Math.round((selectedEvent.price * (selectedEvent.depositAmount || 0)) / 100)
                   : (selectedEvent.depositAmount || 0)
                 : 0;
+              const amountDue = depositEnabled ? depositAmt : selectedEvent.price;
               const depositMethods = selectedEvent.depositMethods || [];
-              const depositAlreadyPaid = lastBooking?.depositPaidAt;
               const bankTransfer = settings.bankTransfer;
+              const label = depositEnabled ? "Deposit" : "Full Payment";
 
-              const handleStripeDeposit = async () => {
-                if (!lastBooking) return;
+              const handleStripePayment = async () => {
                 setProcessingPayment(true);
+                // We create the booking first (with pending status) so Stripe has a booking ID
+                const modifyToken = `mod-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+                const dateStr = toDateStr(selectedDate);
+                const tempBooking = {
+                  id: `bk-${Date.now()}`,
+                  clientName: answers["q1"] || "Client",
+                  clientEmail: answers["q2"] || "",
+                  date: dateStr,
+                  time: selectedTime,
+                  eventTypeId: selectedEvent.id,
+                  type: selectedEvent.title,
+                  duration: selectedDuration,
+                  status: selectedEvent.requiresConfirmation ? "pending" as const : "confirmed" as const,
+                  notes: "",
+                  answers,
+                  createdAt: new Date().toISOString(),
+                  paymentStatus: "unpaid" as const,
+                  paymentAmount: selectedEvent.price,
+                  instagramHandle: answers[selectedEvent.questions.find(q => q.type === "instagram" || q.label.toLowerCase().includes("instagram"))?.id || ""] || "",
+                  modifyToken,
+                  depositRequired: depositEnabled || false,
+                  depositAmount: depositAmt,
+                  depositMethod: "stripe" as const,
+                };
+                addBooking(tempBooking);
+                syncBookingToCalendar(tempBooking).catch(() => {});
+                setLastBookingId(tempBooking.id);
+
                 const result = await createBookingCheckout({
-                  bookingId: lastBooking.id,
-                  clientName: lastBooking.clientName,
-                  clientEmail: lastBooking.clientEmail,
-                  amount: depositAmt,
+                  bookingId: tempBooking.id,
+                  clientName: tempBooking.clientName,
+                  clientEmail: tempBooking.clientEmail,
+                  amount: amountDue,
                   eventTitle: selectedEvent.title,
                 });
                 setProcessingPayment(false);
@@ -620,11 +657,159 @@ export default function Booking() {
                 }
               };
 
-              const copyToClipboard = (text: string, field: string) => {
-                navigator.clipboard.writeText(text);
-                setCopiedField(field);
-                setTimeout(() => setCopiedField(null), 2000);
-              };
+              return (
+                <motion.div key="payment" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} className="max-w-md mx-auto">
+                  <button onClick={() => setStep("questions")} className="inline-flex items-center gap-2 text-xs font-body tracking-wider uppercase text-muted-foreground hover:text-primary transition-colors mb-6">
+                    <ArrowLeft className="w-3.5 h-3.5" /> Back
+                  </button>
+
+                  {timerActive && (
+                    <div className="glass-panel rounded-lg p-3 mb-4 flex items-center justify-center">
+                      <BookingTimer minutes={settings.bookingTimerMinutes} onExpire={handleTimerExpire} />
+                    </div>
+                  )}
+
+                  {/* Booking summary */}
+                  <div className="glass-panel rounded-xl p-5 mb-5">
+                    <div className="flex items-center gap-3 mb-3">
+                      <div className="w-1.5 h-10 rounded-full bg-primary" />
+                      <div>
+                        <h3 className="font-display text-lg text-foreground">{selectedEvent.title}</h3>
+                        <p className="text-xs font-body text-muted-foreground flex items-center gap-1.5">
+                          <Clock className="w-3 h-3" /> {formatDuration(selectedDuration)}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="border-t border-border/50 pt-3 space-y-1">
+                      <p className="text-sm font-body text-foreground">
+                        {selectedDate.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" })}
+                      </p>
+                      <p className="text-sm font-body text-primary font-medium">{formatTime12(selectedTime)}</p>
+                    </div>
+                  </div>
+
+                  {/* Payment panel */}
+                  <div className="glass-panel rounded-xl p-6 space-y-5">
+                    <div>
+                      <h2 className="font-display text-xl text-foreground mb-1">{label} Required</h2>
+                      <p className="text-xs font-body text-muted-foreground">
+                        {depositEnabled
+                          ? `A $${amountDue} deposit is required to secure your booking.`
+                          : `Full payment of $${amountDue} is required to confirm your booking.`}
+                      </p>
+                    </div>
+
+                    <div className="flex justify-between items-center border border-border/50 rounded-lg p-4 bg-secondary/30">
+                      <span className="text-sm font-body text-muted-foreground">{label}</span>
+                      <span className="font-display text-xl text-foreground">${amountDue}</span>
+                    </div>
+
+                    <div className="space-y-3">
+                      {/* Stripe */}
+                      {(!depositEnabled || depositMethods.includes("stripe")) && stripeAvailable && (
+                        <Button
+                          onClick={handleStripePayment}
+                          disabled={processingPayment}
+                          className="w-full gap-3 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-sm h-12"
+                        >
+                          <CreditCard className="w-5 h-5" />
+                          {processingPayment ? "Redirecting…" : `Pay $${amountDue} with Card`}
+                        </Button>
+                      )}
+
+                      {/* Bank Transfer */}
+                      {(!depositEnabled || depositMethods.includes("bank")) && bankTransfer.enabled && (
+                        <>
+                          <Button
+                            onClick={() => setShowBankDeposit(!showBankDeposit)}
+                            variant="outline"
+                            className="w-full gap-3 border-border text-foreground hover:bg-secondary font-body text-sm h-12"
+                          >
+                            <Building2 className="w-5 h-5" />
+                            Bank Transfer / PayID
+                          </Button>
+
+                          {showBankDeposit && (
+                            <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} className="space-y-3">
+                              {bankTransfer.accountName && (
+                                <div className="flex items-center justify-between p-3 rounded-lg bg-secondary">
+                                  <div>
+                                    <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Account Name</p>
+                                    <p className="text-sm font-body text-foreground font-medium">{bankTransfer.accountName}</p>
+                                  </div>
+                                  <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-primary" onClick={() => { navigator.clipboard.writeText(bankTransfer.accountName); setCopiedField("name"); setTimeout(() => setCopiedField(null), 2000); }}>
+                                    {copiedField === "name" ? <CheckIcon className="w-4 h-4 text-primary" /> : <Copy className="w-4 h-4" />}
+                                  </Button>
+                                </div>
+                              )}
+                              {bankTransfer.bsb && (
+                                <div className="flex items-center justify-between p-3 rounded-lg bg-secondary">
+                                  <div>
+                                    <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">BSB</p>
+                                    <p className="text-sm font-body text-foreground font-medium">{bankTransfer.bsb}</p>
+                                  </div>
+                                  <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-primary" onClick={() => { navigator.clipboard.writeText(bankTransfer.bsb); setCopiedField("bsb"); setTimeout(() => setCopiedField(null), 2000); }}>
+                                    {copiedField === "bsb" ? <CheckIcon className="w-4 h-4 text-primary" /> : <Copy className="w-4 h-4" />}
+                                  </Button>
+                                </div>
+                              )}
+                              {bankTransfer.accountNumber && (
+                                <div className="flex items-center justify-between p-3 rounded-lg bg-secondary">
+                                  <div>
+                                    <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Account Number</p>
+                                    <p className="text-sm font-body text-foreground font-medium">{bankTransfer.accountNumber}</p>
+                                  </div>
+                                  <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-primary" onClick={() => { navigator.clipboard.writeText(bankTransfer.accountNumber); setCopiedField("acc"); setTimeout(() => setCopiedField(null), 2000); }}>
+                                    {copiedField === "acc" ? <CheckIcon className="w-4 h-4 text-primary" /> : <Copy className="w-4 h-4" />}
+                                  </Button>
+                                </div>
+                              )}
+                              {bankTransfer.payId && (
+                                <div className="flex items-center justify-between p-3 rounded-lg bg-secondary">
+                                  <div>
+                                    <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">PayID ({bankTransfer.payIdType})</p>
+                                    <p className="text-sm font-body text-foreground font-medium">{bankTransfer.payId}</p>
+                                  </div>
+                                  <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-primary" onClick={() => { navigator.clipboard.writeText(bankTransfer.payId); setCopiedField("payid"); setTimeout(() => setCopiedField(null), 2000); }}>
+                                    {copiedField === "payid" ? <CheckIcon className="w-4 h-4 text-primary" /> : <Copy className="w-4 h-4" />}
+                                  </Button>
+                                </div>
+                              )}
+                              {bankTransfer.instructions && (
+                                <div className="p-3 rounded-lg bg-primary/5 border border-primary/10">
+                                  <p className="text-xs font-body text-muted-foreground">{bankTransfer.instructions}</p>
+                                </div>
+                              )}
+                              <Button
+                                onClick={() => handleCompletePayment("bank")}
+                                className="w-full bg-green-600/90 text-white hover:bg-green-600 font-body text-xs tracking-wider uppercase h-11"
+                              >
+                                I've Sent the Transfer — Submit Booking
+                              </Button>
+                              <p className="text-[10px] font-body text-muted-foreground text-center">
+                                Your booking will be held pending payment confirmation by the admin.
+                              </p>
+                            </motion.div>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  </div>
+                </motion.div>
+              );
+            })()}
+
+            {/* ─── Confirmation ─── */}
+            {step === "confirmed" && selectedEvent && selectedDate && selectedTime && selectedDuration && (() => {
+              const lastBooking = lastBookingId ? getBookings().find(b => b.id === lastBookingId) : null;
+              const modifyUrl = lastBooking?.modifyToken ? `${window.location.origin}/booking/modify/${lastBooking.modifyToken}` : null;
+              const depositEnabled = selectedEvent.depositEnabled && selectedEvent.depositAmount && selectedEvent.depositAmount > 0;
+              const depositAmt = depositEnabled
+                ? selectedEvent.depositType === "percentage"
+                  ? Math.round((selectedEvent.price * (selectedEvent.depositAmount || 0)) / 100)
+                  : (selectedEvent.depositAmount || 0)
+                : 0;
+              const wasBankTransfer = lastBooking?.depositMethod === "bank" || lastBooking?.paymentStatus === "pending-confirmation";
 
               return (
               <motion.div key="confirmed" initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="max-w-md mx-auto text-center">
@@ -634,110 +819,40 @@ export default function Booking() {
                     {selectedEvent.requiresConfirmation ? "Booking Request Sent!" : "Booking Confirmed!"}
                   </h2>
                   <p className="text-sm font-body text-muted-foreground mb-6">
-                    {selectedEvent.requiresConfirmation ? "You'll receive a confirmation once approved." : "You're all set!"}
+                    {wasBankTransfer
+                      ? "Your booking is held pending payment confirmation."
+                      : selectedEvent.requiresConfirmation
+                      ? "You'll receive a confirmation once approved."
+                      : "You're all set!"}
                   </p>
                   <div className="border-t border-border/50 pt-4 space-y-2 text-left">
                     <div className="flex justify-between text-sm font-body"><span className="text-muted-foreground">Event</span><span className="text-foreground">{selectedEvent.title}</span></div>
                     <div className="flex justify-between text-sm font-body"><span className="text-muted-foreground">Duration</span><span className="text-foreground">{formatDuration(selectedDuration)}</span></div>
                     <div className="flex justify-between text-sm font-body"><span className="text-muted-foreground">Date</span><span className="text-foreground">{selectedDate.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}</span></div>
                     <div className="flex justify-between text-sm font-body"><span className="text-muted-foreground">Time</span><span className="text-primary font-medium">{formatTime12(selectedTime)}</span></div>
-                    {depositRequired && (
+                    {depositEnabled && (
                       <div className="flex justify-between text-sm font-body">
-                        <span className="text-muted-foreground">Deposit Required</span>
-                        <span className={`font-medium ${depositAlreadyPaid ? "text-green-400" : "text-yellow-400"}`}>
-                          ${depositAmt} {depositAlreadyPaid ? "✓ Paid" : "· Unpaid"}
+                        <span className="text-muted-foreground">Deposit</span>
+                        <span className={`font-medium ${wasBankTransfer ? "text-yellow-400" : "text-green-400"}`}>
+                          ${depositAmt} {wasBankTransfer ? "· Pending confirmation" : "· Paid"}
+                        </span>
+                      </div>
+                    )}
+                    {!depositEnabled && (
+                      <div className="flex justify-between text-sm font-body">
+                        <span className="text-muted-foreground">Payment</span>
+                        <span className={`font-medium ${wasBankTransfer ? "text-yellow-400" : "text-green-400"}`}>
+                          ${selectedEvent.price} {wasBankTransfer ? "· Pending confirmation" : "· Paid"}
                         </span>
                       </div>
                     )}
                   </div>
 
-                  {/* Deposit Payment Section */}
-                  {depositRequired && !depositAlreadyPaid && (
-                    <div className="mt-6 border-t border-border/50 pt-6">
-                      <h3 className="font-display text-lg text-foreground mb-1">Pay Deposit</h3>
-                      <p className="text-xs font-body text-muted-foreground mb-4">
-                        A ${depositAmt} deposit is required to secure your booking.
+                  {wasBankTransfer && (
+                    <div className="mt-4 p-3 rounded-lg bg-yellow-500/10 border border-yellow-500/20 text-left">
+                      <p className="text-xs font-body text-yellow-400">
+                        Once your bank transfer is received, the admin will confirm your booking. You'll be notified by email.
                       </p>
-                      <div className="space-y-3">
-                        {depositMethods.includes("stripe") && stripeAvailable && (
-                          <Button
-                            onClick={handleStripeDeposit}
-                            disabled={processingPayment}
-                            className="w-full gap-3 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-sm h-12"
-                          >
-                            <CreditCard className="w-5 h-5" />
-                            {processingPayment ? "Redirecting..." : `Pay $${depositAmt} with Card`}
-                          </Button>
-                        )}
-                        {depositMethods.includes("bank") && bankTransfer.enabled && (
-                          <Button
-                            onClick={() => setShowBankDeposit(!showBankDeposit)}
-                            variant="outline"
-                            className="w-full gap-3 border-border text-foreground hover:bg-secondary font-body text-sm h-12"
-                          >
-                            <Building2 className="w-5 h-5" />
-                            Bank Transfer / PayID
-                          </Button>
-                        )}
-                      </div>
-
-                      {/* Bank Transfer Details Inline */}
-                      {showBankDeposit && bankTransfer.enabled && (
-                        <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} className="mt-4 space-y-3 text-left">
-                          {bankTransfer.accountName && (
-                            <div className="flex items-center justify-between p-3 rounded-lg bg-secondary">
-                              <div>
-                                <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Account Name</p>
-                                <p className="text-sm font-body text-foreground font-medium">{bankTransfer.accountName}</p>
-                              </div>
-                              <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-primary" onClick={() => copyToClipboard(bankTransfer.accountName, "name")}>
-                                {copiedField === "name" ? <CheckIcon className="w-4 h-4 text-primary" /> : <Copy className="w-4 h-4" />}
-                              </Button>
-                            </div>
-                          )}
-                          {bankTransfer.bsb && (
-                            <div className="flex items-center justify-between p-3 rounded-lg bg-secondary">
-                              <div>
-                                <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">BSB</p>
-                                <p className="text-sm font-body text-foreground font-medium">{bankTransfer.bsb}</p>
-                              </div>
-                              <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-primary" onClick={() => copyToClipboard(bankTransfer.bsb, "bsb")}>
-                                {copiedField === "bsb" ? <CheckIcon className="w-4 h-4 text-primary" /> : <Copy className="w-4 h-4" />}
-                              </Button>
-                            </div>
-                          )}
-                          {bankTransfer.accountNumber && (
-                            <div className="flex items-center justify-between p-3 rounded-lg bg-secondary">
-                              <div>
-                                <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Account Number</p>
-                                <p className="text-sm font-body text-foreground font-medium">{bankTransfer.accountNumber}</p>
-                              </div>
-                              <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-primary" onClick={() => copyToClipboard(bankTransfer.accountNumber, "acc")}>
-                                {copiedField === "acc" ? <CheckIcon className="w-4 h-4 text-primary" /> : <Copy className="w-4 h-4" />}
-                              </Button>
-                            </div>
-                          )}
-                          {bankTransfer.payId && (
-                            <div className="flex items-center justify-between p-3 rounded-lg bg-secondary">
-                              <div>
-                                <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">PayID ({bankTransfer.payIdType})</p>
-                                <p className="text-sm font-body text-foreground font-medium">{bankTransfer.payId}</p>
-                              </div>
-                              <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-primary" onClick={() => copyToClipboard(bankTransfer.payId, "payid")}>
-                                {copiedField === "payid" ? <CheckIcon className="w-4 h-4 text-primary" /> : <Copy className="w-4 h-4" />}
-                              </Button>
-                            </div>
-                          )}
-                          {bankTransfer.instructions && (
-                            <div className="p-3 rounded-lg bg-primary/5 border border-primary/10">
-                              <p className="text-xs font-body text-muted-foreground">{bankTransfer.instructions}</p>
-                            </div>
-                          )}
-                          <p className="text-xs font-body text-muted-foreground text-center">
-                            Include your booking reference: <span className="text-primary font-medium">{lastBooking?.id}</span>
-                          </p>
-                        </motion.div>
-                      )}
                     </div>
                   )}
                   

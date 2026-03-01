@@ -30,6 +30,7 @@ import type {
 import WatermarkedImage from "@/components/WatermarkedImage";
 import ProgressiveImg from "@/components/ProgressiveImg";
 import { Slider } from "@/components/ui/slider";
+import RichTextEditor from "@/components/RichTextEditor";
 import sampleLandscape from "@/assets/sample-landscape.jpg";
 import samplePortrait from "@/assets/sample-portrait.jpg";
 import sampleWedding from "@/assets/sample-wedding.jpg";
@@ -642,7 +643,7 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
       </div>
       <div>
         <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Description</label>
-        <Textarea value={description} onChange={(e) => setDescription(e.target.value)} className="bg-secondary border-border text-foreground font-body min-h-[60px]" />
+        <RichTextEditor value={description} onChange={setDescription} placeholder="Describe this event type…" minHeight="80px" />
       </div>
       <div>
         <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Location</label>
@@ -1802,7 +1803,7 @@ function ProfileView() {
           </div>
           <div>
             <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Bio</label>
-            <Textarea value={profile.bio} onChange={(e) => setProfileState({ ...profile, bio: e.target.value })} className="bg-secondary border-border text-foreground font-body min-h-[60px]" />
+            <RichTextEditor value={profile.bio} onChange={(val) => setProfileState({ ...profile, bio: val })} placeholder="Write your bio…" minHeight="60px" />
           </div>
           <div>
             <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Timezone</label>
