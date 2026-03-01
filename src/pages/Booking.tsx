@@ -3,7 +3,8 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   Clock, ChevronLeft, ChevronRight, ArrowLeft, Globe,
   CalendarDays, Upload, CheckCircle2, AlertCircle, Camera,
-  MapPin, Calendar as CalendarIcon, ExternalLink, XCircle, Edit
+  MapPin, Calendar as CalendarIcon, ExternalLink, XCircle, Edit,
+  CreditCard, Building2, Copy, Check as CheckIcon
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -11,7 +12,7 @@ import { Textarea } from "@/components/ui/textarea";
 import Footer from "@/components/Footer";
 import { toast } from "sonner";
 import { getEventTypes, getProfile, addBooking, getBookings, getSettings, isSlotBooked, updateBooking } from "@/lib/storage";
-import { syncBookingToCalendar } from "@/lib/api";
+import { syncBookingToCalendar, createBookingCheckout, getStripeStatus } from "@/lib/api";
 import type { EventType, QuestionField } from "@/lib/types";
 
 type Step = "event-select" | "datetime" | "questions" | "confirmed";
@@ -166,6 +167,15 @@ export default function Booking() {
   const [use24h, setUse24h] = useState(false);
   const [timerActive, setTimerActive] = useState(false);
   const [lastBookingId, setLastBookingId] = useState<string | null>(null);
+  const [showBankDeposit, setShowBankDeposit] = useState(false);
+  const [copiedField, setCopiedField] = useState<string | null>(null);
+  const [stripeAvailable, setStripeAvailable] = useState(false);
+  const [processingPayment, setProcessingPayment] = useState(false);
+
+  // Check Stripe availability on mount
+  useEffect(() => {
+    getStripeStatus().then(s => setStripeAvailable(s.configured));
+  }, []);
 
   const year = currentMonth.getFullYear();
   const month = currentMonth.getMonth();
@@ -240,6 +250,13 @@ export default function Booking() {
     }
 
     const modifyToken = `mod-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const depositEnabled = selectedEvent.depositEnabled && selectedEvent.depositAmount && selectedEvent.depositAmount > 0;
+    const depositAmt = depositEnabled
+      ? selectedEvent.depositType === "percentage"
+        ? Math.round((selectedEvent.price * (selectedEvent.depositAmount || 0)) / 100)
+        : (selectedEvent.depositAmount || 0)
+      : 0;
+
     const booking = {
       id: `bk-${Date.now()}`,
       clientName: answers["q1"] || "Client",
@@ -257,6 +274,8 @@ export default function Booking() {
       paymentAmount: selectedEvent.price,
       instagramHandle: answers[selectedEvent.questions.find(q => q.type === "instagram" || q.label.toLowerCase().includes("instagram"))?.id || ""] || "",
       modifyToken,
+      depositRequired: depositEnabled || false,
+      depositAmount: depositAmt,
     };
     addBooking(booking);
     // Auto-sync to Google Calendar (fire-and-forget)
@@ -573,6 +592,40 @@ export default function Booking() {
             {step === "confirmed" && selectedEvent && selectedDate && selectedTime && selectedDuration && (() => {
               const lastBooking = lastBookingId ? getBookings().find(b => b.id === lastBookingId) : null;
               const modifyUrl = lastBooking?.modifyToken ? `${window.location.origin}/booking/modify/${lastBooking.modifyToken}` : null;
+              const depositRequired = selectedEvent.depositEnabled && selectedEvent.depositAmount && selectedEvent.depositAmount > 0;
+              const depositAmt = depositRequired
+                ? selectedEvent.depositType === "percentage"
+                  ? Math.round((selectedEvent.price * (selectedEvent.depositAmount || 0)) / 100)
+                  : (selectedEvent.depositAmount || 0)
+                : 0;
+              const depositMethods = selectedEvent.depositMethods || [];
+              const depositAlreadyPaid = lastBooking?.depositPaidAt;
+              const bankTransfer = settings.bankTransfer;
+
+              const handleStripeDeposit = async () => {
+                if (!lastBooking) return;
+                setProcessingPayment(true);
+                const result = await createBookingCheckout({
+                  bookingId: lastBooking.id,
+                  clientName: lastBooking.clientName,
+                  clientEmail: lastBooking.clientEmail,
+                  amount: depositAmt,
+                  eventTitle: selectedEvent.title,
+                });
+                setProcessingPayment(false);
+                if (result.url) {
+                  window.location.href = result.url;
+                } else {
+                  toast.error(result.error || "Failed to create checkout session");
+                }
+              };
+
+              const copyToClipboard = (text: string, field: string) => {
+                navigator.clipboard.writeText(text);
+                setCopiedField(field);
+                setTimeout(() => setCopiedField(null), 2000);
+              };
+
               return (
               <motion.div key="confirmed" initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="max-w-md mx-auto text-center">
                 <div className="glass-panel rounded-xl p-8">
@@ -588,7 +641,105 @@ export default function Booking() {
                     <div className="flex justify-between text-sm font-body"><span className="text-muted-foreground">Duration</span><span className="text-foreground">{formatDuration(selectedDuration)}</span></div>
                     <div className="flex justify-between text-sm font-body"><span className="text-muted-foreground">Date</span><span className="text-foreground">{selectedDate.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}</span></div>
                     <div className="flex justify-between text-sm font-body"><span className="text-muted-foreground">Time</span><span className="text-primary font-medium">{formatTime12(selectedTime)}</span></div>
+                    {depositRequired && (
+                      <div className="flex justify-between text-sm font-body">
+                        <span className="text-muted-foreground">Deposit Required</span>
+                        <span className={`font-medium ${depositAlreadyPaid ? "text-green-400" : "text-yellow-400"}`}>
+                          ${depositAmt} {depositAlreadyPaid ? "✓ Paid" : "· Unpaid"}
+                        </span>
+                      </div>
+                    )}
                   </div>
+
+                  {/* Deposit Payment Section */}
+                  {depositRequired && !depositAlreadyPaid && (
+                    <div className="mt-6 border-t border-border/50 pt-6">
+                      <h3 className="font-display text-lg text-foreground mb-1">Pay Deposit</h3>
+                      <p className="text-xs font-body text-muted-foreground mb-4">
+                        A ${depositAmt} deposit is required to secure your booking.
+                      </p>
+                      <div className="space-y-3">
+                        {depositMethods.includes("stripe") && stripeAvailable && (
+                          <Button
+                            onClick={handleStripeDeposit}
+                            disabled={processingPayment}
+                            className="w-full gap-3 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-sm h-12"
+                          >
+                            <CreditCard className="w-5 h-5" />
+                            {processingPayment ? "Redirecting..." : `Pay $${depositAmt} with Card`}
+                          </Button>
+                        )}
+                        {depositMethods.includes("bank") && bankTransfer.enabled && (
+                          <Button
+                            onClick={() => setShowBankDeposit(!showBankDeposit)}
+                            variant="outline"
+                            className="w-full gap-3 border-border text-foreground hover:bg-secondary font-body text-sm h-12"
+                          >
+                            <Building2 className="w-5 h-5" />
+                            Bank Transfer / PayID
+                          </Button>
+                        )}
+                      </div>
+
+                      {/* Bank Transfer Details Inline */}
+                      {showBankDeposit && bankTransfer.enabled && (
+                        <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} className="mt-4 space-y-3 text-left">
+                          {bankTransfer.accountName && (
+                            <div className="flex items-center justify-between p-3 rounded-lg bg-secondary">
+                              <div>
+                                <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Account Name</p>
+                                <p className="text-sm font-body text-foreground font-medium">{bankTransfer.accountName}</p>
+                              </div>
+                              <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-primary" onClick={() => copyToClipboard(bankTransfer.accountName, "name")}>
+                                {copiedField === "name" ? <CheckIcon className="w-4 h-4 text-primary" /> : <Copy className="w-4 h-4" />}
+                              </Button>
+                            </div>
+                          )}
+                          {bankTransfer.bsb && (
+                            <div className="flex items-center justify-between p-3 rounded-lg bg-secondary">
+                              <div>
+                                <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">BSB</p>
+                                <p className="text-sm font-body text-foreground font-medium">{bankTransfer.bsb}</p>
+                              </div>
+                              <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-primary" onClick={() => copyToClipboard(bankTransfer.bsb, "bsb")}>
+                                {copiedField === "bsb" ? <CheckIcon className="w-4 h-4 text-primary" /> : <Copy className="w-4 h-4" />}
+                              </Button>
+                            </div>
+                          )}
+                          {bankTransfer.accountNumber && (
+                            <div className="flex items-center justify-between p-3 rounded-lg bg-secondary">
+                              <div>
+                                <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Account Number</p>
+                                <p className="text-sm font-body text-foreground font-medium">{bankTransfer.accountNumber}</p>
+                              </div>
+                              <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-primary" onClick={() => copyToClipboard(bankTransfer.accountNumber, "acc")}>
+                                {copiedField === "acc" ? <CheckIcon className="w-4 h-4 text-primary" /> : <Copy className="w-4 h-4" />}
+                              </Button>
+                            </div>
+                          )}
+                          {bankTransfer.payId && (
+                            <div className="flex items-center justify-between p-3 rounded-lg bg-secondary">
+                              <div>
+                                <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">PayID ({bankTransfer.payIdType})</p>
+                                <p className="text-sm font-body text-foreground font-medium">{bankTransfer.payId}</p>
+                              </div>
+                              <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-primary" onClick={() => copyToClipboard(bankTransfer.payId, "payid")}>
+                                {copiedField === "payid" ? <CheckIcon className="w-4 h-4 text-primary" /> : <Copy className="w-4 h-4" />}
+                              </Button>
+                            </div>
+                          )}
+                          {bankTransfer.instructions && (
+                            <div className="p-3 rounded-lg bg-primary/5 border border-primary/10">
+                              <p className="text-xs font-body text-muted-foreground">{bankTransfer.instructions}</p>
+                            </div>
+                          )}
+                          <p className="text-xs font-body text-muted-foreground text-center">
+                            Include your booking reference: <span className="text-primary font-medium">{lastBooking?.id}</span>
+                          </p>
+                        </motion.div>
+                      )}
+                    </div>
+                  )}
                   
                   <div className="flex flex-col gap-3 mt-6">
                     <a href={buildGoogleCalendarUrl(selectedEvent, selectedDate, selectedTime, selectedDuration)} target="_blank" rel="noopener noreferrer">

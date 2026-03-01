@@ -7,6 +7,7 @@ import Footer from "@/components/Footer";
 import WatermarkedImage from "@/components/WatermarkedImage";
 import PurchasePanel from "@/components/PurchasePanel";
 import { getAlbumBySlug, getSettings, updateAlbum } from "@/lib/storage";
+import { createAlbumCheckout, getStripeStatus } from "@/lib/api";
 import { toast } from "sonner";
 import { resizeToTargetSize } from "@/lib/image-utils";
 import {
@@ -47,6 +48,13 @@ export default function AlbumDetail() {
   const [usedPin, setUsedPin] = useState("");
   const [clientNote, setClientNote] = useState("");
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+  const [stripeAvailable, setStripeAvailable] = useState(false);
+  const [processingStripe, setProcessingStripe] = useState(false);
+
+  // Check Stripe availability from server (Docker env var)
+  useEffect(() => {
+    getStripeStatus().then(s => setStripeAvailable(s.configured));
+  }, []);
 
   const watermarkPosition = settings.watermarkPosition;
   const bankTransfer = settings.bankTransfer;
@@ -341,9 +349,10 @@ export default function AlbumDetail() {
                   onSelect={() => setLightboxIndex(i)}
                   locked={!isFullyUnlocked && freeRemaining <= 0 && !selectedIds.has(photo.id)}
                   index={i}
-                  watermarkPosition={isFullyUnlocked ? undefined : watermarkPosition}
-                  watermarkText={isFullyUnlocked ? undefined : settings.watermarkText}
-                  watermarkImage={isFullyUnlocked ? undefined : settings.watermarkImage}
+                  showWatermark={!isFullyUnlocked}
+                  watermarkPosition={watermarkPosition}
+                  watermarkText={settings.watermarkText}
+                  watermarkImage={settings.watermarkImage}
                   watermarkOpacity={settings.watermarkOpacity}
                 />
               ))}
@@ -441,16 +450,30 @@ export default function AlbumDetail() {
               {paidCount > 0 && <> · <span className="text-primary font-medium">${paidTotal}</span></>}
             </p>
 
-            {settings.stripeEnabled && (
+            {stripeAvailable && (
               <Button
-                onClick={() => {
+                onClick={async () => {
                   setShowPaymentChoice(false);
-                  toast.info("Stripe checkout would open here — connect Stripe to enable");
+                  setProcessingStripe(true);
+                  const result = await createAlbumCheckout({
+                    albumId: album.id,
+                    albumTitle: album.title,
+                    photoCount: selectedIds.size > 0 ? selectedIds.size : album.photos.length,
+                    amount: selectedIds.size > 0 ? paidTotal : album.priceFullAlbum,
+                    clientEmail: album.clientEmail,
+                  });
+                  setProcessingStripe(false);
+                  if (result.url) {
+                    window.location.href = result.url;
+                  } else {
+                    toast.error(result.error || "Failed to create checkout session");
+                  }
                 }}
+                disabled={processingStripe}
                 className="w-full gap-3 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-sm h-12"
               >
                 <CreditCard className="w-5 h-5" />
-                Pay with Card (Stripe)
+                {processingStripe ? "Redirecting to Stripe..." : "Pay with Card (Stripe)"}
               </Button>
             )}
 
@@ -468,7 +491,7 @@ export default function AlbumDetail() {
               </Button>
             )}
 
-            {!settings.stripeEnabled && !bankTransfer.enabled && (
+            {!stripeAvailable && !bankTransfer.enabled && (
               <div className="p-4 rounded-lg bg-secondary text-center">
                 <p className="text-sm font-body text-muted-foreground">No payment methods configured. Contact the photographer.</p>
               </div>
