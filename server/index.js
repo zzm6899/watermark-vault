@@ -3,6 +3,7 @@ const multer = require("multer");
 const cors = require("cors");
 const path = require("path");
 const fs = require("fs");
+const { registerRoutes: registerGoogleCalendarRoutes } = require("./google-calendar");
 
 const app = express();
 const PORT = process.env.PORT || 5066;
@@ -128,6 +129,9 @@ app.delete("/api/upload/:filename", (req, res) => {
     res.status(500).json({ error: "Failed to delete file" });
   }
 });
+
+// ── Google Calendar Integration ───────────────────────
+registerGoogleCalendarRoutes(app);
 
 // ── Serve uploaded photos ─────────────────────────────
 app.use("/uploads", express.static(UPLOADS_DIR, { maxAge: "7d" }));
