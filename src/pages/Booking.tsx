@@ -30,7 +30,8 @@ function generateTimeSlots(startTime: string, endTime: string, duration: number)
   const [eh, em] = endTime.split(":").map(Number);
   const startMins = sh * 60 + sm;
   const endMins = eh * 60 + em;
-  for (let m = startMins; m + duration <= endMins; m += 15) {
+  const interval = duration < 15 ? duration : 15;
+  for (let m = startMins; m + duration <= endMins; m += interval) {
     const hh = Math.floor(m / 60).toString().padStart(2, "0");
     const mm = (m % 60).toString().padStart(2, "0");
     slots.push(`${hh}:${mm}`);
