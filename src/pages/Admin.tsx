@@ -991,14 +991,20 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onCa
       const results = await uploadPhotosToServer(fileArr, (done, total) => {
         setUploadStats(prev => prev ? { ...prev, done, total } : null);
       });
-      for (const r of results) {
-        const id = r.id;
-        const thumb = await generateThumbnail(r.url).catch(() => undefined);
-        setPhotos(prev => [...prev, { id, src: r.url, thumbnail: thumb, title: r.originalName.replace(/\.[^.]+$/, ""), width: 800, height: 600 }]);
-        if (!coverImage) setCoverImage(r.url);
-      }
+      // Add all photos immediately (no thumbnail yet) so none are lost if modal closes
+      const newPhotos: Photo[] = results.map(r => ({
+        id: r.id, src: r.url, title: r.originalName.replace(/\.[^.]+$/, ""), width: 800, height: 600,
+      }));
+      setPhotos(prev => [...prev, ...newPhotos]);
+      if (!coverImage && newPhotos.length > 0) setCoverImage(newPhotos[0].src);
       setUploadStats(prev => prev ? { ...prev, done: fileArr.length, errors: fileArr.length - results.length, savedBytes: 0 } : null);
       if (results.length > 0) toast.success(`${results.length} photos uploaded to server`);
+      // Generate thumbnails in background (non-blocking)
+      for (const r of results) {
+        generateThumbnail(r.url).then(thumb => {
+          setPhotos(prev => prev.map(p => p.id === r.id ? { ...p, thumbnail: thumb } : p));
+        }).catch(() => {});
+      }
     } else {
       // Fallback: compress to base64 for localStorage
       for (const file of fileArr) {
@@ -1309,14 +1315,28 @@ function PhotosView() {
       const results = await uploadPhotosToServer(fileArr, (done, total) => {
         setUploadStats(prev => prev ? { ...prev, done, total } : null);
       });
-      for (const r of results) {
-        const thumb = await generateThumbnail(r.url).catch(() => undefined);
-        const photo: Photo = { id: r.id, src: r.url, thumbnail: thumb, title: r.originalName.replace(/\.[^.]+$/, ""), width: 800, height: 600 };
-        addPhotoToTarget(photo);
-      }
+      // Add all photos immediately so none are lost if tab closes
+      const newPhotos: Photo[] = results.map(r => ({
+        id: r.id, src: r.url, title: r.originalName.replace(/\.[^.]+$/, ""), width: 800, height: 600,
+      }));
+      for (const photo of newPhotos) addPhotoToTarget(photo);
       setUploadStats(prev => prev ? { ...prev, done: fileArr.length, errors: fileArr.length - results.length } : null);
       const target = selectedAlbum ? `"${selectedAlbum.title}"` : "library";
       if (results.length > 0) toast.success(`${results.length} photos uploaded to ${target}`);
+      // Generate thumbnails in background (non-blocking)
+      for (const r of results) {
+        generateThumbnail(r.url).then(thumb => {
+          // Update in library or album depending on target
+          if (selectedAlbum) {
+            setAlbumsState(prev => prev.map(a => a.id === selectedAlbum.id
+              ? { ...a, photos: a.photos.map(p => p.id === r.id ? { ...p, thumbnail: thumb } : p) }
+              : a
+            ));
+          } else {
+            setLibraryPhotosState(prev => prev.map(p => p.id === r.id ? { ...p, thumbnail: thumb } : p));
+          }
+        }).catch(() => {});
+      }
     } else {
       for (const file of fileArr) {
         try {
