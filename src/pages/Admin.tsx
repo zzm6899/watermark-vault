@@ -21,7 +21,7 @@ import {
   getPhotoLibrary, setPhotoLibrary,
 } from "@/lib/storage";
 import { compressImage, formatBytes, getLocalStorageUsage, generateThumbnail } from "@/lib/image-utils";
-import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar } from "@/lib/api";
+import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar, getServerStorageStats } from "@/lib/api";
 import type {
   EventType, QuestionField, AvailabilitySlot,
   ProfileSettings, AppSettings, Booking, WatermarkPosition,
@@ -1942,27 +1942,30 @@ function StorageView() {
   const bookings = getBookings();
   const eventTypes = getEventTypes();
 
-  const { used, limit } = getLocalStorageUsage();
+  const [serverStats, setServerStats] = useState<{
+    totalBytes: number;
+    photoCount: number;
+    dbSizeBytes: number;
+    uploadsSizeBytes: number;
+    photoFiles: { name: string; size: number; modified: string }[];
+    disk: { totalBytes: number; usedBytes: number; availableBytes: number; mountPoint: string } | null;
+    dataDir: string;
+  } | null>(null);
+  const [loading, setLoading] = useState(true);
 
-  // Calculate per-key sizes
-  const keySizes: { key: string; size: number }[] = [];
-  for (let i = 0; i < localStorage.length; i++) {
-    const key = localStorage.key(i);
-    if (key) {
-      const val = localStorage.getItem(key) || "";
-      keySizes.push({ key, size: val.length * 2 });
-    }
-  }
-  keySizes.sort((a, b) => b.size - a.size);
+  useEffect(() => {
+    getServerStorageStats().then(s => { setServerStats(s); setLoading(false); });
+  }, []);
 
-  // Photo stats
+  const { used: lsUsed, limit: lsLimit } = getLocalStorageUsage();
   const totalAlbumPhotos = albums.reduce((sum, a) => sum + a.photos.length, 0);
   const totalLibraryPhotos = libraryPhotos.length;
   const totalDownloads = albums.reduce((sum, a) => sum + (a.downloadHistory || []).reduce((s, h) => s + h.photoIds.length, 0), 0);
   const totalRequests = albums.reduce((sum, a) => sum + (a.downloadRequests || []).length, 0);
   const pendingRequests = albums.reduce((sum, a) => sum + (a.downloadRequests || []).filter(r => r.status === "pending").length, 0);
 
-  const usedPct = Math.min(100, (used / limit) * 100);
+  const disk = serverStats?.disk;
+  const diskUsedPct = disk ? Math.min(100, (disk.usedBytes / disk.totalBytes) * 100) : 0;
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
@@ -1990,42 +1993,89 @@ function StorageView() {
         </div>
       </div>
 
-      {/* localStorage Usage */}
-      <div className="glass-panel rounded-xl p-6 mb-6">
-        <h3 className="font-display text-base text-foreground mb-4">LocalStorage Usage</h3>
-        <div className="mb-3">
-          <div className="flex items-center justify-between text-xs font-body text-muted-foreground mb-1.5">
-            <span>{formatBytes(used)} used</span>
-            <span>{formatBytes(limit)} limit</span>
-          </div>
-          <div className="h-3 rounded-full bg-secondary overflow-hidden">
-            <div className={`h-full rounded-full transition-all ${usedPct > 80 ? "bg-destructive" : usedPct > 50 ? "bg-yellow-500" : "bg-primary"}`} style={{ width: `${usedPct}%` }} />
-          </div>
+      {/* TrueNAS Volume / Disk Usage */}
+      {loading ? (
+        <div className="glass-panel rounded-xl p-6 mb-6 text-center">
+          <p className="text-sm font-body text-muted-foreground animate-pulse">Loading server storage stats...</p>
         </div>
-        <p className="text-[10px] font-body text-muted-foreground/50">
-          {isServerMode() ? "Server backend is active — photos are stored on disk, localStorage is used for metadata only." : "Running without server — all data stored in localStorage. Consider enabling the Docker backend for larger libraries."}
-        </p>
-      </div>
-
-      {/* Key Breakdown */}
-      <div className="glass-panel rounded-xl p-6 mb-6">
-        <h3 className="font-display text-base text-foreground mb-4">Storage Breakdown</h3>
-        <div className="space-y-2 max-h-64 overflow-y-auto">
-          {keySizes.map(({ key, size }) => (
-            <div key={key} className="flex items-center justify-between p-2 rounded-lg hover:bg-secondary/30 transition-colors">
-              <span className="text-xs font-body text-foreground font-mono truncate max-w-[60%]">{key}</span>
-              <div className="flex items-center gap-3">
-                <div className="w-24 h-1.5 rounded-full bg-secondary overflow-hidden">
-                  <div className="h-full rounded-full bg-primary/50" style={{ width: `${Math.min(100, (size / used) * 100)}%` }} />
+      ) : serverStats ? (
+        <>
+          {/* Disk Volume */}
+          {disk && (
+            <div className="glass-panel rounded-xl p-6 mb-6">
+              <h3 className="font-display text-base text-foreground mb-1">Volume Storage</h3>
+              <p className="text-[10px] font-body text-muted-foreground/50 mb-4 font-mono">{disk.mountPoint} → {serverStats.dataDir}</p>
+              <div className="mb-3">
+                <div className="flex items-center justify-between text-xs font-body text-muted-foreground mb-1.5">
+                  <span>{formatBytes(disk.usedBytes)} used</span>
+                  <span>{formatBytes(disk.availableBytes)} free</span>
+                  <span>{formatBytes(disk.totalBytes)} total</span>
                 </div>
-                <span className="text-[10px] font-body text-muted-foreground w-16 text-right">{formatBytes(size)}</span>
+                <div className="h-4 rounded-full bg-secondary overflow-hidden">
+                  <div className={`h-full rounded-full transition-all ${diskUsedPct > 90 ? "bg-destructive" : diskUsedPct > 70 ? "bg-yellow-500" : "bg-primary"}`} style={{ width: `${diskUsedPct}%` }} />
+                </div>
+                <p className="text-[10px] font-body text-muted-foreground mt-1">{diskUsedPct.toFixed(1)}% used</p>
               </div>
             </div>
-          ))}
-        </div>
-      </div>
+          )}
 
-      {/* Download & Request Stats */}
+          {/* App Data Breakdown */}
+          <div className="glass-panel rounded-xl p-6 mb-6">
+            <h3 className="font-display text-base text-foreground mb-4">App Data Breakdown</h3>
+            <div className="grid sm:grid-cols-3 gap-4 mb-4">
+              <div className="p-4 rounded-lg bg-secondary/50 border border-border/50">
+                <p className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1">Photos on Disk</p>
+                <p className="font-display text-xl text-foreground">{serverStats.photoCount}</p>
+                <p className="text-[10px] font-body text-muted-foreground">{formatBytes(serverStats.uploadsSizeBytes)}</p>
+              </div>
+              <div className="p-4 rounded-lg bg-secondary/50 border border-border/50">
+                <p className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1">Database</p>
+                <p className="font-display text-xl text-foreground">{formatBytes(serverStats.dbSizeBytes)}</p>
+                <p className="text-[10px] font-body text-muted-foreground">db.json</p>
+              </div>
+              <div className="p-4 rounded-lg bg-secondary/50 border border-border/50">
+                <p className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1">Total App Data</p>
+                <p className="font-display text-xl text-primary">{formatBytes(serverStats.totalBytes)}</p>
+              </div>
+            </div>
+
+            {/* Largest files */}
+            {serverStats.photoFiles.length > 0 && (
+              <div>
+                <p className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-2">Largest Files</p>
+                <div className="space-y-1 max-h-48 overflow-y-auto">
+                  {serverStats.photoFiles.slice(0, 20).map((f) => (
+                    <div key={f.name} className="flex items-center justify-between p-2 rounded-lg hover:bg-secondary/30 transition-colors">
+                      <span className="text-xs font-body text-foreground font-mono truncate max-w-[50%]">{f.name}</span>
+                      <div className="flex items-center gap-3">
+                        <span className="text-[10px] font-body text-muted-foreground">{new Date(f.modified).toLocaleDateString()}</span>
+                        <span className="text-[10px] font-body text-muted-foreground w-16 text-right">{formatBytes(f.size)}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </>
+      ) : (
+        /* Fallback: localStorage only (no server) */
+        <div className="glass-panel rounded-xl p-6 mb-6">
+          <h3 className="font-display text-base text-foreground mb-4">LocalStorage Usage</h3>
+          <div className="mb-3">
+            <div className="flex items-center justify-between text-xs font-body text-muted-foreground mb-1.5">
+              <span>{formatBytes(lsUsed)} used</span>
+              <span>{formatBytes(lsLimit)} limit</span>
+            </div>
+            <div className="h-3 rounded-full bg-secondary overflow-hidden">
+              <div className={`h-full rounded-full transition-all ${(lsUsed/lsLimit)*100 > 80 ? "bg-destructive" : "bg-primary"}`} style={{ width: `${Math.min(100,(lsUsed/lsLimit)*100)}%` }} />
+            </div>
+          </div>
+          <p className="text-[10px] font-body text-muted-foreground/50">No server backend detected — all data stored in localStorage. Enable Docker backend for disk storage.</p>
+        </div>
+      )}
+
+      {/* Activity Summary */}
       <div className="glass-panel rounded-xl p-6">
         <h3 className="font-display text-base text-foreground mb-4">Activity Summary</h3>
         <div className="grid sm:grid-cols-2 gap-4">
