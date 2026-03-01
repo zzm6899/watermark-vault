@@ -21,6 +21,7 @@ import {
   getPhotoLibrary, setPhotoLibrary,
 } from "@/lib/storage";
 import { compressImage, formatBytes, getLocalStorageUsage } from "@/lib/image-utils";
+import { uploadPhotosToServer, isServerMode, deletePhotoFromServer } from "@/lib/api";
 import type {
   EventType, QuestionField, AvailabilitySlot,
   ProfileSettings, AppSettings, Booking, WatermarkPosition,
@@ -869,16 +870,31 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onCa
     const fileArr = Array.from(files);
     setUploadStats({ total: fileArr.length, done: 0, errors: 0, savedBytes: 0 });
 
-    for (const file of fileArr) {
-      try {
-        const result = await compressImage(file);
-        const id = `ph-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`;
-        setPhotos(prev => [...prev, { id, src: result.src, title: file.name.replace(/\.[^.]+$/, ""), width: result.width, height: result.height }]);
-        if (!coverImage) setCoverImage(result.src);
-        setUploadStats(prev => prev ? { ...prev, done: prev.done + 1, savedBytes: prev.savedBytes + (result.originalSize - result.compressedSize) } : null);
-      } catch {
-        setUploadStats(prev => prev ? { ...prev, done: prev.done + 1, errors: prev.errors + 1 } : null);
-        toast.error(`Failed to process: ${file.name}`);
+    if (isServerMode()) {
+      // Upload to server — files saved to TrueNAS disk
+      const results = await uploadPhotosToServer(fileArr, (done, total) => {
+        setUploadStats(prev => prev ? { ...prev, done, total } : null);
+      });
+      for (const r of results) {
+        const id = r.id;
+        setPhotos(prev => [...prev, { id, src: r.url, title: r.originalName.replace(/\.[^.]+$/, ""), width: 800, height: 600 }]);
+        if (!coverImage) setCoverImage(r.url);
+      }
+      setUploadStats(prev => prev ? { ...prev, done: fileArr.length, errors: fileArr.length - results.length, savedBytes: 0 } : null);
+      if (results.length > 0) toast.success(`${results.length} photos uploaded to server`);
+    } else {
+      // Fallback: compress to base64 for localStorage
+      for (const file of fileArr) {
+        try {
+          const result = await compressImage(file);
+          const id = `ph-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`;
+          setPhotos(prev => [...prev, { id, src: result.src, title: file.name.replace(/\.[^.]+$/, ""), width: result.width, height: result.height }]);
+          if (!coverImage) setCoverImage(result.src);
+          setUploadStats(prev => prev ? { ...prev, done: prev.done + 1, savedBytes: prev.savedBytes + (result.originalSize - result.compressedSize) } : null);
+        } catch {
+          setUploadStats(prev => prev ? { ...prev, done: prev.done + 1, errors: prev.errors + 1 } : null);
+          toast.error(`Failed to process: ${file.name}`);
+        }
       }
     }
   };
@@ -1060,19 +1076,35 @@ function PhotosView() {
     const fileArr = Array.from(files);
     setUploadStats({ total: fileArr.length, done: 0, errors: 0, savedBytes: 0 });
 
-    for (const file of fileArr) {
-      try {
-        const result = await compressImage(file);
-        const photo: Photo = { id: generateId("ph"), src: result.src, title: file.name.replace(/\.[^.]+$/, ""), width: result.width, height: result.height };
+    if (isServerMode()) {
+      const results = await uploadPhotosToServer(fileArr, (done, total) => {
+        setUploadStats(prev => prev ? { ...prev, done, total } : null);
+      });
+      for (const r of results) {
+        const photo: Photo = { id: r.id, src: r.url, title: r.originalName.replace(/\.[^.]+$/, ""), width: 800, height: 600 };
         setPhotosState(prev => {
           const updated = [...prev, photo];
           setPhotoLibrary(updated);
           return updated;
         });
-        setUploadStats(prev => prev ? { ...prev, done: prev.done + 1, savedBytes: prev.savedBytes + (result.originalSize - result.compressedSize) } : null);
-      } catch {
-        setUploadStats(prev => prev ? { ...prev, done: prev.done + 1, errors: prev.errors + 1 } : null);
-        toast.error(`Failed to process: ${file.name}`);
+      }
+      setUploadStats(prev => prev ? { ...prev, done: fileArr.length, errors: fileArr.length - results.length } : null);
+      if (results.length > 0) toast.success(`${results.length} photos uploaded to server`);
+    } else {
+      for (const file of fileArr) {
+        try {
+          const result = await compressImage(file);
+          const photo: Photo = { id: generateId("ph"), src: result.src, title: file.name.replace(/\.[^.]+$/, ""), width: result.width, height: result.height };
+          setPhotosState(prev => {
+            const updated = [...prev, photo];
+            setPhotoLibrary(updated);
+            return updated;
+          });
+          setUploadStats(prev => prev ? { ...prev, done: prev.done + 1, savedBytes: prev.savedBytes + (result.originalSize - result.compressedSize) } : null);
+        } catch {
+          setUploadStats(prev => prev ? { ...prev, done: prev.done + 1, errors: prev.errors + 1 } : null);
+          toast.error(`Failed to process: ${file.name}`);
+        }
       }
     }
   };
