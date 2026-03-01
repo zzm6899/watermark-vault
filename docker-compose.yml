@@ -1,0 +1,12 @@
+version: "3.8"
+
+services:
+  watermark-vault:
+    build: .
+    container_name: watermark-vault
+    restart: unless-stopped
+    ports:
+      - "5066:5066"
+    # Optional: mount a volume if you want to persist any data
+    # volumes:
+    #   - /mnt/your-pool/watermark-vault:/data

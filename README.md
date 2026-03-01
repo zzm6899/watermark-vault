@@ -1,73 +1,51 @@
-# Welcome to your Lovable project
+# watermark-vault Docker Deployment
 
-## Project info
+## Files
+- `Dockerfile` — Multi-stage build: Node 20 builds the app, nginx serves it
+- `nginx.conf` — Nginx config listening on port **5066**
+- `docker-compose.yml` — Compose file for easy deployment
 
-**URL**: https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID
+## Deploy on TrueNAS SCALE
 
-## How can I edit this code?
+### Option A: Docker Compose (TrueNAS SCALE with Docker)
 
-There are several ways of editing your application.
+1. Copy all three files to your TrueNAS server (e.g., `/mnt/pool/watermark-vault/`)
+2. SSH into TrueNAS and run:
 
-**Use Lovable**
-
-Simply visit the [Lovable Project](https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID) and start prompting.
-
-Changes made via Lovable will be committed automatically to this repo.
-
-**Use your preferred IDE**
-
-If you want to work locally using your own IDE, you can clone this repo and push changes. Pushed changes will also be reflected in Lovable.
-
-The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
-
-Follow these steps:
-
-```sh
-# Step 1: Clone the repository using the project's Git URL.
-git clone <YOUR_GIT_URL>
-
-# Step 2: Navigate to the project directory.
-cd <YOUR_PROJECT_NAME>
-
-# Step 3: Install the necessary dependencies.
-npm i
-
-# Step 4: Start the development server with auto-reloading and an instant preview.
-npm run dev
+```bash
+cd /mnt/pool/watermark-vault
+docker compose up -d --build
 ```
 
-**Edit a file directly in GitHub**
+3. Access the app at: `http://<truenas-ip>:5066`
 
-- Navigate to the desired file(s).
-- Click the "Edit" button (pencil icon) at the top right of the file view.
-- Make your changes and commit the changes.
+### Option B: TrueNAS SCALE Apps (Custom App)
 
-**Use GitHub Codespaces**
+1. Go to **Apps → Custom App**
+2. Set the image source to build from this repo, or pre-build and push to a registry:
 
-- Navigate to the main page of your repository.
-- Click on the "Code" button (green button) near the top right.
-- Select the "Codespaces" tab.
-- Click on "New codespace" to launch a new Codespace environment.
-- Edit files directly within the Codespace and commit and push your changes once you're done.
+```bash
+# Build and tag
+docker build -t watermark-vault:latest .
 
-## What technologies are used for this project?
+# Push to local registry or Docker Hub
+docker tag watermark-vault:latest your-registry/watermark-vault:latest
+docker push your-registry/watermark-vault:latest
+```
 
-This project is built with:
+3. In TrueNAS Custom App config:
+   - **Image:** `your-registry/watermark-vault:latest`
+   - **Port Forwarding:** Host `5066` → Container `5066`
+   - **Restart Policy:** `unless-stopped`
 
-- Vite
-- TypeScript
-- React
-- shadcn-ui
-- Tailwind CSS
+### Rebuilding after updates
 
-## How can I deploy this project?
+```bash
+docker compose down
+docker compose up -d --build
+```
 
-Simply open [Lovable](https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID) and click on Share -> Publish.
-
-## Can I connect a custom domain to my Lovable project?
-
-Yes, you can!
-
-To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
-
-Read more here: [Setting up a custom domain](https://docs.lovable.dev/features/custom-domain#custom-domain)
+## Notes
+- This is a pure frontend app — no backend/database needed
+- All processing happens client-side in the browser
+- The build clones directly from GitHub, so you need internet access during build time
