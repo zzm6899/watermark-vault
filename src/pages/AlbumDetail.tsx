@@ -1,7 +1,7 @@
 import { useParams } from "react-router-dom";
 import { useState } from "react";
 import { motion } from "framer-motion";
-import { Info, Building2, Copy, Check as CheckIcon } from "lucide-react";
+import { Info, Building2, Copy, Check as CheckIcon, Lock } from "lucide-react";
 import Header from "@/components/Header";
 import Footer from "@/components/Footer";
 import WatermarkedImage from "@/components/WatermarkedImage";
@@ -15,6 +15,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 
 export default function AlbumDetail() {
   const { albumId } = useParams();
@@ -23,6 +24,8 @@ export default function AlbumDetail() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [showBankTransfer, setShowBankTransfer] = useState(false);
   const [copiedField, setCopiedField] = useState<string | null>(null);
+  const [accessGranted, setAccessGranted] = useState(!album?.accessCode);
+  const [pinInput, setPinInput] = useState("");
 
   const watermarkPosition = settings.watermarkPosition;
   const bankTransfer = settings.bankTransfer;
@@ -33,6 +36,22 @@ export default function AlbumDetail() {
         <div className="text-center">
           <p className="font-display text-2xl text-foreground mb-2">Album Not Found</p>
           <p className="text-muted-foreground font-body text-sm">This gallery may be private or the link is incorrect.</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!accessGranted) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="glass-panel rounded-xl p-8 max-w-sm w-full text-center">
+          <Lock className="w-8 h-8 text-primary mx-auto mb-4" />
+          <h2 className="font-display text-xl text-foreground mb-2">Private Gallery</h2>
+          <p className="text-sm font-body text-muted-foreground mb-4">Enter the PIN to access this gallery.</p>
+          <Input type="password" value={pinInput} onChange={(e) => setPinInput(e.target.value)} placeholder="Enter PIN" className="bg-secondary border-border text-foreground font-body mb-3" onKeyDown={(e) => { if (e.key === "Enter") { if (pinInput === album.accessCode) setAccessGranted(true); else toast.error("Incorrect PIN"); } }} />
+          <Button onClick={() => { if (pinInput === album.accessCode) setAccessGranted(true); else toast.error("Incorrect PIN"); }} className="w-full bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs tracking-wider uppercase">
+            Unlock Gallery
+          </Button>
         </div>
       </div>
     );

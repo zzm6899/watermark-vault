@@ -1,11 +1,11 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { motion } from "framer-motion";
 import {
   LayoutDashboard, Calendar, Settings, Plus, Upload,
   Trash2, Edit, Users, Clock, CreditCard, Building2,
   Camera, Save, X, LogOut, ChevronDown, ChevronUp,
   Image, DollarSign, Link2, Merge, Send, Copy, ExternalLink,
-  MapPin
+  MapPin, Lock, Bell
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -18,6 +18,7 @@ import {
   deleteEventType, updateEventType, getBookings, deleteBooking,
   updateBooking, getSettings, setSettings, logout,
   getAlbums, addAlbum, updateAlbum, deleteAlbum,
+  getPhotoLibrary, setPhotoLibrary,
 } from "@/lib/storage";
 import type {
   EventType, QuestionField, AvailabilitySlot,
@@ -25,7 +26,7 @@ import type {
   Album, Photo, PaymentStatus,
 } from "@/lib/types";
 
-type Tab = "dashboard" | "bookings" | "event-types" | "albums" | "profile" | "settings";
+type Tab = "dashboard" | "bookings" | "event-types" | "albums" | "photos" | "profile" | "settings";
 
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
@@ -49,10 +50,16 @@ function slugify(text: string): string {
 export default function Admin() {
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<Tab>("dashboard");
+  const [prefillBookingId, setPrefillBookingId] = useState<string | null>(null);
 
   const handleLogout = () => {
     logout();
     navigate("/admin");
+  };
+
+  const handleCreateAlbumForBooking = (bookingId: string) => {
+    setPrefillBookingId(bookingId);
+    setActiveTab("albums");
   };
 
   const tabs = [
@@ -60,6 +67,7 @@ export default function Admin() {
     { id: "bookings" as Tab, label: "Bookings", icon: Calendar },
     { id: "event-types" as Tab, label: "Events", icon: Clock },
     { id: "albums" as Tab, label: "Albums", icon: Image },
+    { id: "photos" as Tab, label: "Photos", icon: Upload },
     { id: "profile" as Tab, label: "Profile", icon: Camera },
     { id: "settings" as Tab, label: "Settings", icon: Settings },
   ];
@@ -103,9 +111,10 @@ export default function Admin() {
 
         <main className="flex-1 lg:ml-56 p-6 lg:p-8 mt-12 lg:mt-0">
           {activeTab === "dashboard" && <DashboardView />}
-          {activeTab === "bookings" && <BookingsView />}
+          {activeTab === "bookings" && <BookingsView onCreateAlbum={handleCreateAlbumForBooking} />}
           {activeTab === "event-types" && <EventTypesView />}
-          {activeTab === "albums" && <AlbumsView />}
+          {activeTab === "albums" && <AlbumsView prefillBookingId={prefillBookingId} onClearPrefill={() => setPrefillBookingId(null)} />}
+          {activeTab === "photos" && <PhotosView />}
           {activeTab === "profile" && <ProfileView />}
           {activeTab === "settings" && <SettingsView />}
         </main>
@@ -199,9 +208,11 @@ function DashboardView() {
 }
 
 // ─── Bookings ────────────────────────────────────────
-function BookingsView() {
+function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) => void }) {
   const [bookings, setBookingsState] = useState<Booking[]>(getBookings());
+  const [expandedId, setExpandedId] = useState<string | null>(null);
   const settings = getSettings();
+  const eventTypes = getEventTypes();
 
   const handleDelete = (id: string) => {
     if (!confirm("Delete this booking?")) return;
@@ -233,54 +244,95 @@ function BookingsView() {
         </div>
       ) : (
         <div className="space-y-3">
-          {bookings.sort((a, b) => new Date(b.createdAt || b.date).getTime() - new Date(a.createdAt || a.date).getTime()).map((bk) => (
-            <div key={bk.id} className="glass-panel rounded-xl p-4">
-              <div className="flex items-center gap-4">
-                <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
-                  <Users className="w-4 h-4 text-primary" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <h3 className="text-sm font-body text-foreground font-medium">{bk.clientName}</h3>
-                    {bk.instagramHandle && <span className="text-xs font-body text-primary">@{bk.instagramHandle.replace("@", "")}</span>}
-                  </div>
-                  <p className="text-xs font-body text-muted-foreground">{bk.type} · {bk.date} at {bk.time} · {formatDuration(bk.duration)}</p>
-                  {bk.clientEmail && <p className="text-xs font-body text-muted-foreground/70">{bk.clientEmail}</p>}
-                  {bk.paymentAmount && bk.paymentAmount > 0 && (
-                    <p className="text-xs font-body text-foreground mt-1">${bk.paymentAmount}</p>
-                  )}
-                </div>
-                <div className="flex items-center gap-2 flex-wrap">
-                  <select value={bk.status} onChange={(e) => handleStatusChange(bk, e.target.value as Booking["status"])}
-                    className="text-xs font-body px-2.5 py-1 rounded-full bg-secondary border border-border text-foreground cursor-pointer"
-                  >
-                    <option value="pending">Pending</option>
-                    <option value="confirmed">Confirmed</option>
-                    <option value="completed">Completed</option>
-                    <option value="cancelled">Cancelled</option>
-                  </select>
-                  <select value={bk.paymentStatus || "unpaid"} onChange={(e) => handlePaymentChange(bk, e.target.value as PaymentStatus)}
-                    className="text-xs font-body px-2.5 py-1 rounded-full bg-secondary border border-border text-foreground cursor-pointer"
-                  >
-                    <option value="unpaid">Unpaid</option>
-                    <option value="paid">Paid</option>
-                    <option value="cash">Cash</option>
-                    <option value="pending-confirmation">Pending Confirm</option>
-                  </select>
-                  {bk.albumId && (
-                    <a href={`/gallery/${bk.albumId}`} target="_blank" rel="noopener noreferrer">
-                      <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-primary">
-                        <ExternalLink className="w-4 h-4" />
+          {bookings.sort((a, b) => new Date(b.createdAt || b.date).getTime() - new Date(a.createdAt || a.date).getTime()).map((bk) => {
+            const isExpanded = expandedId === bk.id;
+            const et = eventTypes.find(e => e.id === bk.eventTypeId);
+            return (
+              <div key={bk.id} className="glass-panel rounded-xl overflow-hidden">
+                <div className="p-4 cursor-pointer hover:bg-secondary/20 transition-colors" onClick={() => setExpandedId(isExpanded ? null : bk.id)}>
+                  <div className="flex items-center gap-4">
+                    <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
+                      <Users className="w-4 h-4 text-primary" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <h3 className="text-sm font-body text-foreground font-medium">{bk.clientName}</h3>
+                        {bk.instagramHandle && <span className="text-xs font-body text-primary">@{bk.instagramHandle.replace("@", "")}</span>}
+                      </div>
+                      <p className="text-xs font-body text-muted-foreground">{bk.type} · {bk.date} at {bk.time} · {formatDuration(bk.duration)}</p>
+                    </div>
+                    <div className="flex items-center gap-2 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
+                      <select value={bk.status} onChange={(e) => handleStatusChange(bk, e.target.value as Booking["status"])}
+                        className="text-xs font-body px-2.5 py-1 rounded-full bg-secondary border border-border text-foreground cursor-pointer">
+                        <option value="pending">Pending</option>
+                        <option value="confirmed">Confirmed</option>
+                        <option value="completed">Completed</option>
+                        <option value="cancelled">Cancelled</option>
+                      </select>
+                      <select value={bk.paymentStatus || "unpaid"} onChange={(e) => handlePaymentChange(bk, e.target.value as PaymentStatus)}
+                        className="text-xs font-body px-2.5 py-1 rounded-full bg-secondary border border-border text-foreground cursor-pointer">
+                        <option value="unpaid">Unpaid</option>
+                        <option value="paid">Paid</option>
+                        <option value="cash">Cash</option>
+                        <option value="pending-confirmation">Pending Confirm</option>
+                      </select>
+                      <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-destructive" onClick={() => handleDelete(bk.id)}>
+                        <Trash2 className="w-4 h-4" />
                       </Button>
-                    </a>
-                  )}
-                  <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-destructive" onClick={() => handleDelete(bk.id)}>
-                    <Trash2 className="w-4 h-4" />
-                  </Button>
+                      <ChevronDown className={`w-4 h-4 text-muted-foreground transition-transform ${isExpanded ? "rotate-180" : ""}`} />
+                    </div>
+                  </div>
                 </div>
+                {isExpanded && (
+                  <div className="px-4 pb-4 border-t border-border/50 pt-3 space-y-3">
+                    <div className="grid sm:grid-cols-3 gap-3">
+                      <div className="p-3 rounded-lg bg-secondary/50">
+                        <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-1">Email</p>
+                        <p className="text-sm font-body text-foreground">{bk.clientEmail || "—"}</p>
+                      </div>
+                      <div className="p-3 rounded-lg bg-secondary/50">
+                        <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-1">Amount</p>
+                        <p className="text-sm font-body text-foreground">${bk.paymentAmount || 0}</p>
+                      </div>
+                      <div className="p-3 rounded-lg bg-secondary/50">
+                        <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-1">Payment</p>
+                        <p className="text-sm font-body text-foreground">{bk.paymentStatus || "unpaid"}</p>
+                      </div>
+                    </div>
+                    {bk.answers && Object.keys(bk.answers).length > 0 && (
+                      <div>
+                        <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-2">Questionnaire Answers</p>
+                        <div className="space-y-2">
+                          {Object.entries(bk.answers).map(([qId, answer]) => {
+                            const question = et?.questions.find(q => q.id === qId);
+                            return (
+                              <div key={qId} className="p-2 rounded-lg bg-secondary/30 border border-border/30">
+                                <p className="text-[10px] font-body text-muted-foreground">{question?.label || qId}</p>
+                                <p className="text-sm font-body text-foreground">{answer}</p>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                    <div className="flex items-center gap-2 pt-1">
+                      {bk.albumId ? (
+                        <a href={`/gallery/${bk.albumId}`} target="_blank" rel="noopener noreferrer">
+                          <Button size="sm" variant="outline" className="gap-2 font-body text-xs border-border text-foreground">
+                            <ExternalLink className="w-3.5 h-3.5" /> View Album
+                          </Button>
+                        </a>
+                      ) : onCreateAlbum ? (
+                        <Button size="sm" variant="outline" onClick={() => onCreateAlbum(bk.id)} className="gap-2 font-body text-xs border-border text-foreground">
+                          <Image className="w-3.5 h-3.5" /> Create Album
+                        </Button>
+                      ) : null}
+                    </div>
+                  </div>
+                )}
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </motion.div>
@@ -384,10 +436,15 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
   const [durations, setDurations] = useState<number[]>(eventType?.durations || [30]);
   const [price, setPrice] = useState(eventType?.price || 0);
   const [requiresConfirmation, setRequiresConfirmation] = useState(eventType?.requiresConfirmation || false);
-  const [questions, setQuestions] = useState<QuestionField[]>(eventType?.questions || [
+  const currentSettings = getSettings();
+  const defaultQuestions: QuestionField[] = [
     { id: "q1", label: "Name", type: "text", required: true, placeholder: "Your full name" },
     { id: "q2", label: "Email", type: "text", required: true, placeholder: "you@example.com" },
-  ]);
+  ];
+  if (currentSettings.instagramFieldEnabled) {
+    defaultQuestions.push({ id: "q-ig", label: "Instagram Handle", type: "text", required: false, placeholder: "@yourusername" });
+  }
+  const [questions, setQuestions] = useState<QuestionField[]>(eventType?.questions || defaultQuestions);
   const [recurring, setRecurring] = useState<AvailabilitySlot[]>(eventType?.availability?.recurring || []);
   const [blockedDates, setBlockedDates] = useState<string[]>(eventType?.availability?.blockedDates || []);
   const [specificDates, setSpecificDates] = useState(eventType?.availability?.specificDates || []);
@@ -597,7 +654,7 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
 }
 
 // ─── Albums ──────────────────────────────────────────
-function AlbumsView() {
+function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: string | null; onClearPrefill?: () => void }) {
   const [albums, setAlbumsState] = useState<Album[]>(getAlbums());
   const bookings = getBookings();
   const settings = getSettings();
@@ -605,6 +662,13 @@ function AlbumsView() {
   const [editing, setEditing] = useState<Album | null>(null);
   const [mergeMode, setMergeMode] = useState(false);
   const [mergeSelection, setMergeSelection] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (prefillBookingId) {
+      setShowNew(true);
+      onClearPrefill?.();
+    }
+  }, [prefillBookingId]);
 
   const refresh = () => setAlbumsState(getAlbums());
 
@@ -696,6 +760,7 @@ function AlbumsView() {
           album={editing}
           bookings={bookings}
           settings={settings}
+          prefillBookingId={showNew && !editing ? prefillBookingId : undefined}
           onSave={(alb) => {
             if (editing) { updateAlbum(alb); }
             else { addAlbum(alb); }
@@ -771,25 +836,28 @@ function AlbumsView() {
 }
 
 // ─── Album Editor ────────────────────────────────────
-function AlbumEditor({ album, bookings, settings, onSave, onCancel }: {
+function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onCancel }: {
   album: Album | null;
   bookings: Booking[];
   settings: AppSettings;
+  prefillBookingId?: string | null;
   onSave: (alb: Album) => void;
   onCancel: () => void;
 }) {
   const isNew = !album;
-  const [title, setTitle] = useState(album?.title || "");
-  const [slug, setSlug] = useState(album?.slug || "");
+  const prefillBk = prefillBookingId ? bookings.find(b => b.id === prefillBookingId) : null;
+  const [title, setTitle] = useState(album?.title || (prefillBk ? `${prefillBk.clientName} — ${prefillBk.type}` : ""));
+  const [slug, setSlug] = useState(album?.slug || (prefillBk ? slugify(`${prefillBk.clientName}-${prefillBk.date}`) : ""));
   const [description, setDescription] = useState(album?.description || "");
-  const [bookingId, setBookingId] = useState(album?.bookingId || "");
-  const [clientName, setClientName] = useState(album?.clientName || "");
-  const [clientEmail, setClientEmail] = useState(album?.clientEmail || "");
+  const [bookingId, setBookingId] = useState(album?.bookingId || prefillBookingId || "");
+  const [clientName, setClientName] = useState(album?.clientName || prefillBk?.clientName || "");
+  const [clientEmail, setClientEmail] = useState(album?.clientEmail || prefillBk?.clientEmail || "");
   const [freeDownloads, setFreeDownloads] = useState(album?.freeDownloads ?? settings.defaultFreeDownloads);
   const [pricePerPhoto, setPricePerPhoto] = useState(album?.pricePerPhoto ?? settings.defaultPricePerPhoto);
   const [priceFullAlbum, setPriceFullAlbum] = useState(album?.priceFullAlbum ?? settings.defaultPriceFullAlbum);
   const [photos, setPhotos] = useState<Photo[]>(album?.photos || []);
   const [coverImage, setCoverImage] = useState(album?.coverImage || "");
+  const [accessCode, setAccessCode] = useState(album?.accessCode || "");
 
   const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
@@ -820,8 +888,9 @@ function AlbumEditor({ album, bookings, settings, onSave, onCancel }: {
   const handleSave = () => {
     if (!title.trim()) { toast.error("Title required"); return; }
     const finalSlug = slug.trim() || slugify(title);
+    const albumId = album?.id || generateId("alb");
     onSave({
-      id: album?.id || generateId("alb"),
+      id: albumId,
       slug: finalSlug,
       title: title.trim(),
       description: description.trim(),
@@ -836,14 +905,13 @@ function AlbumEditor({ album, bookings, settings, onSave, onCancel }: {
       clientName: clientName.trim(),
       clientEmail: clientEmail.trim(),
       bookingId: bookingId || undefined,
-      accessCode: album?.accessCode,
+      accessCode: accessCode || undefined,
       mergedFrom: album?.mergedFrom,
     });
-    // Link album to booking
     if (bookingId) {
       const bk = bookings.find(b => b.id === bookingId);
       if (bk) {
-        updateBooking({ ...bk, albumId: album?.id || generateId("alb") });
+        updateBooking({ ...bk, albumId });
       }
     }
   };
@@ -895,6 +963,12 @@ function AlbumEditor({ album, bookings, settings, onSave, onCancel }: {
         </div>
       </div>
 
+      <div>
+        <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Album PIN (optional)</label>
+        <Input value={accessCode} onChange={(e) => setAccessCode(e.target.value)} placeholder="Leave empty for no PIN" className="bg-secondary border-border text-foreground font-body" />
+        <p className="text-[10px] font-body text-muted-foreground/50 mt-1">Visitors must enter this PIN to view the gallery</p>
+      </div>
+
       <div className="grid grid-cols-3 gap-4">
         <div>
           <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Free Downloads</label>
@@ -941,6 +1015,113 @@ function AlbumEditor({ album, bookings, settings, onSave, onCancel }: {
         </Button>
       </div>
     </div>
+  );
+}
+
+// ─── Photo Library ───────────────────────────────────
+function PhotosView() {
+  const [photos, setPhotosState] = useState<Photo[]>(getPhotoLibrary());
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+  const handleUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files) return;
+    Array.from(files).forEach(file => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const src = reader.result as string;
+        const photo: Photo = { id: generateId("ph"), src, title: file.name.replace(/\.[^.]+$/, ""), width: 800, height: 600 };
+        setPhotosState(prev => {
+          const updated = [...prev, photo];
+          setPhotoLibrary(updated);
+          return updated;
+        });
+      };
+      reader.readAsDataURL(file);
+    });
+  };
+
+  const toggleSelect = (id: string) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const handleDeletePhoto = (id: string) => {
+    const updated = photos.filter(p => p.id !== id);
+    setPhotoLibrary(updated);
+    setPhotosState(updated);
+    setSelectedIds(prev => { const next = new Set(prev); next.delete(id); return next; });
+  };
+
+  const handleCreateAlbumFromSelection = () => {
+    if (selectedIds.size === 0) { toast.error("Select photos first"); return; }
+    const selectedPhotos = photos.filter(p => selectedIds.has(p.id));
+    const s = getSettings();
+    const alb: Album = {
+      id: generateId("alb"),
+      slug: slugify(`album-${Date.now()}`),
+      title: "New Album",
+      description: "",
+      coverImage: selectedPhotos[0]?.src || "",
+      date: new Date().toISOString().split("T")[0],
+      photoCount: selectedPhotos.length,
+      freeDownloads: s.defaultFreeDownloads,
+      pricePerPhoto: s.defaultPricePerPhoto,
+      priceFullAlbum: s.defaultPriceFullAlbum,
+      isPublic: true,
+      photos: selectedPhotos,
+    };
+    addAlbum(alb);
+    toast.success(`Album created with ${selectedPhotos.length} photos — go to Albums tab to edit`);
+    setSelectedIds(new Set());
+  };
+
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+      <div className="flex items-center justify-between mb-6">
+        <h2 className="font-display text-2xl text-foreground">Photo Library</h2>
+        {selectedIds.size > 0 && (
+          <Button size="sm" onClick={handleCreateAlbumFromSelection} className="gap-2 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs tracking-wider uppercase">
+            <Plus className="w-4 h-4" /> Create Album ({selectedIds.size})
+          </Button>
+        )}
+      </div>
+
+      <div className="glass-panel rounded-xl p-6 mb-6">
+        <div className="border-2 border-dashed border-border rounded-lg p-8 text-center hover:border-primary/30 transition-colors cursor-pointer relative">
+          <Upload className="w-8 h-8 text-muted-foreground/50 mx-auto mb-2" />
+          <p className="text-sm font-body text-muted-foreground">Upload photos to your library</p>
+          <p className="text-[10px] font-body text-muted-foreground/50 mt-1">Select photos then create albums from them</p>
+          <input type="file" accept="image/*" multiple className="absolute inset-0 opacity-0 cursor-pointer" onChange={handleUpload} />
+        </div>
+      </div>
+
+      {photos.length === 0 ? (
+        <div className="glass-panel rounded-xl p-12 text-center">
+          <Image className="w-10 h-10 text-muted-foreground/30 mx-auto mb-3" />
+          <p className="text-sm font-body text-muted-foreground">No photos in library yet.</p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-4 sm:grid-cols-6 lg:grid-cols-8 gap-2">
+          {photos.map(p => (
+            <div key={p.id} className={`relative group aspect-square rounded-lg overflow-hidden bg-secondary cursor-pointer border-2 transition-all ${selectedIds.has(p.id) ? "border-primary ring-2 ring-primary/20" : "border-transparent hover:border-border"}`}
+              onClick={() => toggleSelect(p.id)}>
+              <img src={p.src} alt={p.title} className="w-full h-full object-cover" />
+              {selectedIds.has(p.id) && (
+                <div className="absolute top-1 right-1 w-5 h-5 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-[10px] font-bold">✓</div>
+              )}
+              <button onClick={(e) => { e.stopPropagation(); handleDeletePhoto(p.id); }}
+                className="absolute bottom-1 right-1 w-5 h-5 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                <X className="w-3 h-3" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </motion.div>
   );
 }
 
@@ -1109,6 +1290,18 @@ function SettingsView() {
           <Textarea value={settings.notificationEmailTemplate} onChange={(e) => setSettingsState({ ...settings, notificationEmailTemplate: e.target.value })}
             className="bg-secondary border-border text-foreground font-body min-h-[80px]" placeholder="Hey {name}, your photos are ready! {link}" />
           <p className="text-[10px] font-body text-muted-foreground/50">Variables: {"{name}"}, {"{link}"}, {"{instagram}"}. Requires SMTP backend to send.</p>
+        </div>
+
+        {/* Discord Webhook */}
+        <div className="glass-panel rounded-xl p-6 space-y-4">
+          <h3 className="font-display text-base text-foreground flex items-center gap-2">
+            <Bell className="w-4 h-4 text-primary" /> Discord Webhooks
+          </h3>
+          <div>
+            <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Webhook URL</label>
+            <Input value={settings.discordWebhookUrl} onChange={(e) => setSettingsState({ ...settings, discordWebhookUrl: e.target.value })} placeholder="https://discord.com/api/webhooks/..." className="bg-secondary border-border text-foreground font-body" />
+            <p className="text-[10px] font-body text-muted-foreground/50 mt-1">Receive notifications for new bookings and reminders. Requires backend service to send.</p>
+          </div>
         </div>
 
         {/* Payment Methods */}

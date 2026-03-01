@@ -51,11 +51,13 @@ function toDateStr(d: Date): string {
 
 function getAvailabilityForDate(et: EventType, date: Date): { startTime: string; endTime: string }[] {
   const dateStr = toDateStr(date);
-  if (et.availability.blockedDates.includes(dateStr)) return [];
-  const specific = et.availability.specificDates.filter((s) => s.date === dateStr);
+  const avail = et.availability;
+  if (!avail) return [];
+  if ((avail.blockedDates || []).includes(dateStr)) return [];
+  const specific = (avail.specificDates || []).filter((s) => s.date === dateStr);
   if (specific.length > 0) return specific.map((s) => ({ startTime: s.startTime, endTime: s.endTime }));
   const dayOfWeek = date.getDay();
-  const recurring = et.availability.recurring.filter((s) => s.day === dayOfWeek);
+  const recurring = (avail.recurring || []).filter((s) => s.day === dayOfWeek);
   return recurring.map((s) => ({ startTime: s.startTime, endTime: s.endTime }));
 }
 

@@ -1,5 +1,5 @@
 import type {
-  EventType, Booking, Album, ProfileSettings,
+  EventType, Booking, Album, Photo, ProfileSettings,
   AppSettings, AdminCredentials, BankTransferSettings,
 } from "./types";
 
@@ -187,6 +187,7 @@ const defaultSettings: AppSettings = {
   bookingTimerMinutes: 15,
   instagramFieldEnabled: true,
   notificationEmailTemplate: "Hey {name}, your photos are ready! Check them out here: {link}",
+  discordWebhookUrl: "",
 };
 
 export function getSettings(): AppSettings {
@@ -207,4 +208,13 @@ export async function hashPassword(pw: string): Promise<string> {
   return Array.from(new Uint8Array(hash))
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
+}
+
+// ── Photo Library ──────────────────────────────────
+export function getPhotoLibrary(): Photo[] {
+  return get<Photo[]>("wv_photo_library", []);
+}
+
+export function setPhotoLibrary(photos: Photo[]) {
+  set("wv_photo_library", photos);
 }
