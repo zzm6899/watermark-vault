@@ -5,6 +5,7 @@ const path = require("path");
 const fs = require("fs");
 const { registerRoutes: registerGoogleCalendarRoutes } = require("./google-calendar");
 const { registerRoutes: registerEmailRoutes } = require("./email");
+const { registerRoutes: registerStripeRoutes } = require("./stripe");
 
 const app = express();
 const PORT = process.env.PORT || 5066;
@@ -168,6 +169,9 @@ registerGoogleCalendarRoutes(app);
 
 // ── Email (SMTP) Integration ─────────────────────────
 registerEmailRoutes(app);
+
+// ── Stripe Payments ──────────────────────────────────
+registerStripeRoutes(app);
 
 // ── Serve uploaded photos ─────────────────────────────
 app.use("/uploads", express.static(UPLOADS_DIR, { maxAge: "7d" }));

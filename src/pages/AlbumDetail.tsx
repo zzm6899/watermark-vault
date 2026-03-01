@@ -70,7 +70,7 @@ export default function AlbumDetail() {
     return () => window.removeEventListener("keydown", handler);
   }, [lightboxIndex, album]);
 
-  if (!album) {
+  if (!album || album.enabled === false) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="text-center">
