@@ -72,6 +72,17 @@ export interface Photo {
   selected?: boolean;
 }
 
+export type AlbumDisplaySize = "small" | "medium" | "large" | "list";
+
+export interface AlbumDownloadRecord {
+  photoIds: string[];
+  method: "free" | "stripe" | "bank-transfer";
+  status: "pending" | "approved" | "completed";
+  requestedAt: string;
+  approvedAt?: string;
+  clientNote?: string;
+}
+
 export interface Album {
   id: string;
   slug: string;
@@ -90,6 +101,10 @@ export interface Album {
   bookingId?: string;
   accessCode?: string;
   mergedFrom?: string[];
+  allUnlocked?: boolean;
+  usedFreeDownloads?: Record<string, number>; // keyed by accessCode or session
+  downloadRequests?: AlbumDownloadRecord[];
+  displaySize?: AlbumDisplaySize;
 }
 
 export interface BankTransferSettings {
@@ -112,7 +127,8 @@ export interface ProfileSettings {
 export interface AppSettings {
   watermarkPosition: WatermarkPosition;
   watermarkText: string;
-  watermarkImage: string; // base64 data URL for image watermark
+  watermarkImage: string;
+  watermarkOpacity: number; // 0-100
   defaultFreeDownloads: number;
   defaultPricePerPhoto: number;
   defaultPriceFullAlbum: number;
