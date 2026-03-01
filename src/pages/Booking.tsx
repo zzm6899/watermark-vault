@@ -12,9 +12,14 @@ import { Textarea } from "@/components/ui/textarea";
 import Footer from "@/components/Footer";
 import { toast } from "sonner";
 import { getEventTypes, getProfile, addBooking, getBookings, getSettings, isSlotBooked, updateBooking } from "@/lib/storage";
-import { syncBookingToCalendar, createBookingCheckout, getStripeStatus } from "@/lib/api";
+import { syncBookingToCalendar, createBookingCheckout, getStripeStatus, sendBookingConfirmationEmail } from "@/lib/api";
 import type { EventType, QuestionField } from "@/lib/types";
 import { RichTextDisplay } from "@/components/RichTextEditor";
+
+function sendBookingEmail(payload: Parameters<typeof sendBookingConfirmationEmail>[0]) {
+  // Non-fatal — email failure should never break the booking flow
+  sendBookingConfirmationEmail(payload).catch(() => {});
+}
 
 type Step = "event-select" | "datetime" | "questions" | "payment" | "confirmed";
 
@@ -155,19 +160,37 @@ export default function Booking() {
   const eventTypes = getEventTypes().filter((e) => e.active);
   const settings = getSettings();
 
-  const [step, setStep] = useState<Step>("event-select");
-  const [selectedEvent, setSelectedEvent] = useState<EventType | null>(null);
-  const [selectedDuration, setSelectedDuration] = useState<number | null>(null);
-  const [selectedDate, setSelectedDate] = useState<Date | null>(null);
-  const [selectedTime, setSelectedTime] = useState<string | null>(null);
+  // ── Restore last booking from localStorage on page reload ──
+  const restoredBookingId = (() => {
+    try {
+      const saved = localStorage.getItem("lastBookingId");
+      if (!saved) return null;
+      const booking = getBookings().find(b => b.id === saved);
+      // Only restore if booking exists and was made in the last 24h
+      if (!booking) { localStorage.removeItem("lastBookingId"); return null; }
+      const age = Date.now() - new Date(booking.createdAt).getTime();
+      if (age > 24 * 60 * 60 * 1000) { localStorage.removeItem("lastBookingId"); return null; }
+      return saved;
+    } catch { return null; }
+  })();
+
+  const restoredBooking = restoredBookingId ? getBookings().find(b => b.id === restoredBookingId) : null;
+  const restoredEventType = restoredBooking ? getEventTypes().find(e => e.id === restoredBooking.eventTypeId) : null;
+  const restoredDate = restoredBooking ? (() => { const [y,m,d] = restoredBooking.date.split("-").map(Number); return new Date(y, m-1, d); })() : null;
+
+  const [step, setStep] = useState<Step>(restoredBooking ? "confirmed" : "event-select");
+  const [selectedEvent, setSelectedEvent] = useState<EventType | null>(restoredEventType || null);
+  const [selectedDuration, setSelectedDuration] = useState<number | null>(restoredBooking?.duration || null);
+  const [selectedDate, setSelectedDate] = useState<Date | null>(restoredDate);
+  const [selectedTime, setSelectedTime] = useState<string | null>(restoredBooking?.time || null);
   const [currentMonth, setCurrentMonth] = useState(() => {
     const now = new Date();
     return new Date(now.getFullYear(), now.getMonth());
   });
-  const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [answers, setAnswers] = useState<Record<string, string>>(restoredBooking?.answers || {});
   const [use24h, setUse24h] = useState(false);
   const [timerActive, setTimerActive] = useState(false);
-  const [lastBookingId, setLastBookingId] = useState<string | null>(null);
+  const [lastBookingId, setLastBookingId] = useState<string | null>(restoredBookingId);
   const [showBankDeposit, setShowBankDeposit] = useState(false);
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [stripeAvailable, setStripeAvailable] = useState(false);
@@ -250,13 +273,16 @@ export default function Booking() {
       return;
     }
 
-    // Proceed to payment step
-    setStep("payment");
+    // Proceed to payment step (skip if free)
+    if (selectedEvent.price === 0) {
+      handleCompletePaymentFree();
+    } else {
+      setStep("payment");
+    }
   };
 
-  const handleCompletePayment = (paymentMethod: "stripe" | "bank" | "none") => {
-    if (!selectedEvent || !selectedDate || !selectedTime || !selectedDuration) return;
-
+  const buildBookingRecord = (paymentMethod: "stripe" | "bank" | "none") => {
+    if (!selectedEvent || !selectedDate || !selectedTime || !selectedDuration) return null;
     const modifyToken = `mod-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const depositEnabled = selectedEvent.depositEnabled && selectedEvent.depositAmount && selectedEvent.depositAmount > 0;
     const depositAmt = depositEnabled
@@ -264,9 +290,8 @@ export default function Booking() {
         ? Math.round((selectedEvent.price * (selectedEvent.depositAmount || 0)) / 100)
         : (selectedEvent.depositAmount || 0)
       : 0;
-
     const dateStr = toDateStr(selectedDate);
-    const booking = {
+    return {
       id: `bk-${Date.now()}`,
       clientName: answers["q1"] || "Client",
       clientEmail: answers["q2"] || "",
@@ -279,7 +304,7 @@ export default function Booking() {
       notes: "",
       answers,
       createdAt: new Date().toISOString(),
-      paymentStatus: paymentMethod === "bank" ? "pending-confirmation" as const : "unpaid" as const,
+      paymentStatus: paymentMethod === "bank" ? "pending-confirmation" as const : paymentMethod === "none" ? "unpaid" as const : "unpaid" as const,
       paymentAmount: selectedEvent.price,
       instagramHandle: answers[selectedEvent.questions.find(q => q.type === "instagram" || q.label.toLowerCase().includes("instagram"))?.id || ""] || "",
       modifyToken,
@@ -287,14 +312,65 @@ export default function Booking() {
       depositAmount: depositAmt,
       depositMethod: paymentMethod === "none" ? undefined : paymentMethod,
     };
+  };
+
+  const handleCompletePaymentFree = () => {
+    if (!selectedEvent) return;
+    const booking = buildBookingRecord("none");
+    if (!booking) return;
     addBooking(booking);
     syncBookingToCalendar(booking).catch(() => {});
+    if (booking.clientEmail) {
+      sendBookingEmail({
+        to: booking.clientEmail,
+        clientName: booking.clientName,
+        eventTitle: selectedEvent.title,
+        date: booking.date,
+        time: booking.time,
+        duration: booking.duration,
+        location: selectedEvent.location,
+        price: 0,
+        paymentMethod: "none",
+        modifyToken: booking.modifyToken,
+        bookingId: booking.id,
+      });
+    }
+    localStorage.setItem("lastBookingId", booking.id);
+    setLastBookingId(booking.id);
+    setTimerActive(false);
+    setStep("confirmed");
+  };
+
+  const handleCompletePayment = (paymentMethod: "stripe" | "bank" | "none") => {
+    if (!selectedEvent || !selectedDate || !selectedTime || !selectedDuration) return;
+    const booking = buildBookingRecord(paymentMethod);
+    if (!booking) return;
+    addBooking(booking);
+    syncBookingToCalendar(booking).catch(() => {});
+    if (booking.clientEmail) {
+      sendBookingEmail({
+        to: booking.clientEmail,
+        clientName: booking.clientName,
+        eventTitle: selectedEvent.title,
+        date: booking.date,
+        time: booking.time,
+        duration: booking.duration,
+        location: selectedEvent.location,
+        price: selectedEvent.price,
+        depositAmount: booking.depositAmount,
+        paymentMethod,
+        modifyToken: booking.modifyToken,
+        bookingId: booking.id,
+      });
+    }
+    localStorage.setItem("lastBookingId", booking.id);
     setLastBookingId(booking.id);
     setTimerActive(false);
     setStep("confirmed");
   };
 
   const handleReset = () => {
+    localStorage.removeItem("lastBookingId");
     setStep("event-select");
     setSelectedEvent(null);
     setSelectedDuration(null);
@@ -607,45 +683,50 @@ export default function Booking() {
                   ? Math.round((selectedEvent.price * (selectedEvent.depositAmount || 0)) / 100)
                   : (selectedEvent.depositAmount || 0)
                 : 0;
-              const amountDue = depositEnabled ? depositAmt : selectedEvent.price;
+
+              // Check if deposit was already paid for this event (returning to pay remaining)
+              const existingBooking = lastBookingId ? getBookings().find(b => b.id === lastBookingId) : null;
+              const depositAlreadyPaid = !!(existingBooking?.depositPaidAt);
+              const remainingAmount = depositAlreadyPaid
+                ? Math.max(0, selectedEvent.price - depositAmt)
+                : depositEnabled ? depositAmt : selectedEvent.price;
+
+              const amountDue = remainingAmount;
+              const paymentLabel = depositAlreadyPaid ? `Pay Remaining Balance` : depositEnabled ? "Deposit Required" : "Full Payment Required";
               const depositMethods = selectedEvent.depositMethods || [];
               const bankTransfer = settings.bankTransfer;
-              const label = depositEnabled ? "Deposit" : "Full Payment";
 
               const handleStripePayment = async () => {
                 setProcessingPayment(true);
-                // We create the booking first (with pending status) so Stripe has a booking ID
-                const modifyToken = `mod-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-                const dateStr = toDateStr(selectedDate);
-                const tempBooking = {
-                  id: `bk-${Date.now()}`,
-                  clientName: answers["q1"] || "Client",
-                  clientEmail: answers["q2"] || "",
-                  date: dateStr,
-                  time: selectedTime,
-                  eventTypeId: selectedEvent.id,
-                  type: selectedEvent.title,
-                  duration: selectedDuration,
-                  status: selectedEvent.requiresConfirmation ? "pending" as const : "confirmed" as const,
-                  notes: "",
-                  answers,
-                  createdAt: new Date().toISOString(),
-                  paymentStatus: "unpaid" as const,
-                  paymentAmount: selectedEvent.price,
-                  instagramHandle: answers[selectedEvent.questions.find(q => q.type === "instagram" || q.label.toLowerCase().includes("instagram"))?.id || ""] || "",
-                  modifyToken,
-                  depositRequired: depositEnabled || false,
-                  depositAmount: depositAmt,
-                  depositMethod: "stripe" as const,
-                };
-                addBooking(tempBooking);
-                syncBookingToCalendar(tempBooking).catch(() => {});
-                setLastBookingId(tempBooking.id);
+                let bookingId: string;
+                let modifyToken: string;
+                let clientName: string;
+                let clientEmail: string;
+
+                if (existingBooking && depositAlreadyPaid) {
+                  // Paying remaining on existing booking
+                  bookingId = existingBooking.id;
+                  modifyToken = existingBooking.modifyToken;
+                  clientName = existingBooking.clientName;
+                  clientEmail = existingBooking.clientEmail;
+                } else {
+                  // New booking — create record before redirecting to Stripe
+                  const newBooking = buildBookingRecord("stripe");
+                  if (!newBooking) { setProcessingPayment(false); return; }
+                  addBooking(newBooking);
+                  syncBookingToCalendar(newBooking).catch(() => {});
+                  localStorage.setItem("lastBookingId", newBooking.id);
+                  setLastBookingId(newBooking.id);
+                  bookingId = newBooking.id;
+                  modifyToken = newBooking.modifyToken;
+                  clientName = newBooking.clientName;
+                  clientEmail = newBooking.clientEmail;
+                }
 
                 const result = await createBookingCheckout({
-                  bookingId: tempBooking.id,
-                  clientName: tempBooking.clientName,
-                  clientEmail: tempBooking.clientEmail,
+                  bookingId,
+                  clientName,
+                  clientEmail,
                   amount: amountDue,
                   eventTitle: selectedEvent.title,
                 });
@@ -691,16 +772,20 @@ export default function Booking() {
                   {/* Payment panel */}
                   <div className="glass-panel rounded-xl p-6 space-y-5">
                     <div>
-                      <h2 className="font-display text-xl text-foreground mb-1">{label} Required</h2>
+                      <h2 className="font-display text-xl text-foreground mb-1">{paymentLabel}</h2>
                       <p className="text-xs font-body text-muted-foreground">
-                        {depositEnabled
-                          ? `A $${amountDue} deposit is required to secure your booking.`
+                        {depositAlreadyPaid
+                          ? `Deposit paid. Remaining balance of $${amountDue} is due.`
+                          : depositEnabled
+                          ? `A $${amountDue} deposit is required to secure your booking. Remaining $${Math.max(0, selectedEvent.price - depositAmt)} due on the day.`
                           : `Full payment of $${amountDue} is required to confirm your booking.`}
                       </p>
                     </div>
 
                     <div className="flex justify-between items-center border border-border/50 rounded-lg p-4 bg-secondary/30">
-                      <span className="text-sm font-body text-muted-foreground">{label}</span>
+                      <span className="text-sm font-body text-muted-foreground">
+                        {depositAlreadyPaid ? "Remaining Balance" : depositEnabled ? "Deposit" : "Total"}
+                      </span>
                       <span className="font-display text-xl text-foreground">${amountDue}</span>
                     </div>
 
@@ -853,6 +938,21 @@ export default function Booking() {
                       <p className="text-xs font-body text-yellow-400">
                         Once your bank transfer is received, the admin will confirm your booking. You'll be notified by email.
                       </p>
+                    </div>
+                  )}
+
+                  {/* Pay remaining balance button (deposit was paid, balance still owed) */}
+                  {depositEnabled && !wasBankTransfer && lastBooking?.depositPaidAt && (selectedEvent.price - depositAmt) > 0 && (
+                    <div className="mt-4 p-4 rounded-lg bg-primary/5 border border-primary/20">
+                      <p className="text-xs font-body text-muted-foreground mb-3">
+                        Deposit paid. Remaining balance due on the day:
+                      </p>
+                      <Button
+                        onClick={() => setStep("payment")}
+                        className="w-full bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs tracking-wider uppercase h-10"
+                      >
+                        Pay Remaining ${selectedEvent.price - depositAmt}
+                      </Button>
                     </div>
                   )}
                   

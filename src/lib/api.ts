@@ -252,3 +252,30 @@ export async function syncAllBookingsToCalendar(bookings: unknown[], calendarId 
     return { ok: false };
   }
 }
+
+export async function sendBookingConfirmationEmail(params: {
+  to: string;
+  clientName: string;
+  eventTitle: string;
+  date: string;
+  time: string;
+  duration: number;
+  location?: string;
+  price: number;
+  depositAmount?: number;
+  paymentMethod: "stripe" | "bank" | "none";
+  modifyToken?: string;
+  bookingId: string;
+}): Promise<{ ok: boolean; messageId?: string; error?: string }> {
+  if (!(await checkServer())) return { ok: false, error: "Server unavailable" };
+  try {
+    const res = await fetch("/api/email/booking-confirmation", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(params),
+    });
+    return await res.json();
+  } catch {
+    return { ok: false, error: "Network error" };
+  }
+}
