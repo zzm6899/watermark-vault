@@ -4,6 +4,7 @@ const cors = require("cors");
 const path = require("path");
 const fs = require("fs");
 const { registerRoutes: registerGoogleCalendarRoutes } = require("./google-calendar");
+const { registerRoutes: registerEmailRoutes } = require("./email");
 
 const app = express();
 const PORT = process.env.PORT || 5066;
@@ -164,6 +165,9 @@ app.delete("/api/upload/:filename", (req, res) => {
 
 // ── Google Calendar Integration ───────────────────────
 registerGoogleCalendarRoutes(app);
+
+// ── Email (SMTP) Integration ─────────────────────────
+registerEmailRoutes(app);
 
 // ── Serve uploaded photos ─────────────────────────────
 app.use("/uploads", express.static(UPLOADS_DIR, { maxAge: "7d" }));
