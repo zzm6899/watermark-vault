@@ -5,7 +5,7 @@ import {
   Trash2, Edit, Users, Clock, CreditCard, Building2,
   Camera, Save, X, LogOut, ChevronDown, ChevronUp,
   Image, DollarSign, Link2, Merge, Send, Copy, ExternalLink,
-  MapPin, Lock, Bell, Download, Unlock, Eye, Grid, List, LayoutGrid, HardDrive, CheckSquare, XSquare
+  MapPin, Lock, Bell, Download, Unlock, Eye, Grid, List, LayoutGrid, HardDrive, CheckSquare, XSquare, Search, RefreshCw
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -1261,6 +1261,47 @@ function PhotosView() {
   const [uploadStats, setUploadStats] = useState<{ total: number; done: number; errors: number; savedBytes: number } | null>(null);
   const [showAddToAlbum, setShowAddToAlbum] = useState(false);
   const [viewSource, setViewSource] = useState<"all" | "library" | string>("all");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [syncing, setSyncing] = useState(false);
+
+  // Reconcile: find files on server storage that aren't tracked in any album or library
+  const handleSyncFromStorage = async () => {
+    if (!isServerMode()) { toast.error("Server not available"); return; }
+    setSyncing(true);
+    try {
+      const stats = await getServerStorageStats();
+      if (!stats || !stats.photoFiles) { toast.info("No storage data"); setSyncing(false); return; }
+      // Collect all known URLs
+      const knownUrls = new Set<string>();
+      for (const p of libraryPhotos) knownUrls.add(p.src);
+      for (const alb of albums) for (const p of alb.photos) knownUrls.add(p.src);
+      // Find orphaned files
+      const orphaned = stats.photoFiles.filter(f => !knownUrls.has(`/uploads/${f.name}`));
+      if (orphaned.length === 0) { toast.info("All storage files are already tracked — no missing photos"); setSyncing(false); return; }
+      // Add orphaned files to library
+      const newPhotos: Photo[] = orphaned.map(f => ({
+        id: `ph-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+        src: `/uploads/${f.name}`,
+        title: f.name.replace(/\.[^.]+$/, ""),
+        width: 800, height: 600,
+      }));
+      const updated = [...libraryPhotos, ...newPhotos];
+      setPhotoLibrary(updated);
+      setLibraryPhotosState(updated);
+      toast.success(`Recovered ${orphaned.length} missing photo(s) from storage`);
+      // Background thumbnails
+      for (const p of newPhotos) {
+        generateThumbnail(p.src).then(thumb => {
+          setLibraryPhotosState(prev => {
+            const u = prev.map(pp => pp.id === p.id ? { ...pp, thumbnail: thumb } : pp);
+            setPhotoLibrary(u);
+            return u;
+          });
+        }).catch(() => {});
+      }
+    } catch { toast.error("Failed to sync from storage"); }
+    setSyncing(false);
+  };
 
   // Build unified photo list — don't dedup across sources so album filters work
   const allPhotos: (Photo & { source: string })[] = [];
@@ -1280,7 +1321,10 @@ function PhotosView() {
     return alb ? alb.photos.map(p => ({ ...p, source: alb.title })) : [];
   };
 
-  const displayPhotos = viewSource === "all" ? allPhotos : viewSource === "library" ? libraryPhotos.map(p => ({ ...p, source: "Library" })) : getAlbumPhotos(viewSource);
+  const unfilteredPhotos = viewSource === "all" ? allPhotos : viewSource === "library" ? libraryPhotos.map(p => ({ ...p, source: "Library" })) : getAlbumPhotos(viewSource);
+  const displayPhotos = searchQuery.trim()
+    ? unfilteredPhotos.filter(p => p.title.toLowerCase().includes(searchQuery.trim().toLowerCase()) || p.src.toLowerCase().includes(searchQuery.trim().toLowerCase()))
+    : unfilteredPhotos;
 
   // Determine if we're viewing a specific album (for upload-to-album)
   const selectedAlbum = viewSource !== "all" && viewSource !== "library" ? albums.find(a => a.title === viewSource) : null;
@@ -1468,9 +1512,12 @@ function PhotosView() {
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center justify-between mb-4">
         <h2 className="font-display text-2xl text-foreground">Photo Library</h2>
-        <div className="flex gap-2">
+        <div className="flex gap-2 items-center">
+          <Button size="sm" variant="outline" onClick={handleSyncFromStorage} disabled={syncing} className="gap-2 font-body text-xs border-border text-foreground">
+            <RefreshCw className={`w-4 h-4 ${syncing ? "animate-spin" : ""}`} /> {syncing ? "Syncing…" : "Sync Storage"}
+          </Button>
           {selectedIds.size > 0 && (
             <>
               <Button size="sm" variant="outline" onClick={handleMassDelete} className="gap-2 font-body text-xs border-destructive/30 text-destructive hover:bg-destructive/10">
@@ -1505,6 +1552,22 @@ function PhotosView() {
             <CheckSquare className="w-4 h-4" /> {selectedIds.size === displayPhotos.length && displayPhotos.length > 0 ? "Deselect All" : "Select All"}
           </Button>
         </div>
+      </div>
+
+      {/* Search bar */}
+      <div className="relative mb-4">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+        <Input
+          placeholder="Search by filename…"
+          value={searchQuery}
+          onChange={e => setSearchQuery(e.target.value)}
+          className="pl-9 h-9 text-sm font-body bg-secondary/50 border-border"
+        />
+        {searchQuery && (
+          <button onClick={() => setSearchQuery("")} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+            <X className="w-4 h-4" />
+          </button>
+        )}
       </div>
 
       {/* Source filter */}
