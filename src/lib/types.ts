@@ -1,5 +1,5 @@
 export type WatermarkPosition = "center" | "top-left" | "top-right" | "bottom-left" | "bottom-right" | "tiled";
-export type QuestionFieldType = "text" | "textarea" | "select" | "boolean" | "image-upload";
+export type QuestionFieldType = "text" | "textarea" | "select" | "boolean" | "image-upload" | "instagram";
 export type PaymentStatus = "unpaid" | "paid" | "cash" | "pending-confirmation";
 
 export interface QuestionField {
@@ -60,6 +60,7 @@ export interface Booking {
   paymentStatus?: PaymentStatus;
   paymentAmount?: number;
   instagramHandle?: string;
+  modifyToken?: string;
 }
 
 export interface Photo {

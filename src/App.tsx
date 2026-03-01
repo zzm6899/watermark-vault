@@ -6,6 +6,7 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { useState, useCallback } from "react";
 import Booking from "./pages/Booking";
 import AlbumDetail from "./pages/AlbumDetail";
+import BookingModify from "./pages/BookingModify";
 import Admin from "./pages/Admin";
 import Login from "./pages/Login";
 import Setup from "./pages/Setup";
@@ -36,6 +37,7 @@ const App = () => (
         <Routes>
           <Route path="/" element={<Booking />} />
           <Route path="/gallery/:albumId" element={<AlbumDetail />} />
+          <Route path="/booking/modify/:bookingId" element={<BookingModify />} />
           <Route path="/admin" element={<AdminGuard />} />
           <Route path="*" element={<NotFound />} />
         </Routes>
