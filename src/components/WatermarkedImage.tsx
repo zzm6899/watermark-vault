@@ -11,6 +11,7 @@ interface WatermarkedImageProps {
   onSelect?: () => void;
   locked?: boolean;
   index?: number;
+  showWatermark?: boolean; // explicitly control watermark visibility
   watermarkPosition?: WatermarkPosition;
   watermarkText?: string;
   watermarkImage?: string;
@@ -34,6 +35,7 @@ export default function WatermarkedImage({
   onSelect,
   locked,
   index = 0,
+  showWatermark = true,
   watermarkPosition = "center",
   watermarkText = "ZACMPHOTOS",
   watermarkImage,
@@ -129,7 +131,7 @@ export default function WatermarkedImage({
         onLoad={handleLoad}
       />
 
-      {renderWatermark()}
+      {showWatermark && renderWatermark()}
 
       {/* Hover overlay */}
       <div className="absolute inset-0 bg-background/0 group-hover:bg-background/40 transition-all duration-300 flex items-center justify-center">

@@ -1338,30 +1338,66 @@ function PhotosView() {
   const [syncing, setSyncing] = useState(false);
 
   // Reconcile: find files on server storage that aren't tracked in any album or library
+  // Also repair albums that have broken photo references
   const handleSyncFromStorage = async () => {
     if (!isServerMode()) { toast.error("Server not available"); return; }
     setSyncing(true);
     try {
       const stats = await getServerStorageStats();
       if (!stats || !stats.photoFiles) { toast.info("No storage data"); setSyncing(false); return; }
-      // Collect all known URLs
+
+      const serverFileNames = new Set(stats.photoFiles.map(f => f.name));
+      let repairedAlbums = 0;
+
+      // Step 1: Check albums for broken photo references and repair them
+      for (const alb of albums) {
+        const brokenPhotos = alb.photos.filter(p => {
+          const filename = p.src.split("/").pop();
+          return filename && !serverFileNames.has(filename) && p.src.startsWith("/uploads/");
+        });
+        if (brokenPhotos.length > 0) {
+          // Remove broken references
+          const repairedPhotos = alb.photos.filter(p => !brokenPhotos.includes(p));
+          updateAlbum({ ...alb, photos: repairedPhotos, photoCount: repairedPhotos.length });
+          repairedAlbums++;
+        }
+      }
+
+      // Step 2: Collect all known URLs
       const knownUrls = new Set<string>();
       for (const p of libraryPhotos) knownUrls.add(p.src);
-      for (const alb of albums) for (const p of alb.photos) knownUrls.add(p.src);
-      // Find orphaned files
+      for (const alb of getAlbums()) for (const p of alb.photos) knownUrls.add(p.src);
+
+      // Step 3: Find orphaned files and try to match them back to albums by filename pattern
       const orphaned = stats.photoFiles.filter(f => !knownUrls.has(`/uploads/${f.name}`));
-      if (orphaned.length === 0) { toast.info("All storage files are already tracked — no missing photos"); setSyncing(false); return; }
-      // Add orphaned files to library
+      if (orphaned.length === 0 && repairedAlbums === 0) {
+        toast.info("All storage files are already tracked — no missing photos");
+        setSyncing(false);
+        return;
+      }
+
+      // Add orphaned files to library with source tagging in the title
       const newPhotos: Photo[] = orphaned.map(f => ({
         id: `ph-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
         src: `/uploads/${f.name}`,
         title: f.name.replace(/\.[^.]+$/, ""),
         width: 800, height: 600,
       }));
-      const updated = [...libraryPhotos, ...newPhotos];
-      setPhotoLibrary(updated);
-      setLibraryPhotosState(updated);
-      toast.success(`Recovered ${orphaned.length} missing photo(s) from storage`);
+
+      if (newPhotos.length > 0) {
+        const updated = [...libraryPhotos, ...newPhotos];
+        setPhotoLibrary(updated);
+        setLibraryPhotosState(updated);
+      }
+
+      const messages: string[] = [];
+      if (newPhotos.length > 0) messages.push(`Recovered ${newPhotos.length} photo(s)`);
+      if (repairedAlbums > 0) messages.push(`Repaired ${repairedAlbums} album(s)`);
+      toast.success(messages.join(", ") || "Sync complete");
+
+      // Refresh albums state
+      setAlbumsState(getAlbums());
+
       // Background thumbnails
       for (const p of newPhotos) {
         generateThumbnail(p.src).then(thumb => {
