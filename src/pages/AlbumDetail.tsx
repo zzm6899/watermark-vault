@@ -1,7 +1,7 @@
 import { useParams } from "react-router-dom";
-import { useState, useCallback } from "react";
-import { motion } from "framer-motion";
-import { Info, Building2, Copy, Check as CheckIcon, Lock, Download, Grid, List, LayoutGrid, CreditCard } from "lucide-react";
+import { useState, useCallback, useEffect } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import { Info, Building2, Copy, Check as CheckIcon, Lock, Download, Grid, List, LayoutGrid, CreditCard, X, ChevronLeft, ChevronRight } from "lucide-react";
 import Header from "@/components/Header";
 import Footer from "@/components/Footer";
 import WatermarkedImage from "@/components/WatermarkedImage";
@@ -46,6 +46,7 @@ export default function AlbumDetail() {
   const [pinInput, setPinInput] = useState("");
   const [usedPin, setUsedPin] = useState("");
   const [clientNote, setClientNote] = useState("");
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
 
   const watermarkPosition = settings.watermarkPosition;
   const bankTransfer = settings.bankTransfer;
@@ -56,6 +57,18 @@ export default function AlbumDetail() {
       setAlbumState(fresh);
     }
   }, [albumId]);
+
+  // Keyboard navigation for lightbox
+  useEffect(() => {
+    if (lightboxIndex === null) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setLightboxIndex(null);
+      if (e.key === "ArrowLeft" && lightboxIndex > 0) setLightboxIndex(lightboxIndex - 1);
+      if (e.key === "ArrowRight" && album && lightboxIndex < album.photos.length - 1) setLightboxIndex(lightboxIndex + 1);
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [lightboxIndex, album]);
 
   if (!album) {
     return (
@@ -324,7 +337,7 @@ export default function AlbumDetail() {
                   src={photo.thumbnail || photo.src}
                   title={photo.title}
                   selected={selectedIds.has(photo.id)}
-                  onSelect={() => toggleSelect(photo.id)}
+                  onSelect={() => setLightboxIndex(i)}
                   locked={!isFullyUnlocked && freeRemaining <= 0 && !selectedIds.has(photo.id)}
                   index={i}
                   watermarkPosition={isFullyUnlocked ? undefined : watermarkPosition}
@@ -523,6 +536,88 @@ export default function AlbumDetail() {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Fullscreen Lightbox */}
+      <AnimatePresence>
+        {lightboxIndex !== null && album.photos[lightboxIndex] && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[100] bg-background/95 backdrop-blur-sm flex items-center justify-center"
+            onClick={() => setLightboxIndex(null)}
+          >
+            {/* Close button */}
+            <button className="absolute top-4 right-4 z-10 w-10 h-10 rounded-full bg-card/80 backdrop-blur-sm flex items-center justify-center text-foreground hover:bg-card transition-colors"
+              onClick={() => setLightboxIndex(null)}>
+              <X className="w-5 h-5" />
+            </button>
+
+            {/* Nav arrows */}
+            {lightboxIndex > 0 && (
+              <button className="absolute left-4 z-10 w-10 h-10 rounded-full bg-card/80 backdrop-blur-sm flex items-center justify-center text-foreground hover:bg-card transition-colors"
+                onClick={(e) => { e.stopPropagation(); setLightboxIndex(lightboxIndex - 1); }}>
+                <ChevronLeft className="w-5 h-5" />
+              </button>
+            )}
+            {lightboxIndex < album.photos.length - 1 && (
+              <button className="absolute right-4 z-10 w-10 h-10 rounded-full bg-card/80 backdrop-blur-sm flex items-center justify-center text-foreground hover:bg-card transition-colors"
+                onClick={(e) => { e.stopPropagation(); setLightboxIndex(lightboxIndex + 1); }}>
+                <ChevronRight className="w-5 h-5" />
+              </button>
+            )}
+
+            {/* Photo */}
+            <div className="relative max-w-[90vw] max-h-[90vh]" onClick={(e) => e.stopPropagation()}>
+              <img
+                src={album.photos[lightboxIndex].src}
+                alt={album.photos[lightboxIndex].title}
+                className="max-w-full max-h-[85vh] object-contain rounded-lg"
+              />
+              {/* Watermark overlay in lightbox */}
+              {!isFullyUnlocked && (
+                <div className="absolute inset-0 pointer-events-none select-none flex items-center justify-center">
+                  <div className="rotate-[-30deg]">
+                    {settings.watermarkImage ? (
+                      <img src={settings.watermarkImage} alt="" className="h-16 md:h-24 w-auto" style={{ opacity: settings.watermarkOpacity / 100 }} />
+                    ) : (
+                      <p className="font-display text-foreground text-3xl md:text-5xl tracking-widest whitespace-nowrap" style={{ opacity: settings.watermarkOpacity / 100 }}>
+                        {settings.watermarkText}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Bottom bar with select/title */}
+              <div className="absolute bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-background/80 to-transparent rounded-b-lg flex items-center justify-between">
+                <p className="text-sm font-body text-foreground">{album.photos[lightboxIndex].title}</p>
+                <div className="flex gap-2">
+                  <Button
+                    size="sm"
+                    variant={selectedIds.has(album.photos[lightboxIndex].id) ? "default" : "outline"}
+                    onClick={() => toggleSelect(album.photos[lightboxIndex].id)}
+                    className="gap-1.5 font-body text-xs"
+                  >
+                    {selectedIds.has(album.photos[lightboxIndex].id) ? (
+                      <><CheckIcon className="w-3.5 h-3.5" /> Selected</>
+                    ) : (
+                      <><Download className="w-3.5 h-3.5" /> Select</>
+                    )}
+                  </Button>
+                </div>
+              </div>
+            </div>
+
+            {/* Counter */}
+            <div className="absolute bottom-4 left-1/2 -translate-x-1/2">
+              <p className="text-xs font-body text-muted-foreground bg-card/80 backdrop-blur-sm px-3 py-1.5 rounded-full">
+                {lightboxIndex + 1} / {album.photos.length}
+              </p>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <Footer />
     </div>

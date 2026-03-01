@@ -1255,19 +1255,48 @@ function PhotosView() {
   const [showAddToAlbum, setShowAddToAlbum] = useState(false);
   const [viewSource, setViewSource] = useState<"all" | "library" | string>("all");
 
-  // Build unified photo list
+  // Build unified photo list — don't dedup across sources so album filters work
   const allPhotos: (Photo & { source: string })[] = [];
-  const seen = new Set<string>();
+  const seenInAll = new Set<string>();
   for (const p of libraryPhotos) {
-    if (!seen.has(p.src)) { allPhotos.push({ ...p, source: "Library" }); seen.add(p.src); }
+    if (!seenInAll.has(p.src)) { allPhotos.push({ ...p, source: "Library" }); seenInAll.add(p.src); }
   }
   for (const alb of albums) {
     for (const p of alb.photos) {
-      if (!seen.has(p.src)) { allPhotos.push({ ...p, source: alb.title }); seen.add(p.src); }
+      if (!seenInAll.has(p.src)) { allPhotos.push({ ...p, source: alb.title }); seenInAll.add(p.src); }
     }
   }
 
-  const displayPhotos = viewSource === "all" ? allPhotos : viewSource === "library" ? allPhotos.filter(p => p.source === "Library") : allPhotos.filter(p => p.source === viewSource);
+  // For album-specific filters, pull directly from album.photos (not allPhotos) so added photos always appear
+  const getAlbumPhotos = (albumTitle: string): (Photo & { source: string })[] => {
+    const alb = albums.find(a => a.title === albumTitle);
+    return alb ? alb.photos.map(p => ({ ...p, source: alb.title })) : [];
+  };
+
+  const displayPhotos = viewSource === "all" ? allPhotos : viewSource === "library" ? libraryPhotos.map(p => ({ ...p, source: "Library" })) : getAlbumPhotos(viewSource);
+
+  // Determine if we're viewing a specific album (for upload-to-album)
+  const selectedAlbum = viewSource !== "all" && viewSource !== "library" ? albums.find(a => a.title === viewSource) : null;
+
+  const addPhotoToTarget = (photo: Photo) => {
+    if (selectedAlbum) {
+      // Upload directly to the selected album
+      const alb = albums.find(a => a.id === selectedAlbum.id);
+      if (alb) {
+        const updated = { ...alb, photos: [...alb.photos, photo], photoCount: alb.photos.length + 1 };
+        if (!updated.coverImage) updated.coverImage = photo.src;
+        updateAlbum(updated);
+        setAlbumsState(getAlbums());
+      }
+    } else {
+      // Upload to library
+      setLibraryPhotosState(prev => {
+        const updated = [...prev, photo];
+        setPhotoLibrary(updated);
+        return updated;
+      });
+    }
+  };
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
@@ -1282,25 +1311,18 @@ function PhotosView() {
       for (const r of results) {
         const thumb = await generateThumbnail(r.url).catch(() => undefined);
         const photo: Photo = { id: r.id, src: r.url, thumbnail: thumb, title: r.originalName.replace(/\.[^.]+$/, ""), width: 800, height: 600 };
-        setLibraryPhotosState(prev => {
-          const updated = [...prev, photo];
-          setPhotoLibrary(updated);
-          return updated;
-        });
+        addPhotoToTarget(photo);
       }
       setUploadStats(prev => prev ? { ...prev, done: fileArr.length, errors: fileArr.length - results.length } : null);
-      if (results.length > 0) toast.success(`${results.length} photos uploaded to server`);
+      const target = selectedAlbum ? `"${selectedAlbum.title}"` : "library";
+      if (results.length > 0) toast.success(`${results.length} photos uploaded to ${target}`);
     } else {
       for (const file of fileArr) {
         try {
           const result = await compressImage(file);
           const thumb = await generateThumbnail(result.src).catch(() => undefined);
           const photo: Photo = { id: generateId("ph"), src: result.src, thumbnail: thumb, title: file.name.replace(/\.[^.]+$/, ""), width: result.width, height: result.height };
-          setLibraryPhotosState(prev => {
-            const updated = [...prev, photo];
-            setPhotoLibrary(updated);
-            return updated;
-          });
+          addPhotoToTarget(photo);
           setUploadStats(prev => prev ? { ...prev, done: prev.done + 1, savedBytes: prev.savedBytes + (result.originalSize - result.compressedSize) } : null);
         } catch {
           setUploadStats(prev => prev ? { ...prev, done: prev.done + 1, errors: prev.errors + 1 } : null);
@@ -1472,7 +1494,7 @@ function PhotosView() {
         <button onClick={() => setViewSource("library")} className={`text-xs font-body px-3 py-1.5 rounded-full whitespace-nowrap transition-all ${viewSource === "library" ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground hover:text-foreground"}`}>
           Library ({libraryPhotos.length})
         </button>
-        {albums.filter(a => a.photos.length > 0).map(a => (
+        {albums.map(a => (
           <button key={a.id} onClick={() => setViewSource(a.title)} className={`text-xs font-body px-3 py-1.5 rounded-full whitespace-nowrap transition-all ${viewSource === a.title ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground hover:text-foreground"}`}>
             {a.title} ({a.photos.length})
           </button>
@@ -1482,8 +1504,12 @@ function PhotosView() {
       <div className="glass-panel rounded-xl p-6 mb-6">
         <div className="border-2 border-dashed border-border rounded-lg p-8 text-center hover:border-primary/30 transition-colors cursor-pointer relative">
           <Upload className="w-8 h-8 text-muted-foreground/50 mx-auto mb-2" />
-          <p className="text-sm font-body text-muted-foreground">Upload photos to your library</p>
-          <p className="text-[10px] font-body text-muted-foreground/50 mt-1">Select photos then create albums or add to existing ones</p>
+          <p className="text-sm font-body text-muted-foreground">
+            Upload photos to {selectedAlbum ? `"${selectedAlbum.title}"` : "your library"}
+          </p>
+          <p className="text-[10px] font-body text-muted-foreground/50 mt-1">
+            {selectedAlbum ? "Photos will be added directly to this album" : "Select photos then create albums or add to existing ones"}
+          </p>
           <input type="file" accept="image/*" multiple className="absolute inset-0 opacity-0 cursor-pointer" onChange={handleUpload} />
         </div>
         {uploadStats && (
