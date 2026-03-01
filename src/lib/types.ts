@@ -1,5 +1,6 @@
 export type WatermarkPosition = "center" | "top-left" | "top-right" | "bottom-left" | "bottom-right" | "tiled";
 export type QuestionFieldType = "text" | "textarea" | "select" | "boolean" | "image-upload";
+export type PaymentStatus = "unpaid" | "paid" | "cash" | "pending-confirmation";
 
 export interface QuestionField {
   id: string;
@@ -39,6 +40,7 @@ export interface EventType {
   requiresConfirmation?: boolean;
   questions: QuestionField[];
   availability: EventTypeAvailability;
+  location?: string;
 }
 
 export interface Booking {
@@ -55,6 +57,9 @@ export interface Booking {
   albumId?: string;
   answers?: Record<string, string>;
   createdAt: string;
+  paymentStatus?: PaymentStatus;
+  paymentAmount?: number;
+  instagramHandle?: string;
 }
 
 export interface Photo {
@@ -68,6 +73,7 @@ export interface Photo {
 
 export interface Album {
   id: string;
+  slug: string;
   title: string;
   description: string;
   coverImage: string;
@@ -79,8 +85,10 @@ export interface Album {
   isPublic: boolean;
   photos: Photo[];
   clientName?: string;
+  clientEmail?: string;
   bookingId?: string;
   accessCode?: string;
+  mergedFrom?: string[];
 }
 
 export interface BankTransferSettings {
@@ -96,17 +104,22 @@ export interface BankTransferSettings {
 export interface ProfileSettings {
   name: string;
   bio: string;
-  avatar: string; // base64 data URL or empty
+  avatar: string;
   timezone: string;
 }
 
 export interface AppSettings {
   watermarkPosition: WatermarkPosition;
   watermarkText: string;
+  watermarkImage: string; // base64 data URL for image watermark
   defaultFreeDownloads: number;
   defaultPricePerPhoto: number;
   defaultPriceFullAlbum: number;
   bankTransfer: BankTransferSettings;
+  stripeEnabled: boolean;
+  bookingTimerMinutes: number;
+  instagramFieldEnabled: boolean;
+  notificationEmailTemplate: string;
 }
 
 export interface AdminCredentials {

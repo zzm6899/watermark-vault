@@ -121,6 +121,24 @@ export function updateBooking(bk: Booking) {
   setBookings(getBookings().map((b) => (b.id === bk.id ? bk : b)));
 }
 
+// Check if a time slot is already booked
+export function isSlotBooked(date: string, time: string, duration: number, excludeBookingId?: string): boolean {
+  const bookings = getBookings().filter(
+    (b) => b.date === date && b.status !== "cancelled" && b.id !== excludeBookingId
+  );
+  const [h, m] = time.split(":").map(Number);
+  const slotStart = h * 60 + m;
+  const slotEnd = slotStart + duration;
+  
+  for (const bk of bookings) {
+    const [bh, bm] = bk.time.split(":").map(Number);
+    const bookingStart = bh * 60 + bm;
+    const bookingEnd = bookingStart + bk.duration;
+    if (slotStart < bookingEnd && slotEnd > bookingStart) return true;
+  }
+  return false;
+}
+
 // ── Albums ──────────────────────────────────────────
 export function getAlbums(): Album[] {
   return get<Album[]>(KEYS.ALBUMS, []);
@@ -130,10 +148,29 @@ export function setAlbums(albs: Album[]) {
   set(KEYS.ALBUMS, albs);
 }
 
+export function addAlbum(alb: Album) {
+  const list = getAlbums();
+  list.push(alb);
+  setAlbums(list);
+}
+
+export function updateAlbum(alb: Album) {
+  setAlbums(getAlbums().map((a) => (a.id === alb.id ? alb : a)));
+}
+
+export function deleteAlbum(id: string) {
+  setAlbums(getAlbums().filter((a) => a.id !== id));
+}
+
+export function getAlbumBySlug(slug: string): Album | undefined {
+  return getAlbums().find((a) => a.slug === slug || a.id === slug);
+}
+
 // ── Settings ────────────────────────────────────────
 const defaultSettings: AppSettings = {
   watermarkPosition: "center",
   watermarkText: "ZACMPHOTOS",
+  watermarkImage: "",
   defaultFreeDownloads: 5,
   defaultPricePerPhoto: 12,
   defaultPriceFullAlbum: 299,
@@ -146,10 +183,16 @@ const defaultSettings: AppSettings = {
     payIdType: "email",
     instructions: "Please include your booking reference in the transfer description.",
   } satisfies BankTransferSettings,
+  stripeEnabled: false,
+  bookingTimerMinutes: 15,
+  instagramFieldEnabled: true,
+  notificationEmailTemplate: "Hey {name}, your photos are ready! Check them out here: {link}",
 };
 
 export function getSettings(): AppSettings {
-  return get(KEYS.SETTINGS, defaultSettings);
+  const stored = get(KEYS.SETTINGS, defaultSettings);
+  // Merge with defaults to handle new fields
+  return { ...defaultSettings, ...stored, bankTransfer: { ...defaultSettings.bankTransfer, ...stored.bankTransfer } };
 }
 
 export function setSettings(s: AppSettings) {

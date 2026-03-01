@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Check, Download, Lock } from "lucide-react";
 import { motion } from "framer-motion";
-import type { WatermarkPosition } from "@/lib/mock-data";
+import type { WatermarkPosition } from "@/lib/types";
 
 interface WatermarkedImageProps {
   src: string;
@@ -12,6 +12,7 @@ interface WatermarkedImageProps {
   index?: number;
   watermarkPosition?: WatermarkPosition;
   watermarkText?: string;
+  watermarkImage?: string;
 }
 
 const positionClasses: Record<WatermarkPosition, string> = {
@@ -31,9 +32,70 @@ export default function WatermarkedImage({
   locked,
   index = 0,
   watermarkPosition = "center",
-  watermarkText = "LUMIÈRE",
+  watermarkText = "ZACMPHOTOS",
+  watermarkImage,
 }: WatermarkedImageProps) {
   const [loaded, setLoaded] = useState(false);
+
+  const renderWatermark = () => {
+    if (watermarkImage) {
+      // Image watermark
+      if (watermarkPosition === "tiled") {
+        return (
+          <div className="absolute inset-0 pointer-events-none select-none overflow-hidden">
+            <div className="absolute inset-0 flex flex-wrap items-start justify-start gap-x-16 gap-y-12 rotate-[-30deg] scale-150 origin-center opacity-[0.15]">
+              {Array.from({ length: 20 }).map((_, i) => (
+                <img key={i} src={watermarkImage} alt="" className="h-8 w-auto" />
+              ))}
+            </div>
+          </div>
+        );
+      }
+      return (
+        <div className={`absolute pointer-events-none select-none ${positionClasses[watermarkPosition]}`}>
+          <div className={watermarkPosition === "center" ? "rotate-[-30deg]" : ""}>
+            <img src={watermarkImage} alt="" className={`opacity-[0.2] ${watermarkPosition === "center" ? "h-16 md:h-24" : "h-8 md:h-12"} w-auto`} />
+          </div>
+        </div>
+      );
+    }
+
+    // Text watermark
+    if (watermarkPosition === "tiled") {
+      return (
+        <>
+          <div className="absolute inset-0 pointer-events-none select-none overflow-hidden">
+            <div className="absolute inset-0 flex flex-wrap items-start justify-start gap-x-16 gap-y-12 rotate-[-30deg] scale-150 origin-center opacity-[0.12]">
+              {Array.from({ length: 20 }).map((_, i) => (
+                <p key={i} className="font-display text-foreground text-xl tracking-widest whitespace-nowrap">
+                  {watermarkText}
+                </p>
+              ))}
+            </div>
+          </div>
+          <div className="absolute inset-0 pointer-events-none" style={{
+            backgroundImage: `repeating-linear-gradient(-45deg, transparent, transparent 100px, hsl(var(--foreground) / 0.03) 100px, hsl(var(--foreground) / 0.03) 101px)`
+          }} />
+        </>
+      );
+    }
+    return (
+      <>
+        <div className={`absolute pointer-events-none select-none ${positionClasses[watermarkPosition]}`}>
+          <div className={watermarkPosition === "center" ? "rotate-[-30deg]" : ""}>
+            <p className={`font-display text-foreground tracking-widest whitespace-nowrap opacity-[0.15] ${
+              watermarkPosition === "center" ? "text-3xl md:text-5xl" : "text-lg md:text-xl"
+            }`}>
+              {watermarkText}
+            </p>
+          </div>
+        </div>
+        <div className="absolute inset-0 pointer-events-none" style={{
+          backgroundImage: `repeating-linear-gradient(-45deg, transparent, transparent 100px, hsl(var(--foreground) / 0.03) 100px, hsl(var(--foreground) / 0.03) 101px)`
+        }} />
+      </>
+    );
+  };
 
   return (
     <motion.div
@@ -52,38 +114,7 @@ export default function WatermarkedImage({
         onLoad={() => setLoaded(true)}
       />
 
-      {/* Watermark overlay */}
-      {watermarkPosition === "tiled" ? (
-        <>
-          <div className="absolute inset-0 pointer-events-none select-none overflow-hidden">
-            <div className="absolute inset-0 flex flex-wrap items-start justify-start gap-x-16 gap-y-12 rotate-[-30deg] scale-150 origin-center opacity-[0.12]">
-              {Array.from({ length: 20 }).map((_, i) => (
-                <p key={i} className="font-display text-foreground text-xl tracking-widest whitespace-nowrap">
-                  {watermarkText}
-                </p>
-              ))}
-            </div>
-          </div>
-          <div className="absolute inset-0 pointer-events-none" style={{
-            backgroundImage: `repeating-linear-gradient(-45deg, transparent, transparent 100px, hsl(var(--foreground) / 0.03) 100px, hsl(var(--foreground) / 0.03) 101px)`
-          }} />
-        </>
-      ) : (
-        <>
-          <div className={`absolute pointer-events-none select-none ${positionClasses[watermarkPosition]}`}>
-            <div className={watermarkPosition === "center" ? "rotate-[-30deg]" : ""}>
-              <p className={`font-display text-foreground tracking-widest whitespace-nowrap opacity-[0.15] ${
-                watermarkPosition === "center" ? "text-3xl md:text-5xl" : "text-lg md:text-xl"
-              }`}>
-                {watermarkText}
-              </p>
-            </div>
-          </div>
-          <div className="absolute inset-0 pointer-events-none" style={{
-            backgroundImage: `repeating-linear-gradient(-45deg, transparent, transparent 100px, hsl(var(--foreground) / 0.03) 100px, hsl(var(--foreground) / 0.03) 101px)`
-          }} />
-        </>
-      )}
+      {renderWatermark()}
 
       {/* Hover overlay */}
       <div className="absolute inset-0 bg-background/0 group-hover:bg-background/40 transition-all duration-300 flex items-center justify-center">

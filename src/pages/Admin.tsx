@@ -4,6 +4,8 @@ import {
   LayoutDashboard, Calendar, Settings, Plus, Upload,
   Trash2, Edit, Users, Clock, CreditCard, Building2,
   Camera, Save, X, LogOut, ChevronDown, ChevronUp,
+  Image, DollarSign, Link2, Merge, Send, Copy, ExternalLink,
+  MapPin
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,13 +17,15 @@ import {
   getProfile, setProfile, getEventTypes, setEventTypes, addEventType,
   deleteEventType, updateEventType, getBookings, deleteBooking,
   updateBooking, getSettings, setSettings, logout,
+  getAlbums, addAlbum, updateAlbum, deleteAlbum,
 } from "@/lib/storage";
 import type {
   EventType, QuestionField, AvailabilitySlot,
   ProfileSettings, AppSettings, Booking, WatermarkPosition,
+  Album, Photo, PaymentStatus,
 } from "@/lib/types";
 
-type Tab = "dashboard" | "bookings" | "event-types" | "profile" | "settings";
+type Tab = "dashboard" | "bookings" | "event-types" | "albums" | "profile" | "settings";
 
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
@@ -38,6 +42,10 @@ function formatDuration(mins: number) {
   return `${mins}m`;
 }
 
+function slugify(text: string): string {
+  return text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+}
+
 export default function Admin() {
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<Tab>("dashboard");
@@ -50,7 +58,8 @@ export default function Admin() {
   const tabs = [
     { id: "dashboard" as Tab, label: "Dashboard", icon: LayoutDashboard },
     { id: "bookings" as Tab, label: "Bookings", icon: Calendar },
-    { id: "event-types" as Tab, label: "Event Types", icon: Clock },
+    { id: "event-types" as Tab, label: "Events", icon: Clock },
+    { id: "albums" as Tab, label: "Albums", icon: Image },
     { id: "profile" as Tab, label: "Profile", icon: Camera },
     { id: "settings" as Tab, label: "Settings", icon: Settings },
   ];
@@ -96,6 +105,7 @@ export default function Admin() {
           {activeTab === "dashboard" && <DashboardView />}
           {activeTab === "bookings" && <BookingsView />}
           {activeTab === "event-types" && <EventTypesView />}
+          {activeTab === "albums" && <AlbumsView />}
           {activeTab === "profile" && <ProfileView />}
           {activeTab === "settings" && <SettingsView />}
         </main>
@@ -108,12 +118,18 @@ export default function Admin() {
 function DashboardView() {
   const bookings = getBookings();
   const eventTypes = getEventTypes();
+  const settings = getSettings();
+
+  const totalIncome = bookings.reduce((sum, b) => sum + (b.paymentAmount || 0), 0);
+  const paidIncome = bookings.filter(b => b.paymentStatus === "paid").reduce((sum, b) => sum + (b.paymentAmount || 0), 0);
+  const unpaidIncome = bookings.filter(b => !b.paymentStatus || b.paymentStatus === "unpaid").reduce((sum, b) => sum + (b.paymentAmount || 0), 0);
+  const pendingIncome = bookings.filter(b => b.paymentStatus === "pending-confirmation" || b.paymentStatus === "cash").reduce((sum, b) => sum + (b.paymentAmount || 0), 0);
 
   const stats = [
-    { label: "Event Types", value: eventTypes.length, icon: Clock, color: "text-primary" },
     { label: "Total Bookings", value: bookings.length, icon: Calendar, color: "text-primary" },
-    { label: "Pending", value: bookings.filter((b) => b.status === "pending").length, icon: Users, color: "text-primary" },
-    { label: "Confirmed", value: bookings.filter((b) => b.status === "confirmed").length, icon: Users, color: "text-primary" },
+    { label: "Paid", value: `$${paidIncome}`, icon: DollarSign, color: "text-green-400" },
+    { label: "Unpaid", value: `$${unpaidIncome}`, icon: DollarSign, color: "text-destructive" },
+    { label: "Pending", value: `$${pendingIncome}`, icon: DollarSign, color: "text-yellow-400" },
   ];
 
   return (
@@ -138,17 +154,30 @@ function DashboardView() {
                 <thead>
                   <tr className="border-b border-border">
                     <th className="text-left text-[10px] font-body tracking-wider uppercase text-muted-foreground p-4">Client</th>
+                    {settings.instagramFieldEnabled && <th className="text-left text-[10px] font-body tracking-wider uppercase text-muted-foreground p-4">Instagram</th>}
                     <th className="text-left text-[10px] font-body tracking-wider uppercase text-muted-foreground p-4">Type</th>
-                    <th className="text-left text-[10px] font-body tracking-wider uppercase text-muted-foreground p-4">Date</th>
+                    <th className="text-left text-[10px] font-body tracking-wider uppercase text-muted-foreground p-4">Date & Time</th>
+                    <th className="text-left text-[10px] font-body tracking-wider uppercase text-muted-foreground p-4">Amount</th>
+                    <th className="text-left text-[10px] font-body tracking-wider uppercase text-muted-foreground p-4">Payment</th>
                     <th className="text-left text-[10px] font-body tracking-wider uppercase text-muted-foreground p-4">Status</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {bookings.slice(-5).reverse().map((b) => (
+                  {bookings.slice(-8).reverse().map((b) => (
                     <tr key={b.id} className="border-b border-border/50 hover:bg-secondary/30 transition-colors">
                       <td className="p-4 text-sm font-body text-foreground">{b.clientName}</td>
+                      {settings.instagramFieldEnabled && <td className="p-4 text-sm font-body text-muted-foreground">{b.instagramHandle || "—"}</td>}
                       <td className="p-4 text-sm font-body text-muted-foreground">{b.type}</td>
-                      <td className="p-4 text-sm font-body text-muted-foreground">{b.date}</td>
+                      <td className="p-4 text-sm font-body text-muted-foreground">{b.date} {b.time}</td>
+                      <td className="p-4 text-sm font-body text-foreground">${b.paymentAmount || 0}</td>
+                      <td className="p-4">
+                        <span className={`text-xs font-body px-2 py-0.5 rounded-full ${
+                          b.paymentStatus === "paid" ? "bg-green-500/10 text-green-400" :
+                          b.paymentStatus === "cash" ? "bg-yellow-500/10 text-yellow-400" :
+                          b.paymentStatus === "pending-confirmation" ? "bg-blue-500/10 text-blue-400" :
+                          "bg-destructive/10 text-destructive"
+                        }`}>{b.paymentStatus || "unpaid"}</span>
+                      </td>
                       <td className="p-4">
                         <span className={`text-xs font-body px-2.5 py-1 rounded-full ${
                           b.status === "completed" ? "bg-green-500/10 text-green-400" :
@@ -172,6 +201,7 @@ function DashboardView() {
 // ─── Bookings ────────────────────────────────────────
 function BookingsView() {
   const [bookings, setBookingsState] = useState<Booking[]>(getBookings());
+  const settings = getSettings();
 
   const handleDelete = (id: string) => {
     if (!confirm("Delete this booking?")) return;
@@ -186,6 +216,12 @@ function BookingsView() {
     toast.success(`Booking ${status}`);
   };
 
+  const handlePaymentChange = (bk: Booking, paymentStatus: PaymentStatus) => {
+    updateBooking({ ...bk, paymentStatus });
+    setBookingsState(getBookings());
+    toast.success(`Payment marked as ${paymentStatus}`);
+  };
+
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
       <h2 className="font-display text-2xl text-foreground mb-6">Bookings</h2>
@@ -193,31 +229,56 @@ function BookingsView() {
       {bookings.length === 0 ? (
         <div className="glass-panel rounded-xl p-12 text-center">
           <Calendar className="w-10 h-10 text-muted-foreground/30 mx-auto mb-3" />
-          <p className="text-sm font-body text-muted-foreground">No bookings yet. They'll appear here when clients book.</p>
+          <p className="text-sm font-body text-muted-foreground">No bookings yet.</p>
         </div>
       ) : (
         <div className="space-y-3">
           {bookings.sort((a, b) => new Date(b.createdAt || b.date).getTime() - new Date(a.createdAt || a.date).getTime()).map((bk) => (
-            <div key={bk.id} className="glass-panel rounded-xl p-4 flex items-center gap-4">
-              <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
-                <Users className="w-4 h-4 text-primary" />
+            <div key={bk.id} className="glass-panel rounded-xl p-4">
+              <div className="flex items-center gap-4">
+                <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
+                  <Users className="w-4 h-4 text-primary" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-sm font-body text-foreground font-medium">{bk.clientName}</h3>
+                    {bk.instagramHandle && <span className="text-xs font-body text-primary">@{bk.instagramHandle.replace("@", "")}</span>}
+                  </div>
+                  <p className="text-xs font-body text-muted-foreground">{bk.type} · {bk.date} at {bk.time} · {formatDuration(bk.duration)}</p>
+                  {bk.clientEmail && <p className="text-xs font-body text-muted-foreground/70">{bk.clientEmail}</p>}
+                  {bk.paymentAmount && bk.paymentAmount > 0 && (
+                    <p className="text-xs font-body text-foreground mt-1">${bk.paymentAmount}</p>
+                  )}
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <select value={bk.status} onChange={(e) => handleStatusChange(bk, e.target.value as Booking["status"])}
+                    className="text-xs font-body px-2.5 py-1 rounded-full bg-secondary border border-border text-foreground cursor-pointer"
+                  >
+                    <option value="pending">Pending</option>
+                    <option value="confirmed">Confirmed</option>
+                    <option value="completed">Completed</option>
+                    <option value="cancelled">Cancelled</option>
+                  </select>
+                  <select value={bk.paymentStatus || "unpaid"} onChange={(e) => handlePaymentChange(bk, e.target.value as PaymentStatus)}
+                    className="text-xs font-body px-2.5 py-1 rounded-full bg-secondary border border-border text-foreground cursor-pointer"
+                  >
+                    <option value="unpaid">Unpaid</option>
+                    <option value="paid">Paid</option>
+                    <option value="cash">Cash</option>
+                    <option value="pending-confirmation">Pending Confirm</option>
+                  </select>
+                  {bk.albumId && (
+                    <a href={`/gallery/${bk.albumId}`} target="_blank" rel="noopener noreferrer">
+                      <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-primary">
+                        <ExternalLink className="w-4 h-4" />
+                      </Button>
+                    </a>
+                  )}
+                  <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-destructive" onClick={() => handleDelete(bk.id)}>
+                    <Trash2 className="w-4 h-4" />
+                  </Button>
+                </div>
               </div>
-              <div className="flex-1 min-w-0">
-                <h3 className="text-sm font-body text-foreground font-medium">{bk.clientName}</h3>
-                <p className="text-xs font-body text-muted-foreground">{bk.type} · {bk.date} at {bk.time} · {formatDuration(bk.duration)}</p>
-                {bk.clientEmail && <p className="text-xs font-body text-muted-foreground/70">{bk.clientEmail}</p>}
-              </div>
-              <select value={bk.status} onChange={(e) => handleStatusChange(bk, e.target.value as Booking["status"])}
-                className={`text-xs font-body px-2.5 py-1 rounded-full bg-secondary border border-border text-foreground cursor-pointer`}
-              >
-                <option value="pending">Pending</option>
-                <option value="confirmed">Confirmed</option>
-                <option value="completed">Completed</option>
-                <option value="cancelled">Cancelled</option>
-              </select>
-              <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-destructive" onClick={() => handleDelete(bk.id)}>
-                <Trash2 className="w-4 h-4" />
-              </Button>
             </div>
           ))}
         </div>
@@ -239,7 +300,6 @@ function EventTypesView() {
     if (!et) return;
     updateEventType({ ...et, active: !et.active });
     refresh();
-    toast.success("Event type updated");
   };
 
   const handleDelete = (id: string) => {
@@ -254,7 +314,7 @@ function EventTypesView() {
       <div className="flex items-center justify-between mb-6">
         <h2 className="font-display text-2xl text-foreground">Event Types</h2>
         <Button size="sm" onClick={() => setShowNew(true)} className="gap-2 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs tracking-wider uppercase">
-          <Plus className="w-4 h-4" /> New Event Type
+          <Plus className="w-4 h-4" /> New
         </Button>
       </div>
 
@@ -267,7 +327,7 @@ function EventTypesView() {
             refresh();
             setEditing(null);
             setShowNew(false);
-            toast.success(editing ? "Event type updated" : "Event type created");
+            toast.success(editing ? "Updated" : "Created");
           }}
           onCancel={() => { setEditing(null); setShowNew(false); }}
         />
@@ -287,11 +347,14 @@ function EventTypesView() {
                       {et.durations.map((d) => formatDuration(d)).join(", ")}
                     </span>
                   </div>
-                  {et.description && <p className="text-sm font-body text-muted-foreground mt-1">{et.description}</p>}
+                  {et.description && <p className="text-sm font-body text-muted-foreground mt-1 line-clamp-2">{et.description}</p>}
                   <div className="flex items-center gap-3 mt-2">
                     {et.price > 0 && <p className="text-sm font-body text-primary font-medium">${et.price}</p>}
                     <span className="text-xs font-body text-muted-foreground">{et.questions.length} questions</span>
-                    <span className="text-xs font-body text-muted-foreground">{et.availability.recurring.length} days/week</span>
+                    <span className="text-xs font-body text-muted-foreground">
+                      {et.availability.recurring.length} days + {et.availability.specificDates.length} specific
+                    </span>
+                    {et.location && <span className="text-xs font-body text-muted-foreground flex items-center gap-1"><MapPin className="w-3 h-3" />{et.location}</span>}
                   </div>
                 </div>
               </div>
@@ -317,6 +380,7 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
   const isNew = !eventType;
   const [title, setTitle] = useState(eventType?.title || "");
   const [description, setDescription] = useState(eventType?.description || "");
+  const [location, setLocation] = useState(eventType?.location || "");
   const [durations, setDurations] = useState<number[]>(eventType?.durations || [30]);
   const [price, setPrice] = useState(eventType?.price || 0);
   const [requiresConfirmation, setRequiresConfirmation] = useState(eventType?.requiresConfirmation || false);
@@ -324,13 +388,7 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
     { id: "q1", label: "Name", type: "text", required: true, placeholder: "Your full name" },
     { id: "q2", label: "Email", type: "text", required: true, placeholder: "you@example.com" },
   ]);
-  const [recurring, setRecurring] = useState<AvailabilitySlot[]>(eventType?.availability?.recurring || [
-    { day: 1, startTime: "09:00", endTime: "17:00" },
-    { day: 2, startTime: "09:00", endTime: "17:00" },
-    { day: 3, startTime: "09:00", endTime: "17:00" },
-    { day: 4, startTime: "09:00", endTime: "17:00" },
-    { day: 5, startTime: "09:00", endTime: "17:00" },
-  ]);
+  const [recurring, setRecurring] = useState<AvailabilitySlot[]>(eventType?.availability?.recurring || []);
   const [blockedDates, setBlockedDates] = useState<string[]>(eventType?.availability?.blockedDates || []);
   const [specificDates, setSpecificDates] = useState(eventType?.availability?.specificDates || []);
   const [durationInput, setDurationInput] = useState("");
@@ -368,6 +426,7 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
       requiresConfirmation,
       questions,
       availability: { recurring, specificDates, blockedDates },
+      location: location.trim(),
     });
   };
 
@@ -391,6 +450,10 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
       <div>
         <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Description</label>
         <Textarea value={description} onChange={(e) => setDescription(e.target.value)} className="bg-secondary border-border text-foreground font-body min-h-[60px]" />
+      </div>
+      <div>
+        <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Location</label>
+        <Input value={location} onChange={(e) => setLocation(e.target.value)} placeholder="e.g. Sydney CBD" className="bg-secondary border-border text-foreground font-body" />
       </div>
 
       <div>
@@ -421,7 +484,6 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
         </button>
         {expandAvailability && (
           <div className="space-y-4 pl-2 border-l-2 border-border/50 ml-1">
-            {/* Recurring */}
             <div className="space-y-2">
               <p className="text-xs font-body text-muted-foreground font-medium">Weekly Schedule</p>
               {DAY_NAMES.map((dayName, i) => {
@@ -441,7 +503,6 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
                 );
               })}
             </div>
-            {/* Specific Dates */}
             <div className="space-y-2">
               <p className="text-xs font-body text-muted-foreground font-medium">Specific Date Availability</p>
               {specificDates.map((sd, idx) => (
@@ -451,7 +512,7 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
                   <button onClick={() => setSpecificDates(specificDates.filter((_, i) => i !== idx))} className="text-muted-foreground hover:text-destructive"><Trash2 className="w-3 h-3" /></button>
                 </div>
               ))}
-              <div className="flex gap-2 items-end">
+              <div className="flex gap-2 items-end flex-wrap">
                 <Input type="date" value={specificDateInput} onChange={(e) => setSpecificDateInput(e.target.value)} className="bg-secondary border-border text-foreground font-body text-xs w-36" />
                 <Input type="time" value={specificStartInput} onChange={(e) => setSpecificStartInput(e.target.value)} className="bg-secondary border-border text-foreground font-body text-xs w-28" />
                 <Input type="time" value={specificEndInput} onChange={(e) => setSpecificEndInput(e.target.value)} className="bg-secondary border-border text-foreground font-body text-xs w-28" />
@@ -462,7 +523,6 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
                 }} className="font-body text-xs border-border text-foreground">Add</Button>
               </div>
             </div>
-            {/* Blocked Dates */}
             <div className="space-y-2">
               <p className="text-xs font-body text-muted-foreground font-medium">Blocked Dates</p>
               <div className="flex flex-wrap gap-2">
@@ -529,7 +589,355 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
       <div className="flex gap-3 pt-2 border-t border-border/50">
         <Button variant="outline" onClick={onCancel} className="font-body text-xs border-border text-foreground">Cancel</Button>
         <Button onClick={handleSave} className="bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs tracking-wider uppercase gap-2">
-          <Save className="w-4 h-4" /> {isNew ? "Create" : "Save Changes"}
+          <Save className="w-4 h-4" /> {isNew ? "Create" : "Save"}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Albums ──────────────────────────────────────────
+function AlbumsView() {
+  const [albums, setAlbumsState] = useState<Album[]>(getAlbums());
+  const bookings = getBookings();
+  const settings = getSettings();
+  const [showNew, setShowNew] = useState(false);
+  const [editing, setEditing] = useState<Album | null>(null);
+  const [mergeMode, setMergeMode] = useState(false);
+  const [mergeSelection, setMergeSelection] = useState<Set<string>>(new Set());
+
+  const refresh = () => setAlbumsState(getAlbums());
+
+  const handleDelete = (id: string) => {
+    if (!confirm("Delete this album?")) return;
+    deleteAlbum(id);
+    refresh();
+    toast.success("Album deleted");
+  };
+
+  const handleMerge = () => {
+    if (mergeSelection.size < 2) { toast.error("Select at least 2 albums to merge"); return; }
+    const selectedAlbums = albums.filter(a => mergeSelection.has(a.id));
+    const mergedPhotos: Photo[] = [];
+    const seen = new Set<string>();
+    for (const alb of selectedAlbums) {
+      for (const p of alb.photos) {
+        if (!seen.has(p.id)) { mergedPhotos.push(p); seen.add(p.id); }
+      }
+    }
+    const totalFree = selectedAlbums.reduce((sum, a) => sum + a.freeDownloads, 0);
+    const merged: Album = {
+      id: generateId("alb"),
+      slug: slugify(selectedAlbums.map(a => a.title).join("-merged-")),
+      title: selectedAlbums.map(a => a.title).join(" + "),
+      description: "Merged album",
+      coverImage: selectedAlbums[0].coverImage,
+      date: new Date().toISOString().split("T")[0],
+      photoCount: mergedPhotos.length,
+      freeDownloads: totalFree,
+      pricePerPhoto: settings.defaultPricePerPhoto,
+      priceFullAlbum: settings.defaultPriceFullAlbum,
+      isPublic: true,
+      photos: mergedPhotos,
+      clientName: selectedAlbums[0].clientName,
+      clientEmail: selectedAlbums[0].clientEmail,
+      mergedFrom: Array.from(mergeSelection),
+    };
+    addAlbum(merged);
+    refresh();
+    setMergeMode(false);
+    setMergeSelection(new Set());
+    toast.success(`Merged ${mergeSelection.size} albums with ${totalFree} free downloads`);
+  };
+
+  const copyLink = (slug: string) => {
+    const url = `${window.location.origin}/gallery/${slug}`;
+    navigator.clipboard.writeText(url);
+    toast.success("Gallery link copied!");
+  };
+
+  const handleSendNotification = (album: Album) => {
+    const template = settings.notificationEmailTemplate || "Hey {name}, your photos are ready! {link}";
+    const link = `${window.location.origin}/gallery/${album.slug}`;
+    const message = template
+      .replace("{name}", album.clientName || "there")
+      .replace("{link}", link)
+      .replace("{instagram}", album.clientEmail || "");
+    toast.info(`Email notification stub:\n\nTo: ${album.clientEmail || "no email"}\n${message}`);
+  };
+
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+      <div className="flex items-center justify-between mb-6">
+        <h2 className="font-display text-2xl text-foreground">Albums</h2>
+        <div className="flex gap-2">
+          {albums.length >= 2 && (
+            <Button variant="outline" size="sm" onClick={() => { setMergeMode(!mergeMode); setMergeSelection(new Set()); }} className="gap-2 font-body text-xs border-border text-foreground">
+              <Merge className="w-4 h-4" /> {mergeMode ? "Cancel Merge" : "Merge"}
+            </Button>
+          )}
+          <Button size="sm" onClick={() => setShowNew(true)} className="gap-2 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs tracking-wider uppercase">
+            <Plus className="w-4 h-4" /> New Album
+          </Button>
+        </div>
+      </div>
+
+      {mergeMode && (
+        <div className="glass-panel rounded-xl p-4 mb-4 flex items-center justify-between">
+          <p className="text-sm font-body text-muted-foreground">Select albums to merge ({mergeSelection.size} selected)</p>
+          <Button size="sm" onClick={handleMerge} disabled={mergeSelection.size < 2} className="bg-primary text-primary-foreground font-body text-xs gap-2">
+            <Merge className="w-4 h-4" /> Merge Selected
+          </Button>
+        </div>
+      )}
+
+      {(showNew || editing) && (
+        <AlbumEditor
+          album={editing}
+          bookings={bookings}
+          settings={settings}
+          onSave={(alb) => {
+            if (editing) { updateAlbum(alb); }
+            else { addAlbum(alb); }
+            refresh();
+            setEditing(null);
+            setShowNew(false);
+            toast.success(editing ? "Album updated" : "Album created");
+          }}
+          onCancel={() => { setEditing(null); setShowNew(false); }}
+        />
+      )}
+
+      {albums.length === 0 ? (
+        <div className="glass-panel rounded-xl p-12 text-center">
+          <Image className="w-10 h-10 text-muted-foreground/30 mx-auto mb-3" />
+          <p className="text-sm font-body text-muted-foreground">No albums yet. Create one to get started.</p>
+        </div>
+      ) : (
+        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {albums.map((alb) => (
+            <div key={alb.id} className={`glass-panel rounded-xl overflow-hidden ${mergeMode ? "cursor-pointer" : ""} ${mergeSelection.has(alb.id) ? "ring-2 ring-primary" : ""}`}
+              onClick={() => {
+                if (mergeMode) {
+                  setMergeSelection(prev => {
+                    const next = new Set(prev);
+                    if (next.has(alb.id)) next.delete(alb.id); else next.add(alb.id);
+                    return next;
+                  });
+                }
+              }}
+            >
+              {alb.coverImage && (
+                <div className="aspect-video bg-secondary overflow-hidden">
+                  <img src={alb.coverImage} alt={alb.title} className="w-full h-full object-cover" />
+                </div>
+              )}
+              <div className="p-4 space-y-2">
+                <h3 className="font-display text-base text-foreground">{alb.title}</h3>
+                <p className="text-xs font-body text-muted-foreground">
+                  {alb.photos.length} photos · {alb.freeDownloads} free · ${alb.pricePerPhoto}/photo
+                </p>
+                {alb.clientName && <p className="text-xs font-body text-primary">{alb.clientName}</p>}
+                {alb.mergedFrom && <p className="text-[10px] font-body text-muted-foreground/50">Merged from {alb.mergedFrom.length} albums</p>}
+                {!mergeMode && (
+                  <div className="flex items-center gap-2 pt-2 border-t border-border/50">
+                    <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary" onClick={() => copyLink(alb.slug)}>
+                      <Copy className="w-3.5 h-3.5" />
+                    </Button>
+                    <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary" onClick={() => handleSendNotification(alb)}>
+                      <Send className="w-3.5 h-3.5" />
+                    </Button>
+                    <a href={`/gallery/${alb.slug}`} target="_blank" rel="noopener noreferrer">
+                      <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary">
+                        <ExternalLink className="w-3.5 h-3.5" />
+                      </Button>
+                    </a>
+                    <div className="flex-1" />
+                    <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-foreground" onClick={() => setEditing(alb)}>
+                      <Edit className="w-3.5 h-3.5" />
+                    </Button>
+                    <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={() => handleDelete(alb.id)}>
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </Button>
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </motion.div>
+  );
+}
+
+// ─── Album Editor ────────────────────────────────────
+function AlbumEditor({ album, bookings, settings, onSave, onCancel }: {
+  album: Album | null;
+  bookings: Booking[];
+  settings: AppSettings;
+  onSave: (alb: Album) => void;
+  onCancel: () => void;
+}) {
+  const isNew = !album;
+  const [title, setTitle] = useState(album?.title || "");
+  const [slug, setSlug] = useState(album?.slug || "");
+  const [description, setDescription] = useState(album?.description || "");
+  const [bookingId, setBookingId] = useState(album?.bookingId || "");
+  const [clientName, setClientName] = useState(album?.clientName || "");
+  const [clientEmail, setClientEmail] = useState(album?.clientEmail || "");
+  const [freeDownloads, setFreeDownloads] = useState(album?.freeDownloads ?? settings.defaultFreeDownloads);
+  const [pricePerPhoto, setPricePerPhoto] = useState(album?.pricePerPhoto ?? settings.defaultPricePerPhoto);
+  const [priceFullAlbum, setPriceFullAlbum] = useState(album?.priceFullAlbum ?? settings.defaultPriceFullAlbum);
+  const [photos, setPhotos] = useState<Photo[]>(album?.photos || []);
+  const [coverImage, setCoverImage] = useState(album?.coverImage || "");
+
+  const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files) return;
+    Array.from(files).forEach(file => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const src = reader.result as string;
+        const id = `ph-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`;
+        setPhotos(prev => [...prev, { id, src, title: file.name.replace(/\.[^.]+$/, ""), width: 800, height: 600 }]);
+        if (!coverImage) setCoverImage(src);
+      };
+      reader.readAsDataURL(file);
+    });
+  };
+
+  const handleBookingLink = (bkId: string) => {
+    setBookingId(bkId);
+    const bk = bookings.find(b => b.id === bkId);
+    if (bk) {
+      if (!clientName) setClientName(bk.clientName);
+      if (!clientEmail) setClientEmail(bk.clientEmail);
+      if (!title) setTitle(`${bk.clientName} — ${bk.type}`);
+      if (!slug) setSlug(slugify(`${bk.clientName}-${bk.date}`));
+    }
+  };
+
+  const handleSave = () => {
+    if (!title.trim()) { toast.error("Title required"); return; }
+    const finalSlug = slug.trim() || slugify(title);
+    onSave({
+      id: album?.id || generateId("alb"),
+      slug: finalSlug,
+      title: title.trim(),
+      description: description.trim(),
+      coverImage: coverImage || (photos[0]?.src || ""),
+      date: new Date().toISOString().split("T")[0],
+      photoCount: photos.length,
+      freeDownloads,
+      pricePerPhoto,
+      priceFullAlbum,
+      isPublic: true,
+      photos,
+      clientName: clientName.trim(),
+      clientEmail: clientEmail.trim(),
+      bookingId: bookingId || undefined,
+      accessCode: album?.accessCode,
+      mergedFrom: album?.mergedFrom,
+    });
+    // Link album to booking
+    if (bookingId) {
+      const bk = bookings.find(b => b.id === bookingId);
+      if (bk) {
+        updateBooking({ ...bk, albumId: album?.id || generateId("alb") });
+      }
+    }
+  };
+
+  return (
+    <div className="glass-panel rounded-xl p-6 mb-6 space-y-5">
+      <div className="flex items-center justify-between">
+        <h3 className="font-display text-lg text-foreground">{isNew ? "New Album" : "Edit Album"}</h3>
+        <Button variant="ghost" size="icon" onClick={onCancel}><X className="w-4 h-4" /></Button>
+      </div>
+
+      <div className="grid md:grid-cols-2 gap-4">
+        <div>
+          <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Title *</label>
+          <Input value={title} onChange={(e) => { setTitle(e.target.value); if (!slug || slug === slugify(album?.title || "")) setSlug(slugify(e.target.value)); }} className="bg-secondary border-border text-foreground font-body" />
+        </div>
+        <div>
+          <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Custom URL Slug</label>
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-body text-muted-foreground">/gallery/</span>
+            <Input value={slug} onChange={(e) => setSlug(slugify(e.target.value))} className="bg-secondary border-border text-foreground font-body" />
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Description</label>
+        <Textarea value={description} onChange={(e) => setDescription(e.target.value)} className="bg-secondary border-border text-foreground font-body min-h-[50px]" />
+      </div>
+
+      <div>
+        <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Link to Booking</label>
+        <select value={bookingId} onChange={(e) => handleBookingLink(e.target.value)} className="w-full bg-secondary border border-border text-foreground font-body text-sm rounded-md px-3 py-2.5">
+          <option value="">No booking (standalone)</option>
+          {bookings.map(bk => (
+            <option key={bk.id} value={bk.id}>{bk.clientName} — {bk.type} ({bk.date})</option>
+          ))}
+        </select>
+      </div>
+
+      <div className="grid md:grid-cols-2 gap-4">
+        <div>
+          <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Client Name</label>
+          <Input value={clientName} onChange={(e) => setClientName(e.target.value)} className="bg-secondary border-border text-foreground font-body" />
+        </div>
+        <div>
+          <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Client Email</label>
+          <Input type="email" value={clientEmail} onChange={(e) => setClientEmail(e.target.value)} className="bg-secondary border-border text-foreground font-body" />
+        </div>
+      </div>
+
+      <div className="grid grid-cols-3 gap-4">
+        <div>
+          <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Free Downloads</label>
+          <Input type="number" value={freeDownloads} onChange={(e) => setFreeDownloads(Number(e.target.value))} className="bg-secondary border-border text-foreground font-body" />
+        </div>
+        <div>
+          <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">$/Photo</label>
+          <Input type="number" value={pricePerPhoto} onChange={(e) => setPricePerPhoto(Number(e.target.value))} className="bg-secondary border-border text-foreground font-body" />
+        </div>
+        <div>
+          <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Full Album $</label>
+          <Input type="number" value={priceFullAlbum} onChange={(e) => setPriceFullAlbum(Number(e.target.value))} className="bg-secondary border-border text-foreground font-body" />
+        </div>
+      </div>
+
+      {/* Photo Upload */}
+      <div>
+        <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-3 block">Photos ({photos.length})</label>
+        <div className="border-2 border-dashed border-border rounded-lg p-6 text-center hover:border-primary/30 transition-colors cursor-pointer relative mb-3">
+          <Upload className="w-6 h-6 text-muted-foreground/50 mx-auto mb-2" />
+          <p className="text-xs font-body text-muted-foreground">Click to upload photos or drag and drop</p>
+          <p className="text-[10px] font-body text-muted-foreground/50 mt-1">Multiple files supported</p>
+          <input type="file" accept="image/*" multiple className="absolute inset-0 opacity-0 cursor-pointer" onChange={handlePhotoUpload} />
+        </div>
+        {photos.length > 0 && (
+          <div className="grid grid-cols-6 gap-2 max-h-48 overflow-y-auto">
+            {photos.map(p => (
+              <div key={p.id} className="relative group aspect-square rounded-md overflow-hidden bg-secondary">
+                <img src={p.src} alt={p.title} className="w-full h-full object-cover" />
+                <button onClick={() => setPhotos(photos.filter(pp => pp.id !== p.id))}
+                  className="absolute top-1 right-1 w-5 h-5 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="flex gap-3 pt-2 border-t border-border/50">
+        <Button variant="outline" onClick={onCancel} className="font-body text-xs border-border text-foreground">Cancel</Button>
+        <Button onClick={handleSave} className="bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs tracking-wider uppercase gap-2">
+          <Save className="w-4 h-4" /> {isNew ? "Create Album" : "Save Album"}
         </Button>
       </div>
     </div>
@@ -551,14 +959,13 @@ function ProfileView() {
   const handleSave = () => {
     if (!profile.name.trim()) { toast.error("Name is required"); return; }
     setProfile(profile);
-    toast.success("Profile saved! Changes visible on booking page.");
+    toast.success("Profile saved!");
   };
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
       <h2 className="font-display text-2xl text-foreground mb-6">Profile & Cover Page</h2>
       <div className="max-w-lg space-y-6">
-        {/* Preview */}
         <div className="glass-panel rounded-xl p-6">
           <p className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-4">Preview</p>
           <div className="flex items-center gap-3 mb-3">
@@ -570,7 +977,6 @@ function ProfileView() {
           {profile.bio && <p className="text-sm font-body text-muted-foreground mt-1">{profile.bio}</p>}
         </div>
 
-        {/* Edit */}
         <div className="glass-panel rounded-xl p-6 space-y-4">
           <div className="flex items-center gap-4">
             <label className="cursor-pointer">
@@ -614,6 +1020,14 @@ function SettingsView() {
     { value: "bottom-left", label: "Bottom Left" }, { value: "bottom-right", label: "Bottom Right" }, { value: "tiled", label: "Tiled" },
   ];
 
+  const handleWatermarkImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => setSettingsState({ ...settings, watermarkImage: reader.result as string });
+    reader.readAsDataURL(file);
+  };
+
   const handleSave = () => {
     setSettings(settings);
     toast.success("Settings saved!");
@@ -629,6 +1043,18 @@ function SettingsView() {
           <div>
             <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Watermark Text</label>
             <Input value={settings.watermarkText} onChange={(e) => setSettingsState({ ...settings, watermarkText: e.target.value })} className="bg-secondary border-border text-foreground font-body" />
+          </div>
+          <div>
+            <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-3 block">Watermark Image (optional, overrides text)</label>
+            <div className="flex items-center gap-4">
+              <label className="cursor-pointer">
+                <div className="w-20 h-12 rounded-md bg-secondary border-2 border-dashed border-border flex items-center justify-center overflow-hidden">
+                  {settings.watermarkImage ? <img src={settings.watermarkImage} alt="Watermark" className="w-full h-full object-contain" /> : <Upload className="w-4 h-4 text-muted-foreground/50" />}
+                </div>
+                <input type="file" accept="image/*" onChange={handleWatermarkImageUpload} className="hidden" />
+              </label>
+              {settings.watermarkImage && <button onClick={() => setSettingsState({ ...settings, watermarkImage: "" })} className="text-xs font-body text-destructive hover:underline">Remove</button>}
+            </div>
           </div>
           <div>
             <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-3 block">Position</label>
@@ -663,11 +1089,46 @@ function SettingsView() {
           </div>
         </div>
 
-        {/* Payment */}
+        {/* Booking */}
+        <div className="glass-panel rounded-xl p-6 space-y-4">
+          <h3 className="font-display text-base text-foreground">Booking Settings</h3>
+          <div>
+            <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Booking Timer (minutes)</label>
+            <Input type="number" value={settings.bookingTimerMinutes} onChange={(e) => setSettingsState({ ...settings, bookingTimerMinutes: Number(e.target.value) })} className="bg-secondary border-border text-foreground font-body w-32" />
+            <p className="text-[10px] font-body text-muted-foreground/50 mt-1">How long a client has to complete their booking after selecting a time</p>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-body text-muted-foreground">Show Instagram Handle Field</span>
+            <Switch checked={settings.instagramFieldEnabled} onCheckedChange={(v) => setSettingsState({ ...settings, instagramFieldEnabled: v })} />
+          </div>
+        </div>
+
+        {/* Notification Email */}
+        <div className="glass-panel rounded-xl p-6 space-y-4">
+          <h3 className="font-display text-base text-foreground">Notification Email Template</h3>
+          <Textarea value={settings.notificationEmailTemplate} onChange={(e) => setSettingsState({ ...settings, notificationEmailTemplate: e.target.value })}
+            className="bg-secondary border-border text-foreground font-body min-h-[80px]" placeholder="Hey {name}, your photos are ready! {link}" />
+          <p className="text-[10px] font-body text-muted-foreground/50">Variables: {"{name}"}, {"{link}"}, {"{instagram}"}. Requires SMTP backend to send.</p>
+        </div>
+
+        {/* Payment Methods */}
         <div className="glass-panel rounded-xl p-6 space-y-4">
           <h3 className="font-display text-base text-foreground flex items-center gap-2">
             <CreditCard className="w-4 h-4 text-primary" /> Payment Methods
           </h3>
+
+          {/* Stripe */}
+          <div className="p-4 rounded-lg bg-secondary/50 border border-border/50">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-body text-foreground font-medium flex items-center gap-2">
+                <CreditCard className="w-4 h-4" /> Stripe
+              </span>
+              <Switch checked={settings.stripeEnabled} onCheckedChange={(v) => setSettingsState({ ...settings, stripeEnabled: v })} />
+            </div>
+            <p className="text-[10px] font-body text-muted-foreground/50 mt-2">Configure STRIPE_SECRET_KEY in Docker env vars</p>
+          </div>
+
+          {/* Bank Transfer */}
           <div className="p-4 rounded-lg bg-secondary/50 border border-border/50">
             <div className="flex items-center justify-between mb-2">
               <span className="text-sm font-body text-foreground font-medium flex items-center gap-2">
@@ -702,9 +1163,6 @@ function SettingsView() {
               </div>
             )}
           </div>
-          <p className="text-xs font-body text-muted-foreground/50">
-            Stripe requires backend service. Configure SMTP & Stripe via Docker env vars.
-          </p>
         </div>
 
         <Button onClick={handleSave} className="bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs tracking-wider uppercase gap-2">
