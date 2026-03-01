@@ -42,6 +42,10 @@ export interface EventType {
   questions: QuestionField[];
   availability: EventTypeAvailability;
   location?: string;
+  depositEnabled?: boolean;
+  depositAmount?: number; // fixed amount, or percentage if depositType is "percentage"
+  depositType?: "fixed" | "percentage";
+  depositMethods?: ("stripe" | "bank")[]; // which payment methods to offer
 }
 
 export interface Booking {
@@ -62,6 +66,11 @@ export interface Booking {
   paymentAmount?: number;
   instagramHandle?: string;
   modifyToken?: string;
+  depositRequired?: boolean;
+  depositAmount?: number;
+  depositMethod?: "stripe" | "bank";
+  depositPaidAt?: string;
+  stripeSessionId?: string;
 }
 
 export interface Photo {
@@ -106,6 +115,7 @@ export interface Album {
   pricePerPhoto: number;
   priceFullAlbum: number;
   isPublic: boolean;
+  enabled?: boolean; // false = hidden from public gallery listing
   photos: Photo[];
   clientName?: string;
   clientEmail?: string;

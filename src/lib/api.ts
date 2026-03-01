@@ -113,6 +113,41 @@ export async function getServerStorageStats(): Promise<{
   }
 }
 
+// ── Stripe ──────────────────────────────────────────────
+
+export async function getStripeStatus(): Promise<{ configured: boolean; publishableKey: string | null }> {
+  if (!(await checkServer())) return { configured: false, publishableKey: null };
+  try {
+    const res = await fetch("/api/stripe/status");
+    if (!res.ok) return { configured: false, publishableKey: null };
+    return await res.json();
+  } catch {
+    return { configured: false, publishableKey: null };
+  }
+}
+
+export async function createBookingCheckout(params: {
+  bookingId: string; clientName: string; clientEmail: string; amount: number; eventTitle: string;
+}): Promise<{ url?: string; error?: string }> {
+  try {
+    const res = await fetch("/api/stripe/checkout/booking", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(params),
+    });
+    return await res.json();
+  } catch { return { error: "Network error" }; }
+}
+
+export async function createAlbumCheckout(params: {
+  albumId: string; albumTitle: string; photoCount: number; amount: number; clientEmail?: string;
+}): Promise<{ url?: string; error?: string }> {
+  try {
+    const res = await fetch("/api/stripe/checkout/album", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(params),
+    });
+    return await res.json();
+  } catch { return { error: "Network error" }; }
+}
+
 // ── Email (SMTP) ───────────────────────────────────────
 
 export async function getEmailStatus(): Promise<{ configured: boolean; host: string | null; user: string | null; from: string | null }> {

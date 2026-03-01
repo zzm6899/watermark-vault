@@ -284,6 +284,7 @@ function DashboardView() {
                     <th className="text-left text-[10px] font-body tracking-wider uppercase text-muted-foreground p-4">Type</th>
                     <th className="text-left text-[10px] font-body tracking-wider uppercase text-muted-foreground p-4">Date & Time</th>
                     <th className="text-left text-[10px] font-body tracking-wider uppercase text-muted-foreground p-4">Amount</th>
+                    <th className="text-left text-[10px] font-body tracking-wider uppercase text-muted-foreground p-4">Deposit</th>
                     <th className="text-left text-[10px] font-body tracking-wider uppercase text-muted-foreground p-4">Payment</th>
                     <th className="text-left text-[10px] font-body tracking-wider uppercase text-muted-foreground p-4">Status</th>
                   </tr>
@@ -296,6 +297,17 @@ function DashboardView() {
                       <td className="p-4 text-sm font-body text-muted-foreground">{b.type}</td>
                       <td className="p-4 text-sm font-body text-muted-foreground">{b.date} {b.time}</td>
                       <td className="p-4 text-sm font-body text-foreground">${b.paymentAmount || 0}</td>
+                      <td className="p-4">
+                        {b.depositRequired ? (
+                          <span className={`text-xs font-body px-2 py-0.5 rounded-full ${
+                            b.depositPaidAt ? "bg-green-500/10 text-green-400" : "bg-yellow-500/10 text-yellow-400"
+                          }`}>
+                            ${b.depositAmount || 0} {b.depositPaidAt ? "✓ Paid" : `(${b.depositMethod || "pending"})`}
+                          </span>
+                        ) : (
+                          <span className="text-xs font-body text-muted-foreground/50">—</span>
+                        )}
+                      </td>
                       <td className="p-4">
                         <span className={`text-xs font-body px-2 py-0.5 rounded-full ${
                           b.paymentStatus === "paid" ? "bg-green-500/10 text-green-400" :
@@ -552,6 +564,10 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
   const [durations, setDurations] = useState<number[]>(eventType?.durations || [30]);
   const [price, setPrice] = useState(eventType?.price || 0);
   const [requiresConfirmation, setRequiresConfirmation] = useState(eventType?.requiresConfirmation || false);
+  const [depositEnabled, setDepositEnabled] = useState(eventType?.depositEnabled || false);
+  const [depositAmount, setDepositAmount] = useState(eventType?.depositAmount || 0);
+  const [depositType, setDepositType] = useState<"fixed" | "percentage">(eventType?.depositType || "fixed");
+  const [depositMethods, setDepositMethods] = useState<("stripe" | "bank")[]>(eventType?.depositMethods || ["stripe", "bank"]);
   const currentSettings = getSettings();
   const defaultQuestions: QuestionField[] = [
     { id: "q1", label: "Name", type: "text", required: true, placeholder: "Your full name" },
@@ -597,6 +613,10 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
       price,
       active: eventType?.active ?? true,
       requiresConfirmation,
+      depositEnabled,
+      depositAmount: depositEnabled ? depositAmount : undefined,
+      depositType: depositEnabled ? depositType : undefined,
+      depositMethods: depositEnabled ? depositMethods : undefined,
       questions,
       availability: { recurring, specificDates, blockedDates },
       location: location.trim(),
@@ -649,7 +669,52 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
         <Switch checked={requiresConfirmation} onCheckedChange={setRequiresConfirmation} />
       </div>
 
-      {/* Availability Section */}
+      {/* Deposit Section */}
+      <div className="space-y-3 p-4 rounded-lg bg-secondary/30 border border-border/50">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-body text-muted-foreground font-medium">Require Deposit</span>
+          <Switch checked={depositEnabled} onCheckedChange={setDepositEnabled} />
+        </div>
+        {depositEnabled && (
+          <div className="space-y-3 pt-2">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-1 block">Amount</label>
+                <Input type="number" value={depositAmount} onChange={e => setDepositAmount(Number(e.target.value))} className="bg-secondary border-border text-foreground font-body text-sm" />
+              </div>
+              <div>
+                <label className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-1 block">Type</label>
+                <select value={depositType} onChange={e => setDepositType(e.target.value as "fixed" | "percentage")} className="w-full bg-secondary border border-border text-foreground font-body text-xs rounded-md px-2 py-2">
+                  <option value="fixed">Fixed ($)</option>
+                  <option value="percentage">Percentage (%)</option>
+                </select>
+              </div>
+            </div>
+            <div>
+              <label className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Payment Methods</label>
+              <div className="flex gap-4">
+                <label className="flex items-center gap-2 text-xs font-body text-muted-foreground cursor-pointer">
+                  <Switch checked={depositMethods.includes("stripe")} onCheckedChange={v => {
+                    setDepositMethods(v ? [...depositMethods, "stripe"] : depositMethods.filter(m => m !== "stripe"));
+                  }} />Stripe
+                </label>
+                <label className="flex items-center gap-2 text-xs font-body text-muted-foreground cursor-pointer">
+                  <Switch checked={depositMethods.includes("bank")} onCheckedChange={v => {
+                    setDepositMethods(v ? [...depositMethods, "bank"] : depositMethods.filter(m => m !== "bank"));
+                  }} />Bank Transfer
+                </label>
+              </div>
+            </div>
+            {price > 0 && (
+              <p className="text-[10px] font-body text-muted-foreground">
+                Deposit: ${depositType === "percentage" ? ((price * depositAmount) / 100).toFixed(2) : depositAmount} 
+                {depositType === "percentage" ? ` (${depositAmount}% of $${price})` : ""}
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+
       <div>
         <button onClick={() => setExpandAvailability(!expandAvailability)} className="flex items-center gap-2 text-xs font-body tracking-wider uppercase text-muted-foreground mb-3 hover:text-foreground transition-colors">
           {expandAvailability ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
@@ -898,7 +963,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
           {albums.map((alb) => (
-            <div key={alb.id} className={`glass-panel rounded-xl overflow-hidden ${mergeMode ? "cursor-pointer" : ""} ${mergeSelection.has(alb.id) ? "ring-2 ring-primary" : ""}`}
+            <div key={alb.id} className={`glass-panel rounded-xl overflow-hidden transition-all ${mergeMode ? "cursor-pointer" : ""} ${mergeSelection.has(alb.id) ? "ring-2 ring-primary" : ""} ${alb.enabled === false ? "opacity-50" : ""}`}
               onClick={() => {
                 if (mergeMode) {
                   setMergeSelection(prev => {
@@ -923,6 +988,14 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                 {alb.mergedFrom && <p className="text-[10px] font-body text-muted-foreground/50">Merged from {alb.mergedFrom.length} albums</p>}
                 {!mergeMode && (
                   <div className="flex items-center gap-2 pt-2 border-t border-border/50">
+                    <Switch
+                      checked={alb.enabled !== false}
+                      onCheckedChange={(v) => {
+                        updateAlbum({ ...alb, enabled: v });
+                        refresh();
+                        toast.success(v ? "Album enabled" : "Album disabled");
+                      }}
+                    />
                     <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary" onClick={() => copyLink(alb.slug)}>
                       <Copy className="w-3.5 h-3.5" />
                     </Button>
