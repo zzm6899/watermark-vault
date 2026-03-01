@@ -24,8 +24,14 @@ function get<T>(key: string, fallback: T): T {
   }
 }
 
-function set(key: string, value: unknown) {
-  localStorage.setItem(key, JSON.stringify(value));
+function set(key: string, value: unknown): boolean {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+    return true;
+  } catch (e) {
+    console.error("localStorage save failed (quota?):", e);
+    return false;
+  }
 }
 
 // ── Setup ───────────────────────────────────────────
