@@ -667,7 +667,6 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
   useEffect(() => {
     if (prefillBookingId) {
       setShowNew(true);
-      onClearPrefill?.();
     }
   }, [prefillBookingId]);
 
@@ -768,9 +767,10 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
             refresh();
             setEditing(null);
             setShowNew(false);
+            onClearPrefill?.();
             toast.success(editing ? "Album updated" : "Album created");
           }}
-          onCancel={() => { setEditing(null); setShowNew(false); }}
+          onCancel={() => { setEditing(null); setShowNew(false); onClearPrefill?.(); }}
         />
       )}
 
@@ -886,9 +886,12 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onCa
     }
   };
 
+  const existingAlbums = getAlbums();
   const handleSave = () => {
     if (!title.trim()) { toast.error("Title required"); return; }
     const finalSlug = slug.trim() || slugify(title);
+    const slugTaken = existingAlbums.some(a => a.slug === finalSlug && a.id !== album?.id);
+    if (slugTaken) { toast.error("URL slug already exists — choose a different one"); return; }
     const albumId = album?.id || generateId("alb");
     onSave({
       id: albumId,
@@ -933,7 +936,12 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onCa
           <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Custom URL Slug</label>
           <div className="flex items-center gap-2">
             <span className="text-xs font-body text-muted-foreground">/gallery/</span>
-            <Input value={slug} onChange={(e) => setSlug(slugify(e.target.value))} className="bg-secondary border-border text-foreground font-body" />
+            <Input value={slug} onChange={(e) => setSlug(slugify(e.target.value))} className="bg-secondary border-border text-foreground font-body flex-1" />
+            {slug && (
+              <span className={`text-[10px] font-body whitespace-nowrap ${existingAlbums.some(a => a.slug === slug && a.id !== album?.id) ? "text-destructive" : "text-green-500"}`}>
+                {existingAlbums.some(a => a.slug === slug && a.id !== album?.id) ? "⚠ Already taken" : "✓ Available"}
+              </span>
+            )}
           </div>
         </div>
       </div>
