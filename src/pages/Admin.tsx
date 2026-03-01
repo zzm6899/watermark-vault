@@ -20,9 +20,10 @@ import {
   getAlbums, addAlbum, updateAlbum, deleteAlbum,
   getPhotoLibrary, setPhotoLibrary,
 } from "@/lib/storage";
-import Login from "@/pages/Login";
 import { compressImage, formatBytes, getLocalStorageUsage, generateThumbnail } from "@/lib/image-utils";
-import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar, getServerStorageStats } from "@/lib/api";
+import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar, getServerStorageStats, syncFromServer } from "@/lib/api";
+import RichTextEditor, { RichTextDisplay } from "@/components/RichTextEditor";
+import Login from "@/pages/Login";
 import type {
   EventType, QuestionField, AvailabilitySlot,
   ProfileSettings, AppSettings, Booking, WatermarkPosition,
@@ -74,22 +75,14 @@ export default function Admin() {
   const { tab: routeTab } = useParams<{ tab?: string }>();
   const resolvedTab = (routeTab && TAB_ROUTE_MAP[routeTab]) || "dashboard";
   const [activeTab, setActiveTabState] = useState<Tab>(resolvedTab);
-
-  // ── Auth state ───────────────────────────────────────
   const [authed, setAuthed] = useState(() => isLoggedIn());
 
   useEffect(() => {
-    if (!isSetupComplete()) {
-      navigate("/setup", { replace: true });
-    }
+    if (!isSetupComplete()) navigate("/setup", { replace: true });
   }, [navigate]);
 
-  // Redirect to setup if not configured
   if (!isSetupComplete()) return null;
-  // Show Login inline — no separate route needed
-  if (!authed) {
-    return <Login onLogin={() => setAuthed(true)} />;
-  }
+  if (!authed) return <Login onLogin={() => setAuthed(true)} />;
   
   const setActiveTab = (tab: Tab) => {
     setActiveTabState(tab);
@@ -376,7 +369,8 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
   const handlePaymentChange = async (bk: Booking, paymentStatus: PaymentStatus) => {
     updateBooking({ ...bk, paymentStatus });
     setBookingsState(getBookings());
-    toast.success(`Payment marked as ${paymentStatus}`);
+    const labels: Record<string, string> = { "paid": "Paid in Full", "deposit-paid": "Deposit Paid", "cash": "Cash", "unpaid": "Unpaid", "pending-confirmation": "Bank Transfer Pending" };
+    toast.success(`Payment: ${labels[paymentStatus] || paymentStatus}`);
   };
 
   return (
@@ -395,9 +389,12 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
             const et = eventTypes.find(e => e.id === bk.eventTypeId);
             return (
               <div key={bk.id} className="glass-panel rounded-xl overflow-hidden">
-                <div className="p-4 cursor-pointer hover:bg-secondary/20 transition-colors" onClick={async () => {
-                    if (!isExpanded) { await syncFromServer(); setBookingsState(getBookings()); }
+                <div className="p-4 cursor-pointer hover:bg-secondary/20 transition-colors" onClick={() => {
                     setExpandedId(isExpanded ? null : bk.id);
+                    // Refresh from server in background after expanding
+                    if (!isExpanded) {
+                      syncFromServer().then(() => setBookingsState(getBookings())).catch(() => {});
+                    }
                   }}>
                   <div className="flex items-center gap-4">
                     <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
@@ -485,6 +482,31 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                                 ) : (
                                   <span className="text-[10px] font-body text-muted-foreground/50">Not opened</span>
                                 )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Email History */}
+                    {bk.emailLog && bk.emailLog.length > 0 && (
+                      <div>
+                        <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-2">Email History</p>
+                        <div className="space-y-1.5">
+                          {bk.emailLog.map((log, i) => (
+                            <div key={i} className="flex items-center justify-between p-2 rounded-lg bg-secondary/30 border border-border/30">
+                              <div className="flex items-center gap-2">
+                                <div className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${log.openedAt ? "bg-green-400" : "bg-muted-foreground/30"}`} />
+                                <div>
+                                  <p className="text-xs font-body text-foreground">{log.type === "booking-confirmation" ? "Booking Confirmation" : log.type === "payment-update" ? "Payment Update" : log.type}</p>
+                                  <p className="text-[10px] font-body text-muted-foreground">Sent {new Date(log.sentAt).toLocaleString()}</p>
+                                </div>
+                              </div>
+                              <div className="text-right">
+                                {log.openedAt
+                                  ? <span className="text-[10px] font-body text-green-400">Opened {new Date(log.openedAt).toLocaleString()}</span>
+                                  : <span className="text-[10px] font-body text-muted-foreground/40">Not opened</span>}
                               </div>
                             </div>
                           ))}
@@ -691,7 +713,7 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
       </div>
       <div>
         <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Description</label>
-        <Textarea value={description} onChange={(e) => setDescription(e.target.value)} className="bg-secondary border-border text-foreground font-body min-h-[60px]" />
+        <RichTextEditor value={description} onChange={setDescription} minHeight="80px" />
       </div>
       <div>
         <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Location</label>
@@ -1851,7 +1873,7 @@ function ProfileView() {
           </div>
           <div>
             <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Bio</label>
-            <Textarea value={profile.bio} onChange={(e) => setProfileState({ ...profile, bio: e.target.value })} className="bg-secondary border-border text-foreground font-body min-h-[60px]" />
+            <RichTextEditor value={profile.bio} onChange={(val) => setProfileState({ ...profile, bio: val })} minHeight="80px" />
           </div>
           <div>
             <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Timezone</label>
