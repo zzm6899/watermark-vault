@@ -5,7 +5,7 @@ import {
   Trash2, Edit, Users, Clock, CreditCard, Building2,
   Camera, Save, X, LogOut, ChevronDown, ChevronUp,
   Image, DollarSign, Link2, Merge, Send, Copy, ExternalLink,
-  MapPin, Lock, Bell, Download, Unlock, Eye, Grid, List, LayoutGrid
+  MapPin, Lock, Bell, Download, Unlock, Eye, Grid, List, LayoutGrid, HardDrive, CheckSquare, XSquare
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -25,7 +25,7 @@ import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCal
 import type {
   EventType, QuestionField, AvailabilitySlot,
   ProfileSettings, AppSettings, Booking, WatermarkPosition,
-  Album, Photo, PaymentStatus, AlbumDisplaySize, AlbumDownloadRecord,
+  Album, Photo, PaymentStatus, AlbumDisplaySize, AlbumDownloadRecord, DownloadHistoryEntry,
 } from "@/lib/types";
 import WatermarkedImage from "@/components/WatermarkedImage";
 import { Slider } from "@/components/ui/slider";
@@ -35,7 +35,7 @@ import sampleWedding from "@/assets/sample-wedding.jpg";
 import sampleEvent from "@/assets/sample-event.jpg";
 import sampleFood from "@/assets/sample-food.jpg";
 
-type Tab = "dashboard" | "bookings" | "events" | "albums" | "photos" | "profile" | "settings";
+type Tab = "dashboard" | "bookings" | "events" | "albums" | "photos" | "profile" | "settings" | "storage";
 
 const TAB_ROUTE_MAP: Record<string, Tab> = {
   dashboard: "dashboard",
@@ -45,6 +45,7 @@ const TAB_ROUTE_MAP: Record<string, Tab> = {
   photos: "photos",
   profile: "profile",
   settings: "settings",
+  storage: "storage",
 };
 
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
@@ -96,6 +97,7 @@ export default function Admin() {
     { id: "photos" as Tab, label: "Photos", icon: Upload },
     { id: "profile" as Tab, label: "Profile", icon: Camera },
     { id: "settings" as Tab, label: "Settings", icon: Settings },
+    { id: "storage" as Tab, label: "Storage", icon: HardDrive },
   ];
 
   return (
@@ -143,6 +145,7 @@ export default function Admin() {
           {activeTab === "photos" && <PhotosView />}
           {activeTab === "profile" && <ProfileView />}
           {activeTab === "settings" && <SettingsView />}
+          {activeTab === "storage" && <StorageView />}
         </main>
       </div>
     </div>
@@ -152,7 +155,7 @@ export default function Admin() {
 // ─── Dashboard ───────────────────────────────────────
 function DashboardView() {
   const bookings = getBookings();
-  const eventTypes = getEventTypes();
+  const albums = getAlbums();
   const settings = getSettings();
 
   const totalIncome = bookings.reduce((sum, b) => sum + (b.paymentAmount || 0), 0);
@@ -160,11 +163,37 @@ function DashboardView() {
   const unpaidIncome = bookings.filter(b => !b.paymentStatus || b.paymentStatus === "unpaid").reduce((sum, b) => sum + (b.paymentAmount || 0), 0);
   const pendingIncome = bookings.filter(b => b.paymentStatus === "pending-confirmation" || b.paymentStatus === "cash").reduce((sum, b) => sum + (b.paymentAmount || 0), 0);
 
+  // Collect all pending download requests across albums
+  const allPendingRequests: (AlbumDownloadRecord & { _albumId: string; _albumTitle: string; _reqIdx: number })[] = [];
+  for (const alb of albums) {
+    (alb.downloadRequests || []).forEach((req, idx) => {
+      if (req.status === "pending") {
+        allPendingRequests.push({ ...req, _albumId: alb.id, _albumTitle: alb.title, _reqIdx: idx });
+      }
+    });
+  }
+
+  // Download stats per album
+  const albumDownloadStats = albums.map(alb => {
+    const history = alb.downloadHistory || [];
+    const totalDownloaded = history.reduce((sum, h) => sum + h.photoIds.length, 0);
+    return { id: alb.id, title: alb.title, totalPhotos: alb.photos.length, totalDownloaded, sessions: history.length, lastDownload: history.length > 0 ? history[history.length - 1].downloadedAt : null };
+  }).filter(a => a.totalPhotos > 0);
+
+  const handleApproveRequest = (albumId: string, reqIdx: number) => {
+    const alb = albums.find(a => a.id === albumId);
+    if (!alb) return;
+    const updated = { ...alb };
+    updated.downloadRequests = updated.downloadRequests!.map((r, i) => i === reqIdx ? { ...r, status: "approved" as const, approvedAt: new Date().toISOString() } : r);
+    updateAlbum(updated);
+    toast.success("Download request approved — client can now download");
+  };
+
   const stats = [
     { label: "Total Bookings", value: bookings.length, icon: Calendar, color: "text-primary" },
     { label: "Paid", value: `$${paidIncome}`, icon: DollarSign, color: "text-green-400" },
     { label: "Unpaid", value: `$${unpaidIncome}`, icon: DollarSign, color: "text-destructive" },
-    { label: "Pending", value: `$${pendingIncome}`, icon: DollarSign, color: "text-yellow-400" },
+    { label: "Pending Requests", value: allPendingRequests.length, icon: Download, color: "text-yellow-400" },
   ];
 
   return (
@@ -179,6 +208,67 @@ function DashboardView() {
           </div>
         ))}
       </div>
+
+      {/* Pending Download Requests */}
+      {allPendingRequests.length > 0 && (
+        <>
+          <h3 className="font-display text-lg text-foreground mb-4 flex items-center gap-2">
+            <Download className="w-5 h-5 text-yellow-400" /> Pending Download Requests
+          </h3>
+          <div className="space-y-2 mb-8">
+            {allPendingRequests.map((req, i) => (
+              <div key={i} className="glass-panel rounded-xl p-4 flex items-center justify-between gap-4">
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-body text-foreground font-medium">{req._albumTitle}</p>
+                  <p className="text-xs font-body text-muted-foreground">
+                    {req.photoIds.length} photos · {req.method} · {new Date(req.requestedAt).toLocaleDateString()}
+                  </p>
+                  {req.clientNote && <p className="text-xs font-body text-muted-foreground mt-1 italic">"{req.clientNote}"</p>}
+                </div>
+                <Button size="sm" variant="outline" onClick={() => handleApproveRequest(req._albumId, req._reqIdx)}
+                  className="gap-1 text-xs font-body border-green-500/30 text-green-400 hover:bg-green-500/10 flex-shrink-0">
+                  <Unlock className="w-3 h-3" /> Approve
+                </Button>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {/* Album Download Stats */}
+      {albumDownloadStats.length > 0 && (
+        <>
+          <h3 className="font-display text-lg text-foreground mb-4 flex items-center gap-2">
+            <Image className="w-5 h-5 text-primary" /> Album Download Stats
+          </h3>
+          <div className="glass-panel rounded-xl overflow-hidden mb-8">
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead>
+                  <tr className="border-b border-border">
+                    <th className="text-left text-[10px] font-body tracking-wider uppercase text-muted-foreground p-4">Album</th>
+                    <th className="text-left text-[10px] font-body tracking-wider uppercase text-muted-foreground p-4">Photos</th>
+                    <th className="text-left text-[10px] font-body tracking-wider uppercase text-muted-foreground p-4">Downloads</th>
+                    <th className="text-left text-[10px] font-body tracking-wider uppercase text-muted-foreground p-4">Sessions</th>
+                    <th className="text-left text-[10px] font-body tracking-wider uppercase text-muted-foreground p-4">Last Download</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {albumDownloadStats.map(a => (
+                    <tr key={a.id} className="border-b border-border/50 hover:bg-secondary/30 transition-colors">
+                      <td className="p-4 text-sm font-body text-foreground">{a.title}</td>
+                      <td className="p-4 text-sm font-body text-muted-foreground">{a.totalPhotos}</td>
+                      <td className="p-4 text-sm font-body text-primary font-medium">{a.totalDownloaded}</td>
+                      <td className="p-4 text-sm font-body text-muted-foreground">{a.sessions}</td>
+                      <td className="p-4 text-sm font-body text-muted-foreground">{a.lastDownload ? new Date(a.lastDownload).toLocaleDateString() : "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
+      )}
 
       {bookings.length > 0 && (
         <>
@@ -232,7 +322,6 @@ function DashboardView() {
     </motion.div>
   );
 }
-
 // ─── Bookings ────────────────────────────────────────
 function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) => void }) {
   const [bookings, setBookingsState] = useState<Booking[]>(getBookings());
@@ -1286,6 +1375,24 @@ function PhotosView() {
         <div className="flex gap-2">
           {selectedIds.size > 0 && (
             <>
+              <Button size="sm" variant="outline" onClick={() => {
+                if (!confirm(`Delete ${selectedIds.size} selected photo(s) from library?`)) return;
+                const remaining = libraryPhotos.filter(p => !selectedIds.has(p.id));
+                setPhotoLibrary(remaining);
+                setLibraryPhotosState(remaining);
+                // Also delete from server if applicable
+                for (const id of selectedIds) {
+                  const photo = libraryPhotos.find(p => p.id === id);
+                  if (photo && isServerMode()) deletePhotoFromServer(photo.src);
+                }
+                setSelectedIds(new Set());
+                toast.success(`Deleted ${selectedIds.size} photos`);
+              }} className="gap-2 font-body text-xs border-destructive/30 text-destructive hover:bg-destructive/10">
+                <Trash2 className="w-4 h-4" /> Delete ({selectedIds.size})
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => setSelectedIds(new Set())} className="gap-1 font-body text-xs text-muted-foreground">
+                <XSquare className="w-4 h-4" /> Clear
+              </Button>
               <div className="relative">
                 <Button size="sm" variant="outline" onClick={() => setShowAddToAlbum(!showAddToAlbum)} className="gap-2 font-body text-xs border-border text-foreground">
                   <Plus className="w-4 h-4" /> Add to Album ({selectedIds.size})
@@ -1305,6 +1412,12 @@ function PhotosView() {
               </Button>
             </>
           )}
+          <Button size="sm" variant="ghost" onClick={() => {
+            if (selectedIds.size === displayPhotos.length) setSelectedIds(new Set());
+            else setSelectedIds(new Set(displayPhotos.map(p => p.id)));
+          }} className="gap-1 font-body text-xs text-muted-foreground">
+            <CheckSquare className="w-4 h-4" /> {selectedIds.size === displayPhotos.length && displayPhotos.length > 0 ? "Deselect All" : "Select All"}
+          </Button>
         </div>
       </div>
 
@@ -1778,5 +1891,124 @@ function GoogleCalendarSection() {
         </div>
       )}
     </div>
+  );
+}
+
+// ─── Storage View ────────────────────────────────────
+function StorageView() {
+  const albums = getAlbums();
+  const libraryPhotos = getPhotoLibrary();
+  const bookings = getBookings();
+  const eventTypes = getEventTypes();
+
+  const { used, limit } = getLocalStorageUsage();
+
+  // Calculate per-key sizes
+  const keySizes: { key: string; size: number }[] = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (key) {
+      const val = localStorage.getItem(key) || "";
+      keySizes.push({ key, size: val.length * 2 });
+    }
+  }
+  keySizes.sort((a, b) => b.size - a.size);
+
+  // Photo stats
+  const totalAlbumPhotos = albums.reduce((sum, a) => sum + a.photos.length, 0);
+  const totalLibraryPhotos = libraryPhotos.length;
+  const totalDownloads = albums.reduce((sum, a) => sum + (a.downloadHistory || []).reduce((s, h) => s + h.photoIds.length, 0), 0);
+  const totalRequests = albums.reduce((sum, a) => sum + (a.downloadRequests || []).length, 0);
+  const pendingRequests = albums.reduce((sum, a) => sum + (a.downloadRequests || []).filter(r => r.status === "pending").length, 0);
+
+  const usedPct = Math.min(100, (used / limit) * 100);
+
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+      <h2 className="font-display text-2xl text-foreground mb-6 flex items-center gap-2">
+        <HardDrive className="w-6 h-6 text-primary" /> Storage & Usage
+      </h2>
+
+      {/* Overview Stats */}
+      <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+        <div className="glass-panel rounded-xl p-5">
+          <p className="font-display text-2xl text-foreground">{albums.length}</p>
+          <p className="text-xs font-body text-muted-foreground tracking-wider uppercase">Albums</p>
+        </div>
+        <div className="glass-panel rounded-xl p-5">
+          <p className="font-display text-2xl text-foreground">{totalAlbumPhotos + totalLibraryPhotos}</p>
+          <p className="text-xs font-body text-muted-foreground tracking-wider uppercase">Total Photos</p>
+        </div>
+        <div className="glass-panel rounded-xl p-5">
+          <p className="font-display text-2xl text-primary">{totalDownloads}</p>
+          <p className="text-xs font-body text-muted-foreground tracking-wider uppercase">Total Downloads</p>
+        </div>
+        <div className="glass-panel rounded-xl p-5">
+          <p className="font-display text-2xl text-foreground">{bookings.length}</p>
+          <p className="text-xs font-body text-muted-foreground tracking-wider uppercase">Bookings</p>
+        </div>
+      </div>
+
+      {/* localStorage Usage */}
+      <div className="glass-panel rounded-xl p-6 mb-6">
+        <h3 className="font-display text-base text-foreground mb-4">LocalStorage Usage</h3>
+        <div className="mb-3">
+          <div className="flex items-center justify-between text-xs font-body text-muted-foreground mb-1.5">
+            <span>{formatBytes(used)} used</span>
+            <span>{formatBytes(limit)} limit</span>
+          </div>
+          <div className="h-3 rounded-full bg-secondary overflow-hidden">
+            <div className={`h-full rounded-full transition-all ${usedPct > 80 ? "bg-destructive" : usedPct > 50 ? "bg-yellow-500" : "bg-primary"}`} style={{ width: `${usedPct}%` }} />
+          </div>
+        </div>
+        <p className="text-[10px] font-body text-muted-foreground/50">
+          {isServerMode() ? "Server backend is active — photos are stored on disk, localStorage is used for metadata only." : "Running without server — all data stored in localStorage. Consider enabling the Docker backend for larger libraries."}
+        </p>
+      </div>
+
+      {/* Key Breakdown */}
+      <div className="glass-panel rounded-xl p-6 mb-6">
+        <h3 className="font-display text-base text-foreground mb-4">Storage Breakdown</h3>
+        <div className="space-y-2 max-h-64 overflow-y-auto">
+          {keySizes.map(({ key, size }) => (
+            <div key={key} className="flex items-center justify-between p-2 rounded-lg hover:bg-secondary/30 transition-colors">
+              <span className="text-xs font-body text-foreground font-mono truncate max-w-[60%]">{key}</span>
+              <div className="flex items-center gap-3">
+                <div className="w-24 h-1.5 rounded-full bg-secondary overflow-hidden">
+                  <div className="h-full rounded-full bg-primary/50" style={{ width: `${Math.min(100, (size / used) * 100)}%` }} />
+                </div>
+                <span className="text-[10px] font-body text-muted-foreground w-16 text-right">{formatBytes(size)}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Download & Request Stats */}
+      <div className="glass-panel rounded-xl p-6">
+        <h3 className="font-display text-base text-foreground mb-4">Activity Summary</h3>
+        <div className="grid sm:grid-cols-2 gap-4">
+          <div className="p-4 rounded-lg bg-secondary/50 border border-border/50">
+            <p className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1">Event Types</p>
+            <p className="font-display text-xl text-foreground">{eventTypes.length}</p>
+            <p className="text-[10px] font-body text-muted-foreground">{eventTypes.filter(e => e.active).length} active</p>
+          </div>
+          <div className="p-4 rounded-lg bg-secondary/50 border border-border/50">
+            <p className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1">Library Photos</p>
+            <p className="font-display text-xl text-foreground">{totalLibraryPhotos}</p>
+          </div>
+          <div className="p-4 rounded-lg bg-secondary/50 border border-border/50">
+            <p className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1">Download Requests</p>
+            <p className="font-display text-xl text-foreground">{totalRequests}</p>
+            <p className="text-[10px] font-body text-muted-foreground">{pendingRequests} pending</p>
+          </div>
+          <div className="p-4 rounded-lg bg-secondary/50 border border-border/50">
+            <p className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1">Photo Downloads</p>
+            <p className="font-display text-xl text-primary">{totalDownloads}</p>
+            <p className="text-[10px] font-body text-muted-foreground">across {albums.filter(a => (a.downloadHistory || []).length > 0).length} albums</p>
+          </div>
+        </div>
+      </div>
+    </motion.div>
   );
 }

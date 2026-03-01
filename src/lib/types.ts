@@ -83,6 +83,15 @@ export interface AlbumDownloadRecord {
   requestedAt: string;
   approvedAt?: string;
   clientNote?: string;
+  albumTitle?: string;
+  albumId?: string;
+}
+
+export interface DownloadHistoryEntry {
+  photoIds: string[];
+  downloadedAt: string;
+  quality: DownloadQuality;
+  sessionKey: string;
 }
 
 export interface Album {
@@ -106,6 +115,7 @@ export interface Album {
   allUnlocked?: boolean;
   usedFreeDownloads?: Record<string, number>; // keyed by accessCode or session
   downloadRequests?: AlbumDownloadRecord[];
+  downloadHistory?: DownloadHistoryEntry[];
   displaySize?: AlbumDisplaySize;
 }
 

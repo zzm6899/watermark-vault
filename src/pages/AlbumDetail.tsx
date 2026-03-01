@@ -20,7 +20,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Label } from "@/components/ui/label";
-import type { Album, AlbumDownloadRecord, DownloadQuality } from "@/lib/types";
+import type { Album, AlbumDownloadRecord, DownloadQuality, DownloadHistoryEntry } from "@/lib/types";
 
 function getSessionKey(album: Album, pin: string): string {
   return pin || `session-${album.id}`;
@@ -155,6 +155,14 @@ export default function AlbumDetail() {
 
     const updated = { ...album };
     updated.usedFreeDownloads = { ...(updated.usedFreeDownloads || {}), [sessionKey]: freeUsed + canDownload };
+    // Track download history
+    const historyEntry: DownloadHistoryEntry = {
+      photoIds: toDownload.map(p => p.id),
+      downloadedAt: new Date().toISOString(),
+      quality: downloadQuality,
+      sessionKey,
+    };
+    updated.downloadHistory = [...(updated.downloadHistory || []), historyEntry];
     updateAlbum(updated);
     refreshAlbum();
     setSelectedIds(new Set());
@@ -176,6 +184,17 @@ export default function AlbumDetail() {
     for (const p of photos) {
       await downloadPhoto(p, downloadQuality);
     }
+    // Track download history
+    const updated = { ...album };
+    const historyEntry: DownloadHistoryEntry = {
+      photoIds: photos.map(p => p.id),
+      downloadedAt: new Date().toISOString(),
+      quality: downloadQuality,
+      sessionKey,
+    };
+    updated.downloadHistory = [...(updated.downloadHistory || []), historyEntry];
+    updateAlbum(updated);
+    refreshAlbum();
     setSelectedIds(new Set());
     setShowDownloadOptions(false);
     setDownloading(false);
@@ -187,6 +206,7 @@ export default function AlbumDetail() {
   };
 
   const handlePurchaseAlbum = () => {
+    // Always go to payment portal for full album
     setShowPaymentChoice(true);
   };
 
