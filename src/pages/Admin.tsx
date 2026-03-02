@@ -2505,9 +2505,7 @@ function EmailTemplatesManager() {
   return (
     <div className="glass-panel rounded-xl p-6 space-y-4">
       <div className="flex items-center justify-between">
-        <h3 className="font-display text-base text-foreground flex items-center gap-2">
-          <Mail className="w-4 h-4 text-primary" /> Email Templates
-        </h3>
+        <h3 className="font-display text-base text-foreground">Email Templates</h3>
         <Button size="sm" variant="outline" onClick={() => { setShowForm(!showForm); setEditingId(null); setNewName(""); setNewSubject(""); setNewBody(""); }}
           className="gap-1.5 font-body text-xs">
           <Plus className="w-3 h-3" /> {showForm ? "Cancel" : "New Template"}
