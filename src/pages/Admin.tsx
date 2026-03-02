@@ -371,6 +371,13 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
   const [customEmailBody, setCustomEmailBody] = useState("");
   const [sendingCustomEmail, setSendingCustomEmail] = useState(false);
   const [showEmailPreview, setShowEmailPreview] = useState(false);
+  const [selectedBookingIds, setSelectedBookingIds] = useState<Set<string>>(new Set());
+  const [bulkEmailOpen, setBulkEmailOpen] = useState(false);
+  const [bulkEmailSubject, setBulkEmailSubject] = useState("");
+  const [bulkEmailBody, setBulkEmailBody] = useState("");
+  const [sendingBulkEmail, setSendingBulkEmail] = useState(false);
+  const [showBulkPreview, setShowBulkPreview] = useState(false);
+  const [bulkEmailProgress, setBulkEmailProgress] = useState<{ sent: number; total: number } | null>(null);
   const emailTemplates = getEmailTemplates();
   const settings = getSettings();
   const eventTypes = getEventTypes();
@@ -453,13 +460,129 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
         <h2 className="font-display text-2xl text-foreground">Bookings</h2>
-        {bookings.length > 0 && isServerMode() && (
-          <Button size="sm" variant="outline" onClick={handleSheetsSync} disabled={sheetsSyncing} className="w-full sm:w-auto">
-            <ExternalLink className="w-3.5 h-3.5 mr-1.5" />
-            {sheetsSyncing ? "Syncing…" : "Export to Google Sheets"}
-          </Button>
-        )}
+        <div className="flex items-center gap-2 flex-wrap">
+          {bookings.length > 0 && (
+            <Button size="sm" variant={selectedBookingIds.size > 0 ? "default" : "outline"}
+              onClick={() => { if (selectedBookingIds.size > 0) { setSelectedBookingIds(new Set()); setBulkEmailOpen(false); } else { setSelectedBookingIds(new Set(sortedBookings.filter(b => b.clientEmail).map(b => b.id))); } }}
+              className="gap-1.5 font-body text-xs">
+              <CheckSquare className="w-3.5 h-3.5" />
+              {selectedBookingIds.size > 0 ? `${selectedBookingIds.size} Selected` : "Select All"}
+            </Button>
+          )}
+          {selectedBookingIds.size > 0 && isServerMode() && (
+            <Button size="sm" variant="outline" onClick={() => setBulkEmailOpen(!bulkEmailOpen)}
+              className="gap-1.5 font-body text-xs border-primary/30 text-primary hover:bg-primary/10">
+              <Mail className="w-3.5 h-3.5" /> Bulk Email ({selectedBookingIds.size})
+            </Button>
+          )}
+          {bookings.length > 0 && isServerMode() && (
+            <Button size="sm" variant="outline" onClick={handleSheetsSync} disabled={sheetsSyncing} className="font-body text-xs">
+              <ExternalLink className="w-3.5 h-3.5 mr-1.5" />
+              {sheetsSyncing ? "Syncing…" : "Export to Sheets"}
+            </Button>
+          )}
+        </div>
       </div>
+
+      {/* Bulk Email Panel */}
+      {bulkEmailOpen && selectedBookingIds.size > 0 && (
+        <div className="glass-panel rounded-xl p-4 mb-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <p className="text-xs font-body text-muted-foreground">
+              Bulk email to <span className="text-foreground font-medium">{selectedBookingIds.size} clients</span>
+            </p>
+            <Button size="sm" variant="ghost" onClick={() => setBulkEmailOpen(false)} className="h-7 w-7 p-0">
+              <X className="w-3.5 h-3.5" />
+            </Button>
+          </div>
+
+          {emailTemplates.length > 0 && (
+            <div>
+              <label className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Load Template</label>
+              <div className="flex flex-wrap gap-1.5">
+                {emailTemplates.map(t => (
+                  <button key={t.id} onClick={() => {
+                    setBulkEmailSubject(t.subject);
+                    setBulkEmailBody(t.body);
+                    setShowBulkPreview(false);
+                  }} className="text-[10px] font-body px-2.5 py-1 rounded-full bg-primary/10 text-primary hover:bg-primary/20 transition-colors">
+                    {t.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <Input value={bulkEmailSubject} onChange={e => { setBulkEmailSubject(e.target.value); setShowBulkPreview(false); }} placeholder="Email subject… (supports {{clientName}}, {{eventTitle}}, etc.)" className="bg-secondary border-border text-foreground font-body text-sm" />
+          <Textarea value={bulkEmailBody} onChange={e => { setBulkEmailBody(e.target.value); setShowBulkPreview(false); }} placeholder="Email body… Variables will be replaced per recipient." className="bg-secondary border-border text-foreground font-body text-sm min-h-[100px]" />
+
+          {/* Bulk Preview — shows first selected booking as example */}
+          {showBulkPreview && bulkEmailSubject.trim() && bulkEmailBody.trim() && (() => {
+            const sample = bookings.find(b => selectedBookingIds.has(b.id));
+            if (!sample) return null;
+            const replaceVars = (text: string, bk: Booking) => text.replace(/\{\{clientName\}\}/g, bk.clientName).replace(/\{\{eventTitle\}\}/g, bk.type || "").replace(/\{\{date\}\}/g, bk.date).replace(/\{\{time\}\}/g, bk.time).replace(/\{\{amount\}\}/g, String(bk.paymentAmount || 0));
+            return (
+              <div className="rounded-lg border border-border/50 overflow-hidden">
+                <div className="px-3 py-2 bg-muted/30 border-b border-border/50">
+                  <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground">Preview (showing: {sample.clientName})</p>
+                </div>
+                <div className="p-4 bg-background/50">
+                  <p className="text-xs font-body text-muted-foreground mb-1">To: <span className="text-foreground">{sample.clientEmail}</span></p>
+                  <p className="text-xs font-body text-muted-foreground mb-3">Subject: <span className="text-foreground font-medium">{replaceVars(bulkEmailSubject, sample)}</span></p>
+                  <div className="rounded-lg p-4" style={{ background: "#0a0a0a", color: "#f5f5f5", fontFamily: "sans-serif", maxWidth: 520 }}>
+                    <p style={{ color: "#ccc", lineHeight: 1.8, whiteSpace: "pre-wrap" }} dangerouslySetInnerHTML={{ __html: replaceVars(bulkEmailBody, sample).replace(/\n/g, "<br/>") }} />
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
+
+          {bulkEmailProgress && (
+            <div className="flex items-center gap-2">
+              <div className="flex-1 h-1.5 bg-secondary rounded-full overflow-hidden">
+                <div className="h-full bg-primary rounded-full transition-all" style={{ width: `${(bulkEmailProgress.sent / bulkEmailProgress.total) * 100}%` }} />
+              </div>
+              <span className="text-[10px] font-body text-muted-foreground">{bulkEmailProgress.sent}/{bulkEmailProgress.total}</span>
+            </div>
+          )}
+
+          <div className="flex items-center gap-2 flex-wrap">
+            <Button size="sm" variant="outline" onClick={() => setShowBulkPreview(!showBulkPreview)}
+              disabled={!bulkEmailSubject.trim() || !bulkEmailBody.trim()}
+              className="gap-1.5 font-body text-xs border-border text-foreground hover:bg-secondary">
+              <Eye className="w-3 h-3" /> {showBulkPreview ? "Hide Preview" : "Preview"}
+            </Button>
+            <Button size="sm" disabled={sendingBulkEmail || !bulkEmailSubject.trim() || !bulkEmailBody.trim()}
+              className="gap-1.5 bg-primary text-primary-foreground font-body text-xs"
+              onClick={async () => {
+                const selected = bookings.filter(b => selectedBookingIds.has(b.id) && b.clientEmail);
+                if (selected.length === 0) return;
+                if (!confirm(`Send email to ${selected.length} clients?`)) return;
+                setSendingBulkEmail(true);
+                setBulkEmailProgress({ sent: 0, total: selected.length });
+                let sent = 0;
+                for (const bk of selected) {
+                  const subj = bulkEmailSubject.replace(/\{\{clientName\}\}/g, bk.clientName).replace(/\{\{eventTitle\}\}/g, bk.type || "").replace(/\{\{date\}\}/g, bk.date).replace(/\{\{time\}\}/g, bk.time).replace(/\{\{amount\}\}/g, String(bk.paymentAmount || 0));
+                  const body = bulkEmailBody.replace(/\{\{clientName\}\}/g, bk.clientName).replace(/\{\{eventTitle\}\}/g, bk.type || "").replace(/\{\{date\}\}/g, bk.date).replace(/\{\{time\}\}/g, bk.time).replace(/\{\{amount\}\}/g, String(bk.paymentAmount || 0));
+                  const html = `<div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:32px;background:#0a0a0a;color:#f5f5f5;border-radius:12px;"><p style="color:#ccc;line-height:1.8;white-space:pre-wrap;">${body.replace(/\n/g, "<br/>")}</p></div>`;
+                  await sendCustomEmail(bk.clientEmail, subj, html, body, bk.id);
+                  sent++;
+                  setBulkEmailProgress({ sent, total: selected.length });
+                }
+                setSendingBulkEmail(false);
+                setBulkEmailProgress(null);
+                toast.success(`Sent ${sent} emails successfully`);
+                setBulkEmailOpen(false);
+                setSelectedBookingIds(new Set());
+                setBulkEmailSubject("");
+                setBulkEmailBody("");
+              }}>
+              <Send className="w-3 h-3" />
+              {sendingBulkEmail ? "Sending…" : `Send to ${selectedBookingIds.size} Clients`}
+            </Button>
+          </div>
+        </div>
+      )}
 
       {bookings.length === 0 ? (
         <div className="glass-panel rounded-xl p-12 text-center">
@@ -499,6 +622,22 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                   }}>
                   <div className="flex flex-col sm:flex-row sm:items-center gap-3">
                     <div className="flex items-center gap-3 flex-1 min-w-0">
+                      {selectedBookingIds.size > 0 && (
+                        <button className="flex-shrink-0" onClick={(e) => {
+                          e.stopPropagation();
+                          setSelectedBookingIds(prev => {
+                            const next = new Set(prev);
+                            if (next.has(bk.id)) next.delete(bk.id); else next.add(bk.id);
+                            return next;
+                          });
+                        }}>
+                          <div className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-colors ${
+                            selectedBookingIds.has(bk.id) ? "bg-primary border-primary" : "border-border"
+                          }`}>
+                            {selectedBookingIds.has(bk.id) && <CheckSquare className="w-3 h-3 text-primary-foreground" />}
+                          </div>
+                        </button>
+                      )}
                       <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
                         <Users className="w-4 h-4 text-primary" />
                       </div>
