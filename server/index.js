@@ -22,10 +22,16 @@ if (!fs.existsSync(DB_FILE)) {
   fs.writeFileSync(DB_FILE, JSON.stringify({}));
 }
 
+function parseStoredValue(raw) {
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw === "string") { try { return JSON.parse(raw); } catch { return raw; } }
+  return raw; // already parsed by express.json
+}
+
 function getDiscordWebhookUrl() {
   try {
     const db = readDb();
-    const settings = db["wv_settings"] ? JSON.parse(db["wv_settings"]) : null;
+    const settings = parseStoredValue(db["wv_settings"]);
     return settings?.discordWebhookUrl || null;
   } catch { return null; }
 }
@@ -141,23 +147,24 @@ app.put("/api/store/:key", (req, res) => {
   // Fire Discord notifications for booking changes (fire-and-forget)
   if (key === "wv_bookings") {
     try {
-      const newBookings = JSON.parse(req.body.value);
-      const oldBookings = oldValue ? JSON.parse(oldValue) : [];
-      const oldMap = Object.fromEntries(oldBookings.map(b => [b.id, b]));
-      const webhookUrl = getDiscordWebhookUrl();
-      if (webhookUrl) {
-        for (const booking of newBookings) {
-          if (!oldMap[booking.id]) {
-            // Brand new booking
-            notifyNewBooking(webhookUrl, booking).catch(() => {});
-          } else if (oldMap[booking.id].status !== booking.status) {
-            // Status changed
-            notifyBookingUpdate(webhookUrl, booking, oldMap[booking.id].status, booking.status).catch(() => {});
+      // req.body.value may be already-parsed array (express.json middleware) or a string
+      const newBookings = parseStoredValue(req.body.value) || [];
+      const oldBookings = parseStoredValue(oldValue) || [];
+      if (Array.isArray(newBookings) && newBookings.length > 0) {
+        const oldMap = Object.fromEntries(oldBookings.map(b => [b.id, b]));
+        const webhookUrl = getDiscordWebhookUrl();
+        if (webhookUrl) {
+          for (const booking of newBookings) {
+            if (!oldMap[booking.id]) {
+              notifyNewBooking(webhookUrl, booking).catch(() => {});
+            } else if (oldMap[booking.id].status !== booking.status) {
+              notifyBookingUpdate(webhookUrl, booking, oldMap[booking.id].status, booking.status).catch(() => {});
+            }
           }
         }
       }
     } catch (e) {
-      // Silent — never break the store write
+      console.error("Discord notify error:", e.message);
     }
   }
 });
