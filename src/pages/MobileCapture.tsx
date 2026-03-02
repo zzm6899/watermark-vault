@@ -10,14 +10,21 @@ import { toast } from "@/hooks/use-toast";
 import { getBookings, getAlbums, getSettings, updateAlbum, addAlbum } from "@/lib/storage";
 import { uploadPhotosToServer, isServerMode } from "@/lib/api";
 import { generateThumbnail } from "@/lib/image-utils";
+import CameraUsb from "@/plugins/camera-usb";
+import type { CameraFile } from "@/plugins/camera-usb";
+import { Capacitor } from "@capacitor/core";
 import type { Booking, Album, Photo } from "@/lib/types";
 import {
   Camera, Upload, CheckCircle, ArrowLeft, FolderOpen,
   Wifi, WifiOff, Zap, Image as ImageIcon, RefreshCw,
+  Usb, AlertCircle, Download,
 } from "lucide-react";
 
 export default function MobileCapture() {
   const navigate = useNavigate();
+  const isNative = Capacitor.isNativePlatform();
+
+  // ── State ──
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [albums, setAlbums] = useState<Album[]>([]);
   const [selectedBooking, setSelectedBooking] = useState<Booking | null>(null);
@@ -31,12 +38,64 @@ export default function MobileCapture() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const watchInputRef = useRef<HTMLInputElement>(null);
 
+  // USB camera state
+  const [cameraConnected, setCameraConnected] = useState(false);
+  const [cameraName, setCameraName] = useState("");
+  const [cameraFiles, setCameraFiles] = useState<CameraFile[]>([]);
+  const [importing, setImporting] = useState(false);
+  const [importProgress, setImportProgress] = useState(0);
+  const [watching, setWatching] = useState(false);
+
   useEffect(() => {
     const bks = getBookings().filter(b => b.status !== "cancelled");
     setBookings(bks);
     setAlbums(getAlbums());
     setServerOnline(isServerMode());
   }, []);
+
+  // Check USB camera connection
+  const checkCamera = useCallback(async () => {
+    if (!isNative) return;
+    try {
+      const { connected, deviceName } = await CameraUsb.isConnected();
+      setCameraConnected(connected);
+      setCameraName(deviceName);
+      if (connected) {
+        const { granted } = await CameraUsb.requestPermission();
+        if (granted) {
+          const { files } = await CameraUsb.listFiles({ limit: 50 });
+          setCameraFiles(files);
+        }
+      }
+    } catch {
+      setCameraConnected(false);
+    }
+  }, [isNative]);
+
+  // Poll camera connection status
+  useEffect(() => {
+    if (!isNative) return;
+    checkCamera();
+    const interval = setInterval(checkCamera, 5000);
+    return () => clearInterval(interval);
+  }, [isNative, checkCamera]);
+
+  // Listen for new files in watch mode
+  useEffect(() => {
+    if (!isNative || !watching) return;
+
+    const listener = CameraUsb.addListener?.("newFiles" as any, async (event: any) => {
+      const newFiles: CameraFile[] = event.files || [];
+      if (newFiles.length > 0 && targetAlbum) {
+        toast({ title: `${newFiles.length} new photo(s) detected`, description: "Auto-importing…" });
+        await importCameraFiles(newFiles.map(f => f.handle));
+      }
+    });
+
+    return () => {
+      listener?.then?.((l: any) => l.remove?.());
+    };
+  }, [isNative, watching, targetAlbum]);
 
   // Find or create album for booking
   const getOrCreateAlbum = useCallback((booking: Booking): Album => {
@@ -72,8 +131,110 @@ export default function MobileCapture() {
     const album = getOrCreateAlbum(booking);
     setTargetAlbum(album);
     setUploadedCount(0);
+    // Refresh camera files
+    if (isNative) checkCamera();
   };
 
+  // ── Import from USB Camera ──
+  const importCameraFiles = async (handles: number[]) => {
+    if (!targetAlbum || handles.length === 0) return;
+
+    setImporting(true);
+    setImportProgress(0);
+
+    try {
+      // Import files from camera to local storage
+      const { files: imported } = await CameraUsb.importFiles({ handles });
+      setImportProgress(50);
+
+      // Now upload to server
+      const newPhotos: Photo[] = [];
+
+      if (serverOnline) {
+        // Fetch the local files and upload to server
+        for (let i = 0; i < imported.length; i++) {
+          const f = imported[i];
+          try {
+            const response = await fetch(f.uri);
+            const blob = await response.blob();
+            const file = new File([blob], f.localPath.split("/").pop() || `photo_${i}.jpg`, { type: "image/jpeg" });
+
+            const results = await uploadPhotosToServer([file], () => {});
+            for (const r of results) {
+              const thumb = await generateThumbnail(r.url, 300, 0.6).catch(() => r.url);
+              newPhotos.push({
+                id: r.id,
+                src: r.url,
+                thumbnail: thumb,
+                title: r.originalName,
+                width: 0,
+                height: 0,
+                proofing: true,
+              });
+            }
+          } catch (e) {
+            console.error("Upload error for file:", f.localPath, e);
+          }
+          setImportProgress(50 + Math.round(((i + 1) / imported.length) * 50));
+        }
+      } else {
+        // Offline — just create local entries
+        for (const f of imported) {
+          newPhotos.push({
+            id: crypto.randomUUID(),
+            src: f.uri,
+            thumbnail: f.uri,
+            title: f.localPath.split("/").pop() || "photo",
+            width: 0,
+            height: 0,
+            proofing: true,
+          });
+        }
+        setImportProgress(100);
+      }
+
+      if (newPhotos.length > 0) {
+        const freshAlbum = getAlbums().find(a => a.id === targetAlbum.id) || targetAlbum;
+        const updated: Album = {
+          ...freshAlbum,
+          photos: [...freshAlbum.photos, ...newPhotos],
+          photoCount: freshAlbum.photos.length + newPhotos.length,
+          coverImage: freshAlbum.coverImage || (newPhotos[0]?.src ?? ""),
+        };
+        updateAlbum(updated);
+        setTargetAlbum(updated);
+        setUploadedCount(prev => prev + newPhotos.length);
+        toast({ title: `${newPhotos.length} photos imported`, description: "Tagged as proofing" });
+      }
+
+      // Remove imported files from the camera files list
+      setCameraFiles(prev => prev.filter(f => !handles.includes(f.handle)));
+    } catch (err) {
+      console.error(err);
+      toast({ title: "Import error", variant: "destructive" });
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const importAllCameraFiles = () => {
+    importCameraFiles(cameraFiles.map(f => f.handle));
+  };
+
+  // Toggle live watching
+  const toggleLiveWatch = async () => {
+    if (watching) {
+      await CameraUsb.stopWatching();
+      setWatching(false);
+      toast({ title: "Live capture stopped" });
+    } else {
+      await CameraUsb.startWatching({ intervalMs: 2000 });
+      setWatching(true);
+      toast({ title: "Live capture started", description: "New photos will auto-import" });
+    }
+  };
+
+  // ── File picker fallback (web or manual) ──
   const handleFilePick = async (files: FileList | null) => {
     if (!files || files.length === 0 || !targetAlbum) return;
 
@@ -83,20 +244,16 @@ export default function MobileCapture() {
       return;
     }
 
-    // Save locally first (backup)
     setPendingFiles(prev => [...prev, ...imageFiles]);
-
     setUploading(true);
     setUploadProgress(0);
 
     try {
       if (serverOnline) {
-        // Upload to server
         const results = await uploadPhotosToServer(imageFiles, (done, total) => {
           setUploadProgress(Math.round((done / total) * 100));
         });
 
-        // Create photo entries with proofing tag
         const newPhotos: Photo[] = [];
         for (const r of results) {
           const thumb = await generateThumbnail(r.url, 300, 0.6).catch(() => r.url);
@@ -107,11 +264,10 @@ export default function MobileCapture() {
             title: r.originalName,
             width: 0,
             height: 0,
-            proofing: true, // mark as unedited
+            proofing: true,
           });
         }
 
-        // Update album
         const freshAlbum = getAlbums().find(a => a.id === targetAlbum.id) || targetAlbum;
         const updated: Album = {
           ...freshAlbum,
@@ -134,10 +290,8 @@ export default function MobileCapture() {
     }
   };
 
-  // Live mode: auto-upload when files are picked
   const handleLiveCapture = (e: React.ChangeEvent<HTMLInputElement>) => {
     handleFilePick(e.target.files);
-    // Reset so same files can be re-selected
     if (e.target) e.target.value = "";
   };
 
@@ -150,14 +304,22 @@ export default function MobileCapture() {
             <ArrowLeft className="w-5 h-5" />
           </Button>
           <h1 className="text-xl font-display text-foreground">Mobile Capture</h1>
-          <Badge variant={serverOnline ? "default" : "destructive"} className="ml-auto gap-1">
-            {serverOnline ? <Wifi className="w-3 h-3" /> : <WifiOff className="w-3 h-3" />}
-            {serverOnline ? "Online" : "Offline"}
-          </Badge>
+          <div className="ml-auto flex items-center gap-2">
+            {isNative && (
+              <Badge variant={cameraConnected ? "default" : "outline"} className="gap-1">
+                <Usb className="w-3 h-3" />
+                {cameraConnected ? cameraName || "Camera" : "No Camera"}
+              </Badge>
+            )}
+            <Badge variant={serverOnline ? "default" : "destructive"} className="gap-1">
+              {serverOnline ? <Wifi className="w-3 h-3" /> : <WifiOff className="w-3 h-3" />}
+              {serverOnline ? "Online" : "Offline"}
+            </Badge>
+          </div>
         </div>
 
         <p className="text-muted-foreground text-sm mb-4 font-body">
-          Select a session to start uploading photos from your camera.
+          Select a session to start {isNative && cameraConnected ? "importing from your camera" : "uploading photos"}.
         </p>
 
         <ScrollArea className="h-[calc(100vh-140px)]">
@@ -207,16 +369,23 @@ export default function MobileCapture() {
   return (
     <div className="min-h-screen bg-background p-4">
       <div className="flex items-center gap-3 mb-4">
-        <Button variant="ghost" size="icon" onClick={() => { setSelectedBooking(null); setTargetAlbum(null); }}>
+        <Button variant="ghost" size="icon" onClick={() => { setSelectedBooking(null); setTargetAlbum(null); setWatching(false); CameraUsb.stopWatching().catch(() => {}); }}>
           <ArrowLeft className="w-5 h-5" />
         </Button>
         <div className="flex-1 min-w-0">
           <h1 className="text-lg font-display text-foreground truncate">{selectedBooking.clientName}</h1>
           <p className="text-xs text-muted-foreground font-body">{selectedBooking.type} · {selectedBooking.date}</p>
         </div>
-        <Badge variant={serverOnline ? "default" : "destructive"} className="gap-1">
-          {serverOnline ? <Wifi className="w-3 h-3" /> : <WifiOff className="w-3 h-3" />}
-        </Badge>
+        <div className="flex items-center gap-2">
+          {isNative && (
+            <Badge variant={cameraConnected ? "default" : "outline"} className="gap-1">
+              <Usb className="w-3 h-3" />
+            </Badge>
+          )}
+          <Badge variant={serverOnline ? "default" : "destructive"} className="gap-1">
+            {serverOnline ? <Wifi className="w-3 h-3" /> : <WifiOff className="w-3 h-3" />}
+          </Badge>
+        </div>
       </div>
 
       {/* Stats */}
@@ -231,59 +400,102 @@ export default function MobileCapture() {
             <p className="text-xs text-muted-foreground font-body">This Session</p>
           </div>
           <div>
-            <p className="text-2xl font-display text-foreground">{pendingFiles.length}</p>
-            <p className="text-xs text-muted-foreground font-body">Local Backup</p>
+            <p className="text-2xl font-display text-foreground">{isNative ? cameraFiles.length : pendingFiles.length}</p>
+            <p className="text-xs text-muted-foreground font-body">{isNative ? "On Camera" : "Local Backup"}</p>
           </div>
         </div>
       </Card>
 
-      {/* Upload Progress */}
-      {uploading && (
+      {/* Import / Upload Progress */}
+      {(uploading || importing) && (
         <Card className="p-4 mb-4">
           <div className="flex items-center gap-2 mb-2">
             <RefreshCw className="w-4 h-4 animate-spin text-primary" />
-            <span className="text-sm font-body text-foreground">Uploading…</span>
-            <span className="text-sm font-body text-muted-foreground ml-auto">{uploadProgress}%</span>
+            <span className="text-sm font-body text-foreground">{importing ? "Importing from camera…" : "Uploading…"}</span>
+            <span className="text-sm font-body text-muted-foreground ml-auto">{importing ? importProgress : uploadProgress}%</span>
           </div>
-          <Progress value={uploadProgress} className="h-2" />
+          <Progress value={importing ? importProgress : uploadProgress} className="h-2" />
         </Card>
       )}
 
-      {/* Live Mode Toggle */}
-      <Card className="p-4 mb-4">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Zap className={`w-4 h-4 ${liveMode ? "text-primary" : "text-muted-foreground"}`} />
-            <div>
-              <p className="text-sm font-display text-foreground">Live Upload Mode</p>
-              <p className="text-xs text-muted-foreground font-body">Auto-upload as you capture</p>
-            </div>
-          </div>
-          <Switch checked={liveMode} onCheckedChange={setLiveMode} />
-        </div>
-      </Card>
+      {/* USB Camera Section (Native only) */}
+      {isNative && (
+        <Card className="p-4 mb-4">
+          {cameraConnected ? (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Usb className="w-4 h-4 text-primary" />
+                  <div>
+                    <p className="text-sm font-display text-foreground">{cameraName || "Camera Connected"}</p>
+                    <p className="text-xs text-muted-foreground font-body">{cameraFiles.length} photos available</p>
+                  </div>
+                </div>
+                <Button size="sm" variant="outline" onClick={checkCamera}>
+                  <RefreshCw className="w-3 h-3 mr-1" /> Refresh
+                </Button>
+              </div>
 
-      {/* Action Buttons */}
+              {/* Live Watch Toggle */}
+              <div className="flex items-center justify-between pt-2 border-t border-border">
+                <div className="flex items-center gap-2">
+                  <Zap className={`w-4 h-4 ${watching ? "text-primary animate-pulse" : "text-muted-foreground"}`} />
+                  <div>
+                    <p className="text-sm font-display text-foreground">Live Capture</p>
+                    <p className="text-xs text-muted-foreground font-body">Auto-import new shots</p>
+                  </div>
+                </div>
+                <Switch checked={watching} onCheckedChange={toggleLiveWatch} />
+              </div>
+
+              {/* Import buttons */}
+              {cameraFiles.length > 0 && !watching && (
+                <div className="flex gap-2 pt-2">
+                  <Button
+                    className="flex-1"
+                    onClick={importAllCameraFiles}
+                    disabled={importing}
+                  >
+                    <Download className="w-4 h-4 mr-2" />
+                    Import All ({cameraFiles.length})
+                  </Button>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="flex items-center gap-3 text-muted-foreground">
+              <AlertCircle className="w-5 h-5" />
+              <div>
+                <p className="text-sm font-display text-foreground">No camera detected</p>
+                <p className="text-xs font-body">Connect your Nikon Z6III via USB-C</p>
+              </div>
+            </div>
+          )}
+        </Card>
+      )}
+
+      {/* Manual file picker (always available as fallback) */}
       <div className="grid grid-cols-2 gap-3 mb-4">
         <Button
           size="lg"
-          className="h-20 flex-col gap-2"
+          variant="secondary"
+          className="h-16 flex-col gap-2"
           onClick={() => fileInputRef.current?.click()}
-          disabled={uploading}
+          disabled={uploading || importing}
         >
-          <FolderOpen className="w-6 h-6" />
+          <FolderOpen className="w-5 h-5" />
           <span className="text-xs font-body">Browse Files</span>
         </Button>
 
         <Button
           size="lg"
-          variant={liveMode ? "default" : "secondary"}
-          className="h-20 flex-col gap-2"
+          variant="secondary"
+          className="h-16 flex-col gap-2"
           onClick={() => watchInputRef.current?.click()}
-          disabled={uploading}
+          disabled={uploading || importing}
         >
-          <Camera className="w-6 h-6" />
-          <span className="text-xs font-body">{liveMode ? "Capture & Upload" : "Take Photo"}</span>
+          <Camera className="w-5 h-5" />
+          <span className="text-xs font-body">Phone Camera</span>
         </Button>
       </div>
 
