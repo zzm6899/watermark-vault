@@ -34,6 +34,16 @@ async function sendDiscordEmbed(webhookUrl, embed) {
  */
 async function notifyNewBooking(webhookUrl, booking) {
   if (!webhookUrl) return;
+
+  const paymentLabels = {
+    paid: "✅ Paid",
+    "deposit-paid": "💰 Deposit Paid",
+    cash: "💵 Cash",
+    "pending-confirmation": "🏦 Bank Pending",
+    unpaid: "⏳ Unpaid",
+  };
+  const paymentLabel = paymentLabels[booking.paymentStatus] || booking.paymentStatus || "—";
+
   const fields = [
     { name: "Client", value: booking.clientName || "Unknown", inline: true },
     { name: "Date", value: booking.date || "—", inline: true },
@@ -42,9 +52,13 @@ async function notifyNewBooking(webhookUrl, booking) {
     { name: "Duration", value: booking.duration ? `${booking.duration}min` : "—", inline: true },
     { name: "Status", value: booking.status || "pending", inline: true },
   ];
+  if (booking.paymentAmount) fields.push({ name: "Price", value: `$${booking.paymentAmount}`, inline: true });
+  if (booking.depositRequired && booking.depositAmount) {
+    fields.push({ name: "Deposit", value: `$${booking.depositAmount}`, inline: true });
+  }
+  fields.push({ name: "Payment", value: paymentLabel, inline: true });
   if (booking.clientEmail) fields.push({ name: "Email", value: booking.clientEmail, inline: true });
   if (booking.instagramHandle) fields.push({ name: "Instagram", value: `@${booking.instagramHandle.replace("@", "")}`, inline: true });
-  if (booking.paymentAmount) fields.push({ name: "Amount", value: `$${booking.paymentAmount}`, inline: true });
   if (booking.notes) fields.push({ name: "Notes", value: booking.notes.slice(0, 200), inline: false });
 
   await sendDiscordEmbed(webhookUrl, {
@@ -97,15 +111,30 @@ async function notifyBookingUpdate(webhookUrl, booking, oldStatus, newStatus) {
   };
   const color = newStatus === "confirmed" ? 0x22c55e : newStatus === "cancelled" ? 0xef4444 : newStatus === "completed" ? 0xf59e0b : 0x6b7280;
 
+  const paymentLabels = {
+    paid: "✅ Paid",
+    "deposit-paid": "💰 Deposit Paid",
+    cash: "💵 Cash",
+    "pending-confirmation": "🏦 Bank Pending",
+    unpaid: "⏳ Unpaid",
+  };
+
+  const fields = [
+    { name: "Client", value: booking.clientName || "Unknown", inline: true },
+    { name: "Date", value: booking.date || "—", inline: true },
+    { name: "Type", value: booking.type || "—", inline: true },
+    { name: "Status", value: `${oldStatus} → ${newStatus}`, inline: false },
+  ];
+  if (booking.paymentAmount) fields.push({ name: "Price", value: `$${booking.paymentAmount}`, inline: true });
+  if (booking.depositRequired && booking.depositAmount) {
+    fields.push({ name: "Deposit", value: `$${booking.depositAmount}`, inline: true });
+  }
+  fields.push({ name: "Payment", value: paymentLabels[booking.paymentStatus] || booking.paymentStatus || "—", inline: true });
+
   await sendDiscordEmbed(webhookUrl, {
     title: `${statusEmoji[newStatus] || "📋"} Booking ${newStatus.charAt(0).toUpperCase() + newStatus.slice(1)}`,
     color,
-    fields: [
-      { name: "Client", value: booking.clientName || "Unknown", inline: true },
-      { name: "Date", value: booking.date || "—", inline: true },
-      { name: "Type", value: booking.type || "—", inline: true },
-      { name: "Status", value: `${oldStatus} → ${newStatus}`, inline: false },
-    ],
+    fields,
     footer: { text: `Booking ID: ${booking.id}` },
     timestamp: new Date().toISOString(),
   });

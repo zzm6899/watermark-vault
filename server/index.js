@@ -4,7 +4,7 @@ const cors = require("cors");
 const path = require("path");
 const fs = require("fs");
 const { registerRoutes: registerGoogleCalendarRoutes, autoSyncBooking } = require("./google-calendar");
-const { notifyNewBooking, notifyBookingUpdate } = require("./discord");
+const { notifyNewBooking, notifyBookingUpdate, notifyPayment } = require("./discord");
 const { registerRoutes: registerEmailRoutes, sendBookingConfirmationEmail } = require("./email");
 const { registerRoutes: registerStripeRoutes } = require("./stripe");
 const { registerRoutes: registerSheetsRoutes } = require("./google-sheets");
@@ -154,16 +154,22 @@ app.put("/api/store/:key", (req, res) => {
       const oldBookings = parseStoredValue(oldValue) || [];
       if (Array.isArray(newBookings) && newBookings.length > 0) {
         const oldMap = Object.fromEntries(oldBookings.map(b => [b.id, b]));
-        const webhookUrl = getDiscordWebhookUrl();
-        if (webhookUrl) {
-          for (const booking of newBookings) {
-            if (!oldMap[booking.id]) {
-              notifyNewBooking(webhookUrl, booking).catch(() => {});
-            } else if (oldMap[booking.id].status !== booking.status) {
-              notifyBookingUpdate(webhookUrl, booking, oldMap[booking.id].status, booking.status).catch(() => {});
-            }
-          }
-        }
+                const webhookUrl = getDiscordWebhookUrl();
+                if (webhookUrl) {
+                  for (const booking of newBookings) {
+                    if (!oldMap[booking.id]) {
+                      notifyNewBooking(webhookUrl, booking).catch(() => {});
+                    } else {
+                      const old = oldMap[booking.id];
+                      if (old.status !== booking.status) {
+                        notifyBookingUpdate(webhookUrl, booking, old.status, booking.status).catch(() => {});
+                      }
+                      if (old.paymentStatus !== booking.paymentStatus && booking.paymentStatus !== old.paymentStatus) {
+                        notifyPayment(webhookUrl, booking, booking.paymentStatus).catch(() => {});
+                      }
+                    }
+                  }
+                }
       }
     } catch (e) {
       console.error("Discord notify error:", e.message);
