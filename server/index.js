@@ -7,6 +7,7 @@ const { registerRoutes: registerGoogleCalendarRoutes, autoSyncBooking } = requir
 const { notifyNewBooking, notifyBookingUpdate } = require("./discord");
 const { registerRoutes: registerEmailRoutes, sendBookingConfirmationEmail } = require("./email");
 const { registerRoutes: registerStripeRoutes } = require("./stripe");
+const { registerRoutes: registerSheetsRoutes } = require("./google-sheets");
 
 const app = express();
 const PORT = process.env.PORT || 5066;
@@ -112,7 +113,8 @@ function getStorageUsage() {
     photoCount: photoFiles.length,
     dbSizeBytes: fs.existsSync(DB_FILE) ? fs.statSync(DB_FILE).size : 0,
     uploadsSizeBytes: totalBytes - (fs.existsSync(DB_FILE) ? fs.statSync(DB_FILE).size : 0),
-    photoFiles: photoFiles.sort((a, b) => b.size - a.size).slice(0, 50), // top 50 by size
+    photoFiles: photoFiles.sort((a, b) => b.size - a.size), // all files, sorted by size
+    allFileNames: photoFiles.map(f => f.name), // flat list for sync dedup
     disk: diskStats,
     dataDir: DATA_DIR,
   };
@@ -256,8 +258,24 @@ app.delete("/api/upload/:filename", (req, res) => {
   }
 });
 
+// ── Bulk delete files (orphan cleanup) ────────────────
+app.post("/api/upload/bulk-delete", express.json(), (req, res) => {
+  const { filenames } = req.body;
+  if (!Array.isArray(filenames)) return res.status(400).json({ error: "filenames array required" });
+  let deleted = 0;
+  for (const name of filenames) {
+    const safeName = path.basename(name);
+    const filepath = path.join(UPLOADS_DIR, safeName);
+    try { if (fs.existsSync(filepath)) { fs.unlinkSync(filepath); deleted++; } } catch {}
+  }
+  res.json({ ok: true, deleted });
+});
+
 // ── Google Calendar Integration ───────────────────────
 registerGoogleCalendarRoutes(app);
+
+// ── Google Sheets Integration ─────────────────────────
+registerSheetsRoutes(app, store);
 
 // ── Email (SMTP) Integration ─────────────────────────
 registerEmailRoutes(app, store);
