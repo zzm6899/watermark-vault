@@ -373,6 +373,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
   const [showEmailPreview, setShowEmailPreview] = useState(false);
   const [selectedBookingIds, setSelectedBookingIds] = useState<Set<string>>(new Set());
   const [bulkEmailOpen, setBulkEmailOpen] = useState(false);
+  const [selectMode, setSelectMode] = useState(false);
   const [bulkEmailSubject, setBulkEmailSubject] = useState("");
   const [bulkEmailBody, setBulkEmailBody] = useState("");
   const [sendingBulkEmail, setSendingBulkEmail] = useState(false);
@@ -462,12 +463,22 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
         <h2 className="font-display text-2xl text-foreground">Bookings</h2>
         <div className="flex items-center gap-2 flex-wrap">
           {bookings.length > 0 && (
-            <Button size="sm" variant={selectedBookingIds.size > 0 ? "default" : "outline"}
-              onClick={() => { if (selectedBookingIds.size > 0) { setSelectedBookingIds(new Set()); setBulkEmailOpen(false); } else { setSelectedBookingIds(new Set(sortedBookings.filter(b => b.clientEmail).map(b => b.id))); } }}
-              className="gap-1.5 font-body text-xs">
-              <CheckSquare className="w-3.5 h-3.5" />
-              {selectedBookingIds.size > 0 ? `${selectedBookingIds.size} Selected` : "Select All"}
-            </Button>
+            <>
+              <Button size="sm" variant={selectMode ? "default" : "outline"}
+                onClick={() => { setSelectMode(!selectMode); setSelectedBookingIds(new Set()); setBulkEmailOpen(false); }}
+                className="gap-1.5 font-body text-xs">
+                <CheckSquare className="w-3.5 h-3.5" />
+                {selectMode ? "Cancel" : "Select"}
+              </Button>
+              {selectMode && (
+                <Button size="sm" variant="outline" onClick={() => {
+                  const allIds = new Set(sortedBookings.filter(b => b.clientEmail).map(b => b.id));
+                  setSelectedBookingIds(prev => prev.size === allIds.size ? new Set() : allIds);
+                }} className="gap-1.5 font-body text-xs">
+                  {selectedBookingIds.size === sortedBookings.filter(b => b.clientEmail).length ? "Deselect All" : "Select All"}
+                </Button>
+              )}
+            </>
           )}
           {selectedBookingIds.size > 0 && isServerMode() && (
             <Button size="sm" variant="outline" onClick={() => setBulkEmailOpen(!bulkEmailOpen)}
@@ -622,7 +633,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                   }}>
                   <div className="flex flex-col sm:flex-row sm:items-center gap-3">
                     <div className="flex items-center gap-3 flex-1 min-w-0">
-                      {selectedBookingIds.size > 0 && (
+                      {selectMode && (
                         <button className="flex-shrink-0" onClick={(e) => {
                           e.stopPropagation();
                           setSelectedBookingIds(prev => {
