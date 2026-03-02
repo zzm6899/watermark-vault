@@ -7,6 +7,7 @@ import Footer from "@/components/Footer";
 import WatermarkedImage from "@/components/WatermarkedImage";
 import PurchasePanel from "@/components/PurchasePanel";
 import { getAlbumBySlug, getSettings, updateAlbum } from "@/lib/storage";
+import { useBackfillThumbnails } from "@/hooks/use-backfill-thumbnails";
 import { createAlbumCheckout, getStripeStatus } from "@/lib/api";
 import { toast } from "sonner";
 import { resizeToTargetSize } from "@/lib/image-utils";
@@ -98,6 +99,16 @@ export default function AlbumDetail() {
       setAlbumState(fresh);
     }
   }, [albumId]);
+
+  // Backfill missing thumbnails in background
+  useBackfillThumbnails(album?.photos || [], useCallback((photoId, thumb) => {
+    setAlbumState(prev => {
+      if (!prev) return prev;
+      const updated = { ...prev, photos: prev.photos.map(p => p.id === photoId ? { ...p, thumbnail: thumb } : p) };
+      updateAlbum(updated);
+      return updated;
+    });
+  }, []));
 
   // Keyboard navigation for lightbox
   useEffect(() => {

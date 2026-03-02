@@ -31,6 +31,7 @@ import type {
 } from "@/lib/types";
 import WatermarkedImage from "@/components/WatermarkedImage";
 import ProgressiveImg from "@/components/ProgressiveImg";
+import { useBackfillThumbnails } from "@/hooks/use-backfill-thumbnails";
 import { Slider } from "@/components/ui/slider";
 import sampleLandscape from "@/assets/sample-landscape.jpg";
 import samplePortrait from "@/assets/sample-portrait.jpg";
@@ -911,6 +912,24 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
 
   const refresh = () => setAlbumsState(getAlbums());
 
+  // Backfill missing thumbnails for all album photos
+  const allAlbumPhotos = albums.flatMap(a => a.photos);
+  useBackfillThumbnails(allAlbumPhotos, useCallback((photoId, thumb) => {
+    setAlbumsState(prev => prev.map(a => ({
+      ...a,
+      photos: a.photos.map(p => p.id === photoId ? { ...p, thumbnail: thumb } : p),
+    })));
+    // Persist
+    const current = getAlbums();
+    for (const alb of current) {
+      const photo = alb.photos.find(p => p.id === photoId);
+      if (photo) {
+        updateAlbum({ ...alb, photos: alb.photos.map(p => p.id === photoId ? { ...p, thumbnail: thumb } : p) });
+        break;
+      }
+    }
+  }, []));
+
   const handleDelete = (id: string) => {
     if (!confirm("Delete this album?")) return;
     deleteAlbum(id);
@@ -1397,6 +1416,15 @@ function PhotosView() {
   const [viewSource, setViewSource] = useState<"all" | "library" | string>("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [syncing, setSyncing] = useState(false);
+
+  // Backfill missing thumbnails for library photos
+  useBackfillThumbnails(libraryPhotos, useCallback((photoId, thumb) => {
+    setLibraryPhotosState(prev => {
+      const updated = prev.map(p => p.id === photoId ? { ...p, thumbnail: thumb } : p);
+      setPhotoLibrary(updated);
+      return updated;
+    });
+  }, []));
 
   // Reconcile: find files on server storage that aren't tracked in any album or library
   // Also repair albums that have broken photo references
