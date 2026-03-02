@@ -358,6 +358,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
   const [sheetsSyncing, setSheetsSyncing] = useState(false);
   const [sortKey, setSortKey] = useState<BookingSortKey>("date");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const [bookingSearch, setBookingSearch] = useState("");
   const settings = getSettings();
   const eventTypes = getEventTypes();
 
@@ -399,7 +400,19 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
     else { setSortKey(key); setSortDir(key === "date" ? "desc" : "asc"); }
   };
 
-  const sortedBookings = [...bookings].sort((a, b) => {
+  const filteredBookings = bookings.filter(bk => {
+    if (!bookingSearch) return true;
+    const q = bookingSearch.toLowerCase();
+    return (bk.clientName || "").toLowerCase().includes(q)
+      || (bk.clientEmail || "").toLowerCase().includes(q)
+      || (bk.instagramHandle || "").toLowerCase().includes(q)
+      || (bk.type || "").toLowerCase().includes(q)
+      || (bk.status || "").toLowerCase().includes(q)
+      || (bk.date || "").includes(q)
+      || (bk.notes || "").toLowerCase().includes(q);
+  });
+
+  const sortedBookings = [...filteredBookings].sort((a, b) => {
     const dir = sortDir === "asc" ? 1 : -1;
     switch (sortKey) {
       case "date": return dir * (new Date(a.createdAt || a.date).getTime() - new Date(b.createdAt || b.date).getTime());
@@ -437,14 +450,20 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
         </div>
       ) : (
         <>
-          <div className="flex items-center gap-1 mb-3 flex-wrap">
-            <span className="text-[10px] font-body text-muted-foreground/50 mr-1">Sort:</span>
-            <SortBtn k="date" label="Date" />
-            <SortBtn k="type" label="Type" />
-            <SortBtn k="name" label="Name" />
-            <SortBtn k="instagram" label="Instagram" />
-            <SortBtn k="status" label="Status" />
-            <SortBtn k="payment" label="Payment" />
+          <div className="flex items-center gap-2 mb-3">
+            <div className="relative flex-1 max-w-xs">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+              <Input value={bookingSearch} onChange={e => setBookingSearch(e.target.value)} placeholder="Search bookings…" className="pl-8 h-8 text-xs font-body" />
+            </div>
+            <div className="flex items-center gap-1 flex-wrap">
+              <span className="text-[10px] font-body text-muted-foreground/50 mr-1">Sort:</span>
+              <SortBtn k="date" label="Date" />
+              <SortBtn k="type" label="Type" />
+              <SortBtn k="name" label="Name" />
+              <SortBtn k="instagram" label="Instagram" />
+              <SortBtn k="status" label="Status" />
+              <SortBtn k="payment" label="Payment" />
+            </div>
           </div>
           <div className="space-y-3">
           {sortedBookings.map((bk) => {
@@ -969,6 +988,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
   const [mergeSelection, setMergeSelection] = useState<Set<string>>(new Set());
   const [albumSortKey, setAlbumSortKey] = useState<AlbumSortKey>("date");
   const [albumSortDir, setAlbumSortDir] = useState<SortDir>("desc");
+  const [albumSearch, setAlbumSearch] = useState("");
 
   useEffect(() => {
     if (prefillBookingId) {
@@ -1106,7 +1126,16 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
           if (albumSortKey === key) setAlbumSortDir(d => d === "asc" ? "desc" : "asc");
           else { setAlbumSortKey(key); setAlbumSortDir(key === "date" ? "desc" : "asc"); }
         };
-        const sortedAlbums = [...albums].sort((a, b) => {
+        const filteredAlbums = albums.filter(a => {
+          if (!albumSearch) return true;
+          const q = albumSearch.toLowerCase();
+          return a.title.toLowerCase().includes(q)
+            || (a.clientName || "").toLowerCase().includes(q)
+            || (a.clientEmail || "").toLowerCase().includes(q)
+            || (a.description || "").toLowerCase().includes(q)
+            || (a.slug || "").toLowerCase().includes(q);
+        });
+        const sortedAlbums = [...filteredAlbums].sort((a, b) => {
           const dir = albumSortDir === "asc" ? 1 : -1;
           switch (albumSortKey) {
             case "date": return dir * (new Date(a.date).getTime() - new Date(b.date).getTime());
@@ -1128,12 +1157,18 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
         </div>
       ) : (
         <>
-          <div className="flex items-center gap-1 mb-3 flex-wrap">
-            <span className="text-[10px] font-body text-muted-foreground/50 mr-1">Sort:</span>
-            <AlbumSortBtn k="date" label="Date" />
-            <AlbumSortBtn k="name" label="Name" />
-            <AlbumSortBtn k="photos" label="Photos" />
-            <AlbumSortBtn k="client" label="Client" />
+          <div className="flex items-center gap-2 mb-3">
+            <div className="relative flex-1 max-w-xs">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+              <Input value={albumSearch} onChange={e => setAlbumSearch(e.target.value)} placeholder="Search albums…" className="pl-8 h-8 text-xs font-body" />
+            </div>
+            <div className="flex items-center gap-1 flex-wrap">
+              <span className="text-[10px] font-body text-muted-foreground/50 mr-1">Sort:</span>
+              <AlbumSortBtn k="date" label="Date" />
+              <AlbumSortBtn k="name" label="Name" />
+              <AlbumSortBtn k="photos" label="Photos" />
+              <AlbumSortBtn k="client" label="Client" />
+            </div>
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
           {sortedAlbums.map((alb) => (
