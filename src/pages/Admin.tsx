@@ -348,10 +348,16 @@ function DashboardView() {
   );
 }
 // ─── Bookings ────────────────────────────────────────
+type BookingSortKey = "date" | "name" | "type" | "instagram" | "status" | "payment";
+type AlbumSortKey = "date" | "name" | "photos" | "client";
+type SortDir = "asc" | "desc";
+
 function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) => void }) {
   const [bookings, setBookingsState] = useState<Booking[]>(getBookings());
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [sheetsSyncing, setSheetsSyncing] = useState(false);
+  const [sortKey, setSortKey] = useState<BookingSortKey>("date");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
   const settings = getSettings();
   const eventTypes = getEventTypes();
 
@@ -388,6 +394,30 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
     }
   };
 
+  const toggleSort = (key: BookingSortKey) => {
+    if (sortKey === key) setSortDir(d => d === "asc" ? "desc" : "asc");
+    else { setSortKey(key); setSortDir(key === "date" ? "desc" : "asc"); }
+  };
+
+  const sortedBookings = [...bookings].sort((a, b) => {
+    const dir = sortDir === "asc" ? 1 : -1;
+    switch (sortKey) {
+      case "date": return dir * (new Date(a.createdAt || a.date).getTime() - new Date(b.createdAt || b.date).getTime());
+      case "name": return dir * (a.clientName || "").localeCompare(b.clientName || "");
+      case "type": return dir * (a.type || "").localeCompare(b.type || "");
+      case "instagram": return dir * (a.instagramHandle || "").localeCompare(b.instagramHandle || "");
+      case "status": return dir * (a.status || "").localeCompare(b.status || "");
+      case "payment": return dir * (a.paymentStatus || "").localeCompare(b.paymentStatus || "");
+      default: return 0;
+    }
+  });
+
+  const SortBtn = ({ k, label }: { k: BookingSortKey; label: string }) => (
+    <button onClick={() => toggleSort(k)} className={`text-[10px] font-body tracking-wider uppercase px-2 py-1 rounded transition-colors ${sortKey === k ? "bg-primary/15 text-primary" : "text-muted-foreground hover:text-foreground"}`}>
+      {label} {sortKey === k ? (sortDir === "asc" ? "↑" : "↓") : ""}
+    </button>
+  );
+
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
       <div className="flex items-center justify-between mb-6">
@@ -406,8 +436,18 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
           <p className="text-sm font-body text-muted-foreground">No bookings yet.</p>
         </div>
       ) : (
-        <div className="space-y-3">
-          {bookings.sort((a, b) => new Date(b.createdAt || b.date).getTime() - new Date(a.createdAt || a.date).getTime()).map((bk) => {
+        <>
+          <div className="flex items-center gap-1 mb-3 flex-wrap">
+            <span className="text-[10px] font-body text-muted-foreground/50 mr-1">Sort:</span>
+            <SortBtn k="date" label="Date" />
+            <SortBtn k="type" label="Type" />
+            <SortBtn k="name" label="Name" />
+            <SortBtn k="instagram" label="Instagram" />
+            <SortBtn k="status" label="Status" />
+            <SortBtn k="payment" label="Payment" />
+          </div>
+          <div className="space-y-3">
+          {sortedBookings.map((bk) => {
             const isExpanded = expandedId === bk.id;
             const et = eventTypes.find(e => e.id === bk.eventTypeId);
             return (
@@ -527,7 +567,8 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
               </div>
             );
           })}
-        </div>
+          </div>
+        </>
       )}
     </motion.div>
   );
@@ -926,6 +967,8 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
   const [editing, setEditing] = useState<Album | null>(null);
   const [mergeMode, setMergeMode] = useState(false);
   const [mergeSelection, setMergeSelection] = useState<Set<string>>(new Set());
+  const [albumSortKey, setAlbumSortKey] = useState<AlbumSortKey>("date");
+  const [albumSortDir, setAlbumSortDir] = useState<SortDir>("desc");
 
   useEffect(() => {
     if (prefillBookingId) {
@@ -1058,14 +1101,42 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
         />
       )}
 
-      {albums.length === 0 ? (
+      {(() => {
+        const toggleAlbumSort = (key: AlbumSortKey) => {
+          if (albumSortKey === key) setAlbumSortDir(d => d === "asc" ? "desc" : "asc");
+          else { setAlbumSortKey(key); setAlbumSortDir(key === "date" ? "desc" : "asc"); }
+        };
+        const sortedAlbums = [...albums].sort((a, b) => {
+          const dir = albumSortDir === "asc" ? 1 : -1;
+          switch (albumSortKey) {
+            case "date": return dir * (new Date(a.date).getTime() - new Date(b.date).getTime());
+            case "name": return dir * a.title.localeCompare(b.title);
+            case "photos": return dir * (a.photos.length - b.photos.length);
+            case "client": return dir * (a.clientName || "").localeCompare(b.clientName || "");
+            default: return 0;
+          }
+        });
+        const AlbumSortBtn = ({ k, label }: { k: AlbumSortKey; label: string }) => (
+          <button onClick={() => toggleAlbumSort(k)} className={`text-[10px] font-body tracking-wider uppercase px-2 py-1 rounded transition-colors ${albumSortKey === k ? "bg-primary/15 text-primary" : "text-muted-foreground hover:text-foreground"}`}>
+            {label} {albumSortKey === k ? (albumSortDir === "asc" ? "↑" : "↓") : ""}
+          </button>
+        );
+        return albums.length === 0 ? (
         <div className="glass-panel rounded-xl p-12 text-center">
           <Image className="w-10 h-10 text-muted-foreground/30 mx-auto mb-3" />
           <p className="text-sm font-body text-muted-foreground">No albums yet. Create one to get started.</p>
         </div>
       ) : (
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
-          {albums.map((alb) => (
+        <>
+          <div className="flex items-center gap-1 mb-3 flex-wrap">
+            <span className="text-[10px] font-body text-muted-foreground/50 mr-1">Sort:</span>
+            <AlbumSortBtn k="date" label="Date" />
+            <AlbumSortBtn k="name" label="Name" />
+            <AlbumSortBtn k="photos" label="Photos" />
+            <AlbumSortBtn k="client" label="Client" />
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
+          {sortedAlbums.map((alb) => (
             <div key={alb.id} className={`glass-panel rounded-xl overflow-hidden transition-all ${mergeMode ? "cursor-pointer" : ""} ${mergeSelection.has(alb.id) ? "ring-2 ring-primary" : ""} ${alb.enabled === false ? "opacity-50" : ""}`}
               onClick={() => {
                 if (mergeMode) {
@@ -1122,8 +1193,11 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
               </div>
             </div>
           ))}
-        </div>
-      )}
+          </div>
+        </>
+      );
+      })()}
+
     </motion.div>
   );
 }
