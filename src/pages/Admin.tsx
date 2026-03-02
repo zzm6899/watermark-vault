@@ -457,12 +457,12 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
         </div>
       ) : (
         <>
-          <div className="flex items-center gap-2 mb-3">
+          <div className="flex flex-col sm:flex-row sm:items-center gap-2 mb-3">
             <div className="relative flex-1 max-w-xs">
               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
               <Input value={bookingSearch} onChange={e => setBookingSearch(e.target.value)} placeholder="Search bookings…" className="pl-8 h-8 text-xs font-body" />
             </div>
-            <div className="flex items-center gap-1 flex-wrap">
+            <div className="flex items-center gap-1 flex-wrap overflow-x-auto">
               <span className="text-[10px] font-body text-muted-foreground/50 mr-1">Sort:</span>
               <SortBtn k="date" label="Date" />
               <SortBtn k="type" label="Type" />
@@ -486,18 +486,20 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                       fetchEmailLog(bk.id);
                     }
                   }}>
-                  <div className="flex items-center gap-4">
-                    <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
-                      <Users className="w-4 h-4 text-primary" />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <h3 className="text-sm font-body text-foreground font-medium">{bk.clientName}</h3>
-                        {bk.instagramHandle && <span className="text-xs font-body text-primary">@{bk.instagramHandle.replace("@", "")}</span>}
+                  <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+                    <div className="flex items-center gap-3 flex-1 min-w-0">
+                      <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
+                        <Users className="w-4 h-4 text-primary" />
                       </div>
-                      <p className="text-xs font-body text-muted-foreground">{bk.type} · {bk.date} at {bk.time} · {formatDuration(bk.duration)}</p>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <h3 className="text-sm font-body text-foreground font-medium">{bk.clientName}</h3>
+                          {bk.instagramHandle && <span className="text-xs font-body text-primary">@{bk.instagramHandle.replace("@", "")}</span>}
+                        </div>
+                        <p className="text-xs font-body text-muted-foreground">{bk.type} · {bk.date} at {bk.time} · {formatDuration(bk.duration)}</p>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-2 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
+                    <div className="flex items-center gap-2 flex-shrink-0 flex-wrap pl-13 sm:pl-0" onClick={(e) => e.stopPropagation()}>
                       <select value={bk.status} onChange={(e) => handleStatusChange(bk, e.target.value as Booking["status"])}
                         className="text-xs font-body px-2.5 py-1 rounded-full bg-secondary border border-border text-foreground cursor-pointer">
                         <option value="pending">Pending</option>
@@ -542,9 +544,10 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                         <div className="space-y-2">
                           {Object.entries(bk.answers).map(([qId, answer]) => {
                             const question = et?.questions.find(q => q.id === qId);
+                            const label = bk.answerLabels?.[qId] || question?.label || qId.replace(/^q\d+$/, "Custom Question");
                             return (
                               <div key={qId} className="p-2 rounded-lg bg-secondary/30 border border-border/30">
-                                <p className="text-[10px] font-body text-muted-foreground">{question?.label || qId}</p>
+                                <p className="text-[10px] font-body text-muted-foreground">{label}</p>
                                 <p className="text-sm font-body text-foreground">{answer}</p>
                               </div>
                             );

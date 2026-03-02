@@ -62,6 +62,7 @@ export interface Booking {
   notes: string;
   albumId?: string;
   answers?: Record<string, string>;
+  answerLabels?: Record<string, string>;
   createdAt: string;
   paymentStatus?: PaymentStatus;
   paymentAmount?: number;
