@@ -21,7 +21,7 @@ import {
   getPhotoLibrary, setPhotoLibrary,
 } from "@/lib/storage";
 import { compressImage, formatBytes, getLocalStorageUsage, generateThumbnail } from "@/lib/image-utils";
-import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar, getServerStorageStats, syncFromServer, sendEmail } from "@/lib/api";
+import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar, getServerStorageStats, syncFromServer, sendEmail, bulkDeleteFiles, syncBookingsToSheet } from "@/lib/api";
 import RichTextEditor, { RichTextDisplay } from "@/components/RichTextEditor";
 import Login from "@/pages/Login";
 import type {
@@ -351,6 +351,7 @@ function DashboardView() {
 function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) => void }) {
   const [bookings, setBookingsState] = useState<Booking[]>(getBookings());
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [sheetsSyncing, setSheetsSyncing] = useState(false);
   const settings = getSettings();
   const eventTypes = getEventTypes();
 
@@ -373,9 +374,31 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
     toast.success(`Payment marked as ${paymentStatus}`);
   };
 
+  const handleSheetsSync = async () => {
+    setSheetsSyncing(true);
+    const result = await syncBookingsToSheet(bookings);
+    setSheetsSyncing(false);
+    if (result.ok && result.url) {
+      toast.success(`Synced ${result.rows} bookings to Google Sheets`);
+      window.open(result.url, "_blank");
+    } else if (result.needsReauth) {
+      toast.error("Please reconnect Google (Settings → Google Calendar) to grant Sheets permission");
+    } else {
+      toast.error(result.error || "Failed to sync to Sheets");
+    }
+  };
+
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-      <h2 className="font-display text-2xl text-foreground mb-6">Bookings</h2>
+      <div className="flex items-center justify-between mb-6">
+        <h2 className="font-display text-2xl text-foreground">Bookings</h2>
+        {bookings.length > 0 && isServerMode() && (
+          <Button size="sm" variant="outline" onClick={handleSheetsSync} disabled={sheetsSyncing}>
+            <ExternalLink className="w-3.5 h-3.5 mr-1.5" />
+            {sheetsSyncing ? "Syncing…" : "Export to Google Sheets"}
+          </Button>
+        )}
+      </div>
 
       {bookings.length === 0 ? (
         <div className="glass-panel rounded-xl p-12 text-center">
@@ -1433,9 +1456,9 @@ function PhotosView() {
     setSyncing(true);
     try {
       const stats = await getServerStorageStats();
-      if (!stats || !stats.photoFiles) { toast.info("No storage data"); setSyncing(false); return; }
+      if (!stats || !stats.allFileNames) { toast.info("No storage data"); setSyncing(false); return; }
 
-      const serverFileNames = new Set(stats.photoFiles.map(f => f.name));
+      const serverFileNames = new Set(stats.allFileNames);
       let repairedAlbums = 0;
 
       // Step 1: Check albums for broken photo references and repair them
@@ -1453,63 +1476,43 @@ function PhotosView() {
       }
 
       // Step 2: Collect all known filenames (normalised) to prevent ghost duplicates
-      const knownUrls = new Set<string>();
       const knownFilenames = new Set<string>();
       for (const p of libraryPhotos) {
-        knownUrls.add(p.src);
         const fn = p.src.split("/").pop();
         if (fn) knownFilenames.add(fn);
       }
       for (const alb of getAlbums()) {
         for (const p of alb.photos) {
-          knownUrls.add(p.src);
           const fn = p.src.split("/").pop();
           if (fn) knownFilenames.add(fn);
         }
       }
 
-      // Step 3: Find orphaned files — check both full URL and filename to avoid ghosts
-      const orphaned = stats.photoFiles.filter(f =>
-        !knownUrls.has(`/uploads/${f.name}`) && !knownFilenames.has(f.name)
-      );
-      if (orphaned.length === 0 && repairedAlbums === 0) {
-        toast.info("All storage files are already tracked — no missing photos");
+      // Step 3: Find orphaned files on disk not tracked anywhere
+      const orphanedFileNames = stats.allFileNames.filter(f => !knownFilenames.has(f));
+
+      if (orphanedFileNames.length > 0) {
+        // Delete orphans from disk
+        const { deleted } = await bulkDeleteFiles(orphanedFileNames);
+        toast.success(`Deleted ${deleted} orphaned file(s) from disk`);
+      }
+
+      if (orphanedFileNames.length === 0 && repairedAlbums === 0) {
+        toast.info("All storage files are already tracked — no orphans found");
         setSyncing(false);
         return;
       }
 
-      // Add orphaned files to library with source tagging in the title
-      const newPhotos: Photo[] = orphaned.map(f => ({
-        id: `ph-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
-        src: `/uploads/${f.name}`,
-        title: f.name.replace(/\.[^.]+$/, ""),
-        width: 800, height: 600,
-      }));
-
-      if (newPhotos.length > 0) {
-        const updated = [...libraryPhotos, ...newPhotos];
-        setPhotoLibrary(updated);
-        setLibraryPhotosState(updated);
-      }
-
       const messages: string[] = [];
-      if (newPhotos.length > 0) messages.push(`Recovered ${newPhotos.length} photo(s)`);
+      if (orphanedFileNames.length > 0) messages.push(`Cleaned ${orphanedFileNames.length} orphan(s) from disk`);
       if (repairedAlbums > 0) messages.push(`Repaired ${repairedAlbums} album(s)`);
+
       toast.success(messages.join(", ") || "Sync complete");
 
       // Refresh albums state
       setAlbumsState(getAlbums());
-
-      // Background thumbnails
-      for (const p of newPhotos) {
-        generateThumbnail(p.src).then(thumb => {
-          setLibraryPhotosState(prev => {
-            const u = prev.map(pp => pp.id === p.id ? { ...pp, thumbnail: thumb } : pp);
-            setPhotoLibrary(u);
-            return u;
-          });
-        }).catch(() => {});
-      }
+      // Refresh storage stats
+      // Storage stats will refresh on next visit
     } catch { toast.error("Failed to sync from storage"); }
     setSyncing(false);
   };
@@ -2295,6 +2298,7 @@ function StorageView() {
     dbSizeBytes: number;
     uploadsSizeBytes: number;
     photoFiles: { name: string; size: number; modified: string }[];
+    allFileNames: string[];
     disk: { totalBytes: number; usedBytes: number; availableBytes: number; mountPoint: string } | null;
     dataDir: string;
   } | null>(null);

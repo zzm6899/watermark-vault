@@ -136,6 +136,7 @@ export async function getServerStorageStats(): Promise<{
   dbSizeBytes: number;
   uploadsSizeBytes: number;
   photoFiles: { name: string; size: number; modified: string }[];
+  allFileNames: string[];
   disk: { totalBytes: number; usedBytes: number; availableBytes: number; mountPoint: string } | null;
   dataDir: string;
 } | null> {
@@ -378,4 +379,40 @@ export async function saveCalendarSettings(settings: { autoSync?: boolean; calen
     });
     return await res.json();
   } catch { return { ok: false }; }
+}
+
+// ── Bulk file delete (orphan cleanup) ──────────────────
+
+export async function bulkDeleteFiles(filenames: string[]): Promise<{ ok: boolean; deleted: number }> {
+  if (!(await checkServer())) return { ok: false, deleted: 0 };
+  try {
+    const res = await fetch("/api/upload/bulk-delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filenames }),
+    });
+    return await res.json();
+  } catch { return { ok: false, deleted: 0 }; }
+}
+
+// ── Google Sheets ──────────────────────────────────────
+
+export async function getSheetsStatus(): Promise<{ connected: boolean; spreadsheetId: string | null; spreadsheetUrl: string | null }> {
+  if (!(await checkServer())) return { connected: false, spreadsheetId: null, spreadsheetUrl: null };
+  try {
+    const res = await fetch("/api/integrations/sheets/status");
+    if (!res.ok) return { connected: false, spreadsheetId: null, spreadsheetUrl: null };
+    return await res.json();
+  } catch { return { connected: false, spreadsheetId: null, spreadsheetUrl: null }; }
+}
+
+export async function syncBookingsToSheet(bookings: unknown[]): Promise<{ ok: boolean; url?: string; rows?: number; error?: string; needsReauth?: boolean }> {
+  try {
+    const res = await fetch("/api/integrations/sheets/sync", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bookings }),
+    });
+    return await res.json();
+  } catch { return { ok: false, error: "Network error" }; }
 }

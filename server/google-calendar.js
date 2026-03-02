@@ -105,6 +105,7 @@ function registerRoutes(app) {
       scope: [
         "https://www.googleapis.com/auth/calendar",
         "https://www.googleapis.com/auth/userinfo.email",
+        "https://www.googleapis.com/auth/spreadsheets",
       ],
     });
     res.json({ url });
@@ -329,4 +330,4 @@ function registerRoutes(app) {
   });
 }
 
-module.exports = { registerRoutes, getAuthenticatedClient, loadCalSettings };
+module.exports = { registerRoutes, getAuthenticatedClient, loadCalSettings, saveCalSettings };
