@@ -689,16 +689,7 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
                 {durations.map(d => (
                   <div key={d} className="flex items-center gap-2">
                     <span className="text-xs font-body text-muted-foreground w-10 flex-shrink-0">{formatDuration(d)}</span>
-                    <Input
-                      type="number"
-                      placeholder={String(price || 0)}
-                      value={prices[d] ?? ""}
-                      onChange={(e) => {
-                        const v = e.target.value === "" ? undefined : Number(e.target.value);
-                        setPrices(prev => { const n = {...prev}; if (v === undefined) delete n[d]; else n[d] = v; return n; });
-                      }}
-                      className="bg-secondary border-border text-foreground font-body h-8 text-sm"
-                    />
+                    <Input type="number" placeholder={String(price || 0)} value={prices[d] ?? ""} onChange={(e) => { const v = e.target.value === "" ? undefined : Number(e.target.value); setPrices(prev => { const n = {...prev}; if (v === undefined) delete n[d]; else n[d] = v; return n; }); }} className="bg-secondary border-border text-foreground font-body h-8 text-sm" />
                     {prices[d] !== undefined && <span className="text-[10px] text-primary">custom</span>}
                   </div>
                 ))}
@@ -972,10 +963,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
     if (!album.clientEmail) { toast.error("No client email on this album"); return; }
     const template = settings.notificationEmailTemplate || "Hey {name}, your photos are ready! Check them out here: {link}";
     const link = `${window.location.origin}/gallery/${album.slug}`;
-    const message = template
-      .replace("{name}", album.clientName || "there")
-      .replace("{link}", link)
-      .replace("{instagram}", (album as any).instagramHandle || album.clientEmail || "");
+    const message = template.replace("{name}", album.clientName || "there").replace("{link}", link).replace("{instagram}", (album as any).instagramHandle || album.clientEmail || "");
     const html = `<div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:32px;background:#0a0a0a;color:#f5f5f5;border-radius:12px;"><h2 style="font-size:22px;margin:0 0 16px;">📸 Your photos are ready!</h2><p style="color:#aaa;line-height:1.6;">${message.replace(link, "")}</p><a href="${link}" style="display:inline-block;margin-top:24px;padding:12px 28px;background:#fff;color:#000;border-radius:8px;text-decoration:none;font-weight:600;">View Your Gallery →</a><p style="margin-top:32px;font-size:11px;color:#555;">${link}</p></div>`;
     try {
       const result = await sendEmail(album.clientEmail, `Your photos are ready — ${album.clientName || "Gallery"}`, html, message);
@@ -1949,21 +1937,11 @@ function SettingsView() {
           </div>
           <div>
             <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-3 block">Opacity ({settings.watermarkOpacity}%)</label>
-            <Slider
-              value={[settings.watermarkOpacity]}
-              onValueChange={(v) => setSettingsState({ ...settings, watermarkOpacity: v[0] })}
-              min={5} max={80} step={1}
-              className="mb-4"
-            />
+            <Slider value={[settings.watermarkOpacity]} onValueChange={(v) => setSettingsState({ ...settings, watermarkOpacity: v[0] })} min={5} max={80} step={1} className="mb-4" />
           </div>
           <div>
             <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-3 block">Size ({settings.watermarkSize ?? 40}%)</label>
-            <Slider
-              value={[settings.watermarkSize ?? 40]}
-              onValueChange={(v) => setSettingsState({ ...settings, watermarkSize: v[0] })}
-              min={10} max={100} step={1}
-              className="mb-4"
-            />
+            <Slider value={[settings.watermarkSize ?? 40]} onValueChange={(v) => setSettingsState({ ...settings, watermarkSize: v[0] })} min={10} max={100} step={1} className="mb-4" />
           </div>
           {/* Live Preview with Sample Image Selector */}
           <div>
@@ -2018,10 +1996,35 @@ function SettingsView() {
           <h3 className="font-display text-base text-foreground flex items-center gap-2">
             <Bell className="w-4 h-4 text-primary" /> Discord Webhooks
           </h3>
-          <div>
-            <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Webhook URL</label>
-            <Input value={settings.discordWebhookUrl} onChange={(e) => setSettingsState({ ...settings, discordWebhookUrl: e.target.value })} placeholder="https://discord.com/api/webhooks/..." className="bg-secondary border-border text-foreground font-body" />
-            <p className="text-[10px] font-body text-muted-foreground/50 mt-1">Receive notifications for new bookings and reminders. Requires backend service to send.</p>
+          <div className="space-y-3">
+            <div>
+              <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Webhook URL</label>
+              <Input value={settings.discordWebhookUrl} onChange={(e) => setSettingsState({ ...settings, discordWebhookUrl: e.target.value })} placeholder="https://discord.com/api/webhooks/..." className="bg-secondary border-border text-foreground font-body" />
+              <p className="text-[10px] font-body text-muted-foreground/50 mt-1">Receive notifications for new bookings, status changes and payments.</p>
+            </div>
+            {settings.discordWebhookUrl && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="font-body text-xs gap-2"
+                onClick={async () => {
+                  try {
+                    const res = await fetch("/api/discord/test", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ webhookUrl: settings.discordWebhookUrl }),
+                    });
+                    const data = await res.json();
+                    if (data.ok) toast.success("Test message sent to Discord ✓");
+                    else toast.error(`Discord error: ${data.error || "Unknown"}`);
+                  } catch {
+                    toast.error("Failed to reach server");
+                  }
+                }}
+              >
+                <Bell className="w-3.5 h-3.5" /> Send Test Message
+              </Button>
+            )}
           </div>
         </div>
 
@@ -2170,7 +2173,7 @@ function GoogleCalendarSection() {
     const result = await syncAllBookingsToCalendar(bookings, selectedCalendar);
     setSyncing(false);
     if (result.ok) {
-      toast.success(`Synced ${(result.created||0)+(result.updated||0)} bookings — ${result.created||0} new, ${result.updated||0} updated, ${result.deletedOrphans||0} removed`);
+      toast.success(`Synced ${result.created} bookings to Google Calendar${result.errors ? ` (${result.errors} failed)` : ""}`);
     } else {
       toast.error("Failed to sync bookings");
     }
