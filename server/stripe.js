@@ -1,4 +1,5 @@
 const stripe = require("stripe");
+const { notifyPayment } = require("./discord");
 
 let stripeClient = null;
 
@@ -10,7 +11,14 @@ function getStripe() {
   return stripeClient;
 }
 
-function registerRoutes(app, store, sendBookingConfirmationEmail) {
+function getDiscordWebhookUrl(store) {
+  try {
+    const settings = store.get("wv_settings");
+    return settings?.discordWebhookUrl || null;
+  } catch { return null; }
+}
+
+function registerRoutes(app, store, sendBookingConfirmationEmail, autoSyncBooking) {
   // ── Status ─────────────────────────────────────────
   app.get("/api/stripe/status", (_req, res) => {
     const configured = !!process.env.STRIPE_SECRET_KEY;
@@ -149,6 +157,11 @@ function registerRoutes(app, store, sendBookingConfirmationEmail) {
             booking.stripeSessionId = session.id;
             db.bookings = JSON.stringify(bookings);
             fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
+
+            // Auto-sync to Google Calendar
+            if (autoSyncBooking) {
+              autoSyncBooking(booking).catch(err => console.error("Calendar sync after payment failed:", err.message));
+            }
 
             // Send confirmation email
             if (sendBookingConfirmationEmail && booking.clientEmail) {
