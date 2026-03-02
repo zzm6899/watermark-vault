@@ -1,11 +1,12 @@
 import { useState, useCallback, useEffect } from "react";
-import { motion } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 import {
   LayoutDashboard, Calendar, Settings, Plus, Upload,
   Trash2, Edit, Users, Clock, CreditCard, Building2,
   Camera, Save, X, LogOut, ChevronDown, ChevronUp,
   Image, DollarSign, Link2, Merge, Send, Copy, ExternalLink,
-  MapPin, Lock, Bell, Download, Unlock, Eye, Grid, List, LayoutGrid, HardDrive, CheckSquare, XSquare, Search, RefreshCw, Mail
+  MapPin, Lock, Bell, Download, Unlock, Eye, Grid, List, LayoutGrid, HardDrive, CheckSquare, XSquare, Search, RefreshCw, Mail,
+  MessageSquare
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -21,7 +22,7 @@ import {
   getPhotoLibrary, setPhotoLibrary,
 } from "@/lib/storage";
 import { compressImage, formatBytes, getLocalStorageUsage, generateThumbnail } from "@/lib/image-utils";
-import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar, getServerStorageStats, syncFromServer, sendEmail, bulkDeleteFiles, syncBookingsToSheet, getBookingEmailLog, sendBookingReminder } from "@/lib/api";
+import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar, getServerStorageStats, syncFromServer, sendEmail, bulkDeleteFiles, syncBookingsToSheet, getBookingEmailLog, sendBookingReminder, sendCustomEmail } from "@/lib/api";
 import RichTextEditor, { RichTextDisplay } from "@/components/RichTextEditor";
 import Login from "@/pages/Login";
 import type {
@@ -137,19 +138,21 @@ export default function Admin() {
           </button>
         </aside>
 
-        <div className="lg:hidden fixed top-0 left-0 right-0 z-30 bg-card/95 backdrop-blur-sm border-b border-border flex overflow-x-auto">
-          {tabs.map((tab) => (
-            <button key={tab.id} onClick={() => setActiveTab(tab.id)}
-              className={`flex items-center gap-2 px-4 py-3 text-xs font-body tracking-wider uppercase whitespace-nowrap transition-colors border-b-2 ${
-                activeTab === tab.id ? "text-primary border-primary" : "text-muted-foreground border-transparent"
-              }`}
-            >
-              <tab.icon className="w-3.5 h-3.5" />{tab.label}
-            </button>
-          ))}
+        <div className="lg:hidden fixed top-0 left-0 right-0 z-30 bg-card/95 backdrop-blur-sm border-b border-border">
+          <div className="flex overflow-x-auto scrollbar-hide">
+            {tabs.map((tab) => (
+              <button key={tab.id} onClick={() => setActiveTab(tab.id)}
+                className={`flex items-center gap-1.5 px-3 py-3 text-[10px] font-body tracking-wider uppercase whitespace-nowrap transition-colors border-b-2 flex-shrink-0 ${
+                  activeTab === tab.id ? "text-primary border-primary" : "text-muted-foreground border-transparent"
+                }`}
+              >
+                <tab.icon className="w-3.5 h-3.5" />{tab.label}
+              </button>
+            ))}
+          </div>
         </div>
 
-        <main className="flex-1 lg:ml-56 p-6 lg:p-8 mt-12 lg:mt-0">
+        <main className="flex-1 lg:ml-56 p-4 sm:p-6 lg:p-8 mt-14 lg:mt-0">
           {activeTab === "dashboard" && <DashboardView />}
           {activeTab === "bookings" && <BookingsView onCreateAlbum={handleCreateAlbumForBooking} />}
           {activeTab === "events" && <EventTypesView />}
@@ -361,6 +364,10 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
   const [bookingSearch, setBookingSearch] = useState("");
   const [emailLogs, setEmailLogs] = useState<Record<string, { id: string; type: string; sentAt: string; openedAt?: string; subject: string; to: string }[]>>({});
   const [sendingReminder, setSendingReminder] = useState<string | null>(null);
+  const [customEmailTarget, setCustomEmailTarget] = useState<string | null>(null);
+  const [customEmailSubject, setCustomEmailSubject] = useState("");
+  const [customEmailBody, setCustomEmailBody] = useState("");
+  const [sendingCustomEmail, setSendingCustomEmail] = useState(false);
   const settings = getSettings();
   const eventTypes = getEventTypes();
 
@@ -440,10 +447,10 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
         <h2 className="font-display text-2xl text-foreground">Bookings</h2>
         {bookings.length > 0 && isServerMode() && (
-          <Button size="sm" variant="outline" onClick={handleSheetsSync} disabled={sheetsSyncing}>
+          <Button size="sm" variant="outline" onClick={handleSheetsSync} disabled={sheetsSyncing} className="w-full sm:w-auto">
             <ExternalLink className="w-3.5 h-3.5 mr-1.5" />
             {sheetsSyncing ? "Syncing…" : "Export to Google Sheets"}
           </Button>
@@ -637,8 +644,53 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                             <Bell className="w-3 h-3" />
                             {sendingReminder === bk.id ? "Sending…" : "Booking Reminder"}
                           </Button>
+                          <Button size="sm" variant="outline"
+                            className="gap-1.5 font-body text-xs border-border text-foreground hover:bg-secondary"
+                            onClick={() => {
+                              setCustomEmailTarget(customEmailTarget === bk.id ? null : bk.id);
+                              setCustomEmailSubject("");
+                              setCustomEmailBody("");
+                            }}>
+                            <MessageSquare className="w-3 h-3" />
+                            Custom Email
+                          </Button>
                         </>
                       )}
+
+                      {/* Custom Email Form */}
+                      {customEmailTarget === bk.id && bk.clientEmail && (
+                        <AnimatePresence>
+                          <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} className="w-full mt-2 p-4 rounded-lg bg-secondary/50 border border-border/50 space-y-3">
+                            <p className="text-xs font-body text-muted-foreground">Send custom email to <span className="text-foreground font-medium">{bk.clientEmail}</span></p>
+                            <Input value={customEmailSubject} onChange={e => setCustomEmailSubject(e.target.value)} placeholder="Email subject…" className="bg-secondary border-border text-foreground font-body text-sm" />
+                            <Textarea value={customEmailBody} onChange={e => setCustomEmailBody(e.target.value)} placeholder="Write your message… (supports basic formatting)" className="bg-secondary border-border text-foreground font-body text-sm min-h-[100px]" />
+                            <div className="flex items-center gap-2">
+                              <Button size="sm" disabled={sendingCustomEmail || !customEmailSubject.trim() || !customEmailBody.trim()}
+                                className="gap-1.5 bg-primary text-primary-foreground font-body text-xs"
+                                onClick={async () => {
+                                  setSendingCustomEmail(true);
+                                  const html = `<div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:32px;background:#0a0a0a;color:#f5f5f5;border-radius:12px;"><p style="color:#ccc;line-height:1.8;white-space:pre-wrap;">${customEmailBody.replace(/\n/g, "<br/>")}</p></div>`;
+                                  const result = await sendCustomEmail(bk.clientEmail, customEmailSubject, html, customEmailBody, bk.id);
+                                  setSendingCustomEmail(false);
+                                  if (result.ok) {
+                                    toast.success(`Custom email sent to ${bk.clientEmail}`);
+                                    setCustomEmailTarget(null);
+                                    setCustomEmailSubject("");
+                                    setCustomEmailBody("");
+                                    await fetchEmailLog(bk.id);
+                                  } else toast.error(result.error || "Failed to send");
+                                }}>
+                                <Send className="w-3 h-3" />
+                                {sendingCustomEmail ? "Sending…" : "Send Email"}
+                              </Button>
+                              <Button size="sm" variant="ghost" onClick={() => setCustomEmailTarget(null)} className="font-body text-xs text-muted-foreground">
+                                Cancel
+                              </Button>
+                            </div>
+                          </motion.div>
+                        </AnimatePresence>
+                      )}
+
                       {bk.albumId ? (
                         <a href={`/gallery/${bk.albumId}`} target="_blank" rel="noopener noreferrer">
                           <Button size="sm" variant="outline" className="gap-2 font-body text-xs border-border text-foreground">
@@ -711,12 +763,12 @@ function EventTypesView() {
 
       <div className="space-y-3">
         {eventTypes.map((et) => (
-          <div key={et.id} className={`glass-panel rounded-xl p-5 border transition-all ${et.active ? "border-border/50" : "border-border/20 opacity-60"}`}>
-            <div className="flex items-start justify-between gap-4">
-              <div className="flex items-start gap-3 flex-1">
-                <div className={`w-1.5 h-12 rounded-full mt-0.5 bg-primary ${!et.active ? "opacity-30" : ""}`} />
-                <div className="flex-1">
-                  <div className="flex items-center gap-3">
+          <div key={et.id} className={`glass-panel rounded-xl p-4 sm:p-5 border transition-all ${et.active ? "border-border/50" : "border-border/20 opacity-60"}`}>
+            <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+              <div className="flex items-start gap-3 flex-1 min-w-0">
+                <div className={`w-1.5 h-12 rounded-full mt-0.5 bg-primary flex-shrink-0 ${!et.active ? "opacity-30" : ""}`} />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-3 flex-wrap">
                     <h3 className="font-display text-base text-foreground">{et.title}</h3>
                     <span className="text-xs font-body text-muted-foreground flex items-center gap-1">
                       <Clock className="w-3 h-3" />
@@ -724,7 +776,7 @@ function EventTypesView() {
                     </span>
                   </div>
                   {et.description && <p className="text-sm font-body text-muted-foreground mt-1 line-clamp-2">{et.description}</p>}
-                  <div className="flex items-center gap-3 mt-2">
+                  <div className="flex items-center gap-3 mt-2 flex-wrap">
                     {et.price > 0 && <p className="text-sm font-body text-primary font-medium">${et.price}</p>}
                     <span className="text-xs font-body text-muted-foreground">{et.questions.length} questions</span>
                     <span className="text-xs font-body text-muted-foreground">
@@ -734,7 +786,7 @@ function EventTypesView() {
                   </div>
                 </div>
               </div>
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-3 pl-5 sm:pl-0">
                 <Switch checked={et.active} onCheckedChange={() => toggleActive(et.id)} />
                 <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-foreground" onClick={() => setEditing(et)}>
                   <Edit className="w-4 h-4" />
@@ -1149,9 +1201,9 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
         <h2 className="font-display text-2xl text-foreground">Albums</h2>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
           {albums.length >= 2 && (
             <Button variant="outline" size="sm" onClick={() => { setMergeMode(!mergeMode); setMergeSelection(new Set()); }} className="gap-2 font-body text-xs border-border text-foreground">
               <Merge className="w-4 h-4" /> {mergeMode ? "Cancel Merge" : "Merge"}
@@ -1227,12 +1279,12 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
         </div>
       ) : (
         <>
-          <div className="flex items-center gap-2 mb-3">
-            <div className="relative flex-1 max-w-xs">
+           <div className="flex flex-col sm:flex-row sm:items-center gap-2 mb-3">
+            <div className="relative flex-1 sm:max-w-xs">
               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
               <Input value={albumSearch} onChange={e => setAlbumSearch(e.target.value)} placeholder="Search albums…" className="pl-8 h-8 text-xs font-body" />
             </div>
-            <div className="flex items-center gap-1 flex-wrap">
+            <div className="flex items-center gap-1 flex-wrap overflow-x-auto">
               <span className="text-[10px] font-body text-muted-foreground/50 mr-1">Sort:</span>
               <AlbumSortBtn k="date" label="Date" />
               <AlbumSortBtn k="name" label="Name" />
@@ -1240,7 +1292,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
               <AlbumSortBtn k="client" label="Client" />
             </div>
           </div>
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
           {sortedAlbums.map((alb) => (
             <div key={alb.id} className={`glass-panel rounded-xl overflow-hidden transition-all ${mergeMode ? "cursor-pointer" : ""} ${mergeSelection.has(alb.id) ? "ring-2 ring-primary" : ""} ${alb.enabled === false ? "opacity-50" : ""}`}
               onClick={() => {
@@ -1584,7 +1636,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onCa
           </div>
         )}
         {photos.length > 0 && (
-          <div className="grid grid-cols-8 sm:grid-cols-10 gap-1.5 max-h-48 overflow-y-auto">
+          <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 lg:grid-cols-10 gap-1.5 max-h-48 overflow-y-auto">
             {photos.map(p => (
               <div key={p.id} className="relative group aspect-square rounded-md overflow-hidden bg-secondary">
                 <ProgressiveImg thumbSrc={p.thumbnail} fullSrc={p.src} alt={p.title} className="w-full h-full object-cover" loading="lazy" />
@@ -1905,9 +1957,9 @@ function PhotosView() {
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
         <h2 className="font-display text-2xl text-foreground">Photo Library</h2>
-        <div className="flex gap-2 items-center">
+        <div className="flex gap-2 items-center flex-wrap">
           <Button size="sm" variant="outline" onClick={handleSyncFromStorage} disabled={syncing} className="gap-2 font-body text-xs border-border text-foreground">
             <RefreshCw className={`w-4 h-4 ${syncing ? "animate-spin" : ""}`} /> {syncing ? "Syncing…" : "Sync Storage"}
           </Button>
@@ -2010,7 +2062,7 @@ function PhotosView() {
           <p className="text-sm font-body text-muted-foreground">No photos found.</p>
         </div>
       ) : (
-        <div className="grid grid-cols-6 sm:grid-cols-8 lg:grid-cols-10 xl:grid-cols-12 gap-1.5">
+        <div className="grid grid-cols-3 sm:grid-cols-5 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-1.5">
           {displayPhotos.map(p => (
             <div key={p.id + p.source} className={`relative group aspect-square rounded-md overflow-hidden bg-secondary cursor-pointer border-2 transition-all ${selectedIds.has(p.id) ? "border-primary ring-2 ring-primary/20" : "border-transparent hover:border-border"}`}
               onClick={() => toggleSelect(p.id)}>
