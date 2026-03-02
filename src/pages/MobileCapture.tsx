@@ -8,7 +8,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Switch } from "@/components/ui/switch";
 import { toast } from "@/hooks/use-toast";
 import { getBookings, getAlbums, getSettings, updateAlbum, addAlbum } from "@/lib/storage";
-import { uploadPhotosToServer, isServerMode } from "@/lib/api";
+import { uploadPhotosToServer, isServerMode, sendEmail } from "@/lib/api";
 import { generateThumbnail } from "@/lib/image-utils";
 import CameraUsb from "@/plugins/camera-usb";
 import type { CameraFile } from "@/plugins/camera-usb";
@@ -17,7 +17,7 @@ import type { Booking, Album, Photo } from "@/lib/types";
 import {
   Camera, Upload, CheckCircle, ArrowLeft, FolderOpen,
   Wifi, WifiOff, Zap, Image as ImageIcon, RefreshCw,
-  Usb, AlertCircle, Download,
+  Usb, AlertCircle, Download, Mail,
 } from "lucide-react";
 
 export default function MobileCapture() {
@@ -45,6 +45,79 @@ export default function MobileCapture() {
   const [importing, setImporting] = useState(false);
   const [importProgress, setImportProgress] = useState(0);
   const [watching, setWatching] = useState(false);
+  const [notifyClient, setNotifyClient] = useState(true);
+  const emailSentRef = useRef(false); // prevent duplicate album-created emails
+
+  // ── Email notification helper ──
+  const sendClientNotification = useCallback(async (type: "album-created" | "photos-uploaded", photoCount?: number) => {
+    if (!notifyClient || !serverOnline || !selectedBooking?.clientEmail) return;
+
+    const clientName = selectedBooking.clientName || "Client";
+    const sessionType = selectedBooking.type || "Session";
+    const sessionDate = selectedBooking.date || "";
+
+    let subject: string;
+    let html: string;
+
+    if (type === "album-created") {
+      subject = `Your ${sessionType} gallery is being prepared`;
+      html = `<!DOCTYPE html><html><head><meta charset="utf-8"></head>
+<body style="margin:0;padding:0;background:#0a0a0a;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;">
+  <div style="max-width:560px;margin:40px auto;background:#111;border-radius:16px;overflow:hidden;border:1px solid #1f1f1f;">
+    <div style="background:linear-gradient(135deg,#1a1a2e,#16213e);padding:32px;text-align:center;border-bottom:1px solid #1f1f1f;">
+      <div style="font-size:32px;margin-bottom:12px;">📸</div>
+      <h1 style="color:#e5e7eb;font-size:20px;margin:0 0 6px;">Your Photos Are On The Way!</h1>
+      <p style="color:#6b7280;font-size:14px;margin:0;">Hi ${clientName}, we're uploading your photos now.</p>
+    </div>
+    <div style="padding:28px 32px;">
+      <table style="width:100%;border-collapse:collapse;">
+        <tr><td style="padding:6px 0;color:#9ca3af;font-size:14px;">Session</td><td style="padding:6px 0;color:#e5e7eb;font-size:14px;text-align:right;font-weight:600;">${sessionType}</td></tr>
+        <tr><td style="padding:6px 0;color:#9ca3af;font-size:14px;">Date</td><td style="padding:6px 0;color:#e5e7eb;font-size:14px;text-align:right;">${sessionDate}</td></tr>
+      </table>
+      <p style="color:#6b7280;font-size:13px;margin:20px 0 0;line-height:1.6;">
+        We're currently uploading and reviewing your photos. You'll receive another email when your gallery is ready to view.
+      </p>
+    </div>
+    <div style="padding:16px 32px;border-top:1px solid #1f1f1f;text-align:center;">
+      <p style="color:#4b5563;font-size:12px;margin:0;">Questions? Simply reply to this email.</p>
+    </div>
+  </div>
+</body></html>`;
+    } else {
+      subject = `${photoCount} new photo${photoCount !== 1 ? "s" : ""} added to your ${sessionType} gallery`;
+      html = `<!DOCTYPE html><html><head><meta charset="utf-8"></head>
+<body style="margin:0;padding:0;background:#0a0a0a;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;">
+  <div style="max-width:560px;margin:40px auto;background:#111;border-radius:16px;overflow:hidden;border:1px solid #1f1f1f;">
+    <div style="background:linear-gradient(135deg,#1a1a2e,#16213e);padding:32px;text-align:center;border-bottom:1px solid #1f1f1f;">
+      <div style="font-size:32px;margin-bottom:12px;">🖼️</div>
+      <h1 style="color:#e5e7eb;font-size:20px;margin:0 0 6px;">New Photos Uploaded!</h1>
+      <p style="color:#6b7280;font-size:14px;margin:0;">${photoCount} photo${photoCount !== 1 ? "s" : ""} added to your gallery.</p>
+    </div>
+    <div style="padding:28px 32px;">
+      <table style="width:100%;border-collapse:collapse;">
+        <tr><td style="padding:6px 0;color:#9ca3af;font-size:14px;">Session</td><td style="padding:6px 0;color:#e5e7eb;font-size:14px;text-align:right;font-weight:600;">${sessionType}</td></tr>
+        <tr><td style="padding:6px 0;color:#9ca3af;font-size:14px;">Photos Added</td><td style="padding:6px 0;color:#8b5cf6;font-size:14px;text-align:right;font-weight:600;">${photoCount}</td></tr>
+      </table>
+      <p style="color:#6b7280;font-size:13px;margin:20px 0 0;line-height:1.6;">
+        These are proofing previews — final edited photos will be available soon. We'll let you know when your gallery is ready for viewing and downloads.
+      </p>
+    </div>
+    <div style="padding:16px 32px;border-top:1px solid #1f1f1f;text-align:center;">
+      <p style="color:#4b5563;font-size:12px;margin:0;">Questions? Simply reply to this email.</p>
+    </div>
+  </div>
+</body></html>`;
+    }
+
+    try {
+      const result = await sendEmail(selectedBooking.clientEmail, subject, html);
+      if (result.ok) {
+        toast({ title: "Client notified", description: `Email sent to ${selectedBooking.clientEmail}` });
+      }
+    } catch (e) {
+      console.error("Failed to send notification email:", e);
+    }
+  }, [notifyClient, serverOnline, selectedBooking]);
 
   useEffect(() => {
     const bks = getBookings().filter(b => b.status !== "cancelled");
@@ -128,10 +201,16 @@ export default function MobileCapture() {
 
   const selectBooking = (booking: Booking) => {
     setSelectedBooking(booking);
+    const existingAlbum = getAlbums().find(a => a.bookingId === booking.id);
     const album = getOrCreateAlbum(booking);
     setTargetAlbum(album);
     setUploadedCount(0);
-    // Refresh camera files
+    emailSentRef.current = false;
+    // Send album-created email if this is a new album
+    if (!existingAlbum) {
+      sendClientNotification("album-created");
+      emailSentRef.current = true;
+    }
     if (isNative) checkCamera();
   };
 
@@ -205,6 +284,7 @@ export default function MobileCapture() {
         setTargetAlbum(updated);
         setUploadedCount(prev => prev + newPhotos.length);
         toast({ title: `${newPhotos.length} photos imported`, description: "Tagged as proofing" });
+        sendClientNotification("photos-uploaded", newPhotos.length);
       }
 
       // Remove imported files from the camera files list
@@ -279,6 +359,7 @@ export default function MobileCapture() {
         setTargetAlbum(updated);
         setUploadedCount(prev => prev + newPhotos.length);
         toast({ title: `${newPhotos.length} photos uploaded`, description: "Tagged as proofing" });
+        sendClientNotification("photos-uploaded", newPhotos.length);
       } else {
         toast({ title: "Offline — saved locally", description: `${imageFiles.length} files queued` });
       }
@@ -417,6 +498,26 @@ export default function MobileCapture() {
           <Progress value={importing ? importProgress : uploadProgress} className="h-2" />
         </Card>
       )}
+
+      {/* Email Notification Toggle */}
+      <Card className="p-4 mb-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Mail className={`w-4 h-4 ${notifyClient ? "text-primary" : "text-muted-foreground"}`} />
+            <div>
+              <p className="text-sm font-display text-foreground">Notify Client</p>
+              <p className="text-xs text-muted-foreground font-body">
+                {selectedBooking?.clientEmail ? `Email ${selectedBooking.clientEmail}` : "No email on file"}
+              </p>
+            </div>
+          </div>
+          <Switch
+            checked={notifyClient}
+            onCheckedChange={setNotifyClient}
+            disabled={!selectedBooking?.clientEmail || !serverOnline}
+          />
+        </div>
+      </Card>
 
       {/* USB Camera Section (Native only) */}
       {isNative && (
