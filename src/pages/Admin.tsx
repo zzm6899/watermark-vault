@@ -5,7 +5,7 @@ import {
   Trash2, Edit, Users, Clock, CreditCard, Building2,
   Camera, Save, X, LogOut, ChevronDown, ChevronUp,
   Image, DollarSign, Link2, Merge, Send, Copy, ExternalLink,
-  MapPin, Lock, Bell, Download, Unlock, Eye, Grid, List, LayoutGrid, HardDrive, CheckSquare, XSquare, Search, RefreshCw
+  MapPin, Lock, Bell, Download, Unlock, Eye, Grid, List, LayoutGrid, HardDrive, CheckSquare, XSquare, Search, RefreshCw, Mail
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -21,7 +21,7 @@ import {
   getPhotoLibrary, setPhotoLibrary,
 } from "@/lib/storage";
 import { compressImage, formatBytes, getLocalStorageUsage, generateThumbnail } from "@/lib/image-utils";
-import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar, getServerStorageStats, syncFromServer, sendEmail, bulkDeleteFiles, syncBookingsToSheet } from "@/lib/api";
+import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar, getServerStorageStats, syncFromServer, sendEmail, bulkDeleteFiles, syncBookingsToSheet, getBookingEmailLog, sendBookingReminder } from "@/lib/api";
 import RichTextEditor, { RichTextDisplay } from "@/components/RichTextEditor";
 import Login from "@/pages/Login";
 import type {
@@ -359,8 +359,15 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
   const [sortKey, setSortKey] = useState<BookingSortKey>("date");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [bookingSearch, setBookingSearch] = useState("");
+  const [emailLogs, setEmailLogs] = useState<Record<string, { id: string; type: string; sentAt: string; openedAt?: string; subject: string; to: string }[]>>({});
+  const [sendingReminder, setSendingReminder] = useState<string | null>(null);
   const settings = getSettings();
   const eventTypes = getEventTypes();
+
+  const fetchEmailLog = async (bookingId: string) => {
+    const log = await getBookingEmailLog(bookingId);
+    setEmailLogs(prev => ({ ...prev, [bookingId]: log }));
+  };
 
   const handleDelete = (id: string) => {
     if (!confirm("Delete this booking?")) return;
@@ -472,8 +479,12 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
             return (
               <div key={bk.id} className="glass-panel rounded-xl overflow-hidden">
                 <div className="p-4 cursor-pointer hover:bg-secondary/20 transition-colors" onClick={() => {
-                    setExpandedId(isExpanded ? null : bk.id);
-                    if (!isExpanded) syncFromServer().then(() => setBookingsState(getBookings())).catch(() => {});
+                    const willExpand = expandedId !== bk.id;
+                    setExpandedId(willExpand ? bk.id : null);
+                    if (willExpand) {
+                      syncFromServer().then(() => setBookingsState(getBookings())).catch(() => {});
+                      fetchEmailLog(bk.id);
+                    }
                   }}>
                   <div className="flex items-center gap-4">
                     <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
@@ -541,34 +552,84 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                         </div>
                       </div>
                     )}
-                    {/* Email Log */}
-                    {bk.emailLog && bk.emailLog.length > 0 && (
-                      <div>
-                        <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-2">Email History</p>
-                        <div className="space-y-1.5">
-                          {bk.emailLog.map((log, i) => (
-                            <div key={i} className="flex items-center justify-between p-2 rounded-lg bg-secondary/30 border border-border/30">
-                              <div className="flex items-center gap-2">
-                                <div className={`w-1.5 h-1.5 rounded-full ${log.openedAt ? "bg-green-400" : "bg-muted-foreground/40"}`} />
-                                <div>
-                                  <p className="text-xs font-body text-foreground">{log.type === "booking-confirmation" ? "Booking Confirmation" : log.type === "payment-update" ? "Payment Update" : log.type}</p>
-                                  <p className="text-[10px] font-body text-muted-foreground">Sent {new Date(log.sentAt).toLocaleString()}</p>
+                    {/* Email Log — fetched from server */}
+                    {(() => {
+                      const logs = emailLogs[bk.id] || bk.emailLog || [];
+                      return logs.length > 0 ? (
+                        <div>
+                          <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-2 flex items-center gap-1.5">
+                            <Mail className="w-3 h-3" /> Email History ({logs.length})
+                          </p>
+                          <div className="space-y-1.5">
+                            {logs.map((log, i) => {
+                              const typeLabel: Record<string, string> = {
+                                "booking-confirmation": "Booking Confirmation",
+                                "payment-update": "Payment Update",
+                                "payment-reminder": "Payment Reminder",
+                                "booking-reminder": "Booking Reminder",
+                              };
+                              return (
+                                <div key={i} className="flex items-center justify-between p-2 rounded-lg bg-secondary/30 border border-border/30">
+                                  <div className="flex items-center gap-2">
+                                    <div className={`w-1.5 h-1.5 rounded-full ${log.openedAt ? "bg-green-400" : "bg-muted-foreground/40"}`} />
+                                    <div>
+                                      <p className="text-xs font-body text-foreground">{typeLabel[log.type] || log.type}</p>
+                                      <p className="text-[10px] font-body text-muted-foreground">
+                                        {log.to} · {new Date(log.sentAt).toLocaleString()}
+                                      </p>
+                                    </div>
+                                  </div>
+                                  <div className="text-right">
+                                    {log.openedAt ? (
+                                      <span className="text-[10px] font-body text-green-400">✓ Opened {new Date(log.openedAt).toLocaleString()}</span>
+                                    ) : (
+                                      <span className="text-[10px] font-body text-muted-foreground/50">Not opened</span>
+                                    )}
+                                  </div>
                                 </div>
-                              </div>
-                              <div className="text-right">
-                                {log.openedAt ? (
-                                  <span className="text-[10px] font-body text-green-400">Opened {new Date(log.openedAt).toLocaleString()}</span>
-                                ) : (
-                                  <span className="text-[10px] font-body text-muted-foreground/50">Not opened</span>
-                                )}
-                              </div>
-                            </div>
-                          ))}
+                              );
+                            })}
+                          </div>
                         </div>
-                      </div>
-                    )}
+                      ) : (
+                        <p className="text-[10px] font-body text-muted-foreground/50 flex items-center gap-1.5">
+                          <Mail className="w-3 h-3" /> No emails sent yet
+                        </p>
+                      );
+                    })()}
 
-                    <div className="flex items-center gap-2 pt-1">
+                    <div className="flex items-center gap-2 pt-1 flex-wrap">
+                      {/* Reminder buttons */}
+                      {bk.clientEmail && isServerMode() && (
+                        <>
+                          {(bk.paymentStatus !== "paid" && (bk.paymentAmount || 0) > 0) && (
+                            <Button size="sm" variant="outline" disabled={sendingReminder === bk.id}
+                              className="gap-1.5 font-body text-xs border-yellow-500/30 text-yellow-400 hover:bg-yellow-500/10"
+                              onClick={async () => {
+                                setSendingReminder(bk.id);
+                                const result = await sendBookingReminder(bk.id, "payment");
+                                setSendingReminder(null);
+                                if (result.ok) { toast.success("Payment reminder sent"); fetchEmailLog(bk.id); }
+                                else toast.error(result.error || "Failed to send reminder");
+                              }}>
+                              <DollarSign className="w-3 h-3" />
+                              {sendingReminder === bk.id ? "Sending…" : "Payment Reminder"}
+                            </Button>
+                          )}
+                          <Button size="sm" variant="outline" disabled={sendingReminder === bk.id}
+                            className="gap-1.5 font-body text-xs border-primary/30 text-primary hover:bg-primary/10"
+                            onClick={async () => {
+                              setSendingReminder(bk.id);
+                              const result = await sendBookingReminder(bk.id, "booking");
+                              setSendingReminder(null);
+                              if (result.ok) { toast.success("Booking reminder sent"); fetchEmailLog(bk.id); }
+                              else toast.error(result.error || "Failed to send reminder");
+                            }}>
+                            <Bell className="w-3 h-3" />
+                            {sendingReminder === bk.id ? "Sending…" : "Booking Reminder"}
+                          </Button>
+                        </>
+                      )}
                       {bk.albumId ? (
                         <a href={`/gallery/${bk.albumId}`} target="_blank" rel="noopener noreferrer">
                           <Button size="sm" variant="outline" className="gap-2 font-body text-xs border-border text-foreground">

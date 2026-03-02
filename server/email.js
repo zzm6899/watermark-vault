@@ -256,6 +256,129 @@ function registerRoutes(app, store) {
       res.json({ log: booking?.emailLog || [] });
     } catch { res.json({ log: [] }); }
   });
+
+  // Send a reminder email for a booking
+  app.post("/api/email/reminder", async (req, res) => {
+    const t = getTransporter();
+    if (!t) return res.status(400).json({ ok: false, error: "SMTP not configured" });
+
+    const { bookingId, reminderType } = req.body; // reminderType: "payment" | "booking"
+    if (!bookingId) return res.status(400).json({ ok: false, error: "Missing bookingId" });
+    if (!store) return res.status(400).json({ ok: false, error: "No store" });
+
+    const bookings = store.get("bookings") || [];
+    const booking = bookings.find(b => b.id === bookingId);
+    if (!booking) return res.status(404).json({ ok: false, error: "Booking not found" });
+
+    const appBaseUrl = req.body.appBaseUrl || `${req.protocol}://${req.get("host")}`;
+    const modifyUrl = booking.modifyToken && appBaseUrl ? `${appBaseUrl}/booking/modify/${booking.modifyToken}` : null;
+    const calendarUrl = buildGoogleCalendarUrl({
+      title: booking.type || "Booking",
+      date: booking.date, time: booking.time,
+      duration: booking.duration || 60,
+      location: booking.location || "",
+    });
+
+    const isPaymentReminder = reminderType === "payment";
+    const remaining = (booking.paymentAmount || 0) - (booking.depositAmount || 0);
+
+    const subject = isPaymentReminder
+      ? `Payment Reminder — ${booking.type || "Booking"}`
+      : `Booking Reminder — ${booking.type || "Booking"} on ${formatDateNice(booking.date)}`;
+
+    const html = buildReminderEmailHtml({
+      clientName: booking.clientName,
+      eventTitle: booking.type || "Booking",
+      date: booking.date,
+      time: booking.time,
+      duration: booking.duration || 60,
+      isPaymentReminder,
+      paymentStatus: booking.paymentStatus || "unpaid",
+      totalPrice: booking.paymentAmount || 0,
+      depositPaid: booking.depositPaidAt ? (booking.depositAmount || 0) : 0,
+      remaining,
+      bookingId: booking.id,
+      modifyUrl,
+      calendarUrl,
+    });
+
+    const trackingId = randomUUID();
+    const trackingPixelUrl = appBaseUrl ? `${appBaseUrl}/api/email/open/${trackingId}` : null;
+    const finalHtml = html + (trackingPixelUrl ? `<img src="${trackingPixelUrl}" width="1" height="1" style="display:none;" alt="">` : "");
+
+    try {
+      const info = await t.sendMail({ from: getFromAddress(), to: booking.clientEmail, subject, html: finalHtml });
+      console.log(`📧 Reminder sent to ${booking.clientEmail}: ${info.messageId}`);
+
+      appendEmailLog(store, bookingId, {
+        id: trackingId,
+        type: isPaymentReminder ? "payment-reminder" : "booking-reminder",
+        sentAt: new Date().toISOString(),
+        subject,
+        to: booking.clientEmail,
+      });
+
+      res.json({ ok: true, messageId: info.messageId });
+    } catch (err) {
+      console.error("📧 Reminder error:", err.message);
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+}
+
+// ── Reminder Email HTML ───────────────────────────────────
+function buildReminderEmailHtml({ clientName, eventTitle, date, time, duration,
+  isPaymentReminder, paymentStatus, totalPrice, depositPaid, remaining,
+  bookingId, modifyUrl, calendarUrl }) {
+
+  const paymentSection = isPaymentReminder ? `
+    <div style="background:#451a03;border:1px solid #78350f;border-radius:8px;padding:14px;margin:20px 0;">
+      <p style="color:#fbbf24;font-size:13px;margin:0;line-height:1.5;">
+        <strong>💰 Payment Outstanding</strong><br>
+        Total: <strong>$${totalPrice}</strong>${depositPaid > 0 ? ` · Deposit paid: <strong>$${depositPaid}</strong>` : ""}<br>
+        <strong style="color:#f59e0b;">Amount due: $${remaining > 0 ? remaining : totalPrice}</strong><br>
+        Please use booking ref <strong>${bookingId}</strong> as the payment description.
+      </p>
+    </div>` : "";
+
+  const bookingSection = !isPaymentReminder ? `
+    <div style="background:#1a2e1a;border:1px solid #166534;border-radius:8px;padding:14px;margin:20px 0;">
+      <p style="color:#86efac;font-size:13px;margin:0;line-height:1.5;">
+        <strong>📅 Your session is coming up!</strong><br>
+        We look forward to seeing you. Please arrive on time.
+      </p>
+    </div>` : "";
+
+  return `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#0a0a0a;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;">
+  <div style="max-width:560px;margin:40px auto;background:#111111;border-radius:16px;overflow:hidden;border:1px solid #1f1f1f;">
+    <div style="background:linear-gradient(135deg,#1a1a2e 0%,#16213e 100%);padding:32px 32px 24px;text-align:center;border-bottom:1px solid #1f1f1f;">
+      <div style="width:52px;height:52px;background:rgba(139,92,246,0.2);border-radius:50%;display:inline-flex;align-items:center;justify-content:center;margin-bottom:16px;font-size:24px;">${isPaymentReminder ? "💰" : "📷"}</div>
+      <h1 style="color:#e5e7eb;font-size:22px;font-weight:700;margin:0 0 6px;">${isPaymentReminder ? "Payment Reminder" : "Booking Reminder"}</h1>
+      <p style="color:#6b7280;font-size:14px;margin:0;">Hi ${clientName}, this is a friendly reminder.</p>
+    </div>
+    <div style="padding:28px 32px;">
+      <table style="width:100%;border-collapse:collapse;">
+        <tbody>
+          <tr><td style="padding:6px 0;color:#9ca3af;font-size:14px;border-top:1px solid #1f1f1f;">Event</td><td style="padding:6px 0;color:#e5e7eb;font-size:14px;text-align:right;font-weight:600;border-top:1px solid #1f1f1f;">${eventTitle}</td></tr>
+          <tr><td style="padding:6px 0;color:#9ca3af;font-size:14px;">Date</td><td style="padding:6px 0;color:#e5e7eb;font-size:14px;text-align:right;">${formatDateNice(date)}</td></tr>
+          <tr><td style="padding:6px 0;color:#9ca3af;font-size:14px;">Time</td><td style="padding:6px 0;color:#8b5cf6;font-size:14px;text-align:right;font-weight:600;">${formatTime12(time)}</td></tr>
+          <tr><td style="padding:6px 0;color:#9ca3af;font-size:14px;">Duration</td><td style="padding:6px 0;color:#e5e7eb;font-size:14px;text-align:right;">${formatDuration(duration)}</td></tr>
+        </tbody>
+      </table>
+      ${paymentSection}
+      ${bookingSection}
+      <div style="margin-top:24px;">
+        ${!isPaymentReminder ? `<a href="${calendarUrl}" style="display:block;background:#8b5cf6;color:#ffffff;text-decoration:none;text-align:center;padding:14px 20px;border-radius:10px;font-size:14px;font-weight:600;margin-bottom:10px;">📅 Add to Google Calendar</a>` : ""}
+        ${modifyUrl ? `<a href="${modifyUrl}" style="display:block;background:transparent;color:#9ca3af;text-decoration:none;text-align:center;padding:12px 20px;border-radius:10px;font-size:13px;border:1px solid #374151;">View Booking &amp; Manage →</a>` : ""}
+      </div>
+    </div>
+    <div style="padding:20px 32px;border-top:1px solid #1f1f1f;text-align:center;">
+      <p style="color:#4b5563;font-size:12px;margin:0;">Questions? Simply reply to this email.<br>Ref: <span style="color:#6b7280;">${bookingId}</span></p>
+    </div>
+  </div>
+</body></html>`;
 }
 
 module.exports = { registerRoutes, getTransporter, getFromAddress, sendBookingConfirmationEmail };
