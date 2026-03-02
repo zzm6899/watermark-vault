@@ -117,12 +117,12 @@ function buildBookingEmailHtml({ clientName, eventTitle, date, time, duration, l
 // store is the in-memory store object passed from the main server
 function appendEmailLog(store, bookingId, logEntry) {
   try {
-    const data = store.get("bookings") || [];
+    const data = store.get("wv_bookings") || [];
     const idx = data.findIndex(b => b.id === bookingId);
     if (idx === -1) return;
     if (!data[idx].emailLog) data[idx].emailLog = [];
     data[idx].emailLog.push(logEntry);
-    store.set("bookings", data);
+    store.set("wv_bookings", data);
   } catch (e) {
     console.warn("Could not append email log:", e.message);
   }
@@ -223,7 +223,7 @@ function registerRoutes(app, store) {
     // Mark as opened in booking's emailLog
     if (store) {
       try {
-        const bookings = store.get("bookings") || [];
+        const bookings = store.get("wv_bookings") || [];
         let found = false;
         for (const booking of bookings) {
           if (!booking.emailLog) continue;
@@ -234,7 +234,7 @@ function registerRoutes(app, store) {
             break;
           }
         }
-        if (found) store.set("bookings", bookings);
+        if (found) store.set("wv_bookings", bookings);
       } catch (e) {
         console.warn("Email open tracking error:", e.message);
       }
@@ -251,7 +251,7 @@ function registerRoutes(app, store) {
     const { bookingId } = req.params;
     if (!store) return res.json({ log: [] });
     try {
-      const bookings = store.get("bookings") || [];
+      const bookings = store.get("wv_bookings") || [];
       const booking = bookings.find(b => b.id === bookingId);
       res.json({ log: booking?.emailLog || [] });
     } catch { res.json({ log: [] }); }
@@ -266,7 +266,7 @@ function registerRoutes(app, store) {
     if (!bookingId) return res.status(400).json({ ok: false, error: "Missing bookingId" });
     if (!store) return res.status(400).json({ ok: false, error: "No store" });
 
-    const bookings = store.get("bookings") || [];
+    const bookings = store.get("wv_bookings") || [];
     const booking = bookings.find(b => b.id === bookingId);
     if (!booking) return res.status(404).json({ ok: false, error: "Booking not found" });
 
