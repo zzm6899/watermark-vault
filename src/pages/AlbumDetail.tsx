@@ -599,20 +599,44 @@ export default function AlbumDetail() {
                 alt={album.photos[lightboxIndex].title}
                 className="max-w-full max-h-[85vh] object-contain rounded-lg"
               />
-              {/* Watermark overlay in lightbox */}
-              {!isFullyUnlocked && (
-                <div className="absolute inset-0 pointer-events-none select-none flex items-center justify-center">
-                  <div className="rotate-[-30deg]">
-                    {settings.watermarkImage ? (
-                      <img src={settings.watermarkImage} alt="" style={{ width: `${settings.watermarkSize ?? 40}%`, height: "auto", opacity: settings.watermarkOpacity / 100 }} />
-                    ) : (
-                      <p className="font-display text-foreground text-3xl md:text-5xl tracking-widest whitespace-nowrap" style={{ opacity: settings.watermarkOpacity / 100 }}>
-                        {settings.watermarkText}
-                      </p>
-                    )}
+              {/* Watermark overlay in lightbox — uses same settings as grid */}
+              {!isFullyUnlocked && (() => {
+                const op = settings.watermarkOpacity / 100;
+                const size = settings.watermarkSize ?? 40;
+                const pos = settings.watermarkPosition || "center";
+                const isTiled = pos === "tiled";
+                const isCenter = pos === "center";
+                const posStyle: React.CSSProperties = isCenter || isTiled ? {} : {
+                  position: "absolute",
+                  top: pos.startsWith("top") ? "16px" : "auto",
+                  bottom: pos.startsWith("bottom") ? "16px" : "auto",
+                  left: pos.endsWith("left") ? "16px" : "auto",
+                  right: pos.endsWith("right") ? "16px" : "auto",
+                };
+                if (isTiled) return (
+                  <div className="absolute inset-0 pointer-events-none select-none overflow-hidden rounded-lg">
+                    <div className="absolute inset-0 flex flex-wrap items-start justify-start gap-x-16 gap-y-12 rotate-[-30deg] scale-150 origin-center" style={{ opacity: op }}>
+                      {Array.from({ length: 20 }).map((_, i) => settings.watermarkImage
+                        ? <img key={i} src={settings.watermarkImage} alt="" style={{ height: `${Math.max(20, size * 0.4)}px`, width: "auto" }} />
+                        : <p key={i} className="font-display text-foreground tracking-widest whitespace-nowrap" style={{ fontSize: `${Math.max(10, size * 0.3)}px` }}>{settings.watermarkText}</p>
+                      )}
+                    </div>
                   </div>
-                </div>
-              )}
+                );
+                return (
+                  <div className="absolute inset-0 pointer-events-none select-none" style={isCenter ? { display: "flex", alignItems: "center", justifyContent: "center" } : { position: "absolute" }}>
+                    <div style={{ ...posStyle, transform: isCenter ? "rotate(-30deg)" : undefined }}>
+                      {settings.watermarkImage
+                        ? <img src={settings.watermarkImage} alt="" style={{ width: `${size}%`, maxWidth: "100%", height: "auto", opacity: op }} />
+                        : <p className="font-display text-foreground tracking-widest whitespace-nowrap"
+                            style={{ opacity: op, fontSize: `${(size / 40).toFixed(2)}em` }}>
+                            {settings.watermarkText}
+                          </p>
+                      }
+                    </div>
+                  </div>
+                );
+              })()}
 
               {/* Bottom bar with select/title */}
               <div className="absolute bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-background/80 to-transparent rounded-b-lg flex items-center justify-between">
