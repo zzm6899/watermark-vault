@@ -1452,13 +1452,26 @@ function PhotosView() {
         }
       }
 
-      // Step 2: Collect all known URLs
+      // Step 2: Collect all known filenames (normalised) to prevent ghost duplicates
       const knownUrls = new Set<string>();
-      for (const p of libraryPhotos) knownUrls.add(p.src);
-      for (const alb of getAlbums()) for (const p of alb.photos) knownUrls.add(p.src);
+      const knownFilenames = new Set<string>();
+      for (const p of libraryPhotos) {
+        knownUrls.add(p.src);
+        const fn = p.src.split("/").pop();
+        if (fn) knownFilenames.add(fn);
+      }
+      for (const alb of getAlbums()) {
+        for (const p of alb.photos) {
+          knownUrls.add(p.src);
+          const fn = p.src.split("/").pop();
+          if (fn) knownFilenames.add(fn);
+        }
+      }
 
-      // Step 3: Find orphaned files and try to match them back to albums by filename pattern
-      const orphaned = stats.photoFiles.filter(f => !knownUrls.has(`/uploads/${f.name}`));
+      // Step 3: Find orphaned files — check both full URL and filename to avoid ghosts
+      const orphaned = stats.photoFiles.filter(f =>
+        !knownUrls.has(`/uploads/${f.name}`) && !knownFilenames.has(f.name)
+      );
       if (orphaned.length === 0 && repairedAlbums === 0) {
         toast.info("All storage files are already tracked — no missing photos");
         setSyncing(false);
@@ -2271,8 +2284,8 @@ function GoogleCalendarSection() {
 
 // ─── Storage View ────────────────────────────────────
 function StorageView() {
-  const albums = getAlbums();
-  const libraryPhotos = getPhotoLibrary();
+  const [albums, setAlbumsState] = useState(getAlbums());
+  const [libraryPhotos, setLibraryPhotosState] = useState(getPhotoLibrary());
   const bookings = getBookings();
   const eventTypes = getEventTypes();
 
@@ -2290,6 +2303,43 @@ function StorageView() {
   useEffect(() => {
     getServerStorageStats().then(s => { setServerStats(s); setLoading(false); });
   }, []);
+
+  // Backfill thumbnails and track progress
+  const allPhotos = [...libraryPhotos, ...albums.flatMap(a => a.photos)];
+  const uniquePhotos = Array.from(new Map(allPhotos.map(p => [p.id, p])).values());
+  const totalPhotos = uniquePhotos.length;
+  const withThumbnails = uniquePhotos.filter(p => !!p.thumbnail).length;
+  const thumbnailPct = totalPhotos > 0 ? Math.round((withThumbnails / totalPhotos) * 100) : 100;
+
+  // Run backfill from storage view
+  const allAlbumPhotos = albums.flatMap(a => a.photos);
+  useBackfillThumbnails([...libraryPhotos, ...allAlbumPhotos], useCallback((photoId, thumb) => {
+    // Update library
+    setLibraryPhotosState(prev => {
+      const idx = prev.findIndex(p => p.id === photoId);
+      if (idx >= 0) {
+        const updated = prev.map(p => p.id === photoId ? { ...p, thumbnail: thumb } : p);
+        setPhotoLibrary(updated);
+        return updated;
+      }
+      return prev;
+    });
+    // Update albums
+    setAlbumsState(prev => {
+      let changed = false;
+      const updated = prev.map(a => {
+        const idx = a.photos.findIndex(p => p.id === photoId);
+        if (idx >= 0) {
+          changed = true;
+          const photos = a.photos.map(p => p.id === photoId ? { ...p, thumbnail: thumb } : p);
+          updateAlbum({ ...a, photos });
+          return { ...a, photos };
+        }
+        return a;
+      });
+      return changed ? updated : prev;
+    });
+  }, []));
 
   const { used: lsUsed, limit: lsLimit } = getLocalStorageUsage();
   const totalAlbumPhotos = albums.reduce((sum, a) => sum + a.photos.length, 0);
@@ -2325,6 +2375,25 @@ function StorageView() {
           <p className="font-display text-2xl text-foreground">{bookings.length}</p>
           <p className="text-xs font-body text-muted-foreground tracking-wider uppercase">Bookings</p>
         </div>
+      </div>
+
+      {/* Thumbnail Rendering Status */}
+      <div className="glass-panel rounded-xl p-6 mb-6">
+        <h3 className="font-display text-base text-foreground mb-3 flex items-center gap-2">
+          <Image className="w-4 h-4 text-primary" /> Thumbnail Rendering
+        </h3>
+        <div className="flex items-center justify-between text-xs font-body text-muted-foreground mb-1.5">
+          <span>{withThumbnails} of {totalPhotos} photos optimised</span>
+          <span className={thumbnailPct === 100 ? "text-green-500" : "text-primary"}>{thumbnailPct}%</span>
+        </div>
+        <div className="h-3 rounded-full bg-secondary overflow-hidden">
+          <div className={`h-full rounded-full transition-all duration-500 ${thumbnailPct === 100 ? "bg-green-500" : "bg-primary"}`} style={{ width: `${thumbnailPct}%` }} />
+        </div>
+        <p className="text-[10px] font-body text-muted-foreground/50 mt-2">
+          {thumbnailPct === 100
+            ? "✓ All photos have optimised thumbnails for fast grid loading"
+            : `Generating ${totalPhotos - withThumbnails} thumbnail(s) in background… Grid will use low-res placeholders until ready.`}
+        </p>
       </div>
 
       {/* TrueNAS Volume / Disk Usage */}
