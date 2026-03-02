@@ -72,7 +72,7 @@ export interface Booking {
   depositMethod?: "stripe" | "bank";
   depositPaidAt?: string;
   stripeSessionId?: string;
-  emailLog?: { subject: string; sentAt: string; openedAt?: string; type?: string }[];
+  emailLog?: { subject: string; sentAt: string; openedAt?: string; type?: string; to?: string; id?: string }[];
 }
 
 export interface Photo {
