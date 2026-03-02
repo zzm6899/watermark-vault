@@ -19,7 +19,22 @@ const KEYS = {
 function get<T>(key: string, fallback: T): T {
   try {
     const raw = localStorage.getItem(key);
-    return raw ? JSON.parse(raw) : fallback;
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw);
+
+    // Recovery path: handle accidentally double-encoded JSON strings
+    if (typeof parsed === "string") {
+      const t = parsed.trim();
+      if ((t.startsWith("[") && t.endsWith("]")) || (t.startsWith("{") && t.endsWith("}"))) {
+        try {
+          return JSON.parse(parsed) as T;
+        } catch {
+          return parsed as T;
+        }
+      }
+    }
+
+    return parsed as T;
   } catch {
     return fallback;
   }

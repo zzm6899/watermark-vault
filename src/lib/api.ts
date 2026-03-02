@@ -24,11 +24,13 @@ export async function syncFromServer(): Promise<boolean> {
     const res = await fetch("/api/store");
     if (!res.ok) return false;
     const data = await res.json();
+    if (!data || typeof data !== "object" || Array.isArray(data)) return false;
     const SESSION_KEY = "wv_session";
     for (const [key, value] of Object.entries(data)) {
       // Never restore session from server — auth must always be re-done per browser
       if (key === SESSION_KEY) continue;
-      localStorage.setItem(key, JSON.stringify(value));
+      // Server store values are often already JSON strings
+      localStorage.setItem(key, typeof value === "string" ? value : JSON.stringify(value));
     }
     console.log("✅ Synced from server");
     return true;
