@@ -220,6 +220,7 @@ export default function Booking() {
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [stripeAvailable, setStripeAvailable] = useState(false);
   const [processingPayment, setProcessingPayment] = useState(false);
+  const [payFullInstead, setPayFullInstead] = useState(false);
 
   // Check Stripe availability on mount
   useEffect(() => {
@@ -322,6 +323,9 @@ export default function Booking() {
         ? Math.round((getPriceForDuration(selectedEvent, selectedDuration!) * (selectedEvent.depositAmount || 0)) / 100)
         : (selectedEvent.depositAmount || 0)
       : 0;
+    const totalPrice = getPriceForDuration(selectedEvent, selectedDuration!);
+    // If user chose pay-in-full, skip deposit logic
+    const skipDeposit = payFullInstead && depositEnabled;
     const dateStr = toDateStr(selectedDate);
     return {
       id: `bk-${Date.now()}`,
@@ -337,11 +341,11 @@ export default function Booking() {
       answers,
       createdAt: new Date().toISOString(),
       paymentStatus: paymentMethod === "bank" ? "pending-confirmation" as const : paymentMethod === "none" ? "unpaid" as const : "unpaid" as const,
-      paymentAmount: getPriceForDuration(selectedEvent, selectedDuration!),
+      paymentAmount: totalPrice,
       instagramHandle: answers[selectedEvent.questions.find(q => q.type === "instagram" || q.label.toLowerCase().includes("instagram"))?.id || ""] || "",
       modifyToken,
-      depositRequired: depositEnabled || false,
-      depositAmount: depositAmt,
+      depositRequired: skipDeposit ? false : (depositEnabled || false),
+      depositAmount: skipDeposit ? 0 : depositAmt,
       depositMethod: paymentMethod === "none" ? undefined : paymentMethod,
     };
   };
@@ -413,6 +417,7 @@ export default function Booking() {
     setLastBookingId(null);
     setShowBankDeposit(false);
     setProcessingPayment(false);
+    setPayFullInstead(false);
   };
 
   return (
@@ -718,21 +723,30 @@ export default function Booking() {
             {/* ─── Payment Step ─── */}
             {step === "payment" && selectedEvent && selectedDate && selectedTime && selectedDuration && (() => {
               const depositEnabled = selectedEvent.depositEnabled && selectedEvent.depositAmount && selectedEvent.depositAmount > 0;
+              const totalPrice = getPriceForDuration(selectedEvent, selectedDuration!);
               const depositAmt = depositEnabled
                 ? selectedEvent.depositType === "percentage"
-                  ? Math.round((getPriceForDuration(selectedEvent, selectedDuration!) * (selectedEvent.depositAmount || 0)) / 100)
+                  ? Math.round((totalPrice * (selectedEvent.depositAmount || 0)) / 100)
                   : (selectedEvent.depositAmount || 0)
                 : 0;
 
               // Check if deposit was already paid for this event (returning to pay remaining)
               const existingBooking = lastBookingId ? getBookings().find(b => b.id === lastBookingId) : null;
               const depositAlreadyPaid = !!(existingBooking?.depositPaidAt);
-              const remainingAmount = depositAlreadyPaid
-                ? Math.max(0, getPriceForDuration(selectedEvent, selectedDuration!) - depositAmt)
-                : depositEnabled ? depositAmt : getPriceForDuration(selectedEvent, selectedDuration!);
 
-              const amountDue = remainingAmount;
-              const paymentLabel = depositAlreadyPaid ? `Pay Remaining Balance` : depositEnabled ? "Deposit Required" : "Full Payment Required";
+              // If user chose to pay full, or deposit already paid, or no deposit — determine amount
+              const wantsPayFull = payFullInstead && depositEnabled && !depositAlreadyPaid;
+              const amountDue = depositAlreadyPaid
+                ? Math.max(0, totalPrice - depositAmt)
+                : wantsPayFull
+                ? totalPrice
+                : depositEnabled ? depositAmt : totalPrice;
+
+              const paymentLabel = depositAlreadyPaid
+                ? "Pay Remaining Balance"
+                : wantsPayFull
+                ? "Full Payment"
+                : depositEnabled ? "Deposit Required" : "Full Payment Required";
               const depositMethods = selectedEvent.depositMethods || [];
               const bankTransfer = settings.bankTransfer;
 
@@ -816,15 +830,37 @@ export default function Booking() {
                       <p className="text-xs font-body text-muted-foreground">
                         {depositAlreadyPaid
                           ? `Deposit paid. Remaining balance of $${amountDue} is due.`
+                          : wantsPayFull
+                          ? `Full payment of $${totalPrice} to confirm your booking.`
                           : depositEnabled
-                          ? `A $${amountDue} deposit is required to secure your booking. Remaining $${Math.max(0, getPriceForDuration(selectedEvent, selectedDuration!) - depositAmt)} due on the day.`
+                          ? `A $${depositAmt} deposit is required to secure your booking. Remaining $${Math.max(0, totalPrice - depositAmt)} due on the day.`
                           : `Full payment of $${amountDue} is required to confirm your booking.`}
                       </p>
                     </div>
 
+                    {/* Pay full vs deposit toggle */}
+                    {depositEnabled && !depositAlreadyPaid && totalPrice > depositAmt && (
+                      <div className="flex rounded-lg border border-border overflow-hidden">
+                        <button
+                          onClick={() => setPayFullInstead(false)}
+                          className={`flex-1 py-3 px-4 text-sm font-body transition-all ${!payFullInstead ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-secondary"}`}
+                        >
+                          <span className="block font-medium">Pay Deposit</span>
+                          <span className="block text-xs mt-0.5 opacity-70">${depositAmt}</span>
+                        </button>
+                        <button
+                          onClick={() => setPayFullInstead(true)}
+                          className={`flex-1 py-3 px-4 text-sm font-body transition-all ${payFullInstead ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-secondary"}`}
+                        >
+                          <span className="block font-medium">Pay in Full</span>
+                          <span className="block text-xs mt-0.5 opacity-70">${totalPrice}</span>
+                        </button>
+                      </div>
+                    )}
+
                     <div className="flex justify-between items-center border border-border/50 rounded-lg p-4 bg-secondary/30">
                       <span className="text-sm font-body text-muted-foreground">
-                        {depositAlreadyPaid ? "Remaining Balance" : depositEnabled ? "Deposit" : "Total"}
+                        {depositAlreadyPaid ? "Remaining Balance" : wantsPayFull ? "Total" : depositEnabled ? "Deposit" : "Total"}
                       </span>
                       <span className="font-display text-xl text-foreground">${amountDue}</span>
                     </div>
