@@ -44,16 +44,9 @@ export default function WatermarkedImage({
   watermarkSize = 40,
 }: WatermarkedImageProps) {
   const [loaded, setLoaded] = useState(false);
-  const [displaySrc, setDisplaySrc] = useState(src);
 
-  // After thumbnail loads, upgrade to full-res if available
   const handleLoad = () => {
     setLoaded(true);
-    if (fullSrc && fullSrc !== src) {
-      const img = new window.Image();
-      img.onload = () => setDisplaySrc(fullSrc);
-      img.src = fullSrc;
-    }
   };
 
   const opacityValue = watermarkOpacity / 100;
@@ -128,7 +121,7 @@ export default function WatermarkedImage({
       onClick={onSelect}
     >
       <img
-        src={displaySrc}
+        src={src}
         alt={title}
         className={`w-full block transition-all duration-500 ${
           loaded ? "opacity-100" : "opacity-0"

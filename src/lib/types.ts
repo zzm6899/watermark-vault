@@ -1,6 +1,6 @@
 export type WatermarkPosition = "center" | "top-left" | "top-right" | "bottom-left" | "bottom-right" | "tiled";
 export type QuestionFieldType = "text" | "textarea" | "select" | "boolean" | "image-upload" | "instagram";
-export type PaymentStatus = "unpaid" | "paid" | "cash" | "pending-confirmation";
+export type PaymentStatus = "unpaid" | "paid" | "cash" | "pending-confirmation" | "deposit-paid";
 export type DownloadQuality = "2mb" | "5mb" | "original";
 
 export interface QuestionField {
@@ -37,6 +37,7 @@ export interface EventType {
   durations: number[];
   color: string;
   price: number;
+  prices?: Record<number, number>;
   active: boolean;
   requiresConfirmation?: boolean;
   questions: QuestionField[];
@@ -71,6 +72,7 @@ export interface Booking {
   depositMethod?: "stripe" | "bank";
   depositPaidAt?: string;
   stripeSessionId?: string;
+  emailLog?: { subject: string; sentAt: string; openedAt?: string; type?: string }[];
 }
 
 export interface Photo {
