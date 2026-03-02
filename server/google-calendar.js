@@ -233,8 +233,12 @@ function registerRoutes(app) {
   });
 
   // ── PUSH: Full sync — upsert active bookings, delete orphans ──
-  // "Orphan" = a calendar event we created (tagged with watermarkVaultBookingId)
-  // whose booking is now cancelled or deleted. Personal events are never touched.
+  // Strategy:
+  //   1. List ALL events in a wide window (past 90d → future 2y)
+  //   2. Any event whose summary contains "📸" and whose booking ref (in description)
+  //      is not in our active bookings → delete it (orphan/cancelled)
+  //   3. Also use extendedProperties tag (newer events) for more reliable matching
+  //   4. Upsert all active bookings (create if new, update if existing event found)
   app.post("/api/integrations/googlecalendar/sync-all", async (req, res) => {
     const auth = getAuthenticatedClient();
     if (!auth) return res.status(401).json({ error: "Not connected" });
@@ -245,43 +249,67 @@ function registerRoutes(app) {
     const calId = calendarId || loadCalSettings().calendarId || "primary";
     const cal   = google.calendar({ version: "v3", auth });
 
-    // Active booking IDs
-    const activeIds = new Set(bookings.filter(b => b.status !== "cancelled").map(b => b.id));
+    // Map of active booking IDs → booking object
+    const activeBookingsById = {};
+    for (const b of bookings) {
+      if (b.status !== "cancelled") activeBookingsById[b.id] = b;
+    }
 
-    // Step 1: Page through all our tagged events; delete orphans, collect existing
+    // Step 1: List all events in a wide window and find our events
     const existingEventIdByBookingId = {};
-    let pageToken;
     let deletedOrphans = 0;
+    let pageToken;
+    const timeMin = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString(); // 90 days ago
+    const timeMax = new Date(Date.now() + 2 * 365 * 24 * 60 * 60 * 1000).toISOString(); // 2 years ahead
 
     try {
       do {
         const { data } = await cal.events.list({
           calendarId: calId,
-          privateExtendedProperty: "watermarkVaultBookingId",
+          timeMin,
+          timeMax,
           pageToken,
-          maxResults: 250,
+          maxResults: 500,
           singleEvents: true,
+          orderBy: "startTime",
         });
+
         for (const ev of data.items || []) {
-          const bId = ev.extendedProperties?.private?.watermarkVaultBookingId;
-          if (!bId) continue;
-          if (!activeIds.has(bId)) {
+          // Identify our events by:
+          // a) extendedProperties tag (reliable, newer events)
+          const taggedId = ev.extendedProperties?.private?.watermarkVaultBookingId;
+          // b) "Ref: {bookingId}" in description (fallback for older events)
+          const refMatch = ev.description?.match(/Ref:\s*([a-z0-9\-]+)/i);
+          const refId = refMatch?.[1];
+          // c) summary starts with 📸 (broad sweep for any we created)
+          const isOurs = taggedId || refId || ev.summary?.startsWith("📸");
+
+          if (!isOurs) continue; // personal event — leave it alone
+
+          const bookingId = taggedId || refId;
+
+          if (bookingId && activeBookingsById[bookingId]) {
+            // Active booking — track for upsert
+            existingEventIdByBookingId[bookingId] = ev.id;
+          } else if (bookingId && !activeBookingsById[bookingId]) {
+            // Orphan — booking cancelled or deleted
+            try { await cal.events.delete({ calendarId: calId, eventId: ev.id }); deletedOrphans++; }
+            catch (e) { if (e.code !== 410) console.warn("Delete orphan failed:", e.message); }
+          } else if (!bookingId && ev.summary?.startsWith("📸")) {
+            // Old-style event with no ID tag — delete it (will be recreated cleanly)
             try { await cal.events.delete({ calendarId: calId, eventId: ev.id }); deletedOrphans++; }
             catch {}
-          } else {
-            existingEventIdByBookingId[bId] = ev.id;
           }
         }
         pageToken = data.nextPageToken;
       } while (pageToken);
     } catch (err) {
-      console.warn("Could not list tagged events:", err.message);
+      console.warn("Could not list calendar events:", err.message);
     }
 
-    // Step 2: Upsert active bookings
+    // Step 2: Upsert all active bookings
     let created = 0, updated = 0, errors = 0;
-    for (const booking of bookings) {
-      if (booking.status === "cancelled") continue;
+    for (const booking of Object.values(activeBookingsById)) {
       try {
         const existId = existingEventIdByBookingId[booking.id] || booking.gcalEventId;
         if (existId) {
@@ -291,7 +319,10 @@ function registerRoutes(app) {
           await cal.events.insert({ calendarId: calId, requestBody: buildEvent(booking) });
           created++;
         }
-      } catch { errors++; }
+      } catch (e) {
+        console.warn("Upsert booking failed:", booking.id, e.message);
+        errors++;
+      }
     }
 
     res.json({ ok: true, created, updated, deletedOrphans, errors });

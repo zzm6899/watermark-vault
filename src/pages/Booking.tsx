@@ -388,7 +388,7 @@ export default function Booking() {
         time: booking.time,
         duration: booking.duration,
         location: selectedEvent.location,
-        price: selectedEvent.price,
+        price: getPriceForDuration(selectedEvent, booking.duration),
         depositAmount: booking.depositAmount,
         paymentMethod,
         modifyToken: booking.modifyToken,
@@ -461,7 +461,11 @@ export default function Booking() {
                                 {ev.durations.map((d) => formatDuration(d)).join(" / ")}
                               </span>
                               {ev.price > 0 && (
-                                <span className="text-xs font-body text-primary">${ev.price}</span>
+                                <span className="text-xs font-body text-primary">
+                                  {ev.prices && Object.keys(ev.prices).length > 0
+                                    ? ev.durations.map(d => `${formatDuration(d)}: $${ev.prices![d] ?? ev.price}`).join(" · ")
+                                    : `$${ev.price}`}
+                                </span>
                               )}
                               {ev.requiresConfirmation && (
                                 <span className="inline-flex items-center gap-1 text-xs font-body text-muted-foreground border border-border rounded-full px-2.5 py-1">
@@ -528,15 +532,19 @@ export default function Booking() {
                         <div className="flex items-center gap-2">
                           <Clock className="w-3.5 h-3.5 text-muted-foreground" />
                           <div className="flex rounded-full border border-border overflow-hidden">
-                            {selectedEvent.durations.map((d) => (
-                              <button key={d} onClick={() => { setSelectedDuration(d); setSelectedTime(null); }}
-                                className={`px-4 py-1.5 text-xs font-body transition-all ${
-                                  selectedDuration === d ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground hover:bg-secondary"
-                                }`}
-                              >
-                                {formatDuration(d)}
-                              </button>
-                            ))}
+                            {selectedEvent.durations.map((d) => {
+                              const dPrice = getPriceForDuration(selectedEvent, d);
+                              return (
+                                <button key={d} onClick={() => { setSelectedDuration(d); setSelectedTime(null); }}
+                                  className={`px-4 py-2 text-xs font-body transition-all flex flex-col items-center ${
+                                    selectedDuration === d ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground hover:bg-secondary"
+                                  }`}
+                                >
+                                  <span>{formatDuration(d)}</span>
+                                  {dPrice > 0 && <span className={`text-[10px] mt-0.5 ${selectedDuration === d ? "text-primary-foreground/70" : "text-primary"}`}>${dPrice}</span>}
+                                </button>
+                              );
+                            })}
                           </div>
                         </div>
 
@@ -720,8 +728,8 @@ export default function Booking() {
               const existingBooking = lastBookingId ? getBookings().find(b => b.id === lastBookingId) : null;
               const depositAlreadyPaid = !!(existingBooking?.depositPaidAt);
               const remainingAmount = depositAlreadyPaid
-                ? Math.max(0, selectedEvent.price - depositAmt)
-                : depositEnabled ? depositAmt : selectedEvent.price;
+                ? Math.max(0, getPriceForDuration(selectedEvent, selectedDuration!) - depositAmt)
+                : depositEnabled ? depositAmt : getPriceForDuration(selectedEvent, selectedDuration!);
 
               const amountDue = remainingAmount;
               const paymentLabel = depositAlreadyPaid ? `Pay Remaining Balance` : depositEnabled ? "Deposit Required" : "Full Payment Required";
@@ -809,7 +817,7 @@ export default function Booking() {
                         {depositAlreadyPaid
                           ? `Deposit paid. Remaining balance of $${amountDue} is due.`
                           : depositEnabled
-                          ? `A $${amountDue} deposit is required to secure your booking. Remaining $${Math.max(0, selectedEvent.price - depositAmt)} due on the day.`
+                          ? `A $${amountDue} deposit is required to secure your booking. Remaining $${Math.max(0, getPriceForDuration(selectedEvent, selectedDuration!) - depositAmt)} due on the day.`
                           : `Full payment of $${amountDue} is required to confirm your booking.`}
                       </p>
                     </div>
@@ -959,7 +967,7 @@ export default function Booking() {
                       <div className="flex justify-between text-sm font-body">
                         <span className="text-muted-foreground">Payment</span>
                         <span className={`font-medium ${wasBankTransfer ? "text-yellow-400" : "text-green-400"}`}>
-                          ${selectedEvent.price} {wasBankTransfer ? "· Pending confirmation" : "· Paid"}
+                          ${getPriceForDuration(selectedEvent, lastBooking?.duration || selectedDuration!)} {wasBankTransfer ? "· Pending confirmation" : "· Paid"}
                         </span>
                       </div>
                     )}
@@ -974,7 +982,7 @@ export default function Booking() {
                   )}
 
                   {/* Pay remaining balance button (deposit was paid, balance still owed) */}
-                  {depositEnabled && !wasBankTransfer && lastBooking?.depositPaidAt && (selectedEvent.price - depositAmt) > 0 && (
+                  {depositEnabled && !wasBankTransfer && lastBooking?.depositPaidAt && (getPriceForDuration(selectedEvent, lastBooking?.duration || selectedDuration!) - depositAmt) > 0 && (
                     <div className="mt-4 p-4 rounded-lg bg-primary/5 border border-primary/20">
                       <p className="text-xs font-body text-muted-foreground mb-3">
                         Deposit paid. Remaining balance due on the day:
@@ -983,7 +991,7 @@ export default function Booking() {
                         onClick={() => setStep("payment")}
                         className="w-full bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs tracking-wider uppercase h-10"
                       >
-                        Pay Remaining ${selectedEvent.price - depositAmt}
+                        Pay Remaining ${getPriceForDuration(selectedEvent, lastBooking?.duration || selectedDuration!) - depositAmt}
                       </Button>
                     </div>
                   )}
