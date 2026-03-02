@@ -3,7 +3,8 @@ const multer = require("multer");
 const cors = require("cors");
 const path = require("path");
 const fs = require("fs");
-const { registerRoutes: registerGoogleCalendarRoutes } = require("./google-calendar");
+const { registerRoutes: registerGoogleCalendarRoutes, autoSyncBooking } = require("./google-calendar");
+const { notifyNewBooking, notifyBookingUpdate } = require("./discord");
 const { registerRoutes: registerEmailRoutes, sendBookingConfirmationEmail } = require("./email");
 const { registerRoutes: registerStripeRoutes } = require("./stripe");
 
@@ -19,6 +20,14 @@ fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 // Initialize DB file if not exists
 if (!fs.existsSync(DB_FILE)) {
   fs.writeFileSync(DB_FILE, JSON.stringify({}));
+}
+
+function getDiscordWebhookUrl() {
+  try {
+    const db = readDb();
+    const settings = db["wv_settings"] ? JSON.parse(db["wv_settings"]) : null;
+    return settings?.discordWebhookUrl || null;
+  } catch { return null; }
 }
 
 function readDb() {
@@ -122,10 +131,35 @@ app.get("/api/store/:key", (req, res) => {
 
 // Set single key
 app.put("/api/store/:key", (req, res) => {
+  const key = req.params.key;
   const db = readDb();
-  db[req.params.key] = req.body.value;
+  const oldValue = db[key];
+  db[key] = req.body.value;
   writeDb(db);
   res.json({ ok: true });
+
+  // Fire Discord notifications for booking changes (fire-and-forget)
+  if (key === "wv_bookings") {
+    try {
+      const newBookings = JSON.parse(req.body.value);
+      const oldBookings = oldValue ? JSON.parse(oldValue) : [];
+      const oldMap = Object.fromEntries(oldBookings.map(b => [b.id, b]));
+      const webhookUrl = getDiscordWebhookUrl();
+      if (webhookUrl) {
+        for (const booking of newBookings) {
+          if (!oldMap[booking.id]) {
+            // Brand new booking
+            notifyNewBooking(webhookUrl, booking).catch(() => {});
+          } else if (oldMap[booking.id].status !== booking.status) {
+            // Status changed
+            notifyBookingUpdate(webhookUrl, booking, oldMap[booking.id].status, booking.status).catch(() => {});
+          }
+        }
+      }
+    } catch (e) {
+      // Silent — never break the store write
+    }
+  }
 });
 
 // Delete single key
@@ -186,7 +220,7 @@ registerGoogleCalendarRoutes(app);
 registerEmailRoutes(app, store);
 
 // ── Stripe Payments ──────────────────────────────────
-registerStripeRoutes(app, store, sendBookingConfirmationEmail);
+registerStripeRoutes(app, store, sendBookingConfirmationEmail, autoSyncBooking);
 
 // ── Serve uploaded photos ─────────────────────────────
 app.use("/uploads", express.static(UPLOADS_DIR, { maxAge: "7d" }));
