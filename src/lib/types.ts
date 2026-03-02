@@ -84,6 +84,7 @@ export interface Photo {
   width: number;
   height: number;
   selected?: boolean;
+  proofing?: boolean; // true = unedited, needs post-processing
 }
 
 export type AlbumDisplaySize = "small" | "medium" | "large" | "list";
