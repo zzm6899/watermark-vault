@@ -77,6 +77,7 @@ export default function Admin() {
   const resolvedTab = (routeTab && TAB_ROUTE_MAP[routeTab]) || "dashboard";
   const [activeTab, setActiveTabState] = useState<Tab>(resolvedTab);
   const [authed, setAuthed] = useState(() => isLoggedIn());
+  const [prefillBookingId, setPrefillBookingId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!isSetupComplete()) navigate("/setup", { replace: true });
@@ -89,7 +90,6 @@ export default function Admin() {
     setActiveTabState(tab);
     navigate(`/admin/${tab}`, { replace: true });
   };
-  const [prefillBookingId, setPrefillBookingId] = useState<string | null>(null);
 
   const handleLogout = () => {
     logout();
