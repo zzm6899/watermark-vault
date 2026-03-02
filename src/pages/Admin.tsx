@@ -573,15 +573,15 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                                   <div className="flex items-center gap-2">
                                     <div className={`w-1.5 h-1.5 rounded-full ${log.openedAt ? "bg-green-400" : "bg-muted-foreground/40"}`} />
                                     <div>
-                                      <p className="text-xs font-body text-foreground">{typeLabel[log.type] || log.type}</p>
+                                      <p className="text-xs font-body text-foreground">{typeLabel[log.type || ""] || log.type || "Email"}</p>
                                       <p className="text-[10px] font-body text-muted-foreground">
-                                        {log.to} · {new Date(log.sentAt).toLocaleString()}
+                                        {log.to || ""}{log.to && log.sentAt ? " · " : ""}{log.sentAt ? new Date(log.sentAt).toLocaleString() : ""}
                                       </p>
                                     </div>
                                   </div>
                                   <div className="text-right">
                                     {log.openedAt ? (
-                                      <span className="text-[10px] font-body text-green-400">✓ Opened {new Date(log.openedAt).toLocaleString()}</span>
+                                      <span className="text-[10px] font-body text-green-400">✓ Opened {log.openedAt ? new Date(log.openedAt).toLocaleString() : ""}</span>
                                     ) : (
                                       <span className="text-[10px] font-body text-muted-foreground/50">Not opened</span>
                                     )}
@@ -609,8 +609,11 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                                 setSendingReminder(bk.id);
                                 const result = await sendBookingReminder(bk.id, "payment");
                                 setSendingReminder(null);
-                                if (result.ok) { toast.success("Payment reminder sent"); fetchEmailLog(bk.id); }
-                                else toast.error(result.error || "Failed to send reminder");
+                                if (result.ok) {
+                                  toast.success("Payment reminder sent");
+                                  await fetchEmailLog(bk.id);
+                                  syncFromServer().then(() => setBookingsState(getBookings())).catch(() => {});
+                                } else toast.error(result.error || "Failed to send reminder");
                               }}>
                               <DollarSign className="w-3 h-3" />
                               {sendingReminder === bk.id ? "Sending…" : "Payment Reminder"}
@@ -622,8 +625,11 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                               setSendingReminder(bk.id);
                               const result = await sendBookingReminder(bk.id, "booking");
                               setSendingReminder(null);
-                              if (result.ok) { toast.success("Booking reminder sent"); fetchEmailLog(bk.id); }
-                              else toast.error(result.error || "Failed to send reminder");
+                              if (result.ok) {
+                                toast.success("Booking reminder sent");
+                                await fetchEmailLog(bk.id);
+                                syncFromServer().then(() => setBookingsState(getBookings())).catch(() => {});
+                              } else toast.error(result.error || "Failed to send reminder");
                             }}>
                             <Bell className="w-3 h-3" />
                             {sendingReminder === bk.id ? "Sending…" : "Booking Reminder"}
