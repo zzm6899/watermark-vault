@@ -17,7 +17,7 @@ import type { Booking, Album, Photo } from "@/lib/types";
 import {
   Camera, Upload, CheckCircle, ArrowLeft, FolderOpen,
   Wifi, WifiOff, Zap, Image as ImageIcon, RefreshCw,
-  Usb, AlertCircle, Download, Mail,
+  Usb, AlertCircle, Download, Mail, FileImage,
 } from "lucide-react";
 
 export default function MobileCapture() {
@@ -46,6 +46,7 @@ export default function MobileCapture() {
   const [importProgress, setImportProgress] = useState(0);
   const [watching, setWatching] = useState(false);
   const [notifyClient, setNotifyClient] = useState(true);
+  const [jpegOnly, setJpegOnly] = useState(true);
   const emailSentRef = useRef(false); // prevent duplicate album-created emails
 
   // ── Email notification helper ──
@@ -318,7 +319,15 @@ export default function MobileCapture() {
   const handleFilePick = async (files: FileList | null) => {
     if (!files || files.length === 0 || !targetAlbum) return;
 
-    const imageFiles = Array.from(files).filter(f => f.type.startsWith("image/"));
+    const rawExtensions = [".nef", ".cr2", ".cr3", ".arw", ".orf", ".rw2", ".dng", ".raf"];
+    const imageFiles = Array.from(files).filter(f => {
+      if (!f.type.startsWith("image/")) return false;
+      if (jpegOnly) {
+        const ext = f.name.toLowerCase().slice(f.name.lastIndexOf("."));
+        return !rawExtensions.includes(ext);
+      }
+      return true;
+    });
     if (imageFiles.length === 0) {
       toast({ title: "No images found", variant: "destructive" });
       return;
@@ -519,8 +528,24 @@ export default function MobileCapture() {
         </div>
       </Card>
 
-      {/* USB Camera Section (Native only) */}
-      {isNative && (
+      {/* JPEG Only Toggle */}
+      <Card className="p-4 mb-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <FileImage className={`w-4 h-4 ${jpegOnly ? "text-primary" : "text-muted-foreground"}`} />
+            <div>
+              <p className="text-sm font-display text-foreground">JPEG Only</p>
+              <p className="text-xs text-muted-foreground font-body">Skip RAW/NEF files</p>
+            </div>
+          </div>
+          <Switch checked={jpegOnly} onCheckedChange={setJpegOnly} />
+        </div>
+      </Card>
+      {isNative && (() => {
+        const filteredCameraFiles = jpegOnly
+          ? cameraFiles.filter(f => f.mimeType === "image/jpeg" || f.name.toLowerCase().endsWith(".jpg") || f.name.toLowerCase().endsWith(".jpeg"))
+          : cameraFiles;
+        return (
         <Card className="p-4 mb-4">
           {cameraConnected ? (
             <div className="space-y-3">
@@ -529,7 +554,7 @@ export default function MobileCapture() {
                   <Usb className="w-4 h-4 text-primary" />
                   <div>
                     <p className="text-sm font-display text-foreground">{cameraName || "Camera Connected"}</p>
-                    <p className="text-xs text-muted-foreground font-body">{cameraFiles.length} photos available</p>
+                    <p className="text-xs text-muted-foreground font-body">{filteredCameraFiles.length} photos available{jpegOnly ? " (JPEG)" : ""}</p>
                   </div>
                 </div>
                 <Button size="sm" variant="outline" onClick={checkCamera}>
@@ -550,15 +575,15 @@ export default function MobileCapture() {
               </div>
 
               {/* Import buttons */}
-              {cameraFiles.length > 0 && !watching && (
+              {filteredCameraFiles.length > 0 && !watching && (
                 <div className="flex gap-2 pt-2">
                   <Button
                     className="flex-1"
-                    onClick={importAllCameraFiles}
+                    onClick={() => importCameraFiles(filteredCameraFiles.map(f => f.handle))}
                     disabled={importing}
                   >
                     <Download className="w-4 h-4 mr-2" />
-                    Import All ({cameraFiles.length})
+                    Import All ({filteredCameraFiles.length})
                   </Button>
                 </div>
               )}
@@ -573,7 +598,8 @@ export default function MobileCapture() {
             </div>
           )}
         </Card>
-      )}
+        );
+      })()}
 
       {/* Manual file picker (always available as fallback) */}
       <div className="grid grid-cols-2 gap-3 mb-4">
