@@ -339,6 +339,9 @@ export default function Booking() {
       status: selectedEvent.requiresConfirmation ? "pending" as const : "confirmed" as const,
       notes: "",
       answers,
+      answerLabels: Object.fromEntries(
+        selectedEvent.questions.map(q => [q.id, q.label])
+      ),
       createdAt: new Date().toISOString(),
       paymentStatus: paymentMethod === "bank" ? "pending-confirmation" as const : paymentMethod === "none" ? "unpaid" as const : "unpaid" as const,
       paymentAmount: totalPrice,
