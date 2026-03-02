@@ -335,3 +335,47 @@ export async function getBookingEmailLog(bookingId: string): Promise<{
     return data.log || [];
   } catch { return []; }
 }
+
+/** Get busy time blocks from Google Calendar for a date (YYYY-MM-DD).
+ *  Booking page uses this to grey out already-occupied slots. */
+export async function getGoogleBusyTimes(date: string): Promise<{ start: string; end: string }[]> {
+  try {
+    const res = await fetch(`/api/integrations/googlecalendar/busy?date=${encodeURIComponent(date)}`);
+    if (!res.ok) return [];
+    return (await res.json()).busy || [];
+  } catch { return []; }
+}
+
+/** Update an existing Google Calendar event (booking rescheduled / status changed) */
+export async function updateCalendarEvent(eventId: string, booking: unknown, calendarId = "primary"): Promise<{ ok: boolean }> {
+  try {
+    const res = await fetch(`/api/integrations/googlecalendar/event/${encodeURIComponent(eventId)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ booking, calendarId }),
+    });
+    return await res.json();
+  } catch { return { ok: false }; }
+}
+
+/** Delete a Google Calendar event (booking cancelled) */
+export async function deleteCalendarEvent(eventId: string, calendarId = "primary"): Promise<{ ok: boolean }> {
+  try {
+    const res = await fetch(`/api/integrations/googlecalendar/event/${encodeURIComponent(eventId)}?calendarId=${encodeURIComponent(calendarId)}`, {
+      method: "DELETE",
+    });
+    return await res.json();
+  } catch { return { ok: false }; }
+}
+
+/** Save calendar settings (autoSync toggle, target calendar, timezone) */
+export async function saveCalendarSettings(settings: { autoSync?: boolean; calendarId?: string; timeZone?: string }): Promise<{ ok: boolean }> {
+  try {
+    const res = await fetch("/api/integrations/googlecalendar/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(settings),
+    });
+    return await res.json();
+  } catch { return { ok: false }; }
+}
