@@ -195,9 +195,7 @@ app.post("/api/discord/test", async (req, res) => {
           description: "Your Discord webhook is working correctly. You'll receive notifications here for new bookings, status changes, and payments.",
           color: 0x7c3aed,
           fields: [
-            { name: "Events", value: "📸 New bookings
-💰 Payments received
-✅ Status changes", inline: true },
+            { name: "Events", value: "📸 New bookings\n💰 Payments received\n✅ Status changes", inline: true },
           ],
           footer: { text: "Watermark Vault · Test notification" },
           timestamp: new Date().toISOString(),
