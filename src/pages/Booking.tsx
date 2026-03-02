@@ -66,7 +66,7 @@ function isSlotBusyOnGoogle(
 }
 
 /** Get the price for a given duration, with fallback to base price */
-function getPriceForDuration(event: import("./types").EventType, duration: number): number {
+function getPriceForDuration(event: import("@/lib/types").EventType, duration: number): number {
   if (event.prices && event.prices[duration] !== undefined) return event.prices[duration];
   return event.price ?? 0;
 }

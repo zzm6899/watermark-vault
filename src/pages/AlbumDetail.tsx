@@ -21,8 +21,40 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Label } from "@/components/ui/label";
-import type { Album, AlbumDownloadRecord, DownloadQuality, DownloadHistoryEntry } from "@/lib/types";
+import type { Album, AlbumDownloadRecord, DownloadQuality, DownloadHistoryEntry, Photo } from "@/lib/types";
 
+const TARGET_LIGHTBOX_BYTES = 600 * 1024; // ~600KB
+
+/** Renders a medium-quality lightbox image, caching the resized blob URL. */
+function LightboxImage({ photo, cache, onCacheUpdate }: {
+  photo: Photo;
+  cache: Record<string, string>;
+  onCacheUpdate: (id: string, url: string) => void;
+}) {
+  const [src, setSrc] = useState(cache[photo.id] || photo.src);
+
+  useEffect(() => {
+    if (cache[photo.id]) { setSrc(cache[photo.id]); return; }
+    let cancelled = false;
+    resizeToTargetSize(photo.src, TARGET_LIGHTBOX_BYTES)
+      .then(blob => {
+        if (cancelled) return;
+        const url = URL.createObjectURL(blob);
+        onCacheUpdate(photo.id, url);
+        setSrc(url);
+      })
+      .catch(() => { /* keep original src */ });
+    return () => { cancelled = true; };
+  }, [photo.id, photo.src]);
+
+  return (
+    <img
+      src={src}
+      alt={photo.title}
+      className="max-w-full max-h-[85vh] object-contain rounded-lg"
+    />
+  );
+}
 function getSessionKey(album: Album, pin: string): string {
   return pin || `session-${album.id}`;
 }
@@ -48,6 +80,7 @@ export default function AlbumDetail() {
   const [usedPin, setUsedPin] = useState("");
   const [clientNote, setClientNote] = useState("");
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+  const [lightboxSrcCache, setLightboxSrcCache] = useState<Record<string, string>>({});
   const [stripeAvailable, setStripeAvailable] = useState(false);
   const [processingStripe, setProcessingStripe] = useState(false);
 
@@ -342,8 +375,7 @@ export default function AlbumDetail() {
               {album.photos.map((photo, i) => (
                 <WatermarkedImage
                   key={photo.id}
-                  src={photo.thumbnail || photo.src}
-                  fullSrc={photo.thumbnail ? photo.src : undefined}
+                src={photo.thumbnail || photo.src}
                   title={photo.title}
                   selected={selectedIds.has(photo.id)}
                   onSelect={() => setLightboxIndex(i)}
@@ -594,10 +626,10 @@ export default function AlbumDetail() {
 
             {/* Photo */}
             <div className="relative max-w-[90vw] max-h-[90vh]" onClick={(e) => e.stopPropagation()}>
-              <img
-                src={album.photos[lightboxIndex].src}
-                alt={album.photos[lightboxIndex].title}
-                className="max-w-full max-h-[85vh] object-contain rounded-lg"
+              <LightboxImage
+                photo={album.photos[lightboxIndex]}
+                cache={lightboxSrcCache}
+                onCacheUpdate={(id, url) => setLightboxSrcCache(prev => ({ ...prev, [id]: url }))}
               />
               {/* Watermark overlay in lightbox — uses same settings as grid */}
               {!isFullyUnlocked && (() => {
