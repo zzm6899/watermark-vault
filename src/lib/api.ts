@@ -352,6 +352,19 @@ export async function sendBookingReminder(bookingId: string, reminderType: "paym
   } catch { return { ok: false, error: "Network error" }; }
 }
 
+/** Send a custom email to a client */
+export async function sendCustomEmail(to: string, subject: string, html: string, text?: string, bookingId?: string): Promise<{ ok: boolean; error?: string }> {
+  if (!(await checkServer())) return { ok: false, error: "Server unavailable" };
+  try {
+    const res = await fetch("/api/email/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ to, subject, html, text, bookingId }),
+    });
+    return await res.json();
+  } catch { return { ok: false, error: "Network error" }; }
+}
+
 /** Get busy time blocks from Google Calendar for a date (YYYY-MM-DD).
  *  Booking page uses this to grey out already-occupied slots. */
 export async function getGoogleBusyTimes(date: string): Promise<{ start: string; end: string }[]> {

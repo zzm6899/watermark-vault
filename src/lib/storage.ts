@@ -101,7 +101,14 @@ export function setProfile(p: ProfileSettings) {
 
 // ── Event Types ─────────────────────────────────────
 export function getEventTypes(): EventType[] {
-  return get<EventType[]>(KEYS.EVENT_TYPES, []);
+  const raw = get<EventType[]>(KEYS.EVENT_TYPES, []);
+  // Defensive: ensure every event type has valid questions array and availability
+  return raw.map(et => ({
+    ...et,
+    questions: Array.isArray(et.questions) ? et.questions : [],
+    availability: et.availability || { recurring: [], specificDates: [], blockedDates: [] },
+    durations: Array.isArray(et.durations) ? et.durations : [30],
+  }));
 }
 
 export function setEventTypes(ets: EventType[]) {
