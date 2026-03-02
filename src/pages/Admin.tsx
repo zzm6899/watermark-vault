@@ -16,12 +16,14 @@ import { useNavigate, useParams } from "react-router-dom";
 import {
   getProfile, setProfile, getEventTypes, setEventTypes, addEventType,
   deleteEventType, updateEventType, getBookings, deleteBooking,
-  updateBooking, getSettings, setSettings, logout,
+  updateBooking, getSettings, setSettings, logout, isLoggedIn, isSetupComplete,
   getAlbums, addAlbum, updateAlbum, deleteAlbum,
   getPhotoLibrary, setPhotoLibrary,
 } from "@/lib/storage";
 import { compressImage, formatBytes, getLocalStorageUsage, generateThumbnail } from "@/lib/image-utils";
-import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, sendEmail, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar, getServerStorageStats } from "@/lib/api";
+import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar, getServerStorageStats, syncFromServer, sendEmail } from "@/lib/api";
+import RichTextEditor, { RichTextDisplay } from "@/components/RichTextEditor";
+import Login from "@/pages/Login";
 import type {
   EventType, QuestionField, AvailabilitySlot,
   ProfileSettings, AppSettings, Booking, WatermarkPosition,
@@ -73,6 +75,14 @@ export default function Admin() {
   const { tab: routeTab } = useParams<{ tab?: string }>();
   const resolvedTab = (routeTab && TAB_ROUTE_MAP[routeTab]) || "dashboard";
   const [activeTab, setActiveTabState] = useState<Tab>(resolvedTab);
+  const [authed, setAuthed] = useState(() => isLoggedIn());
+
+  useEffect(() => {
+    if (!isSetupComplete()) navigate("/setup", { replace: true });
+  }, [navigate]);
+
+  if (!isSetupComplete()) return null;
+  if (!authed) return <Login onLogin={() => setAuthed(true)} />;
   
   const setActiveTab = (tab: Tab) => {
     setActiveTabState(tab);
@@ -378,9 +388,9 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
             const et = eventTypes.find(e => e.id === bk.eventTypeId);
             return (
               <div key={bk.id} className="glass-panel rounded-xl overflow-hidden">
-                <div className="p-4 cursor-pointer hover:bg-secondary/20 transition-colors" onClick={async () => {
-                    if (!isExpanded) { await syncFromServer(); setBookingsState(getBookings()); }
+                <div className="p-4 cursor-pointer hover:bg-secondary/20 transition-colors" onClick={() => {
                     setExpandedId(isExpanded ? null : bk.id);
+                    if (!isExpanded) syncFromServer().then(() => setBookingsState(getBookings())).catch(() => {});
                   }}>
                   <div className="flex items-center gap-4">
                     <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
@@ -595,6 +605,7 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
   const [location, setLocation] = useState(eventType?.location || "");
   const [durations, setDurations] = useState<number[]>(eventType?.durations || [30]);
   const [price, setPrice] = useState(eventType?.price || 0);
+  const [prices, setPrices] = useState<Record<number, number>>(eventType?.prices || {});
   const [requiresConfirmation, setRequiresConfirmation] = useState(eventType?.requiresConfirmation || false);
   const [depositEnabled, setDepositEnabled] = useState(eventType?.depositEnabled || false);
   const [depositAmount, setDepositAmount] = useState(eventType?.depositAmount || 0);
@@ -643,6 +654,7 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
       durations,
       color: "primary",
       price,
+      prices: Object.keys(prices).length > 0 ? prices : undefined,
       active: eventType?.active ?? true,
       requiresConfirmation,
       depositEnabled,
@@ -669,12 +681,35 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
         </div>
         <div>
           <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Price ($)</label>
-          <Input type="number" value={price} onChange={(e) => setPrice(Number(e.target.value))} className="bg-secondary border-border text-foreground font-body" />
+          <div className="space-y-2">
+            <Input type="number" value={price} onChange={(e) => setPrice(Number(e.target.value))} className="bg-secondary border-border text-foreground font-body" placeholder="Default / fallback price" />
+            {durations.length > 1 && (
+              <div className="space-y-1.5 pt-1">
+                <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground">Per-Duration Prices (override)</p>
+                {durations.map(d => (
+                  <div key={d} className="flex items-center gap-2">
+                    <span className="text-xs font-body text-muted-foreground w-10 flex-shrink-0">{formatDuration(d)}</span>
+                    <Input
+                      type="number"
+                      placeholder={String(price || 0)}
+                      value={prices[d] ?? ""}
+                      onChange={(e) => {
+                        const v = e.target.value === "" ? undefined : Number(e.target.value);
+                        setPrices(prev => { const n = {...prev}; if (v === undefined) delete n[d]; else n[d] = v; return n; });
+                      }}
+                      className="bg-secondary border-border text-foreground font-body h-8 text-sm"
+                    />
+                    {prices[d] !== undefined && <span className="text-[10px] text-primary">custom</span>}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       </div>
       <div>
         <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Description</label>
-        <Textarea value={description} onChange={(e) => setDescription(e.target.value)} className="bg-secondary border-border text-foreground font-body min-h-[60px]" />
+        <RichTextEditor value={description} onChange={setDescription} minHeight="80px" />
       </div>
       <div>
         <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Location</label>
@@ -934,41 +969,19 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
   };
 
   const handleSendNotification = async (album: Album) => {
-    if (!album.clientEmail) {
-      toast.error("No client email on this album");
-      return;
-    }
+    if (!album.clientEmail) { toast.error("No client email on this album"); return; }
     const template = settings.notificationEmailTemplate || "Hey {name}, your photos are ready! Check them out here: {link}";
     const link = `${window.location.origin}/gallery/${album.slug}`;
     const message = template
       .replace("{name}", album.clientName || "there")
       .replace("{link}", link)
-      .replace("{instagram}", album.instagramHandle || album.clientEmail || "");
-
-    // Build a nice HTML version with a button
-    const html = `
-      <div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:32px;background:#0a0a0a;color:#f5f5f5;border-radius:12px;">
-        <h2 style="font-size:22px;margin:0 0 16px;">📸 Your photos are ready!</h2>
-        <p style="color:#aaa;line-height:1.6;">${message.replace(link, "")}</p>
-        <a href="${link}" style="display:inline-block;margin-top:24px;padding:12px 28px;background:#fff;color:#000;border-radius:8px;text-decoration:none;font-weight:600;">View Your Gallery →</a>
-        <p style="margin-top:32px;font-size:11px;color:#555;">${link}</p>
-      </div>`;
-
+      .replace("{instagram}", (album as any).instagramHandle || album.clientEmail || "");
+    const html = `<div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:32px;background:#0a0a0a;color:#f5f5f5;border-radius:12px;"><h2 style="font-size:22px;margin:0 0 16px;">📸 Your photos are ready!</h2><p style="color:#aaa;line-height:1.6;">${message.replace(link, "")}</p><a href="${link}" style="display:inline-block;margin-top:24px;padding:12px 28px;background:#fff;color:#000;border-radius:8px;text-decoration:none;font-weight:600;">View Your Gallery →</a><p style="margin-top:32px;font-size:11px;color:#555;">${link}</p></div>`;
     try {
-      const result = await sendEmail(
-        album.clientEmail,
-        `Your photos are ready — ${album.clientName || "Gallery"}`,
-        html,
-        message
-      );
-      if (result.ok) {
-        toast.success(`Email sent to ${album.clientEmail}`);
-      } else {
-        toast.error(`Failed to send: ${result.error || "Unknown error"}`);
-      }
-    } catch {
-      toast.error("Email send failed — check SMTP settings");
-    }
+      const result = await sendEmail(album.clientEmail, `Your photos are ready — ${album.clientName || "Gallery"}`, html, message);
+      if (result.ok) toast.success(`Email sent to ${album.clientEmail}`);
+      else toast.error(`Failed: ${result.error || "Unknown error"}`);
+    } catch { toast.error("Email send failed — check SMTP settings"); }
   };
 
   return (
@@ -1862,7 +1875,7 @@ function ProfileView() {
           </div>
           <div>
             <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Bio</label>
-            <Textarea value={profile.bio} onChange={(e) => setProfileState({ ...profile, bio: e.target.value })} className="bg-secondary border-border text-foreground font-body min-h-[60px]" />
+            <RichTextEditor value={profile.bio} onChange={(val) => setProfileState({ ...profile, bio: val })} minHeight="80px" />
           </div>
           <div>
             <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Timezone</label>
@@ -1940,6 +1953,15 @@ function SettingsView() {
               value={[settings.watermarkOpacity]}
               onValueChange={(v) => setSettingsState({ ...settings, watermarkOpacity: v[0] })}
               min={5} max={80} step={1}
+              className="mb-4"
+            />
+          </div>
+          <div>
+            <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-3 block">Size ({settings.watermarkSize ?? 40}%)</label>
+            <Slider
+              value={[settings.watermarkSize ?? 40]}
+              onValueChange={(v) => setSettingsState({ ...settings, watermarkSize: v[0] })}
+              min={10} max={100} step={1}
               className="mb-4"
             />
           </div>
@@ -2099,6 +2121,7 @@ function WatermarkPreviewWithSamples({ settings }: { settings: AppSettings }) {
           watermarkText={settings.watermarkText}
           watermarkImage={settings.watermarkImage}
           watermarkOpacity={settings.watermarkOpacity}
+          watermarkSize={settings.watermarkSize ?? 40}
           index={0}
         />
       </div>
@@ -2147,7 +2170,7 @@ function GoogleCalendarSection() {
     const result = await syncAllBookingsToCalendar(bookings, selectedCalendar);
     setSyncing(false);
     if (result.ok) {
-      toast.success(`Synced ${result.created} bookings to Google Calendar${result.errors ? ` (${result.errors} failed)` : ""}`);
+      toast.success(`Synced ${(result.created||0)+(result.updated||0)} bookings — ${result.created||0} new, ${result.updated||0} updated, ${result.deletedOrphans||0} removed`);
     } else {
       toast.error("Failed to sync bookings");
     }
