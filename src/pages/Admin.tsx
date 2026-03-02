@@ -20,6 +20,7 @@ import {
   updateBooking, getSettings, setSettings, logout, isLoggedIn, isSetupComplete,
   getAlbums, addAlbum, updateAlbum, deleteAlbum,
   getPhotoLibrary, setPhotoLibrary,
+  getEmailTemplates, addEmailTemplate, updateEmailTemplate, deleteEmailTemplate,
 } from "@/lib/storage";
 import { compressImage, formatBytes, getLocalStorageUsage, generateThumbnail } from "@/lib/image-utils";
 import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar, getServerStorageStats, syncFromServer, sendEmail, bulkDeleteFiles, syncBookingsToSheet, getBookingEmailLog, sendBookingReminder, sendCustomEmail } from "@/lib/api";
@@ -29,6 +30,7 @@ import type {
   EventType, QuestionField, AvailabilitySlot,
   ProfileSettings, AppSettings, Booking, WatermarkPosition,
   Album, Photo, PaymentStatus, AlbumDisplaySize, AlbumDownloadRecord, DownloadHistoryEntry,
+  EmailTemplate,
 } from "@/lib/types";
 import WatermarkedImage from "@/components/WatermarkedImage";
 import ProgressiveImg from "@/components/ProgressiveImg";
@@ -368,6 +370,8 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
   const [customEmailSubject, setCustomEmailSubject] = useState("");
   const [customEmailBody, setCustomEmailBody] = useState("");
   const [sendingCustomEmail, setSendingCustomEmail] = useState(false);
+  const [showEmailPreview, setShowEmailPreview] = useState(false);
+  const emailTemplates = getEmailTemplates();
   const settings = getSettings();
   const eventTypes = getEventTypes();
 
@@ -662,9 +666,54 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                         <AnimatePresence>
                           <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} className="w-full mt-2 p-4 rounded-lg bg-secondary/50 border border-border/50 space-y-3">
                             <p className="text-xs font-body text-muted-foreground">Send custom email to <span className="text-foreground font-medium">{bk.clientEmail}</span></p>
-                            <Input value={customEmailSubject} onChange={e => setCustomEmailSubject(e.target.value)} placeholder="Email subject…" className="bg-secondary border-border text-foreground font-body text-sm" />
-                            <Textarea value={customEmailBody} onChange={e => setCustomEmailBody(e.target.value)} placeholder="Write your message… (supports basic formatting)" className="bg-secondary border-border text-foreground font-body text-sm min-h-[100px]" />
-                            <div className="flex items-center gap-2">
+                            
+                            {/* Template Picker */}
+                            {emailTemplates.length > 0 && (
+                              <div>
+                                <label className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Load Template</label>
+                                <div className="flex flex-wrap gap-1.5">
+                                  {emailTemplates.map(t => (
+                                    <button key={t.id} onClick={() => {
+                                      const et2 = eventTypes.find(e => e.id === bk.eventTypeId);
+                                      const sub = t.subject.replace(/\{\{clientName\}\}/g, bk.clientName).replace(/\{\{eventTitle\}\}/g, bk.type || et2?.title || "").replace(/\{\{date\}\}/g, bk.date).replace(/\{\{time\}\}/g, bk.time).replace(/\{\{amount\}\}/g, String(bk.paymentAmount || 0));
+                                      const bod = t.body.replace(/\{\{clientName\}\}/g, bk.clientName).replace(/\{\{eventTitle\}\}/g, bk.type || et2?.title || "").replace(/\{\{date\}\}/g, bk.date).replace(/\{\{time\}\}/g, bk.time).replace(/\{\{amount\}\}/g, String(bk.paymentAmount || 0));
+                                      setCustomEmailSubject(sub);
+                                      setCustomEmailBody(bod);
+                                      setShowEmailPreview(false);
+                                    }} className="text-[10px] font-body px-2.5 py-1 rounded-full bg-primary/10 text-primary hover:bg-primary/20 transition-colors">
+                                      {t.name}
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+
+                            <Input value={customEmailSubject} onChange={e => { setCustomEmailSubject(e.target.value); setShowEmailPreview(false); }} placeholder="Email subject…" className="bg-secondary border-border text-foreground font-body text-sm" />
+                            <Textarea value={customEmailBody} onChange={e => { setCustomEmailBody(e.target.value); setShowEmailPreview(false); }} placeholder="Write your message… (supports basic formatting)" className="bg-secondary border-border text-foreground font-body text-sm min-h-[100px]" />
+                            
+                            {/* Email Preview */}
+                            {showEmailPreview && customEmailSubject.trim() && customEmailBody.trim() && (
+                              <div className="rounded-lg border border-border/50 overflow-hidden">
+                                <div className="px-3 py-2 bg-muted/30 border-b border-border/50">
+                                  <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground">Email Preview</p>
+                                </div>
+                                <div className="p-4 bg-background/50">
+                                  <p className="text-xs font-body text-muted-foreground mb-1">To: <span className="text-foreground">{bk.clientEmail}</span></p>
+                                  <p className="text-xs font-body text-muted-foreground mb-3">Subject: <span className="text-foreground font-medium">{customEmailSubject}</span></p>
+                                  <div className="rounded-lg p-4" style={{ background: "#0a0a0a", color: "#f5f5f5", fontFamily: "sans-serif", maxWidth: 520 }}>
+                                    <p style={{ color: "#ccc", lineHeight: 1.8, whiteSpace: "pre-wrap" }} dangerouslySetInnerHTML={{ __html: customEmailBody.replace(/\n/g, "<br/>") }} />
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <Button size="sm" variant="outline" onClick={() => setShowEmailPreview(!showEmailPreview)}
+                                disabled={!customEmailSubject.trim() || !customEmailBody.trim()}
+                                className="gap-1.5 font-body text-xs border-border text-foreground hover:bg-secondary">
+                                <Eye className="w-3 h-3" />
+                                {showEmailPreview ? "Hide Preview" : "Preview"}
+                              </Button>
                               <Button size="sm" disabled={sendingCustomEmail || !customEmailSubject.trim() || !customEmailBody.trim()}
                                 className="gap-1.5 bg-primary text-primary-foreground font-body text-xs"
                                 onClick={async () => {
@@ -677,13 +726,14 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                                     setCustomEmailTarget(null);
                                     setCustomEmailSubject("");
                                     setCustomEmailBody("");
+                                    setShowEmailPreview(false);
                                     await fetchEmailLog(bk.id);
                                   } else toast.error(result.error || "Failed to send");
                                 }}>
                                 <Send className="w-3 h-3" />
                                 {sendingCustomEmail ? "Sending…" : "Send Email"}
                               </Button>
-                              <Button size="sm" variant="ghost" onClick={() => setCustomEmailTarget(null)} className="font-body text-xs text-muted-foreground">
+                              <Button size="sm" variant="ghost" onClick={() => { setCustomEmailTarget(null); setShowEmailPreview(false); }} className="font-body text-xs text-muted-foreground">
                                 Cancel
                               </Button>
                             </div>
@@ -2266,6 +2316,9 @@ function SettingsView() {
           <p className="text-[10px] font-body text-muted-foreground/50">Variables: {"{name}"}, {"{link}"}, {"{instagram}"}. Requires SMTP backend to send.</p>
         </div>
 
+        {/* Email Templates Manager */}
+        <EmailTemplatesManager />
+
         {/* Discord Webhook */}
         <div className="glass-panel rounded-xl p-6 space-y-4">
           <h3 className="font-display text-base text-foreground flex items-center gap-2">
@@ -2403,6 +2456,110 @@ function WatermarkPreviewWithSamples({ settings }: { settings: AppSettings }) {
           index={0}
         />
       </div>
+    </div>
+  );
+}
+
+// ─── Email Templates Manager ─────────────────────────
+function EmailTemplatesManager() {
+  const [templates, setTemplates] = useState<EmailTemplate[]>(getEmailTemplates());
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [newName, setNewName] = useState("");
+  const [newSubject, setNewSubject] = useState("");
+  const [newBody, setNewBody] = useState("");
+  const [showForm, setShowForm] = useState(false);
+
+  const handleSave = () => {
+    if (!newName.trim() || !newSubject.trim()) return;
+    if (editingId) {
+      const updated: EmailTemplate = { id: editingId, name: newName, subject: newSubject, body: newBody, createdAt: templates.find(t => t.id === editingId)?.createdAt || new Date().toISOString() };
+      updateEmailTemplate(updated);
+    } else {
+      const t: EmailTemplate = { id: generateId("tpl"), name: newName, subject: newSubject, body: newBody, createdAt: new Date().toISOString() };
+      addEmailTemplate(t);
+    }
+    setTemplates(getEmailTemplates());
+    setShowForm(false);
+    setEditingId(null);
+    setNewName("");
+    setNewSubject("");
+    setNewBody("");
+    toast.success(editingId ? "Template updated" : "Template saved");
+  };
+
+  const handleDelete = (id: string) => {
+    if (!confirm("Delete this template?")) return;
+    deleteEmailTemplate(id);
+    setTemplates(getEmailTemplates());
+    toast.success("Template deleted");
+  };
+
+  const handleEdit = (t: EmailTemplate) => {
+    setEditingId(t.id);
+    setNewName(t.name);
+    setNewSubject(t.subject);
+    setNewBody(t.body);
+    setShowForm(true);
+  };
+
+  return (
+    <div className="glass-panel rounded-xl p-6 space-y-4">
+      <div className="flex items-center justify-between">
+        <h3 className="font-display text-base text-foreground flex items-center gap-2">
+          <Mail className="w-4 h-4 text-primary" /> Email Templates
+        </h3>
+        <Button size="sm" variant="outline" onClick={() => { setShowForm(!showForm); setEditingId(null); setNewName(""); setNewSubject(""); setNewBody(""); }}
+          className="gap-1.5 font-body text-xs">
+          <Plus className="w-3 h-3" /> {showForm ? "Cancel" : "New Template"}
+        </Button>
+      </div>
+      <p className="text-[10px] font-body text-muted-foreground/50">
+        Create reusable templates for custom emails. Variables: {"{{clientName}}"}, {"{{eventTitle}}"}, {"{{date}}"}, {"{{time}}"}, {"{{amount}}"}
+      </p>
+
+      {showForm && (
+        <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} className="space-y-3 p-4 rounded-lg bg-secondary/50 border border-border/50">
+          <div>
+            <label className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-1 block">Template Name</label>
+            <Input value={newName} onChange={e => setNewName(e.target.value)} placeholder="e.g. Follow Up, Thank You…" className="bg-secondary border-border text-foreground font-body text-sm" />
+          </div>
+          <div>
+            <label className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-1 block">Subject Line</label>
+            <Input value={newSubject} onChange={e => setNewSubject(e.target.value)} placeholder="e.g. Your {{eventTitle}} session on {{date}}" className="bg-secondary border-border text-foreground font-body text-sm" />
+          </div>
+          <div>
+            <label className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-1 block">Body</label>
+            <Textarea value={newBody} onChange={e => setNewBody(e.target.value)} placeholder="Hey {{clientName}},&#10;&#10;Thanks for your booking…" className="bg-secondary border-border text-foreground font-body text-sm min-h-[120px]" />
+          </div>
+          <Button size="sm" onClick={handleSave} disabled={!newName.trim() || !newSubject.trim()} className="gap-1.5 bg-primary text-primary-foreground font-body text-xs">
+            <Save className="w-3 h-3" /> {editingId ? "Update Template" : "Save Template"}
+          </Button>
+        </motion.div>
+      )}
+
+      {templates.length > 0 ? (
+        <div className="space-y-2">
+          {templates.map(t => (
+            <div key={t.id} className="p-3 rounded-lg bg-secondary/30 border border-border/30 flex items-start justify-between gap-3">
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-body text-foreground font-medium">{t.name}</p>
+                <p className="text-xs font-body text-muted-foreground truncate">Subject: {t.subject}</p>
+                <p className="text-[10px] font-body text-muted-foreground/50 mt-1 line-clamp-2">{t.body}</p>
+              </div>
+              <div className="flex items-center gap-1 flex-shrink-0">
+                <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => handleEdit(t)}>
+                  <Edit className="w-3 h-3" />
+                </Button>
+                <Button size="icon" variant="ghost" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={() => handleDelete(t.id)}>
+                  <Trash2 className="w-3 h-3" />
+                </Button>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="text-xs font-body text-muted-foreground/50">No templates yet. Create one to speed up your email workflow.</p>
+      )}
     </div>
   );
 }

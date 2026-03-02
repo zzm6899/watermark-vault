@@ -166,6 +166,14 @@ export interface AppSettings {
   discordWebhookUrl: string;
 }
 
+export interface EmailTemplate {
+  id: string;
+  name: string;
+  subject: string;
+  body: string; // supports {{clientName}}, {{eventTitle}}, {{date}}, {{time}}, {{amount}}, {{albumLink}}
+  createdAt: string;
+}
+
 export interface AdminCredentials {
   username: string;
   passwordHash: string;
