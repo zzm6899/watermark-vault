@@ -177,6 +177,44 @@ app.delete("/api/store/:key", (req, res) => {
   res.json({ ok: true });
 });
 
+
+// Discord webhook test
+app.post("/api/discord/test", async (req, res) => {
+  const { webhookUrl } = req.body;
+  if (!webhookUrl || !webhookUrl.startsWith("https://discord.com/api/webhooks/")) {
+    return res.status(400).json({ ok: false, error: "Invalid webhook URL" });
+  }
+  try {
+    const response = await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        username: "Watermark Vault",
+        embeds: [{
+          title: "✅ Webhook Connected",
+          description: "Your Discord webhook is working correctly. You'll receive notifications here for new bookings, status changes, and payments.",
+          color: 0x7c3aed,
+          fields: [
+            { name: "Events", value: "📸 New bookings
+💰 Payments received
+✅ Status changes", inline: true },
+          ],
+          footer: { text: "Watermark Vault · Test notification" },
+          timestamp: new Date().toISOString(),
+        }],
+      }),
+    });
+    if (response.ok) {
+      res.json({ ok: true });
+    } else {
+      const text = await response.text();
+      res.status(response.status).json({ ok: false, error: text });
+    }
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // ── Photo Upload ──────────────────────────────────────
 const storage = multer.diskStorage({
   destination: UPLOADS_DIR,
