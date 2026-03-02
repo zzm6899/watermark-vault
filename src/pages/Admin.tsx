@@ -16,14 +16,12 @@ import { useNavigate, useParams } from "react-router-dom";
 import {
   getProfile, setProfile, getEventTypes, setEventTypes, addEventType,
   deleteEventType, updateEventType, getBookings, deleteBooking,
-  updateBooking, getSettings, setSettings, logout, isLoggedIn, isSetupComplete,
+  updateBooking, getSettings, setSettings, logout,
   getAlbums, addAlbum, updateAlbum, deleteAlbum,
   getPhotoLibrary, setPhotoLibrary,
 } from "@/lib/storage";
-import RichTextEditor, { RichTextDisplay } from "@/components/RichTextEditor";
-import Login from "@/pages/Login";
 import { compressImage, formatBytes, getLocalStorageUsage, generateThumbnail } from "@/lib/image-utils";
-import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, syncFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar, getServerStorageStats } from "@/lib/api";
+import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar, getServerStorageStats } from "@/lib/api";
 import type {
   EventType, QuestionField, AvailabilitySlot,
   ProfileSettings, AppSettings, Booking, WatermarkPosition,
@@ -75,14 +73,6 @@ export default function Admin() {
   const { tab: routeTab } = useParams<{ tab?: string }>();
   const resolvedTab = (routeTab && TAB_ROUTE_MAP[routeTab]) || "dashboard";
   const [activeTab, setActiveTabState] = useState<Tab>(resolvedTab);
-  const [authed, setAuthed] = useState(() => isLoggedIn());
-
-  useEffect(() => {
-    if (!isSetupComplete()) navigate("/setup", { replace: true });
-  }, [navigate]);
-
-  if (!isSetupComplete()) return null;
-  if (!authed) return <Login onLogin={() => setAuthed(true)} />;
   
   const setActiveTab = (tab: Tab) => {
     setActiveTabState(tab);
@@ -388,9 +378,9 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
             const et = eventTypes.find(e => e.id === bk.eventTypeId);
             return (
               <div key={bk.id} className="glass-panel rounded-xl overflow-hidden">
-                <div className="p-4 cursor-pointer hover:bg-secondary/20 transition-colors" onClick={() => {
+                <div className="p-4 cursor-pointer hover:bg-secondary/20 transition-colors" onClick={async () => {
+                    if (!isExpanded) { await syncFromServer(); setBookingsState(getBookings()); }
                     setExpandedId(isExpanded ? null : bk.id);
-                    if (!isExpanded) syncFromServer().then(() => setBookingsState(getBookings())).catch(() => {});
                   }}>
                   <div className="flex items-center gap-4">
                     <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
@@ -571,13 +561,7 @@ function EventTypesView() {
                   </div>
                   {et.description && <p className="text-sm font-body text-muted-foreground mt-1 line-clamp-2">{et.description}</p>}
                   <div className="flex items-center gap-3 mt-2">
-                    {et.price > 0 && (
-                      <p className="text-sm font-body text-primary font-medium">
-                        {et.prices && Object.keys(et.prices).length > 0
-                          ? et.durations.map(d => `${formatDuration(d)}: $${et.prices![d] ?? et.price}`).join(" · ")
-                          : `$${et.price}`}
-                      </p>
-                    )}
+                    {et.price > 0 && <p className="text-sm font-body text-primary font-medium">${et.price}</p>}
                     <span className="text-xs font-body text-muted-foreground">{et.questions.length} questions</span>
                     <span className="text-xs font-body text-muted-foreground">
                       {et.availability.recurring.length} days + {et.availability.specificDates.length} specific
@@ -611,8 +595,6 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
   const [location, setLocation] = useState(eventType?.location || "");
   const [durations, setDurations] = useState<number[]>(eventType?.durations || [30]);
   const [price, setPrice] = useState(eventType?.price || 0);
-  // Per-duration prices: { 60: 150, 90: 200 }. Falls back to base price if not set.
-  const [prices, setPrices] = useState<Record<number, number>>(eventType?.prices || {});
   const [requiresConfirmation, setRequiresConfirmation] = useState(eventType?.requiresConfirmation || false);
   const [depositEnabled, setDepositEnabled] = useState(eventType?.depositEnabled || false);
   const [depositAmount, setDepositAmount] = useState(eventType?.depositAmount || 0);
@@ -661,7 +643,6 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
       durations,
       color: "primary",
       price,
-      prices: Object.keys(prices).length > 0 ? prices : undefined,
       active: eventType?.active ?? true,
       requiresConfirmation,
       depositEnabled,
@@ -688,39 +669,12 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
         </div>
         <div>
           <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Price ($)</label>
-          <div className="space-y-2">
-            <div className="flex items-center gap-2">
-              <Input type="number" value={price} onChange={(e) => setPrice(Number(e.target.value))} className="bg-secondary border-border text-foreground font-body" placeholder="Default price" />
-              <span className="text-xs text-muted-foreground whitespace-nowrap">default / fallback</span>
-            </div>
-            {durations.length > 1 && (
-              <div className="space-y-1.5">
-                <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground">Per-Duration Prices (optional)</p>
-                {durations.map(d => (
-                  <div key={d} className="flex items-center gap-2">
-                    <span className="text-xs font-body text-muted-foreground w-12 flex-shrink-0">{formatDuration(d)}</span>
-                    <span className="text-xs text-muted-foreground">$</span>
-                    <Input
-                      type="number"
-                      placeholder={String(price || 0)}
-                      value={prices[d] ?? ""}
-                      onChange={(e) => {
-                        const v = e.target.value === "" ? undefined : Number(e.target.value);
-                        setPrices(prev => { const n = { ...prev }; if (v === undefined) delete n[d]; else n[d] = v; return n; });
-                      }}
-                      className="bg-secondary border-border text-foreground font-body h-8 text-sm"
-                    />
-                    {prices[d] !== undefined && <span className="text-[10px] text-primary">custom</span>}
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+          <Input type="number" value={price} onChange={(e) => setPrice(Number(e.target.value))} className="bg-secondary border-border text-foreground font-body" />
         </div>
       </div>
       <div>
         <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Description</label>
-        <RichTextEditor value={description} onChange={setDescription} minHeight="80px" />
+        <Textarea value={description} onChange={(e) => setDescription(e.target.value)} className="bg-secondary border-border text-foreground font-body min-h-[60px]" />
       </div>
       <div>
         <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Location</label>
@@ -1880,7 +1834,7 @@ function ProfileView() {
           </div>
           <div>
             <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Bio</label>
-            <RichTextEditor value={profile.bio} onChange={(val) => setProfileState({ ...profile, bio: val })} minHeight="80px" />
+            <Textarea value={profile.bio} onChange={(e) => setProfileState({ ...profile, bio: e.target.value })} className="bg-secondary border-border text-foreground font-body min-h-[60px]" />
           </div>
           <div>
             <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Timezone</label>
@@ -1958,6 +1912,15 @@ function SettingsView() {
               value={[settings.watermarkOpacity]}
               onValueChange={(v) => setSettingsState({ ...settings, watermarkOpacity: v[0] })}
               min={5} max={80} step={1}
+              className="mb-4"
+            />
+          </div>
+          <div>
+            <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-3 block">Size ({settings.watermarkSize ?? 40}%)</label>
+            <Slider
+              value={[settings.watermarkSize ?? 40]}
+              onValueChange={(v) => setSettingsState({ ...settings, watermarkSize: v[0] })}
+              min={10} max={100} step={1}
               className="mb-4"
             />
           </div>
@@ -2117,6 +2080,7 @@ function WatermarkPreviewWithSamples({ settings }: { settings: AppSettings }) {
           watermarkText={settings.watermarkText}
           watermarkImage={settings.watermarkImage}
           watermarkOpacity={settings.watermarkOpacity}
+          watermarkSize={settings.watermarkSize ?? 40}
           index={0}
         />
       </div>
@@ -2165,7 +2129,7 @@ function GoogleCalendarSection() {
     const result = await syncAllBookingsToCalendar(bookings, selectedCalendar);
     setSyncing(false);
     if (result.ok) {
-      toast.success(`Synced ${(result.created||0)+(result.updated||0)} bookings — ${result.created||0} new, ${result.updated||0} updated, ${result.deletedOrphans||0} old events removed`);
+      toast.success(`Synced ${result.created} bookings to Google Calendar${result.errors ? ` (${result.errors} failed)` : ""}`);
     } else {
       toast.error("Failed to sync bookings");
     }

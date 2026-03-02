@@ -36,8 +36,7 @@ export interface EventType {
   description: string;
   durations: number[];
   color: string;
-  price: number;           // default / fallback price
-  prices?: Record<number, number>; // per-duration pricing: { 60: 150, 90: 200 }
+  price: number;
   active: boolean;
   requiresConfirmation?: boolean;
   questions: QuestionField[];
@@ -72,17 +71,6 @@ export interface Booking {
   depositMethod?: "stripe" | "bank";
   depositPaidAt?: string;
   stripeSessionId?: string;
-  gcalEventId?: string;      // Google Calendar event ID for this booking
-  emailLog?: EmailLogEntry[];
-}
-
-export interface EmailLogEntry {
-  id: string;
-  type: "booking-confirmation" | "payment-update" | "reschedule" | "cancellation" | "manual";
-  sentAt: string;
-  openedAt?: string;
-  subject: string;
-  to: string;
 }
 
 export interface Photo {
@@ -163,6 +151,7 @@ export interface AppSettings {
   watermarkText: string;
   watermarkImage: string;
   watermarkOpacity: number; // 0-100
+  watermarkSize: number;    // 10-100
   defaultFreeDownloads: number;
   defaultPricePerPhoto: number;
   defaultPriceFullAlbum: number;

@@ -181,6 +181,7 @@ const defaultSettings: AppSettings = {
   watermarkText: "ZACMPHOTOS",
   watermarkImage: "",
   watermarkOpacity: 15,
+  watermarkSize: 40,
   defaultFreeDownloads: 5,
   defaultPricePerPhoto: 12,
   defaultPriceFullAlbum: 299,

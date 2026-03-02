@@ -354,6 +354,7 @@ export default function AlbumDetail() {
                   watermarkText={settings.watermarkText}
                   watermarkImage={settings.watermarkImage}
                   watermarkOpacity={settings.watermarkOpacity}
+                  watermarkSize={settings.watermarkSize ?? 40}
                 />
               ))}
             </div>
@@ -603,7 +604,7 @@ export default function AlbumDetail() {
                 <div className="absolute inset-0 pointer-events-none select-none flex items-center justify-center">
                   <div className="rotate-[-30deg]">
                     {settings.watermarkImage ? (
-                      <img src={settings.watermarkImage} alt="" className="h-16 md:h-24 w-auto" style={{ opacity: settings.watermarkOpacity / 100 }} />
+                      <img src={settings.watermarkImage} alt="" style={{ width: `${settings.watermarkSize ?? 40}%`, height: "auto", opacity: settings.watermarkOpacity / 100 }} />
                     ) : (
                       <p className="font-display text-foreground text-3xl md:text-5xl tracking-widest whitespace-nowrap" style={{ opacity: settings.watermarkOpacity / 100 }}>
                         {settings.watermarkText}

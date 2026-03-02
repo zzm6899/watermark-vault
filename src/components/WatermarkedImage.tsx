@@ -16,6 +16,7 @@ interface WatermarkedImageProps {
   watermarkText?: string;
   watermarkImage?: string;
   watermarkOpacity?: number; // 0-100
+  watermarkSize?: number;    // 10-100, controls watermark scale relative to image
 }
 
 const positionClasses: Record<WatermarkPosition, string> = {
@@ -40,6 +41,7 @@ export default function WatermarkedImage({
   watermarkText = "ZACMPHOTOS",
   watermarkImage,
   watermarkOpacity = 15,
+  watermarkSize = 40,
 }: WatermarkedImageProps) {
   const [loaded, setLoaded] = useState(false);
   const [displaySrc, setDisplaySrc] = useState(src);
@@ -55,6 +57,9 @@ export default function WatermarkedImage({
   };
 
   const opacityValue = watermarkOpacity / 100;
+  // Size: watermarkSize 10-100 maps to image/text dimensions
+  const imgSizePx = `${watermarkSize}%`;                         // image watermark: % of container width
+  const fontSizeEm = `${(watermarkSize / 40).toFixed(2)}em`;     // text: 40 = 1em baseline, scale up/down
 
   const renderWatermark = () => {
     if (watermarkImage) {
@@ -63,7 +68,7 @@ export default function WatermarkedImage({
           <div className="absolute inset-0 pointer-events-none select-none overflow-hidden">
             <div className="absolute inset-0 flex flex-wrap items-start justify-start gap-x-16 gap-y-12 rotate-[-30deg] scale-150 origin-center" style={{ opacity: opacityValue }}>
               {Array.from({ length: 20 }).map((_, i) => (
-                <img key={i} src={watermarkImage} alt="" className="h-8 w-auto" />
+                <img key={i} src={watermarkImage} alt="" style={{ height: `${Math.max(20, watermarkSize * 0.4)}px`, width: "auto" }} />
               ))}
             </div>
           </div>
@@ -72,7 +77,7 @@ export default function WatermarkedImage({
       return (
         <div className={`absolute pointer-events-none select-none ${positionClasses[watermarkPosition]}`}>
           <div className={watermarkPosition === "center" ? "rotate-[-30deg]" : ""}>
-            <img src={watermarkImage} alt="" className={`${watermarkPosition === "center" ? "h-16 md:h-24" : "h-8 md:h-12"} w-auto`} style={{ opacity: opacityValue }} />
+            <img src={watermarkImage} alt="" style={{ opacity: opacityValue, width: imgSizePx, maxWidth: "100%", height: "auto" }} />
           </div>
         </div>
       );
@@ -84,7 +89,7 @@ export default function WatermarkedImage({
           <div className="absolute inset-0 pointer-events-none select-none overflow-hidden">
             <div className="absolute inset-0 flex flex-wrap items-start justify-start gap-x-16 gap-y-12 rotate-[-30deg] scale-150 origin-center" style={{ opacity: opacityValue }}>
               {Array.from({ length: 20 }).map((_, i) => (
-                <p key={i} className="font-display text-foreground text-xl tracking-widest whitespace-nowrap">
+                <p key={i} className="font-display text-foreground tracking-widest whitespace-nowrap" style={{ fontSize: `${Math.max(10, watermarkSize * 0.3)}px` }}>
                   {watermarkText}
                 </p>
               ))}
@@ -102,7 +107,7 @@ export default function WatermarkedImage({
           <div className={watermarkPosition === "center" ? "rotate-[-30deg]" : ""}>
             <p className={`font-display text-foreground tracking-widest whitespace-nowrap ${
               watermarkPosition === "center" ? "text-3xl md:text-5xl" : "text-lg md:text-xl"
-            }`} style={{ opacity: opacityValue }}>
+            }`} style={{ opacity: opacityValue, fontSize: fontSizeEm }}>
               {watermarkText}
             </p>
           </div>
