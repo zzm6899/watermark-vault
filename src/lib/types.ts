@@ -1,6 +1,6 @@
 export type WatermarkPosition = "center" | "top-left" | "top-right" | "bottom-left" | "bottom-right" | "tiled";
 export type QuestionFieldType = "text" | "textarea" | "select" | "boolean" | "image-upload" | "instagram";
-export type PaymentStatus = "unpaid" | "deposit-paid" | "paid" | "cash" | "pending-confirmation";
+export type PaymentStatus = "unpaid" | "paid" | "cash" | "pending-confirmation";
 export type DownloadQuality = "2mb" | "5mb" | "original";
 
 export interface QuestionField {
@@ -36,7 +36,8 @@ export interface EventType {
   description: string;
   durations: number[];
   color: string;
-  price: number;
+  price: number;           // default / fallback price
+  prices?: Record<number, number>; // per-duration pricing: { 60: 150, 90: 200 }
   active: boolean;
   requiresConfirmation?: boolean;
   questions: QuestionField[];
@@ -71,14 +72,15 @@ export interface Booking {
   depositMethod?: "stripe" | "bank";
   depositPaidAt?: string;
   stripeSessionId?: string;
+  gcalEventId?: string;      // Google Calendar event ID for this booking
   emailLog?: EmailLogEntry[];
 }
 
 export interface EmailLogEntry {
-  id: string;           // uuid — used for open-tracking pixel
+  id: string;
   type: "booking-confirmation" | "payment-update" | "reschedule" | "cancellation" | "manual";
-  sentAt: string;       // ISO
-  openedAt?: string;    // ISO — populated when tracking pixel is fetched
+  sentAt: string;
+  openedAt?: string;
   subject: string;
   to: string;
 }

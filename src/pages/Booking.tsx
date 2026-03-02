@@ -12,7 +12,7 @@ import { Textarea } from "@/components/ui/textarea";
 import Footer from "@/components/Footer";
 import { toast } from "sonner";
 import { getEventTypes, getProfile, addBooking, getBookings, getSettings, isSlotBooked, updateBooking } from "@/lib/storage";
-import { syncBookingToCalendar, createBookingCheckout, getStripeStatus, sendBookingConfirmationEmail } from "@/lib/api";
+import { syncBookingToCalendar, createBookingCheckout, getStripeStatus, sendBookingConfirmationEmail, getGoogleBusyTimes } from "@/lib/api";
 import type { EventType, QuestionField } from "@/lib/types";
 import { RichTextDisplay } from "@/components/RichTextEditor";
 
@@ -38,13 +38,37 @@ function generateTimeSlots(startTime: string, endTime: string, duration: number)
   const [eh, em] = endTime.split(":").map(Number);
   const startMins = sh * 60 + sm;
   const endMins = eh * 60 + em;
-  const interval = duration < 15 ? duration : 15;
-  for (let m = startMins; m + duration <= endMins; m += interval) {
+  // Step by the booking duration — no gaps, no overlaps
+  for (let m = startMins; m + duration <= endMins; m += duration) {
     const hh = Math.floor(m / 60).toString().padStart(2, "0");
     const mm = (m % 60).toString().padStart(2, "0");
     slots.push(`${hh}:${mm}`);
   }
   return slots;
+}
+
+/** Check if a slot overlaps with a Google Calendar busy period */
+function isSlotBusyOnGoogle(
+  time: string, duration: number,
+  busyPeriods: { start: string; end: string }[]
+): boolean {
+  const [h, m] = time.split(":").map(Number);
+  const slotStart = h * 60 + m;
+  const slotEnd   = slotStart + duration;
+  for (const b of busyPeriods) {
+    const bs = new Date(b.start);
+    const be = new Date(b.end);
+    const bStartMins = bs.getHours() * 60 + bs.getMinutes();
+    const bEndMins   = be.getHours() * 60 + be.getMinutes();
+    if (slotStart < bEndMins && slotEnd > bStartMins) return true;
+  }
+  return false;
+}
+
+/** Get the price for a given duration, with fallback to base price */
+function getPriceForDuration(event: import("./types").EventType, duration: number): number {
+  if (event.prices && event.prices[duration] !== undefined) return event.prices[duration];
+  return event.price ?? 0;
 }
 
 function formatTime12(t: string) {
@@ -181,6 +205,7 @@ export default function Booking() {
   const [step, setStep] = useState<Step>(restoredBooking ? "confirmed" : "event-select");
   const [selectedEvent, setSelectedEvent] = useState<EventType | null>(restoredEventType || null);
   const [selectedDuration, setSelectedDuration] = useState<number | null>(restoredBooking?.duration || null);
+  const [gcalBusy, setGcalBusy] = useState<{ start: string; end: string }[]>([]);
   const [selectedDate, setSelectedDate] = useState<Date | null>(restoredDate);
   const [selectedTime, setSelectedTime] = useState<string | null>(restoredBooking?.time || null);
   const [currentMonth, setCurrentMonth] = useState(() => {
@@ -209,6 +234,12 @@ export default function Booking() {
   const blanks = Array.from({ length: (firstDay + 6) % 7 }, (_, i) => i);
   const days = Array.from({ length: daysInMonth }, (_, i) => i + 1);
 
+  // Fetch Google Calendar busy times whenever date changes
+  useEffect(() => {
+    if (!selectedDate) { setGcalBusy([]); return; }
+    getGoogleBusyTimes(toDateStr(selectedDate)).then(setGcalBusy).catch(() => setGcalBusy([]));
+  }, [selectedDate]);
+
   const timeSlots = useMemo(() => {
     if (!selectedDate || !selectedDuration || !selectedEvent) return [];
     const dateStr = toDateStr(selectedDate);
@@ -217,14 +248,15 @@ export default function Booking() {
     for (const range of ranges) {
       const slots = generateTimeSlots(range.startTime, range.endTime, selectedDuration);
       for (const slot of slots) {
-        // Filter out already-booked slots
-        if (!isSlotBooked(dateStr, slot, selectedDuration)) {
+        // Filter out already-booked slots and Google Calendar busy periods
+        if (!isSlotBooked(dateStr, slot, selectedDuration) &&
+            !isSlotBusyOnGoogle(slot, selectedDuration, gcalBusy)) {
           allSlots.push(slot);
         }
       }
     }
     return allSlots;
-  }, [selectedDate, selectedDuration, selectedEvent]);
+  }, [selectedDate, selectedDuration, selectedEvent, gcalBusy]);
 
   const handleSelectEvent = (ev: EventType) => {
     setSelectedEvent(ev);
@@ -287,7 +319,7 @@ export default function Booking() {
     const depositEnabled = selectedEvent.depositEnabled && selectedEvent.depositAmount && selectedEvent.depositAmount > 0;
     const depositAmt = depositEnabled
       ? selectedEvent.depositType === "percentage"
-        ? Math.round((selectedEvent.price * (selectedEvent.depositAmount || 0)) / 100)
+        ? Math.round((getPriceForDuration(selectedEvent, selectedDuration!) * (selectedEvent.depositAmount || 0)) / 100)
         : (selectedEvent.depositAmount || 0)
       : 0;
     const dateStr = toDateStr(selectedDate);
@@ -305,7 +337,7 @@ export default function Booking() {
       answers,
       createdAt: new Date().toISOString(),
       paymentStatus: paymentMethod === "bank" ? "pending-confirmation" as const : paymentMethod === "none" ? "unpaid" as const : "unpaid" as const,
-      paymentAmount: selectedEvent.price,
+      paymentAmount: getPriceForDuration(selectedEvent, selectedDuration!),
       instagramHandle: answers[selectedEvent.questions.find(q => q.type === "instagram" || q.label.toLowerCase().includes("instagram"))?.id || ""] || "",
       modifyToken,
       depositRequired: depositEnabled || false,
@@ -680,7 +712,7 @@ export default function Booking() {
               const depositEnabled = selectedEvent.depositEnabled && selectedEvent.depositAmount && selectedEvent.depositAmount > 0;
               const depositAmt = depositEnabled
                 ? selectedEvent.depositType === "percentage"
-                  ? Math.round((selectedEvent.price * (selectedEvent.depositAmount || 0)) / 100)
+                  ? Math.round((getPriceForDuration(selectedEvent, selectedDuration!) * (selectedEvent.depositAmount || 0)) / 100)
                   : (selectedEvent.depositAmount || 0)
                 : 0;
 
@@ -891,7 +923,7 @@ export default function Booking() {
               const depositEnabled = selectedEvent.depositEnabled && selectedEvent.depositAmount && selectedEvent.depositAmount > 0;
               const depositAmt = depositEnabled
                 ? selectedEvent.depositType === "percentage"
-                  ? Math.round((selectedEvent.price * (selectedEvent.depositAmount || 0)) / 100)
+                  ? Math.round((getPriceForDuration(selectedEvent, selectedDuration!) * (selectedEvent.depositAmount || 0)) / 100)
                   : (selectedEvent.depositAmount || 0)
                 : 0;
               const wasBankTransfer = lastBooking?.depositMethod === "bank" || lastBooking?.paymentStatus === "pending-confirmation";
