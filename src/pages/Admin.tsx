@@ -21,7 +21,7 @@ import {
   getPhotoLibrary, setPhotoLibrary,
 } from "@/lib/storage";
 import { compressImage, formatBytes, getLocalStorageUsage, generateThumbnail } from "@/lib/image-utils";
-import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar, getServerStorageStats } from "@/lib/api";
+import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, sendEmail, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar, getServerStorageStats } from "@/lib/api";
 import type {
   EventType, QuestionField, AvailabilitySlot,
   ProfileSettings, AppSettings, Booking, WatermarkPosition,
@@ -933,14 +933,42 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
     toast.success("Gallery link copied!");
   };
 
-  const handleSendNotification = (album: Album) => {
-    const template = settings.notificationEmailTemplate || "Hey {name}, your photos are ready! {link}";
+  const handleSendNotification = async (album: Album) => {
+    if (!album.clientEmail) {
+      toast.error("No client email on this album");
+      return;
+    }
+    const template = settings.notificationEmailTemplate || "Hey {name}, your photos are ready! Check them out here: {link}";
     const link = `${window.location.origin}/gallery/${album.slug}`;
     const message = template
       .replace("{name}", album.clientName || "there")
       .replace("{link}", link)
-      .replace("{instagram}", album.clientEmail || "");
-    toast.info(`Email notification stub:\n\nTo: ${album.clientEmail || "no email"}\n${message}`);
+      .replace("{instagram}", album.instagramHandle || album.clientEmail || "");
+
+    // Build a nice HTML version with a button
+    const html = `
+      <div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:32px;background:#0a0a0a;color:#f5f5f5;border-radius:12px;">
+        <h2 style="font-size:22px;margin:0 0 16px;">📸 Your photos are ready!</h2>
+        <p style="color:#aaa;line-height:1.6;">${message.replace(link, "")}</p>
+        <a href="${link}" style="display:inline-block;margin-top:24px;padding:12px 28px;background:#fff;color:#000;border-radius:8px;text-decoration:none;font-weight:600;">View Your Gallery →</a>
+        <p style="margin-top:32px;font-size:11px;color:#555;">${link}</p>
+      </div>`;
+
+    try {
+      const result = await sendEmail(
+        album.clientEmail,
+        `Your photos are ready — ${album.clientName || "Gallery"}`,
+        html,
+        message
+      );
+      if (result.ok) {
+        toast.success(`Email sent to ${album.clientEmail}`);
+      } else {
+        toast.error(`Failed to send: ${result.error || "Unknown error"}`);
+      }
+    } catch {
+      toast.error("Email send failed — check SMTP settings");
+    }
   };
 
   return (
@@ -1915,15 +1943,6 @@ function SettingsView() {
               className="mb-4"
             />
           </div>
-          <div>
-            <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-3 block">Size ({settings.watermarkSize ?? 40}%)</label>
-            <Slider
-              value={[settings.watermarkSize ?? 40]}
-              onValueChange={(v) => setSettingsState({ ...settings, watermarkSize: v[0] })}
-              min={10} max={100} step={1}
-              className="mb-4"
-            />
-          </div>
           {/* Live Preview with Sample Image Selector */}
           <div>
             <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-3 block">Preview</label>
@@ -2080,7 +2099,6 @@ function WatermarkPreviewWithSamples({ settings }: { settings: AppSettings }) {
           watermarkText={settings.watermarkText}
           watermarkImage={settings.watermarkImage}
           watermarkOpacity={settings.watermarkOpacity}
-          watermarkSize={settings.watermarkSize ?? 40}
           index={0}
         />
       </div>
