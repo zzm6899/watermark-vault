@@ -75,14 +75,37 @@ class CameraUsbPlugin : Plugin() {
     }
 
     // ── Find connected camera (any imaging class or Nikon VID) ──
-    private fun findCamera(): UsbDevice? {
-        for ((_, device) in usbManager.deviceList) {
-            for (i in 0 until device.interfaceCount) {
-                if (device.getInterface(i).interfaceClass == 6 /* Still Imaging */) return device
-            }
-            if (device.vendorId == 0x04B0 /* Nikon */) return device
+    private fun isImagingDevice(device: UsbDevice): Boolean {
+        // Null-safe — getInterface() can return null on some Android versions
+        for (i in 0 until device.interfaceCount) {
+            val iface = device.getInterface(i) ?: continue
+            if (iface.interfaceClass == 6 /* Still Imaging / PTP */) return true
         }
-        return null
+        // Accept known camera vendor IDs even if interface class isn't reported
+        return device.vendorId == 0x04B0  // Nikon
+            || device.vendorId == 0x04A9  // Canon
+            || device.vendorId == 0x054C  // Sony
+            || device.vendorId == 0x04B8  // Epson/Olympus
+            || device.vendorId == 0x040A  // Kodak
+            || device.vendorId == 0x07B4  // Olympus
+    }
+
+    private fun findCamera(): UsbDevice? {
+        // Return the first imaging device that we have permission for,
+        // or the first imaging device found (permission requested separately).
+        // Prefers an already-open device to avoid switching mid-session.
+        val devices = usbManager.deviceList.values.filter { isImagingDevice(it) }
+        if (devices.isEmpty()) return null
+
+        // If we already have an open session, stick with that device if it's still present
+        val locked = currentUsbDevice
+        if (locked != null && devices.any { it.deviceId == locked.deviceId }) {
+            return devices.first { it.deviceId == locked.deviceId }
+        }
+
+        // Prefer a device we already have permission for
+        val permitted = devices.firstOrNull { usbManager.hasPermission(it) }
+        return permitted ?: devices.first()
     }
 
     // ── Get or open MTP connection — reuses existing if same device ──
@@ -90,19 +113,10 @@ class CameraUsbPlugin : Plugin() {
     private fun getOrOpenMtp(): MtpDevice {
         val camera = findCamera() ?: throw IllegalStateException("No camera connected")
 
-        // Reuse existing connection if it's the same device and still alive
+        // Reuse existing connection if it's the same device
         val existing = mtpDevice
         if (existing != null && currentUsbDevice?.deviceId == camera.deviceId) {
-            // Verify connection is still alive with a cheap call
-            try {
-                existing.storageIds // throws if disconnected
-                return existing
-            } catch (_: Exception) {
-                // Connection died — close and reopen
-                try { existing.close() } catch (_: Exception) {}
-                mtpDevice = null
-                currentUsbDevice = null
-            }
+            return existing  // trust the existing session; MTP ops will throw if it died
         }
 
         // Close any stale connection
@@ -155,12 +169,20 @@ class CameraUsbPlugin : Plugin() {
     // ── isConnected ──────────────────────────────────────────────────────────
     @PluginMethod
     fun isConnected(call: PluginCall) {
-        // This is a fast device-list check — safe on main thread
-        val camera = findCamera()
-        call.resolve(JSObject().apply {
-            put("connected", camera != null)
-            put("deviceName", camera?.productName ?: "")
-        })
+        // Fast device-list check — safe on main thread, null-safe
+        try {
+            val camera = findCamera()
+            call.resolve(JSObject().apply {
+                put("connected", camera != null)
+                put("deviceName", camera?.productName ?: "")
+            })
+        } catch (e: Exception) {
+            // Never crash on a connection check
+            call.resolve(JSObject().apply {
+                put("connected", false)
+                put("deviceName", "")
+            })
+        }
     }
 
     // ── requestPermission ────────────────────────────────────────────────────
@@ -424,11 +446,13 @@ class CameraUsbPlugin : Plugin() {
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
     override fun handleOnDestroy() {
+        // Post cleanup then quit the thread so it doesn't leak
         mtpHandler.post {
             stopWatchingInternal()
             try { mtpDevice?.close() } catch (_: Exception) {}
             mtpDevice = null
             currentUsbDevice = null
+            mtpThread.quitSafely()
         }
         permissionReceiver?.let {
             try { context.unregisterReceiver(it) } catch (_: Exception) {}
