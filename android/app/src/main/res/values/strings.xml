@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Zuploader</string>
+    <string name="title_activity_main">Zuploader</string>
+    <string name="package_name">conn.uploader</string>
+    <string name="custom_url_scheme">conn.uploader</string>
+</resources>
