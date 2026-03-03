@@ -94,12 +94,12 @@ New-Item -ItemType Directory -Force -Path $projectGradleHome | Out-Null
 Write-Host "  GRADLE_USER_HOME = $projectGradleHome"
 
 # ---------- STEP 4: Gradle release build ----------
-Write-Host "`n=== Step 4: Gradle assembleRelease ===" -ForegroundColor Cyan
-& $GRADLE_BAT -g $projectGradleHome -p android assembleRelease --no-daemon --refresh-dependencies
+Write-Host "`n=== Step 4: Gradle assembleDebug ===" -ForegroundColor Cyan
+& $GRADLE_BAT -g $projectGradleHome -p android assembleDebug --no-daemon --refresh-dependencies
 if ($LASTEXITCODE -ne 0) { throw "Gradle build failed" }
 
 # ---------- DONE ----------
-$apk = "android\app\build\outputs\apk\release\app-release-unsigned.apk"
+$apk = "android\app\build\outputs\apk\debug\app-debug.apk"
 if (Test-Path $apk) {
     $size = [math]::Round((Get-Item $apk).Length / 1MB, 2)
     Write-Host "`n=== SUCCESS ===" -ForegroundColor Green
