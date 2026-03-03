@@ -642,7 +642,7 @@ import {
   Usb, AlertCircle, Download, Mail, FileImage, Search,
   Clock, ChevronDown, ChevronUp, CheckCircle2, Users,
   Star, CalendarDays,
-} from "lucide-react";
+  from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
 // ── Helpers ───────────────────────────────────────────────────
