@@ -2005,6 +2005,29 @@ function PhotosView() {
     setSyncing(false);
   };
 
+  const handleClearDuplicates = () => {
+    let totalRemoved = 0;
+    const updAlbums: Album[] = [];
+    for (const alb of albums) {
+      const seen = new Set<string>();
+      const deduped = alb.photos.filter(p => { if (seen.has(p.src)) return false; seen.add(p.src); return true; });
+      if (deduped.length < alb.photos.length) {
+        totalRemoved += alb.photos.length - deduped.length;
+        const upd = { ...alb, photos: deduped, photoCount: deduped.length };
+        updateAlbum(upd); updAlbums.push(upd);
+      }
+    }
+    const seenLib = new Set<string>();
+    const dedupLib = libraryPhotos.filter(p => { if (seenLib.has(p.src)) return false; seenLib.add(p.src); return true; });
+    if (dedupLib.length < libraryPhotos.length) {
+      totalRemoved += libraryPhotos.length - dedupLib.length;
+      setPhotoLibrary(dedupLib); setLibraryPhotosState(dedupLib);
+    }
+    if (updAlbums.length > 0) setAlbumsState(getAlbums());
+    if (totalRemoved === 0) toast.info("No duplicates found");
+    else toast.success(`Removed ${totalRemoved} duplicate photo${totalRemoved !== 1 ? "s" : ""}`);
+  };
+
   // Build unified photo list — don't dedup across sources so album filters work
   const allPhotos: (Photo & { source: string })[] = [];
   const seenInAll = new Set<string>();
@@ -2217,6 +2240,9 @@ function PhotosView() {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
         <h2 className="font-display text-2xl text-foreground">Photo Library</h2>
         <div className="flex gap-2 items-center flex-wrap">
+          <Button size="sm" variant="outline" onClick={handleClearDuplicates} className="gap-2 font-body text-xs border-border text-foreground">
+            <XSquare className="w-4 h-4" /> Clear Dupes
+          </Button>
           <Button size="sm" variant="outline" onClick={handleSyncFromStorage} disabled={syncing} className="gap-2 font-body text-xs border-border text-foreground">
             <RefreshCw className={`w-4 h-4 ${syncing ? "animate-spin" : ""}`} /> {syncing ? "Syncing…" : "Sync Storage"}
           </Button>

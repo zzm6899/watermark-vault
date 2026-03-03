@@ -19,6 +19,7 @@ import {
   Usb, AlertCircle, Download, Mail, FileImage, Search,
   Clock, ChevronDown, ChevronUp, CheckCircle2, Users,
   Star, CalendarDays, ChevronLeft, ChevronRight,
+  AlertTriangle, RotateCcw,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
@@ -138,8 +139,12 @@ function MobileCaptureInner() {
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   const [viewAllMode, setViewAllMode] = useState(false);
   const [jpegOnly, setJpegOnly] = useState(true);
+  const [importLabel, setImportLabel] = useState(""); // e.g. "3 / 11 — DSC_0042.JPG"
+  const [failedHandles, setFailedHandles] = useState<number[]>([]);
+  const [offlineQueue, setOfflineQueue] = useState<File[]>([]);
+  const [starFilter, setStarFilter] = useState(false);
   const emailSentRef = useRef(false);
-  const sessionUploadedRef = useRef(false); // tracks if any photos uploaded this session (for exit email)
+  const sessionUploadedRef = useRef(false);
 
   const sendClientNotification = useCallback(async (type: "album-created" | "photos-uploaded", photoCount?: number) => {
     if (!notifyClient || !serverOnline || !selectedBooking?.clientEmail) return;
@@ -354,12 +359,16 @@ function MobileCaptureInner() {
             for (let b = 0; b < byteChars.length; b++) byteArr[b] = byteChars.charCodeAt(b);
             const blob = new Blob([byteArr], { type: f.mimeType || "image/jpeg" });
             const file = new File([blob], f.localPath?.split("/").pop() || `photo_${i}.jpg`, { type: f.mimeType || "image/jpeg" });
+            setImportLabel(`${i + 1} / ${imported.length} — ${f.localPath?.split("/").pop() ?? "photo"}`);
             const results = await uploadPhotosToServer([file], () => {});
             for (const r of results) {
               const thumb = await generateThumbnail(r.url, 300, 0.6).catch(() => r.url);
               newPhotos.push({ id: r.id, src: r.url, thumbnail: thumb, title: r.originalName, width: 0, height: 0, proofing: true });
             }
-          } catch (e) { console.error("Upload error:", e); }
+          } catch (e) {
+            console.error("Upload error:", e);
+            setFailedHandles(prev => [...prev, freshHandles[i]]);
+          }
           setImportProgress(50 + Math.round(((i + 1) / imported.length) * 50));
         }
       } else {
@@ -383,7 +392,9 @@ function MobileCaptureInner() {
         }
         setUploadedCount(p => p + newPhotos.length);
         sessionUploadedRef.current = true;
-        toast.success(`${newPhotos.length} photos imported`);
+        setImportLabel("");
+        if (newPhotos.length > 0) toast.success(`${newPhotos.length} photos imported`);
+        // Warn about failures separately so success count is honest
       }
       // Store "name:size" keys — handles name collisions across sessions
       const importedKeys = imported.map((f: any) => {
@@ -447,9 +458,47 @@ function MobileCaptureInner() {
         sessionUploadedRef.current = true;
         toast.success(`${newPhotos.length} photos uploaded`);
       } else {
-        toast.info(`Offline — ${imageFiles.length} files saved locally`);
+        setOfflineQueue(q => [...q, ...imageFiles]);
+        toast.info(`${imageFiles.length} file${imageFiles.length !== 1 ? "s" : ""} queued — will upload when server is back`);
       }
     } catch { toast.error("Upload error"); }
+    finally { setUploading(false); }
+  };
+
+  // Star a photo — persists to album storage
+  const toggleStar = (photoId: string) => {
+    if (!targetAlbum) return;
+    const updated = {
+      ...targetAlbum,
+      photos: targetAlbum.photos.map(p => p.id === photoId ? { ...p, starred: !(p as any).starred } : p),
+    };
+    updateAlbum(updated);
+    setTargetAlbum(updated);
+  };
+
+  // Flush offline queue when server comes back
+  const flushOfflineQueue = async () => {
+    if (!offlineQueue.length || !targetAlbum) return;
+    const isOnline = await recheckServer();
+    if (!isOnline) { toast.info("Still offline — queue retained"); return; }
+    setServerOnline(true);
+    const files = [...offlineQueue];
+    setOfflineQueue([]);
+    setUploading(true); setUploadProgress(0);
+    try {
+      const results = await uploadPhotosToServer(files, (done, total) => setUploadProgress(Math.round(done / total * 100)));
+      const newPhotos: Photo[] = [];
+      for (const r of results) {
+        const thumb = await generateThumbnail(r.url, 300, 0.6).catch(() => r.url);
+        newPhotos.push({ id: r.id, src: r.url, thumbnail: thumb, title: r.originalName, width: 0, height: 0, proofing: true });
+      }
+      const fresh = getAlbums().find(a => a.id === targetAlbum.id) || targetAlbum;
+      const upd: Album = { ...fresh, photos: [...fresh.photos, ...newPhotos], photoCount: fresh.photos.length + newPhotos.length, coverImage: fresh.coverImage || newPhotos[0]?.src || "" };
+      updateAlbum(upd); setTargetAlbum(upd);
+      setUploadedCount(p => p + newPhotos.length);
+      sessionUploadedRef.current = true;
+      toast.success(`${results.length} queued photo${results.length !== 1 ? "s" : ""} uploaded`);
+    } catch { toast.error("Failed to flush offline queue"); }
     finally { setUploading(false); }
   };
 
@@ -503,6 +552,16 @@ function MobileCaptureInner() {
                     <ImageIcon className="w-2.5 h-2.5" /> {photoCount}
                   </span>
                 )}
+                {(() => {
+                  const totalSessions = bk.clientEmail
+                    ? albums.filter(a => a.clientEmail === bk.clientEmail).length
+                    : 0;
+                  return totalSessions > 1 ? (
+                    <span className="inline-flex items-center gap-0.5 text-[9px] font-body text-muted-foreground/50">
+                      <CalendarDays className="w-2.5 h-2.5" /> {totalSessions} sessions
+                    </span>
+                  ) : null;
+                })()}
               </div>
             </div>
           </div>
@@ -533,9 +592,9 @@ function MobileCaptureInner() {
   // ═══════════════════════════════════════════════════════════
   if (!selectedBooking) {
     return (
-      <div className="min-h-screen bg-background">
+      <div className="min-h-screen bg-background" style={{ paddingTop: "env(safe-area-inset-top)" }}>
         {/* Sticky header */}
-        <div className="sticky top-0 z-10 bg-background/95 backdrop-blur-sm border-b border-border/50">
+        <div className="sticky top-0 z-10 bg-background/95 backdrop-blur-sm border-b border-border/50" style={{ paddingTop: "env(safe-area-inset-top)" }}>
           <div className="p-4 space-y-3">
             {/* Top row — compact so system time doesn't overlap pills */}
             <div className="flex items-center gap-2">
@@ -657,7 +716,7 @@ function MobileCaptureInner() {
   // ── CAPTURE VIEW ───────────────────────────────────────────
   // ═══════════════════════════════════════════════════════════
   return (
-    <div className="min-h-screen bg-background p-4">
+    <div className="min-h-screen bg-background p-4" style={{ paddingTop: "calc(env(safe-area-inset-top) + 1rem)" }}>
       {/* Header */}
       <div className="flex items-center gap-3 mb-4">
         <button
@@ -689,12 +748,47 @@ function MobileCaptureInner() {
         </div>
       </div>
 
+      {/* Offline queue banner */}
+      {offlineQueue.length > 0 && (
+        <div className="glass-panel rounded-xl p-3 mb-4 border border-amber-500/30 bg-amber-500/5 flex items-center gap-3">
+          <AlertTriangle className="w-4 h-4 text-amber-400 flex-shrink-0" />
+          <div className="flex-1 min-w-0">
+            <p className="text-xs font-body text-amber-300">{offlineQueue.length} file{offlineQueue.length !== 1 ? "s" : ""} queued offline</p>
+          </div>
+          <button onClick={flushOfflineQueue} disabled={uploading} className="inline-flex items-center gap-1 text-[10px] font-body tracking-wider uppercase px-2.5 py-1 rounded-full border border-amber-500/40 text-amber-300 hover:bg-amber-500/10 disabled:opacity-50 transition-all">
+            <RotateCcw className="w-3 h-3" /> Retry
+          </button>
+        </div>
+      )}
+
+      {/* Failed imports retry */}
+      {failedHandles.length > 0 && (
+        <div className="glass-panel rounded-xl p-3 mb-4 border border-destructive/30 bg-destructive/5 flex items-center gap-3">
+          <AlertTriangle className="w-4 h-4 text-destructive flex-shrink-0" />
+          <div className="flex-1 min-w-0">
+            <p className="text-xs font-body text-destructive/80">{failedHandles.length} import{failedHandles.length !== 1 ? "s" : ""} failed</p>
+          </div>
+          <button
+            onClick={async () => {
+              const toRetry = [...failedHandles];
+              setFailedHandles([]);
+              for (let i = 0; i < toRetry.length; i += 3) await importCameraFiles(toRetry.slice(i, i + 3));
+            }}
+            disabled={importing}
+            className="inline-flex items-center gap-1 text-[10px] font-body tracking-wider uppercase px-2.5 py-1 rounded-full border border-destructive/40 text-destructive hover:bg-destructive/10 disabled:opacity-50 transition-all"
+          >
+            <RotateCcw className="w-3 h-3" /> Retry
+          </button>
+        </div>
+      )}
+
       {/* Stats */}
       <div className="glass-panel rounded-xl p-4 mb-4">
-        <div className="grid grid-cols-3 gap-4 text-center divide-x divide-border/50">
+        <div className="grid grid-cols-4 gap-2 text-center divide-x divide-border/50">
           <div><p className="text-2xl font-display text-foreground">{targetAlbum?.photoCount || 0}</p><p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mt-0.5">In Album</p></div>
           <div><p className="text-2xl font-display text-foreground">{uploadedCount}</p><p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mt-0.5">This Session</p></div>
           <div><p className="text-2xl font-display text-foreground">{isNative ? filteredCameraFiles.length : pendingFiles.length}</p><p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mt-0.5">{isNative ? "On Camera" : "Local"}</p></div>
+          <div><p className="text-2xl font-display text-foreground">{selectedBooking?.clientEmail ? albums.filter(a => a.clientEmail === selectedBooking.clientEmail).length : 1}</p><p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mt-0.5">All Sessions</p></div>
         </div>
       </div>
 
@@ -703,7 +797,7 @@ function MobileCaptureInner() {
         <div className="glass-panel rounded-xl p-4 mb-4">
           <div className="flex items-center gap-2 mb-2">
             <RefreshCw className="w-4 h-4 animate-spin text-primary" />
-            <span className="text-sm font-body text-foreground">{importing ? "Importing from camera…" : "Uploading…"}</span>
+            <span className="text-sm font-body text-foreground">{importing ? (importLabel || "Importing from camera…") : "Uploading…"}</span>
             <span className="text-xs font-body text-muted-foreground ml-auto">{importing ? importProgress : uploadProgress}%</span>
           </div>
           <Progress value={importing ? importProgress : uploadProgress} className="h-1.5" />
@@ -805,13 +899,20 @@ function MobileCaptureInner() {
       {/* Recent uploads */}
       {targetAlbum && targetAlbum.photos.length > 0 && (() => {
         const allPhotos = [...targetAlbum.photos].reverse();
-        const previewPhotos = allPhotos.slice(0, 12);
-        const hasMore = allPhotos.length > 12;
+        const filteredByStars = starFilter ? allPhotos.filter(p => (p as any).starred) : allPhotos;
+        const previewPhotos = filteredByStars.slice(0, 12);
+        const hasMore = filteredByStars.length > 12;
         return (
           <div className="glass-panel rounded-xl p-4">
             <div className="flex items-center justify-between mb-3">
               <p className="text-xs font-body tracking-wider uppercase text-muted-foreground">Recent Uploads</p>
               <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setStarFilter(v => !v)}
+                  className={`inline-flex items-center gap-1 text-[10px] font-body tracking-wider uppercase px-2 py-1 rounded-full border transition-colors ${starFilter ? "border-yellow-500/50 text-yellow-400 bg-yellow-500/10" : "border-border text-muted-foreground hover:text-foreground"}`}
+                >
+                  <Star className={`w-2.5 h-2.5 ${starFilter ? "fill-yellow-400" : ""}`} /> Starred
+                </button>
                 <p className="text-xs font-body text-muted-foreground/60">{allPhotos.length} total</p>
                 {hasMore && (
                   <button
@@ -823,16 +924,23 @@ function MobileCaptureInner() {
             </div>
             <div className="grid grid-cols-4 gap-1.5">
               {previewPhotos.map((photo, idx) => (
-                <button
-                  key={photo.id}
-                  onClick={() => setLightboxIndex(idx)}
-                  className="relative aspect-square rounded-lg overflow-hidden bg-secondary active:scale-95 transition-transform"
-                >
-                  <img src={photo.thumbnail || photo.src} alt={photo.title} className="w-full h-full object-cover" />
+                <div key={photo.id} className="relative aspect-square rounded-lg overflow-hidden bg-secondary">
+                  <button
+                    onClick={() => setLightboxIndex(idx)}
+                    className="absolute inset-0 w-full h-full active:scale-95 transition-transform"
+                  >
+                    <img src={photo.thumbnail || photo.src} alt={photo.title} className="w-full h-full object-cover" />
+                  </button>
                   {photo.proofing && (
-                    <span className="absolute top-1 left-1 text-[8px] font-body tracking-wider uppercase px-1 py-0.5 rounded bg-primary/90 text-primary-foreground leading-tight">P</span>
+                    <span className="absolute top-1 left-1 text-[8px] font-body tracking-wider uppercase px-1 py-0.5 rounded bg-primary/90 text-primary-foreground leading-tight pointer-events-none">P</span>
                   )}
-                </button>
+                  <button
+                    onClick={e => { e.stopPropagation(); toggleStar(photo.id); }}
+                    className="absolute bottom-1 right-1 w-6 h-6 rounded-full bg-black/40 flex items-center justify-center active:scale-90 transition-all"
+                  >
+                    <Star className={`w-3 h-3 ${(photo as any).starred ? "text-yellow-400 fill-yellow-400" : "text-white/60"}`} />
+                  </button>
+                </div>
               ))}
             </div>
             {hasMore && (
@@ -852,7 +960,7 @@ function MobileCaptureInner() {
         const allPhotos = [...targetAlbum.photos].reverse();
         return (
           <div className="fixed inset-0 z-40 bg-background flex flex-col">
-            <div className="flex items-center gap-3 px-4 py-3 border-b border-border/50 bg-background/95 backdrop-blur-sm">
+            <div className="flex items-center gap-3 px-4 border-b border-border/50 bg-background/95 backdrop-blur-sm" style={{ paddingTop: "calc(env(safe-area-inset-top) + 0.75rem)", paddingBottom: "0.75rem" }}>
               <button
                 onClick={() => setViewAllMode(false)}
                 className="w-8 h-8 rounded-full bg-secondary flex items-center justify-center active:scale-95 transition-transform"
@@ -867,16 +975,23 @@ function MobileCaptureInner() {
             <div className="flex-1 overflow-y-auto p-1">
               <div className="grid grid-cols-3 gap-0.5">
                 {allPhotos.map((photo, idx) => (
-                  <button
-                    key={photo.id}
-                    onClick={() => setLightboxIndex(idx)}
-                    className="relative aspect-square overflow-hidden bg-secondary active:scale-[0.98] transition-transform"
-                  >
-                    <img src={photo.thumbnail || photo.src} alt={photo.title} className="w-full h-full object-cover" />
+                  <div key={photo.id} className="relative aspect-square overflow-hidden bg-secondary">
+                    <button
+                      onClick={() => setLightboxIndex(idx)}
+                      className="absolute inset-0 w-full h-full active:scale-[0.98] transition-transform"
+                    >
+                      <img src={photo.thumbnail || photo.src} alt={photo.title} className="w-full h-full object-cover" />
+                    </button>
                     {photo.proofing && (
-                      <span className="absolute top-1 left-1 text-[8px] font-body tracking-wider uppercase px-1 py-0.5 rounded bg-primary/90 text-primary-foreground leading-tight">P</span>
+                      <span className="absolute top-1 left-1 text-[8px] font-body tracking-wider uppercase px-1 py-0.5 rounded bg-primary/90 text-primary-foreground leading-tight pointer-events-none">P</span>
                     )}
-                  </button>
+                    <button
+                      onClick={e => { e.stopPropagation(); toggleStar(photo.id); }}
+                      className="absolute bottom-1 right-1 w-6 h-6 rounded-full bg-black/40 flex items-center justify-center active:scale-90 transition-all"
+                    >
+                      <Star className={`w-3 h-3 ${(photo as any).starred ? "text-yellow-400 fill-yellow-400" : "text-white/60"}`} />
+                    </button>
+                  </div>
                 ))}
               </div>
             </div>
@@ -895,7 +1010,7 @@ function MobileCaptureInner() {
           <div className="fixed inset-0 z-50 bg-black/98 flex flex-col items-center justify-center select-none">
             <button
               onClick={() => setLightboxIndex(null)}
-              className="absolute top-4 right-4 w-9 h-9 rounded-full bg-white/10 flex items-center justify-center text-white/80 text-lg hover:bg-white/20 active:scale-95 z-10"
+              className="absolute right-4 w-9 h-9 rounded-full bg-white/10 flex items-center justify-center text-white/80 text-lg hover:bg-white/20 active:scale-95 z-10" style={{ top: "calc(env(safe-area-inset-top) + 1rem)" }}
             >&#x2715;</button>
             <p className="absolute top-5 left-0 right-0 text-center text-xs text-white/40 font-body pointer-events-none">
               {lightboxIndex + 1} / {allPhotos.length}
@@ -921,7 +1036,14 @@ function MobileCaptureInner() {
                 <ChevronRight className="w-5 h-5 text-white" />
               </button>
             )}
-            <p className="absolute bottom-5 left-0 right-0 text-center text-xs text-white/30 font-body truncate px-16">{photo.title}</p>
+            <button
+              onClick={() => toggleStar(photo.id)}
+              className="absolute bottom-5 left-1/2 -translate-x-1/2 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/10 hover:bg-white/20 active:scale-95 transition-all z-10"
+            >
+              <Star className={`w-4 h-4 ${(photo as any).starred ? "text-yellow-400 fill-yellow-400" : "text-white/50"}`} />
+              <span className="text-xs font-body text-white/60">{(photo as any).starred ? "Starred" : "Star"}</span>
+            </button>
+            <p className="absolute bottom-16 left-0 right-0 text-center text-xs text-white/30 font-body truncate px-16">{photo.title}</p>
           </div>
         );
       })()}
