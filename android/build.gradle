@@ -1,7 +1,7 @@
 // Top-level build file where you can add configuration options common to all sub-projects/modules.
 
 buildscript {
-    ext.kotlin_version = '1.9.20'
+    ext.kotlin_version = '1.9.24'
     repositories {
         google()
         mavenCentral()
@@ -22,6 +22,17 @@ allprojects {
     repositories {
         google()
         mavenCentral()
+    }
+
+    configurations.configureEach {
+        resolutionStrategy {
+            force "org.jetbrains.kotlin:kotlin-stdlib:$kotlin_version"
+            force "org.jetbrains.kotlin:kotlin-stdlib-jdk7:$kotlin_version"
+            force "org.jetbrains.kotlin:kotlin-stdlib-jdk8:$kotlin_version"
+            force "org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1"
+            force "org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm:1.8.1"
+            force "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1"
+        }
     }
 
     // Force the Java version for all projects
