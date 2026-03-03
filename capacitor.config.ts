@@ -5,7 +5,7 @@ const config: CapacitorConfig = {
   appName: "watermark-muse",
   webDir: "dist",
   server: {
-    url: "https://003c9431-f8f4-438a-b536-5243e61c05c2.lovableproject.com?forceHideBadge=true",
+    url: "https://book.zacmclients.photos/admin",
     cleartext: true,
   },
 };
