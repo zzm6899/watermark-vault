@@ -146,24 +146,30 @@ export default function Admin() {
         </aside>
 
         <div className="lg:hidden fixed top-0 left-0 right-0 z-30 bg-card/95 backdrop-blur-sm border-b border-border">
-          <div className="flex overflow-x-auto scrollbar-hide">
-            {/* Capture — pinned first, always visible without scrolling */}
+          <div style={{ display: "flex", alignItems: "stretch" }}>
+            {/* Capture button — fixed left, never scrolls */}
             <button
               onClick={() => navigate("/capture")}
-              className="flex items-center gap-1.5 px-3 py-[11px] text-[10px] font-body tracking-wider uppercase whitespace-nowrap transition-colors border-b-2 flex-shrink-0 text-primary border-primary bg-primary/5"
+              style={{ flexShrink: 0 }}
+              className="flex items-center gap-1.5 px-3 py-3 text-[10px] font-body tracking-wider uppercase text-primary bg-primary/10 border-r border-border transition-colors hover:bg-primary/20 active:bg-primary/30"
             >
-              <Upload className="w-3.5 h-3.5" />Cap
+              <Upload className="w-3.5 h-3.5" />
+              <span>Cap</span>
             </button>
-            <div className="w-px bg-border/50 my-2 flex-shrink-0" />
-            {tabs.map((tab) => (
-              <button key={tab.id} onClick={() => setActiveTab(tab.id)}
-                className={`flex items-center gap-1.5 px-3 py-[11px] text-[10px] font-body tracking-wider uppercase whitespace-nowrap transition-colors border-b-2 flex-shrink-0 ${
-                  activeTab === tab.id ? "text-primary border-primary" : "text-muted-foreground border-transparent"
-                }`}
-              >
-                <tab.icon className="w-3.5 h-3.5" />{tab.short}
-              </button>
-            ))}
+            {/* Scrollable tab strip */}
+            <div style={{ overflowX: "auto", display: "flex", WebkitOverflowScrolling: "touch" }}>
+              {tabs.map((tab) => (
+                <button key={tab.id} onClick={() => setActiveTab(tab.id)}
+                  style={{ flexShrink: 0 }}
+                  className={`flex items-center gap-1 px-3 py-3 text-[10px] font-body tracking-wider uppercase whitespace-nowrap transition-colors border-b-2 ${
+                    activeTab === tab.id ? "text-primary border-primary" : "text-muted-foreground border-transparent"
+                  }`}
+                >
+                  <tab.icon className="w-3 h-3" />
+                  <span>{(tab as any).short ?? tab.label}</span>
+                </button>
+              ))}
+            </div>
           </div>
         </div>assName="flex-1 lg:ml-56 p-4 sm:p-6 lg:p-8 pt-12 lg:pt-8">
           {activeTab === "dashboard" && <DashboardView />}
