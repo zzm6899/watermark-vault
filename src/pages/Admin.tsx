@@ -159,7 +159,7 @@ export default function Admin() {
           </div>
         </div>
 
-        <main className="flex-1 lg:ml-56 p-4 sm:p-6 lg:p-8 mt-14 lg:mt-0">
+        <main className="flex-1 lg:ml-56 p-4 sm:p-6 lg:p-8 pt-16 lg:pt-8">
           {activeTab === "dashboard" && <DashboardView />}
           {activeTab === "bookings" && <BookingsView onCreateAlbum={handleCreateAlbumForBooking} />}
           {activeTab === "events" && <EventTypesView />}
@@ -221,7 +221,12 @@ function DashboardView() {
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-      <h2 className="font-display text-2xl text-foreground mb-6">Dashboard</h2>
+      <div className="flex items-center justify-between mb-6">
+        <h2 className="font-display text-2xl text-foreground">Dashboard</h2>
+        <Button onClick={() => window.location.href = "/capture"} className="gap-2 font-body text-sm">
+          <Upload className="w-4 h-4" /> Capture
+        </Button>
+      </div>
       <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
         {stats.map((stat) => (
           <div key={stat.label} className="glass-panel rounded-xl p-5">
