@@ -105,14 +105,14 @@ export default function Admin() {
   };
 
   const tabs = [
-    { id: "dashboard" as Tab, label: "Dashboard", icon: LayoutDashboard },
-    { id: "bookings" as Tab, label: "Bookings", icon: Calendar },
-    { id: "events" as Tab, label: "Events", icon: Clock },
-    { id: "albums" as Tab, label: "Albums", icon: Image },
-    { id: "photos" as Tab, label: "Photos", icon: Upload },
-    { id: "profile" as Tab, label: "Profile", icon: Camera },
-    { id: "settings" as Tab, label: "Settings", icon: Settings },
-    { id: "storage" as Tab, label: "Storage", icon: HardDrive },
+    { id: "dashboard" as Tab, label: "Dashboard", short: "Dash", icon: LayoutDashboard },
+    { id: "bookings" as Tab, label: "Bookings", short: "Book", icon: Calendar },
+    { id: "events" as Tab, label: "Events", short: "Events", icon: Clock },
+    { id: "albums" as Tab, label: "Albums", short: "Albums", icon: Image },
+    { id: "photos" as Tab, label: "Photos", short: "Photos", icon: Upload },
+    { id: "profile" as Tab, label: "Profile", short: "Profile", icon: Camera },
+    { id: "settings" as Tab, label: "Settings", short: "Setup", icon: Settings },
+    { id: "storage" as Tab, label: "Storage", short: "Store", icon: HardDrive },
   ];
 
   return (
@@ -147,19 +147,25 @@ export default function Admin() {
 
         <div className="lg:hidden fixed top-0 left-0 right-0 z-30 bg-card/95 backdrop-blur-sm border-b border-border">
           <div className="flex overflow-x-auto scrollbar-hide">
+            {/* Capture — pinned first, always visible without scrolling */}
+            <button
+              onClick={() => navigate("/capture")}
+              className="flex items-center gap-1.5 px-3 py-[11px] text-[10px] font-body tracking-wider uppercase whitespace-nowrap transition-colors border-b-2 flex-shrink-0 text-primary border-primary bg-primary/5"
+            >
+              <Upload className="w-3.5 h-3.5" />Cap
+            </button>
+            <div className="w-px bg-border/50 my-2 flex-shrink-0" />
             {tabs.map((tab) => (
               <button key={tab.id} onClick={() => setActiveTab(tab.id)}
-                className={`flex items-center gap-1.5 px-3 py-3 text-[10px] font-body tracking-wider uppercase whitespace-nowrap transition-colors border-b-2 flex-shrink-0 ${
+                className={`flex items-center gap-1.5 px-3 py-[11px] text-[10px] font-body tracking-wider uppercase whitespace-nowrap transition-colors border-b-2 flex-shrink-0 ${
                   activeTab === tab.id ? "text-primary border-primary" : "text-muted-foreground border-transparent"
                 }`}
               >
-                <tab.icon className="w-3.5 h-3.5" />{tab.label}
+                <tab.icon className="w-3.5 h-3.5" />{tab.short}
               </button>
             ))}
           </div>
-        </div>
-
-        <main className="flex-1 lg:ml-56 p-4 sm:p-6 lg:p-8 pt-16 lg:pt-8">
+        </div>assName="flex-1 lg:ml-56 p-4 sm:p-6 lg:p-8 pt-12 lg:pt-8">
           {activeTab === "dashboard" && <DashboardView />}
           {activeTab === "bookings" && <BookingsView onCreateAlbum={handleCreateAlbumForBooking} />}
           {activeTab === "events" && <EventTypesView />}
@@ -222,7 +228,7 @@ function DashboardView() {
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
       <div className="flex items-center justify-between mb-6">
-        <h2 className="font-display text-2xl text-foreground">Dashboard</h2>
+        <h2 className="font-display text-lg sm:text-2xl text-foreground">Dashboard</h2>
         <Button onClick={() => window.location.href = "/capture"} className="gap-2 font-body text-sm">
           <Upload className="w-4 h-4" /> Capture
         </Button>
@@ -470,7 +476,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
-        <h2 className="font-display text-2xl text-foreground">Bookings</h2>
+        <h2 className="font-display text-lg sm:text-2xl text-foreground">Bookings</h2>
         <div className="flex items-center gap-2 flex-wrap">
           {bookings.length > 0 && (
             <>
@@ -950,7 +956,7 @@ function EventTypesView() {
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
       <div className="flex items-center justify-between mb-6">
-        <h2 className="font-display text-2xl text-foreground">Event Types</h2>
+        <h2 className="font-display text-lg sm:text-2xl text-foreground">Events</h2>
         <Button size="sm" onClick={() => setShowNew(true)} className="gap-2 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs tracking-wider uppercase">
           <Plus className="w-4 h-4" /> New
         </Button>
@@ -1412,7 +1418,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
-        <h2 className="font-display text-2xl text-foreground">Albums</h2>
+        <h2 className="font-display text-lg sm:text-2xl text-foreground">Albums</h2>
         <div className="flex gap-2 flex-wrap">
           {albums.length >= 2 && (
             <Button variant="outline" size="sm" onClick={() => { setMergeMode(!mergeMode); setMergeSelection(new Set()); }} className="gap-2 font-body text-xs border-border text-foreground">
@@ -2168,7 +2174,7 @@ function PhotosView() {
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
-        <h2 className="font-display text-2xl text-foreground">Photo Library</h2>
+        <h2 className="font-display text-lg sm:text-2xl text-foreground">Photos</h2>
         <div className="flex gap-2 items-center flex-wrap">
           <Button size="sm" variant="outline" onClick={handleSyncFromStorage} disabled={syncing} className="gap-2 font-body text-xs border-border text-foreground">
             <RefreshCw className={`w-4 h-4 ${syncing ? "animate-spin" : ""}`} /> {syncing ? "Syncing…" : "Sync Storage"}
@@ -2316,7 +2322,7 @@ function ProfileView() {
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-      <h2 className="font-display text-2xl text-foreground mb-6">Profile & Cover Page</h2>
+      <h2 className="font-display text-lg sm:text-2xl text-foreground mb-4 sm:mb-6">Profile</h2>
       <div className="max-w-lg space-y-6">
         <div className="glass-panel rounded-xl p-6">
           <p className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-4">Preview</p>
@@ -2387,7 +2393,7 @@ function SettingsView() {
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-      <h2 className="font-display text-2xl text-foreground mb-6">Settings</h2>
+      <h2 className="font-display text-lg sm:text-2xl text-foreground mb-4 sm:mb-6">Settings</h2>
       <div className="space-y-6 max-w-lg">
         {/* Watermark */}
         <div className="glass-panel rounded-xl p-6 space-y-4">

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -66,8 +66,47 @@ function getSessionStatus(bk: Booking, albums: Album[]): SessionStatus {
   return "upcoming";
 }
 
+
+// ── Error Boundary — prevents PTP crash from killing the whole page ──
+class CameraErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { hasError: boolean; error: string }
+> {
+  constructor(props: any) {
+    super(props);
+    this.state = { hasError: false, error: "" };
+  }
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error: error?.message || "Unknown error" };
+  }
+  componentDidCatch(error: Error) {
+    console.error("MobileCapture crash:", error);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen bg-background flex items-center justify-center p-6">
+          <div className="glass-panel rounded-xl p-8 max-w-sm w-full text-center space-y-4">
+            <AlertCircle className="w-10 h-10 text-destructive mx-auto" />
+            <h2 className="font-display text-lg text-foreground">Camera Error</h2>
+            <p className="text-sm font-body text-muted-foreground">{this.state.error}</p>
+            <p className="text-xs font-body text-muted-foreground/60">Disconnect the camera and try again. If this keeps happening, check USB-C cable and PTP mode on your Z6III.</p>
+            <button
+              onClick={() => this.setState({ hasError: false, error: "" })}
+              className="w-full text-xs font-body tracking-wider uppercase px-4 py-2.5 rounded-full border border-border text-muted-foreground hover:text-foreground hover:bg-secondary transition-all"
+            >
+              Try Again
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 // ── Main Component ──────────────────────────────────────────────
-export default function MobileCapture() {
+function MobileCaptureInner() {
   const navigate = useNavigate();
   const isNative = Capacitor.isNativePlatform();
 
@@ -152,14 +191,36 @@ export default function MobileCapture() {
   const checkCamera = useCallback(async () => {
     if (!isNative) return;
     try {
-      const { connected, deviceName } = await CameraUsb.isConnected();
+      const result = await CameraUsb.isConnected();
+      const connected = result?.connected ?? false;
+      const deviceName = result?.deviceName ?? "";
       setCameraConnected(connected);
       setCameraName(deviceName);
-      if (connected) {
-        const { granted } = await CameraUsb.requestPermission();
-        if (granted) { const { files } = await CameraUsb.listFiles({ limit: 50 }); setCameraFiles(files); }
+      if (!connected) { setCameraFiles([]); return; }
+      // Request permission separately — may throw if camera disconnected between steps
+      let granted = false;
+      try {
+        const permResult = await CameraUsb.requestPermission();
+        granted = permResult?.granted ?? false;
+      } catch (permErr) {
+        console.warn("Camera permission request failed:", permErr);
+        setCameraConnected(false);
+        return;
       }
-    } catch { setCameraConnected(false); }
+      if (!granted) { console.warn("Camera permission denied"); return; }
+      // List files — wrap separately so permission success isn't lost on list failure
+      try {
+        const { files } = await CameraUsb.listFiles({ limit: 50, jpegOnly: false });
+        setCameraFiles(files ?? []);
+      } catch (listErr) {
+        console.warn("Camera listFiles failed:", listErr);
+        setCameraFiles([]);
+      }
+    } catch (err) {
+      console.warn("checkCamera failed:", err);
+      setCameraConnected(false);
+      setCameraFiles([]);
+    }
   }, [isNative]);
 
   useEffect(() => {
@@ -169,17 +230,37 @@ export default function MobileCapture() {
     return () => clearInterval(interval);
   }, [isNative, checkCamera]);
 
+  // Use a ref for targetAlbum so the listener always has latest value without re-subscribing
+  const targetAlbumRef = useRef<Album | null>(null);
+  useEffect(() => { targetAlbumRef.current = targetAlbum; }, [targetAlbum]);
+
   useEffect(() => {
     if (!isNative || !watching) return;
-    const listener = CameraUsb.addListener?.("newFiles" as any, async (event: any) => {
-      const newFiles: CameraFile[] = event.files || [];
-      if (newFiles.length > 0 && targetAlbum) {
-        toast.info(`${newFiles.length} new photo(s) — auto-importing…`);
-        await importCameraFiles(newFiles.map(f => f.handle));
+    if (!CameraUsb.addListener) return; // guard — plugin may not support event listeners
+    let listenerHandle: any = null;
+    const setup = async () => {
+      try {
+        listenerHandle = await CameraUsb.addListener("newFiles" as any, async (event: any) => {
+          try {
+            const newFiles: CameraFile[] = event?.files || [];
+            if (newFiles.length > 0 && targetAlbumRef.current) {
+              toast.info(`${newFiles.length} new photo(s) — auto-importing…`);
+              await importCameraFiles(newFiles.map((f: CameraFile) => f.handle));
+            }
+          } catch (handlerErr) {
+            console.error("Live capture handler error:", handlerErr);
+          }
+        });
+      } catch (setupErr) {
+        console.error("Failed to attach camera listener:", setupErr);
+        setWatching(false);
       }
-    });
-    return () => { listener?.then?.((l: any) => l.remove?.()); };
-  }, [isNative, watching, targetAlbum]);
+    };
+    setup();
+    return () => {
+      try { listenerHandle?.remove?.(); } catch {}
+    };
+  }, [isNative, watching]); // intentionally no targetAlbum dep — use ref instead
 
   const getOrCreateAlbum = useCallback((booking: Booking): Album => {
     const existing = getAlbums().find(a => a.bookingId === booking.id);
@@ -220,7 +301,20 @@ export default function MobileCapture() {
         for (let i = 0; i < imported.length; i++) {
           const f = imported[i];
           try {
-            const blob = await (await fetch(f.uri)).blob();
+            // Retry fetch up to 3x — Android may not have finished writing the file yet
+            let blob: Blob | null = null;
+            for (let attempt = 0; attempt < 3; attempt++) {
+              try {
+                const resp = await fetch(f.uri);
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                blob = await resp.blob();
+                break;
+              } catch (fetchErr) {
+                if (attempt < 2) await new Promise(r => setTimeout(r, 500));
+                else console.warn("Failed to fetch file after 3 attempts:", f.uri, fetchErr);
+              }
+            }
+            if (!blob) continue; // skip this file rather than crashing
             const file = new File([blob], f.localPath.split("/").pop() || `photo_${i}.jpg`, { type: "image/jpeg" });
             const results = await uploadPhotosToServer([file], () => {});
             for (const r of results) {
@@ -249,8 +343,21 @@ export default function MobileCapture() {
   };
 
   const toggleLiveWatch = async () => {
-    if (watching) { await CameraUsb.stopWatching(); setWatching(false); toast.info("Live capture stopped"); }
-    else { await CameraUsb.startWatching({ intervalMs: 2000 }); setWatching(true); toast.success("Live capture active — shoot away!"); }
+    if (watching) {
+      try { await CameraUsb.stopWatching(); } catch (err) { console.warn("stopWatching error:", err); }
+      setWatching(false);
+      toast.info("Live capture stopped");
+    } else {
+      if (!cameraConnected) { toast.error("No camera connected"); return; }
+      try {
+        await CameraUsb.startWatching({ intervalMs: 2000 });
+        setWatching(true);
+        toast.success("Live capture active — shoot away!");
+      } catch (err: any) {
+        console.error("startWatching failed:", err);
+        toast.error(`Live capture failed: ${err?.message || "Unknown error"}`);
+      }
+    }
   };
 
   const handleFilePick = async (files: FileList | null) => {
@@ -492,7 +599,7 @@ export default function MobileCapture() {
       {/* Header */}
       <div className="flex items-center gap-3 mb-4">
         <button
-          onClick={() => { setSelectedBooking(null); setTargetAlbum(null); setWatching(false); CameraUsb.stopWatching().catch(() => {}); }}
+          onClick={() => { setSelectedBooking(null); setTargetAlbum(null); if (watching) { setWatching(false); CameraUsb.stopWatching().catch(() => {}); } }}
           className="p-1.5 rounded-lg hover:bg-secondary transition-colors text-muted-foreground hover:text-foreground"
         >
           <ArrowLeft className="w-5 h-5" />
@@ -648,5 +755,13 @@ export default function MobileCapture() {
       <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden" onChange={(e) => handleFilePick(e.target.files)} />
       <input ref={watchInputRef} type="file" accept="image/*" capture="environment" multiple className="hidden" onChange={(e) => { handleFilePick(e.target.files); if (e.target) e.target.value = ""; }} />
     </div>
+  );
+}
+
+export default function MobileCapture() {
+  return (
+    <CameraErrorBoundary>
+      <MobileCaptureInner />
+    </CameraErrorBoundary>
   );
 }

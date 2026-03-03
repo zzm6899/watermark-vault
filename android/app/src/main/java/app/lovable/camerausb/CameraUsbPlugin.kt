@@ -5,15 +5,16 @@
  * SETUP: Copy this file to your Android project at:
  *   android/app/src/main/java/app/lovable/camerausb/CameraUsbPlugin.kt
  *
- * Then register it in your MainActivity.java:
- *   public void onCreate(Bundle savedInstanceState) {
- *       registerPlugin(CameraUsbPlugin.class);
- *       super.onCreate(savedInstanceState);
+ * Then register it in MainActivity:
+ *   override fun onCreate(savedInstanceState: Bundle?) {
+ *       registerPlugin(CameraUsbPlugin::class.java)
+ *       super.onCreate(savedInstanceState)
  *   }
  *
- * Required AndroidManifest.xml additions:
+ * Required AndroidManifest.xml:
  *   <uses-feature android:name="android.hardware.usb.host" android:required="true" />
- *   <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+ *   <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+ *       android:maxSdkVersion="28" />
  */
 package app.lovable.camerausb
 
@@ -29,6 +30,9 @@ import android.mtp.MtpDevice
 import android.mtp.MtpObjectInfo
 import android.os.Build
 import android.os.Environment
+import android.os.Handler
+import android.os.HandlerThread
+import android.os.Looper
 import com.getcapacitor.JSArray
 import com.getcapacitor.JSObject
 import com.getcapacitor.Plugin
@@ -37,324 +41,348 @@ import com.getcapacitor.PluginMethod
 import com.getcapacitor.annotation.CapacitorPlugin
 import java.io.File
 import java.io.FileOutputStream
-import java.util.Timer
-import java.util.TimerTask
 
 private const val ACTION_USB_PERMISSION = "app.lovable.camerausb.USB_PERMISSION"
 
 @CapacitorPlugin(name = "CameraUsb")
 class CameraUsbPlugin : Plugin() {
 
+    // ── Single shared MTP connection, protected by a dedicated background thread ──
+    // ALL MTP calls must go through mtpHandler to avoid thread-safety crashes.
+    private val mtpThread = HandlerThread("MtpWorker").also { it.start() }
+    private val mtpHandler = Handler(mtpThread.looper)
+    private val mainHandler = Handler(Looper.getMainLooper())
+
     private var mtpDevice: MtpDevice? = null
-    private var usbDevice: UsbDevice? = null
-    private var watchTimer: Timer? = null
+    private var currentUsbDevice: UsbDevice? = null
+    private var watchRunnable: Runnable? = null
     private var lastKnownHandles = mutableSetOf<Int>()
+    private var permissionReceiver: BroadcastReceiver? = null
 
     private val usbManager: UsbManager
         get() = context.getSystemService(Context.USB_SERVICE) as UsbManager
 
-    // ── Find connected camera ──
-    private fun findCamera(): UsbDevice? {
-        val devices = usbManager.deviceList
-        for ((_, device) in devices) {
-            // Nikon vendor ID = 0x04B0, but accept any imaging class device
-            if (device.getInterface(0)?.interfaceClass == 6 /* Imaging */
-                || device.vendorId == 0x04B0 /* Nikon */
-            ) {
-                return device
+    // ── Run a block on the MTP worker thread, resolve/reject on main thread ──
+    private fun runOnMtp(call: PluginCall, block: () -> JSObject) {
+        mtpHandler.post {
+            try {
+                val result = block()
+                mainHandler.post { call.resolve(result) }
+            } catch (e: Exception) {
+                mainHandler.post { call.reject(e.message ?: "Unknown MTP error") }
             }
+        }
+    }
+
+    // ── Find connected camera (any imaging class or Nikon VID) ──
+    private fun findCamera(): UsbDevice? {
+        for ((_, device) in usbManager.deviceList) {
+            for (i in 0 until device.interfaceCount) {
+                if (device.getInterface(i).interfaceClass == 6 /* Still Imaging */) return device
+            }
+            if (device.vendorId == 0x04B0 /* Nikon */) return device
         }
         return null
     }
 
-    private fun openMtpDevice(device: UsbDevice): MtpDevice? {
-        val connection = usbManager.openDevice(device) ?: return null
-        val mtp = MtpDevice(device)
-        return if (mtp.open(connection)) mtp else null
+    // ── Get or open MTP connection — reuses existing if same device ──
+    // MUST be called from mtpHandler thread only.
+    private fun getOrOpenMtp(): MtpDevice {
+        val camera = findCamera() ?: throw IllegalStateException("No camera connected")
+
+        // Reuse existing connection if it's the same device and still alive
+        val existing = mtpDevice
+        if (existing != null && currentUsbDevice?.deviceId == camera.deviceId) {
+            // Verify connection is still alive with a cheap call
+            try {
+                existing.storageIds // throws if disconnected
+                return existing
+            } catch (_: Exception) {
+                // Connection died — close and reopen
+                try { existing.close() } catch (_: Exception) {}
+                mtpDevice = null
+                currentUsbDevice = null
+            }
+        }
+
+        // Close any stale connection
+        try { mtpDevice?.close() } catch (_: Exception) {}
+
+        if (!usbManager.hasPermission(camera)) {
+            throw SecurityException("USB permission not granted — call requestPermission first")
+        }
+
+        val connection = usbManager.openDevice(camera)
+            ?: throw IllegalStateException("Failed to open USB device — is camera in MTP/PTP mode?")
+
+        val mtp = MtpDevice(camera)
+        if (!mtp.open(connection)) {
+            connection.close()
+            throw IllegalStateException("Failed to open MTP session — try disconnecting and reconnecting")
+        }
+
+        mtpDevice = mtp
+        currentUsbDevice = camera
+        return mtp
     }
 
-    // ── Plugin Methods ──
+    // ── Collect image handles from all storages ──
+    private fun collectImageHandles(mtp: MtpDevice, includeRaw: Boolean): List<Pair<Int, MtpObjectInfo>> {
+        val storageIds = mtp.storageIds ?: return emptyList()
+        val results = mutableListOf<Pair<Int, MtpObjectInfo>>()
 
+        for (storageId in storageIds) {
+            // JPEG
+            val jpegHandles = mtp.getObjectHandles(storageId, MtpConstants.FORMAT_EXIF_JPEG, 0) ?: continue
+            for (handle in jpegHandles) {
+                val info = mtp.getObjectInfo(handle) ?: continue
+                results.add(handle to info)
+            }
+            // RAW/NEF (Nikon uses 0x3800 for raw, 0x3801 for TIFF-based raw)
+            if (includeRaw) {
+                for (rawFormat in intArrayOf(0x3800, 0x3801, 0x3802)) {
+                    val rawHandles = mtp.getObjectHandles(storageId, rawFormat, 0) ?: continue
+                    for (handle in rawHandles) {
+                        val info = mtp.getObjectInfo(handle) ?: continue
+                        results.add(handle to info)
+                    }
+                }
+            }
+        }
+        return results
+    }
+
+    // ── isConnected ──────────────────────────────────────────────────────────
     @PluginMethod
     fun isConnected(call: PluginCall) {
+        // This is a fast device-list check — safe on main thread
         val camera = findCamera()
-        val ret = JSObject()
-        ret.put("connected", camera != null)
-        ret.put("deviceName", camera?.productName ?: "")
-        call.resolve(ret)
+        call.resolve(JSObject().apply {
+            put("connected", camera != null)
+            put("deviceName", camera?.productName ?: "")
+        })
     }
 
+    // ── requestPermission ────────────────────────────────────────────────────
     @PluginMethod
     fun requestPermission(call: PluginCall) {
         val camera = findCamera()
         if (camera == null) {
-            val ret = JSObject()
-            ret.put("granted", false)
-            call.resolve(ret)
+            call.resolve(JSObject().apply { put("granted", false) })
             return
         }
-
         if (usbManager.hasPermission(camera)) {
-            val ret = JSObject()
-            ret.put("granted", true)
-            call.resolve(ret)
+            call.resolve(JSObject().apply { put("granted", true) })
             return
         }
 
-        val permissionIntent = PendingIntent.getBroadcast(
-            context, 0,
-            Intent(ACTION_USB_PERMISSION),
-            if (Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0
-        )
+        // Unregister any stale receiver from a previous call
+        permissionReceiver?.let {
+            try { context.unregisterReceiver(it) } catch (_: Exception) {}
+        }
 
-        val filter = IntentFilter(ACTION_USB_PERMISSION)
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(ctx: Context, intent: Intent) {
-                context.unregisterReceiver(this)
+                try { context.unregisterReceiver(this) } catch (_: Exception) {}
+                permissionReceiver = null
                 val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
-                val ret = JSObject()
-                ret.put("granted", granted)
-                call.resolve(ret)
+                call.resolve(JSObject().apply { put("granted", granted) })
             }
         }
+        permissionReceiver = receiver
+
+        val flags = if (Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0
+        val pi = PendingIntent.getBroadcast(context, 0, Intent(ACTION_USB_PERMISSION), flags)
 
         if (Build.VERSION.SDK_INT >= 33) {
-            context.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            context.registerReceiver(receiver, IntentFilter(ACTION_USB_PERMISSION), Context.RECEIVER_NOT_EXPORTED)
         } else {
-            context.registerReceiver(receiver, filter)
+            context.registerReceiver(receiver, IntentFilter(ACTION_USB_PERMISSION))
         }
 
-        usbManager.requestPermission(camera, permissionIntent)
+        usbManager.requestPermission(camera, pi)
     }
 
+    // ── listFiles ────────────────────────────────────────────────────────────
     @PluginMethod
     fun listFiles(call: PluginCall) {
         val limit = call.getInt("limit", 50) ?: 50
+        val includeRaw = call.getBoolean("includeRaw", false) ?: false
 
-        val camera = findCamera()
-        if (camera == null) {
-            call.reject("No camera connected")
-            return
-        }
-
-        if (!usbManager.hasPermission(camera)) {
-            call.reject("USB permission not granted")
-            return
-        }
-
-        try {
-            val mtp = openMtpDevice(camera)
-            if (mtp == null) {
-                call.reject("Failed to open MTP device")
-                return
-            }
-
-            mtpDevice = mtp
-            usbDevice = camera
-
+        runOnMtp(call) {
+            val mtp = getOrOpenMtp()
             val storageIds = mtp.storageIds
             if (storageIds == null || storageIds.isEmpty()) {
-                call.reject("No storage found on camera")
-                mtp.close()
-                return
+                throw IllegalStateException("No storage found on camera — make sure camera is on and in MTP mode")
             }
 
-            // Collect all image files across storages
-            data class MtpFile(val handle: Int, val info: MtpObjectInfo)
-            val allFiles = mutableListOf<MtpFile>()
-
-            for (storageId in storageIds) {
-                val handles = mtp.getObjectHandles(storageId, MtpConstants.FORMAT_EXIF_JPEG, 0)
-                    ?: continue
-                for (handle in handles) {
-                    val info = mtp.getObjectInfo(handle) ?: continue
-                    allFiles.add(MtpFile(handle, info))
-                }
-                // Also get NEF/RAW files
-                val rawHandles = mtp.getObjectHandles(storageId, 0x3801 /* TIFF */, 0)
-                    ?: continue
-                for (handle in rawHandles) {
-                    val info = mtp.getObjectInfo(handle) ?: continue
-                    allFiles.add(MtpFile(handle, info))
-                }
-            }
-
-            // Sort by date modified descending (newest first)
-            allFiles.sortByDescending { it.info.dateModified }
+            val allFiles = collectImageHandles(mtp, includeRaw)
+            allFiles.sortedByDescending { it.second.dateModified }
 
             val filesArray = JSArray()
-            for (file in allFiles.take(limit)) {
-                val obj = JSObject()
-                obj.put("handle", file.handle)
-                obj.put("name", file.info.name)
-                obj.put("mimeType", when (file.info.format) {
-                    MtpConstants.FORMAT_EXIF_JPEG -> "image/jpeg"
-                    0x3801 -> "image/x-nikon-nef"
-                    else -> "image/jpeg"
+            for ((handle, info) in allFiles.take(limit)) {
+                filesArray.put(JSObject().apply {
+                    put("handle", handle)
+                    put("name", info.name ?: "photo_$handle.jpg")
+                    put("mimeType", when (info.format) {
+                        MtpConstants.FORMAT_EXIF_JPEG -> "image/jpeg"
+                        0x3800, 0x3801 -> "image/x-nikon-nef"
+                        else -> "image/jpeg"
+                    })
+                    put("size", info.compressedSize)
+                    put("dateModified", info.dateModified * 1000L)
                 })
-                obj.put("size", file.info.compressedSize)
-                obj.put("dateModified", file.info.dateModified * 1000L)
-                filesArray.put(obj)
             }
 
-            val ret = JSObject()
-            ret.put("files", filesArray)
-            call.resolve(ret)
-        } catch (e: Exception) {
-            call.reject("Error listing files: ${e.message}")
+            JSObject().apply { put("files", filesArray) }
         }
     }
 
+    // ── importFile ───────────────────────────────────────────────────────────
     @PluginMethod
     fun importFile(call: PluginCall) {
-        val handle = call.getInt("handle")
+        val handle = call.getInt("handle") ?: run { call.reject("Missing handle"); return }
         val fileName = call.getString("fileName") ?: "photo_${System.currentTimeMillis()}.jpg"
 
-        if (handle == null) {
-            call.reject("Missing handle")
-            return
-        }
+        runOnMtp(call) {
+            val mtp = getOrOpenMtp()
+            val outFile = getOutputFile(fileName)
 
-        try {
-            val mtp = mtpDevice ?: run {
-                val camera = findCamera() ?: run { call.reject("No camera"); return }
-                openMtpDevice(camera) ?: run { call.reject("Failed to open device"); return }
-            }
-
-            val dir = File(
-                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES),
-                "CameraCapture"
-            )
-            dir.mkdirs()
-
-            val outFile = File(dir, fileName)
-            val data = mtp.getObject(handle, 0) ?: run {
-                call.reject("Failed to read file from camera")
-                return
-            }
+            // FIX: getObject second param is the SIZE to read, not 0 — use objectInfo.compressedSize
+            val info = mtp.getObjectInfo(handle)
+                ?: throw IllegalStateException("Could not get object info for handle $handle")
+            val data = mtp.getObject(handle, info.compressedSize)
+                ?: throw IllegalStateException("Camera returned null data for handle $handle")
+            if (data.isEmpty()) throw IllegalStateException("Camera returned empty data — file may still be writing")
 
             FileOutputStream(outFile).use { it.write(data) }
 
-            val ret = JSObject()
-            ret.put("uri", "file://${outFile.absolutePath}")
-            ret.put("localPath", outFile.absolutePath)
-            call.resolve(ret)
-        } catch (e: Exception) {
-            call.reject("Import error: ${e.message}")
-        }
-    }
-
-    @PluginMethod
-    fun importFiles(call: PluginCall) {
-        val handlesArray = call.getArray("handles") ?: run {
-            call.reject("Missing handles")
-            return
-        }
-
-        val handles = (0 until handlesArray.length()).map { handlesArray.getInt(it) }
-        val results = JSArray()
-
-        val mtp = mtpDevice ?: run {
-            val camera = findCamera() ?: run { call.reject("No camera"); return }
-            openMtpDevice(camera) ?: run { call.reject("Failed to open device"); return }
-        }
-
-        val dir = File(
-            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES),
-            "CameraCapture"
-        )
-        dir.mkdirs()
-
-        for (handle in handles) {
-            try {
-                val info = mtp.getObjectInfo(handle)
-                val fileName = info?.name ?: "photo_${handle}_${System.currentTimeMillis()}.jpg"
-                val outFile = File(dir, fileName)
-                val data = mtp.getObject(handle, 0) ?: continue
-
-                FileOutputStream(outFile).use { it.write(data) }
-
-                val obj = JSObject()
-                obj.put("handle", handle)
-                obj.put("uri", "file://${outFile.absolutePath}")
-                obj.put("localPath", outFile.absolutePath)
-                results.put(obj)
-            } catch (e: Exception) {
-                // Skip failed files, continue importing
+            JSObject().apply {
+                put("uri", "file://${outFile.absolutePath}")
+                put("localPath", outFile.absolutePath)
             }
         }
-
-        val ret = JSObject()
-        ret.put("files", results)
-        call.resolve(ret)
     }
 
+    // ── importFiles ──────────────────────────────────────────────────────────
+    @PluginMethod
+    fun importFiles(call: PluginCall) {
+        val handlesArray = call.getArray("handles") ?: run { call.reject("Missing handles"); return }
+        val handles = (0 until handlesArray.length()).mapNotNull {
+            try { handlesArray.getInt(it) } catch (_: Exception) { null }
+        }
+
+        runOnMtp(call) {
+            val mtp = getOrOpenMtp()
+            val results = JSArray()
+            val errors = mutableListOf<String>()
+
+            for (handle in handles) {
+                try {
+                    val info = mtp.getObjectInfo(handle)
+                        ?: throw IllegalStateException("No object info for handle $handle")
+                    val fileName = info.name?.takeIf { it.isNotBlank() }
+                        ?: "photo_${handle}_${System.currentTimeMillis()}.jpg"
+                    val outFile = getOutputFile(fileName)
+
+                    // FIX: Must pass actual file size, not 0
+                    val data = mtp.getObject(handle, info.compressedSize)
+                    if (data == null || data.isEmpty()) {
+                        errors.add("Empty data for $fileName — skipped")
+                        continue
+                    }
+
+                    FileOutputStream(outFile).use { it.write(data) }
+
+                    results.put(JSObject().apply {
+                        put("handle", handle)
+                        put("uri", "file://${outFile.absolutePath}")
+                        put("localPath", outFile.absolutePath)
+                    })
+                } catch (e: Exception) {
+                    errors.add("handle $handle: ${e.message}")
+                    // Continue importing remaining files
+                }
+            }
+
+            if (errors.isNotEmpty()) {
+                android.util.Log.w("CameraUsb", "Import warnings: ${errors.joinToString("; ")}")
+            }
+
+            JSObject().apply { put("files", results) }
+        }
+    }
+
+    // ── startWatching ────────────────────────────────────────────────────────
     @PluginMethod
     fun startWatching(call: PluginCall) {
         val intervalMs = call.getInt("intervalMs", 3000)?.toLong() ?: 3000L
 
-        stopWatchingInternal()
+        runOnMtp(call) {
+            stopWatchingInternal()
 
-        // Snapshot current handles
-        try {
-            val camera = findCamera() ?: run { call.reject("No camera"); return }
-            val mtp = mtpDevice ?: openMtpDevice(camera) ?: run { call.reject("Failed to open"); return }
-            mtpDevice = mtp
+            val mtp = getOrOpenMtp()
+            val storageIds = mtp.storageIds
+                ?: throw IllegalStateException("No storage on camera")
 
-            val storageIds = mtp.storageIds ?: run { call.reject("No storage"); return }
+            // Snapshot current handles so we only report NEW files
             lastKnownHandles.clear()
             for (storageId in storageIds) {
                 val handles = mtp.getObjectHandles(storageId, MtpConstants.FORMAT_EXIF_JPEG, 0)
                 if (handles != null) lastKnownHandles.addAll(handles.toList())
             }
-        } catch (e: Exception) {
-            call.reject("Error starting watch: ${e.message}")
-            return
-        }
 
-        watchTimer = Timer()
-        watchTimer?.scheduleAtFixedRate(object : TimerTask() {
-            override fun run() {
-                checkForNewFiles()
+            // Schedule polling on MTP thread (safe — same thread as all MTP calls)
+            val runnable = object : Runnable {
+                override fun run() {
+                    checkForNewFiles()
+                    mtpHandler.postDelayed(this, intervalMs)
+                }
             }
-        }, intervalMs, intervalMs)
+            watchRunnable = runnable
+            mtpHandler.postDelayed(runnable, intervalMs)
 
-        call.resolve()
+            JSObject()
+        }
     }
 
+    // ── stopWatching ─────────────────────────────────────────────────────────
     @PluginMethod
     fun stopWatching(call: PluginCall) {
-        stopWatchingInternal()
-        call.resolve()
+        // Can call from any thread
+        mtpHandler.post {
+            stopWatchingInternal()
+            mainHandler.post { call.resolve() }
+        }
     }
 
     private fun stopWatchingInternal() {
-        watchTimer?.cancel()
-        watchTimer = null
+        watchRunnable?.let { mtpHandler.removeCallbacks(it) }
+        watchRunnable = null
     }
 
+    // ── Poll for new files (always runs on mtpHandler thread) ────────────────
     private fun checkForNewFiles() {
         try {
-            val mtp = mtpDevice ?: return
+            val mtp = mtpDevice ?: return // camera not open, skip silently
             val storageIds = mtp.storageIds ?: return
 
             val currentHandles = mutableSetOf<Int>()
             val newFiles = mutableListOf<JSObject>()
 
             for (storageId in storageIds) {
-                val handles = mtp.getObjectHandles(storageId, MtpConstants.FORMAT_EXIF_JPEG, 0)
-                    ?: continue
+                val handles = mtp.getObjectHandles(storageId, MtpConstants.FORMAT_EXIF_JPEG, 0) ?: continue
                 for (handle in handles) {
                     currentHandles.add(handle)
                     if (!lastKnownHandles.contains(handle)) {
                         val info = mtp.getObjectInfo(handle) ?: continue
-                        val obj = JSObject()
-                        obj.put("handle", handle)
-                        obj.put("name", info.name)
-                        obj.put("mimeType", "image/jpeg")
-                        obj.put("size", info.compressedSize)
-                        obj.put("dateModified", info.dateModified * 1000L)
-                        newFiles.add(obj)
+                        newFiles.add(JSObject().apply {
+                            put("handle", handle)
+                            put("name", info.name ?: "photo_$handle.jpg")
+                            put("mimeType", "image/jpeg")
+                            put("size", info.compressedSize)
+                            put("dateModified", info.dateModified * 1000L)
+                        })
                     }
                 }
             }
@@ -362,21 +390,50 @@ class CameraUsbPlugin : Plugin() {
             lastKnownHandles = currentHandles
 
             if (newFiles.isNotEmpty()) {
-                val event = JSObject()
-                val filesArray = JSArray()
-                newFiles.forEach { filesArray.put(it) }
-                event.put("files", filesArray)
-                notifyListeners("newFiles", event)
+                val filesArray = JSArray().also { arr -> newFiles.forEach { arr.put(it) } }
+                val event = JSObject().apply { put("files", filesArray) }
+                mainHandler.post { notifyListeners("newFiles", event) }
             }
         } catch (e: Exception) {
-            // Camera may have been disconnected
+            // Camera disconnected mid-poll — mark connection as dead so next call reopens
+            android.util.Log.w("CameraUsb", "checkForNewFiles error (camera disconnected?): ${e.message}")
+            try { mtpDevice?.close() } catch (_: Exception) {}
+            mtpDevice = null
+            currentUsbDevice = null
         }
     }
 
+    // ── Output directory helper ───────────────────────────────────────────────
+    private fun getOutputFile(fileName: String): File {
+        val dir = if (Build.VERSION.SDK_INT >= 29) {
+            // Android 10+ — use app-specific external storage (no permission needed)
+            File(context.getExternalFilesDir(Environment.DIRECTORY_PICTURES), "CameraCapture")
+        } else {
+            File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "CameraCapture")
+        }
+        dir.mkdirs()
+        // Avoid overwriting existing files
+        var outFile = File(dir, fileName)
+        if (outFile.exists()) {
+            val base = fileName.substringBeforeLast(".")
+            val ext = fileName.substringAfterLast(".", "jpg")
+            outFile = File(dir, "${base}_${System.currentTimeMillis()}.$ext")
+        }
+        return outFile
+    }
+
+    // ── Lifecycle ─────────────────────────────────────────────────────────────
     override fun handleOnDestroy() {
-        stopWatchingInternal()
-        mtpDevice?.close()
-        mtpDevice = null
+        mtpHandler.post {
+            stopWatchingInternal()
+            try { mtpDevice?.close() } catch (_: Exception) {}
+            mtpDevice = null
+            currentUsbDevice = null
+        }
+        permissionReceiver?.let {
+            try { context.unregisterReceiver(it) } catch (_: Exception) {}
+            permissionReceiver = null
+        }
         super.handleOnDestroy()
     }
 }
