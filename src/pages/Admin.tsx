@@ -105,14 +105,14 @@ export default function Admin() {
   };
 
   const tabs = [
-    { id: "dashboard" as Tab, label: "Dashboard", short: "Dash", icon: LayoutDashboard },
-    { id: "bookings" as Tab, label: "Bookings", short: "Book", icon: Calendar },
-    { id: "events" as Tab, label: "Events", short: "Events", icon: Clock },
-    { id: "albums" as Tab, label: "Albums", short: "Albums", icon: Image },
-    { id: "photos" as Tab, label: "Photos", short: "Photos", icon: Upload },
-    { id: "profile" as Tab, label: "Profile", short: "Profile", icon: Camera },
-    { id: "settings" as Tab, label: "Settings", short: "Setup", icon: Settings },
-    { id: "storage" as Tab, label: "Storage", short: "Store", icon: HardDrive },
+    { id: "dashboard" as Tab, label: "Dashboard", icon: LayoutDashboard },
+    { id: "bookings" as Tab, label: "Bookings", icon: Calendar },
+    { id: "events" as Tab, label: "Events", icon: Clock },
+    { id: "albums" as Tab, label: "Albums", icon: Image },
+    { id: "photos" as Tab, label: "Photos", icon: Upload },
+    { id: "profile" as Tab, label: "Profile", icon: Camera },
+    { id: "settings" as Tab, label: "Settings", icon: Settings },
+    { id: "storage" as Tab, label: "Storage", icon: HardDrive },
   ];
 
   return (
@@ -146,34 +146,20 @@ export default function Admin() {
         </aside>
 
         <div className="lg:hidden fixed top-0 left-0 right-0 z-30 bg-card/95 backdrop-blur-sm border-b border-border">
-          <div style={{ display: "flex", alignItems: "stretch" }}>
-            {/* Capture button — fixed left, never scrolls */}
-            <button
-              onClick={() => navigate("/capture")}
-              style={{ flexShrink: 0 }}
-              className="flex items-center gap-1.5 px-3 py-3 text-[10px] font-body tracking-wider uppercase text-primary bg-primary/10 border-r border-border transition-colors hover:bg-primary/20 active:bg-primary/30"
-            >
-              <Upload className="w-3.5 h-3.5" />
-              <span>Cap</span>
-            </button>
-            {/* Scrollable tab strip */}
-            <div style={{ overflowX: "auto", display: "flex", WebkitOverflowScrolling: "touch" }}>
-              {tabs.map((tab) => (
-                <button key={tab.id} onClick={() => setActiveTab(tab.id)}
-                  style={{ flexShrink: 0 }}
-                  className={`flex items-center gap-1 px-3 py-3 text-[10px] font-body tracking-wider uppercase whitespace-nowrap transition-colors border-b-2 ${
-                    activeTab === tab.id ? "text-primary border-primary" : "text-muted-foreground border-transparent"
-                  }`}
-                >
-                  <tab.icon className="w-3 h-3" />
-                  <span>{(tab as any).short ?? tab.label}</span>
-                </button>
-              ))}
-            </div>
+          <div className="flex overflow-x-auto scrollbar-hide">
+            {tabs.map((tab) => (
+              <button key={tab.id} onClick={() => setActiveTab(tab.id)}
+                className={`flex items-center gap-1.5 px-3 py-3 text-[10px] font-body tracking-wider uppercase whitespace-nowrap transition-colors border-b-2 flex-shrink-0 ${
+                  activeTab === tab.id ? "text-primary border-primary" : "text-muted-foreground border-transparent"
+                }`}
+              >
+                <tab.icon className="w-3.5 h-3.5" />{tab.label}
+              </button>
+            ))}
           </div>
         </div>
 
-        <main className="flex-1 lg:ml-56 p-4 sm:p-6 lg:p-8 pt-12 lg:pt-8">
+        <main className="flex-1 lg:ml-56 p-4 sm:p-6 lg:p-8 pt-16 lg:pt-8">
           {activeTab === "dashboard" && <DashboardView />}
           {activeTab === "bookings" && <BookingsView onCreateAlbum={handleCreateAlbumForBooking} />}
           {activeTab === "events" && <EventTypesView />}
@@ -235,40 +221,37 @@ function DashboardView() {
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-      <div className="flex items-center justify-between mb-6">
-        <h2 className="font-display text-lg sm:text-2xl text-foreground">Dashboard</h2>
-        <Button onClick={() => window.location.href = "/capture"} className="gap-2 font-body text-sm">
-          <Upload className="w-4 h-4" /> Capture
-        </Button>
-      </div>
-      <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+      <h2 className="font-display text-lg sm:text-2xl text-foreground mb-4">Dashboard</h2>
+
+      {/* ── Stats grid: 2×2 on mobile, 4 across on desktop ── */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
         {stats.map((stat) => (
-          <div key={stat.label} className="glass-panel rounded-xl p-5">
-            <div className="flex items-center justify-between mb-3"><stat.icon className={`w-5 h-5 ${stat.color}`} /></div>
-            <p className="font-display text-2xl text-foreground">{stat.value}</p>
-            <p className="text-xs font-body text-muted-foreground tracking-wider uppercase">{stat.label}</p>
+          <div key={stat.label} className="glass-panel rounded-xl p-3 sm:p-5">
+            <stat.icon className={`w-4 h-4 ${stat.color} mb-2`} />
+            <p className="font-display text-xl sm:text-2xl text-foreground">{stat.value}</p>
+            <p className="text-[10px] font-body text-muted-foreground tracking-wider uppercase mt-0.5 leading-tight">{stat.label}</p>
           </div>
         ))}
       </div>
 
-      {/* Pending Download Requests */}
+      {/* ── Pending Download Requests ── */}
       {allPendingRequests.length > 0 && (
         <>
-          <h3 className="font-display text-lg text-foreground mb-4 flex items-center gap-2">
-            <Download className="w-5 h-5 text-yellow-400" /> Pending Download Requests
+          <h3 className="font-display text-base text-foreground mb-3 flex items-center gap-2">
+            <Download className="w-4 h-4 text-yellow-400" /> Pending Requests
           </h3>
-          <div className="space-y-2 mb-8">
+          <div className="space-y-2 mb-6">
             {allPendingRequests.map((req, i) => (
-              <div key={i} className="glass-panel rounded-xl p-4 flex items-center justify-between gap-4">
+              <div key={i} className="glass-panel rounded-xl p-3 flex items-center justify-between gap-3">
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm font-body text-foreground font-medium">{req._albumTitle}</p>
+                  <p className="text-sm font-body text-foreground font-medium truncate">{req._albumTitle}</p>
                   <p className="text-xs font-body text-muted-foreground">
                     {req.photoIds.length} photos · {req.method} · {new Date(req.requestedAt).toLocaleDateString()}
                   </p>
-                  {req.clientNote && <p className="text-xs font-body text-muted-foreground mt-1 italic">"{req.clientNote}"</p>}
+                  {req.clientNote && <p className="text-xs font-body text-muted-foreground mt-0.5 italic">"{req.clientNote}"</p>}
                 </div>
                 <Button size="sm" variant="outline" onClick={() => handleApproveRequest(req._albumId, req._reqIdx)}
-                  className="gap-1 text-xs font-body border-green-500/30 text-green-400 hover:bg-green-500/10 flex-shrink-0">
+                  className="gap-1 text-xs font-body border-green-500/30 text-green-400 hover:bg-green-500/10 flex-shrink-0 h-8">
                   <Unlock className="w-3 h-3" /> Approve
                 </Button>
               </div>
@@ -277,45 +260,94 @@ function DashboardView() {
         </>
       )}
 
-      {/* Album Download Stats */}
+      {/* ── Album Download Stats — card list on mobile, table on md+ ── */}
       {albumDownloadStats.length > 0 && (
         <>
-          <h3 className="font-display text-lg text-foreground mb-4 flex items-center gap-2">
-            <Image className="w-5 h-5 text-primary" /> Album Download Stats
+          <h3 className="font-display text-base text-foreground mb-3 flex items-center gap-2">
+            <Image className="w-4 h-4 text-primary" /> Album Stats
           </h3>
-          <div className="glass-panel rounded-xl overflow-hidden mb-8">
-            <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead>
-                  <tr className="border-b border-border">
-                    <th className="text-left text-[10px] font-body tracking-wider uppercase text-muted-foreground p-4">Album</th>
-                    <th className="text-left text-[10px] font-body tracking-wider uppercase text-muted-foreground p-4">Photos</th>
-                    <th className="text-left text-[10px] font-body tracking-wider uppercase text-muted-foreground p-4">Downloads</th>
-                    <th className="text-left text-[10px] font-body tracking-wider uppercase text-muted-foreground p-4">Sessions</th>
-                    <th className="text-left text-[10px] font-body tracking-wider uppercase text-muted-foreground p-4">Last Download</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {albumDownloadStats.map(a => (
-                    <tr key={a.id} className="border-b border-border/50 hover:bg-secondary/30 transition-colors">
-                      <td className="p-4 text-sm font-body text-foreground">{a.title}</td>
-                      <td className="p-4 text-sm font-body text-muted-foreground">{a.totalPhotos}</td>
-                      <td className="p-4 text-sm font-body text-primary font-medium">{a.totalDownloaded}</td>
-                      <td className="p-4 text-sm font-body text-muted-foreground">{a.sessions}</td>
-                      <td className="p-4 text-sm font-body text-muted-foreground">{a.lastDownload ? new Date(a.lastDownload).toLocaleDateString() : "—"}</td>
-                    </tr>
+          {/* Mobile cards */}
+          <div className="md:hidden space-y-2 mb-6">
+            {albumDownloadStats.map(a => (
+              <div key={a.id} className="glass-panel rounded-xl p-3">
+                <p className="text-sm font-body text-foreground font-medium truncate mb-2">{a.title}</p>
+                <div className="flex gap-4 text-xs font-body">
+                  <span className="text-muted-foreground">{a.totalPhotos} <span className="text-muted-foreground/50">photos</span></span>
+                  <span className="text-primary font-medium">{a.totalDownloaded} <span className="text-muted-foreground/50">dl</span></span>
+                  <span className="text-muted-foreground">{a.sessions} <span className="text-muted-foreground/50">sessions</span></span>
+                  {a.lastDownload && <span className="text-muted-foreground/60">{new Date(a.lastDownload).toLocaleDateString()}</span>}
+                </div>
+              </div>
+            ))}
+          </div>
+          {/* Desktop table */}
+          <div className="hidden md:block glass-panel rounded-xl overflow-hidden mb-6">
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-border">
+                  {["Album","Photos","Downloads","Sessions","Last Download"].map(h => (
+                    <th key={h} className="text-left text-[10px] font-body tracking-wider uppercase text-muted-foreground p-4">{h}</th>
                   ))}
-                </tbody>
-              </table>
-            </div>
+                </tr>
+              </thead>
+              <tbody>
+                {albumDownloadStats.map(a => (
+                  <tr key={a.id} className="border-b border-border/50 hover:bg-secondary/30 transition-colors">
+                    <td className="p-4 text-sm font-body text-foreground">{a.title}</td>
+                    <td className="p-4 text-sm font-body text-muted-foreground">{a.totalPhotos}</td>
+                    <td className="p-4 text-sm font-body text-primary font-medium">{a.totalDownloaded}</td>
+                    <td className="p-4 text-sm font-body text-muted-foreground">{a.sessions}</td>
+                    <td className="p-4 text-sm font-body text-muted-foreground">{a.lastDownload ? new Date(a.lastDownload).toLocaleDateString() : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </>
       )}
 
+      {/* ── Recent Bookings — compact cards on mobile, table on md+ ── */}
       {bookings.length > 0 && (
         <>
-          <h3 className="font-display text-lg text-foreground mb-4">Recent Bookings</h3>
-          <div className="glass-panel rounded-xl overflow-hidden">
+          <h3 className="font-display text-base text-foreground mb-3">Recent Bookings</h3>
+          {/* Mobile cards */}
+          <div className="md:hidden space-y-2 mb-6">
+            {bookings.slice(-8).reverse().map((b) => (
+              <div key={b.id} className="glass-panel rounded-xl p-3">
+                <div className="flex items-start justify-between gap-2 mb-1.5">
+                  <div className="min-w-0">
+                    <p className="text-sm font-body text-foreground font-medium truncate">{b.clientName}</p>
+                    {b.instagramHandle && <p className="text-xs font-body text-primary">@{b.instagramHandle.replace("@","")}</p>}
+                  </div>
+                  <div className="flex gap-1.5 flex-shrink-0 flex-wrap justify-end">
+                    <span className={`text-[9px] font-body tracking-wider uppercase px-1.5 py-0.5 rounded-full ${
+                      b.paymentStatus === "paid" ? "bg-green-500/10 text-green-400" :
+                      b.paymentStatus === "cash" ? "bg-yellow-500/10 text-yellow-400" :
+                      b.paymentStatus === "pending-confirmation" ? "bg-blue-500/10 text-blue-400" :
+                      "bg-destructive/10 text-destructive"
+                    }`}>{b.paymentStatus || "unpaid"}</span>
+                    <span className={`text-[9px] font-body tracking-wider uppercase px-1.5 py-0.5 rounded-full ${
+                      b.status === "completed" ? "bg-green-500/10 text-green-400" :
+                      b.status === "confirmed" ? "bg-primary/10 text-primary" :
+                      b.status === "pending" ? "bg-yellow-500/10 text-yellow-400" :
+                      "bg-destructive/10 text-destructive"
+                    }`}>{b.status}</span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3 text-xs font-body text-muted-foreground">
+                  <span>{b.type}</span>
+                  <span className="text-muted-foreground/40">·</span>
+                  <span>{b.date} {b.time}</span>
+                  {(b.paymentAmount || 0) > 0 && <>
+                    <span className="text-muted-foreground/40">·</span>
+                    <span className="text-foreground">${b.paymentAmount}</span>
+                  </>}
+                </div>
+              </div>
+            ))}
+          </div>
+          {/* Desktop table */}
+          <div className="hidden md:block glass-panel rounded-xl overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full">
                 <thead>
@@ -340,14 +372,10 @@ function DashboardView() {
                       <td className="p-4 text-sm font-body text-foreground">${b.paymentAmount || 0}</td>
                       <td className="p-4">
                         {b.depositRequired ? (
-                          <span className={`text-xs font-body px-2 py-0.5 rounded-full ${
-                            b.depositPaidAt ? "bg-green-500/10 text-green-400" : "bg-yellow-500/10 text-yellow-400"
-                          }`}>
+                          <span className={`text-xs font-body px-2 py-0.5 rounded-full ${b.depositPaidAt ? "bg-green-500/10 text-green-400" : "bg-yellow-500/10 text-yellow-400"}`}>
                             ${b.depositAmount || 0} {b.depositPaidAt ? "✓ Paid" : `(${b.depositMethod || "pending"})`}
                           </span>
-                        ) : (
-                          <span className="text-xs font-body text-muted-foreground/50">—</span>
-                        )}
+                        ) : <span className="text-xs font-body text-muted-foreground/50">—</span>}
                       </td>
                       <td className="p-4">
                         <span className={`text-xs font-body px-2 py-0.5 rounded-full ${
@@ -484,7 +512,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
-        <h2 className="font-display text-lg sm:text-2xl text-foreground">Bookings</h2>
+        <h2 className="font-display text-2xl text-foreground">Bookings</h2>
         <div className="flex items-center gap-2 flex-wrap">
           {bookings.length > 0 && (
             <>
@@ -964,7 +992,7 @@ function EventTypesView() {
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
       <div className="flex items-center justify-between mb-6">
-        <h2 className="font-display text-lg sm:text-2xl text-foreground">Events</h2>
+        <h2 className="font-display text-2xl text-foreground">Event Types</h2>
         <Button size="sm" onClick={() => setShowNew(true)} className="gap-2 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs tracking-wider uppercase">
           <Plus className="w-4 h-4" /> New
         </Button>
@@ -1426,7 +1454,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
-        <h2 className="font-display text-lg sm:text-2xl text-foreground">Albums</h2>
+        <h2 className="font-display text-2xl text-foreground">Albums</h2>
         <div className="flex gap-2 flex-wrap">
           {albums.length >= 2 && (
             <Button variant="outline" size="sm" onClick={() => { setMergeMode(!mergeMode); setMergeSelection(new Set()); }} className="gap-2 font-body text-xs border-border text-foreground">
@@ -2182,7 +2210,7 @@ function PhotosView() {
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
-        <h2 className="font-display text-lg sm:text-2xl text-foreground">Photos</h2>
+        <h2 className="font-display text-2xl text-foreground">Photo Library</h2>
         <div className="flex gap-2 items-center flex-wrap">
           <Button size="sm" variant="outline" onClick={handleSyncFromStorage} disabled={syncing} className="gap-2 font-body text-xs border-border text-foreground">
             <RefreshCw className={`w-4 h-4 ${syncing ? "animate-spin" : ""}`} /> {syncing ? "Syncing…" : "Sync Storage"}
@@ -2330,7 +2358,7 @@ function ProfileView() {
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-      <h2 className="font-display text-lg sm:text-2xl text-foreground mb-4 sm:mb-6">Profile</h2>
+      <h2 className="font-display text-2xl text-foreground mb-6">Profile & Cover Page</h2>
       <div className="max-w-lg space-y-6">
         <div className="glass-panel rounded-xl p-6">
           <p className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-4">Preview</p>
@@ -2401,7 +2429,7 @@ function SettingsView() {
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-      <h2 className="font-display text-lg sm:text-2xl text-foreground mb-4 sm:mb-6">Settings</h2>
+      <h2 className="font-display text-2xl text-foreground mb-6">Settings</h2>
       <div className="space-y-6 max-w-lg">
         {/* Watermark */}
         <div className="glass-panel rounded-xl p-6 space-y-4">
