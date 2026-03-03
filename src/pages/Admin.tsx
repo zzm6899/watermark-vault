@@ -221,7 +221,12 @@ function DashboardView() {
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-      <h2 className="font-display text-lg sm:text-2xl text-foreground mb-4">Dashboard</h2>
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="font-display text-lg sm:text-2xl text-foreground">Dashboard</h2>
+        <Button onClick={() => window.location.href = "/capture"} className="gap-2 font-body text-sm h-9 px-3">
+          <Upload className="w-4 h-4" /><span className="hidden sm:inline">Capture</span>
+        </Button>
+      </div>
 
       {/* ── Stats grid: 2×2 on mobile, 4 across on desktop ── */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">

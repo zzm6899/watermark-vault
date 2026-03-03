@@ -134,6 +134,8 @@ function MobileCaptureInner() {
   const [importing, setImporting] = useState(false);
   const [importProgress, setImportProgress] = useState(0);
   const [watching, setWatching] = useState(false);
+  const isCheckingCameraRef = useRef(false); // prevents concurrent checkCamera calls
+  const permissionGrantedRef = useRef(false); // cache permission so we don't re-request every 5s
   const [notifyClient, setNotifyClient] = useState(true);
   const [jpegOnly, setJpegOnly] = useState(true);
   const emailSentRef = useRef(false);
@@ -190,27 +192,32 @@ function MobileCaptureInner() {
   // ── Camera ──────────────────────────────────────────────────
   const checkCamera = useCallback(async () => {
     if (!isNative) return;
+    if (isCheckingCameraRef.current) return; // already running
+    isCheckingCameraRef.current = true;
     try {
       const result = await CameraUsb.isConnected();
       const connected = result?.connected ?? false;
       const deviceName = result?.deviceName ?? "";
       setCameraConnected(connected);
       setCameraName(deviceName);
-      if (!connected) { setCameraFiles([]); return; }
-      // Request permission separately — may throw if camera disconnected between steps
-      let granted = false;
-      try {
-        const permResult = await CameraUsb.requestPermission();
-        granted = permResult?.granted ?? false;
-      } catch (permErr) {
-        console.warn("Camera permission request failed:", permErr);
-        setCameraConnected(false);
-        return;
+      if (!connected) { setCameraFiles([]); permissionGrantedRef.current = false; return; }
+      // Request permission only if not already granted (avoid re-triggering dialog on every poll)
+      if (!permissionGrantedRef.current) {
+        let granted = false;
+        try {
+          const permResult = await CameraUsb.requestPermission();
+          granted = permResult?.granted ?? false;
+        } catch (permErr) {
+          console.warn("Camera permission request failed:", permErr);
+          setCameraConnected(false);
+          return;
+        }
+        if (!granted) { console.warn("Camera permission denied"); return; }
+        permissionGrantedRef.current = true;
       }
-      if (!granted) { console.warn("Camera permission denied"); return; }
       // List files — wrap separately so permission success isn't lost on list failure
       try {
-        const { files } = await CameraUsb.listFiles({ limit: 50, jpegOnly: false });
+        const { files } = await CameraUsb.listFiles({ limit: 50 });
         setCameraFiles(files ?? []);
       } catch (listErr) {
         console.warn("Camera listFiles failed:", listErr);
@@ -220,15 +227,19 @@ function MobileCaptureInner() {
       console.warn("checkCamera failed:", err);
       setCameraConnected(false);
       setCameraFiles([]);
+    } finally {
+      isCheckingCameraRef.current = false;
     }
   }, [isNative]);
 
   useEffect(() => {
     if (!isNative) return;
+    // Only poll in session picker — once booking selected, MTP stays open via direct calls
+    if (selectedBooking) return;
     checkCamera();
     const interval = setInterval(checkCamera, 5000);
     return () => clearInterval(interval);
-  }, [isNative, checkCamera]);
+  }, [isNative, checkCamera, selectedBooking]);
 
   // Use a ref for targetAlbum so the listener always has latest value without re-subscribing
   const targetAlbumRef = useRef<Album | null>(null);
