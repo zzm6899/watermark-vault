@@ -39,6 +39,7 @@ import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
 import com.getcapacitor.PluginMethod
 import com.getcapacitor.annotation.CapacitorPlugin
+import android.util.Base64
 import java.io.File
 import java.io.FileOutputStream
 
@@ -260,6 +261,8 @@ class CameraUsbPlugin : Plugin() {
             JSObject().apply {
                 put("uri", "file://${outFile.absolutePath}")
                 put("localPath", outFile.absolutePath)
+                put("base64", Base64.encodeToString(data, Base64.NO_WRAP))
+                put("mimeType", "image/jpeg")
             }
         }
     }
@@ -298,6 +301,8 @@ class CameraUsbPlugin : Plugin() {
                         put("handle", handle)
                         put("uri", "file://${outFile.absolutePath}")
                         put("localPath", outFile.absolutePath)
+                        put("base64", Base64.encodeToString(data, Base64.NO_WRAP))
+                        put("mimeType", "image/jpeg")
                     })
                 } catch (e: Exception) {
                     errors.add("handle $handle: ${e.message}")
@@ -397,15 +402,9 @@ class CameraUsbPlugin : Plugin() {
         } catch (e: Exception) {
             // Camera disconnected mid-poll — mark connection as dead so next call reopens
             android.util.Log.w("CameraUsb", "checkForNewFiles error (camera disconnected?): ${e.message}")
-            val wasConnected = mtpDevice != null
             try { mtpDevice?.close() } catch (_: Exception) {}
             mtpDevice = null
             currentUsbDevice = null
-            permissionGrantedRef = false
-            // Notify JS that camera disconnected so it can stop watching + update UI immediately
-            if (wasConnected) {
-                mainHandler.post { notifyListeners("cameraDisconnected", JSObject()) }
-            }
         }
     }
 
@@ -429,33 +428,6 @@ class CameraUsbPlugin : Plugin() {
     }
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
-    // ── USB device detach receiver ───────────────────────────────────────────
-    private var usbDetachReceiver: BroadcastReceiver? = null
-
-    override fun handleOnStart() {
-        super.handleOnStart()
-        // Listen for camera unplug at OS level — faster than polling
-        val receiver = object : BroadcastReceiver() {
-            override fun onReceive(ctx: Context, intent: Intent) {
-                if (intent.action != UsbManager.ACTION_USB_DEVICE_DETACHED) return
-                val detached = intent.getParcelableExtra<UsbDevice>(UsbManager.EXTRA_DEVICE) ?: return
-                if (currentUsbDevice?.deviceId != detached.deviceId) return
-                android.util.Log.i("CameraUsb", "Camera unplugged: ${detached.deviceName}")
-                mtpHandler.post {
-                    stopWatchingInternal()
-                    try { mtpDevice?.close() } catch (_: Exception) {}
-                    mtpDevice = null
-                    currentUsbDevice = null
-                    permissionGrantedRef = false
-                    isCheckingCameraRef.set(false)
-                }
-                mainHandler.post { notifyListeners("cameraDisconnected", JSObject()) }
-            }
-        }
-        context.registerReceiver(receiver, IntentFilter(UsbManager.ACTION_USB_DEVICE_DETACHED))
-        usbDetachReceiver = receiver
-    }
-
     override fun handleOnDestroy() {
         mtpHandler.post {
             stopWatchingInternal()
@@ -466,10 +438,6 @@ class CameraUsbPlugin : Plugin() {
         permissionReceiver?.let {
             try { context.unregisterReceiver(it) } catch (_: Exception) {}
             permissionReceiver = null
-        }
-        usbDetachReceiver?.let {
-            try { context.unregisterReceiver(it) } catch (_: Exception) {}
-            usbDetachReceiver = null
         }
         super.handleOnDestroy()
     }

@@ -118,6 +118,8 @@ function MobileCaptureInner() {
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadedCount, setUploadedCount] = useState(0);
+  const [viewingPhoto, setViewingPhoto] = useState<{ src: string; title: string; index: number } | null>(null);
+  const [showAllPhotos, setShowAllPhotos] = useState(false);
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [serverOnline, setServerOnline] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -302,21 +304,14 @@ function MobileCaptureInner() {
         for (let i = 0; i < imported.length; i++) {
           const f = imported[i];
           try {
-            // Retry fetch up to 3x — Android may not have finished writing the file yet
-            let blob: Blob | null = null;
-            for (let attempt = 0; attempt < 3; attempt++) {
-              try {
-                const resp = await fetch(f.uri);
-                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-                blob = await resp.blob();
-                break;
-              } catch (fetchErr) {
-                if (attempt < 2) await new Promise(r => setTimeout(r, 500));
-                else console.warn("Failed to fetch file after 3 attempts:", f.uri, fetchErr);
-              }
-            }
-            if (!blob) continue; // skip this file rather than crashing
-            const file = new File([blob], f.localPath.split("/").pop() || `photo_${i}.jpg`, { type: "image/jpeg" });
+            // Use base64 from plugin — file:// URIs are blocked in Android WebView
+            if (!f.base64) { console.warn("No base64 data for", f.localPath); continue; }
+            const byteChars = atob(f.base64);
+            const byteArr = new Uint8Array(byteChars.length);
+            for (let b = 0; b < byteChars.length; b++) byteArr[b] = byteChars.charCodeAt(b);
+            const blob = new Blob([byteArr], { type: f.mimeType || "image/jpeg" });
+            const fileName = f.localPath?.split("/").pop() || `photo_${i}.jpg`;
+            const file = new File([blob], fileName, { type: f.mimeType || "image/jpeg" });
             const results = await uploadPhotosToServer([file], () => {});
             for (const r of results) {
               const thumb = await generateThumbnail(r.url, 300, 0.6).catch(() => r.url);
@@ -748,21 +743,95 @@ function MobileCaptureInner() {
       </div>
 
       {/* Recent uploads */}
-      {targetAlbum && targetAlbum.photos.length > 0 && (
-        <div className="glass-panel rounded-xl p-4">
-          <p className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-3">Recent Uploads</p>
-          <div className="grid grid-cols-4 gap-2">
-            {targetAlbum.photos.slice(-8).reverse().map(photo => (
-              <div key={photo.id} className="relative aspect-square rounded-lg overflow-hidden bg-secondary">
-                <img src={photo.thumbnail || photo.src} alt={photo.title} className="w-full h-full object-cover" />
-                {photo.proofing && (
-                  <span className="absolute top-1 left-1 text-[8px] font-body tracking-wider uppercase px-1.5 py-0.5 rounded bg-primary/90 text-primary-foreground leading-tight">PROOF</span>
-                )}
-              </div>
-            ))}
+      {targetAlbum && targetAlbum.photos.length > 0 && (() => {
+        const allPhotos = [...targetAlbum.photos].reverse();
+        const displayPhotos = showAllPhotos ? allPhotos : allPhotos.slice(0, 8);
+        return (
+          <div className="glass-panel rounded-xl p-4">
+            <div className="flex items-center justify-between mb-3">
+              <p className="text-xs font-body tracking-wider uppercase text-muted-foreground">
+                Uploaded ({targetAlbum.photos.length})
+              </p>
+              {targetAlbum.photos.length > 8 && (
+                <button
+                  onClick={() => setShowAllPhotos(p => !p)}
+                  className="text-[10px] font-body tracking-wider uppercase text-primary/70 hover:text-primary transition-colors"
+                >
+                  {showAllPhotos ? "Show Less" : `+${targetAlbum.photos.length - 8} More`}
+                </button>
+              )}
+            </div>
+            <div className="grid grid-cols-4 gap-1.5">
+              {displayPhotos.map((photo, idx) => (
+                <button
+                  key={photo.id}
+                  onClick={() => setViewingPhoto({ src: photo.src, title: photo.title || photo.id, index: idx })}
+                  className="relative aspect-square rounded-lg overflow-hidden bg-secondary active:scale-95 transition-transform"
+                >
+                  <img src={photo.thumbnail || photo.src} alt={photo.title} className="w-full h-full object-cover" loading="lazy" />
+                  {photo.proofing && (
+                    <span className="absolute top-0.5 left-0.5 text-[7px] font-body tracking-wider uppercase px-1 py-0.5 rounded bg-primary/90 text-primary-foreground leading-tight">P</span>
+                  )}
+                </button>
+              ))}
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
+
+      {/* Photo lightbox */}
+      {viewingPhoto && (() => {
+        const allPhotos = [...(targetAlbum?.photos || [])].reverse();
+        const go = (dir: number) => {
+          const next = viewingPhoto.index + dir;
+          if (next < 0 || next >= allPhotos.length) return;
+          const p = allPhotos[next];
+          setViewingPhoto({ src: p.src, title: p.title || p.id, index: next });
+        };
+        return (
+          <div
+            className="fixed inset-0 z-50 bg-black/95 flex flex-col"
+            onClick={() => setViewingPhoto(null)}
+          >
+            {/* Header */}
+            <div className="flex items-center justify-between px-4 pt-12 pb-3 flex-shrink-0" onClick={e => e.stopPropagation()}>
+              <button onClick={() => setViewingPhoto(null)} className="p-2 rounded-full bg-white/10 text-white">
+                <ArrowLeft className="w-4 h-4" />
+              </button>
+              <span className="text-xs font-body text-white/60">{viewingPhoto.index + 1} / {allPhotos.length}</span>
+              <a href={viewingPhoto.src} download={viewingPhoto.title} className="p-2 rounded-full bg-white/10 text-white" onClick={e => e.stopPropagation()}>
+                <Download className="w-4 h-4" />
+              </a>
+            </div>
+            {/* Image */}
+            <div className="flex-1 flex items-center justify-center px-2 min-h-0" onClick={e => e.stopPropagation()}>
+              <img
+                src={viewingPhoto.src}
+                alt={viewingPhoto.title}
+                className="max-w-full max-h-full object-contain rounded-lg"
+              />
+            </div>
+            {/* Prev/Next */}
+            <div className="flex items-center justify-between px-6 py-6 flex-shrink-0" onClick={e => e.stopPropagation()}>
+              <button
+                onClick={() => go(-1)}
+                disabled={viewingPhoto.index === 0}
+                className="p-3 rounded-full bg-white/10 text-white disabled:opacity-20"
+              >
+                <ChevronDown className="w-5 h-5 rotate-90" />
+              </button>
+              <p className="text-xs font-body text-white/40 truncate max-w-[60%] text-center">{viewingPhoto.title}</p>
+              <button
+                onClick={() => go(1)}
+                disabled={viewingPhoto.index === allPhotos.length - 1}
+                className="p-3 rounded-full bg-white/10 text-white disabled:opacity-20"
+              >
+                <ChevronDown className="w-5 h-5 -rotate-90" />
+              </button>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Mark Complete */}
       {selectedBooking && selectedBooking.status !== "completed" && (
