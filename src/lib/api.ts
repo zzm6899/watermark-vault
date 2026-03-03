@@ -5,16 +5,26 @@
  */
 
 let serverAvailable: boolean | null = null;
+let lastServerCheck = 0;
 
 async function checkServer(): Promise<boolean> {
-  if (serverAvailable !== null) return serverAvailable;
+  const now = Date.now();
+  // Cache true for 30s; always re-try false so a late server start is picked up
+  if (serverAvailable === true && now - lastServerCheck < 30000) return true;
   try {
-    const res = await fetch("/api/health", { signal: AbortSignal.timeout(2000) });
+    const res = await fetch("/api/health", { signal: AbortSignal.timeout(3000) });
     serverAvailable = res.ok;
   } catch {
     serverAvailable = false;
   }
-  return serverAvailable;
+  lastServerCheck = Date.now();
+  return serverAvailable ?? false;
+}
+
+/** Force a fresh reachability check — call before any critical upload */
+export async function recheckServer(): Promise<boolean> {
+  serverAvailable = null;
+  return checkServer();
 }
 
 /** Fetch all stored data from server and populate localStorage */
@@ -24,13 +34,8 @@ export async function syncFromServer(): Promise<boolean> {
     const res = await fetch("/api/store");
     if (!res.ok) return false;
     const data = await res.json();
-    if (!data || typeof data !== "object" || Array.isArray(data)) return false;
-    const SESSION_KEY = "wv_session";
     for (const [key, value] of Object.entries(data)) {
-      // Never restore session from server — auth must always be re-done per browser
-      if (key === SESSION_KEY) continue;
-      // Server store values are often already JSON strings
-      localStorage.setItem(key, typeof value === "string" ? value : JSON.stringify(value));
+      localStorage.setItem(key, JSON.stringify(value));
     }
     console.log("✅ Synced from server");
     return true;
@@ -39,47 +44,14 @@ export async function syncFromServer(): Promise<boolean> {
   }
 }
 
-// Queue for writes that arrive before server availability is confirmed
-const _writeQueue: Array<{ key: string; value: unknown }> = [];
-let _flushScheduled = false;
-
-async function _flushQueue() {
-  if (!(await checkServer())) { _writeQueue.length = 0; return; }
-  while (_writeQueue.length > 0) {
-    const item = _writeQueue.shift()!;
-    fetch(`/api/store/${encodeURIComponent(item.key)}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ value: item.value }),
-    }).catch(() => {});
-  }
-  _flushScheduled = false;
-}
-
-/** Fire-and-forget persist a key to the server.
- *  If the server check hasn't completed yet, queues the write and flushes once it has. */
+/** Fire-and-forget persist a key to the server */
 export function persistToServer(key: string, value: unknown): void {
-  if (serverAvailable === true) {
-    // Fast path — server known available
-    fetch(`/api/store/${encodeURIComponent(key)}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ value }),
-    }).catch(() => {});
-    return;
-  }
-  if (serverAvailable === false) return; // No server, drop write
-
-  // serverAvailable is null — queue and flush once check completes
-  // Deduplicate: if same key is already queued, replace it
-  const existing = _writeQueue.findIndex(w => w.key === key);
-  if (existing >= 0) _writeQueue[existing].value = value;
-  else _writeQueue.push({ key, value });
-
-  if (!_flushScheduled) {
-    _flushScheduled = true;
-    _flushQueue();
-  }
+  if (serverAvailable !== true) return;
+  fetch(`/api/store/${encodeURIComponent(key)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ value }),
+  }).catch(() => { /* silent - localStorage is the source of truth for UI */ });
 }
 
 /** Fire-and-forget delete a key from the server */
@@ -110,8 +82,9 @@ export async function uploadPhotosToServer(
         const data = await res.json();
         results.push(...data.files);
       }
-    } catch {
-      // skip failed batch
+    } catch (err) {
+      console.error("[upload] batch failed:", err);
+      serverAvailable = null; // reset so next call re-checks
     }
     onProgress?.(Math.min(i + batchSize, files.length), files.length);
   }
@@ -138,7 +111,6 @@ export async function getServerStorageStats(): Promise<{
   dbSizeBytes: number;
   uploadsSizeBytes: number;
   photoFiles: { name: string; size: number; modified: string }[];
-  allFileNames: string[];
   disk: { totalBytes: number; usedBytes: number; availableBytes: number; mountPoint: string } | null;
   dataDir: string;
 } | null> {
@@ -166,12 +138,7 @@ export async function getStripeStatus(): Promise<{ configured: boolean; publisha
 }
 
 export async function createBookingCheckout(params: {
-  bookingId: string;
-  clientName: string;
-  clientEmail: string;
-  amount: number;
-  eventTitle: string;
-  modifyToken?: string;   // used to build the Stripe success redirect URL
+  bookingId: string; clientName: string; clientEmail: string; amount: number; eventTitle: string;
 }): Promise<{ url?: string; error?: string }> {
   try {
     const res = await fetch("/api/stripe/checkout/booking", {
@@ -295,152 +262,4 @@ export async function syncAllBookingsToCalendar(bookings: unknown[], calendarId 
   } catch {
     return { ok: false };
   }
-}
-
-export async function sendBookingConfirmationEmail(params: {
-  to: string;
-  clientName: string;
-  eventTitle: string;
-  date: string;
-  time: string;
-  duration: number;
-  location?: string;
-  price: number;
-  depositAmount?: number;
-  paymentMethod: "stripe" | "bank" | "none";
-  modifyToken?: string;
-  bookingId: string;
-}): Promise<{ ok: boolean; messageId?: string; error?: string }> {
-  if (!(await checkServer())) return { ok: false, error: "Server unavailable" };
-  try {
-    const res = await fetch("/api/email/booking-confirmation", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(params),
-    });
-    return await res.json();
-  } catch {
-    return { ok: false, error: "Network error" };
-  }
-}
-
-// ── Email log ───────────────────────────────────────────────
-
-/** Fetch the email log for a specific booking (admin use) */
-export async function getBookingEmailLog(bookingId: string): Promise<{
-  id: string; type: string; sentAt: string; openedAt?: string; subject: string; to: string;
-}[]> {
-  if (!(await checkServer())) return [];
-  try {
-    const res = await fetch(`/api/email/log/${encodeURIComponent(bookingId)}`);
-    if (!res.ok) return [];
-    const data = await res.json();
-    return data.log || [];
-  } catch { return []; }
-}
-
-/** Send a payment or booking reminder email */
-export async function sendBookingReminder(bookingId: string, reminderType: "payment" | "booking"): Promise<{ ok: boolean; error?: string }> {
-  if (!(await checkServer())) return { ok: false, error: "Server unavailable" };
-  try {
-    const res = await fetch("/api/email/reminder", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ bookingId, reminderType }),
-    });
-    return await res.json();
-  } catch { return { ok: false, error: "Network error" }; }
-}
-
-/** Send a custom email to a client */
-export async function sendCustomEmail(to: string, subject: string, html: string, text?: string, bookingId?: string): Promise<{ ok: boolean; error?: string }> {
-  if (!(await checkServer())) return { ok: false, error: "Server unavailable" };
-  try {
-    const res = await fetch("/api/email/send", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ to, subject, html, text, bookingId }),
-    });
-    return await res.json();
-  } catch { return { ok: false, error: "Network error" }; }
-}
-
-/** Get busy time blocks from Google Calendar for a date (YYYY-MM-DD).
- *  Booking page uses this to grey out already-occupied slots. */
-export async function getGoogleBusyTimes(date: string): Promise<{ start: string; end: string }[]> {
-  try {
-    const res = await fetch(`/api/integrations/googlecalendar/busy?date=${encodeURIComponent(date)}`);
-    if (!res.ok) return [];
-    return (await res.json()).busy || [];
-  } catch { return []; }
-}
-
-/** Update an existing Google Calendar event (booking rescheduled / status changed) */
-export async function updateCalendarEvent(eventId: string, booking: unknown, calendarId = "primary"): Promise<{ ok: boolean }> {
-  try {
-    const res = await fetch(`/api/integrations/googlecalendar/event/${encodeURIComponent(eventId)}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ booking, calendarId }),
-    });
-    return await res.json();
-  } catch { return { ok: false }; }
-}
-
-/** Delete a Google Calendar event (booking cancelled) */
-export async function deleteCalendarEvent(eventId: string, calendarId = "primary"): Promise<{ ok: boolean }> {
-  try {
-    const res = await fetch(`/api/integrations/googlecalendar/event/${encodeURIComponent(eventId)}?calendarId=${encodeURIComponent(calendarId)}`, {
-      method: "DELETE",
-    });
-    return await res.json();
-  } catch { return { ok: false }; }
-}
-
-/** Save calendar settings (autoSync toggle, target calendar, timezone) */
-export async function saveCalendarSettings(settings: { autoSync?: boolean; calendarId?: string; timeZone?: string }): Promise<{ ok: boolean }> {
-  try {
-    const res = await fetch("/api/integrations/googlecalendar/settings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(settings),
-    });
-    return await res.json();
-  } catch { return { ok: false }; }
-}
-
-// ── Bulk file delete (orphan cleanup) ──────────────────
-
-export async function bulkDeleteFiles(filenames: string[]): Promise<{ ok: boolean; deleted: number }> {
-  if (!(await checkServer())) return { ok: false, deleted: 0 };
-  try {
-    const res = await fetch("/api/upload/bulk-delete", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filenames }),
-    });
-    return await res.json();
-  } catch { return { ok: false, deleted: 0 }; }
-}
-
-// ── Google Sheets ──────────────────────────────────────
-
-export async function getSheetsStatus(): Promise<{ connected: boolean; spreadsheetId: string | null; spreadsheetUrl: string | null }> {
-  if (!(await checkServer())) return { connected: false, spreadsheetId: null, spreadsheetUrl: null };
-  try {
-    const res = await fetch("/api/integrations/sheets/status");
-    if (!res.ok) return { connected: false, spreadsheetId: null, spreadsheetUrl: null };
-    return await res.json();
-  } catch { return { connected: false, spreadsheetId: null, spreadsheetUrl: null }; }
-}
-
-export async function syncBookingsToSheet(bookings: unknown[]): Promise<{ ok: boolean; url?: string; rows?: number; error?: string; needsReauth?: boolean }> {
-  try {
-    const res = await fetch("/api/integrations/sheets/sync", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ bookings }),
-    });
-    return await res.json();
-  } catch { return { ok: false, error: "Network error" }; }
 }
