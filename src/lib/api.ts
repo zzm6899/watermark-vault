@@ -5,26 +5,16 @@
  */
 
 let serverAvailable: boolean | null = null;
-let lastServerCheck = 0;
 
 async function checkServer(): Promise<boolean> {
-  const now = Date.now();
-  if (serverAvailable === true && now - lastServerCheck < 30000) return true;
+  if (serverAvailable !== null) return serverAvailable;
   try {
-    const res = await fetch("/api/health", { signal: AbortSignal.timeout(3000) });
+    const res = await fetch("/api/health", { signal: AbortSignal.timeout(2000) });
     serverAvailable = res.ok;
   } catch {
     serverAvailable = false;
   }
-  lastServerCheck = Date.now();
-  return serverAvailable ?? false;
-}
-
-/** Force a fresh reachability check — called before camera imports */
-export async function recheckServer(): Promise<boolean> {
-  serverAvailable = null;
-  lastServerCheck = 0;
-  return checkServer();
+  return serverAvailable;
 }
 
 /** Fetch all stored data from server and populate localStorage */
@@ -120,9 +110,8 @@ export async function uploadPhotosToServer(
         const data = await res.json();
         results.push(...data.files);
       }
-    } catch (err) {
-      console.error("[upload] batch failed:", err);
-      serverAvailable = null;
+    } catch {
+      // skip failed batch
     }
     onProgress?.(Math.min(i + batchSize, files.length), files.length);
   }
@@ -194,6 +183,8 @@ export async function createBookingCheckout(params: {
 
 export async function createAlbumCheckout(params: {
   albumId: string; albumTitle: string; photoCount: number; amount: number; clientEmail?: string;
+  photoIds?: string[]; // specific photo IDs purchased (empty = full album)
+  isFullAlbum?: boolean;
 }): Promise<{ url?: string; error?: string }> {
   try {
     const res = await fetch("/api/stripe/checkout/album", {
