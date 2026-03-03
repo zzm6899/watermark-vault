@@ -171,7 +171,9 @@ export default function Admin() {
               ))}
             </div>
           </div>
-        </div>assName="flex-1 lg:ml-56 p-4 sm:p-6 lg:p-8 pt-12 lg:pt-8">
+        </div>
+
+        <main className="flex-1 lg:ml-56 p-4 sm:p-6 lg:p-8 pt-12 lg:pt-8">
           {activeTab === "dashboard" && <DashboardView />}
           {activeTab === "bookings" && <BookingsView onCreateAlbum={handleCreateAlbumForBooking} />}
           {activeTab === "events" && <EventTypesView />}
