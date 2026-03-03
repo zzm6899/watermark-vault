@@ -287,9 +287,14 @@ class CameraUsbPlugin : Plugin() {
                         ?: throw IllegalStateException("No object info for handle $handle")
                     val fileName = info.name?.takeIf { it.isNotBlank() }
                         ?: "photo_${handle}_${System.currentTimeMillis()}.jpg"
-                    val outFile = getOutputFile(fileName)
 
-                    // FIX: Must pass actual file size, not 0
+                    // Skip files over 80MB — likely RAW or corrupt
+                    if (info.compressedSize > 80 * 1024 * 1024) {
+                        errors.add("$fileName too large (${info.compressedSize / 1024 / 1024}MB) — skipped")
+                        continue
+                    }
+
+                    val outFile = getOutputFile(fileName)
                     val data = mtp.getObject(handle, info.compressedSize)
                     if (data == null || data.isEmpty()) {
                         errors.add("Empty data for $fileName — skipped")
@@ -297,17 +302,18 @@ class CameraUsbPlugin : Plugin() {
                     }
 
                     FileOutputStream(outFile).use { it.write(data) }
+                    val b64 = Base64.encodeToString(data, Base64.NO_WRAP)
+                    android.util.Log.d("CameraUsb", "Imported $fileName (${data.size / 1024}KB)")
 
                     results.put(JSObject().apply {
                         put("handle", handle)
                         put("uri", "file://${outFile.absolutePath}")
                         put("localPath", outFile.absolutePath)
-                        put("base64", Base64.encodeToString(data, Base64.NO_WRAP))
+                        put("base64", b64)
                         put("mimeType", "image/jpeg")
                     })
                 } catch (e: Exception) {
                     errors.add("handle $handle: ${e.message}")
-                    // Continue importing remaining files
                 }
             }
 
@@ -395,9 +401,10 @@ class CameraUsbPlugin : Plugin() {
 
             lastKnownHandles = currentHandles
 
-            if (newFiles.isNotEmpty()) {
-                val filesArray = JSArray().also { arr -> newFiles.forEach { arr.put(it) } }
-                val event = JSObject().apply { put("files", filesArray) }
+            // Emit one file at a time — prevents OOM when burst shooting
+            // JS processes them sequentially, never holding multiple full photos in RAM
+            for (file in newFiles) {
+                val event = JSObject().apply { put("files", JSArray().apply { put(file) }) }
                 mainHandler.post { notifyListeners("newFiles", event) }
             }
         } catch (e: Exception) {

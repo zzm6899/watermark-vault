@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -234,6 +234,23 @@ function MobileCaptureInner() {
   const targetAlbumRef = useRef<Album | null>(null);
   useEffect(() => { targetAlbumRef.current = targetAlbum; }, [targetAlbum]);
 
+  // Serial import queue — prevents concurrent imports from burst shooting causing OOM
+  const importQueueRef = useRef<number[][]>([]);
+  const importBusyRef = useRef(false);
+  // ref so drainImportQueue never closes over importCameraFiles before it's defined
+  const importCameraFilesRef = useRef<((handles: number[]) => Promise<void>) | null>(null);
+  const drainImportQueue = useCallback(async () => {
+    if (importBusyRef.current) return;
+    while (importQueueRef.current.length > 0) {
+      const handles = importQueueRef.current.shift()!;
+      if (!importCameraFilesRef.current) break;
+      importBusyRef.current = true;
+      try { await importCameraFilesRef.current(handles); }
+      catch (e) { console.error("Queue import error:", e); }
+      finally { importBusyRef.current = false; }
+    }
+  }, []);
+
   useEffect(() => {
     if (!isNative || !watching) return;
     if (!CameraUsb.addListener) return; // guard — plugin may not support event listeners
@@ -244,8 +261,9 @@ function MobileCaptureInner() {
           try {
             const newFiles: CameraFile[] = event?.files || [];
             if (newFiles.length > 0 && targetAlbumRef.current) {
-              toast.info(`${newFiles.length} new photo(s) — auto-importing…`);
-              await importCameraFiles(newFiles.map((f: CameraFile) => f.handle));
+              // Queue the handles — drainImportQueue processes them serially to avoid OOM
+              importQueueRef.current.push(newFiles.map((f: CameraFile) => f.handle));
+              drainImportQueue();
             }
           } catch (handlerErr) {
             console.error("Live capture handler error:", handlerErr);
@@ -291,31 +309,27 @@ function MobileCaptureInner() {
   };
 
   const importCameraFiles = async (handles: number[]) => {
-    if (!targetAlbum || handles.length === 0) return;
+    const album = targetAlbumRef.current;
+    if (!album || handles.length === 0) return;
     setImporting(true); setImportProgress(0);
+    const isOnline = await recheckServer();
+    setServerOnline(isOnline);
     try {
-      const { files: imported } = await CameraUsb.importFiles({ handles });
+      const importResult = await CameraUsb.importFiles({ handles });
+      const imported = importResult?.files ?? [];
+      if (imported.length === 0) { toast.error("Camera returned no files"); setImporting(false); return; }
       setImportProgress(50);
       const newPhotos: Photo[] = [];
-      if (serverOnline) {
+      if (isOnline) {
         for (let i = 0; i < imported.length; i++) {
           const f = imported[i];
           try {
-            // Retry fetch up to 3x — Android may not have finished writing the file yet
-            let blob: Blob | null = null;
-            for (let attempt = 0; attempt < 3; attempt++) {
-              try {
-                const resp = await fetch(f.uri);
-                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-                blob = await resp.blob();
-                break;
-              } catch (fetchErr) {
-                if (attempt < 2) await new Promise(r => setTimeout(r, 500));
-                else console.warn("Failed to fetch file after 3 attempts:", f.uri, fetchErr);
-              }
-            }
-            if (!blob) continue; // skip this file rather than crashing
-            const file = new File([blob], f.localPath.split("/").pop() || `photo_${i}.jpg`, { type: "image/jpeg" });
+            if (!f.base64) { console.error("[import] No base64 for", f.localPath); continue; }
+            const byteChars = atob(f.base64);
+            const byteArr = new Uint8Array(byteChars.length);
+            for (let b = 0; b < byteChars.length; b++) byteArr[b] = byteChars.charCodeAt(b);
+            const blob = new Blob([byteArr], { type: f.mimeType || "image/jpeg" });
+            const file = new File([blob], f.localPath?.split("/").pop() || `photo_${i}.jpg`, { type: f.mimeType || "image/jpeg" });
             const results = await uploadPhotosToServer([file], () => {});
             for (const r of results) {
               const thumb = await generateThumbnail(r.url, 300, 0.6).catch(() => r.url);
@@ -330,11 +344,11 @@ function MobileCaptureInner() {
         setImportProgress(100);
       }
       if (newPhotos.length > 0) {
-        const fresh = getAlbums().find(a => a.id === targetAlbum.id) || targetAlbum;
+        const fresh = getAlbums().find(a => a.id === album.id) || album;
         const updated: Album = { ...fresh, photos: [...fresh.photos, ...newPhotos], photoCount: fresh.photos.length + newPhotos.length, coverImage: fresh.coverImage || newPhotos[0]?.src || "" };
         updateAlbum(updated); setTargetAlbum(updated);
         // Sync album record to server so admin panel / recent uploads reflects new photos
-        if (serverOnline) {
+        if (isOnline) {
           try {
             await fetch(`/api/albums/${updated.id}`, {
               method: "PATCH",
@@ -348,9 +362,12 @@ function MobileCaptureInner() {
         sendClientNotification("photos-uploaded", newPhotos.length);
       }
       setCameraFiles(prev => prev.filter(f => !handles.includes(f.handle)));
-    } catch { toast.error("Import error"); }
+    } catch (e) { console.error("Import error:", e); toast.error("Import error"); }
     finally { setImporting(false); }
   };
+
+  // Keep ref in sync so drainImportQueue can call it without stale closure
+  importCameraFilesRef.current = importCameraFiles;
 
   const toggleLiveWatch = async () => {
     if (watching) {
