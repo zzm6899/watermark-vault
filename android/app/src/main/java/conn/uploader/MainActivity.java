@@ -1,7 +1,7 @@
 package conn.uploader;
 
-import android.os.Bundle;
 import com.getcapacitor.BridgeActivity;
+import android.os.Bundle;
 import app.lovable.camerausb.CameraUsbPlugin;
 
 public class MainActivity extends BridgeActivity {

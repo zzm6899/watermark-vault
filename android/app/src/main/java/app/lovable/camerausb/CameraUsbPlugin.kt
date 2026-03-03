@@ -58,7 +58,7 @@ class CameraUsbPlugin : Plugin() {
         val devices = usbManager.deviceList
         for ((_, device) in devices) {
             // Nikon vendor ID = 0x04B0, but accept any imaging class device
-            if ((device.interfaceCount > 0 && device.getInterface(0).interfaceClass == 6 /* Imaging */)
+            if (device.getInterface(0)?.interfaceClass == 6 /* Imaging */
                 || device.vendorId == 0x04B0 /* Nikon */
             ) {
                 return device
@@ -313,7 +313,7 @@ class CameraUsbPlugin : Plugin() {
         }
 
         watchTimer = Timer()
-        watchTimer?.schedule(object : TimerTask() {
+        watchTimer?.scheduleAtFixedRate(object : TimerTask() {
             override fun run() {
                 checkForNewFiles()
             }
