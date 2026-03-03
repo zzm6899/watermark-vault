@@ -135,9 +135,14 @@ export default function Admin() {
               </button>
             ))}
           </nav>
-          <button onClick={handleLogout} className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-body text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-all mt-auto">
-            <LogOut className="w-4 h-4" />Logout
-          </button>
+          <div className="mt-auto space-y-1">
+            <button onClick={() => navigate("/capture")} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-body text-primary hover:bg-primary/10 transition-all">
+              <Upload className="w-4 h-4" />Capture
+            </button>
+            <button onClick={handleLogout} className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-body text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-all">
+              <LogOut className="w-4 h-4" />Logout
+            </button>
+          </div>
         </aside>
 
         <div className="lg:hidden fixed top-0 left-0 right-0 z-30 bg-card/95 backdrop-blur-sm border-b border-border">
