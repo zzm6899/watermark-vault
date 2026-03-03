@@ -18,7 +18,7 @@ import {
   Wifi, WifiOff, Zap, Image as ImageIcon, RefreshCw,
   Usb, AlertCircle, Download, Mail, FileImage, Search,
   Clock, ChevronDown, ChevronUp, CheckCircle2, Users,
-  Star, CalendarDays,
+  Star, CalendarDays, ChevronLeft, ChevronRight,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
@@ -135,7 +135,8 @@ function MobileCaptureInner() {
   const [importProgress, setImportProgress] = useState(0);
   const [watching, setWatching] = useState(false);
   const [notifyClient, setNotifyClient] = useState(true);
-  const [lightboxPhoto, setLightboxPhoto] = useState<{ src: string; title: string } | null>(null);
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+  const [viewAllMode, setViewAllMode] = useState(false);
   const [jpegOnly, setJpegOnly] = useState(true);
   const emailSentRef = useRef(false);
   const sessionUploadedRef = useRef(false); // tracks if any photos uploaded this session (for exit email)
@@ -241,6 +242,8 @@ function MobileCaptureInner() {
   const importBusyRef = useRef(false);
   // ref so drainImportQueue never closes over importCameraFiles before it's defined
   const importCameraFilesRef = useRef<((handles: number[]) => Promise<void>) | null>(null);
+  // tracks imported filenames — prevents duplicates when "On Camera" count lags behind
+  const importedNamesRef = useRef<Set<string>>(new Set());
   const drainImportQueue = useCallback(async () => {
     if (importBusyRef.current) return;
     while (importQueueRef.current.length > 0) {
@@ -306,6 +309,11 @@ function MobileCaptureInner() {
     setTargetAlbum(album);
     setUploadedCount(0);
     emailSentRef.current = false;
+    sessionUploadedRef.current = false;
+    // Seed with "name:0" — album photos lack size data; name match alone blocks re-import from same session
+    importedNamesRef.current = new Set(
+      (getAlbums().find(a => a.bookingId === booking.id)?.photos ?? []).map(p => p.title ? `${p.title}:0` : "").filter(Boolean)
+    );
     if (!existing) { sendClientNotification("album-created"); emailSentRef.current = true; }
     if (isNative) checkCamera();
   };
@@ -313,11 +321,25 @@ function MobileCaptureInner() {
   const importCameraFiles = async (handles: number[]) => {
     const album = targetAlbumRef.current;
     if (!album || handles.length === 0) return;
+    // Dedup key is "name:size" — name alone can collide across sessions (e.g. DSC_0001.JPG)
+    const keyByHandle = new Map(cameraFiles.map(f => [f.handle, `${f.name}:${(f as any).size ?? 0}`]));
+    const freshHandles = handles.filter(h => {
+      const key = keyByHandle.get(h);
+      if (!key) return true; // unknown handle, let through
+      const name = key.split(":")[0];
+      return !importedNamesRef.current.has(key) && !importedNamesRef.current.has(`${name}:0`);
+    });
+    if (freshHandles.length === 0) {
+      toast.info('All selected photos already imported');
+      return;
+    }
+    if (freshHandles.length < handles.length)
+      toast.info(`Skipping ${handles.length - freshHandles.length} already-imported photo(s)`);
     setImporting(true); setImportProgress(0);
     const isOnline = await recheckServer();
     setServerOnline(isOnline);
     try {
-      const importResult = await CameraUsb.importFiles({ handles });
+      const importResult = await CameraUsb.importFiles({ handles: freshHandles });
       const imported = importResult?.files ?? [];
       if (imported.length === 0) { toast.error("Camera returned no files"); setImporting(false); return; }
       setImportProgress(50);
@@ -363,7 +385,17 @@ function MobileCaptureInner() {
         sessionUploadedRef.current = true;
         toast.success(`${newPhotos.length} photos imported`);
       }
-      setCameraFiles(prev => prev.filter(f => !handles.includes(f.handle)));
+      // Store "name:size" keys — handles name collisions across sessions
+      const importedKeys = imported.map((f: any) => {
+        const n = f.localPath?.split('/').pop() || f.name || '';
+        return n ? `${n}:${f.size ?? 0}` : '';
+      }).filter(Boolean);
+      importedKeys.forEach((k: string) => importedNamesRef.current.add(k));
+      setCameraFiles(prev => prev.filter(f => {
+        const n = f.name || '';
+        const key = `${n}:${(f as any).size ?? 0}`;
+        return !importedNamesRef.current.has(key) && !importedNamesRef.current.has(`${n}:0`);
+      }));
     } catch (e) { console.error("Import error:", e); toast.error("Import error"); }
     finally { setImporting(false); }
   };
@@ -770,49 +802,129 @@ function MobileCaptureInner() {
         </button>
       </div>
 
-      {/* Recent uploads with lightbox */}
-      {targetAlbum && targetAlbum.photos.length > 0 && (
-        <div className="glass-panel rounded-xl p-4">
-          <div className="flex items-center justify-between mb-3">
-            <p className="text-xs font-body tracking-wider uppercase text-muted-foreground">Recent Uploads</p>
-            <p className="text-xs font-body text-muted-foreground/60">{targetAlbum.photos.length} total</p>
-          </div>
-          <div className="grid grid-cols-4 gap-1.5">
-            {targetAlbum.photos.slice(-8).reverse().map(photo => (
-              <button
-                key={photo.id}
-                onClick={() => setLightboxPhoto({ src: photo.src, title: photo.title })}
-                className="relative aspect-square rounded-lg overflow-hidden bg-secondary active:scale-95 transition-transform"
-              >
-                <img src={photo.thumbnail || photo.src} alt={photo.title} className="w-full h-full object-cover" />
-                {photo.proofing && (
-                  <span className="absolute top-1 left-1 text-[8px] font-body tracking-wider uppercase px-1 py-0.5 rounded bg-primary/90 text-primary-foreground leading-tight">P</span>
+      {/* Recent uploads */}
+      {targetAlbum && targetAlbum.photos.length > 0 && (() => {
+        const allPhotos = [...targetAlbum.photos].reverse();
+        const previewPhotos = allPhotos.slice(0, 12);
+        const hasMore = allPhotos.length > 12;
+        return (
+          <div className="glass-panel rounded-xl p-4">
+            <div className="flex items-center justify-between mb-3">
+              <p className="text-xs font-body tracking-wider uppercase text-muted-foreground">Recent Uploads</p>
+              <div className="flex items-center gap-2">
+                <p className="text-xs font-body text-muted-foreground/60">{allPhotos.length} total</p>
+                {hasMore && (
+                  <button
+                    onClick={() => setViewAllMode(true)}
+                    className="text-[10px] font-body tracking-wider uppercase px-2 py-1 rounded-full border border-border text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+                  >View All</button>
                 )}
+              </div>
+            </div>
+            <div className="grid grid-cols-4 gap-1.5">
+              {previewPhotos.map((photo, idx) => (
+                <button
+                  key={photo.id}
+                  onClick={() => setLightboxIndex(idx)}
+                  className="relative aspect-square rounded-lg overflow-hidden bg-secondary active:scale-95 transition-transform"
+                >
+                  <img src={photo.thumbnail || photo.src} alt={photo.title} className="w-full h-full object-cover" />
+                  {photo.proofing && (
+                    <span className="absolute top-1 left-1 text-[8px] font-body tracking-wider uppercase px-1 py-0.5 rounded bg-primary/90 text-primary-foreground leading-tight">P</span>
+                  )}
+                </button>
+              ))}
+            </div>
+            {hasMore && (
+              <button
+                onClick={() => setViewAllMode(true)}
+                className="w-full mt-3 py-2 text-xs font-body tracking-wider uppercase text-muted-foreground hover:text-foreground border border-border/50 rounded-lg hover:bg-secondary/30 transition-colors"
+              >
+                View all {allPhotos.length} photos
               </button>
-            ))}
+            )}
           </div>
-        </div>
-      )}
+        );
+      })()}
 
-      {/* Lightbox */}
-      {lightboxPhoto && (
-        <div
-          className="fixed inset-0 z-50 bg-black/95 flex flex-col items-center justify-center"
-          onClick={() => setLightboxPhoto(null)}
-        >
-          <img
-            src={lightboxPhoto.src}
-            alt={lightboxPhoto.title}
-            className="max-w-full max-h-[85vh] object-contain rounded"
-            onClick={e => e.stopPropagation()}
-          />
-          <p className="mt-3 text-xs text-white/40 font-body truncate max-w-xs px-4">{lightboxPhoto.title}</p>
-          <button
-            onClick={() => setLightboxPhoto(null)}
-            className="absolute top-4 right-4 w-9 h-9 rounded-full bg-white/10 flex items-center justify-center text-white/80 text-lg hover:bg-white/20 active:scale-95"
-          >✕</button>
-        </div>
-      )}
+      {/* View All Gallery */}
+      {viewAllMode && targetAlbum && (() => {
+        const allPhotos = [...targetAlbum.photos].reverse();
+        return (
+          <div className="fixed inset-0 z-40 bg-background flex flex-col">
+            <div className="flex items-center gap-3 px-4 py-3 border-b border-border/50 bg-background/95 backdrop-blur-sm">
+              <button
+                onClick={() => setViewAllMode(false)}
+                className="w-8 h-8 rounded-full bg-secondary flex items-center justify-center active:scale-95 transition-transform"
+              >
+                <ArrowLeft className="w-4 h-4 text-foreground" />
+              </button>
+              <div>
+                <p className="text-sm font-body text-foreground">{selectedBooking?.clientName || "Session"}</p>
+                <p className="text-xs font-body text-muted-foreground">{allPhotos.length} photos</p>
+              </div>
+            </div>
+            <div className="flex-1 overflow-y-auto p-1">
+              <div className="grid grid-cols-3 gap-0.5">
+                {allPhotos.map((photo, idx) => (
+                  <button
+                    key={photo.id}
+                    onClick={() => setLightboxIndex(idx)}
+                    className="relative aspect-square overflow-hidden bg-secondary active:scale-[0.98] transition-transform"
+                  >
+                    <img src={photo.thumbnail || photo.src} alt={photo.title} className="w-full h-full object-cover" />
+                    {photo.proofing && (
+                      <span className="absolute top-1 left-1 text-[8px] font-body tracking-wider uppercase px-1 py-0.5 rounded bg-primary/90 text-primary-foreground leading-tight">P</span>
+                    )}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Lightbox with prev/next arrows */}
+      {lightboxIndex !== null && targetAlbum && (() => {
+        const allPhotos = [...targetAlbum.photos].reverse();
+        const photo = allPhotos[lightboxIndex];
+        if (!photo) return null;
+        const hasPrev = lightboxIndex > 0;
+        const hasNext = lightboxIndex < allPhotos.length - 1;
+        return (
+          <div className="fixed inset-0 z-50 bg-black/98 flex flex-col items-center justify-center select-none">
+            <button
+              onClick={() => setLightboxIndex(null)}
+              className="absolute top-4 right-4 w-9 h-9 rounded-full bg-white/10 flex items-center justify-center text-white/80 text-lg hover:bg-white/20 active:scale-95 z-10"
+            >&#x2715;</button>
+            <p className="absolute top-5 left-0 right-0 text-center text-xs text-white/40 font-body pointer-events-none">
+              {lightboxIndex + 1} / {allPhotos.length}
+            </p>
+            {hasPrev && (
+              <button
+                onClick={() => setLightboxIndex(i => i! - 1)}
+                className="absolute left-3 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-white/10 flex items-center justify-center hover:bg-white/20 active:scale-95 transition-all z-10"
+              >
+                <ChevronLeft className="w-5 h-5 text-white" />
+              </button>
+            )}
+            <img
+              src={photo.src}
+              alt={photo.title}
+              className="max-w-full max-h-[85vh] object-contain rounded"
+            />
+            {hasNext && (
+              <button
+                onClick={() => setLightboxIndex(i => i! + 1)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-white/10 flex items-center justify-center hover:bg-white/20 active:scale-95 transition-all z-10"
+              >
+                <ChevronRight className="w-5 h-5 text-white" />
+              </button>
+            )}
+            <p className="absolute bottom-5 left-0 right-0 text-center text-xs text-white/30 font-body truncate px-16">{photo.title}</p>
+          </div>
+        );
+      })()}
 
       {/* Mark Complete */}
       {selectedBooking && selectedBooking.status !== "completed" && (
