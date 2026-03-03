@@ -131,6 +131,17 @@ export function isServerMode(): boolean {
   return serverAvailable === true;
 }
 
+export async function recheckServer(): Promise<boolean> {
+  try {
+    const res = await fetch("/api/health", { method: "GET", signal: AbortSignal.timeout(3000) });
+    serverAvailable = res.ok;
+    return res.ok;
+  } catch {
+    serverAvailable = false;
+    return false;
+  }
+}
+
 /** Fetch server-side storage stats (TrueNAS volume) */
 export async function getServerStorageStats(): Promise<{
   totalBytes: number;
@@ -183,8 +194,6 @@ export async function createBookingCheckout(params: {
 
 export async function createAlbumCheckout(params: {
   albumId: string; albumTitle: string; photoCount: number; amount: number; clientEmail?: string;
-  photoIds?: string[]; // specific photo IDs purchased (empty = full album)
-  isFullAlbum?: boolean;
 }): Promise<{ url?: string; error?: string }> {
   try {
     const res = await fetch("/api/stripe/checkout/album", {
