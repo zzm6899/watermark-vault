@@ -19,7 +19,8 @@ if (Test-Path $JAVA_HOME_OVERRIDE) {
 } else {
     Write-Host "  WARNING: $JAVA_HOME_OVERRIDE not found, using system JAVA_HOME ($env:JAVA_HOME)" -ForegroundColor Yellow
 }
-& java -version 2>&1 | Select-Object -First 1 | Write-Host
+$jver = & java -version 2>&1 | Select-Object -First 1
+Write-Host "  $jver"
 
 # ---------- STEP 1: Install npm deps ----------
 Write-Host "`n=== Step 1: npm install ===" -ForegroundColor Cyan
