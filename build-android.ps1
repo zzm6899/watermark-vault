@@ -82,19 +82,20 @@ Write-Host "`n=== Step 3: Capacitor sync ===" -ForegroundColor Cyan
 npx cap sync android
 if ($LASTEXITCODE -ne 0) { throw "cap sync failed" }
 
-# ---------- STEP 3b: Clear stale Gradle transform cache ----------
-Write-Host "`n=== Step 3b: Clearing Gradle transform cache ===" -ForegroundColor Cyan
-$transformsDir = Join-Path $env:USERPROFILE ".gradle\caches\8.14.3\transforms"
-if (Test-Path $transformsDir) {
-    Remove-Item -Recurse -Force $transformsDir -ErrorAction SilentlyContinue
-    Write-Host "  Cleared $transformsDir"
-} else {
-    Write-Host "  No stale cache found."
+# ---------- STEP 3b: Reset project-local Gradle cache ----------
+Write-Host "`n=== Step 3b: Resetting project-local Gradle cache ===" -ForegroundColor Cyan
+$projectGradleHome = (Resolve-Path ".").Path + "\.gradle-user-home"
+$env:GRADLE_USER_HOME = $projectGradleHome
+
+if (Test-Path $projectGradleHome) {
+    Remove-Item -Recurse -Force $projectGradleHome -ErrorAction SilentlyContinue
 }
+New-Item -ItemType Directory -Force -Path $projectGradleHome | Out-Null
+Write-Host "  GRADLE_USER_HOME = $projectGradleHome"
 
 # ---------- STEP 4: Gradle release build ----------
 Write-Host "`n=== Step 4: Gradle assembleRelease ===" -ForegroundColor Cyan
-& $GRADLE_BAT -p android assembleRelease --no-daemon
+& $GRADLE_BAT -g $projectGradleHome -p android assembleRelease --no-daemon --refresh-dependencies
 if ($LASTEXITCODE -ne 0) { throw "Gradle build failed" }
 
 # ---------- DONE ----------
