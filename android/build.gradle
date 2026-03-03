@@ -7,7 +7,7 @@ buildscript {
         mavenCentral()
     }
     dependencies {
-        classpath 'com.android.tools.build:gradle:8.1.3'
+        classpath 'com.android.tools.build:gradle:8.3.2'
         classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
         classpath 'com.google.gms:google-services:4.4.0'
 
@@ -26,12 +26,12 @@ allprojects {
 
     // Force the Java version for all projects
     tasks.withType(JavaCompile) {
-        options.compilerArgs += ["-source", "17", "-target", "17"]
+        options.compilerArgs += ["-source", "21", "-target", "21"]
     }
 
     tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile) {
         kotlinOptions {
-            jvmTarget = "17"
+            jvmTarget = "21"
         }
     }
 }
