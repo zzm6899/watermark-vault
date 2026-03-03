@@ -6,21 +6,40 @@
 #>
 $ErrorActionPreference = "Stop"
 
-# ---------- CONFIG ----------
-$JAVA_HOME_OVERRIDE = "C:\Program Files\Eclipse Adoptium\jdk-21.0.7.6-hotspot"
-
-# ---------- STEP 0: Validate JDK ----------
+# ---------- STEP 0: Find and use JDK 21 ----------
 Write-Host "`n=== Step 0: Checking JDK 21 ===" -ForegroundColor Cyan
-if (Test-Path $JAVA_HOME_OVERRIDE) {
-    $env:JAVA_HOME = $JAVA_HOME_OVERRIDE
-    Write-Host "  JAVA_HOME -> $env:JAVA_HOME"
-} else {
-    Write-Host "  WARNING: $JAVA_HOME_OVERRIDE not found, using system JAVA_HOME ($env:JAVA_HOME)" -ForegroundColor Yellow
+
+# Auto-detect JDK 21 from common install locations
+$jdk21 = $null
+$searchPaths = @(
+    "C:\Program Files\Eclipse Adoptium",
+    "C:\Program Files\Java",
+    "C:\Program Files\Microsoft\jdk",
+    "C:\Program Files\Zulu"
+)
+foreach ($base in $searchPaths) {
+    if (Test-Path $base) {
+        $match = Get-ChildItem -Path $base -Directory | Where-Object { $_.Name -match "21" } | Select-Object -First 1
+        if ($match) { $jdk21 = $match.FullName; break }
+    }
 }
-$ErrorActionPreference = "SilentlyContinue"
-$jver = & java -version 2>&1 | Select-Object -First 1
-$ErrorActionPreference = "Stop"
-Write-Host "  $jver"
+
+if ($jdk21) {
+    $env:JAVA_HOME = $jdk21
+    Write-Host "  Found JDK 21: $env:JAVA_HOME" -ForegroundColor Green
+} else {
+    # Fallback: check if system java is already 21
+    $ErrorActionPreference = "SilentlyContinue"
+    $sysJava = & java -version 2>&1 | Select-Object -First 1
+    $ErrorActionPreference = "Stop"
+    if ($sysJava -match "21\.") {
+        Write-Host "  System java is JDK 21 (using JAVA_HOME=$env:JAVA_HOME)" -ForegroundColor Yellow
+        Write-Host "  TIP: If build fails, find your JDK 21 folder and set JAVA_HOME manually." -ForegroundColor Yellow
+    } else {
+        throw "JDK 21 not found. Install Adoptium JDK 21 from https://adoptium.net/"
+    }
+}
+Write-Host "  JAVA_HOME = $env:JAVA_HOME"
 
 # ---------- STEP 0b: Prepare local Gradle (bypass wrapper) ----------
 Write-Host "`n=== Step 0b: Preparing local Gradle 8.14.3 ===" -ForegroundColor Cyan
