@@ -190,7 +190,7 @@ export default function Setup({ onComplete }: { onComplete: () => void }) {
   const slideIn = { initial: { opacity: 0, x: 40 }, animate: { opacity: 1, x: 0 }, exit: { opacity: 0, x: -40 } };
 
   return (
-    <div className="min-h-screen bg-background flex items-center justify-center p-4">
+    <div className="min-h-screen bg-background flex items-center justify-center p-4" style={{ paddingTop: "env(safe-area-inset-top)", paddingBottom: "env(safe-area-inset-bottom)" }}>
       <div className="w-full max-w-lg">
         <AnimatePresence mode="wait">
           {/* ─── Welcome ─── */}

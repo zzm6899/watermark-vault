@@ -784,12 +784,24 @@ function MobileCaptureInner() {
 
       {/* Stats */}
       <div className="glass-panel rounded-xl p-4 mb-4">
-        <div className="grid grid-cols-4 gap-2 text-center divide-x divide-border/50">
-          <div><p className="text-2xl font-display text-foreground">{targetAlbum?.photoCount || 0}</p><p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mt-0.5">In Album</p></div>
-          <div><p className="text-2xl font-display text-foreground">{uploadedCount}</p><p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mt-0.5">This Session</p></div>
-          <div><p className="text-2xl font-display text-foreground">{isNative ? filteredCameraFiles.length : pendingFiles.length}</p><p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mt-0.5">{isNative ? "On Camera" : "Local"}</p></div>
-          <div><p className="text-2xl font-display text-foreground">{selectedBooking?.clientEmail ? albums.filter(a => a.clientEmail === selectedBooking.clientEmail).length : 1}</p><p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mt-0.5">All Sessions</p></div>
-        </div>
+        {(() => {
+          const clientAlbums = selectedBooking?.clientEmail ? albums.filter(a => a.clientEmail === selectedBooking.clientEmail) : [];
+          const totalMins = clientAlbums.reduce((s, a) => {
+            const bk = bookings.find(b => b.id === a.bookingId);
+            return s + (bk?.duration || 0);
+          }, 0);
+          const tH = Math.floor(totalMins / 60);
+          const tM = totalMins % 60;
+          const timeLabel = tH > 0 ? (tM > 0 ? `${tH}h ${tM}m` : `${tH}h`) : (totalMins > 0 ? `${totalMins}m` : "—");
+          return (
+            <div className="grid grid-cols-4 gap-2 text-center divide-x divide-border/50">
+              <div><p className="text-2xl font-display text-foreground">{targetAlbum?.photoCount || 0}</p><p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mt-0.5">In Album</p></div>
+              <div><p className="text-2xl font-display text-foreground">{uploadedCount}</p><p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mt-0.5">This Session</p></div>
+              <div><p className="text-2xl font-display text-foreground">{clientAlbums.length || 1}</p><p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mt-0.5">All Sessions</p></div>
+              <div><p className="text-xl font-display text-foreground">{timeLabel}</p><p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mt-0.5">Total Time</p></div>
+            </div>
+          );
+        })()}
       </div>
 
       {/* Progress */}

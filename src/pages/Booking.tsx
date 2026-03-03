@@ -425,7 +425,7 @@ export default function Booking() {
 
   return (
     <div className="min-h-screen bg-background">
-      <section className="pt-8 pb-24 min-h-screen">
+      <section className="min-h-screen" style={{ paddingTop: "calc(env(safe-area-inset-top) + 2rem)", paddingBottom: "calc(env(safe-area-inset-bottom) + 6rem)" }}>
         <div className="container mx-auto px-4">
           <AnimatePresence mode="wait">
 

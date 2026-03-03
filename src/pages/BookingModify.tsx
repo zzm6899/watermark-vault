@@ -117,7 +117,7 @@ export default function BookingModify() {
 
   if (!booking || !eventType) {
     return (
-      <div className="min-h-screen bg-background flex items-center justify-center p-4">
+      <div className="min-h-screen bg-background flex items-center justify-center p-4" style={{ paddingTop: "env(safe-area-inset-top)" }}>
         <div className="glass-panel rounded-xl p-8 text-center max-w-sm">
           <AlertCircle className="w-10 h-10 text-muted-foreground/30 mx-auto mb-4" />
           <h2 className="font-display text-xl text-foreground mb-2">Booking Not Found</h2>
@@ -151,7 +151,7 @@ export default function BookingModify() {
   // ── Rescheduled confirmation ──
   if (mode === "done" && selectedDate && selectedTime) {
     return (
-      <div className="min-h-screen bg-background flex items-center justify-center p-4">
+      <div className="min-h-screen bg-background flex items-center justify-center p-4" style={{ paddingTop: "env(safe-area-inset-top)" }}>
         <div className="glass-panel rounded-xl p-8 text-center max-w-md w-full">
           <CheckCircle2 className="w-12 h-12 text-green-400 mx-auto mb-4" />
           <h2 className="font-display text-xl text-foreground mb-6">Booking Rescheduled!</h2>
@@ -171,7 +171,7 @@ export default function BookingModify() {
 
   return (
     <div className="min-h-screen bg-background">
-      <section className="pt-8 pb-24 min-h-screen">
+      <section className="min-h-screen" style={{ paddingTop: "calc(env(safe-area-inset-top) + 2rem)", paddingBottom: "calc(env(safe-area-inset-bottom) + 6rem)" }}>
         <div className="container mx-auto px-4">
 
           {mode === "status" && (

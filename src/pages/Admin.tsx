@@ -118,7 +118,7 @@ export default function Admin() {
   return (
     <div className="min-h-screen bg-background">
       <div className="flex">
-        <aside className="w-56 fixed left-0 top-0 bottom-0 border-r border-border bg-card/50 p-4 hidden lg:flex flex-col">
+        <aside className="w-56 fixed left-0 top-0 bottom-0 border-r border-border bg-card/50 p-4 hidden lg:flex flex-col" style={{ paddingTop: "calc(env(safe-area-inset-top) + 1rem)" }}>
           <div className="flex items-center gap-2.5 px-3 mb-6 pt-2">
             <Camera className="w-5 h-5 text-primary" />
             <span className="font-display text-base text-foreground">Zacmphotos</span>
@@ -145,7 +145,7 @@ export default function Admin() {
           </div>
         </aside>
 
-        <div className="lg:hidden fixed top-0 left-0 right-0 z-30 bg-card/95 backdrop-blur-sm border-b border-border">
+        <div className="lg:hidden fixed top-0 left-0 right-0 z-30 bg-card/95 backdrop-blur-sm border-b border-border" style={{ paddingTop: "env(safe-area-inset-top)" }}>
           <div className="flex overflow-x-auto scrollbar-hide">
             {tabs.map((tab) => (
               <button key={tab.id} onClick={() => setActiveTab(tab.id)}
@@ -159,7 +159,7 @@ export default function Admin() {
           </div>
         </div>
 
-        <main className="flex-1 lg:ml-56 p-4 sm:p-6 lg:p-8 pt-16 lg:pt-8">
+        <main className="flex-1 lg:ml-56 p-4 sm:p-6 lg:p-8 lg:pt-8" style={{ paddingTop: "calc(env(safe-area-inset-top) + 4rem)" }}>
           {activeTab === "dashboard" && <DashboardView />}
           {activeTab === "bookings" && <BookingsView onCreateAlbum={handleCreateAlbumForBooking} />}
           {activeTab === "events" && <EventTypesView />}
@@ -212,11 +212,19 @@ function DashboardView() {
     toast.success("Download request approved — client can now download");
   };
 
+  const totalSessionMins = bookings.reduce((sum, b) => sum + (b.duration || 0), 0);
+  const totalSessionHours = Math.floor(totalSessionMins / 60);
+  const totalSessionRemMins = totalSessionMins % 60;
+  const totalSessionLabel = totalSessionHours > 0
+    ? (totalSessionRemMins > 0 ? `${totalSessionHours}h ${totalSessionRemMins}m` : `${totalSessionHours}h`)
+    : `${totalSessionMins}m`;
+
   const stats = [
     { label: "Total Bookings", value: bookings.length, icon: Calendar, color: "text-primary" },
     { label: "Paid", value: `$${paidIncome}`, icon: DollarSign, color: "text-green-400" },
     { label: "Unpaid", value: `$${unpaidIncome}`, icon: DollarSign, color: "text-destructive" },
     { label: "Pending Requests", value: allPendingRequests.length, icon: Download, color: "text-yellow-400" },
+    { label: "Session Time", value: totalSessionLabel, icon: Clock, color: "text-blue-400" },
   ];
 
   return (
@@ -229,7 +237,7 @@ function DashboardView() {
       </div>
 
       {/* ── Stats grid: 2×2 on mobile, 4 across on desktop ── */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mb-6">
         {stats.map((stat) => (
           <div key={stat.label} className="glass-panel rounded-xl p-3 sm:p-5">
             <stat.icon className={`w-4 h-4 ${stat.color} mb-2`} />

@@ -124,7 +124,7 @@ export default function AlbumDetail() {
 
   if (!album || album.enabled === false) {
     return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
+      <div className="min-h-screen bg-background flex items-center justify-center" style={{ paddingTop: "env(safe-area-inset-top)" }}>
         <div className="text-center">
           <p className="font-display text-2xl text-foreground mb-2">Album Not Found</p>
           <p className="text-muted-foreground font-body text-sm">This gallery may be private or the link is incorrect.</p>
@@ -135,7 +135,7 @@ export default function AlbumDetail() {
 
   if (!accessGranted) {
     return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
+      <div className="min-h-screen bg-background flex items-center justify-center" style={{ paddingTop: "env(safe-area-inset-top)" }}>
         <div className="glass-panel rounded-xl p-8 max-w-sm w-full text-center">
           <Lock className="w-8 h-8 text-primary mx-auto mb-4" />
           <h2 className="font-display text-xl text-foreground mb-2">Private Gallery</h2>
@@ -315,7 +315,7 @@ export default function AlbumDetail() {
     <div className="min-h-screen bg-background">
       <Header />
 
-      <section className="pt-28 pb-32">
+      <section className="pt-28 pb-32" style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 8rem)" }}>
         <div className="container mx-auto px-4">
           <motion.div
             initial={{ opacity: 0, y: 20 }}
@@ -424,7 +424,7 @@ export default function AlbumDetail() {
         <motion.div
           initial={{ y: 100, opacity: 0 }}
           animate={{ y: 0, opacity: 1 }}
-          className="fixed bottom-0 left-0 right-0 z-40 glass-panel border-t border-border/50 p-4"
+          className="fixed bottom-0 left-0 right-0 z-40 glass-panel border-t border-border/50 p-4" style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 1rem)" }}
         >
           <div className="container mx-auto flex items-center justify-between">
             <p className="text-sm font-body text-foreground">
