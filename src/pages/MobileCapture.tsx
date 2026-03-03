@@ -135,8 +135,10 @@ function MobileCaptureInner() {
   const [importProgress, setImportProgress] = useState(0);
   const [watching, setWatching] = useState(false);
   const [notifyClient, setNotifyClient] = useState(true);
+  const [lightboxPhoto, setLightboxPhoto] = useState<{ src: string; title: string } | null>(null);
   const [jpegOnly, setJpegOnly] = useState(true);
   const emailSentRef = useRef(false);
+  const sessionUploadedRef = useRef(false); // tracks if any photos uploaded this session (for exit email)
 
   const sendClientNotification = useCallback(async (type: "album-created" | "photos-uploaded", photoCount?: number) => {
     if (!notifyClient || !serverOnline || !selectedBooking?.clientEmail) return;
@@ -358,8 +360,8 @@ function MobileCaptureInner() {
           } catch (syncErr) { console.warn("Album sync failed:", syncErr); }
         }
         setUploadedCount(p => p + newPhotos.length);
-        toast.success(`${newPhotos.length} photos imported — tagged as proofing`);
-        sendClientNotification("photos-uploaded", newPhotos.length);
+        sessionUploadedRef.current = true;
+        toast.success(`${newPhotos.length} photos imported`);
       }
       setCameraFiles(prev => prev.filter(f => !handles.includes(f.handle)));
     } catch (e) { console.error("Import error:", e); toast.error("Import error"); }
@@ -410,8 +412,8 @@ function MobileCaptureInner() {
         const updated: Album = { ...fresh, photos: [...fresh.photos, ...newPhotos], photoCount: fresh.photos.length + newPhotos.length, coverImage: fresh.coverImage || newPhotos[0]?.src || "" };
         updateAlbum(updated); setTargetAlbum(updated);
         setUploadedCount(p => p + newPhotos.length);
-        toast.success(`${newPhotos.length} photos uploaded — tagged as proofing`);
-        sendClientNotification("photos-uploaded", newPhotos.length);
+        sessionUploadedRef.current = true;
+        toast.success(`${newPhotos.length} photos uploaded`);
       } else {
         toast.info(`Offline — ${imageFiles.length} files saved locally`);
       }
@@ -627,7 +629,12 @@ function MobileCaptureInner() {
       {/* Header */}
       <div className="flex items-center gap-3 mb-4">
         <button
-          onClick={() => { setSelectedBooking(null); setTargetAlbum(null); if (watching) { setWatching(false); CameraUsb.stopWatching().catch(() => {}); } }}
+          onClick={() => {
+            if (sessionUploadedRef.current && notifyClient) sendClientNotification("photos-uploaded", uploadedCount);
+            sessionUploadedRef.current = false;
+            setSelectedBooking(null); setTargetAlbum(null); setUploadedCount(0);
+            if (watching) { setWatching(false); CameraUsb.stopWatching().catch(() => {}); }
+          }}
           className="p-1.5 rounded-lg hover:bg-secondary transition-colors text-muted-foreground hover:text-foreground"
         >
           <ArrowLeft className="w-5 h-5" />
@@ -723,7 +730,7 @@ function MobileCaptureInner() {
               {filteredCameraFiles.length > 0 && !watching && (
                 <Button
                   className="w-full font-body text-xs tracking-wider uppercase gap-2 h-11"
-                  onClick={() => importCameraFiles(filteredCameraFiles.map(f => f.handle))}
+                  onClick={async () => { const all = filteredCameraFiles.map(f => f.handle); for (let i = 0; i < all.length; i += 3) await importCameraFiles(all.slice(i, i + 3)); }}
                   disabled={importing}
                 >
                   <Download className="w-4 h-4" />
@@ -763,20 +770,47 @@ function MobileCaptureInner() {
         </button>
       </div>
 
-      {/* Recent uploads */}
+      {/* Recent uploads with lightbox */}
       {targetAlbum && targetAlbum.photos.length > 0 && (
         <div className="glass-panel rounded-xl p-4">
-          <p className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-3">Recent Uploads</p>
-          <div className="grid grid-cols-4 gap-2">
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-xs font-body tracking-wider uppercase text-muted-foreground">Recent Uploads</p>
+            <p className="text-xs font-body text-muted-foreground/60">{targetAlbum.photos.length} total</p>
+          </div>
+          <div className="grid grid-cols-4 gap-1.5">
             {targetAlbum.photos.slice(-8).reverse().map(photo => (
-              <div key={photo.id} className="relative aspect-square rounded-lg overflow-hidden bg-secondary">
+              <button
+                key={photo.id}
+                onClick={() => setLightboxPhoto({ src: photo.src, title: photo.title })}
+                className="relative aspect-square rounded-lg overflow-hidden bg-secondary active:scale-95 transition-transform"
+              >
                 <img src={photo.thumbnail || photo.src} alt={photo.title} className="w-full h-full object-cover" />
                 {photo.proofing && (
-                  <span className="absolute top-1 left-1 text-[8px] font-body tracking-wider uppercase px-1.5 py-0.5 rounded bg-primary/90 text-primary-foreground leading-tight">PROOF</span>
+                  <span className="absolute top-1 left-1 text-[8px] font-body tracking-wider uppercase px-1 py-0.5 rounded bg-primary/90 text-primary-foreground leading-tight">P</span>
                 )}
-              </div>
+              </button>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* Lightbox */}
+      {lightboxPhoto && (
+        <div
+          className="fixed inset-0 z-50 bg-black/95 flex flex-col items-center justify-center"
+          onClick={() => setLightboxPhoto(null)}
+        >
+          <img
+            src={lightboxPhoto.src}
+            alt={lightboxPhoto.title}
+            className="max-w-full max-h-[85vh] object-contain rounded"
+            onClick={e => e.stopPropagation()}
+          />
+          <p className="mt-3 text-xs text-white/40 font-body truncate max-w-xs px-4">{lightboxPhoto.title}</p>
+          <button
+            onClick={() => setLightboxPhoto(null)}
+            className="absolute top-4 right-4 w-9 h-9 rounded-full bg-white/10 flex items-center justify-center text-white/80 text-lg hover:bg-white/20 active:scale-95"
+          >✕</button>
         </div>
       )}
 
