@@ -73,30 +73,22 @@ function saveGcalEventId(bookingId, gcalEventId) {
 
 // ── Event builder ─────────────────────────────────────────────
 function buildEvent(booking) {
-  // Build ISO string with the configured timezone offset to avoid server-TZ issues.
-  // We pass timeZone to Google and let them handle DST — we just need a stable wall-clock ISO string.
-  // Using a simple approach: tell Node to interpret the time in the target TZ via Intl.
-  function toTZIso(dateStr, timeStr, tz) {
-    // Parse as if it's in the target TZ by getting the UTC offset at that moment
-    const naive = new Date(`${dateStr}T${timeStr}:00`);
-    // Get what the local time is in target TZ for this naive date
-    const tzFormatter = new Intl.DateTimeFormat("en-CA", {
-      timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit",
-      hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
-    });
-    const parts = tzFormatter.formatToParts(naive);
-    const get = (t) => parts.find(p => p.type === t)?.value || "00";
-    // Build a date that treats the input as wall-clock time in TZ
-    const isoLocal = `${dateStr}T${timeStr}:00`;
-    // Compute the UTC offset for this date in TZ using a reference
-    const utcStr = new Date(`${dateStr}T${timeStr}:00Z`).toLocaleString("en-US", { timeZone: tz });
-    const utcRef = new Date(utcStr);
-    const tzDate = new Date(`${dateStr}T${timeStr}:00Z`);
-    const offsetMs = tzDate - utcRef;
-    return new Date(tzDate.getTime() + offsetMs);
+  // Build start/end as local ISO strings (no timezone offset suffix).
+  // Google Calendar API interprets these as wall-clock time in the given timeZone field,
+  // which is exactly what we want — no JS Date() parsing, no server-TZ issues.
+  const startLocal = `${booking.date}T${booking.time}:00`;
+  const [h, m] = booking.time.split(":").map(Number);
+  const totalMins = h * 60 + m + (booking.duration || 60);
+  const endH = String(Math.floor(totalMins / 60) % 24).padStart(2, "0");
+  const endM = String(totalMins % 60).padStart(2, "0");
+  // Handle sessions that cross midnight
+  let endDate2 = booking.date;
+  if (Math.floor(totalMins / 60) >= 24) {
+    const d = new Date(`${booking.date}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + Math.floor(Math.floor(totalMins / 60) / 24));
+    endDate2 = d.toISOString().slice(0, 10);
   }
-  const startDate = toTZIso(booking.date, booking.time, TZ);
-  const endDate   = new Date(startDate.getTime() + (booking.duration || 60) * 60000);
+  const endLocal = `${endDate2}T${endH}:${endM}:00`;
   return {
     summary: `📸 ${booking.type || "Session"} — ${booking.clientName}`,
     description: [
@@ -109,8 +101,8 @@ function buildEvent(booking) {
       booking.paymentAmount   ? `Amount: $${booking.paymentAmount}`                          : "",
       `\nRef: ${booking.id}`,
     ].filter(Boolean).join("\n"),
-    start: { dateTime: startDate.toISOString(), timeZone: TZ },
-    end:   { dateTime: endDate.toISOString(),   timeZone: TZ },
+    start: { dateTime: startLocal, timeZone: TZ },
+    end:   { dateTime: endLocal,   timeZone: TZ },
     colorId: booking.status === "confirmed" ? "2" : booking.status === "completed" ? "10" : "5",
     extendedProperties: { private: { watermarkVaultBookingId: booking.id } },
   };
