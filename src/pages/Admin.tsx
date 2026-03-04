@@ -233,9 +233,8 @@ function DashboardView() {
     ? (totalSessionRemMins > 0 ? `${totalSessionHours}h ${totalSessionRemMins}m` : `${totalSessionHours}h`)
     : `${totalSessionMins}m`;
 
-  const todayStr = new Date().toISOString().split("T")[0];
   const upcomingBookings = bookings
-    .filter(b => b.status !== "cancelled" && b.date >= todayStr)
+    .filter(b => b.status !== "cancelled" && b.date >= new Date().toISOString().split("T")[0])
     .sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
 
   const stats = [
