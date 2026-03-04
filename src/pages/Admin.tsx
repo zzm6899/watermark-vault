@@ -7,7 +7,7 @@ import {
   Image, DollarSign, Link2, Merge, Send, Copy, ExternalLink,
   MapPin, Lock, Bell, Download, Unlock, Eye, Grid, List, LayoutGrid, HardDrive, CheckSquare, XSquare, Search, RefreshCw, Mail,
   MessageSquare
-} from "lucide-react";
+, Star } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -1617,6 +1617,40 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                         <ExternalLink className="w-3.5 h-3.5" />
                       </Button>
                     </a>
+                    {(() => {
+                      const starredPhotos = alb.photos.filter((p: any) => p.starred);
+                      if (starredPhotos.length === 0) return null;
+                      return (
+                        <Button
+                          variant="ghost" size="icon"
+                          className="h-7 w-7 text-yellow-500 hover:text-yellow-400"
+                          title={`Export ${starredPhotos.length} starred filenames for Lightroom`}
+                          onClick={() => {
+                            const lines = [
+                              `# Starred photos — ${alb.title}`,
+                              `# Album: ${alb.slug}`,
+                              `# Exported: ${new Date().toISOString().slice(0,10)}`,
+                              `# ${starredPhotos.length} of ${alb.photos.length} photos starred`,
+                              `#`,
+                              `# Drop this file into the PowerShell script to copy matching NEFs`,
+                              `# and write 5-star XMP sidecars for Lightroom / Capture One.`,
+                              ``,
+                              ...starredPhotos.map((p: any) => p.title || p.id),
+                            ];
+                            const blob = new Blob([lines.join("\n")], { type: "text/plain" });
+                            const url = URL.createObjectURL(blob);
+                            const a = document.createElement("a");
+                            a.href = url;
+                            a.download = `starred_${alb.slug}_${new Date().toISOString().slice(0,10)}.txt`;
+                            a.click();
+                            URL.revokeObjectURL(url);
+                            toast.success(`Exported ${starredPhotos.length} starred filenames`);
+                          }}
+                        >
+                          <Star className="w-3.5 h-3.5 fill-yellow-500/40" />
+                        </Button>
+                      );
+                    })()}
                     <div className="flex-1" />
                     <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-foreground" onClick={() => setEditing(alb)}>
                       <Edit className="w-3.5 h-3.5" />
