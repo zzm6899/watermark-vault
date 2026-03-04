@@ -121,6 +121,8 @@ export interface DownloadHistoryEntry {
   downloadedAt: string;
   quality: DownloadQuality;
   sessionKey: string;
+  email?: string;
+  photoCount?: number;
 }
 
 export interface Album {
@@ -156,6 +158,9 @@ export interface Album {
   proofingRounds?: ProofingRound[];
   // ── Client access ─────────────────────────────────────────
   clientToken?: string;  // magic-link token — grants access without PIN, identifies client session
+  watermarkDisabled?: boolean;  // per-album override — disable watermarks for this album
+  purchasingDisabled?: boolean; // per-album — hide purchase UI (free/gifted albums)
+  registeredEmails?: Record<string, string>; // sessionKey → email, registered at access time
 }
 
 export interface BankTransferSettings {

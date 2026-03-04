@@ -2030,6 +2030,8 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
   const [coverImage, setCoverImage] = useState(album?.coverImage || "");
   const [accessCode, setAccessCode] = useState(album?.accessCode || "");
   const [allUnlocked, setAllUnlocked] = useState(album?.allUnlocked || false);
+  const [watermarkDisabled, setWatermarkDisabled] = useState((album as any)?.watermarkDisabled || false);
+  const [purchasingDisabled, setPurchasingDisabled] = useState((album as any)?.purchasingDisabled || false);
   const [albumProofingEnabled, setAlbumProofingEnabled] = useState(album?.proofingEnabled || false);
   // Live album state for proofing panel — keeps UI in sync when proofing actions mutate the album
   const [liveAlbum, setLiveAlbum] = useState<Album | null>(album);
@@ -2140,6 +2142,8 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
       allUnlocked,
       downloadExpiresAt: downloadExpiresAt || undefined,
       proofingEnabled: albumProofingEnabled,
+      watermarkDisabled,
+      purchasingDisabled,
       displaySize,
       usedFreeDownloads: album?.usedFreeDownloads,
       downloadRequests: album?.downloadRequests,
@@ -2220,6 +2224,24 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
             <Switch checked={allUnlocked} onCheckedChange={setAllUnlocked} />
           </div>
           <p className="text-[10px] font-body text-muted-foreground/50 mt-1">When enabled, all photos can be downloaded without watermark</p>
+
+          {/* Watermark toggle */}
+          <div className="flex items-center justify-between mt-4">
+            <span className="text-xs font-body text-muted-foreground flex items-center gap-2">
+              <Camera className="w-3.5 h-3.5" /> Watermarks Disabled
+            </span>
+            <Switch checked={watermarkDisabled} onCheckedChange={setWatermarkDisabled} />
+          </div>
+          <p className="text-[10px] font-body text-muted-foreground/50 mt-1">Turn off watermarks for this album (e.g. trusted client, gifted session)</p>
+
+          {/* Purchasing toggle */}
+          <div className="flex items-center justify-between mt-4">
+            <span className="text-xs font-body text-muted-foreground flex items-center gap-2">
+              <CreditCard className="w-3.5 h-3.5" /> Purchasing Disabled
+            </span>
+            <Switch checked={purchasingDisabled} onCheckedChange={setPurchasingDisabled} />
+          </div>
+          <p className="text-[10px] font-body text-muted-foreground/50 mt-1">Hide the purchase panel — use for free/gifted albums where no payment is needed</p>
           {allUnlocked && (
             <div className="mt-3 space-y-1">
               <label className="text-[10px] font-body tracking-wider uppercase text-muted-foreground block">
@@ -3213,6 +3235,52 @@ function FinanceView() {
           </div>
         )}
       </div>
+
+      {/* Download Log */}
+      {(() => {
+        const allDownloads = albums.flatMap(alb =>
+          (alb.downloadHistory || []).map((h: any) => ({
+            ...h,
+            albumTitle: alb.title,
+            albumId: alb.id,
+            clientName: alb.clientName || "Unknown",
+          }))
+        ).sort((a: any, b: any) => new Date(b.downloadedAt).getTime() - new Date(a.downloadedAt).getTime());
+
+        if (allDownloads.length === 0) return null;
+
+        return (
+          <div className="glass-panel rounded-xl overflow-hidden">
+            <div className="p-4 border-b border-border">
+              <h3 className="font-display text-base text-foreground">Download Log</h3>
+              <p className="text-xs font-body text-muted-foreground mt-0.5">{allDownloads.length} download event{allDownloads.length !== 1 ? "s" : ""}</p>
+            </div>
+            <div className="divide-y divide-border max-h-80 overflow-y-auto">
+              {allDownloads.map((d: any, i: number) => (
+                <div key={i} className="flex items-center gap-4 px-4 py-2.5">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <p className="text-xs font-body text-foreground">{d.clientName}</p>
+                      <span className="text-muted-foreground/40 text-xs">·</span>
+                      <p className="text-xs font-body text-muted-foreground truncate">{d.albumTitle}</p>
+                      {d.email && <span className="text-[10px] font-body text-primary/70 bg-primary/5 px-1.5 py-0.5 rounded">{d.email}</span>}
+                    </div>
+                    <p className="text-[10px] font-body text-muted-foreground/60 mt-0.5">
+                      {new Date(d.downloadedAt).toLocaleString("en-AU", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}
+                      {" · "}{d.quality || "original"}
+                      {d.sessionKey && <span className="ml-1 opacity-40">({d.sessionKey.slice(0, 16)}…)</span>}
+                    </p>
+                  </div>
+                  <div className="shrink-0 text-right">
+                    <p className="text-sm font-display text-foreground">{d.photoCount ?? d.photoIds?.length ?? "?"}</p>
+                    <p className="text-[10px] font-body text-muted-foreground">photos</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

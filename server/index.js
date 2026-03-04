@@ -522,6 +522,66 @@ registerEmailRoutes(app);
 registerStripeRoutes(app);
 
 // ── Serve uploaded photos ─────────────────────────────
+
+// ── Register purchaser email to session purchase ──────────
+app.post("/api/album/register-purchaser", (req, res) => {
+  const { albumId, sessionKey, email } = req.body;
+  if (!albumId || !sessionKey || !email) return res.status(400).json({ error: "Missing fields" });
+  const db = readDb();
+  const albums = JSON.parse(db["wv_albums"] || "[]");
+  const idx = albums.findIndex(a => a.id === albumId);
+  if (idx < 0) return res.status(404).json({ error: "Album not found" });
+  const album = albums[idx];
+  // Attach email to the session purchase entry
+  if (album.sessionPurchases && album.sessionPurchases[sessionKey]) {
+    album.sessionPurchases[sessionKey].purchaserEmail = email;
+  }
+  // Also attach to bank transfer requests for this session if any
+  if (album.downloadRequests) {
+    album.downloadRequests = album.downloadRequests.map(r => 
+      (!r.purchaserEmail) ? { ...r, purchaserEmail: email } : r
+    );
+  }
+  albums[idx] = album;
+  db["wv_albums"] = JSON.stringify(albums);
+  writeDb(db);
+  res.json({ ok: true });
+});
+
+// ── Delete payment record ────────────────────────────
+app.delete("/api/album/payment/:albumId/:paymentId", (req, res) => {
+  const { albumId, paymentId } = req.params;
+  const db = readDb();
+  const albums = JSON.parse(db["wv_albums"] || "[]");
+  const idx = albums.findIndex(a => a.id === albumId);
+  if (idx < 0) return res.status(404).json({ error: "Album not found" });
+  const album = albums[idx];
+  if (album.downloadRequests) {
+    const before = album.downloadRequests.length;
+    album.downloadRequests = album.downloadRequests.filter(r => {
+      return `bank-${albumId}-${r.requestedAt}` !== paymentId;
+    });
+    if (album.downloadRequests.length < before) {
+      albums[idx] = album;
+      db["wv_albums"] = JSON.stringify(albums);
+      writeDb(db);
+      return res.json({ ok: true });
+    }
+  }
+  if (album.sessionPurchases) {
+    const sKey = paymentId.replace("stripe-" + albumId + "-", "").replace("stripe-", "");
+    if (album.sessionPurchases[sKey]) {
+      delete album.sessionPurchases[sKey];
+      if (Object.keys(album.sessionPurchases).length === 0) delete album.stripePaidAt;
+      albums[idx] = album;
+      db["wv_albums"] = JSON.stringify(albums);
+      writeDb(db);
+      return res.json({ ok: true });
+    }
+  }
+  res.status(404).json({ error: "Payment record not found" });
+});
+
 app.use("/uploads", express.static(UPLOADS_DIR, { maxAge: "7d" }));
 
 // ── Serve React app ───────────────────────────────────

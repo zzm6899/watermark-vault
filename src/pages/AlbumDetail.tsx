@@ -89,6 +89,12 @@ export default function AlbumDetail() {
   const [accessGranted, setAccessGranted] = useState(!album?.accessCode || tokenMatchesAlbum);
   const [pinInput, setPinInput] = useState("");
   const [usedPin, setUsedPin] = useState(tokenMatchesAlbum ? "__token__" : "");
+  const [registeredEmail, setRegisteredEmail] = useState<string>(() => {
+    // Restore email from localStorage if previously registered for this album
+    try { return localStorage.getItem(`wv_email_${albumId}`) || ""; } catch { return ""; }
+  });
+  const [emailInput, setEmailInput] = useState("");
+  const [showEmailCapture, setShowEmailCapture] = useState(false);
   const [clientNote, setClientNote] = useState("");
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   const [lightboxSrcCache, setLightboxSrcCache] = useState<Record<string, string>>({});
@@ -200,7 +206,11 @@ export default function AlbumDetail() {
     );
   }
 
-  const sessionKey = getSessionKey(album, usedPin, urlToken ?? undefined);
+  // Session key: email > token > PIN > generic fallback
+  const effectiveSessionKey = registeredEmail
+    ? `email-${registeredEmail.toLowerCase().trim()}`
+    : null;
+  const sessionKey = effectiveSessionKey || getSessionKey(album, usedPin, urlToken ?? undefined);
   const freeUsed = getFreeUsed(album, sessionKey);
   const freeRemaining = Math.max(0, album.freeDownloads - freeUsed);
   const isFullyUnlocked = album.allUnlocked === true; // admin-set only (proofing delivery, manual unlock)
@@ -347,6 +357,8 @@ export default function AlbumDetail() {
       downloadedAt: new Date().toISOString(),
       quality: downloadQuality,
       sessionKey,
+      email: registeredEmail || undefined,
+      photoCount: toDownload.length,
     };
     updated.downloadHistory = [...(updated.downloadHistory || []), historyEntry];
     updateAlbum(updated);
@@ -560,6 +572,18 @@ export default function AlbumDetail() {
                       <p className="text-lg font-display text-foreground">${album.priceFullAlbum}</p>
                       <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Full Album</p>
                     </div>
+                    <div className="w-px h-8 bg-border" />
+                    {registeredEmail ? (
+                      <div className="text-center cursor-pointer group" onClick={() => setShowEmailReg(true)} title="Change email">
+                        <p className="text-[11px] font-body text-green-400 truncate max-w-[100px]">{registeredEmail}</p>
+                        <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground group-hover:text-foreground transition-colors">Linked ✓</p>
+                      </div>
+                    ) : (
+                      <button onClick={() => setShowEmailReg(true)} className="text-center hover:opacity-80 transition-opacity">
+                        <p className="text-lg font-display text-muted-foreground">@</p>
+                        <p className="text-[10px] font-body uppercase tracking-wider text-primary">Add Email</p>
+                      </button>
+                    )}
                   </>
                 )}
               </div>
@@ -616,7 +640,7 @@ export default function AlbumDetail() {
                   onSelect={() => isProofing ? toggleStar(photo.id) : toggleSelect(photo.id)}
                   locked={!isProofing && !isPhotoPaid(photo.id) && freeRemaining <= 0 && !selectedIds.has(photo.id)}
                   index={i}
-                  showWatermark={!isPhotoPaid(photo.id)}
+                  showWatermark={!(album as any).watermarkDisabled && !isPhotoPaid(photo.id)}
                   watermarkPosition={watermarkPosition}
                   watermarkText={settings.watermarkText}
                   watermarkImage={settings.watermarkImage}
@@ -699,8 +723,8 @@ export default function AlbumDetail() {
         </motion.div>
       )}
 
-      {/* Show PurchasePanel unless every selected photo is already paid, or we're in proofing mode */}
-      {!canDownload && !isProofing && !(selectedIds.size > 0 && Array.from(selectedIds).every(id => isPhotoPaid(id))) && (
+      {/* Show PurchasePanel unless every selected photo is already paid, or we're in proofing mode, or purchasing disabled */}
+      {!canDownload && !isProofing && !(album as any).purchasingDisabled && !(selectedIds.size > 0 && Array.from(selectedIds).every(id => isPhotoPaid(id))) && (
         <PurchasePanel
           selectedCount={selectedIds.size}
           unpaidCount={unpaidSelected.length}
@@ -955,13 +979,17 @@ export default function AlbumDetail() {
                   if (!purchaserEmail.includes("@")) { toast.error("Please enter a valid email"); return; }
                   setSavingEmail(true);
                   try {
+                    const emailKey = `email-${purchaserEmail.toLowerCase().trim()}`;
                     await fetch("/api/album/register-purchaser", {
                       method: "POST",
                       headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ albumId: album.id, sessionKey, email: purchaserEmail }),
+                      body: JSON.stringify({ albumId: album.id, sessionKey: emailKey, email: purchaserEmail }),
                     });
-                    toast.success("Email saved — your purchase is now linked to " + purchaserEmail);
+                    try { localStorage.setItem(`wv_email_${albumId}`, purchaserEmail); } catch {}
+                    setRegisteredEmail(purchaserEmail);
+                    toast.success("Email saved — your purchases are now linked to " + purchaserEmail);
                     setShowEmailReg(false);
+                    setPurchaserEmail("");
                   } catch { toast.error("Failed to save email"); }
                   setSavingEmail(false);
                 }}
