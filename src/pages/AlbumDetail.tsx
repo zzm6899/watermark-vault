@@ -56,8 +56,14 @@ function LightboxImage({ photo, cache, onCacheUpdate }: {
     />
   );
 }
-function getSessionKey(album: Album, pin: string): string {
-  return pin || `session-${album.id}`;
+// Session key priority: client token (works across devices) > PIN > generic per-album fallback
+function getSessionKey(album: Album, pin: string, token?: string): string {
+  // Token is the most portable — same magic link URL works on any device
+  if (token && album.clientToken && token === album.clientToken) return `token-${token}`;
+  // PIN is device-agnostic if the client knows it
+  if (pin) return pin;
+  // Last resort — shared per-album (no auth = no per-client isolation possible)
+  return `session-${album.id}`;
 }
 
 function getFreeUsed(album: Album, sessionKey: string): number {
@@ -185,7 +191,7 @@ export default function AlbumDetail() {
     );
   }
 
-  const sessionKey = getSessionKey(album, usedPin);
+  const sessionKey = getSessionKey(album, usedPin, urlToken ?? undefined);
   const freeUsed = getFreeUsed(album, sessionKey);
   const freeRemaining = Math.max(0, album.freeDownloads - freeUsed);
   const isFullyUnlocked = album.allUnlocked === true; // admin-set only (proofing delivery, manual unlock)
@@ -198,7 +204,7 @@ export default function AlbumDetail() {
   const globalPaidSet = new Set<string>((album as any).paidPhotoIds || []);
   const paidPhotoIdSet = new Set<string>([...sessionPaidIds, ...globalPaidSet]);
   const canDownload = (isFullyUnlocked || sessionFullAlbum) && !isExpired;
-  const isPhotoPaid = (id: string) => canDownload || paidPhotoIdSet.has(id);|| paidPhotoIdSet.has(id);
+  const isPhotoPaid = (id: string) => canDownload || paidPhotoIdSet.has(id);
 
   // Proofing derived values
   const proofingStage = album.proofingStage || "not-started";
