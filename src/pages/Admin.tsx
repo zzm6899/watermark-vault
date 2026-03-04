@@ -99,6 +99,9 @@ export default function Admin() {
     navigate("/admin");
   };
 
+  // Needed for tab badges and nav-level UI
+  const settings = getSettings();
+  const albums = getAlbums();
   const handleCreateAlbumForBooking = (bookingId: string) => {
     setPrefillBookingId(bookingId);
     setActiveTab("albums");

@@ -190,7 +190,7 @@ export default function AlbumDetail() {
   const freeRemaining = Math.max(0, album.freeDownloads - freeUsed);
   const isFullyUnlocked = album.allUnlocked === true;
   const isExpired = !!(album.downloadExpiresAt && new Date(album.downloadExpiresAt) < new Date());
-  const canDownload = canDownload && !isExpired;
+  const canDownload = isFullyUnlocked && !isExpired;
   const paidPhotoIdSet = new Set<string>(album.paidPhotoIds || []);
   const isPhotoPaid = (id: string) => isFullyUnlocked || paidPhotoIdSet.has(id);
 
@@ -488,7 +488,7 @@ export default function AlbumDetail() {
                 </div>
               )}
 
-              {canDownload && !isExpired && album.downloadExpiresAt && (() => {
+              {canDownload && album.downloadExpiresAt && (() => {
                 const daysLeft = Math.ceil((new Date(album.downloadExpiresAt + "T12:00:00").getTime() - Date.now()) / 86400000);
                 if (daysLeft > 14) return null;
                 return (
