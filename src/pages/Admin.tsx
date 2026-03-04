@@ -1800,6 +1800,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
           bookings={bookings}
           settings={settings}
           prefillBookingId={showNew && !editing ? prefillBookingId : undefined}
+          onUpdate={(alb) => { updateAlbum(alb); setAlbumsState(prev => prev.map(a => a.id === alb.id ? alb : a)); setEditing(alb); }}
           onSave={(alb) => {
             if (editing) { updateAlbum(alb); }
             else { addAlbum(alb); }
@@ -1994,12 +1995,13 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
 }
 
 // ─── Album Editor ────────────────────────────────────
-function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onCancel }: {
+function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUpdate, onCancel }: {
   album: Album | null;
   bookings: Booking[];
   settings: AppSettings;
   prefillBookingId?: string | null;
   onSave: (alb: Album) => void;
+  onUpdate?: (alb: Album) => void;
   onCancel: () => void;
 }) {
   const isNew = !album;
@@ -2018,6 +2020,9 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onCa
   const [accessCode, setAccessCode] = useState(album?.accessCode || "");
   const [allUnlocked, setAllUnlocked] = useState(album?.allUnlocked || false);
   const [albumProofingEnabled, setAlbumProofingEnabled] = useState(album?.proofingEnabled || false);
+  // Live album state for proofing panel — keeps UI in sync when proofing actions mutate the album
+  const [liveAlbum, setLiveAlbum] = useState<Album | null>(album);
+  const updateLiveAlbum = (updated: Album) => { updateAlbum(updated); setLiveAlbum(updated); };
   const [downloadExpiresAt, setDownloadExpiresAt] = useState(album?.downloadExpiresAt || "");
   const [displaySize, setDisplaySize] = useState<AlbumDisplaySize>(album?.displaySize || "medium");
 
@@ -2262,63 +2267,65 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onCa
       )}
 
       {/* ── Proofing Controls ─────────────────────────────── */}
-      {album && settings.proofingEnabled && albumProofingEnabled && (() => {
-        const stage = album.proofingStage || "not-started";
-        const rounds = album.proofingRounds || [];
+      {liveAlbum && settings.proofingEnabled && albumProofingEnabled && (() => {
+        const stage = liveAlbum!.proofingStage || "not-started";
+        const rounds = liveAlbum!.proofingRounds || [];
         const latest = rounds[rounds.length - 1];
-        const clientEmail = album.clientEmail;
+        const clientEmail = liveAlbum!.clientEmail;
 
         const startProofing = async () => {
           const note = (document.getElementById("proofing-admin-note") as HTMLInputElement)?.value || "";
           // Generate a client token if the album doesn't have one yet
-          const clientToken = album.clientToken || `ct-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+          const clientToken = liveAlbum!.clientToken || `ct-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
           const newRound = {
             roundNumber: rounds.length + 1,
             sentAt: new Date().toISOString(),
             selectedPhotoIds: [],
             adminNote: note || undefined,
           };
-          const updated = { ...album, proofingEnabled: true, proofingStage: "proofing" as const, proofingRounds: [...rounds, newRound], clientToken };
-          updateAlbum(updated);
+          const updated = { ...liveAlbum!, proofingEnabled: true, proofingStage: "proofing" as const, proofingRounds: [...rounds, newRound], clientToken };
+          updateLiveAlbum(updated);
           // Send proofing invite email to client — include token in URL so they get straight in
           if (clientEmail) {
-            const galleryUrl = `${window.location.origin}/gallery/${album.slug}?token=${clientToken}`;
+            const galleryUrl = `${window.location.origin}/gallery/${liveAlbum!.slug}?token=${clientToken}`;
             await fetch("/api/email/send", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
                 to: clientEmail,
-                subject: `📸 Your proofing gallery is ready — ${album.title}`,
-                html: `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;"><h2 style="margin:0 0 16px;font-size:20px;">Your photos are ready to review!</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${album.clientName || "there"},</p><p style="color:#9ca3af;margin:0 0 12px;">Your proofing gallery for <strong style="color:#e5e7eb;">${album.title}</strong> is ready. Browse your photos and star the ones you love — then hit Submit Picks when you're done.</p>${note ? `<p style="color:#9ca3af;margin:0 0 20px;padding:12px;background:#1f1f1f;border-radius:8px;"><em>"${note}"</em></p>` : ""}<a href="${galleryUrl}" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">View Your Gallery →</a></div>`,
+                subject: `📸 Your proofing gallery is ready — ${liveAlbum!.title}`,
+                html: `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;"><h2 style="margin:0 0 16px;font-size:20px;">Your photos are ready to review!</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${liveAlbum!.clientName || "there"},</p><p style="color:#9ca3af;margin:0 0 12px;">Your proofing gallery for <strong style="color:#e5e7eb;">${liveAlbum!.title}</strong> is ready. Browse your photos and star the ones you love — then hit Submit Picks when you're done.</p>${note ? `<p style="color:#9ca3af;margin:0 0 20px;padding:12px;background:#1f1f1f;border-radius:8px;"><em>"${note}"</em></p>` : ""}<a href="${galleryUrl}" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">View Your Gallery →</a></div>`,
               }),
             }).catch(() => {});
           }
           toast.success("Proofing round started" + (clientEmail ? " — invite sent to client" : " (no client email on file)"));
+          onUpdate?.(updated); // Silently update album card without closing editor
         };
 
         const approveSelections = () => {
           if (!latest?.selectedPhotoIds?.length) { toast.error("No selections to approve yet"); return; }
           // Hide all non-selected photos
           const selectedSet = new Set(latest.selectedPhotoIds);
-          const updatedPhotos = album.photos.map((p: any) => ({ ...p, hidden: !selectedSet.has(p.id) }));
+          const updatedPhotos = liveAlbum!.photos.map((p: any) => ({ ...p, hidden: !selectedSet.has(p.id) }));
           const updated = { ...album, photos: updatedPhotos, proofingStage: "editing" as const };
-          updateAlbum(updated);
-          toast.success(`${latest.selectedPhotoIds.length} photos kept, ${album.photos.length - latest.selectedPhotoIds.length} hidden`);
+          updateLiveAlbum(updated);
+          toast.success(`${latest.selectedPhotoIds.length} photos kept, ${liveAlbum!.photos.length - latest.selectedPhotoIds.length} hidden`);
+          onUpdate?.(updated);
         };
 
         const deliverFinals = async () => {
           const updated = { ...album, proofingStage: "finals-delivered" as const, allUnlocked: true };
-          updateAlbum(updated);
+          updateLiveAlbum(updated);
           if (clientEmail) {
-            const tok = album.clientToken;
-            const galleryUrl = `${window.location.origin}/gallery/${album.slug}${tok ? `?token=${tok}` : ""}`;
+            const tok = liveAlbum!.clientToken;
+            const galleryUrl = `${window.location.origin}/gallery/${liveAlbum!.slug}${tok ? `?token=${tok}` : ""}`;
             await fetch("/api/email/send", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
                 to: clientEmail,
-                subject: `✨ Your final photos are ready — ${album.title}`,
-                html: `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;"><h2 style="margin:0 0 16px;font-size:20px;">Your edited photos are ready! ✨</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${album.clientName || "there"},</p><p style="color:#9ca3af;margin:0 0 20px;">Your final edited photos for <strong style="color:#e5e7eb;">${album.title}</strong> are now available. Click below to view and download.</p><a href="${galleryUrl}" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">Download Your Photos →</a></div>`,
+                subject: `✨ Your final photos are ready — ${liveAlbum!.title}`,
+                html: `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;"><h2 style="margin:0 0 16px;font-size:20px;">Your edited photos are ready! ✨</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${liveAlbum!.clientName || "there"},</p><p style="color:#9ca3af;margin:0 0 20px;">Your final edited photos for <strong style="color:#e5e7eb;">${liveAlbum!.title}</strong> are now available. Click below to view and download.</p><a href="${galleryUrl}" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">Download Your Photos →</a></div>`,
               }),
             }).catch(() => {});
           }
@@ -2327,9 +2334,11 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onCa
 
         const resetProofing = () => {
           if (!confirm("Reset proofing? This will un-hide all photos and clear the proofing stage.")) return;
-          const updatedPhotos = album.photos.map((p: any) => ({ ...p, hidden: false }));
-          updateAlbum({ ...album, photos: updatedPhotos, proofingStage: "not-started" as const, proofingRounds: [] });
+          const updatedPhotos = liveAlbum!.photos.map((p: any) => ({ ...p, hidden: false }));
+          const resetUpdated = { ...liveAlbum!, photos: updatedPhotos, proofingStage: "not-started" as const, proofingRounds: [] };
+          updateLiveAlbum(resetUpdated);
           toast.success("Proofing reset");
+          onUpdate?.(resetUpdated);
         };
 
         return (
@@ -2370,7 +2379,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onCa
 
             {stage === "proofing" && (
               <p className="text-xs font-body text-muted-foreground">
-                Waiting for {album.clientName || "client"} to star photos and submit picks.
+                Waiting for {liveAlbum!.clientName || "client"} to star photos and submit picks.
                 {latest?.adminNote && <span className="block mt-1 text-muted-foreground/70">Your note: "{latest.adminNote}"</span>}
               </p>
             )}
@@ -2394,7 +2403,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onCa
             {stage === "editing" && (
               <div className="space-y-2">
                 <p className="text-xs font-body text-muted-foreground">
-                  {album.photos.filter((p: any) => !p.hidden).length} photos visible · {album.photos.filter((p: any) => p.hidden).length} hidden
+                  {liveAlbum!.photos.filter((p: any) => !p.hidden).length} photos visible · {liveAlbum!.photos.filter((p: any) => p.hidden).length} hidden
                 </p>
                 <button
                   onClick={deliverFinals}
