@@ -1676,6 +1676,19 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
 
   const refresh = () => setAlbumsState(getAlbums());
 
+  // Poll server for proofing updates (client submissions won't be in localStorage)
+  useEffect(() => {
+    let cancelled = false;
+    const poll = async () => {
+      if (cancelled) return;
+      await syncFromServer();
+      if (!cancelled) setAlbumsState(getAlbums());
+    };
+    poll(); // immediate on mount
+    const id = setInterval(poll, 5000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
+
   // Backfill missing thumbnails for all album photos
   const allAlbumPhotos = albums.flatMap(a => a.photos);
   useBackfillThumbnails(allAlbumPhotos, useCallback((photoId, thumb) => {
