@@ -717,10 +717,10 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
 
   const handleSheetsSync = async () => {
     setSheetsSyncing(true);
-    const result = await syncBookingsToSheet(bookings);
+    const result = await syncBookingsToSheet(bookings, getEventTypes());
     setSheetsSyncing(false);
     if (result.ok && result.url) {
-      toast.success(`Synced ${result.rows} bookings to Google Sheets`);
+      toast.success(`Synced ${result.rows} bookings to Google Sheets (${result.columns || ""} columns)`);
       window.open(result.url, "_blank");
     } else if (result.needsReauth) {
       toast.error("Please reconnect Google (Settings → Google Calendar) to grant Sheets permission");

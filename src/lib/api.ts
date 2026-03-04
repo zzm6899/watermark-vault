@@ -447,12 +447,12 @@ export async function getSheetsStatus(): Promise<{ connected: boolean; spreadshe
   } catch { return { connected: false, spreadsheetId: null, spreadsheetUrl: null }; }
 }
 
-export async function syncBookingsToSheet(bookings: unknown[]): Promise<{ ok: boolean; url?: string; rows?: number; error?: string; needsReauth?: boolean }> {
+export async function syncBookingsToSheet(bookings: unknown[], eventTypes?: unknown[]): Promise<{ ok: boolean; url?: string; rows?: number; columns?: number; error?: string; needsReauth?: boolean }> {
   try {
     const res = await fetch("/api/integrations/sheets/sync", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ bookings }),
+      body: JSON.stringify({ bookings, eventTypes: eventTypes || [] }),
     });
     return await res.json();
   } catch { return { ok: false, error: "Network error" }; }
