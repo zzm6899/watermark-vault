@@ -173,10 +173,10 @@ app.get("/api/album-token/:albumId", (req, res) => {
   const { token } = req.query;
   if (!token) return res.status(400).json({ error: "Missing token" });
   const db = readDb();
-  const albumKey = `album_${albumId}`;
-  if (!db[albumKey]) return res.status(404).json({ error: "Album not found" });
+  const albums = JSON.parse(db["wv_albums"] || "[]");
+  const album = albums.find(a => a.id === albumId);
+  if (!album) return res.status(404).json({ error: "Album not found" });
   try {
-    const album = JSON.parse(db[albumKey]);
     if (album.clientToken && album.clientToken === token) {
       return res.json({ valid: true });
     }
@@ -398,11 +398,12 @@ app.post("/api/proofing/submit", async (req, res) => {
     return res.status(400).json({ error: "Missing albumId or selectedPhotoIds" });
   }
   const db = readDb();
-  const albumKey = `album_${albumId}`;
-  if (!db[albumKey]) return res.status(404).json({ error: "Album not found" });
+  const albums = JSON.parse(db["wv_albums"] || "[]");
+  const albumIdx = albums.findIndex(a => a.id === albumId);
+  if (albumIdx === -1) return res.status(404).json({ error: "Album not found" });
 
   try {
-    const album = JSON.parse(db[albumKey]);
+    const album = albums[albumIdx];
     const rounds = album.proofingRounds || [];
     const latest = rounds[rounds.length - 1];
     if (!latest) return res.status(400).json({ error: "No active proofing round" });
@@ -415,7 +416,8 @@ app.post("/api/proofing/submit", async (req, res) => {
     latest.selectedPhotoIds = selectedPhotoIds;
     if (clientNote) latest.clientNote = clientNote;
     album.proofingStage = "selections-submitted";
-    db[albumKey] = JSON.stringify(album);
+    albums[albumIdx] = album;
+    db["wv_albums"] = JSON.stringify(albums);
     writeDb(db);
 
     // Notify photographer via email if SMTP is configured
