@@ -605,7 +605,6 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [sheetsSyncing, setSheetsSyncing] = useState(false);
   const [sortKey, setSortKey] = useState<BookingSortKey>("date");
-  const [sortDir, setSortDir] = useSt
 
   // Waitlist state
   const [waitlist, setWaitlist] = useState<WaitlistEntry[]>([]);
@@ -620,7 +619,9 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
     await deleteWaitlistEntry(id);
     setWaitlist(prev => prev.filter(e => e.id !== id));
     toast.success("Removed from waitlist");
-  };ate<SortDir>("desc");
+  };
+
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [bookingSearch, setBookingSearch] = useState("");
   const [emailLogs, setEmailLogs] = useState<Record<string, { id: string; type: string; sentAt: string; openedAt?: string; subject: string; to: string }[]>>({});
   const [sendingReminder, setSendingReminder] = useState<string | null>(null);
