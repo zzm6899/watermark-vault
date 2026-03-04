@@ -506,7 +506,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
   const sortedBookings = [...filteredBookings].sort((a, b) => {
     const dir = sortDir === "asc" ? 1 : -1;
     switch (sortKey) {
-      case "date": return dir * (new Date(a.createdAt || a.date).getTime() - new Date(b.createdAt || b.date).getTime());
+      case "date": return dir * ((new Date(`${a.date}T${a.time || "00:00"}:00`).getTime()) - (new Date(`${b.date}T${b.time || "00:00"}:00`).getTime()));
       case "name": return dir * (a.clientName || "").localeCompare(b.clientName || "");
       case "type": return dir * (a.type || "").localeCompare(b.type || "");
       case "instagram": return dir * (a.instagramHandle || "").localeCompare(b.instagramHandle || "");
@@ -2919,6 +2919,12 @@ function StorageView() {
   const bookings = getBookings();
   const eventTypes = getEventTypes();
 
+  // Refresh from storage on mount so we always show current counts
+  useEffect(() => {
+    setAlbumsState(getAlbums());
+    setLibraryPhotosState(getPhotoLibrary());
+  }, []);
+
   const [serverStats, setServerStats] = useState<{
     totalBytes: number;
     photoCount: number;
@@ -3121,6 +3127,7 @@ function StorageView() {
           <div className="p-4 rounded-lg bg-secondary/50 border border-border/50">
             <p className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1">Library Photos</p>
             <p className="font-display text-xl text-foreground">{totalLibraryPhotos}</p>
+            <p className="text-[10px] font-body text-muted-foreground">{totalAlbumPhotos} in albums</p>
           </div>
           <div className="p-4 rounded-lg bg-secondary/50 border border-border/50">
             <p className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1">Download Requests</p>
