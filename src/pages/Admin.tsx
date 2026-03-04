@@ -233,6 +233,11 @@ function DashboardView() {
     ? (totalSessionRemMins > 0 ? `${totalSessionHours}h ${totalSessionRemMins}m` : `${totalSessionHours}h`)
     : `${totalSessionMins}m`;
 
+  const todayStr = new Date().toISOString().split("T")[0];
+  const upcomingBookings = bookings
+    .filter(b => b.status !== "cancelled" && b.date >= todayStr)
+    .sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
+
   const stats = [
     { label: "Total Bookings", value: bookings.length, icon: Calendar, color: "text-primary" },
     { label: "Paid", value: `$${paidIncome}`, icon: DollarSign, color: "text-green-400" },
@@ -500,13 +505,13 @@ function DashboardView() {
         </>
       )}
 
-      {/* ── Recent Bookings — compact cards on mobile, table on md+ ── */}
-      {bookings.length > 0 && (
+      {/* ── Upcoming Bookings — compact cards on mobile, table on md+ ── */}
+      {upcomingBookings.length > 0 && (
         <>
-          <h3 className="font-display text-base text-foreground mb-3">Recent Bookings</h3>
+          <h3 className="font-display text-base text-foreground mb-3">Upcoming Bookings</h3>
           {/* Mobile cards */}
           <div className="md:hidden space-y-2 mb-6">
-            {bookings.slice(-8).reverse().map((b) => (
+            {upcomingBookings.map((b) => (
               <div key={b.id} className="glass-panel rounded-xl p-3">
                 <div className="flex items-start justify-between gap-2 mb-1.5">
                   <div className="min-w-0">
@@ -557,7 +562,7 @@ function DashboardView() {
                   </tr>
                 </thead>
                 <tbody>
-                  {bookings.slice(-8).reverse().map((b) => (
+                  {upcomingBookings.map((b) => (
                     <tr key={b.id} className="border-b border-border/50 hover:bg-secondary/30 transition-colors">
                       <td className="p-4 text-sm font-body text-foreground">{b.clientName}</td>
                       {settings.instagramFieldEnabled && <td className="p-4 text-sm font-body text-muted-foreground">{b.instagramHandle || "—"}</td>}
