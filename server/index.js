@@ -433,66 +433,61 @@ app.post("/api/proofing/submit", async (req, res) => {
     db["wv_albums"] = JSON.stringify(albums);
     writeDb(db);
 
-    // Notify photographer via email if SMTP is configured
-    try {
-      const adminRaw = db["wv_admin"];
-      const adminEmail = adminRaw ? JSON.parse(adminRaw)?.email : null;
-      const notifyEmail = adminEmail || process.env.NOTIFY_EMAIL;
-      const transporter = getTransporter();
-      if (notifyEmail && transporter) {
-        await transporter.sendMail({
-          from: getFromAddress(),
-          to: notifyEmail,
-          subject: `📸 ${album.clientName || "Client"} submitted proofing picks — ${album.title}`,
-          html: `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;">
-            <h2 style="margin:0 0 16px;font-size:20px;">New Proofing Selections</h2>
-            <p style="color:#9ca3af;margin:0 0 12px;"><strong style="color:#e5e7eb;">${album.clientName || "Client"}</strong> has submitted their picks for <strong style="color:#e5e7eb;">${album.title}</strong>.</p>
-            <p style="color:#9ca3af;margin:0 0 20px;">They selected <strong style="color:#a78bfa;">${selectedPhotoIds.length} photo${selectedPhotoIds.length !== 1 ? "s" : ""}</strong> out of ${album.photos?.length || "?"} total.${clientNote ? `<br>Client note: <em>"${clientNote}"</em>` : ""}</p>
-            <a href="${process.env.APP_URL || ""}/admin" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">Review in Admin →</a>
-          </div>`,
-        }).catch(() => {});
-      }
-    } catch {}
-
-    // Also send Discord webhook if configured — rich embed
-    try {
-      const settingsRaw = null; // unused
-      const settings = dbGet(db, "wv_settings", {});
-      if (settings.discordWebhookUrl) {
-        const adminUrl = `${process.env.APP_URL || ""}/admin`;
-        const fields = [
-          { name: "Album", value: album.title || "—", inline: true },
-          { name: "Client", value: album.clientName || "—", inline: true },
-          { name: "Photos selected", value: `${selectedPhotoIds.length} of ${album.photos?.length || "?"}`, inline: true },
-        ];
-        if (clientNote) fields.push({ name: "Client note", value: `"${clientNote}"`, inline: false });
-        await fetch(settings.discordWebhookUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            embeds: [{
-              title: "📸 Proofing picks submitted",
-              description: `**${album.clientName || "Client"}** has submitted their selections for **${album.title}**.`,
-              color: 0xf59e0b, // amber
-              fields,
-              footer: { text: "Watermark Vault · Proofing" },
-              timestamp: new Date().toISOString(),
-            }],
-            components: [{
-              type: 1,
-              components: [{
-                type: 2,
-                style: 5,
-                label: "Review in Admin",
-                url: adminUrl,
-              }],
-            }],
-          }),
-        }).catch(() => {});
-      }
-    } catch {}
-
+    // Respond immediately — don't let email/discord delay the client
     res.json({ ok: true });
+
+    // Background: notify photographer via email + Discord
+    setImmediate(async () => {
+      // Email notification
+      try {
+        const adminRaw = db["wv_admin"];
+        const adminEmail = adminRaw ? JSON.parse(adminRaw)?.email : null;
+        const notifyEmail = adminEmail || process.env.NOTIFY_EMAIL;
+        const transporter = getTransporter();
+        if (notifyEmail && transporter) {
+          await transporter.sendMail({
+            from: getFromAddress(),
+            to: notifyEmail,
+            subject: `📸 ${album.clientName || "Client"} submitted proofing picks — ${album.title}`,
+            html: `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;">
+              <h2 style="margin:0 0 16px;font-size:20px;">New Proofing Selections</h2>
+              <p style="color:#9ca3af;margin:0 0 12px;"><strong style="color:#e5e7eb;">${album.clientName || "Client"}</strong> has submitted their picks for <strong style="color:#e5e7eb;">${album.title}</strong>.</p>
+              <p style="color:#9ca3af;margin:0 0 20px;">They selected <strong style="color:#a78bfa;">${selectedPhotoIds.length} photo${selectedPhotoIds.length !== 1 ? "s" : ""}</strong> out of ${album.photos?.length || "?"} total.${clientNote ? `<br>Client note: <em>"${clientNote}"</em>` : ""}</p>
+              <a href="${process.env.APP_URL || ""}/admin" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">Review in Admin →</a>
+            </div>`,
+          }).catch(() => {});
+        }
+      } catch {}
+
+      // Discord webhook
+      try {
+        const settings = dbGet(db, "wv_settings", {});
+        if (settings.discordWebhookUrl) {
+          const adminUrl = `${process.env.APP_URL || ""}/admin`;
+          const fields = [
+            { name: "Album", value: album.title || "—", inline: true },
+            { name: "Client", value: album.clientName || "—", inline: true },
+            { name: "Photos selected", value: `${selectedPhotoIds.length} of ${album.photos?.length || "?"}`, inline: true },
+          ];
+          if (clientNote) fields.push({ name: "Client note", value: `"${clientNote}"`, inline: false });
+          await fetch(settings.discordWebhookUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              embeds: [{
+                title: "📸 Proofing picks submitted",
+                description: `**${album.clientName || "Client"}** has submitted their selections for **${album.title}**.`,
+                color: 0xf59e0b,
+                fields,
+                footer: { text: "Watermark Vault · Proofing" },
+                timestamp: new Date().toISOString(),
+              }],
+              components: [{ type: 1, components: [{ type: 2, style: 5, label: "Review in Admin", url: adminUrl }] }],
+            }),
+          }).catch(() => {});
+        }
+      } catch {}
+    });
   } catch (err) {
     console.error("Proofing submit error:", err);
     res.status(500).json({ error: err.message });

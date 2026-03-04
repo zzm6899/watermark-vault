@@ -2032,7 +2032,24 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
   const [liveAlbum, setLiveAlbum] = useState<Album | null>(album);
   const updateLiveAlbum = (updated: Album) => { updateAlbum(updated); setLiveAlbum(updated); };
   // Sync liveAlbum when parent refreshes the album prop (e.g. from server polling)
-  useEffect(() => { if (album) setLiveAlbum(album); }, [album]);
+  // But only update if the incoming album has newer/more data to avoid overwriting live edits
+  useEffect(() => {
+    if (!album) return;
+    setLiveAlbum(prev => {
+      if (!prev) return album;
+      // Prefer whichever has more proofing round data (more picks = server has caught up)
+      const prevPicks = prev.proofingRounds?.flatMap(r => r.selectedPhotoIds || []).length ?? 0;
+      const newPicks = album.proofingRounds?.flatMap(r => r.selectedPhotoIds || []).length ?? 0;
+      const prevStage = prev.proofingStage ?? "not-started";
+      const newStage = album.proofingStage ?? "not-started";
+      const stageOrder = ["not-started", "proofing", "selections-submitted", "editing", "finals-delivered"];
+      const prevStageIdx = stageOrder.indexOf(prevStage);
+      const newStageIdx = stageOrder.indexOf(newStage);
+      // Accept incoming if it has more picks OR is at a later stage
+      if (newPicks > prevPicks || newStageIdx > prevStageIdx) return album;
+      return prev;
+    });
+  }, [album]);
   const [downloadExpiresAt, setDownloadExpiresAt] = useState(album?.downloadExpiresAt || "");
   const [displaySize, setDisplaySize] = useState<AlbumDisplaySize>(album?.displaySize || "medium");
 
