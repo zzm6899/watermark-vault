@@ -281,10 +281,11 @@ export default function AlbumDetail() {
         body: JSON.stringify({ albumId: album.id, selectedPhotoIds: picked, clientNote: proofingClientNote }),
       });
       if (!res.ok) throw new Error("Server error");
-      // Optimistically update local state so UI reflects submission immediately
+      // Update local UI state only — don't call updateAlbum here or it will
+      // overwrite the server's picks data (selectedPhotoIds in rounds) with our
+      // stale local version that doesn't have them yet
       const updated = { ...album, proofingStage: "selections-submitted" as const };
       setAlbumState(updated);
-      updateAlbum(updated);
       setProofingSubmitted(true);
       toast.success(`${picked.length} photo${picked.length !== 1 ? "s" : ""} submitted — the photographer will be in touch!`);
     } catch {

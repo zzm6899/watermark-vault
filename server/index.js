@@ -176,6 +176,23 @@ app.delete("/api/upload/:filename", (req, res) => {
   }
 });
 
+app.post("/api/upload/bulk-delete", (req, res) => {
+  const { filenames } = req.body;
+  if (!Array.isArray(filenames)) return res.status(400).json({ error: "filenames must be an array" });
+  let deleted = 0;
+  const errors = [];
+  for (const name of filenames) {
+    const safeName = path.basename(name);
+    const filepath = path.join(UPLOADS_DIR, safeName);
+    try {
+      if (fs.existsSync(filepath)) { fs.unlinkSync(filepath); deleted++; }
+    } catch (err) {
+      errors.push(safeName);
+    }
+  }
+  res.json({ ok: true, deleted, errors });
+});
+
 // ── Magic link token verify ───────────────────────────────
 // Called by AlbumDetail on load when ?token= is in the URL.
 // Returns the album if the token matches — grants access without PIN.

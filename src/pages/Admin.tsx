@@ -2553,6 +2553,7 @@ function PhotosView() {
   const [uploadStats, setUploadStats] = useState<{ total: number; done: number; errors: number; savedBytes: number } | null>(null);
   const [showAddToAlbum, setShowAddToAlbum] = useState(false);
   const [viewSource, setViewSource] = useState<"all" | "library" | string>("all");
+  const [starredOnly, setStarredOnly] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [syncing, setSyncing] = useState(false);
 
@@ -2675,7 +2676,8 @@ function PhotosView() {
   };
 
   const starredPhotos = allPhotos.filter(p => (p as any).starred);
-  const unfilteredPhotos = viewSource === "all" ? allPhotos : viewSource === "library" ? libraryPhotos.map(p => ({ ...p, source: "Library" })) : viewSource === "starred" ? starredPhotos : getAlbumPhotos(viewSource);
+  const sourcePhotos = viewSource === "all" ? allPhotos : viewSource === "library" ? libraryPhotos.map(p => ({ ...p, source: "Library" })) : getAlbumPhotos(viewSource);
+  const unfilteredPhotos = starredOnly ? sourcePhotos.filter(p => (p as any).starred) : sourcePhotos;
   const displayPhotos = searchQuery.trim()
     ? unfilteredPhotos.filter(p => p.title.toLowerCase().includes(searchQuery.trim().toLowerCase()) || p.src.toLowerCase().includes(searchQuery.trim().toLowerCase()))
     : unfilteredPhotos;
@@ -2936,7 +2938,7 @@ function PhotosView() {
           Library ({libraryPhotos.length})
         </button>
         {starredPhotos.length > 0 && (
-          <button onClick={() => setViewSource("starred")} className={`text-xs font-body px-3 py-1.5 rounded-full whitespace-nowrap transition-all ${viewSource === "starred" ? "bg-yellow-500 text-black" : "bg-secondary text-yellow-400 hover:text-yellow-300"}`}>
+          <button onClick={() => setStarredOnly(p => !p)} className={`text-xs font-body px-3 py-1.5 rounded-full whitespace-nowrap transition-all ${starredOnly ? "bg-yellow-500 text-black" : "bg-secondary text-yellow-400 hover:text-yellow-300"}`}>
             ⭐ Starred ({starredPhotos.length})
           </button>
         )}
