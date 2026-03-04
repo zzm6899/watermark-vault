@@ -194,6 +194,8 @@ export async function createBookingCheckout(params: {
 
 export async function createAlbumCheckout(params: {
   albumId: string; albumTitle: string; photoCount: number; amount: number; clientEmail?: string;
+  photoIds?: string[];
+  isFullAlbum?: boolean;
 }): Promise<{ url?: string; error?: string }> {
   try {
     const res = await fetch("/api/stripe/checkout/album", {
