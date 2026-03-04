@@ -628,46 +628,6 @@ async function sendBookingReminders() {
     writeDb(db);
   }
 }
-      bk.remindersSent = sent;
-      changed = true;
-
-      const sessionDate = new Date(`${bk.date}T${bk.time}:00`).toLocaleString("en-AU", {
-        weekday: "long", day: "numeric", month: "long",
-        hour: "numeric", minute: "2-digit", hour12: true,
-      });
-
-      try {
-        await fetch(`http://localhost:${PORT}/api/email/send`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            to: bk.clientEmail,
-            subject: `📸 Reminder: your session is ${label} — ${bk.type || "Photography"}`,
-            html: `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;">
-              <h2 style="margin:0 0 16px;font-size:20px;">See you ${label}! 📸</h2>
-              <p style="color:#9ca3af;margin:0 0 8px;">Hi ${bk.clientName || "there"},</p>
-              <p style="color:#9ca3af;margin:0 0 20px;">Just a reminder about your upcoming session:</p>
-              <div style="background:#1a1a1a;border-radius:8px;padding:16px;margin-bottom:20px;">
-                <p style="margin:0 0 6px;font-size:14px;color:#e5e7eb;font-weight:600;">${bk.type || "Photography Session"}</p>
-                <p style="margin:0;font-size:13px;color:#9ca3af;">📅 ${sessionDate}</p>
-                ${bk.duration ? `<p style="margin:4px 0 0;font-size:13px;color:#9ca3af;">⏱ ${bk.duration} minutes</p>` : ""}
-              </div>
-              ${bk.modifyToken ? `<a href="${process.env.APP_URL || ""}/booking/modify/${bk.modifyToken}" style="display:inline-block;background:#1f1f1f;color:#9ca3af;border:1px solid #2a2a2a;padding:10px 20px;border-radius:8px;text-decoration:none;font-size:13px;">Need to reschedule?</a>` : ""}
-            </div>`,
-          }),
-        });
-        console.log(`📧 ${key} reminder sent to ${bk.clientEmail} for booking ${bk.id}`);
-      } catch (e) {
-        console.error(`Failed to send ${key} reminder for ${bk.id}:`, e.message);
-      }
-    }
-  }
-
-  if (changed) {
-    db["wv_bookings"] = JSON.stringify(bookings);
-    writeDb(db);
-  }
-}
 
 // Run once on startup (catches any missed reminders after a restart), then every hour
 setTimeout(sendBookingReminders, 30000); // 30s delay so SMTP is ready
