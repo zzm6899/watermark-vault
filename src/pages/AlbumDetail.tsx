@@ -1,7 +1,7 @@
 import { useParams, useSearchParams } from "react-router-dom";
 import { useState, useCallback, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Info, Building2, Copy, Check as CheckIcon, Lock, Download, Grid, List, LayoutGrid, CreditCard, X, ChevronLeft, ChevronRight, Star, Camera, CheckCircle2, Clock, Sparkles } from "lucide-react";
+import { Info, Building2, Copy, Check as CheckIcon, Lock, Download, Grid, List, LayoutGrid, CreditCard, X, ChevronLeft, ChevronRight, Star, Camera, CheckCircle2, Clock, Sparkles, Maximize2 } from "lucide-react";
 import Header from "@/components/Header";
 import Footer from "@/components/Footer";
 import WatermarkedImage from "@/components/WatermarkedImage";
@@ -563,7 +563,7 @@ export default function AlbumDetail() {
                 src={photo.thumbnail || photo.src}
                   title={photo.title}
                   selected={isProofing ? starredIds.has(photo.id) : selectedIds.has(photo.id)}
-                  onSelect={() => isProofing ? toggleStar(photo.id) : setLightboxIndex(i)}
+                  onSelect={() => isProofing ? toggleStar(photo.id) : toggleSelect(photo.id)}
                   locked={!isProofing && !isPhotoPaid(photo.id) && freeRemaining <= 0 && !selectedIds.has(photo.id)}
                   index={i}
                   showWatermark={!isPhotoPaid(photo.id)}
@@ -573,6 +573,21 @@ export default function AlbumDetail() {
                   watermarkOpacity={settings.watermarkOpacity}
                   watermarkSize={settings.watermarkSize ?? 40}
                 />
+                  {/* Expand button */}
+                  {!isProofing && (
+                    <button
+                      onClick={e => { e.stopPropagation(); setLightboxIndex(i); }}
+                      className="absolute top-2 left-2 w-7 h-7 rounded-full bg-black/50 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity z-10"
+                    >
+                      <Maximize2 className="w-3 h-3" />
+                    </button>
+                  )}
+                  {/* Selected checkmark */}
+                  {!isProofing && selectedIds.has(photo.id) && (
+                    <div className="absolute top-2 right-2 w-6 h-6 rounded-full bg-primary flex items-center justify-center pointer-events-none">
+                      <CheckIcon className="w-3.5 h-3.5 text-primary-foreground" />
+                    </div>
+                  )}
                   {isProofing && (
                     <button
                       onClick={() => toggleStar(photo.id)}

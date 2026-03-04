@@ -233,9 +233,14 @@ function DashboardView() {
     ? (totalSessionRemMins > 0 ? `${totalSessionHours}h ${totalSessionRemMins}m` : `${totalSessionHours}h`)
     : `${totalSessionMins}m`;
 
+  const todayDateStr = new Date().toISOString().split("T")[0];
   const upcomingBookings = bookings
-    .filter(b => b.status !== "cancelled" && b.date >= new Date().toISOString().split("T")[0])
+    .filter(b => b.status !== "cancelled" && b.date >= todayDateStr)
     .sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
+  const recentPastBookings = bookings
+    .filter(b => b.date < todayDateStr)
+    .sort((a, b) => b.date.localeCompare(a.date) || b.time.localeCompare(a.time))
+    .slice(0, 5); // last 5 past sessions
 
   const stats = [
     { label: "Total Bookings", value: bookings.length, icon: Calendar, color: "text-primary" },
@@ -596,6 +601,32 @@ function DashboardView() {
                 </tbody>
               </table>
             </div>
+          </div>
+        </>
+      )}
+
+      {/* ── Recent Past Bookings ── */}
+      {recentPastBookings.length > 0 && (
+        <>
+          <h3 className="font-display text-base text-foreground mb-3 flex items-center gap-2">
+            <Clock className="w-4 h-4 text-muted-foreground/50" /> Recent Past
+          </h3>
+          <div className="space-y-2 mb-6">
+            {recentPastBookings.map(b => (
+              <div key={b.id} className="glass-panel rounded-xl p-3 opacity-60">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="text-sm font-body text-foreground font-medium truncate">{b.clientName}</p>
+                    <p className="text-xs font-body text-muted-foreground">{b.date} · {b.time} · {b.type}</p>
+                  </div>
+                  <span className={`text-[9px] font-body px-1.5 py-0.5 rounded-full shrink-0 ${
+                    b.status === "completed" ? "bg-green-500/10 text-green-400" :
+                    b.status === "cancelled" ? "bg-destructive/10 text-destructive" :
+                    "bg-primary/10 text-primary"
+                  }`}>{b.status}</span>
+                </div>
+              </div>
+            ))}
           </div>
         </>
       )}
@@ -1973,6 +2004,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onCa
   const [coverImage, setCoverImage] = useState(album?.coverImage || "");
   const [accessCode, setAccessCode] = useState(album?.accessCode || "");
   const [allUnlocked, setAllUnlocked] = useState(album?.allUnlocked || false);
+  const [albumProofingEnabled, setAlbumProofingEnabled] = useState(album?.proofingEnabled || false);
   const [downloadExpiresAt, setDownloadExpiresAt] = useState(album?.downloadExpiresAt || "");
   const [displaySize, setDisplaySize] = useState<AlbumDisplaySize>(album?.displaySize || "medium");
 
@@ -2059,6 +2091,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onCa
       mergedFrom: album?.mergedFrom,
       allUnlocked,
       downloadExpiresAt: downloadExpiresAt || undefined,
+      proofingEnabled: albumProofingEnabled,
       displaySize,
       usedFreeDownloads: album?.usedFreeDownloads,
       downloadRequests: album?.downloadRequests,
@@ -2204,20 +2237,19 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onCa
           </div>
           <button
             onClick={() => {
-              const updated = { ...album, proofingEnabled: !album.proofingEnabled };
-              updateAlbum(updated);
-              toast.success(updated.proofingEnabled ? "Proofing enabled for this album" : "Proofing disabled for this album");
+              setAlbumProofingEnabled(!albumProofingEnabled);
+              toast.success(!albumProofingEnabled ? "Proofing enabled for this album" : "Proofing disabled for this album");
             }}
-            className={`relative rounded-full transition-colors shrink-0 ${album.proofingEnabled ? "bg-primary" : "bg-border"}`}
+            className={`relative rounded-full transition-colors shrink-0 ${albumProofingEnabled ? "bg-primary" : "bg-border"}`}
             style={{ height: "22px", width: "40px" }}
           >
-            <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${album.proofingEnabled ? "translate-x-5" : "translate-x-0.5"}`} />
+            <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${albumProofingEnabled ? "translate-x-5" : "translate-x-0.5"}`} />
           </button>
         </div>
       )}
 
       {/* ── Proofing Controls ─────────────────────────────── */}
-      {album && settings.proofingEnabled && album.proofingEnabled && (() => {
+      {album && settings.proofingEnabled && albumProofingEnabled && (() => {
         const stage = album.proofingStage || "not-started";
         const rounds = album.proofingRounds || [];
         const latest = rounds[rounds.length - 1];
