@@ -468,9 +468,16 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
   };
 
   const handleStatusChange = (bk: Booking, status: Booking["status"]) => {
-    updateBooking({ ...bk, status });
+    const updated = { ...bk, status };
+    updateBooking(updated);
     setBookingsState(getBookings());
     toast.success(`Booking ${status}`);
+    // Push status change to Google Calendar (updates event color)
+    if (bk.gcalEventId || status !== "cancelled") {
+      syncBookingToCalendar(updated).then(res => {
+        if (res?.eventId) updateBooking({ ...updated, gcalEventId: res.eventId });
+      }).catch(() => {});
+    }
   };
 
   const handlePaymentChange = async (bk: Booking, paymentStatus: PaymentStatus) => {

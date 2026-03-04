@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button";
 import Footer from "@/components/Footer";
 import { toast } from "sonner";
 import { getBookings, updateBooking, getEventTypes, getProfile, getSettings, isSlotBooked } from "@/lib/storage";
-import { createBookingCheckout, getStripeStatus } from "@/lib/api";
+import { createBookingCheckout, getStripeStatus, syncBookingToCalendar } from "@/lib/api";
 import type { EventType, Booking } from "@/lib/types";
 
 function formatDuration(mins: number) {
@@ -97,6 +97,10 @@ export default function BookingModify() {
     const updated = { ...booking, status: "cancelled" as const };
     updateBooking(updated);
     setBooking(updated);
+    // Update calendar event to reflect cancellation (changes event color to grey)
+    if (booking.gcalEventId) {
+      syncBookingToCalendar(updated).catch(() => {});
+    }
   }, [booking]);
 
   const handleReschedule = useCallback(() => {
@@ -106,6 +110,10 @@ export default function BookingModify() {
     const updated = { ...booking, date: dateStr, time: selectedTime };
     updateBooking(updated);
     setBooking(updated);
+    // Push reschedule to Google Calendar — update existing event if we have its ID
+    syncBookingToCalendar(updated).then(res => {
+      if (res?.eventId) updateBooking({ ...updated, gcalEventId: res.eventId });
+    }).catch(() => {});
     setMode("done");
   }, [booking, selectedDate, selectedTime]);
 

@@ -358,7 +358,10 @@ export default function Booking() {
     const booking = buildBookingRecord("none");
     if (!booking) return;
     addBooking(booking);
-    syncBookingToCalendar(booking).catch(() => {});
+    // Save gcalEventId back to the booking so future syncs update rather than duplicate
+    syncBookingToCalendar(booking).then(res => {
+      if (res?.eventId) updateBooking({ ...booking, gcalEventId: res.eventId });
+    }).catch(() => {});
     if (booking.clientEmail) {
       sendBookingEmail({
         to: booking.clientEmail,
@@ -385,7 +388,7 @@ export default function Booking() {
     const booking = buildBookingRecord(paymentMethod);
     if (!booking) return;
     addBooking(booking);
-    syncBookingToCalendar(booking).catch(() => {});
+    syncBookingToCalendar(booking).then(res => { if (res?.eventId) updateBooking({ ...booking, gcalEventId: res.eventId }); }).catch(() => {});
     if (booking.clientEmail) {
       sendBookingEmail({
         to: booking.clientEmail,
@@ -771,7 +774,7 @@ export default function Booking() {
                   const newBooking = buildBookingRecord("stripe");
                   if (!newBooking) { setProcessingPayment(false); return; }
                   addBooking(newBooking);
-                  syncBookingToCalendar(newBooking).catch(() => {});
+                  syncBookingToCalendar(newBooking).then(res => { if (res?.eventId) updateBooking({ ...newBooking, gcalEventId: res.eventId }); }).catch(() => {});
                   localStorage.setItem("lastBookingId", newBooking.id);
                   setLastBookingId(newBooking.id);
                   bookingId = newBooking.id;

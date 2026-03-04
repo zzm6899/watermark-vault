@@ -51,9 +51,51 @@ function saveCalSettings(s) {
   fs.writeFileSync(SETTINGS_FILE, JSON.stringify({ ...loadCalSettings(), ...s }, null, 2));
 }
 
+// ── Persist gcalEventId back to db.json ──────────────────────
+function saveGcalEventId(bookingId, gcalEventId) {
+  if (!bookingId || !gcalEventId) return;
+  const fs = require("fs");
+  const path = require("path");
+  const DB_FILE = path.join(process.env.DATA_DIR || "/data", "db.json");
+  try {
+    const db = JSON.parse(fs.readFileSync(DB_FILE, "utf-8"));
+    const bookings = db.wv_bookings ? JSON.parse(db.wv_bookings) : [];
+    const idx = bookings.findIndex(b => b.id === bookingId);
+    if (idx >= 0 && bookings[idx].gcalEventId !== gcalEventId) {
+      bookings[idx].gcalEventId = gcalEventId;
+      db.wv_bookings = JSON.stringify(bookings);
+      fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
+    }
+  } catch (e) {
+    console.warn("saveGcalEventId failed:", e.message);
+  }
+}
+
 // ── Event builder ─────────────────────────────────────────────
 function buildEvent(booking) {
-  const startDate = new Date(`${booking.date}T${booking.time}:00`);
+  // Build ISO string with the configured timezone offset to avoid server-TZ issues.
+  // We pass timeZone to Google and let them handle DST — we just need a stable wall-clock ISO string.
+  // Using a simple approach: tell Node to interpret the time in the target TZ via Intl.
+  function toTZIso(dateStr, timeStr, tz) {
+    // Parse as if it's in the target TZ by getting the UTC offset at that moment
+    const naive = new Date(`${dateStr}T${timeStr}:00`);
+    // Get what the local time is in target TZ for this naive date
+    const tzFormatter = new Intl.DateTimeFormat("en-CA", {
+      timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+    });
+    const parts = tzFormatter.formatToParts(naive);
+    const get = (t) => parts.find(p => p.type === t)?.value || "00";
+    // Build a date that treats the input as wall-clock time in TZ
+    const isoLocal = `${dateStr}T${timeStr}:00`;
+    // Compute the UTC offset for this date in TZ using a reference
+    const utcStr = new Date(`${dateStr}T${timeStr}:00Z`).toLocaleString("en-US", { timeZone: tz });
+    const utcRef = new Date(utcStr);
+    const tzDate = new Date(`${dateStr}T${timeStr}:00Z`);
+    const offsetMs = tzDate - utcRef;
+    return new Date(tzDate.getTime() + offsetMs);
+  }
+  const startDate = toTZIso(booking.date, booking.time, TZ);
   const endDate   = new Date(startDate.getTime() + (booking.duration || 60) * 60000);
   return {
     summary: `📸 ${booking.type || "Session"} — ${booking.clientName}`,
@@ -196,9 +238,12 @@ function registerRoutes(app) {
         const { data } = await cal.events.update({
           calendarId: calId, eventId: booking.gcalEventId, requestBody: buildEvent(booking),
         });
+        saveGcalEventId(booking.id, data.id);
         return res.json({ ok: true, eventId: data.id, updated: true });
       }
       const { data } = await cal.events.insert({ calendarId: calId, requestBody: buildEvent(booking) });
+      // Persist gcalEventId back to db.json so future syncs can update instead of duplicate
+      saveGcalEventId(booking.id, data.id);
       res.json({ ok: true, eventId: data.id, htmlLink: data.htmlLink });
     } catch (err) {
       console.error("Calendar event error:", err.message);
@@ -308,16 +353,19 @@ function registerRoutes(app) {
       console.warn("Could not list calendar events:", err.message);
     }
 
-    // Step 2: Upsert all active bookings
+    // Step 2: Upsert all active bookings and write gcalEventIds back to db
     let created = 0, updated = 0, errors = 0;
     for (const booking of Object.values(activeBookingsById)) {
       try {
         const existId = existingEventIdByBookingId[booking.id] || booking.gcalEventId;
         if (existId) {
-          await cal.events.update({ calendarId: calId, eventId: existId, requestBody: buildEvent(booking) });
+          const { data } = await cal.events.update({ calendarId: calId, eventId: existId, requestBody: buildEvent(booking) });
+          saveGcalEventId(booking.id, data.id);
           updated++;
         } else {
-          await cal.events.insert({ calendarId: calId, requestBody: buildEvent(booking) });
+          const { data } = await cal.events.insert({ calendarId: calId, requestBody: buildEvent(booking) });
+          // Save the new event ID so future syncs update instead of duplicate
+          saveGcalEventId(booking.id, data.id);
           created++;
         }
       } catch (e) {
