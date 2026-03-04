@@ -1,6 +1,6 @@
 import type {
   EventType, Booking, Album, Photo, ProfileSettings,
-  AppSettings, AdminCredentials, BankTransferSettings, EmailTemplate,
+  AppSettings, AdminCredentials, BankTransferSettings, WaitlistEntry,
 } from "./types";
 import { persistToServer } from "./api";
 
@@ -19,22 +19,7 @@ const KEYS = {
 function get<T>(key: string, fallback: T): T {
   try {
     const raw = localStorage.getItem(key);
-    if (!raw) return fallback;
-    const parsed = JSON.parse(raw);
-
-    // Recovery path: handle accidentally double-encoded JSON strings
-    if (typeof parsed === "string") {
-      const t = parsed.trim();
-      if ((t.startsWith("[") && t.endsWith("]")) || (t.startsWith("{") && t.endsWith("}"))) {
-        try {
-          return JSON.parse(parsed) as T;
-        } catch {
-          return parsed as T;
-        }
-      }
-    }
-
-    return parsed as T;
+    return raw ? JSON.parse(raw) : fallback;
   } catch {
     return fallback;
   }
@@ -101,14 +86,7 @@ export function setProfile(p: ProfileSettings) {
 
 // ── Event Types ─────────────────────────────────────
 export function getEventTypes(): EventType[] {
-  const raw = get<EventType[]>(KEYS.EVENT_TYPES, []);
-  // Defensive: ensure every event type has valid questions array and availability
-  return raw.map(et => ({
-    ...et,
-    questions: Array.isArray(et.questions) ? et.questions : [],
-    availability: et.availability || { recurring: [], specificDates: [], blockedDates: [] },
-    durations: Array.isArray(et.durations) ? et.durations : [30],
-  }));
+  return get<EventType[]>(KEYS.EVENT_TYPES, []);
 }
 
 export function setEventTypes(ets: EventType[]) {
@@ -221,6 +199,7 @@ const defaultSettings: AppSettings = {
   instagramFieldEnabled: true,
   notificationEmailTemplate: "Hey {name}, your photos are ready! Check them out here: {link}",
   discordWebhookUrl: "",
+  proofingEnabled: false,
 };
 
 export function getSettings(): AppSettings {
@@ -264,25 +243,25 @@ export function setPhotoLibrary(photos: Photo[]) {
   set("wv_photo_library", photos);
 }
 
-// ── Email Templates ────────────────────────────────
-export function getEmailTemplates(): EmailTemplate[] {
-  return get<EmailTemplate[]>("wv_email_templates", []);
+// ── Waitlist ────────────────────────────────────────
+export function getWaitlist(): WaitlistEntry[] {
+  return get<WaitlistEntry[]>("wv_waitlist", []);
 }
 
-export function setEmailTemplates(templates: EmailTemplate[]) {
-  set("wv_email_templates", templates);
+export function setWaitlist(entries: WaitlistEntry[]) {
+  set("wv_waitlist", entries);
 }
 
-export function addEmailTemplate(t: EmailTemplate) {
-  const list = getEmailTemplates();
-  list.push(t);
-  setEmailTemplates(list);
+export function addWaitlistEntry(entry: WaitlistEntry) {
+  const list = getWaitlist();
+  list.push(entry);
+  setWaitlist(list);
 }
 
-export function updateEmailTemplate(t: EmailTemplate) {
-  setEmailTemplates(getEmailTemplates().map(e => e.id === t.id ? t : e));
+export function removeWaitlistEntry(id: string) {
+  setWaitlist(getWaitlist().filter(e => e.id !== id));
 }
 
-export function deleteEmailTemplate(id: string) {
-  setEmailTemplates(getEmailTemplates().filter(e => e.id !== id));
+export function clearWaitlistForEventDate(eventTypeId: string, date: string) {
+  setWaitlist(getWaitlist().filter(e => !(e.eventTypeId === eventTypeId && e.date === date)));
 }

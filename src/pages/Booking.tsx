@@ -4,7 +4,7 @@ import {
   Clock, ChevronLeft, ChevronRight, ArrowLeft, Globe,
   CalendarDays, Upload, CheckCircle2, AlertCircle, Camera,
   MapPin, Calendar as CalendarIcon, ExternalLink, XCircle, Edit,
-  CreditCard, Building2, Copy, Check as CheckIcon
+  CreditCard, Bell, Users, Building2, Copy, Check as CheckIcon
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,7 +12,7 @@ import { Textarea } from "@/components/ui/textarea";
 import Footer from "@/components/Footer";
 import { toast } from "sonner";
 import { getEventTypes, getProfile, addBooking, getBookings, getSettings, isSlotBooked, updateBooking } from "@/lib/storage";
-import { syncBookingToCalendar, createBookingCheckout, getStripeStatus, sendBookingConfirmationEmail, getGoogleBusyTimes } from "@/lib/api";
+import { syncBookingToCalendar, createBookingCheckout, getStripeStatus, sendBookingConfirmationEmail, getGoogleBusyTimes, joinWaitlist } from "@/lib/api";
 import type { EventType, QuestionField } from "@/lib/types";
 import { RichTextDisplay } from "@/components/RichTextEditor";
 
@@ -216,6 +216,14 @@ export default function Booking() {
   const [use24h, setUse24h] = useState(false);
   const [timerActive, setTimerActive] = useState(false);
   const [lastBookingId, setLastBookingId] = useState<string | null>(restoredBookingId);
+
+  // Waitlist state
+  const [showWaitlist, setShowWaitlist] = useState(false);
+  const [waitlistName, setWaitlistName] = useState("");
+  const [waitlistEmail, setWaitlistEmail] = useState("");
+  const [waitlistNote, setWaitlistNote] = useState("");
+  const [waitlistSubmitting, setWaitlistSubmitting] = useState(false);
+  const [waitlistDone, setWaitlistDone] = useState(false);
   const [showBankDeposit, setShowBankDeposit] = useState(false);
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [stripeAvailable, setStripeAvailable] = useState(false);
@@ -277,6 +285,31 @@ export default function Booking() {
   const handleSelectTime = (time: string) => {
     setSelectedTime(time);
     setTimerActive(true);
+  };
+
+  const handleJoinWaitlist = async () => {
+    if (!selectedEvent || !selectedDate) return;
+    if (!waitlistName.trim() || !waitlistEmail.includes("@")) {
+      toast.error("Please enter your name and a valid email.");
+      return;
+    }
+    setWaitlistSubmitting(true);
+    const dateStr = toDateStr(selectedDate);
+    const result = await joinWaitlist({
+      eventTypeId: selectedEvent.id,
+      eventTypeTitle: selectedEvent.title,
+      date: dateStr,
+      clientName: waitlistName.trim(),
+      clientEmail: waitlistEmail.trim(),
+      note: waitlistNote.trim(),
+    });
+    setWaitlistSubmitting(false);
+    if (result.ok || result.duplicate) {
+      setWaitlistDone(true);
+      toast.success(result.duplicate ? "You're already on the waitlist for this date!" : "You're on the waitlist! We'll email you if a spot opens.");
+    } else {
+      toast.error("Couldn't join waitlist. Please try again.");
+    }
   };
 
   const handleSubmitQuestions = () => {
@@ -602,7 +635,7 @@ export default function Booking() {
                             const isAvailable = !isPast && isDayAvailable(selectedEvent, date);
                             const isToday = toDateStr(date) === toDateStr(new Date());
                             return (
-                              <button key={day} disabled={!isAvailable} onClick={() => { setSelectedDate(date); setSelectedTime(null); setTimerActive(false); }}
+                              <button key={day} disabled={!isAvailable} onClick={() => { setSelectedDate(date); setSelectedTime(null); setTimerActive(false); setShowWaitlist(false); setWaitlistDone(false); setWaitlistName(""); setWaitlistEmail(""); setWaitlistNote(""); }}
                                 className={`aspect-square rounded-lg text-sm font-body transition-all relative ${
                                   isSelected ? "bg-primary text-primary-foreground font-medium ring-2 ring-primary ring-offset-2 ring-offset-background"
                                     : isAvailable ? "text-foreground hover:bg-secondary"
@@ -653,7 +686,75 @@ export default function Booking() {
                                   </button>
                                 ))
                               ) : (
-                                <p className="text-sm font-body text-muted-foreground/50 text-center py-8">No slots available</p>
+                                <div className="py-6 text-center space-y-4">
+                                  {!waitlistDone ? (
+                                    <>
+                                      <div className="flex items-center justify-center gap-2 text-muted-foreground/60">
+                                        <Users className="w-4 h-4" />
+                                        <p className="text-sm font-body">No slots available on this date</p>
+                                      </div>
+                                      {!showWaitlist ? (
+                                        <button
+                                          onClick={() => setShowWaitlist(true)}
+                                          className="flex items-center gap-2 mx-auto text-xs font-body text-primary hover:text-primary/80 border border-primary/30 hover:border-primary/60 px-4 py-2 rounded-full transition-colors"
+                                        >
+                                          <Bell className="w-3.5 h-3.5" />
+                                          Join waitlist — get notified if a spot opens
+                                        </button>
+                                      ) : (
+                                        <motion.div
+                                          initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
+                                          className="glass-panel rounded-xl p-4 text-left space-y-3"
+                                        >
+                                          <div className="flex items-center justify-between">
+                                            <p className="text-xs font-display text-foreground">Join the waitlist</p>
+                                            <button onClick={() => setShowWaitlist(false)} className="text-muted-foreground/50 hover:text-muted-foreground">
+                                              <XCircle className="w-3.5 h-3.5" />
+                                            </button>
+                                          </div>
+                                          <input
+                                            type="text"
+                                            value={waitlistName}
+                                            onChange={e => setWaitlistName(e.target.value)}
+                                            placeholder="Your name"
+                                            className="w-full bg-secondary border border-border rounded-lg px-3 py-2 text-xs font-body text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary/50"
+                                          />
+                                          <input
+                                            type="email"
+                                            value={waitlistEmail}
+                                            onChange={e => setWaitlistEmail(e.target.value)}
+                                            placeholder="Your email"
+                                            className="w-full bg-secondary border border-border rounded-lg px-3 py-2 text-xs font-body text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary/50"
+                                          />
+                                          <input
+                                            type="text"
+                                            value={waitlistNote}
+                                            onChange={e => setWaitlistNote(e.target.value)}
+                                            placeholder="Anything to add? (optional)"
+                                            className="w-full bg-secondary border border-border rounded-lg px-3 py-2 text-xs font-body text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary/50"
+                                          />
+                                          <button
+                                            onClick={handleJoinWaitlist}
+                                            disabled={waitlistSubmitting}
+                                            className="w-full bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 rounded-lg px-4 py-2 text-xs font-body tracking-wider uppercase transition-colors flex items-center justify-center gap-2"
+                                          >
+                                            <Bell className="w-3.5 h-3.5" />
+                                            {waitlistSubmitting ? "Joining…" : "Notify Me"}
+                                          </button>
+                                        </motion.div>
+                                      )}
+                                    </>
+                                  ) : (
+                                    <motion.div
+                                      initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }}
+                                      className="flex flex-col items-center gap-2"
+                                    >
+                                      <CheckCircle2 className="w-8 h-8 text-green-400" />
+                                      <p className="text-sm font-display text-foreground">You're on the waitlist!</p>
+                                      <p className="text-xs font-body text-muted-foreground">We'll email you at {waitlistEmail} if a spot opens up.</p>
+                                    </motion.div>
+                                  )}
+                                </div>
                               )}
                             </div>
                             {selectedTime && (

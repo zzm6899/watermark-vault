@@ -7,7 +7,7 @@ import {
   Image, DollarSign, Link2, Merge, Send, Copy, ExternalLink,
   MapPin, Lock, Bell, Download, Unlock, Eye, Grid, List, LayoutGrid, HardDrive, CheckSquare, XSquare, Search, RefreshCw, Mail,
   MessageSquare
-, Star } from "lucide-react";
+, Star, CheckCircle2, Sparkles, ChevronLeft, ChevronRight, Flag } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -23,14 +23,14 @@ import {
   getEmailTemplates, addEmailTemplate, updateEmailTemplate, deleteEmailTemplate,
 } from "@/lib/storage";
 import { compressImage, formatBytes, getLocalStorageUsage, generateThumbnail } from "@/lib/image-utils";
-import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar, getServerStorageStats, syncFromServer, sendEmail, bulkDeleteFiles, syncBookingsToSheet, getBookingEmailLog, sendBookingReminder, sendCustomEmail } from "@/lib/api";
+import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar, getServerStorageStats, syncFromServer, sendEmail, bulkDeleteFiles, syncBookingsToSheet, getBookingEmailLog, sendBookingReminder, sendCustomEmail, getWaitlistEntries, deleteWaitlistEntry, notifyWaitlistOnCancel } from "@/lib/api";
 import RichTextEditor, { RichTextDisplay } from "@/components/RichTextEditor";
 import Login from "@/pages/Login";
 import type {
   EventType, QuestionField, AvailabilitySlot,
   ProfileSettings, AppSettings, Booking, WatermarkPosition,
   Album, Photo, PaymentStatus, AlbumDisplaySize, AlbumDownloadRecord, DownloadHistoryEntry,
-  EmailTemplate,
+  EmailTemplate, WaitlistEntry,
 } from "@/lib/types";
 import WatermarkedImage from "@/components/WatermarkedImage";
 import ProgressiveImg from "@/components/ProgressiveImg";
@@ -132,6 +132,10 @@ export default function Admin() {
                 }`}
               >
                 <tab.icon className="w-4 h-4" />{tab.label}
+                {tab.id === "albums" && (() => {
+                  const pending = settings.proofingEnabled ? albums.filter(a => a.proofingEnabled && a.proofingStage === "selections-submitted").length : 0;
+                  return pending > 0 ? <span className="ml-auto bg-orange-500 text-white text-[10px] font-bold w-4 h-4 rounded-full flex items-center justify-center">{pending}</span> : null;
+                })()}
               </button>
             ))}
           </nav>
@@ -234,6 +238,99 @@ function DashboardView() {
     { label: "Session Time", value: totalSessionLabel, icon: Clock, color: "text-blue-400" },
   ];
 
+  // ── Booking Calendar ────────────────────────────────────────
+  const [calView, setCalView] = useState<"month" | "week">("month");
+  const [calDate, setCalDate] = useState(() => new Date());
+  const [calSelectedDay, setCalSelectedDay] = useState<string | null>(null);
+  const eventTypes = getEventTypes();
+  const etColorMap: Record<string, string> = {};
+  for (const et of eventTypes) etColorMap[et.id] = et.color || "#7c3aed";
+
+  const bookingsByDate: Record<string, typeof bookings> = {};
+  for (const b of bookings) {
+    if (b.status === "cancelled") continue;
+    if (!bookingsByDate[b.date]) bookingsByDate[b.date] = [];
+    bookingsByDate[b.date].push(b);
+  }
+
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const toDateStr = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const todayStr = toDateStr(new Date());
+
+  // Month view: grid of weeks
+  const monthStart = new Date(calDate.getFullYear(), calDate.getMonth(), 1);
+  const monthEnd = new Date(calDate.getFullYear(), calDate.getMonth() + 1, 0);
+  const gridStart = new Date(monthStart);
+  gridStart.setDate(gridStart.getDate() - ((gridStart.getDay() + 6) % 7)); // Mon start
+  const gridDays: Date[] = [];
+  const cursor = new Date(gridStart);
+  while (cursor <= monthEnd || gridDays.length % 7 !== 0) {
+    gridDays.push(new Date(cursor));
+    cursor.setDate(cursor.getDate() + 1);
+    if (gridDays.length > 42) break;
+  }
+
+  // Week view: 7 days from Mon of current week
+  const weekStart = new Date(calDate);
+  weekStart.setDate(calDate.getDate() - ((calDate.getDay() + 6) % 7));
+  const weekDays: Date[] = Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(weekStart);
+    d.setDate(weekStart.getDate() + i);
+    return d;
+  });
+
+  const prevPeriod = () => {
+    const d = new Date(calDate);
+    calView === "month" ? d.setMonth(d.getMonth() - 1) : d.setDate(d.getDate() - 7);
+    setCalDate(d);
+  };
+  const nextPeriod = () => {
+    const d = new Date(calDate);
+    calView === "month" ? d.setMonth(d.getMonth() + 1) : d.setDate(d.getDate() + 7);
+    setCalDate(d);
+  };
+  const goToday = () => { setCalDate(new Date()); setCalSelectedDay(todayStr); };
+
+  const selectedDayBookings = calSelectedDay ? (bookingsByDate[calSelectedDay] || []) : [];
+
+  const monthLabel = calDate.toLocaleString("en-AU", { month: "long", year: "numeric" });
+  const weekLabel = `${weekDays[0].toLocaleString("en-AU", { day: "numeric", month: "short" })} – ${weekDays[6].toLocaleString("en-AU", { day: "numeric", month: "short", year: "numeric" })}`;
+
+  const renderDayCell = (day: Date, isCurrentMonth = true) => {
+    const ds = toDateStr(day);
+    const dayBookings = bookingsByDate[ds] || [];
+    const isToday = ds === todayStr;
+    const isSelected = ds === calSelectedDay;
+    return (
+      <div
+        key={ds}
+        onClick={() => setCalSelectedDay(calSelectedDay === ds ? null : ds)}
+        className={`min-h-[72px] p-1.5 rounded-lg cursor-pointer transition-colors border ${
+          isSelected ? "border-primary/60 bg-primary/10" :
+          isToday ? "border-primary/30 bg-primary/5" :
+          "border-transparent hover:bg-secondary/60"
+        } ${!isCurrentMonth ? "opacity-35" : ""}`}
+      >
+        <p className={`text-[11px] font-body mb-1 w-5 h-5 flex items-center justify-center rounded-full ${
+          isToday ? "bg-primary text-primary-foreground font-semibold" : "text-muted-foreground"
+        }`}>{day.getDate()}</p>
+        <div className="space-y-0.5">
+          {dayBookings.slice(0, 3).map(b => (
+            <div key={b.id} className="flex items-center gap-1 overflow-hidden">
+              <div className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: etColorMap[b.eventTypeId] || "#7c3aed" }} />
+              <p className="text-[9px] font-body truncate leading-tight" style={{ color: etColorMap[b.eventTypeId] || "#a78bfa" }}>
+                {b.time} {b.clientName?.split(" ")[0]}
+              </p>
+            </div>
+          ))}
+          {dayBookings.length > 3 && (
+            <p className="text-[9px] font-body text-muted-foreground/60">+{dayBookings.length - 3} more</p>
+          )}
+        </div>
+      </div>
+    );
+  };
+
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
       <div className="flex items-center justify-between mb-4">
@@ -243,7 +340,7 @@ function DashboardView() {
         </Button>
       </div>
 
-      {/* ── Stats grid: 2×2 on mobile, 4 across on desktop ── */}
+      {/* ── Stats grid ── */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mb-6">
         {stats.map((stat) => (
           <div key={stat.label} className="glass-panel rounded-xl p-3 sm:p-5">
@@ -252,6 +349,80 @@ function DashboardView() {
             <p className="text-[10px] font-body text-muted-foreground tracking-wider uppercase mt-0.5 leading-tight">{stat.label}</p>
           </div>
         ))}
+      </div>
+
+      {/* ── Booking Calendar ── */}
+      <div className="glass-panel rounded-xl p-4 mb-6">
+        {/* Calendar header */}
+        <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
+          <div className="flex items-center gap-2">
+            <button onClick={prevPeriod} className="w-7 h-7 rounded-lg bg-secondary hover:bg-secondary/80 flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors">
+              <ChevronLeft className="w-4 h-4" />
+            </button>
+            <p className="font-display text-sm text-foreground min-w-[160px] text-center">
+              {calView === "month" ? monthLabel : weekLabel}
+            </p>
+            <button onClick={nextPeriod} className="w-7 h-7 rounded-lg bg-secondary hover:bg-secondary/80 flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors">
+              <ChevronRight className="w-4 h-4" />
+            </button>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <button onClick={goToday} className="text-[10px] font-body px-2.5 py-1 rounded-full bg-secondary hover:bg-secondary/80 text-muted-foreground hover:text-foreground transition-colors">Today</button>
+            {(["month", "week"] as const).map(v => (
+              <button key={v} onClick={() => setCalView(v)} className={`text-[10px] font-body px-2.5 py-1 rounded-full transition-colors capitalize ${calView === v ? "bg-primary/15 text-primary" : "bg-secondary text-muted-foreground hover:text-foreground"}`}>{v}</button>
+            ))}
+          </div>
+        </div>
+
+        {/* Day-of-week headers */}
+        <div className="grid grid-cols-7 mb-1">
+          {["Mon","Tue","Wed","Thu","Fri","Sat","Sun"].map(d => (
+            <p key={d} className="text-[10px] font-body text-center text-muted-foreground/50 tracking-wider uppercase py-1">{d}</p>
+          ))}
+        </div>
+
+        {/* Month grid */}
+        {calView === "month" && (
+          <div className="grid grid-cols-7 gap-1">
+            {gridDays.map(day => renderDayCell(day, day.getMonth() === calDate.getMonth()))}
+          </div>
+        )}
+
+        {/* Week grid */}
+        {calView === "week" && (
+          <div className="grid grid-cols-7 gap-1">
+            {weekDays.map(day => renderDayCell(day, true))}
+          </div>
+        )}
+
+        {/* Selected day detail */}
+        {calSelectedDay && (
+          <div className="mt-3 pt-3 border-t border-border/50">
+            <p className="text-xs font-body text-muted-foreground mb-2">
+              {new Date(calSelectedDay + "T12:00:00").toLocaleDateString("en-AU", { weekday: "long", day: "numeric", month: "long" })}
+              {selectedDayBookings.length === 0 && <span className="ml-2 text-muted-foreground/50">— no bookings</span>}
+            </p>
+            <div className="space-y-1.5">
+              {selectedDayBookings
+                .slice()
+                .sort((a, b) => a.time.localeCompare(b.time))
+                .map(b => (
+                  <div key={b.id} className="flex items-center gap-2.5 p-2 rounded-lg bg-secondary/50">
+                    <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: etColorMap[b.eventTypeId] || "#7c3aed" }} />
+                    <p className="text-xs font-body text-muted-foreground w-10 shrink-0">{b.time}</p>
+                    <p className="text-xs font-body text-foreground font-medium truncate flex-1">{b.clientName}</p>
+                    <p className="text-xs font-body text-muted-foreground shrink-0">{b.duration}m</p>
+                    <span className={`text-[9px] font-body px-1.5 py-0.5 rounded-full shrink-0 ${
+                      b.status === "confirmed" ? "bg-primary/10 text-primary" :
+                      b.status === "completed" ? "bg-green-500/10 text-green-400" :
+                      b.status === "pending" ? "bg-yellow-500/10 text-yellow-400" :
+                      "bg-destructive/10 text-destructive"
+                    }`}>{b.status}</span>
+                  </div>
+                ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* ── Pending Download Requests ── */}
@@ -434,7 +605,22 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [sheetsSyncing, setSheetsSyncing] = useState(false);
   const [sortKey, setSortKey] = useState<BookingSortKey>("date");
-  const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const [sortDir, setSortDir] = useSt
+
+  // Waitlist state
+  const [waitlist, setWaitlist] = useState<WaitlistEntry[]>([]);
+  const [waitlistLoading, setWaitlistLoading] = useState(false);
+  const [showWaitlist, setShowWaitlist] = useState(false);
+
+  useEffect(() => {
+    getWaitlistEntries().then(r => setWaitlist(r.entries || []));
+  }, []);
+
+  const handleRemoveWaitlistEntry = async (id: string) => {
+    await deleteWaitlistEntry(id);
+    setWaitlist(prev => prev.filter(e => e.id !== id));
+    toast.success("Removed from waitlist");
+  };ate<SortDir>("desc");
   const [bookingSearch, setBookingSearch] = useState("");
   const [emailLogs, setEmailLogs] = useState<Record<string, { id: string; type: string; sentAt: string; openedAt?: string; subject: string; to: string }[]>>({});
   const [sendingReminder, setSendingReminder] = useState<string | null>(null);
@@ -477,6 +663,10 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
       syncBookingToCalendar(updated).then(res => {
         if (res?.eventId) updateBooking({ ...updated, gcalEventId: res.eventId });
       }).catch(() => {});
+    }
+    // If cancelled, check waitlist and notify anyone waiting for this slot
+    if (status === "cancelled") {
+      notifyWaitlistOnCancel(updated).catch(() => {});
     }
   };
 
@@ -538,6 +728,54 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+
+      {/* ── Waitlist panel ── */}
+      {waitlist.length > 0 && (
+        <div className="glass-panel rounded-xl p-4 mb-5 border border-primary/10">
+          <button
+            onClick={() => setShowWaitlist(!showWaitlist)}
+            className="flex items-center justify-between w-full"
+          >
+            <div className="flex items-center gap-2">
+              <Bell className="w-4 h-4 text-primary" />
+              <span className="text-sm font-display text-foreground">Waitlist</span>
+              <span className="bg-primary/15 text-primary text-[10px] font-body px-2 py-0.5 rounded-full">{waitlist.length}</span>
+            </div>
+            <ChevronDown className={`w-4 h-4 text-muted-foreground transition-transform ${showWaitlist ? "rotate-180" : ""}`} />
+          </button>
+          {showWaitlist && (
+            <div className="mt-3 space-y-2">
+              {waitlist
+                .slice()
+                .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
+                .map(entry => (
+                  <div key={entry.id} className="flex items-start justify-between gap-3 p-2.5 rounded-lg bg-secondary/50">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <p className="text-xs font-body text-foreground font-medium">{entry.clientName}</p>
+                        <p className="text-xs font-body text-muted-foreground">{entry.clientEmail}</p>
+                        {entry.notifiedAt && (
+                          <span className="text-[9px] font-body bg-green-500/10 text-green-400 px-1.5 py-0.5 rounded-full">Notified</span>
+                        )}
+                      </div>
+                      <p className="text-[10px] font-body text-muted-foreground/70 mt-0.5">
+                        {entry.eventTypeTitle} · {new Date(entry.date + "T12:00:00").toLocaleDateString("en-AU", { day: "numeric", month: "short", year: "numeric" })}
+                        {entry.note && ` · "${entry.note}"`}
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => handleRemoveWaitlistEntry(entry.id)}
+                      className="text-muted-foreground/40 hover:text-destructive transition-colors shrink-0 mt-0.5"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                ))}
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
         <h2 className="font-display text-2xl text-foreground">Bookings</h2>
         <div className="flex items-center gap-2 flex-wrap">
@@ -1468,7 +1706,8 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
   const handleSendNotification = async (album: Album) => {
     if (!album.clientEmail) { toast.error("No client email on this album"); return; }
     const template = settings.notificationEmailTemplate || "Hey {name}, your photos are ready! Check them out here: {link}";
-    const link = `${window.location.origin}/gallery/${album.slug}`;
+    const tok = (album as any).clientToken;
+    const link = `${window.location.origin}/gallery/${album.slug}${tok ? `?token=${tok}` : ""}`;
     const message = template.replace("{name}", album.clientName || "there").replace("{link}", link).replace("{instagram}", (album as any).instagramHandle || album.clientEmail || "");
     const html = `<div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:32px;background:#0a0a0a;color:#f5f5f5;border-radius:12px;"><h2 style="font-size:22px;margin:0 0 16px;">📸 Your photos are ready!</h2><p style="color:#aaa;line-height:1.6;">${message.replace(link, "")}</p><a href="${link}" style="display:inline-block;margin-top:24px;padding:12px 28px;background:#fff;color:#000;border-radius:8px;text-decoration:none;font-weight:600;">View Your Gallery →</a><p style="margin-top:32px;font-size:11px;color:#555;">${link}</p></div>`;
     try {
@@ -1595,6 +1834,36 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                   {alb.photos.length} photos · {alb.freeDownloads} free · ${alb.pricePerPhoto}/photo
                 </p>
                 {alb.clientName && <p className="text-xs font-body text-primary">{alb.clientName}</p>}
+                {/* Download expiry badge */}
+                {alb.downloadExpiresAt && alb.allUnlocked && (() => {
+                  const expired = new Date(alb.downloadExpiresAt + "T12:00:00") < new Date();
+                  const daysLeft = Math.ceil((new Date(alb.downloadExpiresAt + "T12:00:00").getTime() - Date.now()) / 86400000);
+                  if (expired) return (
+                    <span className="inline-flex items-center gap-1 text-[10px] font-body px-2 py-0.5 rounded-full bg-destructive/15 text-destructive">
+                      ⏱ Expired
+                    </span>
+                  );
+                  if (daysLeft <= 7) return (
+                    <span className="inline-flex items-center gap-1 text-[10px] font-body px-2 py-0.5 rounded-full bg-yellow-500/15 text-yellow-400">
+                      ⏱ Expires in {daysLeft}d
+                    </span>
+                  );
+                  return null;
+                })()}
+                {/* Proofing stage badge */}
+                {settings.proofingEnabled && alb.proofingEnabled && alb.proofingStage && alb.proofingStage !== "not-started" && (
+                  <span className={`inline-flex items-center gap-1 text-[10px] font-body px-2 py-0.5 rounded-full ${
+                    alb.proofingStage === "proofing" ? "bg-yellow-500/15 text-yellow-400" :
+                    alb.proofingStage === "selections-submitted" ? "bg-orange-500/15 text-orange-400" :
+                    alb.proofingStage === "editing" ? "bg-blue-500/15 text-blue-400" :
+                    alb.proofingStage === "finals-delivered" ? "bg-green-500/15 text-green-400" : ""
+                  }`}>
+                    {alb.proofingStage === "proofing" && "★ Proofing"}
+                    {alb.proofingStage === "selections-submitted" && "⏳ Picks submitted"}
+                    {alb.proofingStage === "editing" && "✏️ Editing"}
+                    {alb.proofingStage === "finals-delivered" && "✓ Finals delivered"}
+                  </span>
+                )}
                 {alb.mergedFrom && <p className="text-[10px] font-body text-muted-foreground/50">Merged from {alb.mergedFrom.length} albums</p>}
                 {!mergeMode && (
                   <div className="flex items-center gap-2 pt-2 border-t border-border/50">
@@ -1696,6 +1965,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onCa
   const [coverImage, setCoverImage] = useState(album?.coverImage || "");
   const [accessCode, setAccessCode] = useState(album?.accessCode || "");
   const [allUnlocked, setAllUnlocked] = useState(album?.allUnlocked || false);
+  const [downloadExpiresAt, setDownloadExpiresAt] = useState(album?.downloadExpiresAt || "");
   const [displaySize, setDisplaySize] = useState<AlbumDisplaySize>(album?.displaySize || "medium");
 
   const [uploadStats, setUploadStats] = useState<{ total: number; done: number; errors: number; savedBytes: number } | null>(null);
@@ -1780,6 +2050,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onCa
       accessCode: accessCode || undefined,
       mergedFrom: album?.mergedFrom,
       allUnlocked,
+      downloadExpiresAt: downloadExpiresAt || undefined,
       displaySize,
       usedFreeDownloads: album?.usedFreeDownloads,
       downloadRequests: album?.downloadRequests,
@@ -1860,6 +2131,33 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onCa
             <Switch checked={allUnlocked} onCheckedChange={setAllUnlocked} />
           </div>
           <p className="text-[10px] font-body text-muted-foreground/50 mt-1">When enabled, all photos can be downloaded without watermark</p>
+          {allUnlocked && (
+            <div className="mt-3 space-y-1">
+              <label className="text-[10px] font-body tracking-wider uppercase text-muted-foreground block">
+                Download Expires On <span className="text-muted-foreground/40 normal-case">(optional)</span>
+              </label>
+              <div className="flex items-center gap-2">
+                <Input
+                  type="date"
+                  value={downloadExpiresAt}
+                  onChange={e => setDownloadExpiresAt(e.target.value)}
+                  className="bg-secondary border-border text-foreground font-body text-xs h-8"
+                />
+                {downloadExpiresAt && (
+                  <button onClick={() => setDownloadExpiresAt("")} className="text-muted-foreground/50 hover:text-muted-foreground text-xs font-body">Clear</button>
+                )}
+              </div>
+              {downloadExpiresAt && (() => {
+                const expired = new Date(downloadExpiresAt + "T12:00:00") < new Date();
+                const daysLeft = Math.ceil((new Date(downloadExpiresAt + "T12:00:00").getTime() - Date.now()) / 86400000);
+                return (
+                  <p className={`text-[10px] font-body mt-1 ${expired ? "text-destructive" : daysLeft <= 7 ? "text-yellow-400" : "text-muted-foreground/50"}`}>
+                    {expired ? "⚠ Already expired — gallery is locked" : `Locks in ${daysLeft} day${daysLeft !== 1 ? "s" : ""}`}
+                  </p>
+                );
+              })()}
+            </div>
+          )}
         </div>
         <div>
           <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Display Size</label>
@@ -1888,6 +2186,186 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onCa
           <Input type="number" value={priceFullAlbum} onChange={(e) => setPriceFullAlbum(Number(e.target.value))} className="bg-secondary border-border text-foreground font-body" />
         </div>
       </div>
+
+      {/* ── Per-album proofing toggle (only visible when global proofing is on) ── */}
+      {album && settings.proofingEnabled && (
+        <div className="flex items-center justify-between p-3 rounded-lg bg-secondary">
+          <div>
+            <p className="text-xs font-body text-foreground font-medium">Proofing for this album</p>
+            <p className="text-[10px] font-body text-muted-foreground/70 mt-0.5">Let this client star and submit picks before editing</p>
+          </div>
+          <button
+            onClick={() => {
+              const updated = { ...album, proofingEnabled: !album.proofingEnabled };
+              updateAlbum(updated);
+              toast.success(updated.proofingEnabled ? "Proofing enabled for this album" : "Proofing disabled for this album");
+            }}
+            className={`relative rounded-full transition-colors shrink-0 ${album.proofingEnabled ? "bg-primary" : "bg-border"}`}
+            style={{ height: "22px", width: "40px" }}
+          >
+            <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${album.proofingEnabled ? "translate-x-5" : "translate-x-0.5"}`} />
+          </button>
+        </div>
+      )}
+
+      {/* ── Proofing Controls ─────────────────────────────── */}
+      {album && settings.proofingEnabled && album.proofingEnabled && (() => {
+        const stage = album.proofingStage || "not-started";
+        const rounds = album.proofingRounds || [];
+        const latest = rounds[rounds.length - 1];
+        const clientEmail = album.clientEmail;
+
+        const startProofing = async () => {
+          const note = (document.getElementById("proofing-admin-note") as HTMLInputElement)?.value || "";
+          // Generate a client token if the album doesn't have one yet
+          const clientToken = album.clientToken || `ct-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+          const newRound = {
+            roundNumber: rounds.length + 1,
+            sentAt: new Date().toISOString(),
+            selectedPhotoIds: [],
+            adminNote: note || undefined,
+          };
+          const updated = { ...album, proofingStage: "proofing" as const, proofingRounds: [...rounds, newRound], clientToken };
+          updateAlbum(updated);
+          // Send proofing invite email to client — include token in URL so they get straight in
+          if (clientEmail) {
+            const galleryUrl = `${window.location.origin}/gallery/${album.slug}?token=${clientToken}`;
+            await fetch("/api/email/send", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                to: clientEmail,
+                subject: `📸 Your proofing gallery is ready — ${album.title}`,
+                html: `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;"><h2 style="margin:0 0 16px;font-size:20px;">Your photos are ready to review!</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${album.clientName || "there"},</p><p style="color:#9ca3af;margin:0 0 12px;">Your proofing gallery for <strong style="color:#e5e7eb;">${album.title}</strong> is ready. Browse your photos and star the ones you love — then hit Submit Picks when you're done.</p>${note ? `<p style="color:#9ca3af;margin:0 0 20px;padding:12px;background:#1f1f1f;border-radius:8px;"><em>"${note}"</em></p>` : ""}<a href="${galleryUrl}" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">View Your Gallery →</a></div>`,
+              }),
+            }).catch(() => {});
+          }
+          toast.success("Proofing round started" + (clientEmail ? " — invite sent to client" : " (no client email on file)"));
+        };
+
+        const approveSelections = () => {
+          if (!latest?.selectedPhotoIds?.length) { toast.error("No selections to approve yet"); return; }
+          // Hide all non-selected photos
+          const selectedSet = new Set(latest.selectedPhotoIds);
+          const updatedPhotos = album.photos.map((p: any) => ({ ...p, hidden: !selectedSet.has(p.id) }));
+          const updated = { ...album, photos: updatedPhotos, proofingStage: "editing" as const };
+          updateAlbum(updated);
+          toast.success(`${latest.selectedPhotoIds.length} photos kept, ${album.photos.length - latest.selectedPhotoIds.length} hidden`);
+        };
+
+        const deliverFinals = async () => {
+          const updated = { ...album, proofingStage: "finals-delivered" as const, allUnlocked: true };
+          updateAlbum(updated);
+          if (clientEmail) {
+            const tok = album.clientToken;
+            const galleryUrl = `${window.location.origin}/gallery/${album.slug}${tok ? `?token=${tok}` : ""}`;
+            await fetch("/api/email/send", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                to: clientEmail,
+                subject: `✨ Your final photos are ready — ${album.title}`,
+                html: `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;"><h2 style="margin:0 0 16px;font-size:20px;">Your edited photos are ready! ✨</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${album.clientName || "there"},</p><p style="color:#9ca3af;margin:0 0 20px;">Your final edited photos for <strong style="color:#e5e7eb;">${album.title}</strong> are now available. Click below to view and download.</p><a href="${galleryUrl}" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">Download Your Photos →</a></div>`,
+              }),
+            }).catch(() => {});
+          }
+          toast.success("Finals delivered!" + (clientEmail ? " — client notified" : ""));
+        };
+
+        const resetProofing = () => {
+          if (!confirm("Reset proofing? This will un-hide all photos and clear the proofing stage.")) return;
+          const updatedPhotos = album.photos.map((p: any) => ({ ...p, hidden: false }));
+          updateAlbum({ ...album, photos: updatedPhotos, proofingStage: "not-started" as const, proofingRounds: [] });
+          toast.success("Proofing reset");
+        };
+
+        return (
+          <div className="border border-border rounded-lg p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-body tracking-wider uppercase text-muted-foreground">Proofing Round</label>
+              <span className={`text-[10px] font-body px-2 py-0.5 rounded-full ${
+                stage === "not-started" ? "bg-secondary text-muted-foreground" :
+                stage === "proofing" ? "bg-yellow-500/15 text-yellow-400" :
+                stage === "selections-submitted" ? "bg-orange-500/15 text-orange-400" :
+                stage === "editing" ? "bg-blue-500/15 text-blue-400" :
+                "bg-green-500/15 text-green-400"
+              }`}>
+                {stage === "not-started" && "Not started"}
+                {stage === "proofing" && "★ Proofing — awaiting picks"}
+                {stage === "selections-submitted" && `⏳ ${latest?.selectedPhotoIds?.length || 0} picks submitted`}
+                {stage === "editing" && "✏️ Editing"}
+                {stage === "finals-delivered" && "✓ Finals delivered"}
+              </span>
+            </div>
+
+            {stage === "not-started" && (
+              <div className="space-y-2">
+                <textarea
+                  id="proofing-admin-note"
+                  placeholder="Optional message to client (e.g. 'Please pick your top 30 favourites')"
+                  rows={2}
+                  className="w-full bg-secondary border border-border rounded px-3 py-2 text-xs font-body text-foreground placeholder:text-muted-foreground/50 resize-none"
+                />
+                <button
+                  onClick={startProofing}
+                  className="flex items-center gap-2 w-full justify-center bg-yellow-500/15 hover:bg-yellow-500/25 text-yellow-400 border border-yellow-500/30 rounded-lg px-4 py-2 text-xs font-body tracking-wider uppercase transition-colors"
+                >
+                  <Star className="w-3.5 h-3.5" /> Start Proofing Round {rounds.length + 1}
+                </button>
+              </div>
+            )}
+
+            {stage === "proofing" && (
+              <p className="text-xs font-body text-muted-foreground">
+                Waiting for {album.clientName || "client"} to star photos and submit picks.
+                {latest?.adminNote && <span className="block mt-1 text-muted-foreground/70">Your note: "{latest.adminNote}"</span>}
+              </p>
+            )}
+
+            {stage === "selections-submitted" && latest && (
+              <div className="space-y-3">
+                <div className="bg-secondary rounded-lg p-3 space-y-1">
+                  <p className="text-xs font-body text-foreground font-medium">{latest.selectedPhotoIds.length} photos selected by client</p>
+                  {latest.clientNote && <p className="text-xs font-body text-muted-foreground italic">"{latest.clientNote}"</p>}
+                  <p className="text-[10px] font-body text-muted-foreground/60">{latest.submittedAt ? new Date(latest.submittedAt).toLocaleString() : ""}</p>
+                </div>
+                <button
+                  onClick={approveSelections}
+                  className="flex items-center gap-2 w-full justify-center bg-blue-500/15 hover:bg-blue-500/25 text-blue-400 border border-blue-500/30 rounded-lg px-4 py-2 text-xs font-body tracking-wider uppercase transition-colors"
+                >
+                  <CheckCircle2 className="w-3.5 h-3.5" /> Approve & Hide Unselected → Editing
+                </button>
+              </div>
+            )}
+
+            {stage === "editing" && (
+              <div className="space-y-2">
+                <p className="text-xs font-body text-muted-foreground">
+                  {album.photos.filter((p: any) => !p.hidden).length} photos visible · {album.photos.filter((p: any) => p.hidden).length} hidden
+                </p>
+                <button
+                  onClick={deliverFinals}
+                  className="flex items-center gap-2 w-full justify-center bg-green-500/15 hover:bg-green-500/25 text-green-400 border border-green-500/30 rounded-lg px-4 py-2 text-xs font-body tracking-wider uppercase transition-colors"
+                >
+                  <Sparkles className="w-3.5 h-3.5" /> Deliver Finals to Client
+                </button>
+              </div>
+            )}
+
+            {stage === "finals-delivered" && (
+              <p className="text-xs font-body text-green-400/80 flex items-center gap-1.5">
+                <CheckCircle2 className="w-3.5 h-3.5" /> Delivered · Album unlocked for download
+              </p>
+            )}
+
+            {stage !== "not-started" && (
+              <button onClick={resetProofing} className="text-[10px] font-body text-muted-foreground/50 hover:text-muted-foreground underline">
+                Reset proofing
+              </button>
+            )}
+          </div>
+        );
+      })()}
 
       {/* Download Requests */}
       {album?.downloadRequests && album.downloadRequests.length > 0 && (
@@ -2647,6 +3125,21 @@ function SettingsView() {
                 <Bell className="w-3.5 h-3.5" /> Send Test Message
               </Button>
             )}
+
+            {/* Proofing toggle */}
+            <div className="flex items-center justify-between p-3 rounded-lg bg-secondary">
+              <div>
+                <p className="text-xs font-body text-foreground font-medium">Client Proofing</p>
+                <p className="text-[10px] font-body text-muted-foreground/70 mt-0.5">Allow clients to star and submit photo picks before editing</p>
+              </div>
+              <button
+                onClick={() => setSettingsState({ ...settings, proofingEnabled: !settings.proofingEnabled })}
+                className={`relative w-10 h-5.5 rounded-full transition-colors shrink-0 ${settings.proofingEnabled ? "bg-primary" : "bg-border"}`}
+                style={{ height: "22px", width: "40px" }}
+              >
+                <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${settings.proofingEnabled ? "translate-x-5" : "translate-x-0.5"}`} />
+              </button>
+            </div>
           </div>
         </div>
 

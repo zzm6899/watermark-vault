@@ -1,7 +1,7 @@
 import { useParams, useSearchParams } from "react-router-dom";
 import { useState, useCallback, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Info, Building2, Copy, Check as CheckIcon, Lock, Download, Grid, List, LayoutGrid, CreditCard, X, ChevronLeft, ChevronRight } from "lucide-react";
+import { Info, Building2, Copy, Check as CheckIcon, Lock, Download, Grid, List, LayoutGrid, CreditCard, X, ChevronLeft, ChevronRight, Star, Camera, CheckCircle2, Clock, Sparkles } from "lucide-react";
 import Header from "@/components/Header";
 import Footer from "@/components/Footer";
 import WatermarkedImage from "@/components/WatermarkedImage";
@@ -76,17 +76,25 @@ export default function AlbumDetail() {
   const [downloadQuality, setDownloadQuality] = useState<DownloadQuality>("original");
   const [downloading, setDownloading] = useState(false);
   const [copiedField, setCopiedField] = useState<string | null>(null);
-  const [accessGranted, setAccessGranted] = useState(!album?.accessCode);
+  const [searchParams] = useSearchParams();
+  const urlToken = searchParams.get("token");
+  // Token in URL grants access without PIN — verified against album.clientToken
+  const tokenMatchesAlbum = !!(urlToken && album?.clientToken && urlToken === album.clientToken);
+  const [accessGranted, setAccessGranted] = useState(!album?.accessCode || tokenMatchesAlbum);
   const [pinInput, setPinInput] = useState("");
-  const [usedPin, setUsedPin] = useState("");
+  const [usedPin, setUsedPin] = useState(tokenMatchesAlbum ? "__token__" : "");
   const [clientNote, setClientNote] = useState("");
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   const [lightboxSrcCache, setLightboxSrcCache] = useState<Record<string, string>>({});
   const [stripeAvailable, setStripeAvailable] = useState(false);
   const [processingStripe, setProcessingStripe] = useState(false);
-  const [searchParams] = useSearchParams();
-  const [stripeSuccess, setStripeSuccess] = useState(() => new URLSearchParams(window.location.search).get("success") === "1");
+  const [stripeSuccess, setStripeSuccess] = useState(() => searchParams.get("success") === "1");
   const [pollingCount, setPollingCount] = useState(0);
+
+  // Proofing state
+  const [proofingClientNote, setProofingClientNote] = useState("");
+  const [proofingSubmitting, setProofingSubmitting] = useState(false);
+  const [proofingSubmitted, setProofingSubmitted] = useState(false);
 
   // Check Stripe availability from server (Docker env var)
   useEffect(() => {
@@ -181,8 +189,20 @@ export default function AlbumDetail() {
   const freeUsed = getFreeUsed(album, sessionKey);
   const freeRemaining = Math.max(0, album.freeDownloads - freeUsed);
   const isFullyUnlocked = album.allUnlocked === true;
+  const isExpired = !!(album.downloadExpiresAt && new Date(album.downloadExpiresAt) < new Date());
+  const canDownload = canDownload && !isExpired;
   const paidPhotoIdSet = new Set<string>(album.paidPhotoIds || []);
   const isPhotoPaid = (id: string) => isFullyUnlocked || paidPhotoIdSet.has(id);
+
+  // Proofing derived values
+  const proofingStage = album.proofingStage || "not-started";
+  const isProofing = proofingStage === "proofing" && !!settings.proofingEnabled && !!(album as any).proofingEnabled;
+  const latestRound = album.proofingRounds?.[album.proofingRounds.length - 1];
+  const adminNote = latestRound?.adminNote;
+  // Visible photos: hide photos marked hidden (non-selected after round approval)
+  const visiblePhotos = album.photos.filter((p: any) => !p.hidden);
+  // During proofing, starred photos = client's current picks
+  const starredIds = new Set<string>(album.photos.filter((p: any) => p.starred).map(p => p.id));
 
   const toggleSelect = (id: string) => {
     setSelectedIds((prev) => {
@@ -235,6 +255,45 @@ export default function AlbumDetail() {
     setShowDownloadOptions(true);
   };
 
+  // ── Proofing handlers ─────────────────────────────────────
+  const toggleStar = (photoId: string) => {
+    if (!album) return;
+    const updated = {
+      ...album,
+      photos: album.photos.map((p: any) => p.id === photoId ? { ...p, starred: !p.starred } : p),
+    };
+    setAlbumState(updated);
+    updateAlbum(updated);
+  };
+
+  const handleSubmitSelections = async () => {
+    if (!album) return;
+    const picked = album.photos.filter((p: any) => p.starred).map(p => p.id);
+    if (picked.length === 0) {
+      toast.error("Please star at least one photo before submitting.");
+      return;
+    }
+    setProofingSubmitting(true);
+    try {
+      const res = await fetch("/api/proofing/submit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ albumId: album.id, selectedPhotoIds: picked, clientNote: proofingClientNote }),
+      });
+      if (!res.ok) throw new Error("Server error");
+      // Optimistically update local state so UI reflects submission immediately
+      const updated = { ...album, proofingStage: "selections-submitted" as const };
+      setAlbumState(updated);
+      updateAlbum(updated);
+      setProofingSubmitted(true);
+      toast.success(`${picked.length} photo${picked.length !== 1 ? "s" : ""} submitted — the photographer will be in touch!`);
+    } catch {
+      toast.error("Failed to submit. Please try again.");
+    } finally {
+      setProofingSubmitting(false);
+    }
+  };
+
   const executeDownloadFree = async () => {
     const selected = album.photos.filter(p => selectedIds.has(p.id));
     // Photos paid individually via Stripe always downloadable
@@ -271,7 +330,7 @@ export default function AlbumDetail() {
   };
 
   const handleDownloadAll = async () => {
-    if (!isFullyUnlocked) return;
+    if (!canDownload) return;
     setShowDownloadOptions(true);
   };
 
@@ -363,8 +422,88 @@ export default function AlbumDetail() {
                 <p className="text-sm font-body text-muted-foreground">{album.description}</p>
               </div>
 
+              {/* ── Proofing Stage Banner ───────────────────────────── */}
+              {settings.proofingEnabled && (album as any).proofingEnabled && proofingStage === "proofing" && (
+                <div className="glass-panel rounded-xl p-5 border border-yellow-500/30 bg-yellow-500/5">
+                  <div className="flex items-start gap-3">
+                    <Star className="w-5 h-5 text-yellow-400 mt-0.5 shrink-0 fill-yellow-400/30" />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-display text-foreground mb-1">Select your favourite photos</p>
+                      <p className="text-xs font-body text-muted-foreground">
+                        {adminNote || "Tap ★ on the photos you love — star as many as you like, then submit your picks below."}
+                      </p>
+                      <p className="text-xs font-body text-yellow-400/80 mt-2">
+                        {starredIds.size === 0 ? "No photos starred yet" : `${starredIds.size} photo${starredIds.size !== 1 ? "s" : ""} starred`}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+              {settings.proofingEnabled && (album as any).proofingEnabled && proofingStage === "selections-submitted" && (
+                <div className="glass-panel rounded-xl p-5 border border-primary/30 bg-primary/5">
+                  <div className="flex items-start gap-3">
+                    <Clock className="w-5 h-5 text-primary mt-0.5 shrink-0" />
+                    <div>
+                      <p className="text-sm font-display text-foreground mb-1">Picks received — editing in progress</p>
+                      <p className="text-xs font-body text-muted-foreground">Your selections are with the photographer. Finals will be delivered here once editing is complete.</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+              {settings.proofingEnabled && (album as any).proofingEnabled && proofingStage === "editing" && (
+                <div className="glass-panel rounded-xl p-5 border border-primary/30 bg-primary/5">
+                  <div className="flex items-start gap-3">
+                    <Camera className="w-5 h-5 text-primary mt-0.5 shrink-0" />
+                    <div>
+                      <p className="text-sm font-display text-foreground mb-1">Editing underway</p>
+                      <p className="text-xs font-body text-muted-foreground">Your photographer is editing your selected photos. You'll receive an email when finals are ready.</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+              {settings.proofingEnabled && (album as any).proofingEnabled && proofingStage === "finals-delivered" && (
+                <div className="glass-panel rounded-xl p-5 border border-green-500/30 bg-green-500/5">
+                  <div className="flex items-start gap-3">
+                    <Sparkles className="w-5 h-5 text-green-400 mt-0.5 shrink-0" />
+                    <div>
+                      <p className="text-sm font-display text-foreground mb-1">Your final photos are ready!</p>
+                      <p className="text-xs font-body text-muted-foreground">Select photos below to download your edited finals.</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* ── Download Expiry Banner ─────────────────────────── */}
+              {isExpired && (
+                <div className="glass-panel rounded-xl p-5 border border-destructive/30 bg-destructive/5">
+                  <div className="flex items-start gap-3">
+                    <Clock className="w-5 h-5 text-destructive mt-0.5 shrink-0" />
+                    <div>
+                      <p className="text-sm font-display text-foreground">Download access has expired</p>
+                      <p className="text-xs font-body text-muted-foreground mt-1">
+                        This gallery's download period ended on {new Date(album.downloadExpiresAt! + "T12:00:00").toLocaleDateString("en-AU", { day: "numeric", month: "long", year: "numeric" })}. Contact your photographer to request an extension.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {canDownload && !isExpired && album.downloadExpiresAt && (() => {
+                const daysLeft = Math.ceil((new Date(album.downloadExpiresAt + "T12:00:00").getTime() - Date.now()) / 86400000);
+                if (daysLeft > 14) return null;
+                return (
+                  <div className="glass-panel rounded-xl p-4 border border-yellow-500/20 bg-yellow-500/5 flex items-center gap-3">
+                    <Clock className="w-4 h-4 text-yellow-400 shrink-0" />
+                    <p className="text-xs font-body text-muted-foreground">
+                      <span className="text-yellow-400 font-medium">Download expires in {daysLeft} day{daysLeft !== 1 ? "s" : ""}</span>
+                      {" "}— {new Date(album.downloadExpiresAt + "T12:00:00").toLocaleDateString("en-AU", { day: "numeric", month: "long" })}
+                    </p>
+                  </div>
+                );
+              })()}
+
               <div className="glass-panel rounded-lg p-4 flex items-center gap-6">
-                {isFullyUnlocked ? (
+                {canDownload ? (
                   <div className="text-center">
                     <p className="text-lg font-display text-green-400">✓ Unlocked</p>
                     <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">All Photos</p>
@@ -390,7 +529,7 @@ export default function AlbumDetail() {
               </div>
             </div>
 
-            {!isFullyUnlocked && (
+            {!canDownload && (
               <div className="flex items-center gap-2 mt-4 p-3 rounded-lg bg-primary/5 border border-primary/10">
                 <Info className="w-4 h-4 text-primary flex-shrink-0" />
                 <p className="text-xs font-body text-muted-foreground">
@@ -399,7 +538,7 @@ export default function AlbumDetail() {
               </div>
             )}
 
-            {isFullyUnlocked && (
+            {canDownload && (
               <div className="flex items-center gap-2 mt-4 p-3 rounded-lg bg-green-500/5 border border-green-500/10">
                 <Download className="w-4 h-4 text-green-400 flex-shrink-0" />
                 <p className="text-xs font-body text-muted-foreground">
@@ -418,14 +557,14 @@ export default function AlbumDetail() {
             </div>
           ) : (
             <div className={gridClass}>
-              {album.photos.map((photo, i) => (
-                <WatermarkedImage
-                  key={photo.id}
+              {visiblePhotos.map((photo, i) => (
+                <div key={photo.id} className="relative group">
+                  <WatermarkedImage
                 src={photo.thumbnail || photo.src}
                   title={photo.title}
-                  selected={selectedIds.has(photo.id)}
-                  onSelect={() => setLightboxIndex(i)}
-                  locked={!isPhotoPaid(photo.id) && freeRemaining <= 0 && !selectedIds.has(photo.id)}
+                  selected={isProofing ? starredIds.has(photo.id) : selectedIds.has(photo.id)}
+                  onSelect={() => isProofing ? toggleStar(photo.id) : setLightboxIndex(i)}
+                  locked={!isProofing && !isPhotoPaid(photo.id) && freeRemaining <= 0 && !selectedIds.has(photo.id)}
                   index={i}
                   showWatermark={!isPhotoPaid(photo.id)}
                   watermarkPosition={watermarkPosition}
@@ -434,6 +573,19 @@ export default function AlbumDetail() {
                   watermarkOpacity={settings.watermarkOpacity}
                   watermarkSize={settings.watermarkSize ?? 40}
                 />
+                  {isProofing && (
+                    <button
+                      onClick={() => toggleStar(photo.id)}
+                      className={`absolute top-2 right-2 w-8 h-8 rounded-full flex items-center justify-center transition-all shadow-lg ${
+                        starredIds.has(photo.id)
+                          ? "bg-yellow-400 text-yellow-900 scale-110"
+                          : "bg-black/50 text-white/70 opacity-0 group-hover:opacity-100"
+                      }`}
+                    >
+                      <Star className={`w-4 h-4 ${starredIds.has(photo.id) ? "fill-yellow-900" : ""}`} />
+                    </button>
+                  )}
+                </div>
               ))}
             </div>
           )}
@@ -448,8 +600,42 @@ export default function AlbumDetail() {
         </div>
       )}
 
+      {/* Proofing submit bar */}
+      {isProofing && !proofingSubmitted && (
+        <motion.div
+          initial={{ y: 100, opacity: 0 }} animate={{ y: 0, opacity: 1 }}
+          className="fixed bottom-0 left-0 right-0 z-40 bg-background/95 backdrop-blur-sm border-t border-yellow-500/20 p-4"
+        >
+          <div className="max-w-2xl mx-auto space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-display text-foreground">
+                  {starredIds.size === 0 ? "Star photos to select them" : `${starredIds.size} photo${starredIds.size !== 1 ? "s" : ""} selected`}
+                </p>
+                <p className="text-xs font-body text-muted-foreground">Tap ★ on any photo to add/remove from your picks</p>
+              </div>
+              <button
+                onClick={handleSubmitSelections}
+                disabled={proofingSubmitting || starredIds.size === 0}
+                className="flex items-center gap-2 bg-yellow-500 hover:bg-yellow-400 disabled:opacity-50 disabled:cursor-not-allowed text-yellow-950 font-body text-xs tracking-wider uppercase px-5 py-2.5 rounded-full transition-colors font-semibold"
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                {proofingSubmitting ? "Submitting…" : "Submit Picks"}
+              </button>
+            </div>
+            <textarea
+              value={proofingClientNote}
+              onChange={e => setProofingClientNote(e.target.value)}
+              placeholder="Add a note for the photographer (optional)…"
+              rows={1}
+              className="w-full bg-secondary border border-border rounded-lg px-3 py-2 text-xs font-body text-foreground placeholder:text-muted-foreground/50 resize-none focus:outline-none focus:ring-1 focus:ring-yellow-500/50"
+            />
+          </div>
+        </motion.div>
+      )}
+
       {/* Show PurchasePanel unless every selected photo is already paid */}
-      {!isFullyUnlocked && !(selectedIds.size > 0 && Array.from(selectedIds).every(id => isPhotoPaid(id))) && (
+      {!canDownload && !(selectedIds.size > 0 && Array.from(selectedIds).every(id => isPhotoPaid(id))) && (
         <PurchasePanel
           selectedCount={selectedIds.size}
           freeRemaining={freeRemaining}
@@ -465,7 +651,7 @@ export default function AlbumDetail() {
       )}
 
       {/* Download bar when all selected photos are individually paid */}
-      {!isFullyUnlocked && selectedIds.size > 0 && Array.from(selectedIds).every(id => isPhotoPaid(id)) && (
+      {!canDownload && selectedIds.size > 0 && Array.from(selectedIds).every(id => isPhotoPaid(id)) && (
         <motion.div initial={{ y: 100, opacity: 0 }} animate={{ y: 0, opacity: 1 }}
           className="fixed bottom-0 left-0 right-0 z-40 glass-panel border-t border-border/50 p-4" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 1rem)' }}>
           <div className="container mx-auto flex items-center justify-between">
@@ -479,7 +665,7 @@ export default function AlbumDetail() {
         </motion.div>
       )}
 
-      {isFullyUnlocked && selectedIds.size > 0 && (
+      {canDownload && selectedIds.size > 0 && (
         <motion.div
           initial={{ y: 100, opacity: 0 }}
           animate={{ y: 0, opacity: 1 }}
@@ -530,7 +716,7 @@ export default function AlbumDetail() {
               </div>
             </RadioGroup>
             <Button
-              onClick={isFullyUnlocked ? executeDownloadAll : executeDownloadFree}
+              onClick={canDownload ? executeDownloadAll : executeDownloadFree}
               disabled={downloading}
               className="w-full bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs tracking-wider uppercase gap-2"
             >
@@ -706,7 +892,7 @@ export default function AlbumDetail() {
                 onCacheUpdate={(id, url) => setLightboxSrcCache(prev => ({ ...prev, [id]: url }))}
               />
               {/* Watermark overlay in lightbox — uses same settings as grid */}
-              {!isFullyUnlocked && (() => {
+              {!canDownload && (() => {
                 const op = settings.watermarkOpacity / 100;
                 const size = settings.watermarkSize ?? 40;
                 const pos = settings.watermarkPosition || "center";

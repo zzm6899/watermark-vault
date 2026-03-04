@@ -457,3 +457,46 @@ export async function syncBookingsToSheet(bookings: unknown[]): Promise<{ ok: bo
     return await res.json();
   } catch { return { ok: false, error: "Network error" }; }
 }
+// ── Waitlist ────────────────────────────────────────────────
+export async function joinWaitlist(entry: {
+  eventTypeId: string;
+  eventTypeTitle: string;
+  date: string;
+  clientName: string;
+  clientEmail: string;
+  note?: string;
+}): Promise<{ ok: boolean; duplicate?: boolean; error?: string }> {
+  try {
+    const res = await fetch("/api/waitlist/join", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(entry),
+    });
+    return await res.json();
+  } catch { return { ok: false, error: "Network error" }; }
+}
+
+export async function getWaitlistEntries(): Promise<{ entries: import("./types").WaitlistEntry[] }> {
+  try {
+    const res = await fetch("/api/waitlist");
+    return await res.json();
+  } catch { return { entries: [] }; }
+}
+
+export async function deleteWaitlistEntry(id: string): Promise<{ ok: boolean }> {
+  try {
+    const res = await fetch(`/api/waitlist/${id}`, { method: "DELETE" });
+    return await res.json();
+  } catch { return { ok: false }; }
+}
+
+export async function notifyWaitlistOnCancel(booking: unknown): Promise<{ ok: boolean }> {
+  try {
+    const res = await fetch("/api/booking/cancel-notify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ booking }),
+    });
+    return await res.json();
+  } catch { return { ok: false }; }
+}
