@@ -1,6 +1,6 @@
 export type WatermarkPosition = "center" | "top-left" | "top-right" | "bottom-left" | "bottom-right" | "tiled";
 export type QuestionFieldType = "text" | "textarea" | "select" | "boolean" | "image-upload" | "instagram";
-export type PaymentStatus = "unpaid" | "paid" | "cash" | "pending-confirmation" | "deposit-paid";
+export type PaymentStatus = "unpaid" | "paid" | "cash" | "pending-confirmation";
 export type DownloadQuality = "2mb" | "5mb" | "original";
 
 export interface QuestionField {
@@ -37,7 +37,6 @@ export interface EventType {
   durations: number[];
   color: string;
   price: number;
-  prices?: Record<number, number>;
   active: boolean;
   requiresConfirmation?: boolean;
   questions: QuestionField[];
@@ -62,7 +61,6 @@ export interface Booking {
   notes: string;
   albumId?: string;
   answers?: Record<string, string>;
-  answerLabels?: Record<string, string>;
   createdAt: string;
   paymentStatus?: PaymentStatus;
   paymentAmount?: number;
@@ -73,7 +71,6 @@ export interface Booking {
   depositMethod?: "stripe" | "bank";
   depositPaidAt?: string;
   stripeSessionId?: string;
-  emailLog?: { subject: string; sentAt: string; openedAt?: string; type?: string; to?: string; id?: string }[];
 }
 
 export interface Photo {
@@ -84,7 +81,6 @@ export interface Photo {
   width: number;
   height: number;
   selected?: boolean;
-  proofing?: boolean; // true = unedited, needs post-processing
 }
 
 export type AlbumDisplaySize = "small" | "medium" | "large" | "list";
@@ -127,6 +123,8 @@ export interface Album {
   accessCode?: string;
   mergedFrom?: string[];
   allUnlocked?: boolean;
+  paidPhotoIds?: string[]; // individual photo purchases via Stripe or admin approval
+  stripePaidAt?: string;
   usedFreeDownloads?: Record<string, number>; // keyed by accessCode or session
   downloadRequests?: AlbumDownloadRecord[];
   downloadHistory?: DownloadHistoryEntry[];
@@ -155,7 +153,6 @@ export interface AppSettings {
   watermarkText: string;
   watermarkImage: string;
   watermarkOpacity: number; // 0-100
-  watermarkSize: number;    // 10-100
   defaultFreeDownloads: number;
   defaultPricePerPhoto: number;
   defaultPriceFullAlbum: number;
@@ -165,14 +162,6 @@ export interface AppSettings {
   instagramFieldEnabled: boolean;
   notificationEmailTemplate: string;
   discordWebhookUrl: string;
-}
-
-export interface EmailTemplate {
-  id: string;
-  name: string;
-  subject: string;
-  body: string; // supports {{clientName}}, {{eventTitle}}, {{date}}, {{time}}, {{amount}}, {{albumLink}}
-  createdAt: string;
 }
 
 export interface AdminCredentials {

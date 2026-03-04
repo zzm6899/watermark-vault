@@ -5,26 +5,16 @@
  */
 
 let serverAvailable: boolean | null = null;
-let lastServerCheck = 0;
 
 async function checkServer(): Promise<boolean> {
-  const now = Date.now();
-  if (serverAvailable === true && now - lastServerCheck < 30000) return true;
+  if (serverAvailable !== null) return serverAvailable;
   try {
-    const res = await fetch("/api/health", { signal: AbortSignal.timeout(3000) });
+    const res = await fetch("/api/health", { signal: AbortSignal.timeout(2000) });
     serverAvailable = res.ok;
   } catch {
     serverAvailable = false;
   }
-  lastServerCheck = Date.now();
-  return serverAvailable ?? false;
-}
-
-/** Force a fresh reachability check — called before camera imports */
-export async function recheckServer(): Promise<boolean> {
-  serverAvailable = null;
-  lastServerCheck = 0;
-  return checkServer();
+  return serverAvailable;
 }
 
 /** Fetch all stored data from server and populate localStorage */
@@ -120,9 +110,8 @@ export async function uploadPhotosToServer(
         const data = await res.json();
         results.push(...data.files);
       }
-    } catch (err) {
-      console.error("[upload] batch failed:", err);
-      serverAvailable = null;
+    } catch {
+      // skip failed batch
     }
     onProgress?.(Math.min(i + batchSize, files.length), files.length);
   }
@@ -140,6 +129,17 @@ export function deletePhotoFromServer(url: string): void {
 /** Check if the backend server is available */
 export function isServerMode(): boolean {
   return serverAvailable === true;
+}
+
+export async function recheckServer(): Promise<boolean> {
+  try {
+    const res = await fetch("/api/health", { method: "GET", signal: AbortSignal.timeout(3000) });
+    serverAvailable = res.ok;
+    return res.ok;
+  } catch {
+    serverAvailable = false;
+    return false;
+  }
 }
 
 /** Fetch server-side storage stats (TrueNAS volume) */

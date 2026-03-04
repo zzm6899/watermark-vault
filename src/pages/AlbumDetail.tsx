@@ -1,4 +1,4 @@
-import { useParams } from "react-router-dom";
+import { useParams, useSearchParams } from "react-router-dom";
 import { useState, useCallback, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Info, Building2, Copy, Check as CheckIcon, Lock, Download, Grid, List, LayoutGrid, CreditCard, X, ChevronLeft, ChevronRight } from "lucide-react";
@@ -84,6 +84,9 @@ export default function AlbumDetail() {
   const [lightboxSrcCache, setLightboxSrcCache] = useState<Record<string, string>>({});
   const [stripeAvailable, setStripeAvailable] = useState(false);
   const [processingStripe, setProcessingStripe] = useState(false);
+  const [searchParams] = useSearchParams();
+  const [stripeSuccess, setStripeSuccess] = useState(() => new URLSearchParams(window.location.search).get("success") === "1");
+  const [pollingCount, setPollingCount] = useState(0);
 
   // Check Stripe availability from server (Docker env var)
   useEffect(() => {
@@ -99,6 +102,31 @@ export default function AlbumDetail() {
       setAlbumState(fresh);
     }
   }, [albumId]);
+
+  // Poll until Stripe webhook updates album (runs on stripeSuccess/pollingCount changes)
+  useEffect(() => {
+    if (!stripeSuccess) return;
+    if (pollingCount >= 15) {
+      toast.info("Payment received — refresh the page if photos don't unlock shortly.");
+      setStripeSuccess(false);
+      return;
+    }
+    const timer = setTimeout(() => {
+      refreshAlbum();
+      setPollingCount(n => n + 1);
+    }, 2000);
+    return () => clearTimeout(timer);
+  }, [stripeSuccess, pollingCount, refreshAlbum]);
+
+  // Stop polling once paid data lands
+  useEffect(() => {
+    if (!stripeSuccess) return;
+    if (album && (album.allUnlocked || (album.paidPhotoIds && album.paidPhotoIds.length > 0))) {
+      toast.success("Payment confirmed! Your photos are now unlocked.");
+      setStripeSuccess(false);
+      setPollingCount(0);
+    }
+  }, [album, stripeSuccess]);
 
   // Backfill missing thumbnails in background
   useBackfillThumbnails(album?.photos || [], useCallback((photoId, thumb) => {
@@ -124,7 +152,7 @@ export default function AlbumDetail() {
 
   if (!album || album.enabled === false) {
     return (
-      <div className="min-h-screen bg-background flex items-center justify-center" style={{ paddingTop: "env(safe-area-inset-top)" }}>
+      <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="text-center">
           <p className="font-display text-2xl text-foreground mb-2">Album Not Found</p>
           <p className="text-muted-foreground font-body text-sm">This gallery may be private or the link is incorrect.</p>
@@ -135,7 +163,7 @@ export default function AlbumDetail() {
 
   if (!accessGranted) {
     return (
-      <div className="min-h-screen bg-background flex items-center justify-center" style={{ paddingTop: "env(safe-area-inset-top)" }}>
+      <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="glass-panel rounded-xl p-8 max-w-sm w-full text-center">
           <Lock className="w-8 h-8 text-primary mx-auto mb-4" />
           <h2 className="font-display text-xl text-foreground mb-2">Private Gallery</h2>
@@ -153,6 +181,8 @@ export default function AlbumDetail() {
   const freeUsed = getFreeUsed(album, sessionKey);
   const freeRemaining = Math.max(0, album.freeDownloads - freeUsed);
   const isFullyUnlocked = album.allUnlocked === true;
+  const paidPhotoIdSet = new Set<string>(album.paidPhotoIds || []);
+  const isPhotoPaid = (id: string) => isFullyUnlocked || paidPhotoIdSet.has(id);
 
   const toggleSelect = (id: string) => {
     setSelectedIds((prev) => {
@@ -207,13 +237,17 @@ export default function AlbumDetail() {
 
   const executeDownloadFree = async () => {
     const selected = album.photos.filter(p => selectedIds.has(p.id));
-    const canDownload = Math.min(selected.length, freeRemaining);
+    // Photos paid individually via Stripe always downloadable
+    const alreadyPaid = selected.filter(p => paidPhotoIdSet.has(p.id));
+    const notPaid = selected.filter(p => !paidPhotoIdSet.has(p.id));
+    const canDownloadFree = Math.min(notPaid.length, freeRemaining);
+    const canDownload = alreadyPaid.length + canDownloadFree;
     if (canDownload === 0) {
       toast.error("No free downloads remaining for this session");
       return;
     }
     setDownloading(true);
-    const toDownload = selected.slice(0, canDownload);
+    const toDownload = [...alreadyPaid, ...notPaid.slice(0, canDownloadFree)];
     for (const p of toDownload) {
       await downloadPhoto(p, downloadQuality);
     }
@@ -277,7 +311,8 @@ export default function AlbumDetail() {
 
   const handleBankTransferRequest = () => {
     const selected = album.photos.filter(p => selectedIds.has(p.id));
-    const paidCount = Math.max(0, selected.length - freeRemaining);
+    const unpaidSelected = selected.filter(p => !paidPhotoIdSet.has(p.id));
+    const paidCount = Math.max(0, unpaidSelected.length - freeRemaining);
     if (paidCount === 0) {
       handleDownloadFree();
       return;
@@ -286,7 +321,7 @@ export default function AlbumDetail() {
   };
 
   const submitBankTransferRequest = () => {
-    const selected = album.photos.filter(p => selectedIds.has(p.id));
+    const selected = album.photos.filter(p => selectedIds.has(p.id) && !paidPhotoIdSet.has(p.id));
     const record: AlbumDownloadRecord = {
       photoIds: selected.map(p => p.id),
       method: "bank-transfer",
@@ -315,7 +350,7 @@ export default function AlbumDetail() {
     <div className="min-h-screen bg-background">
       <Header />
 
-      <section className="pt-28 pb-32" style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 8rem)" }}>
+      <section className="pt-28 pb-32">
         <div className="container mx-auto px-4">
           <motion.div
             initial={{ opacity: 0, y: 20 }}
@@ -359,7 +394,7 @@ export default function AlbumDetail() {
               <div className="flex items-center gap-2 mt-4 p-3 rounded-lg bg-primary/5 border border-primary/10">
                 <Info className="w-4 h-4 text-primary flex-shrink-0" />
                 <p className="text-xs font-body text-muted-foreground">
-                  Click photos to select. You have <span className="text-primary font-medium">{freeRemaining} free download{freeRemaining !== 1 ? "s" : ""}</span> remaining. Additional photos can be purchased individually or as a full album.
+                  Click photos to select. You have <span className="text-primary font-medium">{freeRemaining} free download{freeRemaining !== 1 ? "s" : ""}</span> remaining{paidPhotoIdSet.size > 0 && <>, plus <span className="text-primary font-medium">{paidPhotoIdSet.size} purchased</span></>}. Additional photos can be purchased individually or as a full album.
                 </p>
               </div>
             )}
@@ -390,9 +425,9 @@ export default function AlbumDetail() {
                   title={photo.title}
                   selected={selectedIds.has(photo.id)}
                   onSelect={() => setLightboxIndex(i)}
-                  locked={!isFullyUnlocked && freeRemaining <= 0 && !selectedIds.has(photo.id)}
+                  locked={!isPhotoPaid(photo.id) && freeRemaining <= 0 && !selectedIds.has(photo.id)}
                   index={i}
-                  showWatermark={!isFullyUnlocked}
+                  showWatermark={!isPhotoPaid(photo.id)}
                   watermarkPosition={watermarkPosition}
                   watermarkText={settings.watermarkText}
                   watermarkImage={settings.watermarkImage}
@@ -405,7 +440,16 @@ export default function AlbumDetail() {
         </div>
       </section>
 
-      {!isFullyUnlocked && (
+      {/* Stripe payment confirming banner */}
+      {stripeSuccess && (
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 glass-panel rounded-full px-5 py-2.5 border border-primary/30 flex items-center gap-2 shadow-lg">
+          <div className="w-3 h-3 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+          <span className="text-xs font-body text-primary">Confirming payment…</span>
+        </div>
+      )}
+
+      {/* Show PurchasePanel unless every selected photo is already paid */}
+      {!isFullyUnlocked && !(selectedIds.size > 0 && Array.from(selectedIds).every(id => isPhotoPaid(id))) && (
         <PurchasePanel
           selectedCount={selectedIds.size}
           freeRemaining={freeRemaining}
@@ -420,11 +464,26 @@ export default function AlbumDetail() {
         />
       )}
 
+      {/* Download bar when all selected photos are individually paid */}
+      {!isFullyUnlocked && selectedIds.size > 0 && Array.from(selectedIds).every(id => isPhotoPaid(id)) && (
+        <motion.div initial={{ y: 100, opacity: 0 }} animate={{ y: 0, opacity: 1 }}
+          className="fixed bottom-0 left-0 right-0 z-40 glass-panel border-t border-border/50 p-4" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 1rem)' }}>
+          <div className="container mx-auto flex items-center justify-between">
+            <p className="text-sm font-body text-foreground">
+              <span className="font-semibold">{selectedIds.size}</span> paid photo{selectedIds.size !== 1 ? 's' : ''} selected
+            </p>
+            <Button onClick={() => setShowDownloadOptions(true)} size="sm" className="gap-2 bg-primary text-primary-foreground hover:bg-primary/90">
+              <Download className="w-4 h-4" /> Download
+            </Button>
+          </div>
+        </motion.div>
+      )}
+
       {isFullyUnlocked && selectedIds.size > 0 && (
         <motion.div
           initial={{ y: 100, opacity: 0 }}
           animate={{ y: 0, opacity: 1 }}
-          className="fixed bottom-0 left-0 right-0 z-40 glass-panel border-t border-border/50 p-4" style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 1rem)" }}
+          className="fixed bottom-0 left-0 right-0 z-40 glass-panel border-t border-border/50 p-4"
         >
           <div className="container mx-auto flex items-center justify-between">
             <p className="text-sm font-body text-foreground">
@@ -471,7 +530,7 @@ export default function AlbumDetail() {
               </div>
             </RadioGroup>
             <Button
-              onClick={isFullyUnlocked && selectedIds.size === 0 ? executeDownloadAll : isFullyUnlocked ? executeDownloadAll : executeDownloadFree}
+              onClick={isFullyUnlocked ? executeDownloadAll : executeDownloadFree}
               disabled={downloading}
               className="w-full bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs tracking-wider uppercase gap-2"
             >
@@ -499,12 +558,16 @@ export default function AlbumDetail() {
                 onClick={async () => {
                   setShowPaymentChoice(false);
                   setProcessingStripe(true);
+                  const isFullAlbumPurchase = selectedIds.size === 0 || selectedIds.size === album.photos.length;
+                  const photosBeingPaid = album.photos.filter(p => selectedIds.has(p.id) && !paidPhotoIdSet.has(p.id));
                   const result = await createAlbumCheckout({
                     albumId: album.id,
                     albumTitle: album.title,
-                    photoCount: selectedIds.size > 0 ? selectedIds.size : album.photos.length,
-                    amount: selectedIds.size > 0 ? paidTotal : album.priceFullAlbum,
+                    photoCount: isFullAlbumPurchase ? album.photos.length : photosBeingPaid.length,
+                    amount: isFullAlbumPurchase ? album.priceFullAlbum : paidTotal,
                     clientEmail: album.clientEmail,
+                    photoIds: isFullAlbumPurchase ? [] : photosBeingPaid.map(p => p.id),
+                    isFullAlbum: isFullAlbumPurchase,
                   });
                   setProcessingStripe(false);
                   if (result.url) {
