@@ -34,6 +34,16 @@ function writeDb(data) {
   fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
 }
 
+// Safely parse a db value that may be a JSON string or already-parsed object
+function dbGet(db, key, fallback) {
+  const val = db[key];
+  if (val === undefined || val === null) return fallback;
+  if (typeof val === "string") {
+    try { return JSON.parse(val); } catch { return fallback; }
+  }
+  return val; // already an object/array
+}
+
 app.use(cors());
 app.use(express.json({ limit: "50mb" }));
 
@@ -173,7 +183,7 @@ app.get("/api/album-token/:albumId", (req, res) => {
   const { token } = req.query;
   if (!token) return res.status(400).json({ error: "Missing token" });
   const db = readDb();
-  const albums = JSON.parse(db["wv_albums"] || "[]");
+  const albums = dbGet(db, "wv_albums", []);
   const album = albums.find(a => a.id === albumId);
   if (!album) return res.status(404).json({ error: "Album not found" });
   try {
@@ -398,7 +408,7 @@ app.post("/api/proofing/submit", async (req, res) => {
     return res.status(400).json({ error: "Missing albumId or selectedPhotoIds" });
   }
   const db = readDb();
-  const albums = JSON.parse(db["wv_albums"] || "[]");
+  const albums = dbGet(db, "wv_albums", []);
   const albumIdx = albums.findIndex(a => a.id === albumId);
   if (albumIdx === -1) return res.status(404).json({ error: "Album not found" });
 
@@ -443,8 +453,8 @@ app.post("/api/proofing/submit", async (req, res) => {
 
     // Also send Discord webhook if configured — rich embed
     try {
-      const settingsRaw = db["wv_settings"];
-      const settings = settingsRaw ? JSON.parse(settingsRaw) : {};
+      const settingsRaw = null; // unused
+      const settings = dbGet(db, "wv_settings", {});
       if (settings.discordWebhookUrl) {
         const adminUrl = `${process.env.APP_URL || ""}/admin`;
         const fields = [
@@ -518,7 +528,7 @@ async function sendBookingReminders() {
   let bookings;
   try { bookings = JSON.parse(bookingsRaw); } catch { return; }
 
-  const settings = settingsRaw ? JSON.parse(settingsRaw) : {};
+  const settings = settingsRaw ? dbGet(db, "wv_settings", {}) : {};
   const now = Date.now();
   let changed = false;
 
