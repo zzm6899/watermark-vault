@@ -4,6 +4,7 @@ const cors = require("cors");
 const path = require("path");
 const fs = require("fs");
 const { registerRoutes: registerGoogleCalendarRoutes } = require("./google-calendar");
+const { registerRoutes: registerGoogleSheetsRoutes } = require("./google-sheets");
 const { registerRoutes: registerEmailRoutes } = require("./email");
 const { registerRoutes: registerStripeRoutes } = require("./stripe");
 
@@ -490,6 +491,7 @@ app.post("/api/proofing/submit", async (req, res) => {
 
 // ── Google Calendar Integration ───────────────────────
 registerGoogleCalendarRoutes(app);
+registerGoogleSheetsRoutes(app);
 
 // ── Email (SMTP) Integration ─────────────────────────
 registerEmailRoutes(app);

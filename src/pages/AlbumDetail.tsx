@@ -196,7 +196,7 @@ export default function AlbumDetail() {
 
   // Proofing derived values
   const proofingStage = album.proofingStage || "not-started";
-  const isProofing = proofingStage === "proofing" && !!settings.proofingEnabled && !!(album as any).proofingEnabled;
+  const isProofing = proofingStage === "proofing" && !!settings.proofingEnabled && (!!(album as any).proofingEnabled || tokenMatchesAlbum);
   const latestRound = album.proofingRounds?.[album.proofingRounds.length - 1];
   const adminNote = latestRound?.adminNote;
   // Visible photos: hide photos marked hidden (non-selected after round approval)
@@ -649,8 +649,8 @@ export default function AlbumDetail() {
         </motion.div>
       )}
 
-      {/* Show PurchasePanel unless every selected photo is already paid */}
-      {!canDownload && !(selectedIds.size > 0 && Array.from(selectedIds).every(id => isPhotoPaid(id))) && (
+      {/* Show PurchasePanel unless every selected photo is already paid, or we're in proofing mode */}
+      {!canDownload && !isProofing && !(selectedIds.size > 0 && Array.from(selectedIds).every(id => isPhotoPaid(id))) && (
         <PurchasePanel
           selectedCount={selectedIds.size}
           freeRemaining={freeRemaining}

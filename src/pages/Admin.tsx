@@ -2265,7 +2265,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onCa
             selectedPhotoIds: [],
             adminNote: note || undefined,
           };
-          const updated = { ...album, proofingStage: "proofing" as const, proofingRounds: [...rounds, newRound], clientToken };
+          const updated = { ...album, proofingEnabled: true, proofingStage: "proofing" as const, proofingRounds: [...rounds, newRound], clientToken };
           updateAlbum(updated);
           // Send proofing invite email to client — include token in URL so they get straight in
           if (clientEmail) {
