@@ -2299,64 +2299,50 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
         const rounds = liveAlbum!.proofingRounds || [];
         const latest = rounds[rounds.length - 1];
         const clientEmail = liveAlbum!.clientEmail;
+        const isFreeAlbum = !liveAlbum!.pricePerPhoto && !liveAlbum!.priceFullAlbum;
 
         const startProofing = async () => {
           const note = (document.getElementById("proofing-admin-note") as HTMLInputElement)?.value || "";
-          // Generate a client token if the album doesn't have one yet
           const clientToken = liveAlbum!.clientToken || `ct-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-          const newRound = {
-            roundNumber: rounds.length + 1,
-            sentAt: new Date().toISOString(),
-            selectedPhotoIds: [],
-            adminNote: note || undefined,
-          };
+          const newRound = { roundNumber: rounds.length + 1, sentAt: new Date().toISOString(), selectedPhotoIds: [], adminNote: note || undefined };
           const updated = { ...liveAlbum!, proofingEnabled: true, proofingStage: "proofing" as const, proofingRounds: [...rounds, newRound], clientToken };
           updateLiveAlbum(updated);
-          // Send proofing invite email to client — include token in URL so they get straight in
           if (clientEmail) {
             const galleryUrl = `${window.location.origin}/gallery/${liveAlbum!.slug}?token=${clientToken}`;
-            await fetch("/api/email/send", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                to: clientEmail,
-                subject: `📸 Your proofing gallery is ready — ${liveAlbum!.title}`,
-                html: `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;"><h2 style="margin:0 0 16px;font-size:20px;">Your photos are ready to review!</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${liveAlbum!.clientName || "there"},</p><p style="color:#9ca3af;margin:0 0 12px;">Your proofing gallery for <strong style="color:#e5e7eb;">${liveAlbum!.title}</strong> is ready. Browse your photos and star the ones you love — then hit Submit Picks when you're done.</p>${note ? `<p style="color:#9ca3af;margin:0 0 20px;padding:12px;background:#1f1f1f;border-radius:8px;"><em>"${note}"</em></p>` : ""}<a href="${galleryUrl}" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">View Your Gallery →</a></div>`,
-              }),
-            }).catch(() => {});
+            fetch("/api/email/send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ to: clientEmail, subject: `📸 Your proofing gallery is ready — ${liveAlbum!.title}`, html: `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;"><h2 style="margin:0 0 16px;font-size:20px;">Your photos are ready to review!</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${liveAlbum!.clientName || "there"},</p><p style="color:#9ca3af;margin:0 0 12px;">Your proofing gallery for <strong style="color:#e5e7eb;">${liveAlbum!.title}</strong> is ready. Browse and star the ones you love, then hit Submit Picks.</p>${note ? `<p style="color:#9ca3af;margin:0 0 20px;padding:12px;background:#1f1f1f;border-radius:8px;"><em>"${note}"</em></p>` : ""}<a href="${galleryUrl}" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">View Your Gallery →</a></div>` }) }).catch(() => {});
           }
           toast.success("Proofing round started" + (clientEmail ? " — invite sent to client" : " (no client email on file)"));
-          onUpdate?.(updated); // Silently update album card without closing editor
-        };
-
-        const approveSelections = () => {
-          if (!latest?.selectedPhotoIds?.length) { toast.error("No selections to approve yet"); return; }
-          // Hide all non-selected photos
-          const selectedSet = new Set(latest.selectedPhotoIds);
-          const updatedPhotos = liveAlbum!.photos.map((p: any) => ({ ...p, hidden: !selectedSet.has(p.id) }));
-          const updated = { ...album, photos: updatedPhotos, proofingStage: "editing" as const };
-          updateLiveAlbum(updated);
-          toast.success(`${latest.selectedPhotoIds.length} photos kept, ${liveAlbum!.photos.length - latest.selectedPhotoIds.length} hidden`);
           onUpdate?.(updated);
         };
 
-        const deliverFinals = async () => {
-          const updated = { ...album, proofingStage: "finals-delivered" as const, allUnlocked: true };
+        const approveSelections = (free: boolean) => {
+          if (!latest?.selectedPhotoIds?.length) { toast.error("No selections to approve yet"); return; }
+          const selectedSet = new Set(latest.selectedPhotoIds);
+          const updatedPhotos = liveAlbum!.photos.map((p: any) => ({ ...p, hidden: !selectedSet.has(p.id) }));
+          const updated = { ...liveAlbum!, photos: updatedPhotos, proofingStage: "editing" as const, allUnlocked: free ? true : liveAlbum!.allUnlocked };
+          updateLiveAlbum(updated);
+          toast.success(`${latest.selectedPhotoIds.length} photos kept, ${liveAlbum!.photos.length - latest.selectedPhotoIds.length} hidden — ${free ? "album unlocked" : "moving to editing"}`);
+          onUpdate?.(updated);
+        };
+
+        const sendEditingEmail = async () => {
+          if (!clientEmail) { toast.error("No client email on file"); return; }
+          const tok = liveAlbum!.clientToken;
+          const galleryUrl = `${window.location.origin}/gallery/${liveAlbum!.slug}${tok ? `?token=${tok}` : ""}`;
+          await fetch("/api/email/send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ to: clientEmail, subject: `✏️ Your photos are being edited — ${liveAlbum!.title}`, html: `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;"><h2 style="margin:0 0 16px;font-size:20px;">Your photos are being edited ✏️</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${liveAlbum!.clientName || "there"},</p><p style="color:#9ca3af;margin:0 0 20px;">Your selections for <strong style="color:#e5e7eb;">${liveAlbum!.title}</strong> are confirmed and editing has begun. We'll send you another email as soon as your final photos are ready.</p><a href="${galleryUrl}" style="display:inline-block;background:#374151;color:#e5e7eb;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">Preview Gallery →</a></div>` }) }).catch(() => {});
+          toast.success("Editing notification sent to client");
+        };
+
+        const deliverFinals = async (free: boolean) => {
+          const updated = { ...liveAlbum!, proofingStage: "finals-delivered" as const, allUnlocked: free ? true : liveAlbum!.allUnlocked };
           updateLiveAlbum(updated);
           if (clientEmail) {
             const tok = liveAlbum!.clientToken;
             const galleryUrl = `${window.location.origin}/gallery/${liveAlbum!.slug}${tok ? `?token=${tok}` : ""}`;
-            await fetch("/api/email/send", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                to: clientEmail,
-                subject: `✨ Your final photos are ready — ${liveAlbum!.title}`,
-                html: `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;"><h2 style="margin:0 0 16px;font-size:20px;">Your edited photos are ready! ✨</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${liveAlbum!.clientName || "there"},</p><p style="color:#9ca3af;margin:0 0 20px;">Your final edited photos for <strong style="color:#e5e7eb;">${liveAlbum!.title}</strong> are now available. Click below to view and download.</p><a href="${galleryUrl}" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">Download Your Photos →</a></div>`,
-              }),
-            }).catch(() => {});
+            fetch("/api/email/send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ to: clientEmail, subject: `✨ Your final photos are ready — ${liveAlbum!.title}`, html: free ? `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;"><h2 style="margin:0 0 16px;font-size:20px;">Your edited photos are ready! ✨</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${liveAlbum!.clientName || "there"},</p><p style="color:#9ca3af;margin:0 0 20px;">Your final edited photos for <strong style="color:#e5e7eb;">${liveAlbum!.title}</strong> are ready — no payment needed, they're all yours to download!</p><a href="${galleryUrl}" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">Download Your Photos →</a></div>` : `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;"><h2 style="margin:0 0 16px;font-size:20px;">Your edited photos are ready! ✨</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${liveAlbum!.clientName || "there"},</p><p style="color:#9ca3af;margin:0 0 20px;">Your final edited photos for <strong style="color:#e5e7eb;">${liveAlbum!.title}</strong> are now available to view and download.</p><a href="${galleryUrl}" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">View &amp; Download Photos →</a></div>` }) }).catch(() => {});
           }
           toast.success("Finals delivered!" + (clientEmail ? " — client notified" : ""));
+          onUpdate?.(updated);
         };
 
         const resetProofing = () => {
@@ -2380,30 +2366,24 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
                 "bg-green-500/15 text-green-400"
               }`}>
                 {stage === "not-started" && "Not started"}
-                {stage === "proofing" && "★ Proofing — awaiting picks"}
+                {stage === "proofing" && "★ Awaiting picks"}
                 {stage === "selections-submitted" && `⏳ ${latest?.selectedPhotoIds?.length || 0} picks submitted`}
                 {stage === "editing" && "✏️ Editing"}
-                {stage === "finals-delivered" && "✓ Finals delivered"}
+                {stage === "finals-delivered" && "✓ Delivered"}
               </span>
             </div>
 
+            {/* NOT STARTED */}
             {stage === "not-started" && (
               <div className="space-y-2">
-                <textarea
-                  id="proofing-admin-note"
-                  placeholder="Optional message to client (e.g. 'Please pick your top 30 favourites')"
-                  rows={2}
-                  className="w-full bg-secondary border border-border rounded px-3 py-2 text-xs font-body text-foreground placeholder:text-muted-foreground/50 resize-none"
-                />
-                <button
-                  onClick={startProofing}
-                  className="flex items-center gap-2 w-full justify-center bg-yellow-500/15 hover:bg-yellow-500/25 text-yellow-400 border border-yellow-500/30 rounded-lg px-4 py-2 text-xs font-body tracking-wider uppercase transition-colors"
-                >
+                <textarea id="proofing-admin-note" placeholder="Optional message to client (e.g. 'Please pick your top 30')" rows={2} className="w-full bg-secondary border border-border rounded px-3 py-2 text-xs font-body text-foreground placeholder:text-muted-foreground/50 resize-none" />
+                <button onClick={startProofing} className="flex items-center gap-2 w-full justify-center bg-yellow-500/15 hover:bg-yellow-500/25 text-yellow-400 border border-yellow-500/30 rounded-lg px-4 py-2 text-xs font-body tracking-wider uppercase transition-colors">
                   <Star className="w-3.5 h-3.5" /> Start Proofing Round {rounds.length + 1}
                 </button>
               </div>
             )}
 
+            {/* AWAITING PICKS */}
             {stage === "proofing" && (
               <p className="text-xs font-body text-muted-foreground">
                 Waiting for {liveAlbum!.clientName || "client"} to star photos and submit picks.
@@ -2411,6 +2391,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
               </p>
             )}
 
+            {/* PICKS SUBMITTED — paid vs free decision */}
             {stage === "selections-submitted" && latest && (
               <div className="space-y-3">
                 <div className="bg-secondary rounded-lg p-3 space-y-1">
@@ -2418,32 +2399,54 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
                   {latest.clientNote && <p className="text-xs font-body text-muted-foreground italic">"{latest.clientNote}"</p>}
                   <p className="text-[10px] font-body text-muted-foreground/60">{latest.submittedAt ? new Date(latest.submittedAt).toLocaleString() : ""}</p>
                 </div>
-                <button
-                  onClick={approveSelections}
-                  className="flex items-center gap-2 w-full justify-center bg-blue-500/15 hover:bg-blue-500/25 text-blue-400 border border-blue-500/30 rounded-lg px-4 py-2 text-xs font-body tracking-wider uppercase transition-colors"
-                >
-                  <CheckCircle2 className="w-3.5 h-3.5" /> Approve & Hide Unselected → Editing
-                </button>
+                <p className="text-[10px] font-body text-muted-foreground/70 uppercase tracking-wider">Does this album require payment?</p>
+                <div className="grid grid-cols-2 gap-2">
+                  <button onClick={() => approveSelections(true)} className="flex flex-col items-center gap-1 bg-green-500/10 hover:bg-green-500/20 text-green-400 border border-green-500/30 rounded-lg px-3 py-2.5 text-[10px] font-body tracking-wider uppercase transition-colors">
+                    <Unlock className="w-3.5 h-3.5" />
+                    No — Free
+                    <span className="text-[9px] text-green-400/60 normal-case tracking-normal">Unlock immediately</span>
+                  </button>
+                  <button onClick={() => approveSelections(false)} className="flex flex-col items-center gap-1 bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 border border-blue-500/30 rounded-lg px-3 py-2.5 text-[10px] font-body tracking-wider uppercase transition-colors">
+                    <CreditCard className="w-3.5 h-3.5" />
+                    Yes — Paid
+                    <span className="text-[9px] text-blue-400/60 normal-case tracking-normal">Client pays to download</span>
+                  </button>
+                </div>
               </div>
             )}
 
+            {/* EDITING */}
             {stage === "editing" && (
               <div className="space-y-2">
                 <p className="text-xs font-body text-muted-foreground">
-                  {liveAlbum!.photos.filter((p: any) => !p.hidden).length} photos visible · {liveAlbum!.photos.filter((p: any) => p.hidden).length} hidden
+                  {liveAlbum!.photos.filter((p: any) => !p.hidden).length} visible · {liveAlbum!.photos.filter((p: any) => p.hidden).length} hidden
                 </p>
-                <button
-                  onClick={deliverFinals}
-                  className="flex items-center gap-2 w-full justify-center bg-green-500/15 hover:bg-green-500/25 text-green-400 border border-green-500/30 rounded-lg px-4 py-2 text-xs font-body tracking-wider uppercase transition-colors"
-                >
-                  <Sparkles className="w-3.5 h-3.5" /> Deliver Finals to Client
-                </button>
+                {clientEmail && (
+                  <button onClick={sendEditingEmail} className="flex items-center gap-2 w-full justify-center bg-secondary hover:bg-secondary/80 text-muted-foreground hover:text-foreground border border-border rounded-lg px-4 py-2 text-xs font-body tracking-wider uppercase transition-colors">
+                    <Mail className="w-3.5 h-3.5" /> Notify — Photos Being Edited
+                  </button>
+                )}
+                <p className="text-[10px] font-body text-muted-foreground/70 uppercase tracking-wider pt-1">Finished editing?</p>
+                <div className="grid grid-cols-2 gap-2">
+                  <button onClick={() => deliverFinals(true)} className="flex flex-col items-center gap-1 bg-green-500/10 hover:bg-green-500/20 text-green-400 border border-green-500/30 rounded-lg px-3 py-2.5 text-[10px] font-body tracking-wider uppercase transition-colors">
+                    <Unlock className="w-3.5 h-3.5" />
+                    Deliver Free
+                    <span className="text-[9px] text-green-400/60 normal-case tracking-normal">Unlock + notify client</span>
+                  </button>
+                  <button onClick={() => deliverFinals(false)} className="flex flex-col items-center gap-1 bg-purple-500/10 hover:bg-purple-500/20 text-purple-400 border border-purple-500/30 rounded-lg px-3 py-2.5 text-[10px] font-body tracking-wider uppercase transition-colors">
+                    <CreditCard className="w-3.5 h-3.5" />
+                    Deliver Paid
+                    <span className="text-[9px] text-purple-400/60 normal-case tracking-normal">Notify, client pays</span>
+                  </button>
+                </div>
               </div>
             )}
 
+            {/* FINALS DELIVERED */}
             {stage === "finals-delivered" && (
-              <p className="text-xs font-body text-green-400/80 flex items-center gap-1.5">
-                <CheckCircle2 className="w-3.5 h-3.5" /> Delivered · Album unlocked for download
+              <p className={`text-xs font-body flex items-center gap-1.5 ${liveAlbum!.allUnlocked ? "text-green-400/80" : "text-purple-400/80"}`}>
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                {liveAlbum!.allUnlocked ? "Delivered free — album unlocked" : "Delivered — client pays to download"}
               </p>
             )}
 
