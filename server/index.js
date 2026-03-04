@@ -5,7 +5,7 @@ const path = require("path");
 const fs = require("fs");
 const { registerRoutes: registerGoogleCalendarRoutes } = require("./google-calendar");
 const { registerRoutes: registerGoogleSheetsRoutes } = require("./google-sheets");
-const { registerRoutes: registerEmailRoutes } = require("./email");
+const { registerRoutes: registerEmailRoutes, getTransporter, getFromAddress } = require("./email");
 const { registerRoutes: registerStripeRoutes } = require("./stripe");
 
 const app = express();
@@ -422,26 +422,21 @@ app.post("/api/proofing/submit", async (req, res) => {
 
     // Notify photographer via email if SMTP is configured
     try {
-      const settingsRaw = db["wv_settings"];
-      const settings = settingsRaw ? JSON.parse(settingsRaw) : {};
       const adminRaw = db["wv_admin"];
       const adminEmail = adminRaw ? JSON.parse(adminRaw)?.email : null;
       const notifyEmail = adminEmail || process.env.NOTIFY_EMAIL;
-      if (notifyEmail) {
-        await fetch(`http://localhost:${process.env.PORT || 5066}/api/email/send`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            to: notifyEmail,
-            subject: `📸 ${album.clientName || "Client"} submitted proofing picks — ${album.title}`,
-            html: `
-              <div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;">
-                <h2 style="margin:0 0 16px;font-size:20px;">New Proofing Selections</h2>
-                <p style="color:#9ca3af;margin:0 0 12px;"><strong style="color:#e5e7eb;">${album.clientName || "Client"}</strong> has submitted their picks for <strong style="color:#e5e7eb;">${album.title}</strong>.</p>
-                <p style="color:#9ca3af;margin:0 0 20px;">They selected <strong style="color:#a78bfa;">${selectedPhotoIds.length} photo${selectedPhotoIds.length !== 1 ? "s" : ""}</strong> out of ${album.photos?.length || "?"} total.${clientNote ? `</p><p style="color:#9ca3af;margin:0 0 20px;">Client note: <em>"${clientNote}"</em>` : ""}</p>
-                <a href="${process.env.APP_URL || ""}/admin" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">Review in Admin →</a>
-              </div>`,
-          }),
+      const transporter = getTransporter();
+      if (notifyEmail && transporter) {
+        await transporter.sendMail({
+          from: getFromAddress(),
+          to: notifyEmail,
+          subject: `📸 ${album.clientName || "Client"} submitted proofing picks — ${album.title}`,
+          html: `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;">
+            <h2 style="margin:0 0 16px;font-size:20px;">New Proofing Selections</h2>
+            <p style="color:#9ca3af;margin:0 0 12px;"><strong style="color:#e5e7eb;">${album.clientName || "Client"}</strong> has submitted their picks for <strong style="color:#e5e7eb;">${album.title}</strong>.</p>
+            <p style="color:#9ca3af;margin:0 0 20px;">They selected <strong style="color:#a78bfa;">${selectedPhotoIds.length} photo${selectedPhotoIds.length !== 1 ? "s" : ""}</strong> out of ${album.photos?.length || "?"} total.${clientNote ? `<br>Client note: <em>"${clientNote}"</em>` : ""}</p>
+            <a href="${process.env.APP_URL || ""}/admin" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">Review in Admin →</a>
+          </div>`,
         }).catch(() => {});
       }
     } catch {}

@@ -19,7 +19,7 @@ import {
   Usb, AlertCircle, Download, Mail, FileImage, Search,
   Clock, ChevronDown, ChevronUp, CheckCircle2, Users,
   Star, CalendarDays, ChevronLeft, ChevronRight,
-  AlertTriangle, RotateCcw,
+  AlertTriangle, RotateCcw, Settings2,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
@@ -107,6 +107,43 @@ class CameraErrorBoundary extends React.Component<
 }
 
 // ── Main Component ──────────────────────────────────────────────
+function AlbumEditModal({ album, onClose, onSave }: { album: Album; onClose: () => void; onSave: (updated: Album) => void }) {
+  const [editTitle, setEditTitle] = useState(album.title || "");
+  const [editNotes, setEditNotes] = useState((album as any).notes || "");
+  const [editClient, setEditClient] = useState(album.clientName || "");
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/60" />
+      <div className="relative w-full max-w-lg bg-background rounded-t-2xl p-5 space-y-4" style={{paddingBottom:"max(20px,env(safe-area-inset-bottom))"}} onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-1">
+          <h3 className="font-display text-base text-foreground">Edit Album</h3>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground p-1 text-lg">✕</button>
+        </div>
+        <div className="space-y-3">
+          <div>
+            <label className="text-xs font-body text-muted-foreground mb-1 block">Album Title</label>
+            <input value={editTitle} onChange={e => setEditTitle(e.target.value)} className="w-full bg-secondary border border-border rounded-lg px-3 py-2 text-sm font-body text-foreground focus:outline-none focus:ring-1 focus:ring-primary" />
+          </div>
+          <div>
+            <label className="text-xs font-body text-muted-foreground mb-1 block">Client Name</label>
+            <input value={editClient} onChange={e => setEditClient(e.target.value)} className="w-full bg-secondary border border-border rounded-lg px-3 py-2 text-sm font-body text-foreground focus:outline-none focus:ring-1 focus:ring-primary" />
+          </div>
+          <div>
+            <label className="text-xs font-body text-muted-foreground mb-1 block">Notes</label>
+            <textarea value={editNotes} onChange={e => setEditNotes(e.target.value)} rows={3} className="w-full bg-secondary border border-border rounded-lg px-3 py-2 text-sm font-body text-foreground focus:outline-none focus:ring-1 focus:ring-primary resize-none" />
+          </div>
+        </div>
+        <button
+          onClick={() => onSave({ ...album, title: editTitle, clientName: editClient, notes: editNotes } as any)}
+          className="w-full py-3 rounded-xl bg-primary text-primary-foreground font-body text-sm font-medium tracking-wide"
+        >
+          Save Changes
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function MobileCaptureInner() {
   const navigate = useNavigate();
   const isNative = Capacitor.isNativePlatform();
@@ -143,6 +180,8 @@ function MobileCaptureInner() {
   const [failedHandles, setFailedHandles] = useState<number[]>([]);
   const [offlineQueue, setOfflineQueue] = useState<File[]>([]);
   const [starFilter, setStarFilter] = useState(false);
+  const [showAlbumEdit, setShowAlbumEdit] = useState(false);
+  const [enableProofing, setEnableProofing] = useState(false);
   const emailSentRef = useRef(false);
   const sessionUploadedRef = useRef(false);
 
@@ -745,6 +784,12 @@ function MobileCaptureInner() {
           <span className={`inline-flex items-center gap-1 text-xs font-body px-2 py-1 rounded-full border ${serverOnline ? "border-primary/50 text-primary bg-primary/10" : "border-destructive/50 text-destructive"}`}>
             {serverOnline ? <Wifi className="w-3 h-3" /> : <WifiOff className="w-3 h-3" />}
           </span>
+          <button
+            onClick={() => setShowAlbumEdit(true)}
+            className="p-1.5 rounded-lg hover:bg-secondary transition-colors text-muted-foreground hover:text-foreground"
+          >
+            <Settings2 className="w-4 h-4" />
+          </button>
         </div>
       </div>
 
@@ -1062,30 +1107,78 @@ function MobileCaptureInner() {
 
       {/* Mark Complete */}
       {selectedBooking && selectedBooking.status !== "completed" && (
-        <div className="mt-4">
+        <div className="mt-4 space-y-3">
+          {/* Proofing toggle */}
+          {getSettings().proofingEnabled && (
+            <div className="flex items-center justify-between p-3 rounded-xl border border-border bg-secondary/30">
+              <div>
+                <p className="text-xs font-body text-foreground font-medium">Send Proofing Gallery</p>
+                <p className="text-[10px] font-body text-muted-foreground/70 mt-0.5">Email client a link to pick their favourite shots</p>
+              </div>
+              <button
+                onClick={() => setEnableProofing(p => !p)}
+                className={`relative rounded-full transition-colors shrink-0 ${enableProofing ? "bg-primary" : "bg-border"}`}
+                style={{ height: "22px", width: "40px" }}
+              >
+                <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${enableProofing ? "translate-x-5" : "translate-x-0.5"}`} />
+              </button>
+            </div>
+          )}
           <button
-            onClick={() => {
+            onClick={async () => {
               updateBooking({ ...selectedBooking, status: "completed" });
               setBookings(prev => prev.map(b => b.id === selectedBooking.id ? { ...b, status: "completed" } : b));
               setSelectedBooking(prev => prev ? { ...prev, status: "completed" } : prev);
-              toast.success("Session marked as completed");
+              if (enableProofing && targetAlbum && getSettings().proofingEnabled) {
+                const clientToken = targetAlbum.clientToken || `ct-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+                const newRound = { roundNumber: (targetAlbum.proofingRounds?.length || 0) + 1, sentAt: new Date().toISOString(), selectedPhotoIds: [] };
+                const updatedAlbum = { ...targetAlbum, proofingEnabled: true, proofingStage: "proofing" as const, proofingRounds: [...(targetAlbum.proofingRounds || []), newRound], clientToken };
+                updateAlbum(updatedAlbum);
+                setTargetAlbum(updatedAlbum);
+                if (selectedBooking.clientEmail && serverOnline) {
+                  const galleryUrl = `${window.location.origin}/gallery/${targetAlbum.slug}?token=${clientToken}`;
+                  fetch("/api/email/send", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      to: selectedBooking.clientEmail,
+                      subject: `📸 Your proofing gallery is ready — ${targetAlbum.title}`,
+                      html: `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;"><h2 style="margin:0 0 16px;font-size:20px;">Your photos are ready to review! ⭐</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${selectedBooking.clientName || "there"}, your ${selectedBooking.type || "session"} photos are ready for you to star your favourites.</p><p style="color:#9ca3af;margin:0 0 20px;">Click the link below to open your private gallery.</p><a href="${galleryUrl}" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">View My Gallery →</a></div>`,
+                    }),
+                  }).catch(() => {});
+                  toast.success("Session complete — proofing invite sent!");
+                } else {
+                  toast.success("Session complete — proofing enabled!");
+                }
+              } else {
+                toast.success("Session marked as completed");
+              }
             }}
             className="w-full flex items-center justify-center gap-2 py-3 rounded-xl border border-green-500/30 text-green-400 bg-green-500/5 text-xs font-body tracking-wider uppercase hover:bg-green-500/10 transition-colors active:scale-[0.99]"
           >
             <CheckCircle2 className="w-4 h-4" />
-            Mark Session Complete
+            {enableProofing ? "Complete & Send Proofing" : "Mark Session Complete"}
           </button>
-        </div>
-      )}
-      {selectedBooking && selectedBooking.status === "completed" && (
-        <div className="mt-4 flex items-center justify-center gap-2 py-3 rounded-xl border border-green-500/20 text-green-500/60 bg-green-500/5 text-xs font-body tracking-wider uppercase">
-          <CheckCircle2 className="w-4 h-4" />
-          Session Completed
         </div>
       )}
 
       <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden" onChange={(e) => handleFilePick(e.target.files)} />
       <input ref={watchInputRef} type="file" accept="image/*" capture="environment" multiple className="hidden" onChange={(e) => { handleFilePick(e.target.files); if (e.target) e.target.value = ""; }} />
+
+      {/* Album Edit Modal */}
+      {showAlbumEdit && targetAlbum && (
+        <AlbumEditModal
+          album={targetAlbum}
+          onClose={() => setShowAlbumEdit(false)}
+          onSave={(updated) => {
+            updateAlbum(updated);
+            setTargetAlbum(updated);
+            setAlbums(prev => prev.map(a => a.id === updated.id ? updated : a));
+            setShowAlbumEdit(false);
+            toast.success("Album updated");
+          }}
+        />
+      )}
     </div>
   );
 }
