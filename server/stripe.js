@@ -50,11 +50,10 @@ function registerRoutes(app) {
     }
   });
 
-  // ── Create Checkout Session (album purchase) ───────
   app.post("/api/stripe/checkout/album", async (req, res) => {
     const s = getStripe();
     if (!s) return res.status(400).json({ error: "Stripe not configured" });
-    const { albumId, albumTitle, photoCount, amount, clientEmail, successUrl, cancelUrl, photoIds, isFullAlbum } = req.body;
+    const { albumId, albumTitle, photoCount, amount, clientEmail, successUrl, cancelUrl, photoIds, isFullAlbum, sessionKey } = req.body;
     const hasSpecificPhotos = Array.isArray(photoIds) && photoIds.length > 0;
     const productName = isFullAlbum ? (albumTitle || "Full Photo Album") : hasSpecificPhotos ? `${photoCount || photoIds.length} Photo(s) — ${albumTitle || "Gallery"}` : (albumTitle || "Photo Album");
     if (!amount || amount <= 0) return res.status(400).json({ error: "Invalid amount" });
@@ -81,6 +80,7 @@ function registerRoutes(app) {
           type: "album-purchase",
           isFullAlbum: isFullAlbum ? "true" : "false",
           photoIds: hasSpecificPhotos ? photoIds.join(",").slice(0, 490) : "",
+          sessionKey: sessionKey || "",
         },
       });
       res.json({ url: session.url, sessionId: session.id });
@@ -137,25 +137,33 @@ function registerRoutes(app) {
         }
         
         if (metadata.type === "album-purchase" && metadata.albumId) {
-          const albumKey = `album_${metadata.albumId}`;
-          if (db[albumKey]) {
-            const album = JSON.parse(db[albumKey]);
-            album.stripePaidAt = new Date().toISOString();
-
+          // Read albums from wv_albums array (current format)
+          const raw = db["wv_albums"];
+          const albums = raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : [];
+          const albumIdx = albums.findIndex(a => a.id === metadata.albumId);
+          if (albumIdx >= 0) {
+            const album = albums[albumIdx];
+            // Record the purchase per-session so other visitors aren't affected
+            const sKey = metadata.sessionKey || `stripe-${session.id}`;
+            const sessionPurchases = album.sessionPurchases || {};
             if (metadata.isFullAlbum === "true" || !metadata.photoIds) {
-              // Full album purchase
-              album.allUnlocked = true;
-              console.log(`📝 Album ${metadata.albumId} fully unlocked`);
+              // Full album — unlock for this session only
+              sessionPurchases[sKey] = { fullAlbum: true, photoIds: [], paidAt: new Date().toISOString(), stripeSessionId: session.id };
+              album.stripePaidAt = new Date().toISOString(); // for finance view
+              console.log(`📝 Album ${metadata.albumId} full album unlocked for session ${sKey}`);
             } else {
-              // Per-photo purchase — merge new IDs into paidPhotoIds
+              // Per-photo — add to this session's purchased set
               const newIds = metadata.photoIds ? metadata.photoIds.split(",").filter(Boolean) : [];
-              const existing = album.paidPhotoIds || [];
-              album.paidPhotoIds = [...new Set([...existing, ...newIds])];
-              console.log(`📝 Album ${metadata.albumId}: ${newIds.length} photo(s) unlocked`);
+              const existing = sessionPurchases[sKey]?.photoIds || [];
+              sessionPurchases[sKey] = { fullAlbum: false, photoIds: [...new Set([...existing, ...newIds])], paidAt: new Date().toISOString(), stripeSessionId: session.id };
+              console.log(`📝 Album ${metadata.albumId}: ${newIds.length} photo(s) unlocked for session ${sKey}`);
             }
-
-            db[albumKey] = JSON.stringify(album);
+            album.sessionPurchases = sessionPurchases;
+            albums[albumIdx] = album;
+            db["wv_albums"] = JSON.stringify(albums);
             fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
+          } else {
+            console.warn(`Album ${metadata.albumId} not found in wv_albums`);
           }
         }
       } catch (dbErr) {

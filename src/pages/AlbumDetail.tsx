@@ -188,11 +188,17 @@ export default function AlbumDetail() {
   const sessionKey = getSessionKey(album, usedPin);
   const freeUsed = getFreeUsed(album, sessionKey);
   const freeRemaining = Math.max(0, album.freeDownloads - freeUsed);
-  const isFullyUnlocked = album.allUnlocked === true;
+  const isFullyUnlocked = album.allUnlocked === true; // admin-set only (proofing delivery, manual unlock)
   const isExpired = !!(album.downloadExpiresAt && new Date(album.downloadExpiresAt) < new Date());
-  const canDownload = isFullyUnlocked && !isExpired;
-  const paidPhotoIdSet = new Set<string>(album.paidPhotoIds || []);
-  const isPhotoPaid = (id: string) => isFullyUnlocked || paidPhotoIdSet.has(id);
+  // Per-session purchase record for this viewer
+  const sessionPurchase = (album as any).sessionPurchases?.[sessionKey];
+  const sessionFullAlbum = sessionPurchase?.fullAlbum === true;
+  const sessionPaidIds = new Set<string>(sessionPurchase?.photoIds || []);
+  // Legacy global paidPhotoIds (kept for backwards compat with old purchases)
+  const globalPaidSet = new Set<string>((album as any).paidPhotoIds || []);
+  const paidPhotoIdSet = new Set<string>([...sessionPaidIds, ...globalPaidSet]);
+  const canDownload = (isFullyUnlocked || sessionFullAlbum) && !isExpired;
+  const isPhotoPaid = (id: string) => canDownload || paidPhotoIdSet.has(id);|| paidPhotoIdSet.has(id);
 
   // Proofing derived values
   const proofingStage = album.proofingStage || "not-started";
@@ -539,7 +545,8 @@ export default function AlbumDetail() {
             </div>
 
             {!canDownload && (
-              <div className="flex items-center gap-2 mt-4 p-3 rounded-lg bg-primary/5 border border-primary/10">
+              <>
+                <div className="flex items-center gap-2 mt-4 p-3 rounded-lg bg-primary/5 border border-primary/10">
                 <Info className="w-4 h-4 text-primary flex-shrink-0" />
                 <p className="text-xs font-body text-muted-foreground">
                   Click photos to select. You have <span className="text-primary font-medium">{freeRemaining} free download{freeRemaining !== 1 ? "s" : ""}</span> remaining{paidPhotoIdSet.size > 0 && <>, plus <span className="text-primary font-medium">{paidPhotoIdSet.size} purchased</span></>}. Additional photos can be purchased individually or as a full album.
@@ -557,6 +564,7 @@ export default function AlbumDetail() {
                   Download {paidPhotoIdSet.size} Purchased
                 </Button>
               )}
+              </>
             )}
 
             {canDownload && (
@@ -800,6 +808,7 @@ export default function AlbumDetail() {
                     clientEmail: album.clientEmail,
                     photoIds: isFullAlbumPurchase ? [] : unpaidSelected.map(p => p.id),
                     isFullAlbum: isFullAlbumPurchase,
+                    sessionKey,
                   });
                   setProcessingStripe(false);
                   if (result.url) {
