@@ -1,6 +1,6 @@
 import type {
   EventType, Booking, Album, Photo, ProfileSettings,
-  AppSettings, AdminCredentials, BankTransferSettings, WaitlistEntry,
+  AppSettings, AdminCredentials, BankTransferSettings, WaitlistEntry, EmailTemplate,
 } from "./types";
 import { persistToServer } from "./api";
 
@@ -241,6 +241,29 @@ export function getPhotoLibrary(): Photo[] {
 
 export function setPhotoLibrary(photos: Photo[]) {
   set("wv_photo_library", photos);
+}
+
+// ── Email Templates ─────────────────────────────────
+export function getEmailTemplates(): EmailTemplate[] {
+  return get<EmailTemplate[]>("wv_email_templates", []);
+}
+
+export function setEmailTemplates(templates: EmailTemplate[]) {
+  set("wv_email_templates", templates);
+}
+
+export function addEmailTemplate(t: EmailTemplate) {
+  const list = getEmailTemplates();
+  list.push(t);
+  setEmailTemplates(list);
+}
+
+export function updateEmailTemplate(t: EmailTemplate) {
+  setEmailTemplates(getEmailTemplates().map(e => e.id === t.id ? t : e));
+}
+
+export function deleteEmailTemplate(id: string) {
+  setEmailTemplates(getEmailTemplates().filter(e => e.id !== id));
 }
 
 // ── Waitlist ────────────────────────────────────────

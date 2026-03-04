@@ -197,6 +197,14 @@ export interface AdminCredentials {
   passwordHash: string;
 }
 
+export interface EmailTemplate {
+  id: string;
+  name: string;
+  subject: string;
+  body: string;
+  createdAt: string;
+}
+
 // ── Waitlist ──────────────────────────────────────────────────
 export interface WaitlistEntry {
   id: string;
