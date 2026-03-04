@@ -4,6 +4,8 @@ import { motion, AnimatePresence } from "framer-motion";
 
 interface PurchasePanelProps {
   selectedCount: number;
+  unpaidCount?: number;
+  alreadyPaidCount?: number;
   freeRemaining: number;
   pricePerPhoto: number;
   priceFullAlbum: number;
@@ -17,6 +19,8 @@ interface PurchasePanelProps {
 
 export default function PurchasePanel({
   selectedCount,
+  unpaidCount,
+  alreadyPaidCount = 0,
   freeRemaining,
   pricePerPhoto,
   priceFullAlbum,
@@ -27,8 +31,21 @@ export default function PurchasePanel({
   onBankTransfer,
   bankTransferEnabled = false,
 }: PurchasePanelProps) {
-  const paidCount = Math.max(0, selectedCount - freeRemaining);
+  const effectiveUnpaid = unpaidCount ?? selectedCount;
+  const paidCount = Math.max(0, effectiveUnpaid - freeRemaining);
   const paidTotal = paidCount * pricePerPhoto;
+  const fullAlbumCheaper = priceFullAlbum > 0 && paidTotal >= priceFullAlbum;
+  const allFree = paidCount === 0 && effectiveUnpaid > 0;
+  const allAlreadyPaid = alreadyPaidCount > 0 && effectiveUnpaid === 0;
+
+  const breakdownLabel = () => {
+    const parts: string[] = [];
+    if (alreadyPaidCount > 0) parts.push(`${alreadyPaidCount} already purchased`);
+    if (freeRemaining > 0 && effectiveUnpaid > 0) parts.push(`${Math.min(effectiveUnpaid, freeRemaining)} free`);
+    if (paidCount > 0) parts.push(`${paidCount} × $${pricePerPhoto} = $${paidTotal}`);
+    if (parts.length === 0) return "No charge";
+    return parts.join(" · ");
+  };
 
   return (
     <AnimatePresence>
@@ -48,22 +65,19 @@ export default function PurchasePanel({
                 <p className="text-sm font-body text-foreground">
                   <span className="font-semibold">{selectedCount}</span> photo{selectedCount !== 1 ? "s" : ""} selected
                 </p>
-                <p className="text-xs text-muted-foreground font-body">
-                  {freeRemaining > 0
-                    ? `${Math.min(selectedCount, freeRemaining)} free · ${paidCount > 0 ? `${paidCount} × $${pricePerPhoto} = $${paidTotal}` : "No charge"}`
-                    : `${selectedCount} × $${pricePerPhoto} = $${paidTotal}`}
-                </p>
+                <p className="text-xs text-muted-foreground font-body">{breakdownLabel()}</p>
               </div>
             </div>
 
             <div className="flex items-center gap-3 flex-wrap">
-              {freeRemaining > 0 && selectedCount <= freeRemaining && (
+              {(allFree || allAlreadyPaid) && (
                 <Button onClick={onDownloadFree} variant="outline" size="sm" className="gap-2 border-primary/30 text-primary hover:bg-primary/10 hover:text-primary">
                   <Download className="w-4 h-4" />
-                  Download Free
+                  Download{allAlreadyPaid ? " Purchased" : " Free"}
                 </Button>
               )}
-              {paidCount > 0 && (
+
+              {paidCount > 0 && !fullAlbumCheaper && (
                 <>
                   <Button onClick={onPurchaseSelected} size="sm" className="gap-2 bg-primary text-primary-foreground hover:bg-primary/90">
                     <ShoppingCart className="w-4 h-4" />
@@ -77,21 +91,30 @@ export default function PurchasePanel({
                   )}
                 </>
               )}
-              {freeRemaining > 0 && selectedCount > freeRemaining && paidCount === 0 && (
-                <Button onClick={onDownloadFree} variant="outline" size="sm" className="gap-2 border-primary/30 text-primary hover:bg-primary/10 hover:text-primary">
-                  <Download className="w-4 h-4" />
-                  Download (all free)
-                </Button>
-              )}
+
               {priceFullAlbum > 0 ? (
-                <Button onClick={onPurchaseAlbum} variant="outline" size="sm" className="gap-2 border-border text-foreground hover:bg-secondary">
+                <Button
+                  onClick={onPurchaseAlbum}
+                  variant={fullAlbumCheaper ? "default" : "outline"}
+                  size="sm"
+                  className={fullAlbumCheaper
+                    ? "gap-2 bg-green-600 hover:bg-green-500 text-white border-0"
+                    : "gap-2 border-border text-foreground hover:bg-secondary"}
+                >
                   <Package className="w-4 h-4" />
-                  Full Album ${priceFullAlbum}
+                  {fullAlbumCheaper ? `Full Album $${priceFullAlbum} — Better deal!` : `Full Album $${priceFullAlbum}`}
                 </Button>
               ) : (
                 <Button onClick={onPurchaseAlbum} variant="outline" size="sm" className="gap-2 border-green-500/30 text-green-400 hover:bg-green-500/10">
                   <Package className="w-4 h-4" />
                   Unlock Full Album (Free)
+                </Button>
+              )}
+
+              {fullAlbumCheaper && bankTransferEnabled && onBankTransfer && (
+                <Button onClick={onBankTransfer} variant="outline" size="sm" className="gap-2 border-border text-foreground hover:bg-secondary">
+                  <Building2 className="w-4 h-4" />
+                  Bank Transfer
                 </Button>
               )}
             </div>

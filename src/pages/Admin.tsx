@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import React, { useState, useCallback, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   LayoutDashboard, Calendar, Settings, Plus, Upload,
@@ -3017,29 +3017,50 @@ function PhotosView() {
 // ─── Profile ─────────────────────────────────────────
 // ─── Finance ───────────────────────────────────────────
 function FinanceView() {
-  const albums = getAlbums();
-  const bookings = getBookings();
+  const [albumsState, setAlbumsState] = React.useState(() => getAlbums());
+  const [deletingId, setDeletingId] = React.useState<string | null>(null);
 
-  // Collect all payment records across albums
   type PaymentRecord = {
     id: string;
     date: string;
     clientName: string;
     albumTitle: string;
     albumId: string;
-    method: "stripe" | "bank-transfer" | "free";
+    sessionKey?: string;
+    purchaserEmail?: string;
+    method: "stripe" | "bank-transfer";
     amount: number;
-    status: "completed" | "pending" | "approved";
+    status: "completed" | "pending";
     description: string;
+    requestedAt?: string; // for bank-transfer deletion key
   };
 
   const payments: PaymentRecord[] = [];
 
-  for (const alb of albums) {
-    // Stripe full-album payments
-    if (alb.stripePaidAt && alb.priceFullAlbum) {
+  for (const alb of albumsState) {
+    // Stripe — per-session purchases
+    for (const [sKey, sp] of Object.entries((alb as any).sessionPurchases || {})) {
+      const s = sp as any;
+      const photoCount = s.fullAlbum ? (alb.photos?.length || 0) : (s.photoIds?.length || 0);
+      const amount = s.fullAlbum ? (alb.priceFullAlbum || 0) : photoCount * (alb.pricePerPhoto || 0);
       payments.push({
-        id: `stripe-${alb.id}`,
+        id: `session-${alb.id}-${sKey}`,
+        date: s.paidAt || new Date().toISOString(),
+        clientName: s.purchaserEmail || alb.clientName || "Unknown",
+        albumTitle: alb.title,
+        albumId: alb.id,
+        sessionKey: sKey,
+        purchaserEmail: s.purchaserEmail,
+        method: "stripe",
+        amount,
+        status: "completed",
+        description: s.fullAlbum ? `Full album — ${photoCount} photos` : `${photoCount} photo${photoCount !== 1 ? "s" : ""} — Stripe`,
+      });
+    }
+    // Legacy stripe full-album (pre-session-purchase)
+    if (alb.stripePaidAt && alb.priceFullAlbum && !Object.keys((alb as any).sessionPurchases || {}).length) {
+      payments.push({
+        id: `stripe-legacy-${alb.id}`,
         date: alb.stripePaidAt,
         clientName: alb.clientName || "Unknown",
         albumTitle: alb.title,
@@ -3047,43 +3068,70 @@ function FinanceView() {
         method: "stripe",
         amount: alb.priceFullAlbum,
         status: "completed",
-        description: `Full album — ${alb.photos?.length || 0} photos`,
+        description: `Full album — ${alb.photos?.length || 0} photos (legacy)`,
       });
     }
     // Bank transfer requests
     for (const req of alb.downloadRequests || []) {
       if (req.method === "bank-transfer") {
-        const booking = bookings.find(b => b.id === alb.bookingId);
         const photoCount = req.photoIds?.length || 0;
-        const estimatedAmount = req.status === "approved" || req.status === "completed"
-          ? photoCount * (alb.pricePerPhoto || 0)
-          : photoCount * (alb.pricePerPhoto || 0);
+        const amount = photoCount * (alb.pricePerPhoto || 0);
         payments.push({
           id: `bank-${alb.id}-${req.requestedAt}`,
           date: req.approvedAt || req.requestedAt,
-          clientName: alb.clientName || "Unknown",
+          clientName: req.purchaserEmail || alb.clientName || "Unknown",
           albumTitle: alb.title,
           albumId: alb.id,
+          purchaserEmail: req.purchaserEmail,
           method: "bank-transfer",
-          amount: estimatedAmount,
-          status: req.status === "completed" ? "completed" : req.status === "approved" ? "approved" : "pending",
+          amount,
+          status: (req.status === "completed" || req.status === "approved") ? "completed" : "pending",
           description: `${photoCount} photo${photoCount !== 1 ? "s" : ""} — bank transfer`,
+          requestedAt: req.requestedAt,
         });
       }
     }
   }
 
-  // Sort newest first
   payments.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
   const totalRevenue = payments.filter(p => p.status === "completed").reduce((s, p) => s + p.amount, 0);
-  const pendingRevenue = payments.filter(p => p.status === "pending" || p.status === "approved").reduce((s, p) => s + p.amount, 0);
+  const pendingRevenue = payments.filter(p => p.status === "pending").reduce((s, p) => s + p.amount, 0);
   const stripeTotal = payments.filter(p => p.method === "stripe" && p.status === "completed").reduce((s, p) => s + p.amount, 0);
   const bankTotal = payments.filter(p => p.method === "bank-transfer" && p.status === "completed").reduce((s, p) => s + p.amount, 0);
 
-  const methodLabel = (m: string) => m === "stripe" ? "Stripe" : m === "bank-transfer" ? "Bank Transfer" : "Free";
-  const methodColor = (m: string) => m === "stripe" ? "text-purple-400 bg-purple-500/10" : m === "bank-transfer" ? "text-blue-400 bg-blue-500/10" : "text-green-400 bg-green-500/10";
-  const statusColor = (s: string) => s === "completed" ? "text-green-400 bg-green-500/10" : s === "approved" ? "text-blue-400 bg-blue-500/10" : "text-yellow-400 bg-yellow-500/10";
+  const handleDelete = (p: PaymentRecord) => {
+    if (!confirm(`Delete this payment record? This will revoke the client's access to the purchased photos.`)) return;
+    const albums = getAlbums();
+    const alb = albums.find(a => a.id === p.albumId);
+    if (!alb) return;
+    const updated = { ...alb } as any;
+
+    if (p.method === "stripe" && p.sessionKey) {
+      // Remove the session purchase entry — revokes their access
+      const sp = { ...(updated.sessionPurchases || {}) };
+      delete sp[p.sessionKey];
+      updated.sessionPurchases = sp;
+      // If it was the legacy stripe flag, clear that too
+      if (p.id.startsWith("stripe-legacy-")) {
+        updated.stripePaidAt = undefined;
+        updated.allUnlocked = false;
+      }
+    } else if (p.method === "bank-transfer" && p.requestedAt) {
+      // Remove the download request entry
+      updated.downloadRequests = (updated.downloadRequests || []).filter(
+        (r: any) => r.requestedAt !== p.requestedAt
+      );
+    }
+
+    updateAlbum(updated);
+    setAlbumsState(getAlbums());
+    toast.success("Payment record deleted — client access revoked");
+  };
+
+  const methodLabel = (m: string) => m === "stripe" ? "Stripe" : "Bank Transfer";
+  const methodColor = (m: string) => m === "stripe" ? "text-purple-400 bg-purple-500/10" : "text-blue-400 bg-blue-500/10";
+  const statusColor = (s: string) => s === "completed" ? "text-green-400 bg-green-500/10" : "text-yellow-400 bg-yellow-500/10";
 
   return (
     <div className="space-y-6">
@@ -3092,7 +3140,6 @@ function FinanceView() {
         <p className="text-sm font-body text-muted-foreground">Payment history and revenue summary</p>
       </div>
 
-      {/* Summary cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="glass-panel rounded-xl p-5">
           <p className="text-xs font-body text-muted-foreground tracking-wider uppercase mb-1">Total Revenue</p>
@@ -3102,7 +3149,7 @@ function FinanceView() {
         <div className="glass-panel rounded-xl p-5">
           <p className="text-xs font-body text-muted-foreground tracking-wider uppercase mb-1">Pending</p>
           <p className="font-display text-2xl text-yellow-400">${pendingRevenue.toFixed(2)}</p>
-          <p className="text-[10px] font-body text-muted-foreground mt-1">{payments.filter(p => p.status !== "completed").length} awaiting payment</p>
+          <p className="text-[10px] font-body text-muted-foreground mt-1">{payments.filter(p => p.status === "pending").length} awaiting payment</p>
         </div>
         <div className="glass-panel rounded-xl p-5">
           <p className="text-xs font-body text-muted-foreground tracking-wider uppercase mb-1">Stripe</p>
@@ -3116,7 +3163,6 @@ function FinanceView() {
         </div>
       </div>
 
-      {/* Payment list */}
       <div className="glass-panel rounded-xl overflow-hidden">
         <div className="p-4 border-b border-border">
           <h3 className="font-display text-base text-foreground">Payment History</h3>
@@ -3130,19 +3176,31 @@ function FinanceView() {
         ) : (
           <div className="divide-y divide-border">
             {payments.map(p => (
-              <div key={p.id} className="flex items-center gap-4 px-4 py-3 hover:bg-secondary/30 transition-colors">
+              <div key={p.id} className="flex items-center gap-4 px-4 py-3 hover:bg-secondary/30 transition-colors group">
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
                     <p className="text-sm font-body text-foreground truncate">{p.clientName}</p>
                     <span className="text-muted-foreground/40 text-xs">·</span>
                     <p className="text-xs font-body text-muted-foreground truncate">{p.albumTitle}</p>
                   </div>
-                  <p className="text-[10px] font-body text-muted-foreground/60 mt-0.5">{p.description} · {new Date(p.date).toLocaleDateString("en-AU", { day: "numeric", month: "short", year: "numeric" })}</p>
+                  <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                    <p className="text-[10px] font-body text-muted-foreground/60">{p.description} · {new Date(p.date).toLocaleDateString("en-AU", { day: "numeric", month: "short", year: "numeric" })}</p>
+                    {p.purchaserEmail && (
+                      <span className="text-[10px] font-body text-primary/60 bg-primary/5 px-1.5 py-0.5 rounded">{p.purchaserEmail}</span>
+                    )}
+                  </div>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
                   <span className={`text-[10px] font-body px-2 py-0.5 rounded-full ${methodColor(p.method)}`}>{methodLabel(p.method)}</span>
                   <span className={`text-[10px] font-body px-2 py-0.5 rounded-full capitalize ${statusColor(p.status)}`}>{p.status}</span>
                   <p className="text-sm font-display text-foreground w-16 text-right">${p.amount.toFixed(2)}</p>
+                  <button
+                    onClick={() => handleDelete(p)}
+                    className="opacity-0 group-hover:opacity-100 transition-opacity ml-1 p-1 rounded hover:bg-red-500/10 text-muted-foreground/40 hover:text-red-400"
+                    title="Delete & revoke access"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
                 </div>
               </div>
             ))}

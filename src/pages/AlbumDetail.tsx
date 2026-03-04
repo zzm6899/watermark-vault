@@ -96,6 +96,9 @@ export default function AlbumDetail() {
   const [processingStripe, setProcessingStripe] = useState(false);
   const [stripeSuccess, setStripeSuccess] = useState(() => searchParams.get("success") === "1");
   const [pollingCount, setPollingCount] = useState(0);
+  const [showEmailReg, setShowEmailReg] = useState(false);
+  const [purchaserEmail, setPurchaserEmail] = useState("");
+  const [savingEmail, setSavingEmail] = useState(false);
 
   // Proofing state
   const [proofingClientNote, setProofingClientNote] = useState("");
@@ -135,12 +138,18 @@ export default function AlbumDetail() {
   // Stop polling once paid data lands
   useEffect(() => {
     if (!stripeSuccess) return;
-    if (album && (album.allUnlocked || (album.paidPhotoIds && album.paidPhotoIds.length > 0))) {
+    const hasPurchase = album && (
+      (album as any).sessionPurchases?.[sessionKey] ||
+      album.allUnlocked ||
+      (album as any).paidPhotoIds?.length > 0
+    );
+    if (hasPurchase) {
       toast.success("Payment confirmed! Your photos are now unlocked.");
       setStripeSuccess(false);
       setPollingCount(0);
+      setShowEmailReg(true); // prompt for email registration
     }
-  }, [album, stripeSuccess]);
+  }, [album, stripeSuccess, sessionKey]);
 
   // Backfill missing thumbnails in background
   useBackfillThumbnails(album?.photos || [], useCallback((photoId, thumb) => {
@@ -202,7 +211,13 @@ export default function AlbumDetail() {
   const sessionPaidIds = new Set<string>(sessionPurchase?.photoIds || []);
   // Legacy global paidPhotoIds (kept for backwards compat with old purchases)
   const globalPaidSet = new Set<string>((album as any).paidPhotoIds || []);
-  const paidPhotoIdSet = new Set<string>([...sessionPaidIds, ...globalPaidSet]);
+  // Approved/completed bank transfer requests also unlock their photos
+  const bankPaidIds = new Set<string>(
+    ((album as any).downloadRequests || [])
+      .filter((r: any) => r.status === "approved" || r.status === "completed")
+      .flatMap((r: any) => r.photoIds || [])
+  );
+  const paidPhotoIdSet = new Set<string>([...sessionPaidIds, ...globalPaidSet, ...bankPaidIds]);
   const canDownload = (isFullyUnlocked || sessionFullAlbum) && !isExpired;
   const isPhotoPaid = (id: string) => canDownload || paidPhotoIdSet.has(id);
 
@@ -688,6 +703,8 @@ export default function AlbumDetail() {
       {!canDownload && !isProofing && !(selectedIds.size > 0 && Array.from(selectedIds).every(id => isPhotoPaid(id))) && (
         <PurchasePanel
           selectedCount={selectedIds.size}
+          unpaidCount={unpaidSelected.length}
+          alreadyPaidCount={selectedIds.size - unpaidSelected.length}
           freeRemaining={freeRemaining}
           pricePerPhoto={album.pricePerPhoto}
           priceFullAlbum={album.priceFullAlbum}
@@ -911,6 +928,52 @@ export default function AlbumDetail() {
             <Button onClick={submitBankTransferRequest} className="w-full bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs tracking-wider uppercase gap-2">
               <Building2 className="w-4 h-4" /> Submit Request & View Bank Details
             </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Post-payment email registration */}
+      <Dialog open={showEmailReg} onOpenChange={setShowEmailReg}>
+        <DialogContent className="glass-panel border-border max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="font-display text-xl text-foreground">Save your access</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 mt-2">
+            <p className="text-sm font-body text-muted-foreground">
+              Add your email to link this purchase to your account — so you can re-access your photos from any device using the same gallery link.
+            </p>
+            <input
+              type="email"
+              placeholder="your@email.com"
+              value={purchaserEmail}
+              onChange={e => setPurchaserEmail(e.target.value)}
+              className="w-full bg-secondary border border-border rounded-lg px-3 py-2.5 text-sm font-body text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary/50"
+            />
+            <div className="flex gap-2">
+              <Button
+                onClick={async () => {
+                  if (!purchaserEmail.includes("@")) { toast.error("Please enter a valid email"); return; }
+                  setSavingEmail(true);
+                  try {
+                    await fetch("/api/album/register-purchaser", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ albumId: album.id, sessionKey, email: purchaserEmail }),
+                    });
+                    toast.success("Email saved — your purchase is now linked to " + purchaserEmail);
+                    setShowEmailReg(false);
+                  } catch { toast.error("Failed to save email"); }
+                  setSavingEmail(false);
+                }}
+                disabled={savingEmail}
+                className="flex-1 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-sm"
+              >
+                {savingEmail ? "Saving…" : "Save Email"}
+              </Button>
+              <Button variant="outline" onClick={() => setShowEmailReg(false)} className="font-body text-sm border-border">
+                Skip
+              </Button>
+            </div>
           </div>
         </DialogContent>
       </Dialog>
