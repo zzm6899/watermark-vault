@@ -42,7 +42,7 @@ import sampleWedding from "@/assets/sample-wedding.jpg";
 import sampleEvent from "@/assets/sample-event.jpg";
 import sampleFood from "@/assets/sample-food.jpg";
 
-type Tab = "dashboard" | "bookings" | "events" | "albums" | "photos" | "profile" | "settings" | "storage";
+type Tab = "dashboard" | "bookings" | "events" | "albums" | "photos" | "finance" | "profile" | "settings" | "storage";
 
 const TAB_ROUTE_MAP: Record<string, Tab> = {
   dashboard: "dashboard",
@@ -50,6 +50,7 @@ const TAB_ROUTE_MAP: Record<string, Tab> = {
   events: "events",
   albums: "albums",
   photos: "photos",
+  finance: "finance",
   profile: "profile",
   settings: "settings",
   storage: "storage",
@@ -113,6 +114,7 @@ export default function Admin() {
     { id: "events" as Tab, label: "Events", icon: Clock },
     { id: "albums" as Tab, label: "Albums", icon: Image },
     { id: "photos" as Tab, label: "Photos", icon: Upload },
+    { id: "finance" as Tab, label: "Finance", icon: DollarSign },
     { id: "profile" as Tab, label: "Profile", icon: Camera },
     { id: "settings" as Tab, label: "Settings", icon: Settings },
     { id: "storage" as Tab, label: "Storage", icon: HardDrive },
@@ -172,6 +174,7 @@ export default function Admin() {
           {activeTab === "events" && <EventTypesView />}
           {activeTab === "albums" && <AlbumsView prefillBookingId={prefillBookingId} onClearPrefill={() => setPrefillBookingId(null)} />}
           {activeTab === "photos" && <PhotosView />}
+          {activeTab === "finance" && <FinanceView />}
           {activeTab === "profile" && <ProfileView />}
           {activeTab === "settings" && <SettingsView />}
           {activeTab === "storage" && <StorageView />}
@@ -3012,6 +3015,150 @@ function PhotosView() {
 }
 
 // ─── Profile ─────────────────────────────────────────
+// ─── Finance ───────────────────────────────────────────
+function FinanceView() {
+  const albums = getAlbums();
+  const bookings = getBookings();
+
+  // Collect all payment records across albums
+  type PaymentRecord = {
+    id: string;
+    date: string;
+    clientName: string;
+    albumTitle: string;
+    albumId: string;
+    method: "stripe" | "bank-transfer" | "free";
+    amount: number;
+    status: "completed" | "pending" | "approved";
+    description: string;
+  };
+
+  const payments: PaymentRecord[] = [];
+
+  for (const alb of albums) {
+    // Stripe full-album payments
+    if (alb.stripePaidAt && alb.priceFullAlbum) {
+      payments.push({
+        id: `stripe-${alb.id}`,
+        date: alb.stripePaidAt,
+        clientName: alb.clientName || "Unknown",
+        albumTitle: alb.title,
+        albumId: alb.id,
+        method: "stripe",
+        amount: alb.priceFullAlbum,
+        status: "completed",
+        description: `Full album — ${alb.photos?.length || 0} photos`,
+      });
+    }
+    // Bank transfer requests
+    for (const req of alb.downloadRequests || []) {
+      if (req.method === "bank-transfer") {
+        const booking = bookings.find(b => b.id === alb.bookingId);
+        const photoCount = req.photoIds?.length || 0;
+        const estimatedAmount = req.status === "approved" || req.status === "completed"
+          ? photoCount * (alb.pricePerPhoto || 0)
+          : photoCount * (alb.pricePerPhoto || 0);
+        payments.push({
+          id: `bank-${alb.id}-${req.requestedAt}`,
+          date: req.approvedAt || req.requestedAt,
+          clientName: alb.clientName || "Unknown",
+          albumTitle: alb.title,
+          albumId: alb.id,
+          method: "bank-transfer",
+          amount: estimatedAmount,
+          status: req.status === "completed" ? "completed" : req.status === "approved" ? "approved" : "pending",
+          description: `${photoCount} photo${photoCount !== 1 ? "s" : ""} — bank transfer`,
+        });
+      }
+    }
+  }
+
+  // Sort newest first
+  payments.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+  const totalRevenue = payments.filter(p => p.status === "completed").reduce((s, p) => s + p.amount, 0);
+  const pendingRevenue = payments.filter(p => p.status === "pending" || p.status === "approved").reduce((s, p) => s + p.amount, 0);
+  const stripeTotal = payments.filter(p => p.method === "stripe" && p.status === "completed").reduce((s, p) => s + p.amount, 0);
+  const bankTotal = payments.filter(p => p.method === "bank-transfer" && p.status === "completed").reduce((s, p) => s + p.amount, 0);
+
+  const methodLabel = (m: string) => m === "stripe" ? "Stripe" : m === "bank-transfer" ? "Bank Transfer" : "Free";
+  const methodColor = (m: string) => m === "stripe" ? "text-purple-400 bg-purple-500/10" : m === "bank-transfer" ? "text-blue-400 bg-blue-500/10" : "text-green-400 bg-green-500/10";
+  const statusColor = (s: string) => s === "completed" ? "text-green-400 bg-green-500/10" : s === "approved" ? "text-blue-400 bg-blue-500/10" : "text-yellow-400 bg-yellow-500/10";
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="font-display text-2xl text-foreground mb-1">Finance</h2>
+        <p className="text-sm font-body text-muted-foreground">Payment history and revenue summary</p>
+      </div>
+
+      {/* Summary cards */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="glass-panel rounded-xl p-5">
+          <p className="text-xs font-body text-muted-foreground tracking-wider uppercase mb-1">Total Revenue</p>
+          <p className="font-display text-2xl text-green-400">${totalRevenue.toFixed(2)}</p>
+          <p className="text-[10px] font-body text-muted-foreground mt-1">{payments.filter(p => p.status === "completed").length} completed payments</p>
+        </div>
+        <div className="glass-panel rounded-xl p-5">
+          <p className="text-xs font-body text-muted-foreground tracking-wider uppercase mb-1">Pending</p>
+          <p className="font-display text-2xl text-yellow-400">${pendingRevenue.toFixed(2)}</p>
+          <p className="text-[10px] font-body text-muted-foreground mt-1">{payments.filter(p => p.status !== "completed").length} awaiting payment</p>
+        </div>
+        <div className="glass-panel rounded-xl p-5">
+          <p className="text-xs font-body text-muted-foreground tracking-wider uppercase mb-1">Stripe</p>
+          <p className="font-display text-2xl text-purple-400">${stripeTotal.toFixed(2)}</p>
+          <p className="text-[10px] font-body text-muted-foreground mt-1">{payments.filter(p => p.method === "stripe" && p.status === "completed").length} transactions</p>
+        </div>
+        <div className="glass-panel rounded-xl p-5">
+          <p className="text-xs font-body text-muted-foreground tracking-wider uppercase mb-1">Bank Transfer</p>
+          <p className="font-display text-2xl text-blue-400">${bankTotal.toFixed(2)}</p>
+          <p className="text-[10px] font-body text-muted-foreground mt-1">{payments.filter(p => p.method === "bank-transfer" && p.status === "completed").length} transfers</p>
+        </div>
+      </div>
+
+      {/* Payment list */}
+      <div className="glass-panel rounded-xl overflow-hidden">
+        <div className="p-4 border-b border-border">
+          <h3 className="font-display text-base text-foreground">Payment History</h3>
+        </div>
+        {payments.length === 0 ? (
+          <div className="p-12 text-center">
+            <DollarSign className="w-8 h-8 text-muted-foreground/30 mx-auto mb-3" />
+            <p className="text-sm font-body text-muted-foreground">No payments recorded yet</p>
+            <p className="text-xs font-body text-muted-foreground/60 mt-1">Stripe and bank transfer payments will appear here</p>
+          </div>
+        ) : (
+          <div className="divide-y divide-border">
+            {payments.map(p => (
+              <div key={p.id} className="flex items-center gap-4 px-4 py-3 hover:bg-secondary/30 transition-colors">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <p className="text-sm font-body text-foreground truncate">{p.clientName}</p>
+                    <span className="text-muted-foreground/40 text-xs">·</span>
+                    <p className="text-xs font-body text-muted-foreground truncate">{p.albumTitle}</p>
+                  </div>
+                  <p className="text-[10px] font-body text-muted-foreground/60 mt-0.5">{p.description} · {new Date(p.date).toLocaleDateString("en-AU", { day: "numeric", month: "short", year: "numeric" })}</p>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <span className={`text-[10px] font-body px-2 py-0.5 rounded-full ${methodColor(p.method)}`}>{methodLabel(p.method)}</span>
+                  <span className={`text-[10px] font-body px-2 py-0.5 rounded-full capitalize ${statusColor(p.status)}`}>{p.status}</span>
+                  <p className="text-sm font-display text-foreground w-16 text-right">${p.amount.toFixed(2)}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        {payments.length > 0 && (
+          <div className="p-4 border-t border-border flex justify-between items-center">
+            <p className="text-xs font-body text-muted-foreground">{payments.length} total records</p>
+            <p className="text-sm font-body text-foreground">Total collected: <span className="text-green-400 font-medium">${totalRevenue.toFixed(2)}</span></p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ProfileView() {
   const [profile, setProfileState] = useState<ProfileSettings>(getProfile());
 

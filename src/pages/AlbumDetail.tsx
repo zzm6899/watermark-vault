@@ -365,7 +365,14 @@ export default function AlbumDetail() {
   };
 
   const handlePurchaseAlbum = () => {
-    // Always go to payment portal for full album
+    // If full album is free (or already unlocked), just unlock and download
+    if (!album.priceFullAlbum || album.priceFullAlbum === 0) {
+      const updated = { ...album, allUnlocked: true };
+      updateAlbum(updated);
+      setAlbumState(updated);
+      toast.success("Album unlocked! You can now download all photos.");
+      return;
+    }
     setShowPaymentChoice(true);
   };
 
@@ -403,7 +410,8 @@ export default function AlbumDetail() {
   const displaySize = album.displaySize || "medium";
   const gridClass = displaySize === "small" ? "masonry-grid-sm" : displaySize === "large" ? "masonry-grid-lg" : displaySize === "list" ? "masonry-grid-list" : "masonry-grid";
 
-  const paidCount = Math.max(0, selectedIds.size - freeRemaining);
+  const unpaidSelected = album.photos.filter(p => selectedIds.has(p.id) && !paidPhotoIdSet.has(p.id));
+  const paidCount = Math.max(0, unpaidSelected.length - freeRemaining);
   const paidTotal = paidCount * album.pricePerPhoto;
 
   return (
@@ -537,6 +545,18 @@ export default function AlbumDetail() {
                   Click photos to select. You have <span className="text-primary font-medium">{freeRemaining} free download{freeRemaining !== 1 ? "s" : ""}</span> remaining{paidPhotoIdSet.size > 0 && <>, plus <span className="text-primary font-medium">{paidPhotoIdSet.size} purchased</span></>}. Additional photos can be purchased individually or as a full album.
                 </p>
               </div>
+              {paidPhotoIdSet.size > 0 && (
+                <Button size="sm" variant="outline" onClick={async () => {
+                  setDownloading(true);
+                  const purchased = album.photos.filter(p => paidPhotoIdSet.has(p.id));
+                  for (const p of purchased) await downloadPhoto(p, downloadQuality);
+                  setDownloading(false);
+                  toast.success(`Downloaded ${purchased.length} purchased photo${purchased.length !== 1 ? "s" : ""}`);
+                }} className="gap-2 border-primary/30 text-primary hover:bg-primary/10 font-body text-xs shrink-0">
+                  <Download className="w-3.5 h-3.5" />
+                  Download {paidPhotoIdSet.size} Purchased
+                </Button>
+              )}
             )}
 
             {canDownload && (
@@ -761,14 +781,24 @@ export default function AlbumDetail() {
                   setShowPaymentChoice(false);
                   setProcessingStripe(true);
                   const isFullAlbumPurchase = selectedIds.size === 0 || selectedIds.size === album.photos.length;
-                  const photosBeingPaid = album.photos.filter(p => selectedIds.has(p.id) && !paidPhotoIdSet.has(p.id));
+                  const photosBeingPaid = isFullAlbumPurchase
+                    ? [] // server handles full album
+                    : album.photos.filter(p => selectedIds.has(p.id) && !paidPhotoIdSet.has(p.id) && !( unpaidSelected.indexOf(p) < freeRemaining ));
+                  // Recalculate amount using only truly unpaid photos
+                  const checkoutAmount = isFullAlbumPurchase ? album.priceFullAlbum : paidTotal;
+                  // If nothing actually needs paying, just download
+                  if (!isFullAlbumPurchase && checkoutAmount === 0) {
+                    setProcessingStripe(false);
+                    handleDownloadFree();
+                    return;
+                  }
                   const result = await createAlbumCheckout({
                     albumId: album.id,
                     albumTitle: album.title,
-                    photoCount: isFullAlbumPurchase ? album.photos.length : photosBeingPaid.length,
-                    amount: isFullAlbumPurchase ? album.priceFullAlbum : paidTotal,
+                    photoCount: isFullAlbumPurchase ? album.photos.length : unpaidSelected.length,
+                    amount: checkoutAmount,
                     clientEmail: album.clientEmail,
-                    photoIds: isFullAlbumPurchase ? [] : photosBeingPaid.map(p => p.id),
+                    photoIds: isFullAlbumPurchase ? [] : unpaidSelected.map(p => p.id),
                     isFullAlbum: isFullAlbumPurchase,
                   });
                   setProcessingStripe(false);
