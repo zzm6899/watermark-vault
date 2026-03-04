@@ -1682,7 +1682,15 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
     const poll = async () => {
       if (cancelled) return;
       await syncFromServer();
-      if (!cancelled) setAlbumsState(getAlbums());
+      if (cancelled) return;
+      const fresh = getAlbums();
+      setAlbumsState(fresh);
+      // If an album editor is open, refresh it too so proofing picks appear live
+      setEditing(prev => {
+        if (!prev) return prev;
+        const updated = fresh.find(a => a.id === prev.id);
+        return updated ?? prev;
+      });
     };
     poll(); // immediate on mount
     const id = setInterval(poll, 5000);
@@ -2023,6 +2031,8 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
   // Live album state for proofing panel — keeps UI in sync when proofing actions mutate the album
   const [liveAlbum, setLiveAlbum] = useState<Album | null>(album);
   const updateLiveAlbum = (updated: Album) => { updateAlbum(updated); setLiveAlbum(updated); };
+  // Sync liveAlbum when parent refreshes the album prop (e.g. from server polling)
+  useEffect(() => { if (album) setLiveAlbum(album); }, [album]);
   const [downloadExpiresAt, setDownloadExpiresAt] = useState(album?.downloadExpiresAt || "");
   const [displaySize, setDisplaySize] = useState<AlbumDisplaySize>(album?.displaySize || "medium");
 
@@ -2647,7 +2657,8 @@ function PhotosView() {
     return alb ? alb.photos.map(p => ({ ...p, source: alb.title })) : [];
   };
 
-  const unfilteredPhotos = viewSource === "all" ? allPhotos : viewSource === "library" ? libraryPhotos.map(p => ({ ...p, source: "Library" })) : getAlbumPhotos(viewSource);
+  const starredPhotos = allPhotos.filter(p => (p as any).starred);
+  const unfilteredPhotos = viewSource === "all" ? allPhotos : viewSource === "library" ? libraryPhotos.map(p => ({ ...p, source: "Library" })) : viewSource === "starred" ? starredPhotos : getAlbumPhotos(viewSource);
   const displayPhotos = searchQuery.trim()
     ? unfilteredPhotos.filter(p => p.title.toLowerCase().includes(searchQuery.trim().toLowerCase()) || p.src.toLowerCase().includes(searchQuery.trim().toLowerCase()))
     : unfilteredPhotos;
@@ -2907,6 +2918,11 @@ function PhotosView() {
         <button onClick={() => setViewSource("library")} className={`text-xs font-body px-3 py-1.5 rounded-full whitespace-nowrap transition-all ${viewSource === "library" ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground hover:text-foreground"}`}>
           Library ({libraryPhotos.length})
         </button>
+        {starredPhotos.length > 0 && (
+          <button onClick={() => setViewSource("starred")} className={`text-xs font-body px-3 py-1.5 rounded-full whitespace-nowrap transition-all ${viewSource === "starred" ? "bg-yellow-500 text-black" : "bg-secondary text-yellow-400 hover:text-yellow-300"}`}>
+            ⭐ Starred ({starredPhotos.length})
+          </button>
+        )}
         {albums.map(a => (
           <button key={a.id} onClick={() => setViewSource(a.title)} className={`text-xs font-body px-3 py-1.5 rounded-full whitespace-nowrap transition-all ${viewSource === a.title ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground hover:text-foreground"}`}>
             {a.title} ({a.photos.length})
@@ -2951,6 +2967,9 @@ function PhotosView() {
             <div key={p.id + p.source} className={`relative group aspect-square rounded-md overflow-hidden bg-secondary cursor-pointer border-2 transition-all ${selectedIds.has(p.id) ? "border-primary ring-2 ring-primary/20" : "border-transparent hover:border-border"}`}
               onClick={() => toggleSelect(p.id)}>
               <ProgressiveImg thumbSrc={p.thumbnail} fullSrc={p.src} alt={p.title} className="w-full h-full object-cover" loading="lazy" />
+              {(p as any).starred && (
+                <span className="absolute top-1 left-1 text-[10px] leading-none">⭐</span>
+              )}
               <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-background/80 to-transparent p-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
                 <p className="text-[9px] font-body text-foreground font-medium truncate">{p.title}</p>
                 <p className="text-[8px] font-body text-muted-foreground truncate">{p.source}</p>

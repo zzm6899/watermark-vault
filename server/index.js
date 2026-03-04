@@ -94,6 +94,7 @@ function getStorageUsage() {
     dbSizeBytes: fs.existsSync(DB_FILE) ? fs.statSync(DB_FILE).size : 0,
     uploadsSizeBytes: totalBytes - (fs.existsSync(DB_FILE) ? fs.statSync(DB_FILE).size : 0),
     photoFiles: photoFiles.sort((a, b) => b.size - a.size).slice(0, 50), // top 50 by size
+    allFileNames: photoFiles.map(f => f.name),
     disk: diskStats,
     dataDir: DATA_DIR,
   };
@@ -204,24 +205,24 @@ app.post("/api/client-portal/request", async (req, res) => {
   if (!email || !email.includes("@")) return res.status(400).json({ error: "Invalid email" });
 
   const db = readDb();
-  // Find all albums belonging to this email
+  // Use wv_albums array (current storage format)
+  const allAlbums = dbGet(db, "wv_albums", []);
   const matchingAlbums = [];
-  for (const key of Object.keys(db)) {
-    if (!key.startsWith("album_")) continue;
-    try {
-      const album = JSON.parse(db[key]);
-      if (album.clientEmail?.toLowerCase() === email.toLowerCase() && album.enabled !== false) {
-        // Generate or reuse token
-        if (!album.clientToken) {
-          album.clientToken = `ct-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-          db[key] = JSON.stringify(album);
-        }
-        matchingAlbums.push({ id: album.id, slug: album.slug, title: album.title, date: album.date, photoCount: album.photos?.length || 0, proofingStage: album.proofingStage, clientToken: album.clientToken });
-      }
-    } catch {}
+  let dirty = false;
+
+  for (const album of allAlbums) {
+    if (!album || album.clientEmail?.toLowerCase() !== email.toLowerCase()) continue;
+    if (album.enabled === false) continue;
+    // Generate or reuse token
+    if (!album.clientToken) {
+      album.clientToken = `ct-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+      dirty = true;
+    }
+    matchingAlbums.push({ id: album.id, slug: album.slug, title: album.title, date: album.date, photoCount: album.photos?.length || 0, proofingStage: album.proofingStage, clientToken: album.clientToken });
   }
 
-  if (matchingAlbums.length > 0) {
+  if (dirty) {
+    db["wv_albums"] = JSON.stringify(allAlbums);
     writeDb(db);
   }
 
@@ -244,10 +245,10 @@ app.post("/api/client-portal/request", async (req, res) => {
   }).join("");
 
   try {
-    await fetch(`http://localhost:${process.env.PORT || 5066}/api/email/send`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+    const transporter = getTransporter();
+    if (transporter) {
+      await transporter.sendMail({
+        from: getFromAddress(),
         to: email,
         subject: `Your photo galleries (${matchingAlbums.length} album${matchingAlbums.length !== 1 ? "s" : ""})`,
         html: `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;">
@@ -256,8 +257,8 @@ app.post("/api/client-portal/request", async (req, res) => {
           ${albumLinks}
           <p style="color:#374151;margin-top:24px;font-size:11px;">These links are personal to you. If you didn't request this email, you can ignore it.</p>
         </div>`,
-      }),
-    }).catch(() => {});
+      }).catch(() => {});
+    }
   } catch {}
 });
 
@@ -334,21 +335,23 @@ async function notifyWaitlistOnCancellation(cancelledBooking) {
       const formattedDate = new Date(dateStr + "T12:00:00").toLocaleDateString("en-AU", {
         weekday: "long", day: "numeric", month: "long",
       });
-      await fetch(`http://localhost:${process.env.PORT || 5066}/api/email/send`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          to: entry.clientEmail,
-          subject: `📸 A spot just opened up — ${entry.eventTypeTitle || "Session"} on ${formattedDate}`,
-          html: `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;">
+      await (async () => {
+        const transporter = getTransporter();
+        if (transporter) {
+          await transporter.sendMail({
+            from: getFromAddress(),
+            to: entry.clientEmail,
+            subject: `📸 A spot just opened up — ${entry.eventTypeTitle || "Session"} on ${formattedDate}`,
+            html: `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;">
             <h2 style="margin:0 0 16px;font-size:20px;">Good news, ${entry.clientName?.split(" ")[0] || "there"}! 🎉</h2>
             <p style="color:#9ca3af;margin:0 0 12px;">A spot has just opened up for <strong style="color:#e5e7eb;">${entry.eventTypeTitle || "your requested session"}</strong> on <strong style="color:#e5e7eb;">${formattedDate}</strong>.</p>
             <p style="color:#9ca3af;margin:0 0 20px;">Spots go fast — click below to book before it's taken.</p>
             <a href="${bookingUrl}" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">Book Now →</a>
             <p style="color:#374151;margin-top:24px;font-size:11px;">You received this because you joined the waitlist. If you're no longer interested, simply ignore this email.</p>
           </div>`,
-        }),
-      });
+          });
+        }
+      })();
       // Mark as notified
       entry.notifiedAt = new Date().toISOString();
       console.log(`📧 Waitlist notification sent to ${entry.clientEmail} for ${eventTypeId} on ${dateStr}`);
@@ -620,11 +623,10 @@ async function sendBookingReminders() {
       }
 
       try {
-        await fetch(`http://localhost:${PORT}/api/email/send`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ to: bk.clientEmail, subject, html }),
-        });
+        const transporter = getTransporter();
+        if (transporter) {
+          await transporter.sendMail({ from: getFromAddress(), to: bk.clientEmail, subject, html });
+        }
         console.log(`📧 ${key} reminder sent to ${bk.clientEmail} for booking ${bk.id}${reminderTemplate ? " (using template)" : " (using default)"}`);
       } catch (e) {
         console.error(`Failed to send ${key} reminder for ${bk.id}:`, e.message);
