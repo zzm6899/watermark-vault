@@ -207,16 +207,7 @@ function DashboardView() {
     const alb = albums.find(a => a.id === albumId);
     if (!alb) return;
     const updated = { ...alb };
-    const req = updated.downloadRequests![reqIdx];
-    // Mark request as approved
-    updated.downloadRequests = updated.downloadRequests!.map((r, i) =>
-      i === reqIdx ? { ...r, status: "approved" as const, approvedAt: new Date().toISOString() } : r
-    );
-    // Write paidPhotoIds so the gallery unlocks those specific photos
-    if (req?.photoIds?.length) {
-      const existing = updated.paidPhotoIds || [];
-      updated.paidPhotoIds = [...new Set([...existing, ...req.photoIds])];
-    }
+    updated.downloadRequests = updated.downloadRequests!.map((r, i) => i === reqIdx ? { ...r, status: "approved" as const, approvedAt: new Date().toISOString() } : r);
     updateAlbum(updated);
     toast.success("Download request approved — client can now download");
   };
@@ -1868,12 +1859,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onCa
                   {req.status === "pending" && (
                     <Button size="sm" variant="outline" onClick={() => {
                       const updated = { ...album };
-                      const req2 = updated.downloadRequests![idx];
                       updated.downloadRequests = updated.downloadRequests!.map((r, i) => i === idx ? { ...r, status: "approved" as const, approvedAt: new Date().toISOString() } : r);
-                      if (req2?.photoIds?.length) {
-                        const ex = updated.paidPhotoIds || [];
-                        updated.paidPhotoIds = [...new Set([...ex, ...req2.photoIds])];
-                      }
                       updateAlbum(updated);
                       toast.success("Download request approved");
                     }} className="gap-1 text-xs font-body border-green-500/30 text-green-400 hover:bg-green-500/10">
