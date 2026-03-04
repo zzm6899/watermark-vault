@@ -3238,7 +3238,7 @@ function FinanceView() {
 
       {/* Download Log */}
       {(() => {
-        const allDownloads = albums.flatMap(alb =>
+        const allDownloads = albumsState.flatMap(alb =>
           (alb.downloadHistory || []).map((h: any) => ({
             ...h,
             albumTitle: alb.title,

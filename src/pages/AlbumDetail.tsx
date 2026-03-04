@@ -145,17 +145,17 @@ export default function AlbumDetail() {
   useEffect(() => {
     if (!stripeSuccess) return;
     const hasPurchase = album && (
-      (album as any).sessionPurchases?.[sessionKey] ||
       album.allUnlocked ||
-      (album as any).paidPhotoIds?.length > 0
+      (album as any).paidPhotoIds?.length > 0 ||
+      Object.keys((album as any).sessionPurchases || {}).length > 0
     );
     if (hasPurchase) {
       toast.success("Payment confirmed! Your photos are now unlocked.");
       setStripeSuccess(false);
       setPollingCount(0);
-      setShowEmailReg(true); // prompt for email registration
+      setShowEmailReg(true);
     }
-  }, [album, stripeSuccess, sessionKey]);
+  }, [album, stripeSuccess]);
 
   // Backfill missing thumbnails in background
   useBackfillThumbnails(album?.photos || [], useCallback((photoId, thumb) => {
