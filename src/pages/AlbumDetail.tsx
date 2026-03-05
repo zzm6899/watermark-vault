@@ -516,6 +516,10 @@ export default function AlbumDetail() {
   const previewPaidCount = Math.max(0, unpaidSelected.length - freeRemaining);
   const previewCheckoutAmount = previewIsFullAlbum ? priceFullAlbum : (previewPaidCount * pricePerPhoto);
 
+  // Lightbox — computed at render level (no IIFE in JSX to avoid bundler TDZ issues)
+  const lbPhoto = lightboxPhotoId ? displayedPhotos.find((p: any) => p.id === lightboxPhotoId) ?? null : null;
+  const lbIdx = lbPhoto ? displayedPhotos.findIndex((p: any) => p.id === lightboxPhotoId) : -1;
+
   return (
     <div className="min-h-screen bg-background">
       <Header />
@@ -1193,7 +1197,7 @@ export default function AlbumDetail() {
 
       {/* Fullscreen Lightbox */}
       <AnimatePresence>
-        {(() => { const lbPhoto = lightboxPhotoId ? displayedPhotos.find((p:any) => p.id === lightboxPhotoId) : null; const lbIdx = lbPhoto ? displayedPhotos.findIndex((p:any) => p.id === lightboxPhotoId) : -1; return lbPhoto ? (
+        {lbPhoto ? (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -1294,7 +1298,7 @@ export default function AlbumDetail() {
               </p>
             </div>
           </motion.div>
-        ) : null; })()}
+        ) : null}
       </AnimatePresence>
 
       <Footer />
