@@ -105,8 +105,6 @@ export default function PurchasePanel({
                     </Badge>
                   )}
                 </div>
-                  {breakdownLabel()}
-                </p>
               </div>
             </div>
 
@@ -153,7 +151,8 @@ export default function PurchasePanel({
                 </Button>
               )}
 
-              {albumPrice > 0 && !fullAlbumCheaper && (
+              {/* Always offer Full Album purchase as an option unless everything is already paid */}
+              {albumPrice > 0 && !allAlreadyPaid && !(paidCount > 0 && fullAlbumCheaper) && (
                 <Button
                   onClick={onPurchaseAlbum}
                   variant="outline"
