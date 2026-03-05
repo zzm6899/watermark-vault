@@ -676,6 +676,7 @@ export default function AlbumDetail() {
                       ) : null
                     )}
                   </>
+                )}
               </div>
             </div>
           </motion.div>
