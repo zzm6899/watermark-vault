@@ -786,6 +786,7 @@ export default function AlbumDetail() {
               <Download className="w-5 h-5 text-primary" />
               Download Quality
             </DialogTitle>
+            <DialogDescription className="sr-only">Choose the quality for your photo downloads.</DialogDescription>tle>
           </DialogHeader>
           <div className="space-y-4 mt-2">
             <RadioGroup value={downloadQuality} onValueChange={(v) => setDownloadQuality(v as DownloadQuality)}>
@@ -828,6 +829,7 @@ export default function AlbumDetail() {
         <DialogContent className="glass-panel border-border max-w-sm">
           <DialogHeader>
             <DialogTitle className="font-display text-xl text-foreground">Choose Payment Method</DialogTitle>
+            <DialogDescription className="sr-only">Select how you would like to pay for your selected photos.</DialogDescription>
           </DialogHeader>
           <div className="space-y-3 mt-2">
             <p className="text-sm font-body text-muted-foreground">
@@ -908,6 +910,7 @@ export default function AlbumDetail() {
               <Building2 className="w-5 h-5 text-primary" />
               Bank Transfer Details
             </DialogTitle>
+            <DialogDescription className="sr-only">Bank transfer payment details for your photo purchase.</DialogDescription>alogTitle>
           </DialogHeader>
           <div className="space-y-4 mt-2">
             {bankTransfer.accountName && (
@@ -940,6 +943,8 @@ export default function AlbumDetail() {
               <Building2 className="w-5 h-5 text-primary" />
               Request Photos via Bank Transfer
             </DialogTitle>
+            <DialogDescription className="sr-only">Submit a bank transfer request to unlock your selected photos.</DialogDescription>
+            </DialogTitle>
           </DialogHeader>
           <div className="space-y-4 mt-2">
             <p className="text-sm font-body text-muted-foreground">
@@ -966,6 +971,7 @@ export default function AlbumDetail() {
         <DialogContent className="glass-panel border-border max-w-sm">
           <DialogHeader>
             <DialogTitle className="font-display text-xl text-foreground">Save your access</DialogTitle>
+            <DialogDescription className="sr-only">Add your email to link purchases to your account so you can access photos from any device.</DialogDescription>
           </DialogHeader>
           <div className="space-y-4 mt-2">
             <p className="text-sm font-body text-muted-foreground">
