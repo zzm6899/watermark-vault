@@ -3,10 +3,9 @@ const multer = require("multer");
 const cors = require("cors");
 const path = require("path");
 const fs = require("fs");
+const sharp = require("sharp");
 const { registerRoutes: registerGoogleCalendarRoutes } = require("./google-calendar");
-const { registerRoutes: registerGoogleSheetsRoutes } = require("./google-sheets");
-const discord = require("./discord");
-const { registerRoutes: registerEmailRoutes, getTransporter, getFromAddress } = require("./email");
+const { registerRoutes: registerEmailRoutes } = require("./email");
 const { registerRoutes: registerStripeRoutes } = require("./stripe");
 
 const app = express();
@@ -15,34 +14,14 @@ const DATA_DIR = process.env.DATA_DIR || "/data";
 const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
 const DB_FILE = path.join(DATA_DIR, "db.json");
 
-// Ensure directories exist
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
-
-// Initialize DB file if not exists
-if (!fs.existsSync(DB_FILE)) {
-  fs.writeFileSync(DB_FILE, JSON.stringify({}));
-}
+if (!fs.existsSync(DB_FILE)) fs.writeFileSync(DB_FILE, JSON.stringify({}));
 
 function readDb() {
-  try {
-    return JSON.parse(fs.readFileSync(DB_FILE, "utf-8"));
-  } catch {
-    return {};
-  }
+  try { return JSON.parse(fs.readFileSync(DB_FILE, "utf-8")); } catch { return {}; }
 }
-
 function writeDb(data) {
   fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
-}
-
-// Safely parse a db value that may be a JSON string or already-parsed object
-function dbGet(db, key, fallback) {
-  const val = db[key];
-  if (val === undefined || val === null) return fallback;
-  if (typeof val === "string") {
-    try { return JSON.parse(val); } catch { return fallback; }
-  }
-  return val; // already an object/array
 }
 
 app.use(cors());
@@ -50,8 +29,7 @@ app.use(express.json({ limit: "50mb" }));
 
 // ── Health check ──────────────────────────────────────
 app.get("/api/health", (_req, res) => {
-  const usage = getStorageUsage();
-  res.json({ ok: true, storage: usage });
+  res.json({ ok: true, storage: getStorageUsage() });
 });
 
 function getStorageUsage() {
@@ -69,8 +47,6 @@ function getStorageUsage() {
       } catch {}
     }
   } catch {}
-
-  // Try to get disk-level stats for the volume
   let diskStats = null;
   try {
     const { execSync } = require("child_process");
@@ -88,45 +64,31 @@ function getStorageUsage() {
       }
     }
   } catch {}
-
   return {
     totalBytes,
     photoCount: photoFiles.length,
     dbSizeBytes: fs.existsSync(DB_FILE) ? fs.statSync(DB_FILE).size : 0,
     uploadsSizeBytes: totalBytes - (fs.existsSync(DB_FILE) ? fs.statSync(DB_FILE).size : 0),
-    photoFiles: photoFiles.sort((a, b) => b.size - a.size).slice(0, 50), // top 50 by size
-    allFileNames: photoFiles.map(f => f.name),
+    photoFiles: photoFiles.sort((a, b) => b.size - a.size).slice(0, 50),
     disk: diskStats,
     dataDir: DATA_DIR,
   };
 }
 
-// ── Storage stats endpoint ────────────────────────────
-app.get("/api/storage", (_req, res) => {
-  res.json(getStorageUsage());
-});
+app.get("/api/storage", (_req, res) => res.json(getStorageUsage()));
 
-// ── Key-Value Store (mirrors localStorage) ────────────
-// Get all data
-app.get("/api/store", (_req, res) => {
-  res.json(readDb());
-});
-
-// Get single key
+// ── Key-Value Store ────────────────────────────────────
+app.get("/api/store", (_req, res) => res.json(readDb()));
 app.get("/api/store/:key", (req, res) => {
   const db = readDb();
   res.json({ value: db[req.params.key] ?? null });
 });
-
-// Set single key
 app.put("/api/store/:key", (req, res) => {
   const db = readDb();
   db[req.params.key] = req.body.value;
   writeDb(db);
   res.json({ ok: true });
 });
-
-// Delete single key
 app.delete("/api/store/:key", (req, res) => {
   const db = readDb();
   delete db[req.params.key];
@@ -143,16 +105,12 @@ const storage = multer.diskStorage({
     cb(null, name);
   },
 });
-
 const upload = multer({
   storage,
-  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB per file
+  limits: { fileSize: 50 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
-    if (file.mimetype.startsWith("image/")) {
-      cb(null, true);
-    } else {
-      cb(new Error("Only image files are allowed"));
-    }
+    if (file.mimetype.startsWith("image/")) cb(null, true);
+    else cb(new Error("Only image files are allowed"));
   },
 });
 
@@ -167,427 +125,230 @@ app.post("/api/upload", upload.array("photos", 100), (req, res) => {
 });
 
 app.delete("/api/upload/:filename", (req, res) => {
-  const safeName = path.basename(req.params.filename); // prevent path traversal
+  const safeName = path.basename(req.params.filename);
   const filepath = path.join(UPLOADS_DIR, safeName);
   try {
     if (fs.existsSync(filepath)) fs.unlinkSync(filepath);
     res.json({ ok: true });
-  } catch (err) {
+  } catch {
     res.status(500).json({ error: "Failed to delete file" });
   }
 });
 
-app.post("/api/upload/bulk-delete", (req, res) => {
-  const { filenames } = req.body;
-  if (!Array.isArray(filenames)) return res.status(400).json({ error: "filenames must be an array" });
-  let deleted = 0;
-  const errors = [];
-  for (const name of filenames) {
-    const safeName = path.basename(name);
-    const filepath = path.join(UPLOADS_DIR, safeName);
-    try {
-      if (fs.existsSync(filepath)) { fs.unlinkSync(filepath); deleted++; }
-    } catch (err) {
-      errors.push(safeName);
-    }
-  }
-  res.json({ ok: true, deleted, errors });
-});
-
-// ── Magic link token verify ───────────────────────────────
-// Called by AlbumDetail on load when ?token= is in the URL.
-// Returns the album if the token matches — grants access without PIN.
-app.get("/api/album-token/:albumId", (req, res) => {
-  const { albumId } = req.params;
-  const { token } = req.query;
-  if (!token) return res.status(400).json({ error: "Missing token" });
-  const db = readDb();
-  const albums = dbGet(db, "wv_albums", []);
-  const album = albums.find(a => a.id === albumId);
-  if (!album) return res.status(404).json({ error: "Album not found" });
+// ── Watermarking helpers ──────────────────────────────
+function getWatermarkSettings() {
   try {
-    if (album.clientToken && album.clientToken === token) {
-      return res.json({ valid: true });
-    }
-    return res.status(403).json({ valid: false, error: "Invalid token" });
+    const db = readDb();
+    const settings = db["wv_settings"];
+    const parsed = typeof settings === "string" ? JSON.parse(settings) : settings;
+    return {
+      text: parsed?.watermarkText || "ZAC MORGAN PHOTOGRAPHY",
+      opacity: Math.min(1, Math.max(0, (parsed?.watermarkOpacity ?? 20) / 100)),
+      position: parsed?.watermarkPosition || "tiled",
+      imageBase64: parsed?.watermarkImage || null, // base64 data URL
+      size: parsed?.watermarkSize ?? 40,
+    };
   } catch {
-    return res.status(500).json({ error: "Server error" });
-  }
-});
-
-// ── Client portal — send magic links for all albums by email ─
-// Client enters their email → we look up all albums with that email
-// and send them a personalised link to each one.
-app.post("/api/client-portal/request", async (req, res) => {
-  const { email } = req.body;
-  if (!email || !email.includes("@")) return res.status(400).json({ error: "Invalid email" });
-
-  const db = readDb();
-  // Use wv_albums array (current storage format)
-  const allAlbums = dbGet(db, "wv_albums", []);
-  const matchingAlbums = [];
-  let dirty = false;
-
-  for (const album of allAlbums) {
-    if (!album || album.clientEmail?.toLowerCase() !== email.toLowerCase()) continue;
-    if (album.enabled === false) continue;
-    // Generate or reuse token
-    if (!album.clientToken) {
-      album.clientToken = `ct-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-      dirty = true;
-    }
-    matchingAlbums.push({ id: album.id, slug: album.slug, title: album.title, date: album.date, photoCount: album.photos?.length || 0, proofingStage: album.proofingStage, clientToken: album.clientToken });
-  }
-
-  if (dirty) {
-    db["wv_albums"] = JSON.stringify(allAlbums);
-    writeDb(db);
-  }
-
-  // Always respond the same way to prevent email enumeration
-  res.json({ ok: true, count: matchingAlbums.length });
-
-  // Send email if we found albums
-  if (matchingAlbums.length === 0) return;
-
-  const origin = process.env.APP_URL || `http://localhost:${process.env.PORT || 5066}`;
-  const albumLinks = matchingAlbums.map(a => {
-    const url = `${origin}/gallery/${a.slug}?token=${a.clientToken}`;
-    const stage = a.proofingStage === "proofing" ? " 🌟 <strong>Proofing ready — your picks needed!</strong>" :
-                  a.proofingStage === "finals-delivered" ? " ✨ Finals ready" : "";
-    return `<div style="margin-bottom:16px;padding:16px;background:#1a1a1a;border-radius:8px;border:1px solid #2a2a2a;">
-      <p style="margin:0 0 4px;font-size:15px;color:#e5e7eb;font-weight:600;">${a.title}${stage}</p>
-      <p style="margin:0 0 12px;font-size:12px;color:#6b7280;">${a.date} · ${a.photoCount} photos</p>
-      <a href="${url}" style="display:inline-block;background:#7c3aed;color:#fff;padding:8px 18px;border-radius:6px;text-decoration:none;font-size:13px;font-weight:600;">View Gallery →</a>
-    </div>`;
-  }).join("");
-
-  try {
-    const transporter = getTransporter();
-    if (transporter) {
-      await transporter.sendMail({
-        from: getFromAddress(),
-        to: email,
-        subject: `Your photo galleries (${matchingAlbums.length} album${matchingAlbums.length !== 1 ? "s" : ""})`,
-        html: `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;">
-          <h2 style="margin:0 0 8px;font-size:20px;">Your photo galleries</h2>
-          <p style="color:#6b7280;margin:0 0 24px;font-size:14px;">Here are your personal links. Each link gives you direct access — no password needed.</p>
-          ${albumLinks}
-          <p style="color:#374151;margin-top:24px;font-size:11px;">These links are personal to you. If you didn't request this email, you can ignore it.</p>
-        </div>`,
-      }).catch(() => {});
-    }
-  } catch {}
-});
-
-// ── Waitlist ──────────────────────────────────────────────────
-// POST /api/waitlist/join — client joins waitlist for an event type + date
-app.post("/api/waitlist/join", (req, res) => {
-  const { eventTypeId, eventTypeTitle, date, clientName, clientEmail, note } = req.body;
-  if (!eventTypeId || !date || !clientName || !clientEmail) {
-    return res.status(400).json({ error: "Missing required fields" });
-  }
-  const db = readDb();
-  const listRaw = db["wv_waitlist"];
-  const list = listRaw ? JSON.parse(listRaw) : [];
-
-  // Prevent duplicate entries for same person + event + date
-  const exists = list.some(e =>
-    e.eventTypeId === eventTypeId &&
-    e.date === date &&
-    e.clientEmail.toLowerCase() === clientEmail.toLowerCase()
-  );
-  if (exists) return res.json({ ok: true, duplicate: true });
-
-  const entry = {
-    id: `wl-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-    eventTypeId, eventTypeTitle: eventTypeTitle || "", date,
-    clientName, clientEmail, note: note || "",
-    createdAt: new Date().toISOString(),
-  };
-  list.push(entry);
-  db["wv_waitlist"] = JSON.stringify(list);
-  writeDb(db);
-  res.json({ ok: true });
-});
-
-// GET /api/waitlist — admin fetches all waitlist entries
-app.get("/api/waitlist", (_req, res) => {
-  const db = readDb();
-  const listRaw = db["wv_waitlist"];
-  res.json({ entries: listRaw ? JSON.parse(listRaw) : [] });
-});
-
-// DELETE /api/waitlist/:id — admin removes one entry
-app.delete("/api/waitlist/:id", (req, res) => {
-  const db = readDb();
-  const list = db["wv_waitlist"] ? JSON.parse(db["wv_waitlist"]) : [];
-  db["wv_waitlist"] = JSON.stringify(list.filter(e => e.id !== req.params.id));
-  writeDb(db);
-  res.json({ ok: true });
-});
-
-// Internal helper — called when a booking is cancelled
-// Finds waitlist entries for that event type + date and sends them a slot-opened email
-async function notifyWaitlistOnCancellation(cancelledBooking) {
-  const db = readDb();
-  const listRaw = db["wv_waitlist"];
-  if (!listRaw) return;
-  const list = JSON.parse(listRaw);
-  const dateStr = cancelledBooking.date;
-  const eventTypeId = cancelledBooking.eventTypeId;
-
-  const toNotify = list.filter(e =>
-    e.eventTypeId === eventTypeId &&
-    e.date === dateStr &&
-    !e.notifiedAt
-  );
-  if (!toNotify.length) return;
-
-  const settings = db["wv_settings"] ? JSON.parse(db["wv_settings"]) : {};
-  const origin = process.env.APP_URL || `http://localhost:${process.env.PORT || 5066}`;
-  const bookingUrl = origin + "/";
-
-  for (const entry of toNotify) {
-    try {
-      const formattedDate = new Date(dateStr + "T12:00:00").toLocaleDateString("en-AU", {
-        weekday: "long", day: "numeric", month: "long",
-      });
-      await (async () => {
-        const transporter = getTransporter();
-        if (transporter) {
-          await transporter.sendMail({
-            from: getFromAddress(),
-            to: entry.clientEmail,
-            subject: `📸 A spot just opened up — ${entry.eventTypeTitle || "Session"} on ${formattedDate}`,
-            html: `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;">
-            <h2 style="margin:0 0 16px;font-size:20px;">Good news, ${entry.clientName?.split(" ")[0] || "there"}! 🎉</h2>
-            <p style="color:#9ca3af;margin:0 0 12px;">A spot has just opened up for <strong style="color:#e5e7eb;">${entry.eventTypeTitle || "your requested session"}</strong> on <strong style="color:#e5e7eb;">${formattedDate}</strong>.</p>
-            <p style="color:#9ca3af;margin:0 0 20px;">Spots go fast — click below to book before it's taken.</p>
-            <a href="${bookingUrl}" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">Book Now →</a>
-            <p style="color:#374151;margin-top:24px;font-size:11px;">You received this because you joined the waitlist. If you're no longer interested, simply ignore this email.</p>
-          </div>`,
-          });
-        }
-      })();
-      // Mark as notified
-      entry.notifiedAt = new Date().toISOString();
-      console.log(`📧 Waitlist notification sent to ${entry.clientEmail} for ${eventTypeId} on ${dateStr}`);
-    } catch (e) {
-      console.error("Waitlist notify error:", e.message);
-    }
-  }
-
-  // Persist notifiedAt updates
-  const updatedList = list.map(e => toNotify.find(n => n.id === e.id) || e);
-  db["wv_waitlist"] = JSON.stringify(updatedList);
-  writeDb(db);
-
-  // Discord notification via discord.js
-  if (settings.discordWebhookUrl && toNotify.length > 0) {
-    const names = toNotify.map(e => e.clientName);
-    discord.notifyWaitlistNotified(settings.discordWebhookUrl, cancelledBooking, names).catch(() => {});
+    return { text: "ZAC MORGAN PHOTOGRAPHY", opacity: 0.2, position: "tiled", imageBase64: null, size: 40 };
   }
 }
 
-// Hook into the store PUT to detect booking cancellations and trigger waitlist
-// We intercept wv_bookings writes and compare status changes
-const _originalPut = app._router.stack.find(l => l.route?.path === "/api/store/:key" && l.route?.methods?.put);
+async function buildWatermarkOverlay(imgWidth, imgHeight, wm) {
+  // If watermark is an image (base64 data URL)
+  if (wm.imageBase64 && wm.imageBase64.startsWith("data:image/")) {
+    try {
+      const base64Data = wm.imageBase64.split(",")[1];
+      const wmBuf = Buffer.from(base64Data, "base64");
+      const wmSize = Math.round(imgWidth * (wm.size / 100));
+      const wmResized = await sharp(wmBuf)
+        .resize(wmSize, null, { fit: "inside" })
+        .png()
+        .toBuffer();
+      const wmMeta = await sharp(wmResized).metadata();
 
-app.put("/api/store/:key/waitlist-hook", async (req, res, next) => { next(); });
-
-// Override the store PUT to also check for cancellations
-app.post("/api/booking/cancel-notify", async (req, res) => {
-  const { booking } = req.body;
-  if (!booking) return res.status(400).json({ error: "Missing booking" });
-  try {
-    await notifyWaitlistOnCancellation(booking);
-    res.json({ ok: true });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
+      if (wm.position === "tiled") {
+        // Build a tiled SVG overlay
+        const tiles = [];
+        const gapX = Math.round(imgWidth * 0.35);
+        const gapY = Math.round(imgHeight * 0.25);
+        for (let y = -gapY; y < imgHeight + gapY; y += gapY) {
+          for (let x = -gapX; x < imgWidth + gapX; x += gapX) {
+            tiles.push({ input: wmResized, top: Math.round(y), left: Math.round(x), blend: "over" });
+          }
+        }
+        // Create transparent canvas and composite tiles
+        const canvas = sharp({
+          create: { width: imgWidth, height: imgHeight, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } }
+        });
+        const tiled = await canvas.composite(tiles).png().toBuffer();
+        // Apply opacity via modulate isn't ideal — use linear multiply
+        return { input: tiled, blend: "over", opacity: wm.opacity };
+      } else {
+        // Single positioned watermark
+        const positions = {
+          center: { top: Math.round((imgHeight - wmMeta.height) / 2), left: Math.round((imgWidth - wmMeta.width) / 2) },
+          "top-left": { top: 20, left: 20 },
+          "top-right": { top: 20, left: imgWidth - wmMeta.width - 20 },
+          "bottom-left": { top: imgHeight - wmMeta.height - 20, left: 20 },
+          "bottom-right": { top: imgHeight - wmMeta.height - 20, left: imgWidth - wmMeta.width - 20 },
+        };
+        const pos = positions[wm.position] || positions.center;
+        return { input: wmResized, blend: "over", ...pos };
+      }
+    } catch (e) {
+      console.error("Watermark image error, falling back to text:", e.message);
+    }
   }
-});
 
-// ── Discord webhook proxy ──────────────────────────────────
-// Called by frontend on booking create, status change, payment update
-app.post("/api/discord/notify", async (req, res) => {
+  // Text watermark via SVG
+  const fontSize = Math.max(16, Math.round(imgWidth * (wm.size / 100) * 0.12));
+  const text = wm.text.toUpperCase();
+  const alpha = Math.round(wm.opacity * 255).toString(16).padStart(2, "0");
+
+  if (wm.position === "tiled") {
+    // Build tiled SVG
+    const lineH = fontSize * 2.5;
+    const lineW = fontSize * (text.length * 0.65);
+    const rows = Math.ceil(imgHeight / lineH) + 2;
+    const cols = Math.ceil(imgWidth / lineW) + 2;
+    let svgContent = "";
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const x = (c - 0.5) * lineW;
+        const y = (r - 0.5) * lineH;
+        svgContent += `<text x="${x}" y="${y}" transform="rotate(-30, ${x}, ${y})">${text}</text>`;
+      }
+    }
+    const svg = `<svg width="${imgWidth}" height="${imgHeight}" xmlns="http://www.w3.org/2000/svg">
+      <style>text { font-family: Georgia, serif; font-size: ${fontSize}px; fill: #ffffff${alpha}; letter-spacing: 3px; }</style>
+      ${svgContent}
+    </svg>`;
+    return { input: Buffer.from(svg), blend: "over" };
+  } else {
+    // Single text
+    const w = Math.round(fontSize * text.length * 0.65);
+    const h = fontSize * 2;
+    const svg = `<svg width="${w}" height="${h}" xmlns="http://www.w3.org/2000/svg">
+      <style>text { font-family: Georgia, serif; font-size: ${fontSize}px; fill: #ffffff${alpha}; letter-spacing: 3px; }</style>
+      <text x="50%" y="60%" dominant-baseline="middle" text-anchor="middle" transform="rotate(-30, ${w/2}, ${h/2})">${text}</text>
+    </svg>`;
+    const positions = {
+      center: { top: Math.round((imgHeight - h) / 2), left: Math.round((imgWidth - w) / 2) },
+      "top-left": { top: 20, left: 20 },
+      "top-right": { top: 20, left: Math.max(0, imgWidth - w - 20) },
+      "bottom-left": { top: Math.max(0, imgHeight - h - 20), left: 20 },
+      "bottom-right": { top: Math.max(0, imgHeight - h - 20), left: Math.max(0, imgWidth - w - 20) },
+    };
+    const pos = positions[wm.position] || positions.center;
+    return { input: Buffer.from(svg), blend: "over", ...pos };
+  }
+}
+
+// ── Check if a photo is paid/free for a session ───────
+function isPhotoAccessible(filename, sessionKey, albumId) {
   try {
     const db = readDb();
-    const settings = db["wv_settings"] ? JSON.parse(db["wv_settings"]) : {};
-    const webhookUrl = settings.discordWebhookUrl;
-    if (!webhookUrl) return res.json({ ok: true, skipped: true });
+    const albums = db["wv_albums"];
+    const parsed = typeof albums === "string" ? JSON.parse(albums) : albums;
+    if (!Array.isArray(parsed)) return false;
 
-    const { type, booking, oldStatus, newStatus, paymentStatus, album, purchaseType, amount, email, photoCount, clientNote } = req.body;
+    const album = parsed.find(a => a.id === albumId);
+    if (!album) return false;
 
-    switch (type) {
-      case "new-booking":
-        await discord.notifyNewBooking(webhookUrl, booking);
-        break;
-      case "booking-update":
-        await discord.notifyBookingUpdate(webhookUrl, booking, oldStatus, newStatus);
-        break;
-      case "payment":
-        await discord.notifyPayment(webhookUrl, booking, paymentStatus);
-        break;
-      case "album-purchase":
-        await discord.notifyAlbumPurchase(webhookUrl, album, purchaseType, amount, email);
-        break;
-      case "proofing-submission":
-        await discord.notifyProofingSubmission(webhookUrl, album, photoCount, clientNote);
-        break;
-      default:
-        return res.status(400).json({ error: `Unknown type: ${type}` });
-    }
-    res.json({ ok: true });
-  } catch (e) {
-    console.error("Discord notify error:", e.message);
-    res.status(500).json({ error: e.message });
+    // If purchasing is disabled, all photos are free
+    if (album.purchasingDisabled) return true;
+    // If full album unlocked
+    if (album.allUnlocked) return true;
+
+    const photo = album.photos?.find(p => p.url && p.url.includes(filename));
+    if (!photo) return false;
+
+    // Check per-photo paid status
+    if (photo.paid) return true;
+
+    // Check session-level free downloads
+    const sessionData = db[`wv_session_${sessionKey}_${albumId}`];
+    const sessionParsed = typeof sessionData === "string" ? JSON.parse(sessionData) : sessionData;
+    if (sessionParsed?.unlockedPhotoIds?.includes(photo.id)) return true;
+
+    // Check free remaining — first N photos in album are free
+    const freeRemaining = typeof album.freeDownloads === "number" ? album.freeDownloads : 5;
+    const photoIndex = album.photos.indexOf(photo);
+    if (photoIndex >= 0 && photoIndex < freeRemaining) return true;
+
+    return false;
+  } catch {
+    return false;
   }
-});
+}
 
-// ── Proofing — client submits selections ─────────────────────
-// No auth needed — album slug acts as the access token.
-// Writes selected photo IDs into the latest proofing round and
-// sends an email notification to the photographer.
-app.post("/api/proofing/submit", async (req, res) => {
-  const { albumId, selectedPhotoIds, clientNote } = req.body;
-  if (!albumId || !Array.isArray(selectedPhotoIds)) {
-    return res.status(400).json({ error: "Missing albumId or selectedPhotoIds" });
+// ── Serve watermarked photo (public, replaces express.static) ──
+app.get("/uploads/:filename", async (req, res) => {
+  const safeName = path.basename(req.params.filename);
+  const filepath = path.join(UPLOADS_DIR, safeName);
+
+  if (!fs.existsSync(filepath)) return res.status(404).send("Not found");
+
+  // Check if caller has paid access via query params
+  const { sessionKey, albumId, paid } = req.query;
+  const hasAccess = paid === "1" && sessionKey && albumId
+    ? isPhotoAccessible(safeName, sessionKey, albumId)
+    : false;
+
+  if (hasAccess) {
+    // Serve original
+    return res.sendFile(filepath);
   }
-  const db = readDb();
-  const albums = dbGet(db, "wv_albums", []);
-  const albumIdx = albums.findIndex(a => a.id === albumId);
-  if (albumIdx === -1) return res.status(404).json({ error: "Album not found" });
 
+  // Serve watermarked version — cache in memory briefly
   try {
-    const album = albums[albumIdx];
-    const rounds = album.proofingRounds || [];
-    const latest = rounds[rounds.length - 1];
-    if (!latest) return res.status(400).json({ error: "No active proofing round" });
-    if (album.proofingStage !== "proofing") {
-      return res.status(400).json({ error: "Album is not in proofing stage" });
-    }
+    const wm = getWatermarkSettings();
+    const img = sharp(filepath);
+    const meta = await img.metadata();
+    const { width, height } = meta;
 
-    // Write selections into the current round
-    latest.submittedAt = new Date().toISOString();
-    latest.selectedPhotoIds = selectedPhotoIds;
-    if (clientNote) latest.clientNote = clientNote;
-    album.proofingStage = "selections-submitted";
-    albums[albumIdx] = album;
-    db["wv_albums"] = JSON.stringify(albums);
-    writeDb(db);
+    const overlay = await buildWatermarkOverlay(width, height, wm);
+    const composites = [overlay];
 
-    // Respond immediately — don't let email/discord delay the client
-    res.json({ ok: true });
+    // For image watermarks with opacity, we need to handle differently
+    const result = await sharp(filepath)
+      .composite(composites)
+      .jpeg({ quality: 82, progressive: true })
+      .toBuffer();
 
-    // Background: notify photographer via email + Discord
-    setImmediate(async () => {
-      // Email notification
-      try {
-        const adminRaw = db["wv_admin"];
-        const adminEmail = adminRaw ? JSON.parse(adminRaw)?.email : null;
-        const notifyEmail = adminEmail || process.env.NOTIFY_EMAIL;
-        const transporter = getTransporter();
-        if (notifyEmail && transporter) {
-          await transporter.sendMail({
-            from: getFromAddress(),
-            to: notifyEmail,
-            subject: `📸 ${album.clientName || "Client"} submitted proofing picks — ${album.title}`,
-            html: `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;">
-              <h2 style="margin:0 0 16px;font-size:20px;">New Proofing Selections</h2>
-              <p style="color:#9ca3af;margin:0 0 12px;"><strong style="color:#e5e7eb;">${album.clientName || "Client"}</strong> has submitted their picks for <strong style="color:#e5e7eb;">${album.title}</strong>.</p>
-              <p style="color:#9ca3af;margin:0 0 20px;">They selected <strong style="color:#a78bfa;">${selectedPhotoIds.length} photo${selectedPhotoIds.length !== 1 ? "s" : ""}</strong> out of ${album.photos?.length || "?"} total.${clientNote ? `<br>Client note: <em>"${clientNote}"</em>` : ""}</p>
-              <a href="${process.env.APP_URL || ""}/admin" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">Review in Admin →</a>
-            </div>`,
-          }).catch(() => {});
-        }
-      } catch {}
-
-      // Discord webhook
-      try {
-        const settings = dbGet(db, "wv_settings", {});
-        // Discord via discord.js
-        discord.notifyProofingSubmission(settings.discordWebhookUrl, album, selectedPhotoIds.length, clientNote).catch(() => {});
-      } catch {}
+    res.set({
+      "Content-Type": "image/jpeg",
+      "Cache-Control": "public, max-age=3600",
+      "X-Watermarked": "true",
     });
+    return res.send(result);
   } catch (err) {
-    console.error("Proofing submit error:", err);
-    res.status(500).json({ error: err.message });
+    console.error("Watermark error for", safeName, err.message);
+    // Fallback: serve original if Sharp fails
+    return res.sendFile(filepath);
   }
 });
 
-// ── Google Calendar Integration ───────────────────────
+// ── Serve original photo (paid, requires valid session) ──
+app.get("/api/photo/:filename/original", async (req, res) => {
+  const safeName = path.basename(req.params.filename);
+  const filepath = path.join(UPLOADS_DIR, safeName);
+  if (!fs.existsSync(filepath)) return res.status(404).send("Not found");
+
+  const { sessionKey, albumId } = req.query;
+  if (!sessionKey || !albumId) return res.status(403).send("Forbidden");
+
+  if (!isPhotoAccessible(safeName, sessionKey, albumId)) {
+    return res.status(403).send("Forbidden");
+  }
+
+  res.sendFile(filepath);
+});
+
+// ── Integrations ──────────────────────────────────────
 registerGoogleCalendarRoutes(app);
-registerGoogleSheetsRoutes(app);
-
-// ── Email (SMTP) Integration ─────────────────────────
 registerEmailRoutes(app);
-
-// ── Stripe Payments ──────────────────────────────────
 registerStripeRoutes(app);
-
-// ── Serve uploaded photos ─────────────────────────────
-
-// ── Register purchaser email to session purchase ──────────
-app.post("/api/album/register-purchaser", (req, res) => {
-  const { albumId, sessionKey, email } = req.body;
-  if (!albumId || !sessionKey || !email) return res.status(400).json({ error: "Missing fields" });
-  const db = readDb();
-  const albums = dbGet(db, "wv_albums", []);
-  const idx = albums.findIndex(a => a.id === albumId);
-  if (idx < 0) return res.status(404).json({ error: "Album not found" });
-  const album = albums[idx];
-  // Attach email to the session purchase entry
-  if (album.sessionPurchases && album.sessionPurchases[sessionKey]) {
-    album.sessionPurchases[sessionKey].purchaserEmail = email;
-  }
-  // Also attach to bank transfer requests for this session if any
-  if (album.downloadRequests) {
-    album.downloadRequests = album.downloadRequests.map(r => 
-      (!r.purchaserEmail) ? { ...r, purchaserEmail: email } : r
-    );
-  }
-  albums[idx] = album;
-  db["wv_albums"] = JSON.stringify(albums);
-  writeDb(db);
-  res.json({ ok: true });
-});
-
-// ── Delete payment record ────────────────────────────
-app.delete("/api/album/payment/:albumId/:paymentId", (req, res) => {
-  const { albumId, paymentId } = req.params;
-  const db = readDb();
-  const albums = dbGet(db, "wv_albums", []);
-  const idx = albums.findIndex(a => a.id === albumId);
-  if (idx < 0) return res.status(404).json({ error: "Album not found" });
-  const album = albums[idx];
-  if (album.downloadRequests) {
-    const before = album.downloadRequests.length;
-    album.downloadRequests = album.downloadRequests.filter(r => {
-      return `bank-${albumId}-${r.requestedAt}` !== paymentId;
-    });
-    if (album.downloadRequests.length < before) {
-      albums[idx] = album;
-      db["wv_albums"] = JSON.stringify(albums);
-      writeDb(db);
-      return res.json({ ok: true });
-    }
-  }
-  if (album.sessionPurchases) {
-    const sKey = paymentId.replace("stripe-" + albumId + "-", "").replace("stripe-", "");
-    if (album.sessionPurchases[sKey]) {
-      delete album.sessionPurchases[sKey];
-      if (Object.keys(album.sessionPurchases).length === 0) delete album.stripePaidAt;
-      albums[idx] = album;
-      db["wv_albums"] = JSON.stringify(albums);
-      writeDb(db);
-      return res.json({ ok: true });
-    }
-  }
-  res.status(404).json({ error: "Payment record not found" });
-});
-
-app.use("/uploads", express.static(UPLOADS_DIR, { maxAge: "7d" }));
 
 // ── Serve React app ───────────────────────────────────
 const distPath = path.join(__dirname, "../dist");
@@ -596,132 +357,6 @@ app.get("*", (_req, res) => {
   res.sendFile(path.join(distPath, "index.html"));
 });
 
-// ── Booking reminders ────────────────────────────────────────
-// Runs every hour. Sends an email reminder at ~24h and ~1h before each session.
-// Uses a "remindersSent" field on each booking to avoid duplicate sends.
-async function sendBookingReminders() {
-  const db = readDb();
-  const bookingsRaw = db["wv_bookings"];
-  const settingsRaw = db["wv_settings"];
-  if (!bookingsRaw) return;
-
-  let bookings;
-  try { bookings = JSON.parse(bookingsRaw); } catch { return; }
-
-  const settings = settingsRaw ? dbGet(db, "wv_settings", {}) : {};
-  const now = Date.now();
-  let changed = false;
-
-  // Load saved email templates (keyed by name for easy lookup)
-  let emailTemplates = [];
-  try {
-    const tplRaw = db["wv_email_templates"];
-    if (tplRaw) emailTemplates = JSON.parse(tplRaw);
-  } catch {}
-
-  // Find a template whose name contains "reminder" (case-insensitive), fallback to null
-  const reminderTemplate = emailTemplates.find(t =>
-    t.name?.toLowerCase().includes("reminder")
-  ) || null;
-
-  // Default fallback subject/body if no template found
-  const DEFAULT_SUBJECT = "📸 Reminder: your session is {label} — {type}";
-  const DEFAULT_HTML = `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;">
-    <h2 style="margin:0 0 16px;font-size:20px;">See you {label}! 📸</h2>
-    <p style="color:#9ca3af;margin:0 0 8px;">Hi {name},</p>
-    <p style="color:#9ca3af;margin:0 0 20px;">Just a reminder about your upcoming session:</p>
-    <div style="background:#1a1a1a;border-radius:8px;padding:16px;margin-bottom:20px;">
-      <p style="margin:0 0 6px;font-size:14px;color:#e5e7eb;font-weight:600;">{type}</p>
-      <p style="margin:0 0 4px;font-size:13px;color:#9ca3af;">📅 {date}</p>
-      <p style="margin:0;font-size:13px;color:#9ca3af;">⏱ {duration}</p>
-    </div>
-    {reschedule_link}
-  </div>`;
-
-  for (const bk of bookings) {
-    if (!bk.clientEmail) continue;
-    if (bk.status === "cancelled" || bk.status === "completed") continue;
-    if (!bk.date || !bk.time) continue;
-
-    const sessionMs = new Date(`${bk.date}T${bk.time}:00`).getTime();
-    if (isNaN(sessionMs)) continue;
-
-    const minsUntil = (sessionMs - now) / 60000;
-    const sent = bk.remindersSent || {};
-
-    const reminders = [
-      { key: "24h", minLow: 23 * 60, minHigh: 25 * 60, label: "tomorrow" },
-      { key: "1h",  minLow: 45,      minHigh: 75,       label: "in 1 hour" },
-    ];
-
-    for (const { key, minLow, minHigh, label } of reminders) {
-      if (sent[key]) continue;
-      if (minsUntil < minLow || minsUntil > minHigh) continue;
-
-      sent[key] = new Date().toISOString();
-      bk.remindersSent = sent;
-      changed = true;
-
-      const sessionDate = new Date(`${bk.date}T${bk.time}:00`).toLocaleString("en-AU", {
-        weekday: "long", day: "numeric", month: "long",
-        hour: "numeric", minute: "2-digit", hour12: true,
-      });
-
-      const rescheduleHtml = bk.modifyToken
-        ? `<a href="${process.env.APP_URL || ""}/booking/modify/${bk.modifyToken}" style="display:inline-block;background:#1f1f1f;color:#9ca3af;border:1px solid #2a2a2a;padding:10px 20px;border-radius:8px;text-decoration:none;font-size:13px;">Need to reschedule?</a>`
-        : "";
-
-      // Token replacements — available in both template and default
-      const replacements = {
-        "{name}":           bk.clientName || "there",
-        "{label}":          label,
-        "{type}":           bk.type || "Photography Session",
-        "{date}":           sessionDate,
-        "{duration}":       bk.duration ? `${bk.duration} minutes` : "",
-        "{reschedule_link}": rescheduleHtml,
-        "{link}":           bk.modifyToken ? `${process.env.APP_URL || ""}/booking/modify/${bk.modifyToken}` : "",
-      };
-
-      const applyTokens = (str) => Object.entries(replacements).reduce((s, [k, v]) => s.replaceAll(k, v), str);
-
-      // Build subject and html — use saved template if found, otherwise use defaults
-      let subject, html;
-      if (reminderTemplate) {
-        subject = applyTokens(reminderTemplate.subject || DEFAULT_SUBJECT);
-        // Template body is plain text — wrap it in the styled email container
-        const bodyText = applyTokens(reminderTemplate.body || "");
-        html = `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;">
-          <p style="color:#9ca3af;white-space:pre-line;line-height:1.7;">${bodyText.replace(/\n/g, "<br>")}</p>
-          ${rescheduleHtml ? `<div style="margin-top:20px;">${rescheduleHtml}</div>` : ""}
-        </div>`;
-      } else {
-        subject = applyTokens(DEFAULT_SUBJECT);
-        html = applyTokens(DEFAULT_HTML);
-      }
-
-      try {
-        const transporter = getTransporter();
-        if (transporter) {
-          await transporter.sendMail({ from: getFromAddress(), to: bk.clientEmail, subject, html });
-        }
-        console.log(`📧 ${key} reminder sent to ${bk.clientEmail} for booking ${bk.id}${reminderTemplate ? " (using template)" : " (using default)"}`);
-      } catch (e) {
-        console.error(`Failed to send ${key} reminder for ${bk.id}:`, e.message);
-      }
-    }
-  }
-
-  if (changed) {
-    db["wv_bookings"] = JSON.stringify(bookings);
-    writeDb(db);
-  }
-}
-
-// Run once on startup (catches any missed reminders after a restart), then every hour
-setTimeout(sendBookingReminders, 30000); // 30s delay so SMTP is ready
-setInterval(sendBookingReminders, 60 * 60 * 1000);
-
-// ── Start ─────────────────────────────────────────────
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`🔒 Watermark Vault running on port ${PORT}`);
   console.log(`📁 Data directory: ${DATA_DIR}`);
