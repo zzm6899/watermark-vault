@@ -116,6 +116,8 @@ export default function AlbumDetail() {
   const [emailSkippedThisSession, setEmailSkippedThisSession] = useState(false);
   const [purchaserEmail, setPurchaserEmail] = useState("");
   const [savingEmail, setSavingEmail] = useState(false);
+  // When user explicitly requests to purchase the full album (via button)
+  const [requestedFullAlbum, setRequestedFullAlbum] = useState(false);
 
   // Proofing state
   const [proofingClientNote, setProofingClientNote] = useState("");
@@ -412,6 +414,7 @@ export default function AlbumDetail() {
 
   const handlePurchaseSelected = () => {
     setEmailSkippedThisSession(false); // reset on new payment attempt
+    setRequestedFullAlbum(false);
     setShowPaymentChoice(true);
     // Prompt email registration before paying if not already registered
     if (!registeredEmail && !emailSkippedThisSession) setTimeout(() => setShowEmailReg(true), 300);
@@ -426,6 +429,7 @@ export default function AlbumDetail() {
       toast.success("Album unlocked! You can now download all photos.");
       return;
     }
+    setRequestedFullAlbum(true);
     setShowPaymentChoice(true);
   };
 
@@ -848,7 +852,7 @@ export default function AlbumDetail() {
       </Dialog>
 
       {/* Payment Method Choice */}
-      <Dialog open={showPaymentChoice} onOpenChange={setShowPaymentChoice}>
+      <Dialog open={showPaymentChoice} onOpenChange={(v) => { setShowPaymentChoice(v); if (!v) setRequestedFullAlbum(false); }}>
         <DialogContent className="glass-panel border-border max-w-sm">
           <DialogHeader>
             <DialogTitle className="font-display text-xl text-foreground">Choose Payment Method</DialogTitle>
@@ -876,6 +880,7 @@ export default function AlbumDetail() {
                   setShowPaymentChoice(false);
                   setProcessingStripe(true);
                   const isFullAlbumPurchase =
+                    requestedFullAlbum ||
                     fullAlbumCheaper ||
                     selectedIds.size === 0 ||
                     selectedIds.size === album.photos.length;
