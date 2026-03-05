@@ -39,7 +39,7 @@ export default function PurchasePanel({
   const albumPrice = Number(priceFullAlbum) || 0;
   const paidTotal = paidCount * perPhotoPrice;
   // Compute locally — prop from parent is a bonus, not required
-  const fullAlbumCheaper = !!(fullAlbumCheaperProp ?? (albumPrice > 0 && paidCount > 0 && paidTotal >= albumPrice));
+  const fullAlbumCheaper = fullAlbumCheaperProp === true || (albumPrice > 0 && paidCount > 0 && paidTotal >= albumPrice);
 
   const allFree = paidCount === 0 && effectiveUnpaid > 0;
   const allAlreadyPaid = alreadyPaidCount > 0 && effectiveUnpaid === 0;

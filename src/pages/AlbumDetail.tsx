@@ -112,6 +112,7 @@ export default function AlbumDetail() {
   const [stripeSuccess, setStripeSuccess] = useState(() => searchParams.get("success") === "1");
   const [pollingCount, setPollingCount] = useState(0);
   const [showEmailReg, setShowEmailReg] = useState(false);
+  const [emailSkippedThisSession, setEmailSkippedThisSession] = useState(false);
   const [purchaserEmail, setPurchaserEmail] = useState("");
   const [savingEmail, setSavingEmail] = useState(false);
 
@@ -162,7 +163,7 @@ export default function AlbumDetail() {
       toast.success("Payment confirmed! Your photos are now unlocked.");
       setStripeSuccess(false);
       setPollingCount(0);
-      setShowEmailReg(true);
+      if (!emailSkippedThisSession) setShowEmailReg(true);
     }
   }, [album, stripeSuccess]);
 
@@ -409,9 +410,10 @@ export default function AlbumDetail() {
   };
 
   const handlePurchaseSelected = () => {
+    setEmailSkippedThisSession(false); // reset on new payment attempt
     setShowPaymentChoice(true);
     // Prompt email registration before paying if not already registered
-    if (!registeredEmail) setTimeout(() => setShowEmailReg(true), 300);
+    if (!registeredEmail && !emailSkippedThisSession) setTimeout(() => setShowEmailReg(true), 300);
   };
 
   const handlePurchaseAlbum = () => {
@@ -427,7 +429,7 @@ export default function AlbumDetail() {
   };
 
   const handleBankTransferRequest = () => {
-    if (!registeredEmail) setTimeout(() => setShowEmailReg(true), 300);
+    setEmailSkippedThisSession(false); // reset skip on new payment attempt
     const selected = album.photos.filter(p => selectedIds.has(p.id));
     const unpaidSelected = selected.filter(p => !paidPhotoIdSet.has(p.id));
     const paidCount = Math.max(0, unpaidSelected.length - freeRemaining);
@@ -1023,7 +1025,7 @@ export default function AlbumDetail() {
               >
                 {savingEmail ? "Saving…" : "Save Email"}
               </Button>
-              <Button variant="outline" onClick={() => setShowEmailReg(false)} className="font-body text-sm border-border">
+              <Button variant="outline" onClick={() => { setShowEmailReg(false); setEmailSkippedThisSession(true); }} className="font-body text-sm border-border">
                 Skip
               </Button>
             </div>

@@ -533,7 +533,7 @@ app.post("/api/album/register-purchaser", (req, res) => {
   const { albumId, sessionKey, email } = req.body;
   if (!albumId || !sessionKey || !email) return res.status(400).json({ error: "Missing fields" });
   const db = readDb();
-  const albums = JSON.parse(db["wv_albums"] || "[]");
+  const albums = dbGet(db, "wv_albums", []);
   const idx = albums.findIndex(a => a.id === albumId);
   if (idx < 0) return res.status(404).json({ error: "Album not found" });
   const album = albums[idx];
@@ -557,7 +557,7 @@ app.post("/api/album/register-purchaser", (req, res) => {
 app.delete("/api/album/payment/:albumId/:paymentId", (req, res) => {
   const { albumId, paymentId } = req.params;
   const db = readDb();
-  const albums = JSON.parse(db["wv_albums"] || "[]");
+  const albums = dbGet(db, "wv_albums", []);
   const idx = albums.findIndex(a => a.id === albumId);
   if (idx < 0) return res.status(404).json({ error: "Album not found" });
   const album = albums[idx];
