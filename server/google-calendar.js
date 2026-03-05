@@ -59,11 +59,12 @@ function saveGcalEventId(bookingId, gcalEventId) {
   const DB_FILE = path.join(process.env.DATA_DIR || "/data", "db.json");
   try {
     const db = JSON.parse(fs.readFileSync(DB_FILE, "utf-8"));
-    const bookings = db.wv_bookings ? JSON.parse(db.wv_bookings) : [];
+    const raw = db.wv_bookings;
+    const bookings = Array.isArray(raw) ? raw : (raw ? JSON.parse(raw) : []);
     const idx = bookings.findIndex(b => b.id === bookingId);
     if (idx >= 0 && bookings[idx].gcalEventId !== gcalEventId) {
       bookings[idx].gcalEventId = gcalEventId;
-      db.wv_bookings = JSON.stringify(bookings);
+      db.wv_bookings = bookings; // keep as object, don't double-stringify
       fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
     }
   } catch (e) {
