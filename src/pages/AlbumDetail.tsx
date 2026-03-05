@@ -185,7 +185,6 @@ export default function AlbumDetail() {
   }, []));
 
   // Keyboard navigation for lightbox
-  // displayedPhotosRef keeps current list without being a useEffect dep (avoids SWC TDZ)
   const displayedPhotosRef = useRef<any[]>([]);
   useEffect(() => {
     if (lightboxPhotoId === null) return;
@@ -569,7 +568,7 @@ export default function AlbumDetail() {
     <div className="min-h-screen bg-background">
       <Header />
 
-      <section className="pt-28 pb-32">
+      <section className="pt-20 sm:pt-28 pb-32">
         <div className="container mx-auto px-4">
           <motion.div
             initial={{ opacity: 0, y: 20 }}
@@ -657,7 +656,7 @@ export default function AlbumDetail() {
 
               {_expiryBanner}
 
-              <div className="glass-panel rounded-lg p-4 flex items-center gap-6">
+              <div className="glass-panel rounded-lg px-3 py-3 flex items-center gap-3 sm:gap-5 overflow-x-auto scrollbar-none min-w-0">
                 {canDownload ? (
                   <div className="text-center">
                     <p className="text-lg font-display text-green-400">✓ Unlocked</p>
@@ -666,20 +665,20 @@ export default function AlbumDetail() {
                 ) : (
                   <>
                     <div className="text-center">
-                      <p className="text-lg font-display text-primary">{freeRemaining}</p>
-                      <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Free Left</p>
+                      <p className="text-base sm:text-lg font-display text-primary leading-tight">{freeRemaining}</p>
+                      <p className="text-[9px] sm:text-[10px] font-body uppercase tracking-wider text-muted-foreground">Free Left</p>
                     </div>
-                    <div className="w-px h-8 bg-border" />
+                    <div className="w-px h-6 sm:h-8 bg-border shrink-0" />
                     <div className="text-center">
-                      <p className="text-lg font-display text-foreground">${album.pricePerPhoto}</p>
-                      <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Per Photo</p>
+                      <p className="text-base sm:text-lg font-display text-foreground leading-tight">${album.pricePerPhoto}</p>
+                      <p className="text-[9px] sm:text-[10px] font-body uppercase tracking-wider text-muted-foreground">Per Photo</p>
                     </div>
-                    <div className="w-px h-8 bg-border" />
+                    <div className="w-px h-6 sm:h-8 bg-border shrink-0" />
                     <div className="text-center">
-                      <p className="text-lg font-display text-foreground">${album.priceFullAlbum}</p>
-                      <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Full Album</p>
+                      <p className="text-base sm:text-lg font-display text-foreground leading-tight">${album.priceFullAlbum}</p>
+                      <p className="text-[9px] sm:text-[10px] font-body uppercase tracking-wider text-muted-foreground">Full Album</p>
                     </div>
-                    <div className="w-px h-8 bg-border" />
+                    <div className="w-px h-6 sm:h-8 bg-border shrink-0" />
                     {/* Email link button */}
                     {registeredEmail ? (
                       <div className="text-center group/email">
@@ -695,13 +694,13 @@ export default function AlbumDetail() {
                       </div>
                     ) : (
                       <button onClick={() => setShowEmailReg(true)} className="text-center hover:opacity-80 transition-opacity">
-                        <p className="text-lg font-display text-muted-foreground">@</p>
-                        <p className="text-[10px] font-body uppercase tracking-wider text-primary">Add Email</p>
+                        <p className="text-base sm:text-lg font-display text-muted-foreground leading-tight">@</p>
+                        <p className="text-[9px] sm:text-[10px] font-body uppercase tracking-wider text-primary">Add Email</p>
                       </button>
                     )}
                     {!(album as any).purchasingDisabled && (
                     <>
-                    <div className="w-px h-8 bg-border" />
+                    <div className="w-px h-6 sm:h-8 bg-border shrink-0" />
                     {/* Payment CTA(s): hidden when purchasing disabled */}
                     {previewCheckoutAmount === 0 ? (
                       <Button
@@ -844,7 +843,7 @@ export default function AlbumDetail() {
                   {!isProofing && (
                     <button
                       onClick={e => { e.stopPropagation(); setLightboxPhotoId(photo.id); }}
-                      className="absolute top-2 left-2 w-7 h-7 rounded-full bg-black/50 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity z-10"
+                      className="absolute top-2 left-2 w-7 h-7 rounded-full bg-black/50 text-white flex items-center justify-center opacity-50 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity z-10"
                     >
                       <Maximize2 className="w-3 h-3" />
                     </button>
