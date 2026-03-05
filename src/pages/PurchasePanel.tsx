@@ -42,6 +42,10 @@ export default function PurchasePanel({
   // Always compute locally — don't rely solely on parent prop
   const fullAlbumCheaper = fullAlbumCheaperProp === true
     || (albumPrice > 0 && paidCount > 0 && paidTotal >= albumPrice);
+  // Temporary debug — remove after confirming fix
+  if (process.env.NODE_ENV !== 'production') {
+    console.log('[PurchasePanel]', { albumPrice, paidCount, paidTotal, fullAlbumCheaperProp, fullAlbumCheaper });
+  }
 
   const allFree = paidCount === 0 && effectiveUnpaid > 0;
   const allAlreadyPaid = alreadyPaidCount > 0 && effectiveUnpaid === 0;

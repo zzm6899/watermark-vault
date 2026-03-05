@@ -494,7 +494,14 @@ export default function AlbumDetail() {
                   <div className="flex items-start gap-3">
                     <Star className="w-5 h-5 text-yellow-400 mt-0.5 shrink-0 fill-yellow-400/30" />
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm font-display text-foreground mb-1">Select your favourite photos</p>
+                      <div className="flex items-center gap-2 mb-1">
+                        <p className="text-sm font-display text-foreground">Select your favourite photos</p>
+                        {album.proofingRounds && album.proofingRounds.length > 0 && (
+                          <span className="text-[10px] font-body px-1.5 py-0.5 rounded-full bg-yellow-500/20 text-yellow-400">
+                            Round {album.proofingRounds.length}
+                          </span>
+                        )}
+                      </div>
                       <p className="text-xs font-body text-muted-foreground">
                         {adminNote || "Tap ★ on the photos you love — star as many as you like, then submit your picks below."}
                       </p>
@@ -592,9 +599,16 @@ export default function AlbumDetail() {
                     </div>
                     <div className="w-px h-8 bg-border" />
                     {registeredEmail ? (
-                      <div className="text-center cursor-pointer group" onClick={() => setShowEmailReg(true)} title="Change email">
-                        <p className="text-[11px] font-body text-green-400 truncate max-w-[100px]">{registeredEmail}</p>
-                        <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground group-hover:text-foreground transition-colors">Linked ✓</p>
+                      <div className="text-center group/email">
+                        <div className="cursor-pointer" onClick={() => setShowEmailReg(true)} title="Change email">
+                          <p className="text-[11px] font-body text-green-400 truncate max-w-[100px]">{registeredEmail}</p>
+                          <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground group-hover/email:text-foreground transition-colors">Linked ✓</p>
+                        </div>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); try { localStorage.removeItem(`wv_email_${albumId}`); } catch {} setRegisteredEmail(""); }}
+                          className="text-[9px] font-body text-muted-foreground/30 hover:text-red-400 transition-colors mt-0.5 block w-full leading-none"
+                          title="Unlink email"
+                        >unlink</button>
                       </div>
                     ) : (
                       <button onClick={() => setShowEmailReg(true)} className="text-center hover:opacity-80 transition-opacity">

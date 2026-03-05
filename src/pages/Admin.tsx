@@ -2390,7 +2390,9 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
         return (
           <div className="border border-border rounded-lg p-4 space-y-3">
             <div className="flex items-center justify-between">
-              <label className="text-xs font-body tracking-wider uppercase text-muted-foreground">Proofing Round</label>
+              <label className="text-xs font-body tracking-wider uppercase text-muted-foreground">
+                  Proofing{rounds.length > 0 ? ` — Round ${rounds.length}` : ""}
+                </label>
               <span className={`text-[10px] font-body px-2 py-0.5 rounded-full ${
                 stage === "not-started" ? "bg-secondary text-muted-foreground" :
                 stage === "proofing" ? "bg-yellow-500/15 text-yellow-400" :
