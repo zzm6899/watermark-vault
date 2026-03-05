@@ -63,17 +63,6 @@ function LightboxImage({ photo, cache, onCacheUpdate }: {
       className="max-w-full max-h-[85vh] object-contain rounded-lg"
     />
   );
-} src */ });
-    return () => { cancelled = true; };
-  }, [photo.id, photo.src]);
-
-  return (
-    <img
-      src={src}
-      alt={photo.title}
-      className="max-w-full max-h-[85vh] object-contain rounded-lg"
-    />
-  );
 }
 // Session key priority: client token (works across devices) > PIN > generic per-album fallback
 function getSessionKey(album: Album, pin: string, token?: string): string {
