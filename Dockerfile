@@ -1,4 +1,4 @@
-# Stage 1: Build the React/Vite app
+#Stage 1: Build the React/Vite app
 FROM node:20-alpine AS builder
 
 WORKDIR /app
@@ -16,7 +16,10 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-# Install server dependencies
+# Sharp requires vips native library on Alpine
+RUN apk add --no-cache vips-dev fftw-dev build-base python3
+
+# Install server dependencies (including sharp)
 COPY server/package.json server/
 RUN cd server && npm install --production
 
@@ -31,5 +34,7 @@ EXPOSE 5066
 
 ENV PORT=5066
 ENV DATA_DIR=/data
+# Tell sharp to use the system vips rather than downloading its own
+ENV SHARP_IGNORE_GLOBAL_LIBVIPS=0
 
 CMD ["node", "server/index.js"]
