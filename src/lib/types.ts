@@ -71,8 +71,6 @@ export interface Booking {
   depositMethod?: "stripe" | "bank";
   depositPaidAt?: string;
   stripeSessionId?: string;
-  remindersSent?: Record<string, string>; // keyed by "24h" | "1h" → ISO sent timestamp
-  gcalEventId?: string;
 }
 
 export interface Photo {
@@ -83,24 +81,10 @@ export interface Photo {
   width: number;
   height: number;
   selected?: boolean;
-  hidden?: boolean; // hidden after proofing round — not shown to client
-}
-
-// ── Proofing ─────────────────────────────────────────────────
-export type ProofingStage =
-  | "not-started"        // no proofing initiated
-  | "proofing"           // client is viewing and starring photos
-  | "selections-submitted" // client clicked "Submit picks" — waiting for admin
-  | "editing"            // admin acknowledged, now editing
-  | "finals-delivered";  // admin delivered finals, album unlocked
-
-export interface ProofingRound {
-  roundNumber: number;
-  sentAt: string;           // ISO — when admin sent proofing invite
-  submittedAt?: string;     // ISO — when client submitted picks
-  selectedPhotoIds: string[]; // photo IDs client starred/picked
-  adminNote?: string;       // message from admin shown on gallery (e.g. "Please pick your top 30")
-  clientNote?: string;      // optional message from client when submitting
+  starred?: boolean;
+  hidden?: boolean;
+  uploadedAt?: string;  // ISO timestamp — set on upload, used for time sort
+  takenAt?: string;     // ISO timestamp from EXIF if available
 }
 
 export type AlbumDisplaySize = "small" | "medium" | "large" | "list";
@@ -121,8 +105,6 @@ export interface DownloadHistoryEntry {
   downloadedAt: string;
   quality: DownloadQuality;
   sessionKey: string;
-  email?: string;
-  photoCount?: number;
 }
 
 export interface Album {
@@ -145,22 +127,12 @@ export interface Album {
   accessCode?: string;
   mergedFrom?: string[];
   allUnlocked?: boolean;
-  downloadExpiresAt?: string; // ISO date — after this date allUnlocked is treated as false
   paidPhotoIds?: string[]; // individual photo purchases via Stripe or admin approval
   stripePaidAt?: string;
   usedFreeDownloads?: Record<string, number>; // keyed by accessCode or session
   downloadRequests?: AlbumDownloadRecord[];
   downloadHistory?: DownloadHistoryEntry[];
   displaySize?: AlbumDisplaySize;
-  // ── Proofing ──────────────────────────────────────────────
-  proofingEnabled?: boolean;  // per-album opt-in (only works when global proofingEnabled is on)
-  proofingStage?: ProofingStage;  // undefined = not-started
-  proofingRounds?: ProofingRound[];
-  // ── Client access ─────────────────────────────────────────
-  clientToken?: string;  // magic-link token — grants access without PIN, identifies client session
-  watermarkDisabled?: boolean;  // per-album override — disable watermarks for this album
-  purchasingDisabled?: boolean; // per-album — hide purchase UI (free/gifted albums)
-  registeredEmails?: Record<string, string>; // sessionKey → email, registered at access time
 }
 
 export interface BankTransferSettings {
@@ -194,31 +166,9 @@ export interface AppSettings {
   instagramFieldEnabled: boolean;
   notificationEmailTemplate: string;
   discordWebhookUrl: string;
-  proofingEnabled: boolean; // global toggle — shows proofing controls on albums
 }
 
 export interface AdminCredentials {
   username: string;
   passwordHash: string;
-}
-
-export interface EmailTemplate {
-  id: string;
-  name: string;
-  subject: string;
-  body: string;
-  createdAt: string;
-}
-
-// ── Waitlist ──────────────────────────────────────────────────
-export interface WaitlistEntry {
-  id: string;
-  eventTypeId: string;
-  eventTypeTitle: string;
-  date: string;         // YYYY-MM-DD — the specific date they wanted
-  clientName: string;
-  clientEmail: string;
-  note?: string;
-  createdAt: string;
-  notifiedAt?: string;  // ISO — when we sent the "slot opened" email
 }

@@ -2081,7 +2081,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
       });
       // Add all photos immediately (no thumbnail yet) so none are lost if modal closes
       const newPhotos: Photo[] = results.map(r => ({
-        id: r.id, src: r.url, title: r.originalName.replace(/\.[^.]+$/, ""), width: 800, height: 600,
+        id: r.id, src: r.url, title: r.originalName.replace(/\.[^.]+$/, ""), width: 800, height: 600, uploadedAt: new Date().toISOString(),
       }));
       setPhotos(prev => [...prev, ...newPhotos]);
       if (!coverImage && newPhotos.length > 0) setCoverImage(newPhotos[0].src);
@@ -2780,7 +2780,7 @@ function PhotosView() {
         try {
           const result = await compressImage(file);
           const thumb = await generateThumbnail(result.src).catch(() => undefined);
-          const photo: Photo = { id: generateId("ph"), src: result.src, thumbnail: thumb, title: file.name.replace(/\.[^.]+$/, ""), width: result.width, height: result.height };
+          const photo: Photo = { id: generateId("ph"), src: result.src, thumbnail: thumb, title: file.name.replace(/\.[^.]+$/, ""), width: result.width, height: result.height, uploadedAt: new Date().toISOString() };
           addPhotoToTarget(photo);
           setUploadStats(prev => prev ? { ...prev, done: prev.done + 1, savedBytes: prev.savedBytes + (result.originalSize - result.compressedSize) } : null);
         } catch {

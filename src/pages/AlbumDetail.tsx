@@ -1,7 +1,7 @@
 import { useParams, useSearchParams } from "react-router-dom";
 import { useState, useCallback, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Info, Building2, Copy, Check as CheckIcon, Lock, Download, Grid, List, LayoutGrid, CreditCard, X, ChevronLeft, ChevronRight, Star, Camera, CheckCircle2, Clock, Sparkles, Maximize2 } from "lucide-react";
+import { Info, Building2, Copy, Check as CheckIcon, Lock, Download, Grid, List, LayoutGrid, CreditCard, X, ChevronLeft, ChevronRight, Star, Camera, CheckCircle2, Clock, Sparkles, Maximize2, ArrowUpDown, SlidersHorizontal } from "lucide-react";
 import Header from "@/components/Header";
 import Footer from "@/components/Footer";
 import WatermarkedImage from "@/components/WatermarkedImage";
@@ -106,7 +106,9 @@ export default function AlbumDetail() {
   const [emailInput, setEmailInput] = useState("");
   const [showEmailCapture, setShowEmailCapture] = useState(false);
   const [clientNote, setClientNote] = useState("");
-  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+  const [lightboxPhotoId, setLightboxPhotoId] = useState<string | null>(null);
+  const [showStarredOnly, setShowStarredOnly] = useState(false);
+  const [sortOrder, setSortOrder] = useState<"default" | "asc" | "desc">("default");
   const [lightboxSrcCache, setLightboxSrcCache] = useState<Record<string, string>>({});
   const [stripeAvailable, setStripeAvailable] = useState(false);
   const [processingStripe, setProcessingStripe] = useState(false);
@@ -184,15 +186,17 @@ export default function AlbumDetail() {
 
   // Keyboard navigation for lightbox
   useEffect(() => {
-    if (lightboxIndex === null) return;
+    if (lightboxPhotoId === null) return;
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setLightboxIndex(null);
-      if (e.key === "ArrowLeft" && lightboxIndex > 0) setLightboxIndex(lightboxIndex - 1);
-      if (e.key === "ArrowRight" && album && lightboxIndex < album.photos.length - 1) setLightboxIndex(lightboxIndex + 1);
+      const lbPhotos = displayedPhotos;
+      const lbIdx = lbPhotos.findIndex((p: any) => p.id === lightboxPhotoId);
+      if (e.key === "Escape") setLightboxPhotoId(null);
+      if (e.key === "ArrowLeft" && lbIdx > 0) setLightboxPhotoId(lbPhotos[lbIdx - 1].id);
+      if (e.key === "ArrowRight" && lbIdx < lbPhotos.length - 1) setLightboxPhotoId(lbPhotos[lbIdx + 1].id);
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [lightboxIndex, album]);
+  }, [lightboxPhotoId, displayedPhotos]);
 
   if (!album || album.enabled === false) {
     return (
@@ -253,6 +257,21 @@ export default function AlbumDetail() {
   const adminNote = latestRound?.adminNote;
   // Visible photos: hide photos marked hidden (non-selected after round approval)
   const visiblePhotos = album.photos.filter((p: any) => !p.hidden);
+  const hasStarred = visiblePhotos.some((p: any) => p.starred);
+  const displayedPhotos = (() => {
+    let photos = showStarredOnly ? visiblePhotos.filter((p: any) => p.starred) : visiblePhotos;
+    if (sortOrder !== "default") {
+      photos = [...photos].sort((a: any, b: any) => {
+        const dateA = new Date(a.takenAt || a.uploadedAt || 0).getTime();
+        const dateB = new Date(b.takenAt || b.uploadedAt || 0).getTime();
+        // Fallback: compare titles (filename order)
+        const titleCmp = a.title.localeCompare(b.title, undefined, { numeric: true });
+        const timeCmp = dateA !== dateB ? dateA - dateB : titleCmp;
+        return sortOrder === "asc" ? timeCmp : -timeCmp;
+      });
+    }
+    return photos;
+  })();
   // During proofing, starred photos = client's current picks
   const starredIds = new Set<string>(album.photos.filter((p: any) => p.starred).map(p => p.id));
 
@@ -601,59 +620,59 @@ export default function AlbumDetail() {
                 );
               })()}
 
-              <div className="glass-panel rounded-lg px-3 py-2 flex items-center gap-2 overflow-x-auto scrollbar-none">
+              <div className="glass-panel rounded-lg p-4 flex items-center gap-6">
                 {canDownload ? (
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    <span className="text-sm font-display text-green-400">✓</span>
-                    <span className="text-xs font-body text-muted-foreground">All Unlocked</span>
+                  <div className="text-center">
+                    <p className="text-lg font-display text-green-400">✓ Unlocked</p>
+                    <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">All Photos</p>
                   </div>
                 ) : (
                   <>
-                    <div className="flex flex-col items-center shrink-0">
-                      <span className="text-sm font-display text-primary leading-none">{freeRemaining}</span>
-                      <span className="text-[9px] font-body uppercase text-muted-foreground mt-0.5">Free</span>
+                    <div className="text-center">
+                      <p className="text-lg font-display text-primary">{freeRemaining}</p>
+                      <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Free Left</p>
                     </div>
-                    <div className="w-px h-5 bg-border shrink-0" />
-                    <div className="flex flex-col items-center shrink-0">
-                      <span className="text-sm font-display text-foreground leading-none">${album.pricePerPhoto}</span>
-                      <span className="text-[9px] font-body uppercase text-muted-foreground mt-0.5">Photo</span>
+                    <div className="w-px h-8 bg-border" />
+                    <div className="text-center">
+                      <p className="text-lg font-display text-foreground">${album.pricePerPhoto}</p>
+                      <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Per Photo</p>
                     </div>
-                    <div className="w-px h-5 bg-border shrink-0" />
-                    <div className="flex flex-col items-center shrink-0">
-                      <span className="text-sm font-display text-foreground leading-none">${album.priceFullAlbum}</span>
-                      <span className="text-[9px] font-body uppercase text-muted-foreground mt-0.5">Album</span>
+                    <div className="w-px h-8 bg-border" />
+                    <div className="text-center">
+                      <p className="text-lg font-display text-foreground">${album.priceFullAlbum}</p>
+                      <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Full Album</p>
                     </div>
-                    <div className="w-px h-5 bg-border shrink-0" />
+                    <div className="w-px h-8 bg-border" />
                     {/* Email link button */}
                     {registeredEmail ? (
-                      <div className="flex flex-col items-center shrink-0 group/email">
-                        <button className="flex flex-col items-center" onClick={() => setShowEmailReg(true)} title="Change email">
-                          <span className="text-[10px] font-body text-green-400 leading-none">✓ linked</span>
-                          <span className="text-[9px] font-body text-muted-foreground mt-0.5 truncate max-w-[52px]">{registeredEmail.split('@')[0]}</span>
-                        </button>
+                      <div className="text-center group/email">
+                        <div className="cursor-pointer" onClick={() => setShowEmailReg(true)} title="Change email">
+                          <p className="text-[11px] font-body text-green-400 truncate max-w-[100px]">{registeredEmail}</p>
+                          <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground group-hover/email:text-foreground transition-colors">Linked ✓</p>
+                        </div>
                         <button
                           onClick={(e) => { e.stopPropagation(); try { localStorage.removeItem(`wv_email_${albumId}`); } catch {} setRegisteredEmail(""); }}
-                          className="text-[8px] font-body text-muted-foreground/30 hover:text-red-400 transition-colors leading-none mt-0.5"
+                          className="text-[9px] font-body text-muted-foreground/30 hover:text-red-400 transition-colors mt-0.5 block w-full leading-none"
+                          title="Unlink email"
                         >unlink</button>
                       </div>
                     ) : (
-                      <button onClick={() => setShowEmailReg(true)} className="flex flex-col items-center shrink-0 hover:opacity-80 transition-opacity">
-                        <span className="text-sm font-display text-muted-foreground leading-none">@</span>
-                        <span className="text-[9px] font-body uppercase text-primary mt-0.5">Email</span>
+                      <button onClick={() => setShowEmailReg(true)} className="text-center hover:opacity-80 transition-opacity">
+                        <p className="text-lg font-display text-muted-foreground">@</p>
+                        <p className="text-[10px] font-body uppercase tracking-wider text-primary">Add Email</p>
                       </button>
                     )}
                     {!(album as any).purchasingDisabled && (
                     <>
-                    <div className="w-px h-5 bg-border shrink-0" />
+                    <div className="w-px h-8 bg-border" />
                     {/* Payment CTA(s): hidden when purchasing disabled */}
                     {previewCheckoutAmount === 0 ? (
                       <Button
                         onClick={() => { setShowPaymentChoice(false); handleDownloadFree(); }}
-                        size="sm"
-                        className="shrink-0 gap-1.5 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs h-8 px-3 active:scale-95"
+                        className="w-full gap-3 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-sm h-12"
                       >
-                        <Download className="w-3.5 h-3.5" />
-                        Download
+                        <Download className="w-5 h-5" />
+                        Download Free
                       </Button>
                     ) : (
                       stripeAvailable ? (
@@ -690,11 +709,10 @@ export default function AlbumDetail() {
                             else toast.error(result.error || "Failed to create checkout session");
                           }}
                           disabled={processingStripe}
-                          size="sm"
-                          className="shrink-0 gap-1.5 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs h-8 px-3 active:scale-95"
+                          className="w-full gap-3 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-sm h-12"
                         >
-                          <CreditCard className="w-3.5 h-3.5" />
-                          {processingStripe ? "..." : `Pay $${ fullAlbumCheaper ? priceFullAlbum : paidTotal}`}
+                          <CreditCard className="w-5 h-5" />
+                          {processingStripe ? "Redirecting to Stripe..." : "Pay with Card (Stripe)"}
                         </Button>
                       ) : null
                     )}
@@ -718,13 +736,58 @@ export default function AlbumDetail() {
               </div>
             )}
 
+          {/* ── Filter / Sort toolbar ──────────────────────────────── */}
+          {visiblePhotos.length > 0 && (
+            <div className="flex items-center gap-2 flex-wrap mb-2">
+              {/* Starred filter — only shown when at least one photo is starred */}
+              {hasStarred && (
+                <button
+                  onClick={() => setShowStarredOnly(v => !v)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-body border transition-all ${
+                    showStarredOnly
+                      ? "bg-yellow-400/15 border-yellow-400/40 text-yellow-400"
+                      : "bg-secondary/50 border-border/50 text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  <Star className={`w-3 h-3 ${showStarredOnly ? "fill-yellow-400" : ""}`} />
+                  {showStarredOnly ? `Starred (${displayedPhotos.length})` : `Show Starred (${visiblePhotos.filter((p: any) => p.starred).length})`}
+                </button>
+              )}
+              {/* Sort by time */}
+              <button
+                onClick={() => setSortOrder(s => s === "default" ? "asc" : s === "asc" ? "desc" : "default")}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-body border transition-all ${
+                  sortOrder !== "default"
+                    ? "bg-primary/10 border-primary/30 text-primary"
+                    : "bg-secondary/50 border-border/50 text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <ArrowUpDown className="w-3 h-3" />
+                {sortOrder === "default" ? "Sort by time" : sortOrder === "asc" ? "Oldest first" : "Newest first"}
+              </button>
+              {/* Active filter summary */}
+              {(showStarredOnly || sortOrder !== "default") && (
+                <button
+                  onClick={() => { setShowStarredOnly(false); setSortOrder("default"); }}
+                  className="flex items-center gap-1 px-2 py-1.5 rounded-full text-xs font-body text-muted-foreground/60 hover:text-muted-foreground transition-colors"
+                >
+                  <X className="w-3 h-3" /> Clear
+                </button>
+              )}
+            </div>
+          )}
+
           {album.photos.length === 0 ? (
             <div className="glass-panel rounded-xl p-12 text-center">
               <p className="text-sm font-body text-muted-foreground">No photos uploaded yet.</p>
             </div>
+          ) : displayedPhotos.length === 0 ? (
+            <div className="glass-panel rounded-xl p-12 text-center">
+              <p className="text-sm font-body text-muted-foreground">No starred photos yet.</p>
+            </div>
           ) : (
             <div className={gridClass}>
-              {visiblePhotos.map((photo, i) => (
+              {displayedPhotos.map((photo, i) => (
                 <div key={photo.id} className="relative group">
                   <WatermarkedImage
                 src={photo.thumbnail || photo.src}
@@ -743,7 +806,7 @@ export default function AlbumDetail() {
                   {/* Expand button */}
                   {!isProofing && (
                     <button
-                      onClick={e => { e.stopPropagation(); setLightboxIndex(i); }}
+                      onClick={e => { e.stopPropagation(); setLightboxPhotoId(photo.id); }}
                       className="absolute top-2 left-2 w-7 h-7 rounded-full bg-black/50 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity z-10"
                     >
                       <Maximize2 className="w-3 h-3" />
@@ -1130,13 +1193,13 @@ export default function AlbumDetail() {
 
       {/* Fullscreen Lightbox */}
       <AnimatePresence>
-        {lightboxIndex !== null && album.photos[lightboxIndex] && (
+        {(() => { const lbPhoto = lightboxPhotoId ? displayedPhotos.find((p:any) => p.id === lightboxPhotoId) : null; const lbIdx = lbPhoto ? displayedPhotos.findIndex((p:any) => p.id === lightboxPhotoId) : -1; return lbPhoto ? (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             className="fixed inset-0 z-[100] bg-background/95 backdrop-blur-sm flex items-center justify-center"
-            onClick={() => setLightboxIndex(null)}
+            onClick={() => setLightboxPhotoId(null)}
           >
             {/* Close button */}
             <button className="absolute top-4 right-4 z-10 w-10 h-10 rounded-full bg-card/80 backdrop-blur-sm flex items-center justify-center text-foreground hover:bg-card transition-colors"
@@ -1145,15 +1208,15 @@ export default function AlbumDetail() {
             </button>
 
             {/* Nav arrows */}
-            {lightboxIndex > 0 && (
+            {lbIdx > 0 && (
               <button className="absolute left-4 z-10 w-10 h-10 rounded-full bg-card/80 backdrop-blur-sm flex items-center justify-center text-foreground hover:bg-card transition-colors"
-                onClick={(e) => { e.stopPropagation(); setLightboxIndex(lightboxIndex - 1); }}>
+                onClick={(e) => { e.stopPropagation(); setLightboxPhotoId(displayedPhotos[lbIdx - 1].id); }}>
                 <ChevronLeft className="w-5 h-5" />
               </button>
             )}
-            {lightboxIndex < album.photos.length - 1 && (
+            {lbIdx < displayedPhotos.length - 1 && (
               <button className="absolute right-4 z-10 w-10 h-10 rounded-full bg-card/80 backdrop-blur-sm flex items-center justify-center text-foreground hover:bg-card transition-colors"
-                onClick={(e) => { e.stopPropagation(); setLightboxIndex(lightboxIndex + 1); }}>
+                onClick={(e) => { e.stopPropagation(); setLightboxPhotoId(displayedPhotos[lbIdx + 1].id); }}>
                 <ChevronRight className="w-5 h-5" />
               </button>
             )}
@@ -1161,12 +1224,12 @@ export default function AlbumDetail() {
             {/* Photo */}
             <div className="relative max-w-[90vw] max-h-[90vh]" onClick={(e) => e.stopPropagation()}>
               <LightboxImage
-                photo={album.photos[lightboxIndex]}
+                photo={lbPhoto}
                 cache={lightboxSrcCache}
                 onCacheUpdate={(id, url) => setLightboxSrcCache(prev => ({ ...prev, [id]: url }))}
               />
               {/* Watermark overlay in lightbox — uses same settings as grid */}
-              {!(album as any).watermarkDisabled && !isPhotoPaid(album.photos[lightboxIndex].id) && (() => {
+              {!(album as any).watermarkDisabled && !isPhotoPaid(lbPhoto.id) && (() => {
                 const op = settings.watermarkOpacity / 100;
                 const size = settings.watermarkSize ?? 40;
                 const pos = settings.watermarkPosition || "center";
@@ -1206,15 +1269,15 @@ export default function AlbumDetail() {
 
               {/* Bottom bar with select/title */}
               <div className="absolute bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-background/80 to-transparent rounded-b-lg flex items-center justify-between">
-                <p className="text-sm font-body text-foreground">{album.photos[lightboxIndex].title}</p>
+                <p className="text-sm font-body text-foreground">{lbPhoto.title}</p>
                 <div className="flex gap-2">
                   <Button
                     size="sm"
-                    variant={selectedIds.has(album.photos[lightboxIndex].id) ? "default" : "outline"}
-                    onClick={() => toggleSelect(album.photos[lightboxIndex].id)}
+                    variant={selectedIds.has(lbPhoto.id) ? "default" : "outline"}
+                    onClick={() => toggleSelect(lbPhoto.id)}
                     className="gap-1.5 font-body text-xs"
                   >
-                    {selectedIds.has(album.photos[lightboxIndex].id) ? (
+                    {selectedIds.has(lbPhoto.id) ? (
                       <><CheckIcon className="w-3.5 h-3.5" /> Selected</>
                     ) : (
                       <><Download className="w-3.5 h-3.5" /> Select</>
@@ -1227,11 +1290,11 @@ export default function AlbumDetail() {
             {/* Counter */}
             <div className="absolute bottom-4 left-1/2 -translate-x-1/2">
               <p className="text-xs font-body text-muted-foreground bg-card/80 backdrop-blur-sm px-3 py-1.5 rounded-full">
-                {lightboxIndex + 1} / {album.photos.length}
+                {lbIdx + 1} / {displayedPhotos.length}
               </p>
             </div>
           </motion.div>
-        )}
+        ) : null; })()}
       </AnimatePresence>
 
       <Footer />
