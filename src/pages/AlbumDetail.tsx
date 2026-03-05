@@ -624,6 +624,26 @@ export default function AlbumDetail() {
                       <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Full Album</p>
                     </div>
                     <div className="w-px h-8 bg-border" />
+                    {/* Email link button */}
+                    {registeredEmail ? (
+                      <div className="text-center group/email">
+                        <div className="cursor-pointer" onClick={() => setShowEmailReg(true)} title="Change email">
+                          <p className="text-[11px] font-body text-green-400 truncate max-w-[100px]">{registeredEmail}</p>
+                          <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground group-hover/email:text-foreground transition-colors">Linked ✓</p>
+                        </div>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); try { localStorage.removeItem(`wv_email_${albumId}`); } catch {} setRegisteredEmail(""); }}
+                          className="text-[9px] font-body text-muted-foreground/30 hover:text-red-400 transition-colors mt-0.5 block w-full leading-none"
+                          title="Unlink email"
+                        >unlink</button>
+                      </div>
+                    ) : (
+                      <button onClick={() => setShowEmailReg(true)} className="text-center hover:opacity-80 transition-opacity">
+                        <p className="text-lg font-display text-muted-foreground">@</p>
+                        <p className="text-[10px] font-body uppercase tracking-wider text-primary">Add Email</p>
+                      </button>
+                    )}
+                    <div className="w-px h-8 bg-border" />
                     {/* Payment CTA(s): show download if nothing owed, otherwise show Stripe button (Bank Transfer handled below) */}
                     {previewCheckoutAmount === 0 ? (
                       <Button
