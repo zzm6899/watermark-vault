@@ -675,6 +675,10 @@ export default function AlbumDetail() {
                         </Button>
                       ) : null
                     )}
+                  </>
+                )}
+              </div>
+            </motion.div>
 
             {canDownload && (
               <div className="flex items-center gap-2 mt-4 p-3 rounded-lg bg-green-500/5 border border-green-500/10">
@@ -687,7 +691,6 @@ export default function AlbumDetail() {
                 </Button>
               </div>
             )}
-          </motion.div>
 
           {album.photos.length === 0 ? (
             <div className="glass-panel rounded-xl p-12 text-center">
