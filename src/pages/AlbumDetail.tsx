@@ -8,6 +8,7 @@ import WatermarkedImage from "@/components/WatermarkedImage";
 import PurchasePanel from "@/components/PurchasePanel";
 import { getAlbumBySlug, getSettings, updateAlbum } from "@/lib/storage";
 import { useBackfillThumbnails } from "@/hooks/use-backfill-thumbnails";
+import { Badge } from "@/components/ui/badge";
 import { createAlbumCheckout, getStripeStatus } from "@/lib/api";
 import { toast } from "sonner";
 import { resizeToTargetSize } from "@/lib/image-utils";
@@ -856,7 +857,17 @@ export default function AlbumDetail() {
           <div className="space-y-3 mt-2">
             <p className="text-sm font-body text-muted-foreground">
               {selectedIds.size} photo{selectedIds.size !== 1 ? "s" : ""} selected
-              {paidCount > 0 && <> · <span className="text-primary font-medium">${paidTotal}</span></>}
+              {paidCount > 0 && (
+                  <>
+                    {" · "}
+                    <span className="text-primary font-medium">
+                      ${fullAlbumCheaper ? priceFullAlbum : paidTotal}
+                    </span>
+                    {fullAlbumCheaper && (
+                      <span className="text-muted-foreground"> (full album)</span>
+                    )}
+                  </>
+                )}
             </p>
 
             {stripeAvailable && (
@@ -864,7 +875,10 @@ export default function AlbumDetail() {
                 onClick={async () => {
                   setShowPaymentChoice(false);
                   setProcessingStripe(true);
-                  const isFullAlbumPurchase = selectedIds.size === 0 || selectedIds.size === album.photos.length;
+                  const isFullAlbumPurchase =
+                    fullAlbumCheaper ||
+                    selectedIds.size === 0 ||
+                    selectedIds.size === album.photos.length;
                   const photosBeingPaid = isFullAlbumPurchase
                     ? [] // server handles full album
                     : album.photos.filter(p => selectedIds.has(p.id) && !paidPhotoIdSet.has(p.id) && !( unpaidSelected.indexOf(p) < freeRemaining ));
