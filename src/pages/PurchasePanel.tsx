@@ -25,7 +25,7 @@ export default function PurchasePanel({
   freeRemaining,
   pricePerPhoto,
   priceFullAlbum,
-  fullAlbumCheaper = false,
+  fullAlbumCheaper: fullAlbumCheaperProp = false,
   totalPhotos,
   onDownloadFree,
   onPurchaseSelected,
@@ -38,6 +38,8 @@ export default function PurchasePanel({
   const perPhotoPrice = Number(pricePerPhoto) || 0;
   const albumPrice = Number(priceFullAlbum) || 0;
   const paidTotal = paidCount * perPhotoPrice;
+  // Use prop if passed, otherwise compute locally as fallback
+  const fullAlbumCheaper = fullAlbumCheaperProp || (albumPrice > 0 && paidCount > 0 && paidTotal >= albumPrice);
 
   const allFree = paidCount === 0 && effectiveUnpaid > 0;
   const allAlreadyPaid = alreadyPaidCount > 0 && effectiveUnpaid === 0;

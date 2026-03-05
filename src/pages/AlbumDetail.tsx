@@ -953,12 +953,21 @@ export default function AlbumDetail() {
           </DialogHeader>
           <div className="space-y-4 mt-2">
             <p className="text-sm font-body text-muted-foreground">
-              You've selected <span className="text-primary font-medium">{selectedIds.size}</span> photo{selectedIds.size !== 1 ? "s" : ""}. 
-              {freeRemaining > 0 && <> ({Math.min(selectedIds.size, freeRemaining)} free, {Math.max(0, selectedIds.size - freeRemaining)} paid)</>}
+              You've selected <span className="text-primary font-medium">{selectedIds.size}</span> photo{selectedIds.size !== 1 ? "s" : ""}.
+              {paidCount > 0
+                ? <> (<span className="text-primary font-medium">{Math.min(unpaidSelected.length, freeRemaining)} free</span>, <span className="text-primary font-medium">{paidCount} paid</span>)</>
+                : freeRemaining > 0 ? <> (all free)</> : null}
             </p>
             <div className="p-3 rounded-lg bg-secondary">
               <p className="text-xs font-body text-muted-foreground">Estimated total</p>
-              <p className="text-lg font-display text-foreground">${Math.max(0, selectedIds.size - freeRemaining) * album.pricePerPhoto}</p>
+              {fullAlbumCheaper ? (
+                <div>
+                  <p className="text-lg font-display text-green-400">${priceFullAlbum} <span className="text-xs font-body text-muted-foreground line-through">${paidTotal}</span></p>
+                  <p className="text-xs font-body text-green-400/80 mt-0.5">Full album price applied — better deal!</p>
+                </div>
+              ) : (
+                <p className="text-lg font-display text-foreground">${paidTotal}</p>
+              )}
             </div>
             <div>
               <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Note (optional)</label>
