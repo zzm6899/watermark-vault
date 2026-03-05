@@ -433,6 +433,8 @@ export default function AlbumDetail() {
     }
     setRequestedFullAlbum(true);
     setShowPaymentChoice(true);
+    // Prompt email registration before paying if not already registered
+    if (!registeredEmail && !emailSkippedThisSession) setTimeout(() => setShowEmailReg(true), 300);
   };
 
   const handleBankTransferRequest = (explicit = false) => {

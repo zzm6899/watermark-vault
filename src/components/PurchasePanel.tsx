@@ -75,12 +75,6 @@ export default function PurchasePanel({
                     <ShoppingCart className="w-4 h-4" />
                     Pay ${paidTotal}
                   </Button>
-                  {bankTransferEnabled && onBankTransfer && (
-                    <Button onClick={onBankTransfer} variant="outline" size="sm" className="gap-2 border-border text-foreground hover:bg-secondary">
-                      <Building2 className="w-4 h-4" />
-                      Bank Transfer
-                    </Button>
-                  )}
                 </>
               )}
 
@@ -95,8 +89,14 @@ export default function PurchasePanel({
                 </Button>
               )}
 
-              {/* Always offer Full Album as option unless nothing to charge and already paid */}
-              {albumPrice > 0 && (
+              {bankTransferEnabled && onBankTransfer && paidCount > 0 && (
+                <Button onClick={onBankTransfer} variant="outline" size="sm" className="gap-2 border-border text-foreground hover:bg-secondary">
+                  <Building2 className="w-4 h-4" />
+                  Bank Transfer
+                </Button>
+              )}
+
+              {albumPrice > 0 && !fullAlbumCheaper && (
                 <Button onClick={onPurchaseAlbum} variant="outline" size="sm" className="gap-2 border-border text-foreground hover:bg-secondary">
                   <Package className="w-4 h-4" />
                   Full Album ${priceFullAlbum}
