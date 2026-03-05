@@ -1,5 +1,5 @@
 import { useParams, useSearchParams } from "react-router-dom";
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Info, Building2, Copy, Check as CheckIcon, Lock, Download, Grid, List, LayoutGrid, CreditCard, X, ChevronLeft, ChevronRight, Star, Camera, CheckCircle2, Clock, Sparkles, Maximize2, ArrowUpDown, SlidersHorizontal } from "lucide-react";
 import Header from "@/components/Header";
@@ -185,10 +185,12 @@ export default function AlbumDetail() {
   }, []));
 
   // Keyboard navigation for lightbox
+  // displayedPhotosRef keeps current list without being a useEffect dep (avoids SWC TDZ)
+  const displayedPhotosRef = useRef<any[]>([]);
   useEffect(() => {
     if (lightboxPhotoId === null) return;
     const handler = (e: KeyboardEvent) => {
-      const lbPhotos = displayedPhotos;
+      const lbPhotos = displayedPhotosRef.current;
       const lbIdx = lbPhotos.findIndex((p: any) => p.id === lightboxPhotoId);
       if (e.key === "Escape") setLightboxPhotoId(null);
       if (e.key === "ArrowLeft" && lbIdx > 0) setLightboxPhotoId(lbPhotos[lbIdx - 1].id);
@@ -196,7 +198,7 @@ export default function AlbumDetail() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [lightboxPhotoId, displayedPhotos]);
+  }, [lightboxPhotoId]);
 
   if (!album || album.enabled === false) {
     return (
@@ -266,9 +268,7 @@ export default function AlbumDetail() {
     const _timeCmp = _dA !== _dB ? _dA - _dB : _tCmp;
     return sortOrder === "asc" ? _timeCmp : -_timeCmp;
   });
-  // Lightbox photo lookup — must be after displayedPhotos
-  const lbPhoto = lightboxPhotoId ? displayedPhotos.find((p: any) => p.id === lightboxPhotoId) ?? null : null;
-  const lbIdx = lbPhoto ? displayedPhotos.findIndex((p: any) => p.id === lightboxPhotoId) : -1;
+  displayedPhotosRef.current = displayedPhotos;
   // During proofing, starred photos = client's current picks
   const starredIds = new Set<string>(album.photos.filter((p: any) => p.starred).map(p => p.id));
 
@@ -513,6 +513,9 @@ export default function AlbumDetail() {
   const previewPaidCount = Math.max(0, unpaidSelected.length - freeRemaining);
   const previewCheckoutAmount = previewIsFullAlbum ? priceFullAlbum : (previewPaidCount * pricePerPhoto);
 
+  // Lightbox — computed at render level (no IIFE in JSX to avoid bundler TDZ issues)
+  const lbPhoto = lightboxPhotoId ? displayedPhotos.find((p: any) => p.id === lightboxPhotoId) ?? null : null;
+  const lbIdx = lbPhoto ? displayedPhotos.findIndex((p: any) => p.id === lightboxPhotoId) : -1;
 
   // Pre-computed JSX to avoid IIFEs inside render (causes TDZ crash when minified)
   const _wmOp = settings.watermarkOpacity / 100;
