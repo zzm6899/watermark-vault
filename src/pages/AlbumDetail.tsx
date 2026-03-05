@@ -258,20 +258,14 @@ export default function AlbumDetail() {
   // Visible photos: hide photos marked hidden (non-selected after round approval)
   const visiblePhotos = album.photos.filter((p: any) => !p.hidden);
   const hasStarred = visiblePhotos.some((p: any) => p.starred);
-  const displayedPhotos = (() => {
-    let photos = showStarredOnly ? visiblePhotos.filter((p: any) => p.starred) : visiblePhotos;
-    if (sortOrder !== "default") {
-      photos = [...photos].sort((a: any, b: any) => {
-        const dateA = new Date(a.takenAt || a.uploadedAt || 0).getTime();
-        const dateB = new Date(b.takenAt || b.uploadedAt || 0).getTime();
-        // Fallback: compare titles (filename order)
-        const titleCmp = a.title.localeCompare(b.title, undefined, { numeric: true });
-        const timeCmp = dateA !== dateB ? dateA - dateB : titleCmp;
-        return sortOrder === "asc" ? timeCmp : -timeCmp;
-      });
-    }
-    return photos;
-  })();
+  const _dpBase = showStarredOnly ? visiblePhotos.filter((p: any) => p.starred) : visiblePhotos;
+  const displayedPhotos = sortOrder === "default" ? _dpBase : [..._dpBase].sort((a: any, b: any) => {
+    const dateA = new Date((a as any).takenAt || (a as any).uploadedAt || 0).getTime();
+    const dateB = new Date((b as any).takenAt || (b as any).uploadedAt || 0).getTime();
+    const titleCmp = a.title.localeCompare(b.title, undefined, { numeric: true });
+    const timeCmp = dateA !== dateB ? dateA - dateB : titleCmp;
+    return sortOrder === "asc" ? timeCmp : -timeCmp;
+  });
   // During proofing, starred photos = client's current picks
   const starredIds = new Set<string>(album.photos.filter((p: any) => p.starred).map(p => p.id));
 
@@ -516,6 +510,56 @@ export default function AlbumDetail() {
   const previewPaidCount = Math.max(0, unpaidSelected.length - freeRemaining);
   const previewCheckoutAmount = previewIsFullAlbum ? priceFullAlbum : (previewPaidCount * pricePerPhoto);
 
+  // Lightbox watermark — pre-computed to avoid IIFE in JSX
+  const _wmOp = settings.watermarkOpacity / 100;
+  const _wmSize = settings.watermarkSize ?? 40;
+  const _wmPos = settings.watermarkPosition || "center";
+  const _wmTiled = _wmPos === "tiled";
+  const _wmCenter = _wmPos === "center";
+  const _wmPosStyle: React.CSSProperties = _wmCenter || _wmTiled ? {} : {
+    position: "absolute",
+    top: _wmPos.startsWith("top") ? "16px" : "auto",
+    bottom: _wmPos.startsWith("bottom") ? "16px" : "auto",
+    left: _wmPos.endsWith("left") ? "16px" : "auto",
+    right: _wmPos.endsWith("right") ? "16px" : "auto",
+  };
+  const lbWatermark = _wmTiled ? (
+    <div className="absolute inset-0 pointer-events-none select-none overflow-hidden rounded-lg">
+      <div className="absolute inset-0 flex flex-wrap items-start justify-start gap-x-16 gap-y-12 rotate-[-30deg] scale-150 origin-center" style={{ opacity: _wmOp }}>
+        {Array.from({ length: 20 }).map((_, i) => settings.watermarkImage
+          ? <img key={i} src={settings.watermarkImage} alt="" style={{ height: `${Math.max(20, _wmSize * 0.4)}px`, width: "auto" }} />
+          : <p key={i} className="font-display text-foreground tracking-widest whitespace-nowrap" style={{ fontSize: `${Math.max(10, _wmSize * 0.3)}px` }}>{settings.watermarkText}</p>
+        )}
+      </div>
+    </div>
+  ) : (
+    <div className="absolute inset-0 pointer-events-none select-none" style={_wmCenter ? { display: "flex", alignItems: "center", justifyContent: "center" } : { position: "absolute" }}>
+      <div style={{ ..._wmPosStyle, transform: _wmCenter ? "rotate(-30deg)" : undefined }}>
+        {settings.watermarkImage
+          ? <img src={settings.watermarkImage} alt="" style={{ width: `${_wmSize}%`, maxWidth: "100%", height: "auto", opacity: _wmOp }} />
+          : <p className="font-display text-foreground tracking-widest whitespace-nowrap"
+              style={{ opacity: _wmOp, fontSize: `${(_wmSize / 40).toFixed(2)}em` }}>
+              {settings.watermarkText}
+            </p>
+        }
+      </div>
+    </div>
+  );
+
+  // Expiry banner — pre-computed to avoid IIFE in JSX
+  const _expiryDays = album?.downloadExpiresAt
+    ? Math.ceil((new Date(album.downloadExpiresAt + "T12:00:00").getTime() - Date.now()) / 86400000)
+    : null;
+  const expiryBanner = (canDownload && album?.downloadExpiresAt && _expiryDays !== null && _expiryDays <= 14) ? (
+    <div className="glass-panel rounded-xl p-4 border border-yellow-500/20 bg-yellow-500/5 flex items-center gap-3">
+      <Clock className="w-4 h-4 text-yellow-400 shrink-0" />
+      <p className="text-xs font-body text-muted-foreground">
+        <span className="text-yellow-400 font-medium">Download expires in {_expiryDays} day{_expiryDays !== 1 ? "s" : ""}</span>
+        {" "}— {new Date(album.downloadExpiresAt + "T12:00:00").toLocaleDateString("en-AU", { day: "numeric", month: "long" })}
+      </p>
+    </div>
+  ) : null;
+
   // Lightbox — computed at render level (no IIFE in JSX to avoid bundler TDZ issues)
   const lbPhoto = lightboxPhotoId ? displayedPhotos.find((p: any) => p.id === lightboxPhotoId) ?? null : null;
   const lbIdx = lbPhoto ? displayedPhotos.findIndex((p: any) => p.id === lightboxPhotoId) : -1;
@@ -610,19 +654,7 @@ export default function AlbumDetail() {
                 </div>
               )}
 
-              {canDownload && album.downloadExpiresAt && (() => {
-                const daysLeft = Math.ceil((new Date(album.downloadExpiresAt + "T12:00:00").getTime() - Date.now()) / 86400000);
-                if (daysLeft > 14) return null;
-                return (
-                  <div className="glass-panel rounded-xl p-4 border border-yellow-500/20 bg-yellow-500/5 flex items-center gap-3">
-                    <Clock className="w-4 h-4 text-yellow-400 shrink-0" />
-                    <p className="text-xs font-body text-muted-foreground">
-                      <span className="text-yellow-400 font-medium">Download expires in {daysLeft} day{daysLeft !== 1 ? "s" : ""}</span>
-                      {" "}— {new Date(album.downloadExpiresAt + "T12:00:00").toLocaleDateString("en-AU", { day: "numeric", month: "long" })}
-                    </p>
-                  </div>
-                );
-              })()}
+              {expiryBanner}
 
               <div className="glass-panel rounded-lg p-4 flex items-center gap-6">
                 {canDownload ? (
@@ -1233,43 +1265,7 @@ export default function AlbumDetail() {
                 onCacheUpdate={(id, url) => setLightboxSrcCache(prev => ({ ...prev, [id]: url }))}
               />
               {/* Watermark overlay in lightbox — uses same settings as grid */}
-              {!(album as any).watermarkDisabled && !isPhotoPaid(lbPhoto.id) && (() => {
-                const op = settings.watermarkOpacity / 100;
-                const size = settings.watermarkSize ?? 40;
-                const pos = settings.watermarkPosition || "center";
-                const isTiled = pos === "tiled";
-                const isCenter = pos === "center";
-                const posStyle: React.CSSProperties = isCenter || isTiled ? {} : {
-                  position: "absolute",
-                  top: pos.startsWith("top") ? "16px" : "auto",
-                  bottom: pos.startsWith("bottom") ? "16px" : "auto",
-                  left: pos.endsWith("left") ? "16px" : "auto",
-                  right: pos.endsWith("right") ? "16px" : "auto",
-                };
-                if (isTiled) return (
-                  <div className="absolute inset-0 pointer-events-none select-none overflow-hidden rounded-lg">
-                    <div className="absolute inset-0 flex flex-wrap items-start justify-start gap-x-16 gap-y-12 rotate-[-30deg] scale-150 origin-center" style={{ opacity: op }}>
-                      {Array.from({ length: 20 }).map((_, i) => settings.watermarkImage
-                        ? <img key={i} src={settings.watermarkImage} alt="" style={{ height: `${Math.max(20, size * 0.4)}px`, width: "auto" }} />
-                        : <p key={i} className="font-display text-foreground tracking-widest whitespace-nowrap" style={{ fontSize: `${Math.max(10, size * 0.3)}px` }}>{settings.watermarkText}</p>
-                      )}
-                    </div>
-                  </div>
-                );
-                return (
-                  <div className="absolute inset-0 pointer-events-none select-none" style={isCenter ? { display: "flex", alignItems: "center", justifyContent: "center" } : { position: "absolute" }}>
-                    <div style={{ ...posStyle, transform: isCenter ? "rotate(-30deg)" : undefined }}>
-                      {settings.watermarkImage
-                        ? <img src={settings.watermarkImage} alt="" style={{ width: `${size}%`, maxWidth: "100%", height: "auto", opacity: op }} />
-                        : <p className="font-display text-foreground tracking-widest whitespace-nowrap"
-                            style={{ opacity: op, fontSize: `${(size / 40).toFixed(2)}em` }}>
-                            {settings.watermarkText}
-                          </p>
-                      }
-                    </div>
-                  </div>
-                );
-              })()}
+              {!(album as any).watermarkDisabled && !isPhotoPaid(lbPhoto.id) && lbWatermark}
 
               {/* Bottom bar with select/title */}
               <div className="absolute bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-background/80 to-transparent rounded-b-lg flex items-center justify-between">
