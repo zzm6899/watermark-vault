@@ -12,7 +12,7 @@ import { Textarea } from "@/components/ui/textarea";
 import Footer from "@/components/Footer";
 import { toast } from "sonner";
 import { getEventTypes, getProfile, addBooking, getBookings, getSettings, isSlotBooked, updateBooking } from "@/lib/storage";
-import { syncBookingToCalendar, createBookingCheckout, getStripeStatus, sendBookingConfirmationEmail, getGoogleBusyTimes, joinWaitlist } from "@/lib/api";
+import { syncBookingToCalendar, createBookingCheckout, getStripeStatus, sendBookingConfirmationEmail, getGoogleBusyTimes, joinWaitlist, notifyDiscord } from "@/lib/api";
 import type { EventType, QuestionField } from "@/lib/types";
 import { RichTextDisplay } from "@/components/RichTextEditor";
 
@@ -391,6 +391,8 @@ export default function Booking() {
     const booking = buildBookingRecord("none");
     if (!booking) return;
     addBooking(booking);
+    // Discord notification
+    notifyDiscord({ type: "new-booking", booking }).catch(() => {});
     // Save gcalEventId back to the booking so future syncs update rather than duplicate
     syncBookingToCalendar(booking).then(res => {
       if (res?.eventId) updateBooking({ ...booking, gcalEventId: res.eventId });

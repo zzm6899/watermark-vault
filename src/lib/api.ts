@@ -196,6 +196,7 @@ export async function createAlbumCheckout(params: {
   albumId: string; albumTitle: string; photoCount: number; amount: number; clientEmail?: string;
   photoIds?: string[];
   isFullAlbum?: boolean;
+  sessionKey?: string;
 }): Promise<{ url?: string; error?: string }> {
   try {
     const res = await fetch("/api/stripe/checkout/album", {
@@ -499,4 +500,15 @@ export async function notifyWaitlistOnCancel(booking: unknown): Promise<{ ok: bo
     });
     return await res.json();
   } catch { return { ok: false }; }
+}
+
+// ── Discord notifications ──────────────────────────────────
+export async function notifyDiscord(payload: Record<string, unknown>): Promise<void> {
+  try {
+    await fetch("/api/discord/notify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  } catch { /* non-critical, swallow errors */ }
 }

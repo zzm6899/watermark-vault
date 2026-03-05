@@ -34,7 +34,8 @@ export default function PurchasePanel({
   const effectiveUnpaid = unpaidCount ?? selectedCount;
   const paidCount = Math.max(0, effectiveUnpaid - freeRemaining);
   const paidTotal = paidCount * pricePerPhoto;
-  const fullAlbumCheaper = priceFullAlbum > 0 && paidTotal >= priceFullAlbum;
+  // Show full album as better deal when per-photo total meets or exceeds album price
+  const fullAlbumCheaper = !!(priceFullAlbum && priceFullAlbum > 0 && paidCount > 0 && paidTotal >= priceFullAlbum);
   const allFree = paidCount === 0 && effectiveUnpaid > 0;
   const allAlreadyPaid = alreadyPaidCount > 0 && effectiveUnpaid === 0;
 
@@ -42,7 +43,13 @@ export default function PurchasePanel({
     const parts: string[] = [];
     if (alreadyPaidCount > 0) parts.push(`${alreadyPaidCount} already purchased`);
     if (freeRemaining > 0 && effectiveUnpaid > 0) parts.push(`${Math.min(effectiveUnpaid, freeRemaining)} free`);
-    if (paidCount > 0) parts.push(`${paidCount} × $${pricePerPhoto} = $${paidTotal}`);
+    if (paidCount > 0) {
+      if (fullAlbumCheaper) {
+        parts.push(`${paidCount} × $${pricePerPhoto} = $${paidTotal} — full album is cheaper!`);
+      } else {
+        parts.push(`${paidCount} × $${pricePerPhoto} = $${paidTotal}`);
+      }
+    }
     if (parts.length === 0) return "No charge";
     return parts.join(" · ");
   };

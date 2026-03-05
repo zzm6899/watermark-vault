@@ -5,6 +5,7 @@ const path = require("path");
 const fs = require("fs");
 const { registerRoutes: registerGoogleCalendarRoutes } = require("./google-calendar");
 const { registerRoutes: registerGoogleSheetsRoutes } = require("./google-sheets");
+const discord = require("./discord");
 const { registerRoutes: registerEmailRoutes, getTransporter, getFromAddress } = require("./email");
 const { registerRoutes: registerStripeRoutes } = require("./stripe");
 
@@ -382,21 +383,10 @@ async function notifyWaitlistOnCancellation(cancelledBooking) {
   db["wv_waitlist"] = JSON.stringify(updatedList);
   writeDb(db);
 
-  // Discord notification if configured
+  // Discord notification via discord.js
   if (settings.discordWebhookUrl && toNotify.length > 0) {
-    const names = toNotify.map(e => e.clientName).join(", ");
-    fetch(settings.discordWebhookUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        embeds: [{
-          title: "📋 Waitlist notified",
-          description: `Cancellation opened a slot for **${cancelledBooking.type || "Session"}** on **${dateStr}**. Notified ${toNotify.length} person${toNotify.length !== 1 ? "s" : ""}: ${names}`,
-          color: 0x10b981,
-          timestamp: new Date().toISOString(),
-        }],
-      }),
-    }).catch(() => {});
+    const names = toNotify.map(e => e.clientName);
+    discord.notifyWaitlistNotified(settings.discordWebhookUrl, cancelledBooking, names).catch(() => {});
   }
 }
 
@@ -414,6 +404,43 @@ app.post("/api/booking/cancel-notify", async (req, res) => {
     await notifyWaitlistOnCancellation(booking);
     res.json({ ok: true });
   } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── Discord webhook proxy ──────────────────────────────────
+// Called by frontend on booking create, status change, payment update
+app.post("/api/discord/notify", async (req, res) => {
+  try {
+    const db = readDb();
+    const settings = db["wv_settings"] ? JSON.parse(db["wv_settings"]) : {};
+    const webhookUrl = settings.discordWebhookUrl;
+    if (!webhookUrl) return res.json({ ok: true, skipped: true });
+
+    const { type, booking, oldStatus, newStatus, paymentStatus, album, purchaseType, amount, email, photoCount, clientNote } = req.body;
+
+    switch (type) {
+      case "new-booking":
+        await discord.notifyNewBooking(webhookUrl, booking);
+        break;
+      case "booking-update":
+        await discord.notifyBookingUpdate(webhookUrl, booking, oldStatus, newStatus);
+        break;
+      case "payment":
+        await discord.notifyPayment(webhookUrl, booking, paymentStatus);
+        break;
+      case "album-purchase":
+        await discord.notifyAlbumPurchase(webhookUrl, album, purchaseType, amount, email);
+        break;
+      case "proofing-submission":
+        await discord.notifyProofingSubmission(webhookUrl, album, photoCount, clientNote);
+        break;
+      default:
+        return res.status(400).json({ error: `Unknown type: ${type}` });
+    }
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("Discord notify error:", e.message);
     res.status(500).json({ error: e.message });
   }
 });
@@ -479,30 +506,8 @@ app.post("/api/proofing/submit", async (req, res) => {
       // Discord webhook
       try {
         const settings = dbGet(db, "wv_settings", {});
-        if (settings.discordWebhookUrl) {
-          const adminUrl = `${process.env.APP_URL || ""}/admin`;
-          const fields = [
-            { name: "Album", value: album.title || "—", inline: true },
-            { name: "Client", value: album.clientName || "—", inline: true },
-            { name: "Photos selected", value: `${selectedPhotoIds.length} of ${album.photos?.length || "?"}`, inline: true },
-          ];
-          if (clientNote) fields.push({ name: "Client note", value: `"${clientNote}"`, inline: false });
-          await fetch(settings.discordWebhookUrl, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              embeds: [{
-                title: "📸 Proofing picks submitted",
-                description: `**${album.clientName || "Client"}** has submitted their selections for **${album.title}**.`,
-                color: 0xf59e0b,
-                fields,
-                footer: { text: "Watermark Vault · Proofing" },
-                timestamp: new Date().toISOString(),
-              }],
-              components: [{ type: 1, components: [{ type: 2, style: 5, label: "Review in Admin", url: adminUrl }] }],
-            }),
-          }).catch(() => {});
-        }
+        // Discord via discord.js
+        discord.notifyProofingSubmission(settings.discordWebhookUrl, album, selectedPhotoIds.length, clientNote).catch(() => {});
       } catch {}
     });
   } catch (err) {

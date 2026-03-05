@@ -32,10 +32,18 @@ function LightboxImage({ photo, cache, onCacheUpdate }: {
   cache: Record<string, string>;
   onCacheUpdate: (id: string, url: string) => void;
 }) {
+  // Show cached version immediately, or fall back to original src (no blank flash)
   const [src, setSrc] = useState(cache[photo.id] || photo.src);
 
   useEffect(() => {
-    if (cache[photo.id]) { setSrc(cache[photo.id]); return; }
+    // If already cached, use it immediately
+    if (cache[photo.id]) {
+      setSrc(cache[photo.id]);
+      return;
+    }
+    // Show original immediately so navigation feels instant
+    setSrc(photo.src);
+    // Then upgrade to resized version in background
     let cancelled = false;
     resizeToTargetSize(photo.src, TARGET_LIGHTBOX_BYTES)
       .then(blob => {
@@ -45,6 +53,17 @@ function LightboxImage({ photo, cache, onCacheUpdate }: {
         setSrc(url);
       })
       .catch(() => { /* keep original src */ });
+    return () => { cancelled = true; };
+  }, [photo.id, photo.src]);
+
+  return (
+    <img
+      src={src}
+      alt={photo.title}
+      className="max-w-full max-h-[85vh] object-contain rounded-lg"
+    />
+  );
+} src */ });
     return () => { cancelled = true; };
   }, [photo.id, photo.src]);
 
@@ -401,6 +420,8 @@ export default function AlbumDetail() {
 
   const handlePurchaseSelected = () => {
     setShowPaymentChoice(true);
+    // Prompt email registration before paying if not already registered
+    if (!registeredEmail) setTimeout(() => setShowEmailReg(true), 300);
   };
 
   const handlePurchaseAlbum = () => {
@@ -416,6 +437,7 @@ export default function AlbumDetail() {
   };
 
   const handleBankTransferRequest = () => {
+    if (!registeredEmail) setTimeout(() => setShowEmailReg(true), 300);
     const selected = album.photos.filter(p => selectedIds.has(p.id));
     const unpaidSelected = selected.filter(p => !paidPhotoIdSet.has(p.id));
     const paidCount = Math.max(0, unpaidSelected.length - freeRemaining);
@@ -656,13 +678,7 @@ export default function AlbumDetail() {
                       <Maximize2 className="w-3 h-3" />
                     </button>
                   )}
-                  {/* Selected checkmark */}
-                  {!isProofing && selectedIds.has(photo.id) && (
-                    <div className="absolute top-2 right-2 w-6 h-6 rounded-full bg-primary flex items-center justify-center pointer-events-none">
-                      <CheckIcon className="w-3.5 h-3.5 text-primary-foreground" />
-                    </div>
-                  )}
-                  {isProofing && (
+                                    {isProofing && (
                     <button
                       onClick={() => toggleStar(photo.id)}
                       className={`absolute top-2 right-2 w-8 h-8 rounded-full flex items-center justify-center transition-all shadow-lg ${
@@ -1044,7 +1060,7 @@ export default function AlbumDetail() {
                 onCacheUpdate={(id, url) => setLightboxSrcCache(prev => ({ ...prev, [id]: url }))}
               />
               {/* Watermark overlay in lightbox — uses same settings as grid */}
-              {!canDownload && (() => {
+              {!(album as any).watermarkDisabled && !isPhotoPaid(album.photos[lightboxIndex].id) && (() => {
                 const op = settings.watermarkOpacity / 100;
                 const size = settings.watermarkSize ?? 40;
                 const pos = settings.watermarkPosition || "center";

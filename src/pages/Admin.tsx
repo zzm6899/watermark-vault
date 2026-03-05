@@ -23,7 +23,7 @@ import {
   getEmailTemplates, addEmailTemplate, updateEmailTemplate, deleteEmailTemplate,
 } from "@/lib/storage";
 import { compressImage, formatBytes, getLocalStorageUsage, generateThumbnail } from "@/lib/image-utils";
-import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar, getServerStorageStats, syncFromServer, sendEmail, bulkDeleteFiles, syncBookingsToSheet, getBookingEmailLog, sendBookingReminder, sendCustomEmail, getWaitlistEntries, deleteWaitlistEntry, notifyWaitlistOnCancel } from "@/lib/api";
+import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar, getServerStorageStats, syncFromServer, sendEmail, bulkDeleteFiles, syncBookingsToSheet, getBookingEmailLog, sendBookingReminder, sendCustomEmail, getWaitlistEntries, deleteWaitlistEntry, notifyWaitlistOnCancel, notifyDiscord } from "@/lib/api";
 import RichTextEditor, { RichTextDisplay } from "@/components/RichTextEditor";
 import Login from "@/pages/Login";
 import type {
@@ -637,7 +637,7 @@ function DashboardView() {
   );
 }
 // ─── Bookings ────────────────────────────────────────
-type BookingSortKey = "date" | "name" | "type" | "instagram" | "status" | "payment";
+type BookingSortKey = "date" | "name" | "type" | "instagram" | "status" | "payment" | "booked";
 type AlbumSortKey = "date" | "name" | "photos" | "client";
 type SortDir = "asc" | "desc";
 
@@ -700,6 +700,8 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
     updateBooking(updated);
     setBookingsState(getBookings());
     toast.success(`Booking ${status}`);
+    // Discord notification
+    notifyDiscord({ type: "booking-update", booking: updated, oldStatus: bk.status, newStatus: status }).catch(() => {});
     // Push status change to Google Calendar (updates event color)
     if (bk.gcalEventId || status !== "cancelled") {
       syncBookingToCalendar(updated).then(res => {
@@ -746,7 +748,8 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
       || (bk.type || "").toLowerCase().includes(q)
       || (bk.status || "").toLowerCase().includes(q)
       || (bk.date || "").includes(q)
-      || (bk.notes || "").toLowerCase().includes(q);
+      || (bk.notes || "").toLowerCase().includes(q)
+      || (bk.createdAt ? new Date(bk.createdAt).toLocaleDateString("en-AU") : "").includes(q);
   });
 
   const sortedBookings = [...filteredBookings].sort((a, b) => {
@@ -758,6 +761,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
       case "instagram": return dir * (a.instagramHandle || "").localeCompare(b.instagramHandle || "");
       case "status": return dir * (a.status || "").localeCompare(b.status || "");
       case "payment": return dir * (a.paymentStatus || "").localeCompare(b.paymentStatus || "");
+      case "booked": return dir * (new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime());
       default: return 0;
     }
   });
@@ -968,7 +972,8 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
             </div>
             <div className="flex items-center gap-1 flex-wrap overflow-x-auto">
               <span className="text-[10px] font-body text-muted-foreground/50 mr-1">Sort:</span>
-              <SortBtn k="date" label="Date" />
+              <SortBtn k="date" label="Session Date" />
+              <SortBtn k="booked" label="Booked On" />
               <SortBtn k="type" label="Type" />
               <SortBtn k="name" label="Name" />
               <SortBtn k="instagram" label="Instagram" />
@@ -1017,6 +1022,9 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                           {bk.instagramHandle && <span className="text-xs font-body text-primary">@{bk.instagramHandle.replace("@", "")}</span>}
                         </div>
                         <p className="text-xs font-body text-muted-foreground">{bk.type} · {bk.date} at {bk.time} · {formatDuration(bk.duration)}</p>
+                        {bk.createdAt && (
+                          <p className="text-[10px] font-body text-muted-foreground/50">Booked {new Date(bk.createdAt).toLocaleDateString("en-AU", { day: "numeric", month: "short", year: "numeric" })}</p>
+                        )}
                       </div>
                     </div>
                     <div className="flex items-center gap-2 flex-shrink-0 flex-wrap pl-13 sm:pl-0" onClick={(e) => e.stopPropagation()}>
