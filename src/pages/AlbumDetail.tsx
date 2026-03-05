@@ -258,20 +258,17 @@ export default function AlbumDetail() {
   // Visible photos: hide photos marked hidden (non-selected after round approval)
   const visiblePhotos = album.photos.filter((p: any) => !p.hidden);
   const hasStarred = visiblePhotos.some((p: any) => p.starred);
-  const displayedPhotos = (() => {
-    let photos = showStarredOnly ? visiblePhotos.filter((p: any) => p.starred) : visiblePhotos;
-    if (sortOrder !== "default") {
-      photos = [...photos].sort((a: any, b: any) => {
-        const dateA = new Date(a.takenAt || a.uploadedAt || 0).getTime();
-        const dateB = new Date(b.takenAt || b.uploadedAt || 0).getTime();
-        // Fallback: compare titles (filename order)
-        const titleCmp = a.title.localeCompare(b.title, undefined, { numeric: true });
-        const timeCmp = dateA !== dateB ? dateA - dateB : titleCmp;
-        return sortOrder === "asc" ? timeCmp : -timeCmp;
-      });
-    }
-    return photos;
-  })();
+  const _dpBase = showStarredOnly ? visiblePhotos.filter((p: any) => p.starred) : visiblePhotos;
+  const displayedPhotos = sortOrder === "default" ? _dpBase : [..._dpBase].sort((a: any, b: any) => {
+    const _dA = new Date((a as any).takenAt || (a as any).uploadedAt || 0).getTime();
+    const _dB = new Date((b as any).takenAt || (b as any).uploadedAt || 0).getTime();
+    const _tCmp = a.title.localeCompare(b.title, undefined, { numeric: true });
+    const _timeCmp = _dA !== _dB ? _dA - _dB : _tCmp;
+    return sortOrder === "asc" ? _timeCmp : -_timeCmp;
+  });
+  // Lightbox photo lookup — must be after displayedPhotos
+  const lbPhoto = lightboxPhotoId ? displayedPhotos.find((p: any) => p.id === lightboxPhotoId) ?? null : null;
+  const lbIdx = lbPhoto ? displayedPhotos.findIndex((p: any) => p.id === lightboxPhotoId) : -1;
   // During proofing, starred photos = client's current picks
   const starredIds = new Set<string>(album.photos.filter((p: any) => p.starred).map(p => p.id));
 
@@ -516,9 +513,6 @@ export default function AlbumDetail() {
   const previewPaidCount = Math.max(0, unpaidSelected.length - freeRemaining);
   const previewCheckoutAmount = previewIsFullAlbum ? priceFullAlbum : (previewPaidCount * pricePerPhoto);
 
-  // Lightbox — computed at render level (no IIFE in JSX to avoid bundler TDZ issues)
-  const lbPhoto = lightboxPhotoId ? displayedPhotos.find((p: any) => p.id === lightboxPhotoId) ?? null : null;
-  const lbIdx = lbPhoto ? displayedPhotos.findIndex((p: any) => p.id === lightboxPhotoId) : -1;
 
   // Pre-computed JSX to avoid IIFEs inside render (causes TDZ crash when minified)
   const _wmOp = settings.watermarkOpacity / 100;
