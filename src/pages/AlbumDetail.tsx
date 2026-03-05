@@ -243,7 +243,7 @@ export default function AlbumDetail() {
       .flatMap((r: any) => r.photoIds || [])
   );
   const paidPhotoIdSet = new Set<string>([...sessionPaidIds, ...globalPaidSet, ...bankPaidIds]);
-  const canDownload = (isFullyUnlocked || sessionFullAlbum) && !isExpired;
+  const canDownload = (isFullyUnlocked || sessionFullAlbum) && !isExpired && !(album as any).purchasingDisabled;
   const isPhotoPaid = (id: string) => canDownload || paidPhotoIdSet.has(id);
 
   // Proofing derived values
@@ -643,8 +643,10 @@ export default function AlbumDetail() {
                         <p className="text-[10px] font-body uppercase tracking-wider text-primary">Add Email</p>
                       </button>
                     )}
+                    {!(album as any).purchasingDisabled && (
+                    <>
                     <div className="w-px h-8 bg-border" />
-                    {/* Payment CTA(s): show download if nothing owed, otherwise show Stripe button (Bank Transfer handled below) */}
+                    {/* Payment CTA(s): hidden when purchasing disabled */}
                     {previewCheckoutAmount === 0 ? (
                       <Button
                         onClick={() => { setShowPaymentChoice(false); handleDownloadFree(); }}
@@ -694,6 +696,8 @@ export default function AlbumDetail() {
                           {processingStripe ? "Redirecting to Stripe..." : "Pay with Card (Stripe)"}
                         </Button>
                       ) : null
+                    )}
+                    </>
                     )}
                   </>
                 )}

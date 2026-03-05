@@ -2245,11 +2245,11 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
           {/* Purchasing toggle */}
           <div className="flex items-center justify-between mt-4">
             <span className="text-xs font-body text-muted-foreground flex items-center gap-2">
-              <CreditCard className="w-3.5 h-3.5" /> Purchasing Disabled
+              <CreditCard className="w-3.5 h-3.5" /> Purchasing Disabled (Gallery Lock)
             </span>
             <Switch checked={purchasingDisabled} onCheckedChange={setPurchasingDisabled} />
           </div>
-          <p className="text-[10px] font-body text-muted-foreground/50 mt-1">Hide the purchase panel — use for free/gifted albums where no payment is needed</p>
+          <p className="text-[10px] font-body text-muted-foreground/50 mt-1">Photos stay watermarked and undownloadable, but no payment UI is shown. Use when payment is handled separately (invoice, in-person) or gallery is for review only.</p>
           {allUnlocked && (
             <div className="mt-3 space-y-1">
               <label className="text-[10px] font-body tracking-wider uppercase text-muted-foreground block">
