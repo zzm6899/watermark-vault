@@ -463,7 +463,11 @@ export default function AlbumDetail() {
 
   const unpaidSelected = album.photos.filter(p => selectedIds.has(p.id) && !paidPhotoIdSet.has(p.id));
   const paidCount = Math.max(0, unpaidSelected.length - freeRemaining);
-  const paidTotal = paidCount * album.pricePerPhoto;
+  const pricePerPhoto = Number(album.pricePerPhoto) || 0;
+  const priceFullAlbum = Number(album.priceFullAlbum) || 0;
+  const paidTotal = paidCount * pricePerPhoto;
+  // Compute here where all values are known — full album is cheaper when individual cost >= album price
+  const fullAlbumCheaper = priceFullAlbum > 0 && paidCount > 0 && paidTotal >= priceFullAlbum;
 
   return (
     <div className="min-h-screen bg-background">
@@ -736,8 +740,9 @@ export default function AlbumDetail() {
           unpaidCount={unpaidSelected.length}
           alreadyPaidCount={selectedIds.size - unpaidSelected.length}
           freeRemaining={freeRemaining}
-          pricePerPhoto={album.pricePerPhoto}
-          priceFullAlbum={album.priceFullAlbum}
+          pricePerPhoto={pricePerPhoto}
+          priceFullAlbum={priceFullAlbum}
+          fullAlbumCheaper={fullAlbumCheaper}
           totalPhotos={album.photos.length}
           onDownloadFree={handleDownloadFree}
           onPurchaseSelected={handlePurchaseSelected}
