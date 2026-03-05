@@ -786,7 +786,7 @@ export default function AlbumDetail() {
               <Download className="w-5 h-5 text-primary" />
               Download Quality
             </DialogTitle>
-            <DialogDescription className="sr-only">Choose the quality for your photo downloads.</DialogDescription>tle>
+            <DialogDescription className="sr-only">Choose the quality for your photo downloads.</DialogDescription>
           </DialogHeader>
           <div className="space-y-4 mt-2">
             <RadioGroup value={downloadQuality} onValueChange={(v) => setDownloadQuality(v as DownloadQuality)}>
@@ -910,7 +910,7 @@ export default function AlbumDetail() {
               <Building2 className="w-5 h-5 text-primary" />
               Bank Transfer Details
             </DialogTitle>
-            <DialogDescription className="sr-only">Bank transfer payment details for your photo purchase.</DialogDescription>alogTitle>
+            <DialogDescription className="sr-only">Bank transfer payment details for your photo purchase.</DialogDescription>
           </DialogHeader>
           <div className="space-y-4 mt-2">
             {bankTransfer.accountName && (
@@ -944,7 +944,6 @@ export default function AlbumDetail() {
               Request Photos via Bank Transfer
             </DialogTitle>
             <DialogDescription className="sr-only">Submit a bank transfer request to unlock your selected photos.</DialogDescription>
-            </DialogTitle>
           </DialogHeader>
           <div className="space-y-4 mt-2">
             <p className="text-sm font-body text-muted-foreground">
