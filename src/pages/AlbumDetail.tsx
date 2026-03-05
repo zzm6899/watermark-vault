@@ -260,11 +260,11 @@ export default function AlbumDetail() {
   const hasStarred = visiblePhotos.some((p: any) => p.starred);
   const _dpBase = showStarredOnly ? visiblePhotos.filter((p: any) => p.starred) : visiblePhotos;
   const displayedPhotos = sortOrder === "default" ? _dpBase : [..._dpBase].sort((a: any, b: any) => {
-    const dateA = new Date((a as any).takenAt || (a as any).uploadedAt || 0).getTime();
-    const dateB = new Date((b as any).takenAt || (b as any).uploadedAt || 0).getTime();
-    const titleCmp = a.title.localeCompare(b.title, undefined, { numeric: true });
-    const timeCmp = dateA !== dateB ? dateA - dateB : titleCmp;
-    return sortOrder === "asc" ? timeCmp : -timeCmp;
+    const _dateA = new Date((a as any).takenAt || (a as any).uploadedAt || 0).getTime();
+    const _dateB = new Date((b as any).takenAt || (b as any).uploadedAt || 0).getTime();
+    const _titleCmp = a.title.localeCompare(b.title, undefined, { numeric: true });
+    const _timeCmp = _dateA !== _dateB ? _dateA - _dateB : _titleCmp;
+    return sortOrder === "asc" ? _timeCmp : -_timeCmp;
   });
   // During proofing, starred photos = client's current picks
   const starredIds = new Set<string>(album.photos.filter((p: any) => p.starred).map(p => p.id));
@@ -510,7 +510,11 @@ export default function AlbumDetail() {
   const previewPaidCount = Math.max(0, unpaidSelected.length - freeRemaining);
   const previewCheckoutAmount = previewIsFullAlbum ? priceFullAlbum : (previewPaidCount * pricePerPhoto);
 
-  // Lightbox watermark — pre-computed to avoid IIFE in JSX
+  // Lightbox — computed at render level (no IIFE in JSX to avoid bundler TDZ issues)
+  const lbPhoto = lightboxPhotoId ? displayedPhotos.find((p: any) => p.id === lightboxPhotoId) ?? null : null;
+  const lbIdx = lbPhoto ? displayedPhotos.findIndex((p: any) => p.id === lightboxPhotoId) : -1;
+
+  // Pre-computed to avoid IIFEs inside JSX (causes TDZ crash in minified builds)
   const _wmOp = settings.watermarkOpacity / 100;
   const _wmSize = settings.watermarkSize ?? 40;
   const _wmPos = settings.watermarkPosition || "center";
@@ -526,9 +530,9 @@ export default function AlbumDetail() {
   const lbWatermark = _wmTiled ? (
     <div className="absolute inset-0 pointer-events-none select-none overflow-hidden rounded-lg">
       <div className="absolute inset-0 flex flex-wrap items-start justify-start gap-x-16 gap-y-12 rotate-[-30deg] scale-150 origin-center" style={{ opacity: _wmOp }}>
-        {Array.from({ length: 20 }).map((_, i) => settings.watermarkImage
-          ? <img key={i} src={settings.watermarkImage} alt="" style={{ height: `${Math.max(20, _wmSize * 0.4)}px`, width: "auto" }} />
-          : <p key={i} className="font-display text-foreground tracking-widest whitespace-nowrap" style={{ fontSize: `${Math.max(10, _wmSize * 0.3)}px` }}>{settings.watermarkText}</p>
+        {Array.from({ length: 20 }).map((_, wi) => settings.watermarkImage
+          ? <img key={wi} src={settings.watermarkImage} alt="" style={{ height: `${Math.max(20, _wmSize * 0.4)}px`, width: "auto" }} />
+          : <p key={wi} className="font-display text-foreground tracking-widest whitespace-nowrap" style={{ fontSize: `${Math.max(10, _wmSize * 0.3)}px` }}>{settings.watermarkText}</p>
         )}
       </div>
     </div>
@@ -545,8 +549,6 @@ export default function AlbumDetail() {
       </div>
     </div>
   );
-
-  // Expiry banner — pre-computed to avoid IIFE in JSX
   const _expiryDays = album?.downloadExpiresAt
     ? Math.ceil((new Date(album.downloadExpiresAt + "T12:00:00").getTime() - Date.now()) / 86400000)
     : null;
@@ -559,10 +561,6 @@ export default function AlbumDetail() {
       </p>
     </div>
   ) : null;
-
-  // Lightbox — computed at render level (no IIFE in JSX to avoid bundler TDZ issues)
-  const lbPhoto = lightboxPhotoId ? displayedPhotos.find((p: any) => p.id === lightboxPhotoId) ?? null : null;
-  const lbIdx = lbPhoto ? displayedPhotos.findIndex((p: any) => p.id === lightboxPhotoId) : -1;
 
   return (
     <div className="min-h-screen bg-background">
@@ -1264,7 +1262,7 @@ export default function AlbumDetail() {
                 cache={lightboxSrcCache}
                 onCacheUpdate={(id, url) => setLightboxSrcCache(prev => ({ ...prev, [id]: url }))}
               />
-              {/* Watermark overlay in lightbox — uses same settings as grid */}
+              {/* Watermark overlay in lightbox */}
               {!(album as any).watermarkDisabled && !isPhotoPaid(lbPhoto.id) && lbWatermark}
 
               {/* Bottom bar with select/title */}
