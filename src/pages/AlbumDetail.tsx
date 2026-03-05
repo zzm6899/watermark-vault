@@ -490,6 +490,11 @@ export default function AlbumDetail() {
   // Compute here where all values are known — full album is cheaper when individual cost >= album price
   const fullAlbumCheaper = priceFullAlbum > 0 && paidCount > 0 && paidTotal >= priceFullAlbum;
 
+  // Preview checkout amount used in the payment dialog to decide which CTAs to show
+  const previewIsFullAlbum = requestedFullAlbum || fullAlbumCheaper || selectedIds.size === 0 || selectedIds.size === album.photos.length;
+  const previewPaidCount = Math.max(0, unpaidSelected.length - freeRemaining);
+  const previewCheckoutAmount = previewIsFullAlbum ? priceFullAlbum : (previewPaidCount * pricePerPhoto);
+
   return (
     <div className="min-h-screen bg-background">
       <Header />
@@ -617,70 +622,57 @@ export default function AlbumDetail() {
                       <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Full Album</p>
                     </div>
                     <div className="w-px h-8 bg-border" />
-                    {/* Compute previewed checkout amount so the UI can show a Download button when nothing is owed */}
-                    {(() => {
-                      const previewIsFullAlbum = requestedFullAlbum || fullAlbumCheaper || selectedIds.size === 0 || selectedIds.size === album.photos.length;
-                      const previewPaidCount = Math.max(0, unpaidSelected.length - freeRemaining);
-                      const previewCheckoutAmount = previewIsFullAlbum ? priceFullAlbum : (previewPaidCount * pricePerPhoto);
-                      if (previewCheckoutAmount === 0) {
-                        return (
-                          <Button
-                            onClick={() => { setShowPaymentChoice(false); handleDownloadFree(); }}
-                            className="w-full gap-3 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-sm h-12"
-                          >
-                            <Download className="w-5 h-5" />
-                            Download Free
-                          </Button>
-                        );
-                      }
-                      return stripeAvailable ? (
-                        <>
-                          <Button
-                            onClick={async () => {
-                              setShowPaymentChoice(false);
-                              setProcessingStripe(true);
-                              const isFullAlbumPurchase =
-                                requestedFullAlbum ||
-                                fullAlbumCheaper ||
-                                selectedIds.size === 0 ||
-                                selectedIds.size === album.photos.length;
-                              const photosBeingPaid = isFullAlbumPurchase
-                                ? [] // server handles full album
-                                : album.photos.filter(p => selectedIds.has(p.id) && !paidPhotoIdSet.has(p.id) && !( unpaidSelected.indexOf(p) < freeRemaining ));
-                              // Recalculate amount using only truly unpaid photos
-                              const checkoutAmount = isFullAlbumPurchase ? album.priceFullAlbum : paidTotal;
-                              // If nothing actually needs paying, just download
-                              if (!isFullAlbumPurchase && checkoutAmount === 0) {
-                                setProcessingStripe(false);
-                                handleDownloadFree();
-                                return;
-                              }
-                              const result = await createAlbumCheckout({
-                                albumId: album.id,
-                                albumTitle: album.title,
-                                photoCount: isFullAlbumPurchase ? album.photos.length : unpaidSelected.length,
-                                amount: checkoutAmount,
-                                clientEmail: album.clientEmail,
-                                photoIds: isFullAlbumPurchase ? [] : unpaidSelected.map(p => p.id),
-                                isFullAlbum: isFullAlbumPurchase,
-                                sessionKey,
-                              });
+                    {/* Payment CTA(s): show download if nothing owed, otherwise show Stripe button (Bank Transfer handled below) */}
+                    {previewCheckoutAmount === 0 ? (
+                      <Button
+                        onClick={() => { setShowPaymentChoice(false); handleDownloadFree(); }}
+                        className="w-full gap-3 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-sm h-12"
+                      >
+                        <Download className="w-5 h-5" />
+                        Download Free
+                      </Button>
+                    ) : (
+                      stripeAvailable ? (
+                        <Button
+                          onClick={async () => {
+                            setShowPaymentChoice(false);
+                            setProcessingStripe(true);
+                            const isFullAlbumPurchase =
+                              requestedFullAlbum ||
+                              fullAlbumCheaper ||
+                              selectedIds.size === 0 ||
+                              selectedIds.size === album.photos.length;
+                            const photosBeingPaid = isFullAlbumPurchase
+                              ? []
+                              : album.photos.filter(p => selectedIds.has(p.id) && !paidPhotoIdSet.has(p.id) && !( unpaidSelected.indexOf(p) < freeRemaining ));
+                            const checkoutAmount = isFullAlbumPurchase ? album.priceFullAlbum : paidTotal;
+                            if (!isFullAlbumPurchase && checkoutAmount === 0) {
                               setProcessingStripe(false);
-                              if (result.url) {
-                                window.location.href = result.url;
-                              } else {
-                                toast.error(result.error || "Failed to create checkout session");
-                              }
-                            }}
-                            disabled={processingStripe}
-                            className="w-full gap-3 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-sm h-12"
-                          >
-                            <CreditCard className="w-5 h-5" />
-                            {processingStripe ? "Redirecting to Stripe..." : "Pay with Card (Stripe)"}
-                          </Button>
-                        </>
-                      ) : null;
-                        })()}
+                              handleDownloadFree();
+                              return;
+                            }
+                            const result = await createAlbumCheckout({
+                              albumId: album.id,
+                              albumTitle: album.title,
+                              photoCount: isFullAlbumPurchase ? album.photos.length : unpaidSelected.length,
+                              amount: checkoutAmount,
+                              clientEmail: album.clientEmail,
+                              photoIds: isFullAlbumPurchase ? [] : unpaidSelected.map(p => p.id),
+                              isFullAlbum: isFullAlbumPurchase,
+                              sessionKey,
+                            });
+                            setProcessingStripe(false);
+                            if (result.url) window.location.href = result.url;
+                            else toast.error(result.error || "Failed to create checkout session");
+                          }}
+                          disabled={processingStripe}
+                          className="w-full gap-3 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-sm h-12"
+                        >
+                          <CreditCard className="w-5 h-5" />
+                          {processingStripe ? "Redirecting to Stripe..." : "Pay with Card (Stripe)"}
+                        </Button>
+                      ) : null
+                    )}
 
             {canDownload && (
               <div className="flex items-center gap-2 mt-4 p-3 rounded-lg bg-green-500/5 border border-green-500/10">
