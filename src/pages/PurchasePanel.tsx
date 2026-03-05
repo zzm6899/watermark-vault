@@ -9,7 +9,7 @@ interface PurchasePanelProps {
   freeRemaining: number;
   pricePerPhoto: number;
   priceFullAlbum: number;
-  fullAlbumCheaper?: boolean; // computed by parent where all data is known
+  fullAlbumCheaper?: boolean;
   totalPhotos: number;
   onDownloadFree: () => void;
   onPurchaseSelected: () => void;
@@ -25,7 +25,7 @@ export default function PurchasePanel({
   freeRemaining,
   pricePerPhoto,
   priceFullAlbum,
-  fullAlbumCheaper: fullAlbumCheaperProp = false,
+  fullAlbumCheaper: fullAlbumCheaperProp,
   totalPhotos,
   onDownloadFree,
   onPurchaseSelected,
@@ -38,8 +38,8 @@ export default function PurchasePanel({
   const perPhotoPrice = Number(pricePerPhoto) || 0;
   const albumPrice = Number(priceFullAlbum) || 0;
   const paidTotal = paidCount * perPhotoPrice;
-  // Use prop if passed, otherwise compute locally as fallback
-  const fullAlbumCheaper = fullAlbumCheaperProp || (albumPrice > 0 && paidCount > 0 && paidTotal >= albumPrice);
+  // Compute locally — prop from parent is a bonus, not required
+  const fullAlbumCheaper = !!(fullAlbumCheaperProp ?? (albumPrice > 0 && paidCount > 0 && paidTotal >= albumPrice));
 
   const allFree = paidCount === 0 && effectiveUnpaid > 0;
   const allAlreadyPaid = alreadyPaidCount > 0 && effectiveUnpaid === 0;
@@ -48,13 +48,7 @@ export default function PurchasePanel({
     const parts: string[] = [];
     if (alreadyPaidCount > 0) parts.push(`${alreadyPaidCount} already purchased`);
     if (freeRemaining > 0 && effectiveUnpaid > 0) parts.push(`${Math.min(effectiveUnpaid, freeRemaining)} free`);
-    if (paidCount > 0) {
-      if (fullAlbumCheaper) {
-        parts.push(`${paidCount} × $${perPhotoPrice} = $${paidTotal} — full album is cheaper!`);
-      } else {
-        parts.push(`${paidCount} × $${perPhotoPrice} = $${paidTotal}`);
-      }
-    }
+    if (paidCount > 0) parts.push(`${paidCount} × $${perPhotoPrice} = $${paidTotal}`);
     if (parts.length === 0) return "No charge";
     return parts.join(" · ");
   };
@@ -83,6 +77,8 @@ export default function PurchasePanel({
             </div>
 
             <div className="flex items-center gap-3 flex-wrap">
+
+              {/* Free / already-paid download */}
               {(allFree || allAlreadyPaid) && (
                 <Button onClick={onDownloadFree} variant="outline" size="sm" className="gap-2 border-primary/30 text-primary hover:bg-primary/10 hover:text-primary">
                   <Download className="w-4 h-4" />
@@ -90,23 +86,30 @@ export default function PurchasePanel({
                 </Button>
               )}
 
-              {/* Only show Pay / Bank Transfer when full album is NOT the better deal */}
-              {paidCount > 0 && !fullAlbumCheaper && (
-                <>
+              {/* Pay per-photo — struck through when full album is the better deal */}
+              {paidCount > 0 && (
+                fullAlbumCheaper ? (
+                  <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-border/30 bg-secondary/40 cursor-not-allowed select-none">
+                    <ShoppingCart className="w-3.5 h-3.5 text-muted-foreground/50" />
+                    <span className="text-sm font-body text-muted-foreground/50 line-through">${paidTotal}</span>
+                  </div>
+                ) : (
                   <Button onClick={onPurchaseSelected} size="sm" className="gap-2 bg-primary text-primary-foreground hover:bg-primary/90">
                     <ShoppingCart className="w-4 h-4" />
                     Pay ${paidTotal}
                   </Button>
-                  {bankTransferEnabled && onBankTransfer && (
-                    <Button onClick={onBankTransfer} variant="outline" size="sm" className="gap-2 border-border text-foreground hover:bg-secondary">
-                      <Building2 className="w-4 h-4" />
-                      Bank Transfer
-                    </Button>
-                  )}
-                </>
+                )
               )}
 
-              {/* Full album button — highlighted green when it's the better deal */}
+              {/* Bank Transfer — only when per-photo is the right option */}
+              {paidCount > 0 && !fullAlbumCheaper && bankTransferEnabled && onBankTransfer && (
+                <Button onClick={onBankTransfer} variant="outline" size="sm" className="gap-2 border-border text-foreground hover:bg-secondary">
+                  <Building2 className="w-4 h-4" />
+                  Bank Transfer
+                </Button>
+              )}
+
+              {/* Full album — highlighted green when it's the better deal */}
               {albumPrice > 0 ? (
                 <Button
                   onClick={onPurchaseAlbum}
@@ -117,9 +120,8 @@ export default function PurchasePanel({
                     : "gap-2 border-border text-foreground hover:bg-secondary"}
                 >
                   <Package className="w-4 h-4" />
-                  {fullAlbumCheaper
-                    ? `Full Album $${albumPrice} — Best deal!`
-                    : `Full Album $${albumPrice}`}
+                  Full Album ${albumPrice}
+                  {fullAlbumCheaper && <span className="text-xs font-body opacity-80 ml-1">— Best deal</span>}
                 </Button>
               ) : (
                 <Button onClick={onPurchaseAlbum} variant="outline" size="sm" className="gap-2 border-green-500/30 text-green-400 hover:bg-green-500/10">
@@ -128,13 +130,14 @@ export default function PurchasePanel({
                 </Button>
               )}
 
-              {/* Bank Transfer also available when full album is the better deal */}
+              {/* Bank Transfer for full album */}
               {fullAlbumCheaper && bankTransferEnabled && onBankTransfer && (
                 <Button onClick={onBankTransfer} variant="outline" size="sm" className="gap-2 border-border text-foreground hover:bg-secondary">
                   <Building2 className="w-4 h-4" />
                   Bank Transfer
                 </Button>
               )}
+
             </div>
           </div>
         </motion.div>
