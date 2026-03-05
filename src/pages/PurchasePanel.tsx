@@ -80,12 +80,13 @@ export default function PurchasePanel({
           initial={{ y: 100, opacity: 0 }}
           animate={{ y: 0, opacity: 1 }}
           exit={{ y: 100, opacity: 0 }}
-          className="fixed bottom-0 left-0 right-0 z-40 glass-panel border-t border-border/50 p-4"
+          className="fixed bottom-0 left-0 right-0 z-40 glass-panel border-t border-border/50 px-4 pt-3 pb-4"
+          style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 0.75rem)" }}
         >
-          <div className="container mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
+          <div className="container mx-auto flex flex-col sm:flex-row items-center justify-between gap-2 sm:gap-4">
 
-            <div className="flex items-center gap-4">
-              <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center">
+            <div className="flex items-center gap-3 w-full sm:w-auto">
+              <div className="hidden sm:flex w-10 h-10 rounded-full bg-primary/10 items-center justify-center">
                 <ShoppingCart className="w-5 h-5 text-primary" />
               </div>
 
@@ -108,10 +109,10 @@ export default function PurchasePanel({
               </div>
             </div>
 
-            <div className="flex items-center gap-3 flex-wrap">
+            <div className="flex items-center gap-2 sm:gap-3 w-full sm:w-auto overflow-x-auto scrollbar-none pb-0.5">
 
               {(allFree || allAlreadyPaid) && (
-                <Button onClick={onDownloadFree} variant="outline" size="sm" className="gap-2">
+                <Button onClick={onDownloadFree} variant="outline" size="sm" className="gap-2 min-h-[44px] shrink-0">
                   <Download className="w-4 h-4" />
                   Download
                 </Button>
@@ -121,7 +122,7 @@ export default function PurchasePanel({
                 <Button
                   onClick={onPurchaseAlbum}
                   size="sm"
-                  className="gap-2 bg-green-600 hover:bg-green-500 text-white"
+                  className="gap-2 bg-green-600 hover:bg-green-500 active:scale-95 text-white min-h-[44px] shrink-0"
                 >
                   <Package className="w-4 h-4" />
                   Pay ${albumPrice} (Full Album)
@@ -132,7 +133,7 @@ export default function PurchasePanel({
                 <Button
                   onClick={onPurchaseSelected}
                   size="sm"
-                  className="gap-2"
+                  className="gap-2 min-h-[44px] shrink-0 active:scale-95"
                 >
                   <ShoppingCart className="w-4 h-4" />
                   Pay ${paidTotal}
@@ -144,7 +145,7 @@ export default function PurchasePanel({
                   onClick={onBankTransfer}
                   variant="outline"
                   size="sm"
-                  className="gap-2"
+                  className="gap-2 min-h-[44px] shrink-0"
                 >
                   <Building2 className="w-4 h-4" />
                   Bank Transfer
@@ -157,7 +158,7 @@ export default function PurchasePanel({
                   onClick={onPurchaseAlbum}
                   variant="outline"
                   size="sm"
-                  className="gap-2"
+                  className="gap-2 min-h-[44px] shrink-0"
                 >
                   <Package className="w-4 h-4" />
                   Full Album ${albumPrice}

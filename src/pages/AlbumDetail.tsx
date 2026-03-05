@@ -501,7 +501,7 @@ export default function AlbumDetail() {
     <div className="min-h-screen bg-background">
       <Header />
 
-      <section className="pt-28 pb-32">
+      <section className="pt-20 sm:pt-28 pb-40 sm:pb-32">
         <div className="container mx-auto px-4">
           <motion.div
             initial={{ opacity: 0, y: 20 }}
@@ -510,7 +510,7 @@ export default function AlbumDetail() {
           >
             <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
               <div>
-                <h1 className="font-display text-4xl md:text-5xl text-foreground mb-2">{album.title}</h1>
+                <h1 className="font-display text-2xl sm:text-4xl md:text-5xl text-foreground mb-2">{album.title}</h1>
                 <p className="text-sm font-body text-muted-foreground">{album.description}</p>
               </div>
 
@@ -601,7 +601,7 @@ export default function AlbumDetail() {
                 );
               })()}
 
-              <div className="glass-panel rounded-lg p-4 flex items-center gap-6">
+              <div className="glass-panel rounded-lg p-3 sm:p-4 flex items-center gap-3 sm:gap-6 overflow-x-auto scrollbar-none">
                 {canDownload ? (
                   <div className="text-center">
                     <p className="text-lg font-display text-green-400">✓ Unlocked</p>
@@ -609,17 +609,17 @@ export default function AlbumDetail() {
                   </div>
                 ) : (
                   <>
-                    <div className="text-center">
+                    <div className="text-center shrink-0">
                       <p className="text-lg font-display text-primary">{freeRemaining}</p>
                       <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Free Left</p>
                     </div>
                     <div className="w-px h-8 bg-border" />
-                    <div className="text-center">
+                    <div className="text-center shrink-0">
                       <p className="text-lg font-display text-foreground">${album.pricePerPhoto}</p>
                       <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Per Photo</p>
                     </div>
                     <div className="w-px h-8 bg-border" />
-                    <div className="text-center">
+                    <div className="text-center shrink-0">
                       <p className="text-lg font-display text-foreground">${album.priceFullAlbum}</p>
                       <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Full Album</p>
                     </div>
@@ -787,12 +787,12 @@ export default function AlbumDetail() {
                 <p className="text-sm font-display text-foreground">
                   {starredIds.size === 0 ? "Star photos to select them" : `${starredIds.size} photo${starredIds.size !== 1 ? "s" : ""} selected`}
                 </p>
-                <p className="text-xs font-body text-muted-foreground">Tap ★ on any photo to add/remove from your picks</p>
+                <p className="text-xs font-body text-muted-foreground hidden sm:block">Tap ★ on any photo to add/remove from your picks</p>
               </div>
               <button
                 onClick={handleSubmitSelections}
                 disabled={proofingSubmitting || starredIds.size === 0}
-                className="flex items-center gap-2 bg-yellow-500 hover:bg-yellow-400 disabled:opacity-50 disabled:cursor-not-allowed text-yellow-950 font-body text-xs tracking-wider uppercase px-5 py-2.5 rounded-full transition-colors font-semibold"
+                className="flex items-center gap-2 bg-yellow-500 hover:bg-yellow-400 disabled:opacity-50 disabled:cursor-not-allowed text-yellow-950 font-body text-xs tracking-wider uppercase px-4 py-3 sm:px-5 sm:py-2.5 rounded-full transition-all font-semibold min-h-[44px] active:scale-95"
               >
                 <CheckCircle2 className="w-4 h-4" />
                 {proofingSubmitting ? "Submitting…" : "Submit Picks"}
@@ -836,7 +836,7 @@ export default function AlbumDetail() {
             <p className="text-sm font-body text-foreground">
               <span className="font-semibold">{selectedIds.size}</span> paid photo{selectedIds.size !== 1 ? 's' : ''} selected
             </p>
-            <Button onClick={() => setShowDownloadOptions(true)} size="sm" className="gap-2 bg-primary text-primary-foreground hover:bg-primary/90">
+            <Button onClick={() => setShowDownloadOptions(true)} size="sm" className="gap-2 bg-primary text-primary-foreground hover:bg-primary/90 min-h-[44px] active:scale-95 transition-all">
               <Download className="w-4 h-4" /> Download
             </Button>
           </div>
@@ -848,12 +848,13 @@ export default function AlbumDetail() {
           initial={{ y: 100, opacity: 0 }}
           animate={{ y: 0, opacity: 1 }}
           className="fixed bottom-0 left-0 right-0 z-40 glass-panel border-t border-border/50 p-4"
+          style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 1rem)" }}
         >
           <div className="container mx-auto flex items-center justify-between">
             <p className="text-sm font-body text-foreground">
               <span className="font-semibold">{selectedIds.size}</span> photo{selectedIds.size !== 1 ? "s" : ""} selected
             </p>
-            <Button onClick={() => setShowDownloadOptions(true)} size="sm" className="gap-2 bg-primary text-primary-foreground hover:bg-primary/90">
+            <Button onClick={() => setShowDownloadOptions(true)} size="sm" className="gap-2 bg-primary text-primary-foreground hover:bg-primary/90 min-h-[44px] active:scale-95 transition-all">
               <Download className="w-4 h-4" /> Download Selected
             </Button>
           </div>
@@ -862,7 +863,7 @@ export default function AlbumDetail() {
 
       {/* Download Quality Options */}
       <Dialog open={showDownloadOptions} onOpenChange={setShowDownloadOptions}>
-        <DialogContent className="glass-panel border-border max-w-sm">
+        <DialogContent className="glass-panel border-border max-w-sm w-[95vw] sm:w-auto">
           <DialogHeader>
             <DialogTitle className="font-display text-xl text-foreground flex items-center gap-2">
               <Download className="w-5 h-5 text-primary" />
@@ -908,7 +909,7 @@ export default function AlbumDetail() {
 
       {/* Payment Method Choice */}
       <Dialog open={showPaymentChoice} onOpenChange={(v) => { setShowPaymentChoice(v); if (!v) { setRequestedFullAlbum(false); setRequestedBankTransfer(false); } }}>
-        <DialogContent className="glass-panel border-border max-w-sm">
+        <DialogContent className="glass-panel border-border max-w-sm w-[95vw] sm:w-auto">
           <DialogHeader>
             <DialogTitle className="font-display text-xl text-foreground">Choose Payment Method</DialogTitle>
             <DialogDescription className="sr-only">Select how you would like to pay for your selected photos.</DialogDescription>
@@ -1006,7 +1007,7 @@ export default function AlbumDetail() {
 
       {/* Bank Transfer Details Dialog */}
       <Dialog open={showBankTransfer} onOpenChange={setShowBankTransfer}>
-        <DialogContent className="glass-panel border-border max-w-md">
+        <DialogContent className="glass-panel border-border max-w-md w-[95vw] sm:w-auto">
           <DialogHeader>
             <DialogTitle className="font-display text-xl text-foreground flex items-center gap-2">
               <Building2 className="w-5 h-5 text-primary" />
@@ -1039,7 +1040,7 @@ export default function AlbumDetail() {
 
       {/* Bank Transfer Request Dialog */}
       <Dialog open={showBankTransferRequest} onOpenChange={setShowBankTransferRequest}>
-        <DialogContent className="glass-panel border-border max-w-md">
+        <DialogContent className="glass-panel border-border max-w-md w-[95vw] sm:w-auto">
           <DialogHeader>
             <DialogTitle className="font-display text-xl text-foreground flex items-center gap-2">
               <Building2 className="w-5 h-5 text-primary" />
@@ -1078,7 +1079,7 @@ export default function AlbumDetail() {
 
       {/* Post-payment email registration */}
       <Dialog open={showEmailReg} onOpenChange={setShowEmailReg}>
-        <DialogContent className="glass-panel border-border max-w-sm">
+        <DialogContent className="glass-panel border-border max-w-sm w-[95vw] sm:w-auto">
           <DialogHeader>
             <DialogTitle className="font-display text-xl text-foreground">Save your access</DialogTitle>
             <DialogDescription className="sr-only">Add your email to link purchases to your account so you can access photos from any device.</DialogDescription>
@@ -1138,20 +1139,20 @@ export default function AlbumDetail() {
             onClick={() => setLightboxIndex(null)}
           >
             {/* Close button */}
-            <button className="absolute top-4 right-4 z-10 w-10 h-10 rounded-full bg-card/80 backdrop-blur-sm flex items-center justify-center text-foreground hover:bg-card transition-colors"
+            <button className="absolute top-4 right-4 z-10 w-11 h-11 rounded-full bg-card/80 backdrop-blur-sm flex items-center justify-center text-foreground hover:bg-card active:scale-95 transition-all"
               onClick={() => setLightboxIndex(null)}>
               <X className="w-5 h-5" />
             </button>
 
             {/* Nav arrows */}
             {lightboxIndex > 0 && (
-              <button className="absolute left-4 z-10 w-10 h-10 rounded-full bg-card/80 backdrop-blur-sm flex items-center justify-center text-foreground hover:bg-card transition-colors"
+              <button className="absolute left-3 sm:left-4 z-10 w-12 h-12 sm:w-10 sm:h-10 rounded-full bg-card/80 backdrop-blur-sm flex items-center justify-center text-foreground hover:bg-card active:scale-95 transition-all"
                 onClick={(e) => { e.stopPropagation(); setLightboxIndex(lightboxIndex - 1); }}>
                 <ChevronLeft className="w-5 h-5" />
               </button>
             )}
             {lightboxIndex < album.photos.length - 1 && (
-              <button className="absolute right-4 z-10 w-10 h-10 rounded-full bg-card/80 backdrop-blur-sm flex items-center justify-center text-foreground hover:bg-card transition-colors"
+              <button className="absolute right-3 sm:right-4 z-10 w-12 h-12 sm:w-10 sm:h-10 rounded-full bg-card/80 backdrop-blur-sm flex items-center justify-center text-foreground hover:bg-card active:scale-95 transition-all"
                 onClick={(e) => { e.stopPropagation(); setLightboxIndex(lightboxIndex + 1); }}>
                 <ChevronRight className="w-5 h-5" />
               </button>

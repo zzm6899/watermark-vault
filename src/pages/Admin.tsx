@@ -158,7 +158,7 @@ export default function Admin() {
           <div className="flex overflow-x-auto scrollbar-hide">
             {tabs.map((tab) => (
               <button key={tab.id} onClick={() => setActiveTab(tab.id)}
-                className={`flex items-center gap-1.5 px-3 py-3 text-[10px] font-body tracking-wider uppercase whitespace-nowrap transition-colors border-b-2 flex-shrink-0 ${
+                className={`flex items-center gap-1.5 px-3 py-3.5 min-h-[48px] text-[10px] font-body tracking-wider uppercase whitespace-nowrap transition-colors border-b-2 flex-shrink-0 ${
                   activeTab === tab.id ? "text-primary border-primary" : "text-muted-foreground border-transparent"
                 }`}
               >
@@ -168,7 +168,7 @@ export default function Admin() {
           </div>
         </div>
 
-        <main className="flex-1 lg:ml-56 p-4 sm:p-6 lg:p-8 lg:pt-8" style={{ paddingTop: "calc(env(safe-area-inset-top) + 4rem)" }}>
+        <main className="flex-1 lg:ml-56 p-4 sm:p-6 lg:p-8 lg:pt-8" style={{ paddingTop: "calc(env(safe-area-inset-top) + 4.5rem)" }}>
           {activeTab === "dashboard" && <DashboardView />}
           {activeTab === "bookings" && <BookingsView onCreateAlbum={handleCreateAlbumForBooking} />}
           {activeTab === "events" && <EventTypesView />}
@@ -2245,7 +2245,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
           {/* Purchasing toggle */}
           <div className="flex items-center justify-between mt-4">
             <span className="text-xs font-body text-muted-foreground flex items-center gap-2">
-              <CreditCard className="w-3.5 h-3.5" /> Purchasing Disabled (Gallery Lock)
+              <CreditCard className="w-3.5 h-3.5" /> Purchasing Disabled (Gallery Lock) (Gallery Lock)
             </span>
             <Switch checked={purchasingDisabled} onCheckedChange={setPurchasingDisabled} />
           </div>
