@@ -657,35 +657,36 @@ export default function AlbumDetail() {
               {_expiryBanner}
 
               <div className="glass-panel rounded-lg p-3 flex flex-col gap-2">
-              <div className="flex items-center gap-3 overflow-x-auto scrollbar-none">
+                {/* Stats row — scrollable on mobile */}
+                <div className="flex items-center gap-3 overflow-x-auto scrollbar-none">
                 {canDownload ? (
-                  <div className="text-center">
-                    <p className="text-lg font-display text-green-400">✓ Unlocked</p>
-                    <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">All Photos</p>
+                  <div className="text-center shrink-0">
+                    <p className="text-base font-display text-green-400 leading-tight">✓ Unlocked</p>
+                    <p className="text-[9px] font-body uppercase tracking-wider text-muted-foreground">All Photos</p>
                   </div>
                 ) : (
                   <>
-                    <div className="text-center">
-                      <p className="text-lg font-display text-primary">{freeRemaining}</p>
-                      <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Free Left</p>
+                    <div className="text-center shrink-0">
+                      <p className="text-base font-display text-primary leading-tight">{freeRemaining}</p>
+                      <p className="text-[9px] font-body uppercase tracking-wider text-muted-foreground">Free Left</p>
                     </div>
-                    <div className="w-px h-8 bg-border" />
-                    <div className="text-center">
-                      <p className="text-lg font-display text-foreground">${album.pricePerPhoto}</p>
-                      <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Per Photo</p>
+                    <div className="w-px h-6 bg-border shrink-0" />
+                    <div className="text-center shrink-0">
+                      <p className="text-base font-display text-foreground leading-tight">${album.pricePerPhoto}</p>
+                      <p className="text-[9px] font-body uppercase tracking-wider text-muted-foreground">Per Photo</p>
                     </div>
-                    <div className="w-px h-8 bg-border" />
-                    <div className="text-center">
-                      <p className="text-lg font-display text-foreground">${album.priceFullAlbum}</p>
-                      <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Full Album</p>
+                    <div className="w-px h-6 bg-border shrink-0" />
+                    <div className="text-center shrink-0">
+                      <p className="text-base font-display text-foreground leading-tight">${album.priceFullAlbum}</p>
+                      <p className="text-[9px] font-body uppercase tracking-wider text-muted-foreground">Full Album</p>
                     </div>
-                    <div className="w-px h-8 bg-border" />
+                    <div className="w-px h-6 bg-border shrink-0" />
                     {/* Email link button */}
                     {registeredEmail ? (
-                      <div className="text-center group/email">
+                      <div className="text-center shrink-0 group/email">
                         <div className="cursor-pointer" onClick={() => setShowEmailReg(true)} title="Change email">
-                          <p className="text-[11px] font-body text-green-400 truncate max-w-[100px]">{registeredEmail}</p>
-                          <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground group-hover/email:text-foreground transition-colors">Linked ✓</p>
+                          <p className="text-[11px] font-body text-green-400 truncate max-w-[80px]">{registeredEmail}</p>
+                          <p className="text-[9px] font-body uppercase tracking-wider text-muted-foreground group-hover/email:text-foreground transition-colors">Linked ✓</p>
                         </div>
                         <button
                           onClick={(e) => { e.stopPropagation(); try { localStorage.removeItem(`wv_email_${albumId}`); } catch {} setRegisteredEmail(""); }}
@@ -694,68 +695,66 @@ export default function AlbumDetail() {
                         >unlink</button>
                       </div>
                     ) : (
-                      <button onClick={() => setShowEmailReg(true)} className="text-center hover:opacity-80 transition-opacity">
-                        <p className="text-lg font-display text-muted-foreground">@</p>
-                        <p className="text-[10px] font-body uppercase tracking-wider text-primary">Add Email</p>
+                      <button onClick={() => setShowEmailReg(true)} className="text-center shrink-0 hover:opacity-80 transition-opacity">
+                        <p className="text-base font-display text-muted-foreground leading-tight">@</p>
+                        <p className="text-[9px] font-body uppercase tracking-wider text-primary">Add Email</p>
                       </button>
                     )}
-                  </div>{/* end scrollable stats row */}
-                    {!(album as any).purchasingDisabled && (
-                    <>
-                    {/* Payment CTA — full width below stats */}
-                    {previewCheckoutAmount === 0 ? (
+                  </>
+                )}
+                </div>
+                {/* CTA button — full width below stats */}
+                {!canDownload && !(album as any).purchasingDisabled && (
+                  previewCheckoutAmount === 0 ? (
+                    <Button
+                      onClick={() => { setShowPaymentChoice(false); handleDownloadFree(); }}
+                      className="w-full gap-2 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-sm h-10"
+                    >
+                      <Download className="w-4 h-4" />
+                      Download Free
+                    </Button>
+                  ) : (
+                    stripeAvailable ? (
                       <Button
-                        onClick={() => { setShowPaymentChoice(false); handleDownloadFree(); }}
+                        onClick={async () => {
+                          setShowPaymentChoice(false);
+                          setProcessingStripe(true);
+                          const isFullAlbumPurchase =
+                            requestedFullAlbum ||
+                            fullAlbumCheaper ||
+                            selectedIds.size === 0 ||
+                            selectedIds.size === album.photos.length;
+                          const photosBeingPaid = isFullAlbumPurchase
+                            ? []
+                            : album.photos.filter(p => selectedIds.has(p.id) && !paidPhotoIdSet.has(p.id) && !( unpaidSelected.indexOf(p) < freeRemaining ));
+                          const checkoutAmount = isFullAlbumPurchase ? album.priceFullAlbum : paidTotal;
+                          if (!isFullAlbumPurchase && checkoutAmount === 0) {
+                            setProcessingStripe(false);
+                            handleDownloadFree();
+                            return;
+                          }
+                          const result = await createAlbumCheckout({
+                            albumId: album.id,
+                            albumTitle: album.title,
+                            photoCount: isFullAlbumPurchase ? album.photos.length : unpaidSelected.length,
+                            amount: checkoutAmount,
+                            clientEmail: album.clientEmail,
+                            photoIds: isFullAlbumPurchase ? [] : unpaidSelected.map(p => p.id),
+                            isFullAlbum: isFullAlbumPurchase,
+                            sessionKey,
+                          });
+                          setProcessingStripe(false);
+                          if (result.url) window.location.href = result.url;
+                          else toast.error(result.error || "Failed to create checkout session");
+                        }}
+                        disabled={processingStripe}
                         className="w-full gap-2 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-sm h-10"
                       >
-                        <Download className="w-4 h-4" />
-                        Download Free
+                        <CreditCard className="w-4 h-4" />
+                        {processingStripe ? "Redirecting to Stripe..." : "Pay with Card (Stripe)"}
                       </Button>
-                    ) : (
-                      stripeAvailable ? (
-                        <Button
-                          onClick={async () => {
-                            setShowPaymentChoice(false);
-                            setProcessingStripe(true);
-                            const isFullAlbumPurchase =
-                              requestedFullAlbum ||
-                              fullAlbumCheaper ||
-                              selectedIds.size === 0 ||
-                              selectedIds.size === album.photos.length;
-                            const photosBeingPaid = isFullAlbumPurchase
-                              ? []
-                              : album.photos.filter(p => selectedIds.has(p.id) && !paidPhotoIdSet.has(p.id) && !( unpaidSelected.indexOf(p) < freeRemaining ));
-                            const checkoutAmount = isFullAlbumPurchase ? album.priceFullAlbum : paidTotal;
-                            if (!isFullAlbumPurchase && checkoutAmount === 0) {
-                              setProcessingStripe(false);
-                              handleDownloadFree();
-                              return;
-                            }
-                            const result = await createAlbumCheckout({
-                              albumId: album.id,
-                              albumTitle: album.title,
-                              photoCount: isFullAlbumPurchase ? album.photos.length : unpaidSelected.length,
-                              amount: checkoutAmount,
-                              clientEmail: album.clientEmail,
-                              photoIds: isFullAlbumPurchase ? [] : unpaidSelected.map(p => p.id),
-                              isFullAlbum: isFullAlbumPurchase,
-                              sessionKey,
-                            });
-                            setProcessingStripe(false);
-                            if (result.url) window.location.href = result.url;
-                            else toast.error(result.error || "Failed to create checkout session");
-                          }}
-                          disabled={processingStripe}
-                          className="w-full gap-2 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-sm h-10"
-                        >
-                          <CreditCard className="w-4 h-4" />
-                          {processingStripe ? "Redirecting to Stripe..." : "Pay with Card (Stripe)"}
-                        </Button>
-                      ) : null
-                    )}
-                    </>
-                    )}
-                  </>
+                    ) : null
+                  )
                 )}
               </div>
             </div>
