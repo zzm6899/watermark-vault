@@ -38,8 +38,10 @@ export default function PurchasePanel({
   const perPhotoPrice = Number(pricePerPhoto) || 0;
   const albumPrice = Number(priceFullAlbum) || 0;
   const paidTotal = paidCount * perPhotoPrice;
-  // Compute locally — prop from parent is a bonus, not required
-  const fullAlbumCheaper = fullAlbumCheaperProp === true || (albumPrice > 0 && paidCount > 0 && paidTotal >= albumPrice);
+
+  // Always compute locally — don't rely solely on parent prop
+  const fullAlbumCheaper = fullAlbumCheaperProp === true
+    || (albumPrice > 0 && paidCount > 0 && paidTotal >= albumPrice);
 
   const allFree = paidCount === 0 && effectiveUnpaid > 0;
   const allAlreadyPaid = alreadyPaidCount > 0 && effectiveUnpaid === 0;
@@ -47,8 +49,10 @@ export default function PurchasePanel({
   const breakdownLabel = () => {
     const parts: string[] = [];
     if (alreadyPaidCount > 0) parts.push(`${alreadyPaidCount} already purchased`);
-    if (freeRemaining > 0 && effectiveUnpaid > 0) parts.push(`${Math.min(effectiveUnpaid, freeRemaining)} free`);
-    if (paidCount > 0) parts.push(`${paidCount} × $${perPhotoPrice} = $${paidTotal}`);
+    if (freeRemaining > 0 && effectiveUnpaid > 0)
+      parts.push(`${Math.min(effectiveUnpaid, freeRemaining)} free`);
+    if (paidCount > 0)
+      parts.push(`${paidCount} × $${perPhotoPrice} = $${paidTotal}`);
     if (parts.length === 0) return "No charge";
     return parts.join(" · ");
   };
@@ -64,6 +68,8 @@ export default function PurchasePanel({
           style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 1rem)" }}
         >
           <div className="container mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
+
+            {/* Left — count + breakdown */}
             <div className="flex items-center gap-4">
               <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center">
                 <ShoppingCart className="w-5 h-5 text-primary" />
@@ -76,22 +82,27 @@ export default function PurchasePanel({
               </div>
             </div>
 
+            {/* Right — action buttons */}
             <div className="flex items-center gap-3 flex-wrap">
 
               {/* Free / already-paid download */}
               {(allFree || allAlreadyPaid) && (
-                <Button onClick={onDownloadFree} variant="outline" size="sm" className="gap-2 border-primary/30 text-primary hover:bg-primary/10 hover:text-primary">
+                <Button
+                  onClick={onDownloadFree}
+                  variant="outline" size="sm"
+                  className="gap-2 border-primary/30 text-primary hover:bg-primary/10 hover:text-primary"
+                >
                   <Download className="w-4 h-4" />
                   Download{allAlreadyPaid ? " Purchased" : " Free"}
                 </Button>
               )}
 
-              {/* Pay per-photo — struck through when full album is the better deal */}
+              {/* Per-photo pay — struck through when full album is the better deal */}
               {paidCount > 0 && (
                 fullAlbumCheaper ? (
-                  <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-border/30 bg-secondary/40 cursor-not-allowed select-none">
-                    <ShoppingCart className="w-3.5 h-3.5 text-muted-foreground/50" />
-                    <span className="text-sm font-body text-muted-foreground/50 line-through">${paidTotal}</span>
+                  <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-border/30 bg-secondary/40 cursor-not-allowed select-none" title="Full album is a better deal">
+                    <ShoppingCart className="w-3.5 h-3.5 text-muted-foreground/40" />
+                    <span className="text-sm font-body text-muted-foreground/40 line-through">${paidTotal}</span>
                   </div>
                 ) : (
                   <Button onClick={onPurchaseSelected} size="sm" className="gap-2 bg-primary text-primary-foreground hover:bg-primary/90">
@@ -109,7 +120,7 @@ export default function PurchasePanel({
                 </Button>
               )}
 
-              {/* Full album — highlighted green when it's the better deal */}
+              {/* Full album button */}
               {albumPrice > 0 ? (
                 <Button
                   onClick={onPurchaseAlbum}
@@ -121,7 +132,9 @@ export default function PurchasePanel({
                 >
                   <Package className="w-4 h-4" />
                   Full Album ${albumPrice}
-                  {fullAlbumCheaper && <span className="text-xs font-body opacity-80 ml-1">— Best deal</span>}
+                  {fullAlbumCheaper && (
+                    <span className="text-xs font-normal opacity-80 ml-0.5">— Best deal</span>
+                  )}
                 </Button>
               ) : (
                 <Button onClick={onPurchaseAlbum} variant="outline" size="sm" className="gap-2 border-green-500/30 text-green-400 hover:bg-green-500/10">
@@ -130,7 +143,7 @@ export default function PurchasePanel({
                 </Button>
               )}
 
-              {/* Bank Transfer for full album */}
+              {/* Bank Transfer for full album when that's the better deal */}
               {fullAlbumCheaper && bankTransferEnabled && onBankTransfer && (
                 <Button onClick={onBankTransfer} variant="outline" size="sm" className="gap-2 border-border text-foreground hover:bg-secondary">
                   <Building2 className="w-4 h-4" />
