@@ -27,8 +27,13 @@ export default function PurchasePanel({
   onBankTransfer,
   bankTransferEnabled = false,
 }: PurchasePanelProps) {
+  const perPhotoPrice = Number(pricePerPhoto) || 0;
+  const albumPrice = Number(priceFullAlbum) || 0;
+
   const paidCount = Math.max(0, selectedCount - freeRemaining);
-  const paidTotal = paidCount * pricePerPhoto;
+  const paidTotal = paidCount * perPhotoPrice;
+
+  const fullAlbumCheaper = albumPrice > 0 && paidCount > 0 && paidTotal >= albumPrice;
 
   return (
     <AnimatePresence>
@@ -63,7 +68,8 @@ export default function PurchasePanel({
                   Download Free
                 </Button>
               )}
-              {paidCount > 0 && (
+
+              {paidCount > 0 && !fullAlbumCheaper && (
                 <>
                   <Button onClick={onPurchaseSelected} size="sm" className="gap-2 bg-primary text-primary-foreground hover:bg-primary/90">
                     <ShoppingCart className="w-4 h-4" />
@@ -77,10 +83,25 @@ export default function PurchasePanel({
                   )}
                 </>
               )}
-              <Button onClick={onPurchaseAlbum} variant="outline" size="sm" className="gap-2 border-border text-foreground hover:bg-secondary">
-                <Package className="w-4 h-4" />
-                Full Album ${priceFullAlbum}
-              </Button>
+
+              {paidCount > 0 && fullAlbumCheaper && albumPrice > 0 && (
+                <Button
+                  onClick={onPurchaseAlbum}
+                  size="sm"
+                  className="gap-2 bg-green-600 hover:bg-green-500 text-white"
+                >
+                  <Package className="w-4 h-4" />
+                  Pay ${albumPrice} (Full Album)
+                </Button>
+              )}
+
+              {/* Always offer Full Album as option unless nothing to charge and already paid */}
+              {albumPrice > 0 && (
+                <Button onClick={onPurchaseAlbum} variant="outline" size="sm" className="gap-2 border-border text-foreground hover:bg-secondary">
+                  <Package className="w-4 h-4" />
+                  Full Album ${priceFullAlbum}
+                </Button>
+              )}
             </div>
           </div>
         </motion.div>

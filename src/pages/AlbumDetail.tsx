@@ -118,6 +118,8 @@ export default function AlbumDetail() {
   const [savingEmail, setSavingEmail] = useState(false);
   // When user explicitly requests to purchase the full album (via button)
   const [requestedFullAlbum, setRequestedFullAlbum] = useState(false);
+  // When user explicitly requests bank transfer flow
+  const [requestedBankTransfer, setRequestedBankTransfer] = useState(false);
 
   // Proofing state
   const [proofingClientNote, setProofingClientNote] = useState("");
@@ -433,16 +435,28 @@ export default function AlbumDetail() {
     setShowPaymentChoice(true);
   };
 
-  const handleBankTransferRequest = () => {
+  const handleBankTransferRequest = (explicit = false) => {
     setEmailSkippedThisSession(false); // reset skip on new payment attempt
     const selected = album.photos.filter(p => selectedIds.has(p.id));
     const unpaidSelected = selected.filter(p => !paidPhotoIdSet.has(p.id));
     const paidCount = Math.max(0, unpaidSelected.length - freeRemaining);
-    if (paidCount === 0) {
+    // If nothing actually needs paying and the user didn't explicitly request bank transfer/full-album, just download
+    if (paidCount === 0 && !explicit && !requestedFullAlbum && !requestedBankTransfer) {
       handleDownloadFree();
       return;
     }
+    // Reset explicit intent marker once we open the request
+    setRequestedBankTransfer(false);
+    setRequestedFullAlbum(false);
     setShowBankTransferRequest(true);
+  };
+
+  const handleBankTransferClick = () => {
+    setRequestedBankTransfer(true);
+    setEmailSkippedThisSession(false);
+    // Prompt email registration before bank transfer if needed
+    if (!registeredEmail && !emailSkippedThisSession) setTimeout(() => setShowEmailReg(true), 300);
+    setShowPaymentChoice(true);
   };
 
   const submitBankTransferRequest = () => {
@@ -603,50 +617,71 @@ export default function AlbumDetail() {
                       <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Full Album</p>
                     </div>
                     <div className="w-px h-8 bg-border" />
-                    {registeredEmail ? (
-                      <div className="text-center group/email">
-                        <div className="cursor-pointer" onClick={() => setShowEmailReg(true)} title="Change email">
-                          <p className="text-[11px] font-body text-green-400 truncate max-w-[100px]">{registeredEmail}</p>
-                          <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground group-hover/email:text-foreground transition-colors">Linked ✓</p>
-                        </div>
-                        <button
-                          onClick={(e) => { e.stopPropagation(); try { localStorage.removeItem(`wv_email_${albumId}`); } catch {} setRegisteredEmail(""); }}
-                          className="text-[9px] font-body text-muted-foreground/30 hover:text-red-400 transition-colors mt-0.5 block w-full leading-none"
-                          title="Unlink email"
-                        >unlink</button>
-                      </div>
-                    ) : (
-                      <button onClick={() => setShowEmailReg(true)} className="text-center hover:opacity-80 transition-opacity">
-                        <p className="text-lg font-display text-muted-foreground">@</p>
-                        <p className="text-[10px] font-body uppercase tracking-wider text-primary">Add Email</p>
-                      </button>
-                    )}
-                  </>
-                )}
-              </div>
-            </div>
-
-            {!canDownload && (
-              <>
-                <div className="flex items-center gap-2 mt-4 p-3 rounded-lg bg-primary/5 border border-primary/10">
-                <Info className="w-4 h-4 text-primary flex-shrink-0" />
-                <p className="text-xs font-body text-muted-foreground">
-                  Click photos to select. You have <span className="text-primary font-medium">{freeRemaining} free download{freeRemaining !== 1 ? "s" : ""}</span> remaining{paidPhotoIdSet.size > 0 && <>, plus <span className="text-primary font-medium">{paidPhotoIdSet.size} purchased</span></>}. Additional photos can be purchased individually or as a full album.
-                </p>
-              </div>
-              {paidPhotoIdSet.size > 0 && (
-                <Button size="sm" variant="outline" onClick={async () => {
-                  setDownloading(true);
-                  const purchased = album.photos.filter(p => paidPhotoIdSet.has(p.id));
-                  for (const p of purchased) await downloadPhoto(p, downloadQuality);
-                  setDownloading(false);
-                  toast.success(`Downloaded ${purchased.length} purchased photo${purchased.length !== 1 ? "s" : ""}`);
-                }} className="gap-2 border-primary/30 text-primary hover:bg-primary/10 font-body text-xs shrink-0">
-                  <Download className="w-3.5 h-3.5" />
-                  Download {paidPhotoIdSet.size} Purchased
-                </Button>
-              )}
-              </>
+                    {/* Compute previewed checkout amount so the UI can show a Download button when nothing is owed */}
+                    {(() => {
+                      const previewIsFullAlbum = requestedFullAlbum || fullAlbumCheaper || selectedIds.size === 0 || selectedIds.size === album.photos.length;
+                      const previewPaidCount = Math.max(0, unpaidSelected.length - freeRemaining);
+                      const previewCheckoutAmount = previewIsFullAlbum ? priceFullAlbum : (previewPaidCount * pricePerPhoto);
+                      if (previewCheckoutAmount === 0) {
+                        return (
+                          <Button
+                            onClick={() => { setShowPaymentChoice(false); handleDownloadFree(); }}
+                            className="w-full gap-3 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-sm h-12"
+                          >
+                            <Download className="w-5 h-5" />
+                            Download Free
+                          </Button>
+                        );
+                      }
+                      return stripeAvailable ? (
+                        <>
+                          <Button
+                            onClick={async () => {
+                              setShowPaymentChoice(false);
+                              setProcessingStripe(true);
+                              const isFullAlbumPurchase =
+                                requestedFullAlbum ||
+                                fullAlbumCheaper ||
+                                selectedIds.size === 0 ||
+                                selectedIds.size === album.photos.length;
+                              const photosBeingPaid = isFullAlbumPurchase
+                                ? [] // server handles full album
+                                : album.photos.filter(p => selectedIds.has(p.id) && !paidPhotoIdSet.has(p.id) && !( unpaidSelected.indexOf(p) < freeRemaining ));
+                              // Recalculate amount using only truly unpaid photos
+                              const checkoutAmount = isFullAlbumPurchase ? album.priceFullAlbum : paidTotal;
+                              // If nothing actually needs paying, just download
+                              if (!isFullAlbumPurchase && checkoutAmount === 0) {
+                                setProcessingStripe(false);
+                                handleDownloadFree();
+                                return;
+                              }
+                              const result = await createAlbumCheckout({
+                                albumId: album.id,
+                                albumTitle: album.title,
+                                photoCount: isFullAlbumPurchase ? album.photos.length : unpaidSelected.length,
+                                amount: checkoutAmount,
+                                clientEmail: album.clientEmail,
+                                photoIds: isFullAlbumPurchase ? [] : unpaidSelected.map(p => p.id),
+                                isFullAlbum: isFullAlbumPurchase,
+                                sessionKey,
+                              });
+                              setProcessingStripe(false);
+                              if (result.url) {
+                                window.location.href = result.url;
+                              } else {
+                                toast.error(result.error || "Failed to create checkout session");
+                              }
+                            }}
+                            disabled={processingStripe}
+                            className="w-full gap-3 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-sm h-12"
+                          >
+                            <CreditCard className="w-5 h-5" />
+                            {processingStripe ? "Redirecting to Stripe..." : "Pay with Card (Stripe)"}
+                          </Button>
+                        </>
+                      ) : null;
+                    })()}
+            
             )}
 
             {canDownload && (
@@ -768,7 +803,7 @@ export default function AlbumDetail() {
           onDownloadFree={handleDownloadFree}
           onPurchaseSelected={handlePurchaseSelected}
           onPurchaseAlbum={handlePurchaseAlbum}
-          onBankTransfer={handleBankTransferRequest}
+          onBankTransfer={handleBankTransferClick}
           bankTransferEnabled={bankTransfer.enabled}
         />
       )}
@@ -852,7 +887,7 @@ export default function AlbumDetail() {
       </Dialog>
 
       {/* Payment Method Choice */}
-      <Dialog open={showPaymentChoice} onOpenChange={(v) => { setShowPaymentChoice(v); if (!v) setRequestedFullAlbum(false); }}>
+      <Dialog open={showPaymentChoice} onOpenChange={(v) => { setShowPaymentChoice(v); if (!v) { setRequestedFullAlbum(false); setRequestedBankTransfer(false); } }}>
         <DialogContent className="glass-panel border-border max-w-sm">
           <DialogHeader>
             <DialogTitle className="font-display text-xl text-foreground">Choose Payment Method</DialogTitle>
@@ -924,7 +959,13 @@ export default function AlbumDetail() {
               <Button
                 onClick={() => {
                   setShowPaymentChoice(false);
-                  handleBankTransferRequest();
+                  // If user hasn't registered email, show email capture first and remember intent
+                  if (!registeredEmail && !emailSkippedThisSession) {
+                    setRequestedBankTransfer(true);
+                    setShowEmailReg(true);
+                  } else {
+                    handleBankTransferRequest(true);
+                  }
                 }}
                 variant="outline"
                 className="w-full gap-3 border-border text-foreground hover:bg-secondary font-body text-sm h-12"
