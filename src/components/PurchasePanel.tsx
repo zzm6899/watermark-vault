@@ -4,9 +4,12 @@ import { motion, AnimatePresence } from "framer-motion";
 
 interface PurchasePanelProps {
   selectedCount: number;
+  unpaidCount?: number;
+  alreadyPaidCount?: number;
   freeRemaining: number;
   pricePerPhoto: number;
   priceFullAlbum: number;
+  fullAlbumCheaper?: boolean;
   totalPhotos: number;
   onDownloadFree: () => void;
   onPurchaseSelected: () => void;

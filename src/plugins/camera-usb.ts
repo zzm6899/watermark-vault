@@ -31,13 +31,13 @@ export interface CameraUsbPlugin {
   requestPermission(): Promise<{ granted: boolean }>;
 
   /** List the latest N image files from the camera (newest first) */
-  listFiles(options: { limit?: number }): Promise<{ files: CameraFile[] }>;
+  listFiles(options: { limit?: number; jpegOnly?: boolean }): Promise<{ files: CameraFile[] }>;
 
   /** Import a file from the camera to local storage. Returns local file URI */
   importFile(options: { handle: number; fileName: string }): Promise<{ uri: string; localPath: string }>;
 
   /** Import multiple files. Returns array of local file URIs */
-  importFiles(options: { handles: number[] }): Promise<{ files: Array<{ handle: number; uri: string; localPath: string }> }>;
+  importFiles(options: { handles: number[] }): Promise<{ files: Array<{ handle: number; uri: string; localPath: string; base64?: string; mimeType?: string }> }>;
 
   /** Start watching for new files on camera (polling). Emits 'newFiles' event */
   startWatching(options: { intervalMs?: number }): Promise<void>;
