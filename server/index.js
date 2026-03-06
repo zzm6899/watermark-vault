@@ -4,6 +4,7 @@ const cors = require("cors");
 const path = require("path");
 const fs = require("fs");
 const sharp = require("sharp");
+const archiver = require("archiver");
 const { registerRoutes: registerGoogleCalendarRoutes } = require("./google-calendar");
 const { registerRoutes: registerEmailRoutes } = require("./email");
 const { registerRoutes: registerStripeRoutes } = require("./stripe");
@@ -310,16 +311,36 @@ function isPhotoAccessible(filename, sessionKey, albumId) {
 
     // If purchasing is disabled, all photos are free
     if (album.purchasingDisabled) return true;
-    // If full album unlocked
+    // If full album unlocked by admin
     if (album.allUnlocked) return true;
 
-    const photo = album.photos?.find(p => p.url && p.url.includes(filename));
+    // Session-level full-album purchase (Stripe / bank transfer)
+    const sessionPurchase = album.sessionPurchases?.[sessionKey];
+    if (sessionPurchase?.fullAlbum === true) return true;
+
+    const photo = album.photos?.find(p => {
+      const url = p.url || p.src || "";
+      return url.includes(filename);
+    });
     if (!photo) return false;
 
-    // Check per-photo paid status
+    // Check per-photo paid flag set by admin
     if (photo.paid) return true;
 
-    // Check session-level free downloads
+    // Per-session Stripe purchase includes this photo
+    if (sessionPurchase?.photoIds?.includes(photo.id)) return true;
+
+    // Legacy global paidPhotoIds list
+    if (Array.isArray(album.paidPhotoIds) && album.paidPhotoIds.includes(photo.id)) return true;
+
+    // Bank transfer requests that have been approved/completed
+    const bankApproved = (album.downloadRequests || []).some(
+      r => (r.status === "approved" || r.status === "completed") &&
+           Array.isArray(r.photoIds) && r.photoIds.includes(photo.id)
+    );
+    if (bankApproved) return true;
+
+    // Check session-level free downloads (legacy wv_session_* key)
     const sessionData = db[`wv_session_${sessionKey}_${albumId}`];
     const sessionParsed = typeof sessionData === "string" ? JSON.parse(sessionData) : sessionData;
     if (sessionParsed?.unlockedPhotoIds?.includes(photo.id)) return true;
@@ -521,6 +542,56 @@ app.post("/api/upload/bulk-delete", async (req, res) => {
     } catch { /* skip individual failures */ }
   }
   res.json({ ok: true, deleted });
+});
+
+// ── Download original photos as a zip (authenticated) ──────────
+app.post("/api/download/zip", makeRateLimiter(5_000), async (req, res) => {
+  const { filenames, sessionKey, albumId } = req.body;
+  if (!Array.isArray(filenames) || !sessionKey || !albumId) {
+    return res.status(400).json({ error: "filenames array, sessionKey and albumId required" });
+  }
+  if (filenames.length > 1000) {
+    return res.status(400).json({ error: "Too many files in a single zip request (max 1000)" });
+  }
+
+  // Collect accessible files
+  const accessibleFiles = [];
+  for (const name of filenames) {
+    const safeName = path.basename(String(name));
+    const filepath = path.join(UPLOADS_DIR, safeName);
+    if (!fs.existsSync(filepath)) continue;
+    if (!isPhotoAccessible(safeName, sessionKey, albumId)) continue;
+    accessibleFiles.push({ safeName, filepath });
+  }
+
+  if (accessibleFiles.length === 0) {
+    return res.status(403).json({ error: "No accessible photos found for this session" });
+  }
+
+  // Look up a friendly album name for the zip filename
+  let albumName = "photos";
+  try {
+    const db = readDb();
+    const albums = db["wv_albums"];
+    const parsed = typeof albums === "string" ? JSON.parse(albums) : albums;
+    const album = Array.isArray(parsed) ? parsed.find(a => a.id === albumId) : null;
+    if (album?.title) albumName = album.title.replace(/[^a-z0-9_\- ]/gi, "_").trim();
+  } catch {}
+
+  res.setHeader("Content-Type", "application/zip");
+  res.setHeader("Content-Disposition", `attachment; filename="${albumName}.zip"`);
+
+  const archive = archiver("zip", { zlib: { level: 0 } }); // store-only — images are already compressed
+  archive.on("error", (err) => {
+    console.error("Zip archive error:", err.message);
+    if (!res.headersSent) res.status(500).json({ error: "Failed to create zip" });
+  });
+
+  archive.pipe(res);
+  for (const { safeName, filepath } of accessibleFiles) {
+    archive.file(filepath, { name: safeName });
+  }
+  await archive.finalize();
 });
 
 // ── Integrations ──────────────────────────────────────

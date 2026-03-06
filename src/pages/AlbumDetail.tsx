@@ -9,7 +9,7 @@ import PurchasePanel from "@/components/PurchasePanel";
 import { getAlbumBySlug, getSettings, updateAlbum } from "@/lib/storage";
 import { useBackfillThumbnails } from "@/hooks/use-backfill-thumbnails";
 import { Badge } from "@/components/ui/badge";
-import { createAlbumCheckout, getStripeStatus } from "@/lib/api";
+import { createAlbumCheckout, getStripeStatus, isServerMode } from "@/lib/api";
 import { toast } from "sonner";
 import { resizeToTargetSize } from "@/lib/image-utils";
 import {
@@ -354,10 +354,21 @@ export default function AlbumDetail() {
     setTimeout(() => setCopiedField(null), 2000);
   };
 
+  /** Returns the clean (watermark-free) URL for a server-hosted photo. */
+  const getCleanSrc = (photo: { src: string }) => {
+    if (isServerMode() && photo.src.startsWith("/uploads/")) {
+      const filename = photo.src.split("/").pop() || "";
+      return `/api/photo/${encodeURIComponent(filename)}/original?sessionKey=${encodeURIComponent(sessionKey)}&albumId=${encodeURIComponent(album.id)}`;
+    }
+    // localStorage mode — data URL, already watermark-free on the client
+    return photo.src;
+  };
+
   const downloadPhoto = async (photo: { src: string; title: string }, quality: DownloadQuality) => {
+    const cleanSrc = getCleanSrc(photo);
     if (quality === "original") {
       const link = document.createElement("a");
-      link.href = photo.src;
+      link.href = cleanSrc;
       link.download = `${photo.title}.jpg`;
       document.body.appendChild(link);
       link.click();
@@ -365,7 +376,7 @@ export default function AlbumDetail() {
     } else {
       const targetBytes = quality === "2mb" ? 2 * 1024 * 1024 : 5 * 1024 * 1024;
       try {
-        const blob = await resizeToTargetSize(photo.src, targetBytes);
+        const blob = await resizeToTargetSize(cleanSrc, targetBytes);
         const url = URL.createObjectURL(blob);
         const link = document.createElement("a");
         link.href = url;
@@ -375,13 +386,54 @@ export default function AlbumDetail() {
         document.body.removeChild(link);
         URL.revokeObjectURL(url);
       } catch {
-        // Fallback to original
+        // Fallback to clean original
         const link = document.createElement("a");
-        link.href = photo.src;
+        link.href = cleanSrc;
         link.download = `${photo.title}.jpg`;
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
+      }
+    }
+  };
+
+  /** Downloads multiple photos as a single zip via the server zip endpoint. */
+  const downloadZip = async (photos: Photo[]) => {
+    const serverPhotos = photos.filter(p => p.src.startsWith("/uploads/"));
+    const localPhotos = photos.filter(p => !p.src.startsWith("/uploads/"));
+
+    // Download local (data-URL) photos individually as fallback
+    for (const p of localPhotos) {
+      await downloadPhoto(p, downloadQuality);
+    }
+
+    if (serverPhotos.length === 0) return;
+
+    const filenames = serverPhotos.map(p => p.src.split("/").pop() || "");
+    try {
+      const res = await fetch("/api/download/zip", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filenames, sessionKey, albumId: album.id }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || "Server error");
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${album.title || "photos"}.zip`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (err: any) {
+      toast.error(`Zip download failed: ${err.message || "unknown error"}`);
+      // Fallback: download individually
+      for (const p of serverPhotos) {
+        await downloadPhoto(p, downloadQuality);
       }
     }
   };
@@ -443,8 +495,12 @@ export default function AlbumDetail() {
     }
     setDownloading(true);
     const toDownload = [...alreadyPaid, ...notPaid.slice(0, canDownloadFree)];
-    for (const p of toDownload) {
-      await downloadPhoto(p, downloadQuality);
+    if (isServerMode() && toDownload.length > 1) {
+      await downloadZip(toDownload as Photo[]);
+    } else {
+      for (const p of toDownload) {
+        await downloadPhoto(p, downloadQuality);
+      }
     }
 
     const updated = { ...album };
@@ -477,8 +533,12 @@ export default function AlbumDetail() {
     const photos = selectedIds.size > 0
       ? album.photos.filter(p => selectedIds.has(p.id))
       : album.photos;
-    for (const p of photos) {
-      await downloadPhoto(p, downloadQuality);
+    if (isServerMode() && photos.length > 1) {
+      await downloadZip(photos as Photo[]);
+    } else {
+      for (const p of photos) {
+        await downloadPhoto(p, downloadQuality);
+      }
     }
     // Track download history
     const updated = { ...album };
@@ -494,7 +554,7 @@ export default function AlbumDetail() {
     setSelectedIds(new Set());
     setShowDownloadOptions(false);
     setDownloading(false);
-    toast.success(`Downloaded ${photos.length} photos`);
+    toast.success(`Downloaded ${photos.length} photo${photos.length !== 1 ? "s" : ""}`);
   };
 
   const handlePurchaseSelected = () => {
@@ -991,42 +1051,67 @@ export default function AlbumDetail() {
           <DialogHeader>
             <DialogTitle className="font-display text-xl text-foreground flex items-center gap-2">
               <Download className="w-5 h-5 text-primary" />
-              Download Quality
+              Download Options
             </DialogTitle>
             <DialogDescription className="sr-only">Choose the quality for your photo downloads.</DialogDescription>
           </DialogHeader>
           <div className="space-y-4 mt-2">
-            <RadioGroup value={downloadQuality} onValueChange={(v) => setDownloadQuality(v as DownloadQuality)}>
-              <div className="flex items-center space-x-3 p-3 rounded-lg bg-secondary hover:bg-secondary/80 cursor-pointer">
-                <RadioGroupItem value="2mb" id="q-2mb" />
-                <Label htmlFor="q-2mb" className="font-body text-sm cursor-pointer flex-1">
-                  <span className="text-foreground">Web Quality</span>
-                  <span className="text-xs text-muted-foreground block">~2 MB per photo · Fast download</span>
-                </Label>
-              </div>
-              <div className="flex items-center space-x-3 p-3 rounded-lg bg-secondary hover:bg-secondary/80 cursor-pointer">
-                <RadioGroupItem value="5mb" id="q-5mb" />
-                <Label htmlFor="q-5mb" className="font-body text-sm cursor-pointer flex-1">
-                  <span className="text-foreground">High Quality</span>
-                  <span className="text-xs text-muted-foreground block">~5 MB per photo · Print ready</span>
-                </Label>
-              </div>
-              <div className="flex items-center space-x-3 p-3 rounded-lg bg-secondary hover:bg-secondary/80 cursor-pointer">
-                <RadioGroupItem value="original" id="q-original" />
-                <Label htmlFor="q-original" className="font-body text-sm cursor-pointer flex-1">
-                  <span className="text-foreground">Original</span>
-                  <span className="text-xs text-muted-foreground block">Full resolution · Largest file size</span>
-                </Label>
-              </div>
-            </RadioGroup>
-            <Button
-              onClick={canDownload ? executeDownloadAll : executeDownloadFree}
-              disabled={downloading}
-              className="w-full bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs tracking-wider uppercase gap-2"
-            >
-              <Download className="w-4 h-4" />
-              {downloading ? "Downloading..." : "Download"}
-            </Button>
+            {(() => {
+              const downloadCount = canDownload
+                ? (selectedIds.size > 0 ? selectedIds.size : album.photos.length)
+                : (() => {
+                    const sel = album.photos.filter(p => selectedIds.has(p.id));
+                    const paid = sel.filter(p => paidPhotoIdSet.has(p.id));
+                    const free = Math.min(sel.filter(p => !paidPhotoIdSet.has(p.id)).length, freeRemaining);
+                    return paid.length + free;
+                  })();
+              const useZip = isServerMode() && downloadCount > 1;
+              return (
+                <>
+                  {useZip ? (
+                    <div className="flex items-center gap-2 p-3 rounded-lg bg-primary/10 border border-primary/20">
+                      <Download className="w-4 h-4 text-primary flex-shrink-0" />
+                      <div>
+                        <p className="text-sm font-body text-foreground">Download as ZIP</p>
+                        <p className="text-xs text-muted-foreground">{downloadCount} original photos · Single zip file</p>
+                      </div>
+                    </div>
+                  ) : (
+                    <RadioGroup value={downloadQuality} onValueChange={(v) => setDownloadQuality(v as DownloadQuality)}>
+                      <div className="flex items-center space-x-3 p-3 rounded-lg bg-secondary hover:bg-secondary/80 cursor-pointer">
+                        <RadioGroupItem value="2mb" id="q-2mb" />
+                        <Label htmlFor="q-2mb" className="font-body text-sm cursor-pointer flex-1">
+                          <span className="text-foreground">Web Quality</span>
+                          <span className="text-xs text-muted-foreground block">~2 MB per photo · Fast download</span>
+                        </Label>
+                      </div>
+                      <div className="flex items-center space-x-3 p-3 rounded-lg bg-secondary hover:bg-secondary/80 cursor-pointer">
+                        <RadioGroupItem value="5mb" id="q-5mb" />
+                        <Label htmlFor="q-5mb" className="font-body text-sm cursor-pointer flex-1">
+                          <span className="text-foreground">High Quality</span>
+                          <span className="text-xs text-muted-foreground block">~5 MB per photo · Print ready</span>
+                        </Label>
+                      </div>
+                      <div className="flex items-center space-x-3 p-3 rounded-lg bg-secondary hover:bg-secondary/80 cursor-pointer">
+                        <RadioGroupItem value="original" id="q-original" />
+                        <Label htmlFor="q-original" className="font-body text-sm cursor-pointer flex-1">
+                          <span className="text-foreground">Original</span>
+                          <span className="text-xs text-muted-foreground block">Full resolution · Largest file size</span>
+                        </Label>
+                      </div>
+                    </RadioGroup>
+                  )}
+                  <Button
+                    onClick={canDownload ? executeDownloadAll : executeDownloadFree}
+                    disabled={downloading}
+                    className="w-full bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs tracking-wider uppercase gap-2"
+                  >
+                    <Download className="w-4 h-4" />
+                    {downloading ? (useZip ? "Preparing ZIP…" : "Downloading…") : (useZip ? `Download ZIP (${downloadCount})` : "Download")}
+                  </Button>
+                </>
+              );
+            })()}
           </div>
         </DialogContent>
       </Dialog>
