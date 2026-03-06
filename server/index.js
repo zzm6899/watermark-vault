@@ -159,7 +159,11 @@ async function buildWatermarkOverlay(imgWidth, imgHeight, wm) {
     try {
       const base64Data = wm.imageBase64.split(",")[1];
       const wmBuf = Buffer.from(base64Data, "base64");
-      const wmSize = Math.round(imgWidth * (wm.size / 100));
+      // For tiled: cap watermark size to reasonable max regardless of image resolution
+      // CSS preview uses fixed h-8 (32px) tiles — scale proportionally but cap it
+      const wmSize = wm.position === "tiled"
+        ? Math.min(200, Math.round(imgWidth * 0.12))  // max 200px, ~12% width for tiled
+        : Math.round(imgWidth * (wm.size / 100));     // use actual size% for positioned
       const wmResized = await sharp(wmBuf)
         .resize(wmSize, null, { fit: "inside" })
         .png()
