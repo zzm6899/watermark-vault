@@ -123,6 +123,80 @@ function formatClearedMsg(cleared: number | null | undefined): string {
   return ` — ${cleared} cached file${cleared !== 1 ? "s" : ""} removed`;
 }
 
+// ─── Email template variable helpers ─────────────────────────────────────────
+
+function emailFormatDateNice(dateStr: string): string {
+  if (!dateStr) return "";
+  const [year, month, day] = dateStr.split("-").map(Number);
+  return new Date(year, month - 1, day).toLocaleDateString("en-AU", {
+    weekday: "long", year: "numeric", month: "long", day: "numeric",
+  });
+}
+
+function emailFormatTime12(t: string): string {
+  if (!t) return "";
+  const [h, m] = t.split(":").map(Number);
+  return `${h % 12 || 12}:${m.toString().padStart(2, "0")} ${h >= 12 ? "PM" : "AM"}`;
+}
+
+function emailFormatDuration(mins: number): string {
+  if (!mins) return "";
+  if (mins >= 60) {
+    const h = Math.floor(mins / 60);
+    const rm = mins % 60;
+    return rm > 0 ? `${h}h ${rm}m` : `${h}h`;
+  }
+  return `${mins}m`;
+}
+
+/** Replace all supported template variables in `text` using data from `bk` and `eventTypes`. */
+function replaceBookingVars(text: string, bk: Booking, eventTypes: EventType[] = []): string {
+  const et = eventTypes.find(e => e.id === bk.eventTypeId);
+  const firstName = (bk.clientName || "").split(" ")[0];
+  const location = et?.location || "";
+  const duration = emailFormatDuration(bk.duration || 60);
+  const rawDeposit = bk.depositAmount ?? 0;
+  const rawTotal = bk.paymentAmount ?? 0;
+  const rawRemaining = rawTotal > rawDeposit ? rawTotal - rawDeposit : 0;
+  return text
+    .replace(/\{\{clientName\}\}/g, bk.clientName || "")
+    .replace(/\{\{firstName\}\}/g, firstName)
+    .replace(/\{\{eventTitle\}\}/g, bk.type || et?.title || "")
+    .replace(/\{\{date\}\}/g, bk.date || "")
+    .replace(/\{\{dateFormatted\}\}/g, emailFormatDateNice(bk.date))
+    .replace(/\{\{time\}\}/g, bk.time || "")
+    .replace(/\{\{timeFormatted\}\}/g, emailFormatTime12(bk.time))
+    .replace(/\{\{duration\}\}/g, duration)
+    .replace(/\{\{amount\}\}/g, rawTotal ? `$${rawTotal}` : "")
+    .replace(/\{\{depositAmount\}\}/g, rawDeposit ? `$${rawDeposit}` : "")
+    .replace(/\{\{remainingAmount\}\}/g, rawRemaining ? `$${rawRemaining}` : "")
+    .replace(/\{\{location\}\}/g, location)
+    .replace(/\{\{email\}\}/g, bk.clientEmail || "")
+    .replace(/\{\{bookingId\}\}/g, bk.id || "")
+    .replace(/\{\{notes\}\}/g, bk.notes || "")
+    .replace(/\{\{instagram\}\}/g, bk.instagramHandle || "");
+}
+
+/** All template variables with human descriptions — used to render the hints UI. */
+const EMAIL_TEMPLATE_VARS: { variable: string; description: string }[] = [
+  { variable: "{{clientName}}", description: "Full client name" },
+  { variable: "{{firstName}}", description: "First name only" },
+  { variable: "{{email}}", description: "Client email address" },
+  { variable: "{{eventTitle}}", description: "Event / session type" },
+  { variable: "{{date}}", description: "Date (YYYY-MM-DD)" },
+  { variable: "{{dateFormatted}}", description: "Date (e.g. Friday, 14 March 2025)" },
+  { variable: "{{time}}", description: "Time (HH:MM)" },
+  { variable: "{{timeFormatted}}", description: "Time (e.g. 2:00 PM)" },
+  { variable: "{{duration}}", description: "Session duration" },
+  { variable: "{{amount}}", description: "Total amount" },
+  { variable: "{{depositAmount}}", description: "Deposit amount" },
+  { variable: "{{remainingAmount}}", description: "Remaining balance" },
+  { variable: "{{location}}", description: "Shoot location" },
+  { variable: "{{bookingId}}", description: "Booking reference ID" },
+  { variable: "{{notes}}", description: "Booking notes" },
+  { variable: "{{instagram}}", description: "Instagram handle" },
+];
+
 type WatermarkBakeSettings = Pick<AppSettings, "watermarkText" | "watermarkImage" | "watermarkPosition" | "watermarkOpacity" | "watermarkSize"> & {
   watermarkVersion?: number;
 };
@@ -1205,7 +1279,6 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
           {showBulkPreview && bulkEmailSubject.trim() && bulkEmailBody.trim() && (() => {
             const sample = bookings.find(b => selectedBookingIds.has(b.id));
             if (!sample) return null;
-            const replaceVars = (text: string, bk: Booking) => text.replace(/\{\{clientName\}\}/g, bk.clientName).replace(/\{\{eventTitle\}\}/g, bk.type || "").replace(/\{\{date\}\}/g, bk.date).replace(/\{\{time\}\}/g, bk.time).replace(/\{\{amount\}\}/g, String(bk.paymentAmount || 0));
             return (
               <div className="rounded-lg border border-border/50 overflow-hidden">
                 <div className="px-3 py-2 bg-muted/30 border-b border-border/50">
@@ -1213,9 +1286,9 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                 </div>
                 <div className="p-4 bg-background/50">
                   <p className="text-xs font-body text-muted-foreground mb-1">To: <span className="text-foreground">{sample.clientEmail}</span></p>
-                  <p className="text-xs font-body text-muted-foreground mb-3">Subject: <span className="text-foreground font-medium">{replaceVars(bulkEmailSubject, sample)}</span></p>
+                  <p className="text-xs font-body text-muted-foreground mb-3">Subject: <span className="text-foreground font-medium">{replaceBookingVars(bulkEmailSubject, sample, eventTypes)}</span></p>
                   <div className="rounded-lg p-4" style={{ background: "#0a0a0a", color: "#f5f5f5", fontFamily: "sans-serif", maxWidth: 520 }}>
-                    <p style={{ color: "#ccc", lineHeight: 1.8, whiteSpace: "pre-wrap" }} dangerouslySetInnerHTML={{ __html: replaceVars(bulkEmailBody, sample).replace(/\n/g, "<br/>") }} />
+                    <p style={{ color: "#ccc", lineHeight: 1.8, whiteSpace: "pre-wrap" }} dangerouslySetInnerHTML={{ __html: replaceBookingVars(bulkEmailBody, sample, eventTypes).replace(/\n/g, "<br/>") }} />
                   </div>
                 </div>
               </div>
@@ -1247,8 +1320,8 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                 setBulkEmailProgress({ sent: 0, total: selected.length });
                 let sent = 0;
                 for (const bk of selected) {
-                  const subj = bulkEmailSubject.replace(/\{\{clientName\}\}/g, bk.clientName).replace(/\{\{eventTitle\}\}/g, bk.type || "").replace(/\{\{date\}\}/g, bk.date).replace(/\{\{time\}\}/g, bk.time).replace(/\{\{amount\}\}/g, String(bk.paymentAmount || 0));
-                  const body = bulkEmailBody.replace(/\{\{clientName\}\}/g, bk.clientName).replace(/\{\{eventTitle\}\}/g, bk.type || "").replace(/\{\{date\}\}/g, bk.date).replace(/\{\{time\}\}/g, bk.time).replace(/\{\{amount\}\}/g, String(bk.paymentAmount || 0));
+                  const subj = replaceBookingVars(bulkEmailSubject, bk, eventTypes);
+                  const body = replaceBookingVars(bulkEmailBody, bk, eventTypes);
                   const html = `<div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:32px;background:#0a0a0a;color:#f5f5f5;border-radius:12px;"><p style="color:#ccc;line-height:1.8;white-space:pre-wrap;">${body.replace(/\n/g, "<br/>")}</p></div>`;
                   await sendCustomEmail(bk.clientEmail, subj, html, body, bk.id);
                   sent++;
@@ -1502,11 +1575,8 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                                 <div className="flex flex-wrap gap-1.5">
                                   {emailTemplates.map(t => (
                                     <button key={t.id} onClick={() => {
-                                      const et2 = eventTypes.find(e => e.id === bk.eventTypeId);
-                                      const sub = t.subject.replace(/\{\{clientName\}\}/g, bk.clientName).replace(/\{\{eventTitle\}\}/g, bk.type || et2?.title || "").replace(/\{\{date\}\}/g, bk.date).replace(/\{\{time\}\}/g, bk.time).replace(/\{\{amount\}\}/g, String(bk.paymentAmount || 0));
-                                      const bod = t.body.replace(/\{\{clientName\}\}/g, bk.clientName).replace(/\{\{eventTitle\}\}/g, bk.type || et2?.title || "").replace(/\{\{date\}\}/g, bk.date).replace(/\{\{time\}\}/g, bk.time).replace(/\{\{amount\}\}/g, String(bk.paymentAmount || 0));
-                                      setCustomEmailSubject(sub);
-                                      setCustomEmailBody(bod);
+                                      setCustomEmailSubject(replaceBookingVars(t.subject, bk, eventTypes));
+                                      setCustomEmailBody(replaceBookingVars(t.body, bk, eventTypes));
                                       setShowEmailPreview(false);
                                     }} className="text-[10px] font-body px-2.5 py-1 rounded-full bg-primary/10 text-primary hover:bg-primary/20 transition-colors">
                                       {t.name}
@@ -4280,8 +4350,27 @@ function EmailTemplatesManager() {
         </Button>
       </div>
       <p className="text-[10px] font-body text-muted-foreground/50">
-        Create reusable templates for custom emails. Variables: {"{{clientName}}"}, {"{{eventTitle}}"}, {"{{date}}"}, {"{{time}}"}, {"{{amount}}"}
+        Create reusable templates for custom emails. Click a variable badge below to copy it, then paste into your subject or body.
       </p>
+
+      {/* Variable reference */}
+      <div className="rounded-lg border border-border/50 bg-secondary/30 p-3 space-y-2">
+        <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground">Available Variables</p>
+        <div className="flex flex-wrap gap-1.5">
+          {EMAIL_TEMPLATE_VARS.map(({ variable, description }) => (
+            <button
+              key={variable}
+              type="button"
+              title={description}
+              onClick={() => { navigator.clipboard.writeText(variable).then(() => toast.success(`Copied ${variable}`)); }}
+              className="text-[10px] font-mono px-2 py-0.5 rounded bg-primary/10 text-primary hover:bg-primary/20 active:scale-95 transition-all border border-primary/20"
+            >
+              {variable}
+            </button>
+          ))}
+        </div>
+        <p className="text-[9px] font-body text-muted-foreground/40">Click a badge to copy it to your clipboard, then paste into your subject or body.</p>
+      </div>
 
       {showForm && (
         <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} className="space-y-3 p-4 rounded-lg bg-secondary/50 border border-border/50">
@@ -4291,11 +4380,11 @@ function EmailTemplatesManager() {
           </div>
           <div>
             <label className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-1 block">Subject Line</label>
-            <Input value={newSubject} onChange={e => setNewSubject(e.target.value)} placeholder="e.g. Your {{eventTitle}} session on {{date}}" className="bg-secondary border-border text-foreground font-body text-sm" />
+            <Input value={newSubject} onChange={e => setNewSubject(e.target.value)} placeholder="e.g. Your {{eventTitle}} session on {{dateFormatted}}" className="bg-secondary border-border text-foreground font-body text-sm" />
           </div>
           <div>
             <label className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-1 block">Body</label>
-            <Textarea value={newBody} onChange={e => setNewBody(e.target.value)} placeholder="Hey {{clientName}},&#10;&#10;Thanks for your booking…" className="bg-secondary border-border text-foreground font-body text-sm min-h-[120px]" />
+            <Textarea value={newBody} onChange={e => setNewBody(e.target.value)} placeholder="Hey {{firstName}},&#10;&#10;Thanks for booking your {{eventTitle}} session on {{dateFormatted}} at {{timeFormatted}}." className="bg-secondary border-border text-foreground font-body text-sm min-h-[120px]" />
           </div>
           <Button size="sm" onClick={handleSave} disabled={!newName.trim() || !newSubject.trim()} className="gap-1.5 bg-primary text-primary-foreground font-body text-xs">
             <Save className="w-3 h-3" /> {editingId ? "Update Template" : "Save Template"}

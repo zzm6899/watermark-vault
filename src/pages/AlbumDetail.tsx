@@ -1490,7 +1490,7 @@ export default function AlbumDetail() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[100] bg-background/95 backdrop-blur-sm flex items-center justify-center p-3 sm:p-6"
+            className="fixed inset-0 z-[100] bg-black/95 backdrop-blur-sm flex items-center justify-center p-3 sm:p-6"
             onClick={() => setLightboxPhotoId(null)}
             onTouchStart={(e) => { touchStartX.current = e.touches[0].clientX; }}
             onTouchEnd={(e) => {
@@ -1506,20 +1506,20 @@ export default function AlbumDetail() {
             }}
           >
             {/* Close button */}
-            <button className="absolute top-3 right-3 sm:top-4 sm:right-4 z-10 w-11 h-11 rounded-full bg-card/80 backdrop-blur-sm flex items-center justify-center text-foreground hover:bg-card transition-colors"
+            <button className="absolute top-3 right-3 sm:top-4 sm:right-4 z-10 w-11 h-11 rounded-full bg-white/15 backdrop-blur-sm flex items-center justify-center text-white hover:bg-white/25 transition-colors"
               onClick={() => setLightboxPhotoId(null)}>
               <X className="w-5 h-5" />
             </button>
 
             {/* Nav arrows */}
             {lbIdx > 0 && (
-              <button className="absolute left-2 sm:left-4 z-10 w-11 h-11 rounded-full bg-card/80 backdrop-blur-sm flex items-center justify-center text-foreground hover:bg-card transition-colors"
+              <button className="absolute left-2 sm:left-4 z-10 w-11 h-11 rounded-full bg-white/15 backdrop-blur-sm flex items-center justify-center text-white hover:bg-white/25 transition-colors"
                 onClick={(e) => { e.stopPropagation(); setLightboxPhotoId(displayedPhotos[lbIdx - 1].id); }}>
                 <ChevronLeft className="w-5 h-5" />
               </button>
             )}
             {lbIdx < displayedPhotos.length - 1 && (
-              <button className="absolute right-2 sm:right-4 z-10 w-11 h-11 rounded-full bg-card/80 backdrop-blur-sm flex items-center justify-center text-foreground hover:bg-card transition-colors"
+              <button className="absolute right-2 sm:right-4 z-10 w-11 h-11 rounded-full bg-white/15 backdrop-blur-sm flex items-center justify-center text-white hover:bg-white/25 transition-colors"
                 onClick={(e) => { e.stopPropagation(); setLightboxPhotoId(displayedPhotos[lbIdx + 1].id); }}>
                 <ChevronRight className="w-5 h-5" />
               </button>
@@ -1535,10 +1535,21 @@ export default function AlbumDetail() {
                 watermarkVersion={(settings as any).watermarkVersion || (lbPhoto as any).watermarkVersion || 0}
               />
 
-              {/* Bottom bar with select/title */}
-              <div className="absolute bottom-0 left-0 right-0 p-3 sm:p-4 bg-gradient-to-t from-background/85 to-transparent rounded-b-lg flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
-                <p className="text-sm font-body text-foreground pr-12 sm:pr-0">{lbPhoto.title}</p>
+              {/* Bottom bar with select/star/title */}
+              <div className="absolute bottom-0 left-0 right-0 p-3 sm:p-4 bg-gradient-to-t from-black/80 to-transparent rounded-b-lg flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
+                <p className="text-sm font-body text-white/90 pr-12 sm:pr-0">{lbPhoto.title}</p>
                 <div className="flex gap-2">
+                  {isProofing && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => toggleStar(lbPhoto.id)}
+                      className={`gap-1.5 font-body text-xs border-white/20 ${(lbPhoto as any).starred ? "bg-yellow-500/20 text-yellow-400 border-yellow-500/40 hover:bg-yellow-500/30" : "bg-white/10 text-white/80 hover:bg-white/20"}`}
+                    >
+                      <Star className={`w-3.5 h-3.5 ${(lbPhoto as any).starred ? "fill-yellow-400 text-yellow-400" : ""}`} />
+                      {(lbPhoto as any).starred ? "Starred" : "Star"}
+                    </Button>
+                  )}
                   <Button
                     size="sm"
                     variant={selectedIds.has(lbPhoto.id) ? "default" : "outline"}
@@ -1557,7 +1568,7 @@ export default function AlbumDetail() {
 
             {/* Counter */}
             <div className="absolute bottom-3 sm:bottom-4 left-1/2 -translate-x-1/2">
-              <p className="text-xs font-body text-muted-foreground bg-card/80 backdrop-blur-sm px-3 py-1.5 rounded-full">
+              <p className="text-xs font-body text-white/50 bg-white/10 backdrop-blur-sm px-3 py-1.5 rounded-full">
                 {lbIdx + 1} / {displayedPhotos.length}
               </p>
             </div>
