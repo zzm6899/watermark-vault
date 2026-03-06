@@ -2355,7 +2355,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
       });
       // Add all photos immediately — use server-side thumbnails (no heavy client-side canvas work)
       const newPhotos: Photo[] = results.map(r => ({
-        id: r.id, src: r.url, thumbnail: r.url + "?w=200&wm=0", title: r.originalName.replace(/\.[^.]+$/, ""), width: 800, height: 600, uploadedAt: new Date().toISOString(),
+        id: r.id, src: r.url, thumbnail: r.url + "?size=thumb", title: r.originalName.replace(/\.[^.]+$/, ""), width: 800, height: 600, uploadedAt: new Date().toISOString(),
       }));
       const allPhotos = [...photos, ...newPhotos];
       setPhotos(allPhotos);
@@ -2363,12 +2363,6 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
       if (!coverImage && newPhotos.length > 0) setCoverImage(newPhotos[0].src);
       setUploadStats(prev => prev ? { ...prev, done: fileArr.length, errors: fileArr.length - results.length, savedBytes: 0 } : null);
       if (results.length > 0) toast.success(`${results.length} photos uploaded to server`);
-      // Generate thumbnails in background (non-blocking)
-      for (const r of results) {
-        generateThumbnail(r.url).then(thumb => {
-          setPhotos(prev => prev.map(p => p.id === r.id ? { ...p, thumbnail: thumb } : p));
-        }).catch(() => {});
-      }
     } else {
       // Fallback: compress to base64 for localStorage
       for (const file of fileArr) {
@@ -3046,7 +3040,7 @@ function PhotosView() {
       });
       // Add all photos immediately — use server-side thumbnails (no heavy client-side canvas work)
       const newPhotos: Photo[] = results.map(r => ({
-        id: r.id, src: r.url, thumbnail: r.url + "?w=200&wm=0", title: r.originalName.replace(/\.[^.]+$/, ""), width: 800, height: 600, uploadedAt: new Date().toISOString(),
+        id: r.id, src: r.url, thumbnail: r.url + "?size=thumb", title: r.originalName.replace(/\.[^.]+$/, ""), width: 800, height: 600, uploadedAt: new Date().toISOString(),
       }));
       for (const photo of newPhotos) addPhotoToTarget(photo);
       setUploadStats(prev => prev ? { ...prev, done: fileArr.length, errors: fileArr.length - results.length } : null);
@@ -3641,6 +3635,7 @@ function ProfileView() {
 // ─── Settings ────────────────────────────────────────
 function SettingsView() {
   const [settings, setSettingsState] = useState<AppSettings>(getSettings());
+  const [rebuildProgress, setRebuildProgress] = useState<{ running: boolean; done: number; total: number; stage: string } | null>(null);
 
   const watermarkOptions: { value: WatermarkPosition; label: string }[] = [
     { value: "center", label: "Center" }, { value: "top-left", label: "Top Left" }, { value: "top-right", label: "Top Right" },
@@ -3664,24 +3659,37 @@ function SettingsView() {
 
     setSettings(nextSettings as AppSettings);
     setSettingsState(nextSettings as AppSettings);
+
+    if (isServerMode()) {
+      // Server mode: just clear the server image cache so fresh watermarked images are served
+      setRebuildProgress({ running: true, done: 0, total: 1, stage: "Clearing server image cache…" });
+      writeWatermarkRebuildStatus({ running: true, mode: "save", done: 0, total: 1, stage: "Clearing server image cache…" });
+      try {
+        await fetch("/api/cache/clear", { method: "POST" });
+        toast.success("Settings saved — server cache cleared, gallery will serve fresh watermarked images.");
+        writeWatermarkRebuildStatus({ running: false, mode: "save", done: 1, total: 1, stage: "Server cache cleared." });
+      } catch {
+        toast.error("Settings saved, but failed to clear server cache. Run 'Clear Server Image Cache' manually.");
+        writeWatermarkRebuildStatus({ running: false, mode: "save", stage: "Cache clear failed." });
+      }
+      setRebuildProgress({ running: false, done: 1, total: 1, stage: "" });
+      return;
+    }
+
+    // localStorage mode: bake watermark previews client-side
+    setRebuildProgress({ running: true, done: 0, total: 0, stage: "Regenerating baked watermark previews…" });
     writeWatermarkRebuildStatus({
       running: true,
       mode: "save",
       done: 0,
       total: 0,
-      stage: "Saving watermark settings…",
+      stage: "Regenerating baked thumbnail / medium / full assets…",
     });
     toast.info("Saving settings and regenerating baked watermark previews…");
 
     try {
-      writeWatermarkRebuildStatus({
-        running: true,
-        mode: "save",
-        done: 0,
-        total: 0,
-        stage: "Regenerating baked thumbnail / medium / full assets…",
-      });
       const { success, failed, total } = await rebuildWatermarkedAssets(nextSettings, true, (done, totalCount) => {
+        setRebuildProgress({ running: true, done, total: totalCount, stage: "Regenerating baked watermark previews…" });
         writeWatermarkRebuildStatus({
           running: true,
           mode: "save",
@@ -3696,6 +3704,7 @@ function SettingsView() {
       else if (success > 0) toast.success(`Settings saved — rebuilt ${success}/${total} protected previews (${failed} failed).`);
       else toast.error("Settings saved, but preview regeneration failed.");
 
+      setRebuildProgress({ running: false, done: total, total, stage: "" });
       writeWatermarkRebuildStatus({
         running: false,
         mode: "save",
@@ -3704,6 +3713,7 @@ function SettingsView() {
         stage: total > 0 ? "Watermark regeneration complete." : "Settings saved.",
       });
     } catch {
+      setRebuildProgress(null);
       writeWatermarkRebuildStatus({
         running: false,
         mode: "save",
@@ -3916,7 +3926,30 @@ function SettingsView() {
         {/* Google Calendar */}
         <GoogleCalendarSection />
 
-        <Button onClick={handleSave} className="bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs tracking-wider uppercase gap-2">
+        {/* Watermark rebuild / cache clear progress */}
+        {rebuildProgress && (
+          <div className="p-3 rounded-lg bg-secondary/50 border border-border">
+            <div className="flex items-center justify-between text-xs font-body text-muted-foreground mb-1.5">
+              <span className="flex items-center gap-1.5">
+                <RefreshCw className={`w-3 h-3 ${rebuildProgress.running ? "animate-spin" : "text-green-500"}`} />
+                {rebuildProgress.running ? (rebuildProgress.stage || "Processing…") : "Done"}
+              </span>
+              {rebuildProgress.total > 0 && (
+                <span>{rebuildProgress.done}/{rebuildProgress.total}</span>
+              )}
+            </div>
+            {rebuildProgress.running && (
+              <div className="h-1.5 rounded-full bg-border overflow-hidden">
+                <div
+                  className="h-full bg-primary rounded-full transition-all duration-300"
+                  style={{ width: rebuildProgress.total > 0 ? `${Math.max(8, (rebuildProgress.done / rebuildProgress.total) * 100)}%` : "30%" }}
+                />
+              </div>
+            )}
+          </div>
+        )}
+
+        <Button onClick={handleSave} disabled={!!rebuildProgress?.running} className="bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs tracking-wider uppercase gap-2">
           <Save className="w-4 h-4" /> Save All Settings
         </Button>
       </div>

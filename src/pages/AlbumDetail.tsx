@@ -93,18 +93,41 @@ function buildPhotoSrc(src: string, disableWatermark: boolean): string {
 
 function getPhotoVariantSrc(photo: Photo, variant: "thumbnail" | "medium" | "full", disableWatermark: boolean): string {
   const p = photo as any;
+
+  // Strip any legacy ?wm=0 from the thumbnail URL so server applies watermarks when needed
+  const stripWm = (src: string) =>
+    src ? src.replace(/[?&]wm=0(?=&|$)/g, "").replace(/[?&]$/, "").replace(/\?&/, "?") : src;
+
+  // Upgrade a server thumbnail URL to medium quality for lightbox use.
+  // If the URL already uses ?size=thumb, swap to ?size=medium.
+  // If it's a server-hosted image with no size param, add ?size=medium.
+  const upgradeToMedium = (src: string) => {
+    if (!src || !src.startsWith("/uploads/")) return src;
+    if (src.includes("size=thumb")) {
+      return src.replace(/([?&])size=thumb(?=&|$)/, "$1size=medium");
+    }
+    if (!src.includes("size=medium")) {
+      // No size param yet — add medium so lightbox loads a reasonable resolution
+      return `${src}${src.includes("?") ? "&" : "?"}size=medium`;
+    }
+    return src;
+  };
+
   if (disableWatermark) {
-    const cleanBase = variant === "full" ? photo.src : (photo.thumbnail || photo.src);
-    return buildPhotoSrc(cleanBase, true);
+    const rawBase = variant === "full" ? photo.src : (photo.thumbnail || photo.src);
+    const sized = variant === "medium" ? upgradeToMedium(rawBase) : rawBase;
+    return buildPhotoSrc(sized, true);
   }
 
   if (variant === "thumbnail") {
-    return p.thumbnailWatermarked || photo.thumbnail || photo.src;
+    return stripWm(p.thumbnailWatermarked || photo.thumbnail || photo.src);
   }
   if (variant === "medium") {
-    return p.mediumWatermarked || p.thumbnailWatermarked || photo.thumbnail || photo.src;
+    // Prefer baked watermarked variants; fall back to thumb → upgrade to medium for lightbox
+    const src = p.mediumWatermarked || p.thumbnailWatermarked || photo.thumbnail || photo.src;
+    return upgradeToMedium(stripWm(src));
   }
-  return p.fullWatermarked || p.mediumWatermarked || p.thumbnailWatermarked || photo.src;
+  return stripWm(p.fullWatermarked || p.mediumWatermarked || p.thumbnailWatermarked || photo.src);
 }
 
 function getGalleryPhotoSrc(photo: Photo, disableWatermark: boolean): string {
