@@ -3335,6 +3335,16 @@ function PhotosView() {
 function FinanceView() {
   const [albumsState, setAlbumsState] = React.useState(() => getAlbums());
   const [deletingId, setDeletingId] = React.useState<string | null>(null);
+  const [expandedDownloadKeys, setExpandedDownloadKeys] = React.useState<Set<string>>(new Set());
+
+  const toggleDownloadThumbs = (key: string) => {
+    setExpandedDownloadKeys(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
 
   type PaymentRecord = {
     id: string;
@@ -3578,37 +3588,72 @@ function FinanceView() {
                 <Trash2 className="w-3 h-3" /> Clear All
               </Button>
             </div>
-            <div className="divide-y divide-border max-h-80 overflow-y-auto">
-              {allDownloads.map((d: any, i: number) => (
-                <div key={i} className="flex items-center gap-4 px-4 py-2.5 hover:bg-secondary/30 transition-colors group">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <p className="text-xs font-body text-foreground">{d.clientName}</p>
-                      <span className="text-muted-foreground/40 text-xs">·</span>
-                      <p className="text-xs font-body text-muted-foreground truncate">{d.albumTitle}</p>
-                      {d.email && <span className="text-[10px] font-body text-primary/70 bg-primary/5 px-1.5 py-0.5 rounded">{d.email}</span>}
+            <div className="divide-y divide-border max-h-[480px] overflow-y-auto">
+              {allDownloads.map((d: any, i: number) => {
+                const entryKey = `${d.albumId}-${d.downloadedAt}`;
+                const showThumbs = expandedDownloadKeys.has(entryKey);
+                const alb = showThumbs ? albumsState.find(a => a.id === d.albumId) : null;
+                const downloadedPhotos = showThumbs && d.photoIds?.length
+                  ? (d.photoIds as string[]).map((id: string) => alb?.photos.find((p: any) => p.id === id)).filter(Boolean)
+                  : [];
+                const photoCount: number = d.photoCount ?? d.photoIds?.length ?? 0;
+                return (
+                  <div key={i} className="px-4 py-2.5 hover:bg-secondary/30 transition-colors group">
+                    <div className="flex items-center gap-4">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <p className="text-xs font-body text-foreground">{d.clientName}</p>
+                          <span className="text-muted-foreground/40 text-xs">·</span>
+                          <p className="text-xs font-body text-muted-foreground truncate">{d.albumTitle}</p>
+                          {d.email && <span className="text-[10px] font-body text-primary/70 bg-primary/5 px-1.5 py-0.5 rounded">{d.email}</span>}
+                        </div>
+                        <p className="text-[10px] font-body text-muted-foreground/60 mt-0.5">
+                          {new Date(d.downloadedAt).toLocaleString("en-AU", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}
+                          {" · "}{d.quality || "original"}
+                          {d.sessionKey && <span className="ml-1 opacity-40">({d.sessionKey.slice(0, 16)}…)</span>}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        {photoCount > 0 && (
+                          <button
+                            onClick={() => toggleDownloadThumbs(entryKey)}
+                            className={`flex items-center gap-1 text-[10px] font-body px-2 py-1 rounded border transition-all ${showThumbs ? "border-primary/40 text-primary bg-primary/10" : "border-border/60 text-muted-foreground hover:text-foreground"}`}
+                            title={showThumbs ? "Hide photos" : "Show photos"}
+                          >
+                            <Grid className="w-2.5 h-2.5" />
+                            {photoCount}
+                          </button>
+                        )}
+                        <button
+                          onClick={() => handleDeleteDownloadEntry(d.albumId, d.downloadedAt)}
+                          className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded hover:bg-red-500/10 text-muted-foreground/40 hover:text-red-400"
+                          title="Remove log entry"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </div>
-                    <p className="text-[10px] font-body text-muted-foreground/60 mt-0.5">
-                      {new Date(d.downloadedAt).toLocaleString("en-AU", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}
-                      {" · "}{d.quality || "original"}
-                      {d.sessionKey && <span className="ml-1 opacity-40">({d.sessionKey.slice(0, 16)}…)</span>}
-                    </p>
+                    {showThumbs && downloadedPhotos.length > 0 && (
+                      <div className="flex flex-wrap gap-1 mt-2 pb-1">
+                        {(downloadedPhotos as any[]).slice(0, 24).map((p: any) => (
+                          <img
+                            key={p.id}
+                            src={p.thumbnail || p.src}
+                            alt={p.title}
+                            className="w-10 h-10 rounded object-cover border border-border/50"
+                            loading="lazy"
+                          />
+                        ))}
+                        {downloadedPhotos.length > 24 && (
+                          <span className="w-10 h-10 rounded bg-secondary/50 border border-border/50 flex items-center justify-center text-[10px] font-body text-muted-foreground">
+                            +{downloadedPhotos.length - 24}
+                          </span>
+                        )}
+                      </div>
+                    )}
                   </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    <div className="text-right">
-                      <p className="text-sm font-display text-foreground">{d.photoCount ?? d.photoIds?.length ?? "?"}</p>
-                      <p className="text-[10px] font-body text-muted-foreground">photos</p>
-                    </div>
-                    <button
-                      onClick={() => handleDeleteDownloadEntry(d.albumId, d.downloadedAt)}
-                      className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded hover:bg-red-500/10 text-muted-foreground/40 hover:text-red-400"
-                      title="Remove log entry"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         );
@@ -3904,21 +3949,23 @@ function SettingsView() {
                 <Bell className="w-3.5 h-3.5" /> Send Test Message
               </Button>
             )}
+          </div>
+        </div>
 
-            {/* Proofing toggle */}
-            <div className="flex items-center justify-between p-3 rounded-lg bg-secondary">
-              <div>
-                <p className="text-xs font-body text-foreground font-medium">Client Proofing</p>
-                <p className="text-[10px] font-body text-muted-foreground/70 mt-0.5">Allow clients to star and submit photo picks before editing</p>
-              </div>
-              <button
-                onClick={() => setSettingsState({ ...settings, proofingEnabled: !settings.proofingEnabled })}
-                className={`relative w-10 h-5.5 rounded-full transition-colors shrink-0 ${settings.proofingEnabled ? "bg-primary" : "bg-border"}`}
-                style={{ height: "22px", width: "40px" }}
-              >
-                <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${settings.proofingEnabled ? "translate-x-5" : "translate-x-0.5"}`} />
-              </button>
+        {/* Client Proofing */}
+        <div className="glass-panel rounded-xl p-6 space-y-4">
+          <h3 className="font-display text-base text-foreground flex items-center gap-2">
+            <Star className="w-4 h-4 text-primary" /> Client Proofing
+          </h3>
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-body text-foreground font-medium">Enable Client Proofing</p>
+              <p className="text-[10px] font-body text-muted-foreground/70 mt-0.5">Allow clients to star and submit photo picks before editing</p>
             </div>
+            <Switch
+              checked={!!settings.proofingEnabled}
+              onCheckedChange={(v) => setSettingsState({ ...settings, proofingEnabled: v })}
+            />
           </div>
         </div>
 
@@ -4316,10 +4363,10 @@ function StorageView() {
     return () => window.removeEventListener("wm-rebuild-status", handler);
   }, [refreshStorageState]);
 
-  // Poll server stats every 10 s while Storage tab is open so counts stay fresh
+  // Poll server stats every 1 s while Storage tab is open so counts stay current
   useEffect(() => {
     if (!isServerMode()) return;
-    const id = setInterval(() => { refreshStorageState(); }, 10_000);
+    const id = setInterval(() => { refreshStorageState(); }, 1_000);
     return () => clearInterval(id);
   }, [refreshStorageState]);
 
@@ -4504,6 +4551,21 @@ function StorageView() {
   const disk = serverStats?.disk;
   const diskUsedPct = disk ? Math.min(100, (disk.usedBytes / disk.totalBytes) * 100) : 0;
 
+  // Cache status derived values (server mode only)
+  const cacheExpectedVariants = (serverStats?.photoCount ?? 0) * 3;
+  const cachedTotal = cacheStats?.total ?? 0;
+  const cachePct = previewJob.running
+    ? 60
+    : cacheExpectedVariants > 0
+      ? Math.min(100, Math.round((cachedTotal / cacheExpectedVariants) * 100))
+      : (cachedTotal > 0 ? 100 : 0);
+  const cacheBarColor = previewJob.running ? "bg-primary" : cachePct === 0 ? "bg-muted-foreground/30" : cachePct < 100 ? "bg-yellow-500" : "bg-green-500";
+  const cacheStatusLabel = previewJob.running
+    ? (previewJob.stage || "Clearing cache...")
+    : cachedTotal === 0
+      ? "No cached renders yet - renders on first request"
+      : `${cachedTotal} file${cachedTotal !== 1 ? "s" : ""} cached${cacheExpectedVariants > 0 ? ` (${cachePct}%)` : ""}`;
+
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
       <h2 className="font-display text-2xl text-foreground mb-6 flex items-center gap-2">
@@ -4524,10 +4586,20 @@ function StorageView() {
           <p className="font-display text-2xl text-primary">{totalDownloads}</p>
           <p className="text-xs font-body text-muted-foreground tracking-wider uppercase">Total Downloads</p>
         </div>
-        <div className="glass-panel rounded-xl p-5">
-          <p className="font-display text-2xl text-foreground">{bookings.length}</p>
-          <p className="text-xs font-body text-muted-foreground tracking-wider uppercase">Bookings</p>
-        </div>
+        {isServerMode() ? (
+          <div className="glass-panel rounded-xl p-5">
+            <p className="font-display text-2xl text-foreground">{cacheStats?.total ?? 0}</p>
+            <p className="text-xs font-body text-muted-foreground tracking-wider uppercase">Cached Renders</p>
+            {cacheStats && cacheStats.total > 0 && (
+              <p className="text-[10px] font-body text-muted-foreground/50 mt-1">{formatBytes(cacheStats.breakdown.totalBytes)}</p>
+            )}
+          </div>
+        ) : (
+          <div className="glass-panel rounded-xl p-5">
+            <p className="font-display text-2xl text-foreground">{bookings.length}</p>
+            <p className="text-xs font-body text-muted-foreground tracking-wider uppercase">Bookings</p>
+          </div>
+        )}
       </div>
 
       {/* Preview & Watermark Rendering */}
@@ -4538,14 +4610,16 @@ function StorageView() {
         {isServerMode() ? (
           <>
             <div className="flex items-center justify-between text-xs font-body text-muted-foreground mb-1.5">
-              <span>{previewJob.running ? (previewJob.stage || "Clearing cache…") : "Server-side watermarking active"}</span>
-              <span className="text-green-500">{previewJob.running ? "Working…" : "✓ Live"}</span>
+              <span>{cacheStatusLabel}</span>
+              <span className={previewJob.running ? "text-primary" : cachedTotal > 0 ? "text-green-500" : "text-muted-foreground/50"}>
+                {previewJob.running ? "Working..." : cachedTotal > 0 ? "✓ Live" : "Empty"}
+              </span>
             </div>
             <div className="h-3 rounded-full bg-secondary overflow-hidden">
-              <div className={`h-full rounded-full bg-green-500 transition-all duration-500`} style={{ width: previewJob.running ? "60%" : "100%" }} />
+              <div className={`h-full rounded-full ${cacheBarColor} transition-all duration-500`} style={{ width: `${Math.max(0, cachePct)}%` }} />
             </div>
             <p className="text-[10px] font-body text-muted-foreground/50 mt-2">
-              ✓ Watermarks are applied by the server on every image request. No local baking needed. Clear the cache after changing watermark settings.
+              Watermarks are applied by the server on every image request. Cache grows as images are viewed. Clear after changing watermark settings.
             </p>
             {/* Last clear result — exact stats */}
             {lastClearStats && !previewJob.running && (

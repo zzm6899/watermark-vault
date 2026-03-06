@@ -176,6 +176,10 @@ export default function AlbumDetail() {
   const displayedPhotosRef = useRef<Photo[]>([]);
   const [showStarredOnly, setShowStarredOnly] = useState(false);
   const [sortOrder, setSortOrder] = useState<"default" | "asc" | "desc">("default");
+  // Local display size — defaults to admin-set album size (or "medium" fallback)
+  const [localDisplaySize, setLocalDisplaySize] = useState<string>(
+    () => (albumId ? getAlbumBySlug(albumId) : undefined)?.displaySize ?? "medium"
+  );
   const [lightboxSrcCache, setLightboxSrcCache] = useState<Record<string, string>>({});
   const [stripeAvailable, setStripeAvailable] = useState(false);
   const [processingStripe, setProcessingStripe] = useState(false);
@@ -706,8 +710,7 @@ export default function AlbumDetail() {
     toast.success("Bank transfer request submitted! Pay using the details shown, then the photographer will unlock your photos.");
   };
 
-  const displaySize = album.displaySize || "medium";
-  const gridClass = displaySize === "small" ? "masonry-grid-sm" : displaySize === "large" ? "masonry-grid-lg" : displaySize === "list" ? "masonry-grid-list" : "masonry-grid";
+  const gridClass = localDisplaySize === "small" ? "masonry-grid-sm" : localDisplaySize === "large" ? "masonry-grid-lg" : localDisplaySize === "list" ? "masonry-grid-list" : "masonry-grid";
 
   const unpaidSelected = album.photos.filter(p => selectedIds.has(p.id) && !paidPhotoIdSet.has(p.id));
   const paidCount = Math.max(0, unpaidSelected.length - freeRemaining);
@@ -971,6 +974,28 @@ export default function AlbumDetail() {
                   <X className="w-3 h-3" /> Clear
                 </button>
               )}
+              {/* Display size controls — push to right on larger screens */}
+              <div className="flex items-center gap-1 ml-auto">
+                {([
+                  { size: "small", icon: <LayoutGrid className="w-3.5 h-3.5" />, label: "Small" },
+                  { size: "medium", icon: <Grid className="w-3.5 h-3.5" />, label: "Medium" },
+                  { size: "large", icon: <List className="w-3.5 h-3.5 rotate-90" />, label: "Large" },
+                  { size: "list", icon: <List className="w-3.5 h-3.5" />, label: "List" },
+                ] as const).map(({ size, icon, label }) => (
+                  <button
+                    key={size}
+                    onClick={() => setLocalDisplaySize(size)}
+                    title={label}
+                    className={`p-1.5 rounded-lg border transition-all ${
+                      localDisplaySize === size
+                        ? "border-primary/50 text-primary bg-primary/10"
+                        : "border-border/50 text-muted-foreground hover:text-foreground hover:border-border"
+                    }`}
+                  >
+                    {icon}
+                  </button>
+                ))}
+              </div>
             </div>
           )}
 
@@ -987,7 +1012,12 @@ export default function AlbumDetail() {
               {displayedPhotos.map((photo, i) => (
                 <div key={photo.id} className="relative group">
                   <WatermarkedImage
-                src={getGalleryPhotoSrc(photo, !!(album.watermarkDisabled || isPhotoPaid(photo.id)))}
+                src={getGalleryPhotoSrc(photo,
+                  // Branded giveaway: allUnlocked but watermarks still active and no real payment → keep watermark in gallery (matches download behaviour)
+                  (isFullyUnlocked && !album.watermarkDisabled && !paidPhotoIdSet.has(photo.id) && !sessionFullAlbum)
+                    ? false
+                    : !!(album.watermarkDisabled || isPhotoPaid(photo.id))
+                )}
                   title={photo.title}
                   selected={isProofing ? starredIds.has(photo.id) : selectedIds.has(photo.id)}
                   onSelect={() => isProofing ? toggleStar(photo.id) : toggleSelect(photo.id)}
