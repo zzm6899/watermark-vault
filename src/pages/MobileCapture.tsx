@@ -8,8 +8,7 @@ import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { getBookings, getAlbums, getSettings, updateAlbum, addAlbum, updateBooking } from "@/lib/storage";
 import { uploadPhotosToServer, isServerMode, recheckServer, sendEmail } from "@/lib/api";
-import { generateThumbnail } from "@/lib/image-utils";
-import { bakeWatermarkedAsset } from "@/lib/watermark-utils";
+
 import CameraUsb from "@/plugins/camera-usb";
 import type { CameraFile } from "@/plugins/camera-usb";
 import { Capacitor } from "@capacitor/core";
@@ -402,8 +401,7 @@ function MobileCaptureInner() {
             setImportLabel(`${i + 1} / ${imported.length} — ${f.localPath?.split("/").pop() ?? "photo"}`);
             const results = await uploadPhotosToServer([file], () => {});
             for (const r of results) {
-              const thumb = await generateThumbnail(r.url, 300, 0.6).catch(() => r.url);
-              newPhotos.push({ id: r.id, src: r.url, thumbnail: thumb, title: r.originalName, width: 0, height: 0, proofing: true });
+              newPhotos.push({ id: r.id, src: r.url, thumbnail: r.url + "?w=300", title: r.originalName, width: 0, height: 0, proofing: true });
             }
           } catch (e) {
             console.error("Upload error:", e);
@@ -435,26 +433,6 @@ function MobileCaptureInner() {
         setImportLabel("");
         if (newPhotos.length > 0) toast.success(`${newPhotos.length} photos imported`);
 
-        // Bake watermarked variants in background so gallery shows correct previews
-        const wmSettings = getSettings();
-        const wmVersion = (wmSettings as any).watermarkVersion ?? 0;
-        for (const np of newPhotos) {
-          if (!np.src || np.src.startsWith("data:")) continue;
-          Promise.all([
-            bakeWatermarkedAsset(np.src, wmSettings, "thumbnail"),
-            bakeWatermarkedAsset(np.src, wmSettings, "medium"),
-            bakeWatermarkedAsset(np.src, wmSettings, "full"),
-          ]).then(([thumbnailWatermarked, mediumWatermarked, fullWatermarked]) => {
-            const patch = { thumbnailWatermarked, mediumWatermarked, fullWatermarked, watermarkVersion: wmVersion, watermarkUpdatedAt: new Date().toISOString() };
-            setTargetAlbum(prev => {
-              if (!prev) return prev;
-              const photos = prev.photos.map(p => p.id === np.id ? { ...p, ...patch } : p);
-              const upd = { ...prev, photos };
-              updateAlbum(upd);
-              return upd;
-            });
-          }).catch(() => {});
-        }
         // Warn about failures separately so success count is honest
       }
       // Store "name:size" keys — handles name collisions across sessions
@@ -507,38 +485,16 @@ function MobileCaptureInner() {
     try {
       if (serverOnline) {
         const results = await uploadPhotosToServer(imageFiles, (done, total) => setUploadProgress(Math.round(done/total*100)));
-        const newPhotos: Photo[] = [];
-        for (const r of results) {
-          const thumb = await generateThumbnail(r.url, 300, 0.6).catch(() => r.url);
-          newPhotos.push({ id: r.id, src: r.url, thumbnail: thumb, title: r.originalName, width: 0, height: 0, proofing: true });
-        }
+        // Use server-side thumbnails — no client-side canvas work needed
+        const newPhotos: Photo[] = results.map(r => ({
+          id: r.id, src: r.url, thumbnail: r.url + "?w=300", title: r.originalName, width: 0, height: 0, proofing: true,
+        }));
         const fresh = getAlbums().find(a => a.id === targetAlbum.id) || targetAlbum;
         const updated: Album = { ...fresh, photos: [...fresh.photos, ...newPhotos], photoCount: fresh.photos.length + newPhotos.length, coverImage: fresh.coverImage || newPhotos[0]?.src || "" };
         updateAlbum(updated); setTargetAlbum(updated);
         setUploadedCount(p => p + newPhotos.length);
         sessionUploadedRef.current = true;
         toast.success(`${newPhotos.length} photos uploaded`);
-
-        // Bake watermarked variants in background
-        const wmSettings = getSettings();
-        const wmVersion = (wmSettings as any).watermarkVersion ?? 0;
-        for (const np of newPhotos) {
-          if (!np.src || np.src.startsWith("data:")) continue;
-          Promise.all([
-            bakeWatermarkedAsset(np.src, wmSettings, "thumbnail"),
-            bakeWatermarkedAsset(np.src, wmSettings, "medium"),
-            bakeWatermarkedAsset(np.src, wmSettings, "full"),
-          ]).then(([thumbnailWatermarked, mediumWatermarked, fullWatermarked]) => {
-            const patch = { thumbnailWatermarked, mediumWatermarked, fullWatermarked, watermarkVersion: wmVersion, watermarkUpdatedAt: new Date().toISOString() };
-            setTargetAlbum(prev => {
-              if (!prev) return prev;
-              const photos = prev.photos.map(p => p.id === np.id ? { ...p, ...patch } : p);
-              const upd = { ...prev, photos };
-              updateAlbum(upd);
-              return upd;
-            });
-          }).catch(() => {});
-        }
       } else {
         setOfflineQueue(q => [...q, ...imageFiles]);
         toast.info(`${imageFiles.length} file${imageFiles.length !== 1 ? "s" : ""} queued — will upload when server is back`);
@@ -569,11 +525,9 @@ function MobileCaptureInner() {
     setUploading(true); setUploadProgress(0);
     try {
       const results = await uploadPhotosToServer(files, (done, total) => setUploadProgress(Math.round(done / total * 100)));
-      const newPhotos: Photo[] = [];
-      for (const r of results) {
-        const thumb = await generateThumbnail(r.url, 300, 0.6).catch(() => r.url);
-        newPhotos.push({ id: r.id, src: r.url, thumbnail: thumb, title: r.originalName, width: 0, height: 0, proofing: true });
-      }
+      const newPhotos: Photo[] = results.map(r => ({
+        id: r.id, src: r.url, thumbnail: r.url + "?w=300", title: r.originalName, width: 0, height: 0, proofing: true,
+      }));
       const fresh = getAlbums().find(a => a.id === targetAlbum.id) || targetAlbum;
       const upd: Album = { ...fresh, photos: [...fresh.photos, ...newPhotos], photoCount: fresh.photos.length + newPhotos.length, coverImage: fresh.coverImage || newPhotos[0]?.src || "" };
       updateAlbum(upd); setTargetAlbum(upd);

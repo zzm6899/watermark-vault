@@ -2353,36 +2353,20 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
       const results = await uploadPhotosToServer(fileArr, (done, total) => {
         setUploadStats(prev => prev ? { ...prev, done, total } : null);
       });
-      // Add all photos immediately (no thumbnail yet) so none are lost if modal closes
+      // Add all photos immediately — use server-side thumbnails (no heavy client-side canvas work)
       const newPhotos: Photo[] = results.map(r => ({
-        id: r.id, src: r.url, title: r.originalName.replace(/\.[^.]+$/, ""), width: 800, height: 600, uploadedAt: new Date().toISOString(),
+        id: r.id, src: r.url, thumbnail: r.url + "?w=200&wm=0", title: r.originalName.replace(/\.[^.]+$/, ""), width: 800, height: 600, uploadedAt: new Date().toISOString(),
       }));
-      setPhotos(prev => [...prev, ...newPhotos]);
+      const allPhotos = [...photos, ...newPhotos];
+      setPhotos(allPhotos);
+      const newCover = coverImage || (allPhotos[0]?.src ?? "");
       if (!coverImage && newPhotos.length > 0) setCoverImage(newPhotos[0].src);
       setUploadStats(prev => prev ? { ...prev, done: fileArr.length, errors: fileArr.length - results.length, savedBytes: 0 } : null);
       if (results.length > 0) toast.success(`${results.length} photo${results.length !== 1 ? "s" : ""} uploaded`);
 
-      // Bake thumbnail + watermarked variants in background
-      const currentSettings = getSettings() as AppSettings & { watermarkVersion?: number };
-      const wmVersion = currentSettings.watermarkVersion ?? 0;
-      const wmDisabledForAlbum = watermarkDisabled;
-      for (const r of results) {
-        generateThumbnail(r.url).then(thumb => {
-          setPhotos(prev => prev.map(p => p.id === r.id ? { ...p, thumbnail: thumb } : p));
-        }).catch(() => {});
-
-        if (!wmDisabledForAlbum) {
-          // Bake watermarked variants so gallery shows correctly without server round-trip
-          Promise.all([
-            bakeWatermarkedAsset(r.url, currentSettings, "thumbnail"),
-            bakeWatermarkedAsset(r.url, currentSettings, "medium"),
-            bakeWatermarkedAsset(r.url, currentSettings, "full"),
-          ]).then(([thumbnailWatermarked, mediumWatermarked, fullWatermarked]) => {
-            const patch = { thumbnailWatermarked, mediumWatermarked, fullWatermarked, watermarkVersion: wmVersion, watermarkUpdatedAt: new Date().toISOString() };
-            setPhotos(prev => prev.map(p => p.id === r.id ? { ...p, ...patch } : p));
-            persistPhotoVariants(r.id, patch);
-          }).catch(() => {});
-        }
+      // Auto-save for existing albums so photos persist immediately (no manual save needed)
+      if (album?.id && onUpdate) {
+        onUpdate({ ...album, photos: allPhotos, photoCount: allPhotos.length, coverImage: newCover });
       }
     } else {
       // Fallback: compress to base64 for localStorage
@@ -2951,28 +2935,19 @@ function PhotosView() {
       // Step 3: Find orphaned files on disk not tracked anywhere
       const orphanedFileNames = stats.allFileNames.filter(f => !knownFilenames.has(f));
 
-      if (orphanedFileNames.length > 0) {
-        // Delete orphans from disk
-        const { deleted } = await bulkDeleteFiles(orphanedFileNames);
-        toast.success(`Deleted ${deleted} orphaned file(s) from disk`);
-      }
-
-      if (orphanedFileNames.length === 0 && repairedAlbums === 0) {
-        toast.info("All storage files are already tracked — no orphans found");
-        setSyncing(false);
-        return;
-      }
-
       const messages: string[] = [];
-      if (orphanedFileNames.length > 0) messages.push(`Cleaned ${orphanedFileNames.length} orphan(s) from disk`);
-      if (repairedAlbums > 0) messages.push(`Repaired ${repairedAlbums} album(s)`);
+      if (repairedAlbums > 0) messages.push(`Repaired ${repairedAlbums} album(s) with missing file references`);
+      if (orphanedFileNames.length > 0) messages.push(`${orphanedFileNames.length} untracked file(s) on disk (not in any album)`);
 
-      toast.success(messages.join(", ") || "Sync complete");
+      if (messages.length === 0) {
+        toast.info("All storage files are tracked — nothing to fix");
+      } else {
+        toast.success(messages.join(" · "));
+      }
 
-      // Refresh albums state
+      // Refresh albums state and notify StorageView to refresh its stats
       setAlbumsState(getAlbums());
-      // Refresh storage stats
-      // Storage stats will refresh on next visit
+      window.dispatchEvent(new CustomEvent("storage-synced"));
     } catch { toast.error("Failed to sync from storage"); }
     setSyncing(false);
   };
@@ -3058,28 +3033,14 @@ function PhotosView() {
       const results = await uploadPhotosToServer(fileArr, (done, total) => {
         setUploadStats(prev => prev ? { ...prev, done, total } : null);
       });
-      // Add all photos immediately so none are lost if tab closes
+      // Add all photos immediately — use server-side thumbnails (no heavy client-side canvas work)
       const newPhotos: Photo[] = results.map(r => ({
-        id: r.id, src: r.url, title: r.originalName.replace(/\.[^.]+$/, ""), width: 800, height: 600,
+        id: r.id, src: r.url, thumbnail: r.url + "?w=200&wm=0", title: r.originalName.replace(/\.[^.]+$/, ""), width: 800, height: 600,
       }));
       for (const photo of newPhotos) addPhotoToTarget(photo);
       setUploadStats(prev => prev ? { ...prev, done: fileArr.length, errors: fileArr.length - results.length } : null);
       const target = selectedAlbum ? `"${selectedAlbum.title}"` : "library";
       if (results.length > 0) toast.success(`${results.length} photos uploaded to ${target}`);
-      // Generate thumbnails in background (non-blocking)
-      for (const r of results) {
-        generateThumbnail(r.url).then(thumb => {
-          // Update in library or album depending on target
-          if (selectedAlbum) {
-            setAlbumsState(prev => prev.map(a => a.id === selectedAlbum.id
-              ? { ...a, photos: a.photos.map(p => p.id === r.id ? { ...p, thumbnail: thumb } : p) }
-              : a
-            ));
-          } else {
-            setLibraryPhotosState(prev => prev.map(p => p.id === r.id ? { ...p, thumbnail: thumb } : p));
-          }
-        }).catch(() => {});
-      }
     } else {
       for (const file of fileArr) {
         try {
@@ -4238,6 +4199,13 @@ function StorageView() {
       } catch {}
     }
   }, []);
+
+  // Listen for storage sync events so counts refresh after AlbumsView sync
+  useEffect(() => {
+    const handler = () => { refreshStorageState(); };
+    window.addEventListener("storage-synced", handler);
+    return () => window.removeEventListener("storage-synced", handler);
+  }, [refreshStorageState]);
 
   const applyThumbnailToStores = useCallback((photoId: string, thumb?: string) => {
     if (!thumb) return;

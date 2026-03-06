@@ -95,6 +95,7 @@ function getStorageUsage() {
     photoCount: photoFiles.length,
     dbSizeBytes: fs.existsSync(DB_FILE) ? fs.statSync(DB_FILE).size : 0,
     uploadsSizeBytes: totalBytes - (fs.existsSync(DB_FILE) ? fs.statSync(DB_FILE).size : 0),
+    allFileNames: photoFiles.map(f => f.name),
     photoFiles: photoFiles.sort((a, b) => b.size - a.size).slice(0, 50),
     disk: diskStats,
     dataDir: DATA_DIR,
@@ -201,13 +202,17 @@ async function buildWatermarkOverlay(imgWidth, imgHeight, wm) {
       const wmMeta = await sharp(wmResized).metadata();
 
       if (wm.position === "tiled") {
-        // Build a tiled SVG overlay
+        // Rotate watermark -30° for diagonal tile pattern
+        const rotatedWm = await sharp(wmResized)
+          .rotate(-30, { background: { r: 0, g: 0, b: 0, alpha: 0 } })
+          .png()
+          .toBuffer();
         const tiles = [];
         const gapX = Math.round(imgWidth * 0.35);
         const gapY = Math.round(imgHeight * 0.25);
         for (let y = -gapY; y < imgHeight + gapY; y += gapY) {
           for (let x = -gapX; x < imgWidth + gapX; x += gapX) {
-            tiles.push({ input: wmResized, top: Math.round(y), left: Math.round(x), blend: "over" });
+            tiles.push({ input: rotatedWm, top: Math.round(y), left: Math.round(x), blend: "over" });
           }
         }
         // Create transparent canvas and composite tiles
@@ -215,7 +220,6 @@ async function buildWatermarkOverlay(imgWidth, imgHeight, wm) {
           create: { width: imgWidth, height: imgHeight, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } }
         });
         const tiled = await canvas.composite(tiles).png().toBuffer();
-        // Apply opacity via modulate isn't ideal — use linear multiply
         return { input: tiled, blend: "over", opacity: wm.opacity };
       } else {
         // Single positioned watermark
