@@ -1585,6 +1585,20 @@ function EventTypesView() {
     toast.success("Event type deleted");
   };
 
+  const handleDuplicate = (et: EventType) => {
+    const copy: EventType = {
+      ...structuredClone(et),
+      id: generateId("et"),
+      title: `${et.title} (Copy)`,
+      active: false,
+      // Give each duplicated question a fresh ID so they're independent of the original
+      questions: structuredClone(et.questions).map(q => ({ ...q, id: generateId("q") })),
+    };
+    addEventType(copy);
+    refresh();
+    toast.success("Event type duplicated");
+  };
+
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
       <div className="flex items-center justify-between mb-6">
@@ -1636,6 +1650,9 @@ function EventTypesView() {
               </div>
               <div className="flex items-center gap-3 pl-5 sm:pl-0">
                 <Switch checked={et.active} onCheckedChange={() => toggleActive(et.id)} />
+                <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-foreground" title="Duplicate" onClick={() => handleDuplicate(et)}>
+                  <Copy className="w-4 h-4" />
+                </Button>
                 <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-foreground" onClick={() => setEditing(et)}>
                   <Edit className="w-4 h-4" />
                 </Button>
