@@ -209,19 +209,6 @@ export default function AlbumDetail() {
     });
   }, []));
 
-  // Keyboard navigation for lightbox
-  useEffect(() => {
-    if (lightboxPhotoId === null) return;
-    const handler = (e: KeyboardEvent) => {
-      const lbPhotos = displayedPhotos;
-      const lbIdx = lbPhotos.findIndex((p: any) => p.id === lightboxPhotoId);
-      if (e.key === "Escape") setLightboxPhotoId(null);
-      if (e.key === "ArrowLeft" && lbIdx > 0) setLightboxPhotoId(lbPhotos[lbIdx - 1].id);
-      if (e.key === "ArrowRight" && lbIdx < lbPhotos.length - 1) setLightboxPhotoId(lbPhotos[lbIdx + 1].id);
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [lightboxPhotoId, displayedPhotos]);
 
   if (!album || album.enabled === false) {
     return (
@@ -294,6 +281,21 @@ export default function AlbumDetail() {
   // Lightbox photo lookup — must be after displayedPhotos
   const lbPhoto = lightboxPhotoId ? displayedPhotos.find((p: any) => p.id === lightboxPhotoId) ?? null : null;
   const lbIdx = lbPhoto ? displayedPhotos.findIndex((p: any) => p.id === lightboxPhotoId) : -1;
+
+  // Keyboard navigation for lightbox
+  useEffect(() => {
+    if (lightboxPhotoId === null) return;
+    const handler = (e: KeyboardEvent) => {
+      const lbPhotos = displayedPhotos;
+      const currentIdx = lbPhotos.findIndex((p: any) => p.id === lightboxPhotoId);
+      if (e.key === "Escape") setLightboxPhotoId(null);
+      if (e.key === "ArrowLeft" && currentIdx > 0) setLightboxPhotoId(lbPhotos[currentIdx - 1].id);
+      if (e.key === "ArrowRight" && currentIdx < lbPhotos.length - 1) setLightboxPhotoId(lbPhotos[currentIdx + 1].id);
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [lightboxPhotoId, displayedPhotos]);
+
   // During proofing, starred photos = client's current picks
   const starredIds = new Set<string>(album.photos.filter((p: any) => p.starred).map(p => p.id));
 
@@ -1227,7 +1229,7 @@ export default function AlbumDetail() {
           >
             {/* Close button */}
             <button className="absolute top-4 right-4 z-10 w-10 h-10 rounded-full bg-card/80 backdrop-blur-sm flex items-center justify-center text-foreground hover:bg-card transition-colors"
-              onClick={() => setLightboxIndex(null)}>
+              onClick={() => setLightboxPhotoId(null)}>
               <X className="w-5 h-5" />
             </button>
 
