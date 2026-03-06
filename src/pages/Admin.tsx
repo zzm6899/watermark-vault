@@ -2349,7 +2349,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
     setUploadStats({ total: fileArr.length, done: 0, errors: 0, savedBytes: 0 });
 
     if (isServerMode()) {
-      // Upload to server — files saved to disk
+      // Upload to server — files saved to TrueNAS disk
       const results = await uploadPhotosToServer(fileArr, (done, total) => {
         setUploadStats(prev => prev ? { ...prev, done, total } : null);
       });
@@ -2360,34 +2360,15 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
       setPhotos(prev => [...prev, ...newPhotos]);
       if (!coverImage && newPhotos.length > 0) setCoverImage(newPhotos[0].src);
       setUploadStats(prev => prev ? { ...prev, done: fileArr.length, errors: fileArr.length - results.length, savedBytes: 0 } : null);
-      if (results.length > 0) toast.success(`${results.length} photo${results.length !== 1 ? "s" : ""} uploaded`);
-
-      // Bake thumbnail + watermarked variants in background
-      const currentSettings = getSettings() as AppSettings & { watermarkVersion?: number };
-      const wmVersion = currentSettings.watermarkVersion ?? 0;
-      const wmDisabledForAlbum = watermarkDisabled;
+      if (results.length > 0) toast.success(`${results.length} photos uploaded to server`);
+      // Generate thumbnails in background (non-blocking)
       for (const r of results) {
         generateThumbnail(r.url).then(thumb => {
           setPhotos(prev => prev.map(p => p.id === r.id ? { ...p, thumbnail: thumb } : p));
         }).catch(() => {});
-
-        if (!wmDisabledForAlbum) {
-          // Bake watermarked variants so gallery shows correctly without server round-trip
-          Promise.all([
-            bakeWatermarkedAsset(r.url, currentSettings, "thumbnail"),
-            bakeWatermarkedAsset(r.url, currentSettings, "medium"),
-            bakeWatermarkedAsset(r.url, currentSettings, "full"),
-          ]).then(([thumbnailWatermarked, mediumWatermarked, fullWatermarked]) => {
-            const patch = { thumbnailWatermarked, mediumWatermarked, fullWatermarked, watermarkVersion: wmVersion, watermarkUpdatedAt: new Date().toISOString() };
-            setPhotos(prev => prev.map(p => p.id === r.id ? { ...p, ...patch } : p));
-            persistPhotoVariants(r.id, patch);
-          }).catch(() => {});
-        }
       }
     } else {
       // Fallback: compress to base64 for localStorage
-      const currentSettings = getSettings() as AppSettings & { watermarkVersion?: number };
-      const wmVersion = currentSettings.watermarkVersion ?? 0;
       for (const file of fileArr) {
         try {
           const result = await compressImage(file);
@@ -2396,18 +2377,6 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
           setPhotos(prev => [...prev, { id, src: result.src, thumbnail: thumb, title: file.name.replace(/\.[^.]+$/, ""), width: result.width, height: result.height }]);
           if (!coverImage) setCoverImage(result.src);
           setUploadStats(prev => prev ? { ...prev, done: prev.done + 1, savedBytes: prev.savedBytes + (result.originalSize - result.compressedSize) } : null);
-          // Bake watermarked variants in background
-          if (!watermarkDisabled) {
-            Promise.all([
-              bakeWatermarkedAsset(result.src, currentSettings, "thumbnail"),
-              bakeWatermarkedAsset(result.src, currentSettings, "medium"),
-              bakeWatermarkedAsset(result.src, currentSettings, "full"),
-            ]).then(([thumbnailWatermarked, mediumWatermarked, fullWatermarked]) => {
-              const patch = { thumbnailWatermarked, mediumWatermarked, fullWatermarked, watermarkVersion: wmVersion, watermarkUpdatedAt: new Date().toISOString() };
-              setPhotos(prev => prev.map(p => p.id === id ? { ...p, ...patch } : p));
-              persistPhotoVariants(id, patch);
-            }).catch(() => {});
-          }
         } catch {
           setUploadStats(prev => prev ? { ...prev, done: prev.done + 1, errors: prev.errors + 1 } : null);
           toast.error(`Failed to process: ${file.name}`);
@@ -4209,22 +4178,7 @@ function StorageView() {
   const [libraryPhotos, setLibraryPhotosState] = useState(getPhotoLibrary());
   const bookings = getBookings();
   const eventTypes = getEventTypes();
-  const [previewJob, setPreviewJob] = useState<{ running: boolean; mode: "missing" | "all" | "save" | null; done: number; total: number; stage?: string }>(() => {
-    // Hydrate from localStorage in case a save-triggered rebuild is already running
-    const s = readWatermarkRebuildStatus();
-    if (s.running) return { running: true, mode: s.mode ?? "save", done: s.done, total: s.total, stage: s.stage };
-    return { running: false, mode: null, done: 0, total: 0 };
-  });
-
-  // Listen for watermark rebuild status events dispatched by the Settings tab
-  useEffect(() => {
-    const handler = () => {
-      const s = readWatermarkRebuildStatus();
-      setPreviewJob({ running: s.running, mode: s.mode ?? null, done: s.done, total: s.total, stage: s.stage });
-    };
-    window.addEventListener("wm-rebuild-status", handler);
-    return () => window.removeEventListener("wm-rebuild-status", handler);
-  }, []);
+  const [previewJob, setPreviewJob] = useState<{ running: boolean; mode: "missing" | "all" | null; done: number; total: number }>({ running: false, mode: null, done: 0, total: 0 });
 
   const refreshStorageState = useCallback(async () => {
     const nextAlbums = getAlbums();
