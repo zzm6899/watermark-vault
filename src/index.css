@@ -123,57 +123,15 @@
     column-gap: 0;
   }
 
-  /* Tablet */
   @media (max-width: 1024px) {
     .masonry-grid { column-count: 2; }
     .masonry-grid-sm { column-count: 3; }
     .masonry-grid-lg { column-count: 2; }
   }
 
-  /* Mobile — 2-column for small/medium, 1-column for large display size */
   @media (max-width: 640px) {
-    .masonry-grid { column-count: 2; column-gap: 0.5rem; }
-    .masonry-grid-sm { column-count: 2; column-gap: 0.375rem; }
+    .masonry-grid { column-count: 1; }
+    .masonry-grid-sm { column-count: 2; }
     .masonry-grid-lg { column-count: 1; }
-  }
-
-  /* Very small screens */
-  @media (max-width: 375px) {
-    .masonry-grid { column-count: 2; column-gap: 0.375rem; }
-    .masonry-grid-sm { column-count: 2; column-gap: 0.25rem; }
-  }
-
-  /* ── Mobile tap optimizations ── */
-  /* Eliminate 300ms tap delay on interactive elements */
-  a, button, [role="button"], input, label, select, textarea {
-    touch-action: manipulation;
-  }
-
-  /* Improve image rendering quality on high-DPI screens */
-  img {
-    image-rendering: -webkit-optimize-contrast;
-    image-rendering: crisp-edges;
-  }
-
-  /* Gallery images: smooth scale, high quality rendering */
-  .masonry-grid img,
-  .masonry-grid-sm img,
-  .masonry-grid-lg img,
-  .masonry-grid-list img {
-    image-rendering: auto;
-    will-change: opacity;
-  }
-
-  /* Smooth scrolling on gallery pages */
-  .gallery-scroll {
-    -webkit-overflow-scrolling: touch;
-    scroll-behavior: smooth;
-  }
-
-  /* Lightbox: prevent body scroll when open */
-  body.lightbox-open {
-    overflow: hidden;
-    position: fixed;
-    width: 100%;
   }
 }
