@@ -35,11 +35,11 @@ function LightboxImage({ photo, cache, onCacheUpdate, wmDisabled }: {
   onCacheUpdate: (cacheKey: string, url: string) => void;
   wmDisabled?: boolean;
 }) {
-  const previewSrc = photo.thumbnail || photo.src;
-  const photoSrc = buildPhotoSrc(previewSrc, !!wmDisabled);
-  const cacheKey = `${photo.id}:${wmDisabled ? "wm0" : "wm1"}:${photoSrc}`;
+  const previewSrc = buildPhotoSrc(photo.thumbnail || photo.src, !!wmDisabled);
+  const fullSrc = buildPhotoSrc(photo.src, !!wmDisabled);
+  const cacheKey = `${photo.id}:${wmDisabled ? "wm0" : "wm1"}:${fullSrc}`;
 
-  const [src, setSrc] = useState(cache[cacheKey] || photoSrc);
+  const [src, setSrc] = useState(cache[cacheKey] || previewSrc);
 
   useEffect(() => {
     if (cache[cacheKey]) {
@@ -47,14 +47,15 @@ function LightboxImage({ photo, cache, onCacheUpdate, wmDisabled }: {
       return;
     }
 
-    setSrc(photoSrc);
+    // Show the lightweight preview immediately, then upgrade to a full-screen optimized image.
+    setSrc(previewSrc);
 
-    if (photoSrc.startsWith("blob:") || photoSrc.startsWith("data:") || previewSrc !== photo.src) {
+    if (fullSrc.startsWith("blob:") || fullSrc.startsWith("data:")) {
       return;
     }
 
     let cancelled = false;
-    resizeToTargetSize(photoSrc, TARGET_LIGHTBOX_BYTES)
+    resizeToTargetSize(fullSrc, TARGET_LIGHTBOX_BYTES)
       .then(blob => {
         if (cancelled) return;
         const url = URL.createObjectURL(blob);
@@ -62,19 +63,19 @@ function LightboxImage({ photo, cache, onCacheUpdate, wmDisabled }: {
         setSrc(url);
       })
       .catch(() => {
-        /* keep current src */
+        setSrc(previewSrc);
       });
 
     return () => {
       cancelled = true;
     };
-  }, [cache, cacheKey, onCacheUpdate, photo.src, photoSrc, previewSrc]);
+  }, [cache, cacheKey, fullSrc, onCacheUpdate, previewSrc]);
 
   return (
     <img
       src={src}
       alt={photo.title}
-      className="w-auto max-w-[94vw] max-h-[72vh] sm:max-h-[85vh] object-contain rounded-lg"
+      className="max-w-full max-h-full w-full h-full object-contain rounded-lg"
       loading="eager"
       decoding="async"
     />
@@ -209,7 +210,6 @@ export default function AlbumDetail() {
     });
   }, []));
 
-
   if (!album || album.enabled === false) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
@@ -295,7 +295,6 @@ export default function AlbumDetail() {
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [lightboxPhotoId, displayedPhotos]);
-
   // During proofing, starred photos = client's current picks
   const starredIds = new Set<string>(album.photos.filter((p: any) => p.starred).map(p => p.id));
 
@@ -646,103 +645,97 @@ export default function AlbumDetail() {
 
               {_expiryBanner}
 
-              <div className="glass-panel rounded-lg p-4 flex items-center gap-6">
+              <div className="glass-panel rounded-lg p-4 space-y-4">
                 {canDownload ? (
-                  <div className="text-center">
+                  <div className="text-center sm:text-left">
                     <p className="text-lg font-display text-green-400">✓ Unlocked</p>
                     <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">All Photos</p>
                   </div>
                 ) : (
                   <>
-                    <div className="text-center">
-                      <p className="text-lg font-display text-primary">{freeRemaining}</p>
-                      <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Free Left</p>
-                    </div>
-                    <div className="w-px h-8 bg-border" />
-                    <div className="text-center">
-                      <p className="text-lg font-display text-foreground">${album.pricePerPhoto}</p>
-                      <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Per Photo</p>
-                    </div>
-                    <div className="w-px h-8 bg-border" />
-                    <div className="text-center">
-                      <p className="text-lg font-display text-foreground">${album.priceFullAlbum}</p>
-                      <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Full Album</p>
-                    </div>
-                    <div className="w-px h-8 bg-border" />
-                    {/* Email link button */}
-                    {registeredEmail ? (
-                      <div className="text-center group/email">
-                        <div className="cursor-pointer" onClick={() => setShowEmailReg(true)} title="Change email">
-                          <p className="text-[11px] font-body text-green-400 truncate max-w-[100px]">{registeredEmail}</p>
-                          <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground group-hover/email:text-foreground transition-colors">Linked ✓</p>
-                        </div>
-                        <button
-                          onClick={(e) => { e.stopPropagation(); try { localStorage.removeItem(`wv_email_${albumId}`); } catch {} setRegisteredEmail(""); }}
-                          className="text-[9px] font-body text-muted-foreground/30 hover:text-red-400 transition-colors mt-0.5 block w-full leading-none"
-                          title="Unlink email"
-                        >unlink</button>
+                    <div className="grid grid-cols-4 gap-3 sm:gap-4 items-start">
+                      <div className="text-center min-w-0">
+                        <p className="text-lg font-display text-primary">{freeRemaining}</p>
+                        <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground leading-tight">Free Left</p>
                       </div>
-                    ) : (
-                      <button onClick={() => setShowEmailReg(true)} className="text-center hover:opacity-80 transition-opacity">
-                        <p className="text-lg font-display text-muted-foreground">@</p>
-                        <p className="text-[10px] font-body uppercase tracking-wider text-primary">Add Email</p>
-                      </button>
-                    )}
+                      <div className="text-center min-w-0">
+                        <p className="text-lg font-display text-foreground">${album.pricePerPhoto}</p>
+                        <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground leading-tight">Per Photo</p>
+                      </div>
+                      <div className="text-center min-w-0">
+                        <p className="text-lg font-display text-foreground">${album.priceFullAlbum}</p>
+                        <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground leading-tight">Full Album</p>
+                      </div>
+                      {registeredEmail ? (
+                        <div className="text-center group/email min-w-0">
+                          <div className="cursor-pointer" onClick={() => setShowEmailReg(true)} title="Change email">
+                            <p className="text-[10px] sm:text-[11px] font-body text-green-400 truncate">{registeredEmail}</p>
+                            <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground group-hover/email:text-foreground transition-colors leading-tight">Linked ✓</p>
+                          </div>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); try { localStorage.removeItem(`wv_email_${albumId}`); } catch {} setRegisteredEmail(""); }}
+                            className="text-[9px] font-body text-muted-foreground/30 hover:text-red-400 transition-colors mt-0.5 block w-full leading-none"
+                            title="Unlink email"
+                          >unlink</button>
+                        </div>
+                      ) : (
+                        <button onClick={() => setShowEmailReg(true)} className="text-center hover:opacity-80 transition-opacity min-w-0">
+                          <p className="text-lg font-display text-muted-foreground">@</p>
+                          <p className="text-[10px] font-body uppercase tracking-wider text-primary leading-tight">Add Email</p>
+                        </button>
+                      )}
+                    </div>
+
                     {!(album as any).purchasingDisabled && (
-                    <>
-                    <div className="w-px h-8 bg-border" />
-                    {/* Payment CTA(s): hidden when purchasing disabled */}
-                    {previewCheckoutAmount === 0 ? (
-                      <Button
-                        onClick={() => { setShowPaymentChoice(false); handleDownloadFree(); }}
-                        className="w-full gap-3 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-sm h-12"
-                      >
-                        <Download className="w-5 h-5" />
-                        Download Free
-                      </Button>
-                    ) : (
-                      stripeAvailable ? (
-                        <Button
-                          onClick={async () => {
-                            setShowPaymentChoice(false);
-                            setProcessingStripe(true);
-                            const isFullAlbumPurchase =
-                              requestedFullAlbum ||
-                              fullAlbumCheaper ||
-                              selectedIds.size === 0 ||
-                              selectedIds.size === album.photos.length;
-                            const photosBeingPaid = isFullAlbumPurchase
-                              ? []
-                              : album.photos.filter(p => selectedIds.has(p.id) && !paidPhotoIdSet.has(p.id) && !( unpaidSelected.indexOf(p) < freeRemaining ));
-                            const checkoutAmount = isFullAlbumPurchase ? album.priceFullAlbum : paidTotal;
-                            if (!isFullAlbumPurchase && checkoutAmount === 0) {
-                              setProcessingStripe(false);
-                              handleDownloadFree();
-                              return;
-                            }
-                            const result = await createAlbumCheckout({
-                              albumId: album.id,
-                              albumTitle: album.title,
-                              photoCount: isFullAlbumPurchase ? album.photos.length : unpaidSelected.length,
-                              amount: checkoutAmount,
-                              clientEmail: album.clientEmail,
-                              photoIds: isFullAlbumPurchase ? [] : unpaidSelected.map(p => p.id),
-                              isFullAlbum: isFullAlbumPurchase,
-                              sessionKey,
-                            });
-                            setProcessingStripe(false);
-                            if (result.url) window.location.href = result.url;
-                            else toast.error(result.error || "Failed to create checkout session");
-                          }}
-                          disabled={processingStripe}
-                          className="w-full gap-3 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-sm h-12"
-                        >
-                          <CreditCard className="w-5 h-5" />
-                          {processingStripe ? "Redirecting to Stripe..." : "Pay with Card (Stripe)"}
-                        </Button>
-                      ) : null
-                    )}
-                    </>
+                      <div className="pt-1">
+                        {previewCheckoutAmount === 0 ? (
+                          <Button
+                            onClick={() => { setShowPaymentChoice(false); handleDownloadFree(); }}
+                            className="w-full sm:w-auto gap-3 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-sm h-12"
+                          >
+                            <Download className="w-5 h-5" />
+                            Download Free
+                          </Button>
+                        ) : (
+                          stripeAvailable ? (
+                            <Button
+                              onClick={async () => {
+                                setShowPaymentChoice(false);
+                                setProcessingStripe(true);
+                                const isFullAlbumPurchase =
+                                  requestedFullAlbum ||
+                                  fullAlbumCheaper ||
+                                  selectedIds.size === 0 ||
+                                  selectedIds.size === album.photos.length;
+                                const checkoutAmount = isFullAlbumPurchase ? album.priceFullAlbum : paidTotal;
+                                if (!isFullAlbumPurchase && checkoutAmount === 0) {
+                                  setProcessingStripe(false);
+                                  handleDownloadFree();
+                                  return;
+                                }
+                                const result = await createAlbumCheckout({
+                                  albumId: album.id,
+                                  albumTitle: album.title,
+                                  photoCount: isFullAlbumPurchase ? album.photos.length : unpaidSelected.length,
+                                  amount: checkoutAmount,
+                                  clientEmail: album.clientEmail,
+                                  photoIds: isFullAlbumPurchase ? [] : unpaidSelected.map(p => p.id),
+                                  isFullAlbum: isFullAlbumPurchase,
+                                  sessionKey,
+                                });
+                                setProcessingStripe(false);
+                                if (result.url) window.location.href = result.url;
+                                else toast.error(result.error || "Failed to create checkout session");
+                              }}
+                              disabled={processingStripe}
+                              className="w-full sm:w-auto gap-3 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-sm h-12"
+                            >
+                              <CreditCard className="w-5 h-5" />
+                              {processingStripe ? "Redirecting to Stripe..." : "Pay with Card (Stripe)"}
+                            </Button>
+                          ) : null
+                        )}
+                      </div>
                     )}
                   </>
                 )}
@@ -1248,7 +1241,7 @@ export default function AlbumDetail() {
             )}
 
             {/* Photo */}
-            <div className="relative max-w-[90vw] max-h-[90vh]" onClick={(e) => e.stopPropagation()}>
+            <div className="relative flex items-center justify-center w-[96vw] h-[88vh] sm:w-[92vw] sm:h-[90vh] max-w-[1600px]" onClick={(e) => e.stopPropagation()}>
               <LightboxImage
                 photo={lbPhoto}
                 cache={lightboxSrcCache}
