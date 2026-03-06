@@ -9,6 +9,16 @@ const rateLimit = require("express-rate-limit");
 const { registerRoutes: registerGoogleCalendarRoutes } = require("./google-calendar");
 const { registerRoutes: registerEmailRoutes } = require("./email");
 const { registerRoutes: registerStripeRoutes } = require("./stripe");
+const { registerRoutes: registerGoogleSheetsRoutes } = require("./google-sheets");
+const {
+  sendDiscordEmbed,
+  notifyNewBooking,
+  notifyPayment,
+  notifyBookingUpdate,
+  notifyAlbumPurchase,
+  notifyProofingSubmission,
+  notifyWaitlistNotified,
+} = require("./discord");
 
 const app = express();
 // Required for express-rate-limit to correctly identify clients behind a reverse proxy
@@ -671,10 +681,204 @@ app.post("/api/download/zip", downloadZipLimiter, async (req, res) => {
   await archive.finalize();
 });
 
+// ── Discord webhook endpoints ─────────────────────────
+/** Test a Discord webhook URL by sending a sample embed. */
+app.post("/api/discord/test", async (req, res) => {
+  const { webhookUrl } = req.body || {};
+  if (!webhookUrl || typeof webhookUrl !== "string") {
+    return res.status(400).json({ ok: false, error: "webhookUrl required" });
+  }
+  try {
+    await sendDiscordEmbed(webhookUrl, {
+      embeds: [{
+        title: "✅ Watermark Vault — Connection Test",
+        color: 0x7c3aed,
+        description: "Your Discord webhook is connected and working correctly.",
+        fields: [
+          { name: "Status", value: "✅ Connected", inline: true },
+          { name: "Service", value: "Watermark Vault", inline: true },
+        ],
+        footer: { text: "Watermark Vault · Discord Integration" },
+        timestamp: new Date().toISOString(),
+      }],
+    });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message || "Failed to send test message" });
+  }
+});
+
+/** Generic Discord notification endpoint — used by frontend for custom events. */
+app.post("/api/discord/notify", async (req, res) => {
+  const db = readDb();
+  const settings = db["wv_settings"];
+  const parsed = typeof settings === "string" ? JSON.parse(settings) : (settings || {});
+  const webhookUrl = parsed?.discordWebhookUrl;
+  if (!webhookUrl) return res.json({ ok: true, skipped: true });
+
+  const { event, type, booking, album, payment, photoCount, clientNote } = req.body || {};
+  const eventType = event || type;
+
+  try {
+    switch (eventType) {
+      case "new-booking":
+        if (parsed?.discordNotifyBookings !== false && booking) await notifyNewBooking(webhookUrl, booking);
+        break;
+      case "booking-update":
+      case "booking-status":
+        if (parsed?.discordNotifyBookings !== false && booking) await notifyBookingUpdate(webhookUrl, booking, req.body.oldStatus || booking.oldStatus, req.body.newStatus || booking.newStatus);
+        break;
+      case "payment":
+        if (parsed?.discordNotifyBookings !== false && booking && payment) await notifyPayment(webhookUrl, booking, payment);
+        break;
+      case "album-purchase":
+        if (parsed?.discordNotifyDownloads !== false && album) await notifyAlbumPurchase(webhookUrl, album, req.body.purchaseType || "full", req.body.amount || 0, req.body.email);
+        break;
+      case "proofing-submission":
+        if (parsed?.discordNotifyProofing !== false && album) await notifyProofingSubmission(webhookUrl, album, photoCount || 0, clientNote);
+        break;
+      default:
+        // Generic passthrough embed
+        if (req.body.embeds) await sendDiscordEmbed(webhookUrl, req.body);
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("Discord notify error:", err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── Proofing submission endpoint ──────────────────────
+app.post("/api/proofing/submit", async (req, res) => {
+  const { albumId, selectedPhotoIds, clientNote } = req.body || {};
+  if (!albumId || !Array.isArray(selectedPhotoIds)) {
+    return res.status(400).json({ ok: false, error: "albumId and selectedPhotoIds required" });
+  }
+  try {
+    const db = readDb();
+    const albums = db["wv_albums"];
+    const parsed = typeof albums === "string" ? JSON.parse(albums) : (Array.isArray(albums) ? albums : []);
+    const idx = parsed.findIndex(a => a.id === albumId);
+    if (idx === -1) return res.status(404).json({ ok: false, error: "Album not found" });
+
+    const album = parsed[idx];
+
+    // Mark starred photos and record the round
+    const updatedPhotos = (album.photos || []).map(p => ({
+      ...p,
+      starred: selectedPhotoIds.includes(p.id),
+    }));
+
+    const rounds = album.proofingRounds || [];
+    const submissionData = { selectedPhotoIds, clientNote: clientNote || undefined, submittedAt: new Date().toISOString() };
+    let updatedRounds;
+    if (rounds.length > 0) {
+      // Update the most recent round with the client's selections
+      updatedRounds = rounds.map((r, i) =>
+        i === rounds.length - 1 ? { ...r, ...submissionData } : r
+      );
+    } else {
+      updatedRounds = [{ roundNumber: 1, sentAt: new Date().toISOString(), ...submissionData }];
+    }
+
+    const updatedAlbum = { ...album, photos: updatedPhotos, proofingStage: "selections-submitted", proofingRounds: updatedRounds };
+    parsed[idx] = updatedAlbum;
+    db["wv_albums"] = JSON.stringify(parsed);
+    writeDb(db);
+
+    // Fire discord notification if configured
+    const settings = db["wv_settings"];
+    const settingsParsed = typeof settings === "string" ? JSON.parse(settings) : (settings || {});
+    if (settingsParsed?.discordWebhookUrl && settingsParsed?.discordNotifyProofing !== false) {
+      notifyProofingSubmission(settingsParsed.discordWebhookUrl, updatedAlbum, selectedPhotoIds.length, clientNote).catch(() => {});
+    }
+
+    res.json({ ok: true, album: updatedAlbum });
+  } catch (err) {
+    console.error("Proofing submit error:", err.message);
+    res.status(500).json({ ok: false, error: "Failed to save proofing picks" });
+  }
+});
+
+// ── Cache warm / force-render ─────────────────────────
+// mode=warm  → thumb variants only, skip files that already exist in cache
+// mode=force → all variants (thumb + medium + full), overwrite everything
+const cacheWarmLimiter = rateLimit({ windowMs: 60_000, max: 1, standardHeaders: true, legacyHeaders: false, message: { error: "A cache warm job is already running — please wait" } });
+app.post("/api/cache/warm", cacheWarmLimiter, async (req, res) => {
+  const mode = (req.query.mode || req.body?.mode || "warm");
+  const forceAll = mode === "force";
+  const sizesToRender = forceAll ? ["thumb", "medium", "full"] : ["thumb"];
+
+  const cacheDir = path.join(UPLOADS_DIR, "_cache");
+  fs.mkdirSync(cacheDir, { recursive: true });
+
+  res.setHeader("Content-Type", "application/x-ndjson");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Transfer-Encoding", "chunked");
+
+  let files;
+  try {
+    files = fs.readdirSync(UPLOADS_DIR).filter(f => {
+      const ext = path.extname(f).toLowerCase();
+      return [".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif"].includes(ext) && !f.startsWith("_");
+    });
+  } catch {
+    res.end(JSON.stringify({ ok: false, error: "Cannot read uploads directory" }) + "\n");
+    return;
+  }
+
+  const total = files.length;
+  let done = 0;
+  let generated = 0;
+  let skipped = 0;
+  let failed = 0;
+
+  const modeLabel = forceAll ? "force-rendering all variants" : "warming thumbnails";
+  res.write(JSON.stringify({ progress: true, done: 0, total, generated: 0, skipped: 0, failed: 0, stage: `Starting ${modeLabel} for ${total} photos…` }) + "\n");
+
+  for (const filename of files) {
+    const filepath = path.join(UPLOADS_DIR, filename);
+    const baseName = path.basename(filename, path.extname(filename));
+
+    for (const sizeLabel of sizesToRender) {
+      for (const watermarked of [true, false]) {
+        const cacheFile = path.join(cacheDir, getCacheFilename(baseName, sizeLabel, watermarked));
+        // In warm mode skip existing; in force mode always overwrite
+        if (!forceAll && fs.existsSync(cacheFile)) { skipped++; continue; }
+        try {
+          const targetSize = sizeLabel === "thumb" ? 700 : sizeLabel === "medium" ? 1400 : null;
+          let pipeline = targetSize
+            ? sharp(filepath).resize(targetSize, null, { fit: "inside", withoutEnlargement: true })
+            : sharp(filepath);
+          if (watermarked) {
+            const meta = await sharp(filepath).metadata();
+            const imgW = meta.width || (targetSize || 2000);
+            const imgH = meta.height || (targetSize || 2000);
+            const wm = getWatermarkSettings();
+            const overlay = await buildWatermarkOverlay(imgW, imgH, wm);
+            pipeline = pipeline.composite([overlay]);
+          }
+          const buf = await pipeline.jpeg({ quality: 88, progressive: true }).toBuffer();
+          fs.writeFileSync(cacheFile, buf);
+          generated++;
+        } catch (err) { failed++; console.error(`Cache warm error [${sizeLabel}/${watermarked ? "wm" : "clean"}] ${filename}:`, err.message); }
+      }
+    }
+
+    done++;
+    if (done % 5 === 0 || done === total) {
+      res.write(JSON.stringify({ progress: true, done, total, generated, skipped, failed, stage: `${done}/${total} — ${filename}` }) + "\n");
+    }
+  }
+
+  res.end(JSON.stringify({ ok: true, done: total, total, generated, skipped, failed, stage: "Complete" }) + "\n");
+});
+
 // ── Integrations ──────────────────────────────────────
 registerGoogleCalendarRoutes(app);
 registerEmailRoutes(app);
 registerStripeRoutes(app);
+registerGoogleSheetsRoutes(app);
 
 // ── Serve React app ───────────────────────────────────
 const distPath = path.join(__dirname, "../dist");

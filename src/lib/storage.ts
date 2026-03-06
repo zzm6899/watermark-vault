@@ -199,6 +199,9 @@ const defaultSettings: AppSettings = {
   instagramFieldEnabled: true,
   notificationEmailTemplate: "Hey {name}, your photos are ready! Check them out here: {link}",
   discordWebhookUrl: "",
+  discordNotifyBookings: true,
+  discordNotifyDownloads: true,
+  discordNotifyProofing: true,
   proofingEnabled: false,
 };
 

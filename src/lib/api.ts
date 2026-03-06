@@ -182,6 +182,43 @@ export async function getCacheStats(): Promise<{ total: number; breakdown: Cache
   }
 }
 
+/** Stream warm-cache progress. Calls onProgress for each chunk until done.
+ *  mode="warm"  → thumbnails only, skip already-cached files
+ *  mode="force" → all variants (thumb + medium + full), overwrite everything
+ */
+export async function warmCache(
+  mode: "warm" | "force",
+  onProgress: (p: { done: number; total: number; generated: number; skipped: number; failed: number; stage: string }) => void
+): Promise<{ ok: boolean; generated: number; skipped: number; failed: number } | null> {
+  if (!(await checkServer())) return null;
+  try {
+    const res = await fetch(`/api/cache/warm?mode=${mode}`, { method: "POST" });
+    if (!res.ok || !res.body) return null;
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    let last = { ok: false, generated: 0, skipped: 0, failed: 0 };
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split("\n");
+      buf = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const data = JSON.parse(line);
+          if (data.progress) onProgress(data);
+          else last = data;
+        } catch { /* ignore malformed */ }
+      }
+    }
+    return last;
+  } catch {
+    return null;
+  }
+}
+
 // ── Stripe ──────────────────────────────────────────────
 
 export async function getStripeStatus(): Promise<{ configured: boolean; publishableKey: string | null }> {
