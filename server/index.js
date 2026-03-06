@@ -5,6 +5,7 @@ const path = require("path");
 const fs = require("fs");
 const sharp = require("sharp");
 const archiver = require("archiver");
+const rateLimit = require("express-rate-limit");
 const { registerRoutes: registerGoogleCalendarRoutes } = require("./google-calendar");
 const { registerRoutes: registerEmailRoutes } = require("./email");
 const { registerRoutes: registerStripeRoutes } = require("./stripe");
@@ -127,21 +128,9 @@ app.post("/api/upload", upload.array("photos", 100), (req, res) => {
   res.json({ files });
 });
 
-// ── Simple in-memory rate limiter (one call per window) ─────
-function makeRateLimiter(windowMs) {
-  let lastCallAt = 0;
-  return (_req, res, next) => {
-    const now = Date.now();
-    if (now - lastCallAt < windowMs) {
-      return res.status(429).json({ error: "Too many requests — please wait before retrying" });
-    }
-    lastCallAt = now;
-    next();
-  };
-}
-
 // ── Delete ALL uploaded photos from disk ───────────────
-app.delete("/api/upload/all", makeRateLimiter(10_000), async (_req, res) => {
+const deleteAllLimiter = rateLimit({ windowMs: 10_000, max: 1, standardHeaders: true, legacyHeaders: false, message: { error: "Too many requests — please wait before retrying" } });
+app.delete("/api/upload/all", deleteAllLimiter, async (_req, res) => {
   try {
     const files = fs.readdirSync(UPLOADS_DIR);
     let deleted = 0;
@@ -573,7 +562,8 @@ app.post("/api/upload/bulk-delete", async (req, res) => {
 // Accepts either:
 //   { filenames: string[], sessionKey, albumId }   — all clean originals (legacy)
 //   { files: [{filename, clean}], sessionKey, albumId } — per-file clean/watermarked
-app.post("/api/download/zip", makeRateLimiter(5_000), async (req, res) => {
+const downloadZipLimiter = rateLimit({ windowMs: 5_000, max: 1, standardHeaders: true, legacyHeaders: false, message: { error: "Too many requests — please wait before retrying" } });
+app.post("/api/download/zip", downloadZipLimiter, async (req, res) => {
   const { filenames, files, sessionKey, albumId } = req.body;
 
   // Normalise to a [{filename, clean}] array regardless of which format was sent

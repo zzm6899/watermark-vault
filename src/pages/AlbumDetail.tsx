@@ -28,6 +28,9 @@ import type { Album, AlbumDownloadRecord, DownloadQuality, DownloadHistoryEntry,
 
 const TARGET_LIGHTBOX_BYTES = 600 * 1024; // ~600KB
 
+/** Type for Stripe checkout params — defined at file level to avoid re-creation on every render. */
+type StripeCheckoutParams = Parameters<typeof createAlbumCheckout>[0];
+
 /** Uses baked watermarked variants for unpaid photos and clean assets for unlocked photos. */
 function LightboxImage({ photo, cache, onCacheUpdate, wmDisabled, watermarkVersion }: {
   photo: Photo;
@@ -185,6 +188,9 @@ export default function AlbumDetail() {
   const [requestedFullAlbum, setRequestedFullAlbum] = useState(false);
   // When user explicitly requests bank transfer flow
   const [requestedBankTransfer, setRequestedBankTransfer] = useState(false);
+  // Pending Stripe checkout params — set when email is required before we can launch checkout
+  
+  const [pendingStripeParams, setPendingStripeParams] = useState<StripeCheckoutParams | null>(null);
 
   // Proofing state
   const [proofingClientNote, setProofingClientNote] = useState("");
@@ -355,19 +361,19 @@ export default function AlbumDetail() {
   };
 
   /**
-   * A photo download is watermark-free when:
-   *  - Watermarks are explicitly disabled for this album (trusted client / gifted session), OR
-   *  - The client has actually paid for the photo (Stripe per-photo or full-album, bank transfer).
+   * A photo download is watermark-free EXCEPT when the admin has set "All Downloads Unlocked"
+   * with watermarks still ON and the client has not actually paid for the photo.
+   * In that case the photographer wants branded (watermarked) copies for freely distributed photos.
    *
-   * Admin "All Downloads Unlocked" alone keeps watermarks because the photographer may still want
-   * their branding on freely-distributed copies.  Only `watermarkDisabled` or real payment
-   * removes the mark.
+   * Every other case — free-tier quota, individual Stripe/bank payment, full-album purchase,
+   * watermarks explicitly disabled — serves the clean original.
    */
   const isCleanDownload = (photoId: string): boolean => {
-    if (album.watermarkDisabled) return true;
-    if (sessionFullAlbum) return true;
-    if (paidPhotoIdSet.has(photoId)) return true;
-    return false;
+    // Admin branded giveaway: allUnlocked=true but watermarks still enabled and no real payment
+    if (isFullyUnlocked && !album.watermarkDisabled && !paidPhotoIdSet.has(photoId) && !sessionFullAlbum) {
+      return false;
+    }
+    return true; // free-tier, paid, watermarkDisabled, sessionFullAlbum — all get clean originals
   };
 
   /** Returns the URL to use when downloading a photo.
@@ -630,6 +636,55 @@ export default function AlbumDetail() {
     setShowPaymentChoice(true);
   };
 
+  /**
+   * Launch Stripe checkout.  If the buyer hasn't provided their email yet,
+   * save the params and show the email capture dialog (no Skip allowed) so
+   * we can log the purchase to their account before redirecting.
+   */
+  const launchStripe = async (params: StripeCheckoutParams) => {
+    if (!registeredEmail) {
+      // Store params so we can resume after email is captured
+      setPendingStripeParams(params);
+      setShowEmailReg(true);
+      return;
+    }
+    setProcessingStripe(true);
+    const result = await createAlbumCheckout({ ...params, sessionKey });
+    setProcessingStripe(false);
+    if (result.url) window.location.href = result.url;
+    else toast.error(result.error || "Failed to create checkout session");
+  };
+
+  /** Save the buyer's email, then resume any pending Stripe checkout. */
+  const handleSaveEmail = useCallback(async () => {
+    if (!purchaserEmail.includes("@")) { toast.error("Please enter a valid email"); return; }
+    setSavingEmail(true);
+    try {
+      const emailKey = `email-${purchaserEmail.toLowerCase().trim()}`;
+      await fetch("/api/album/register-purchaser", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ albumId: album.id, sessionKey: emailKey, email: purchaserEmail }),
+      });
+      try { localStorage.setItem(`wv_email_${albumId}`, purchaserEmail); } catch {}
+      setRegisteredEmail(purchaserEmail);
+      toast.success("Email saved — your purchases are now linked to " + purchaserEmail);
+      setShowEmailReg(false);
+      setPurchaserEmail("");
+      // If the user was mid-Stripe-checkout, resume it now with the email session key
+      if (pendingStripeParams) {
+        const params = { ...pendingStripeParams, sessionKey: emailKey };
+        setPendingStripeParams(null);
+        setProcessingStripe(true);
+        const result = await createAlbumCheckout(params);
+        setProcessingStripe(false);
+        if (result.url) window.location.href = result.url;
+        else toast.error(result.error || "Failed to create checkout session");
+      }
+    } catch { toast.error("Failed to save email"); }
+    setSavingEmail(false);
+  }, [purchaserEmail, album.id, albumId, pendingStripeParams]);
+
   const submitBankTransferRequest = () => {
     const selected = album.photos.filter(p => selectedIds.has(p.id) && !paidPhotoIdSet.has(p.id));
     const record: AlbumDownloadRecord = {
@@ -826,9 +881,8 @@ export default function AlbumDetail() {
                         ) : (
                           stripeAvailable ? (
                             <Button
-                              onClick={async () => {
+                              onClick={() => {
                                 setShowPaymentChoice(false);
-                                setProcessingStripe(true);
                                 const isFullAlbumPurchase =
                                   requestedFullAlbum ||
                                   fullAlbumCheaper ||
@@ -836,11 +890,10 @@ export default function AlbumDetail() {
                                   selectedIds.size === album.photos.length;
                                 const checkoutAmount = isFullAlbumPurchase ? album.priceFullAlbum : paidTotal;
                                 if (!isFullAlbumPurchase && checkoutAmount === 0) {
-                                  setProcessingStripe(false);
                                   handleDownloadFree();
                                   return;
                                 }
-                                const result = await createAlbumCheckout({
+                                launchStripe({
                                   albumId: album.id,
                                   albumTitle: album.title,
                                   photoCount: isFullAlbumPurchase ? album.photos.length : unpaidSelected.length,
@@ -850,9 +903,6 @@ export default function AlbumDetail() {
                                   isFullAlbum: isFullAlbumPurchase,
                                   sessionKey,
                                 });
-                                setProcessingStripe(false);
-                                if (result.url) window.location.href = result.url;
-                                else toast.error(result.error || "Failed to create checkout session");
                               }}
                               disabled={processingStripe}
                               className="w-full sm:w-auto gap-3 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-sm h-12"
@@ -1167,9 +1217,8 @@ export default function AlbumDetail() {
 
             {stripeAvailable && (
               <Button
-                onClick={async () => {
+                onClick={() => {
                   setShowPaymentChoice(false);
-                  setProcessingStripe(true);
                   const isFullAlbumPurchase =
                     requestedFullAlbum ||
                     fullAlbumCheaper ||
@@ -1182,26 +1231,19 @@ export default function AlbumDetail() {
                   const checkoutAmount = isFullAlbumPurchase ? album.priceFullAlbum : paidTotal;
                   // If nothing actually needs paying, just download
                   if (!isFullAlbumPurchase && checkoutAmount === 0) {
-                    setProcessingStripe(false);
                     handleDownloadFree();
                     return;
                   }
-                  const result = await createAlbumCheckout({
+                  launchStripe({
                     albumId: album.id,
                     albumTitle: album.title,
                     photoCount: isFullAlbumPurchase ? album.photos.length : unpaidSelected.length,
                     amount: checkoutAmount,
                     clientEmail: album.clientEmail,
-                    photoIds: isFullAlbumPurchase ? [] : unpaidSelected.map(p => p.id),
+                    photoIds: isFullAlbumPurchase ? [] : photosBeingPaid.map(p => p.id),
                     isFullAlbum: isFullAlbumPurchase,
                     sessionKey,
                   });
-                  setProcessingStripe(false);
-                  if (result.url) {
-                    window.location.href = result.url;
-                  } else {
-                    toast.error(result.error || "Failed to create checkout session");
-                  }
                 }}
                 disabled={processingStripe}
                 className="w-full gap-3 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-sm h-12"
@@ -1313,51 +1355,42 @@ export default function AlbumDetail() {
       </Dialog>
 
       {/* Post-payment email registration */}
-      <Dialog open={showEmailReg} onOpenChange={setShowEmailReg}>
+      <Dialog open={showEmailReg} onOpenChange={(open) => { setShowEmailReg(open); if (!open && !registeredEmail) { setPendingStripeParams(null); } }}>
         <DialogContent className="glass-panel border-border max-w-sm">
           <DialogHeader>
-            <DialogTitle className="font-display text-xl text-foreground">Save your access</DialogTitle>
+            <DialogTitle className="font-display text-xl text-foreground">
+              {pendingStripeParams ? "Email required for payment" : "Save your access"}
+            </DialogTitle>
             <DialogDescription className="sr-only">Add your email to link purchases to your account so you can access photos from any device.</DialogDescription>
           </DialogHeader>
           <div className="space-y-4 mt-2">
             <p className="text-sm font-body text-muted-foreground">
-              Add your email to link this purchase to your account — so you can re-access your photos from any device using the same gallery link.
+              {pendingStripeParams
+                ? "Enter your email so your purchase is logged and you can re-access your photos from any device."
+                : "Add your email to link this purchase to your account — so you can re-access your photos from any device using the same gallery link."}
             </p>
             <input
               type="email"
               placeholder="your@email.com"
               value={purchaserEmail}
               onChange={e => setPurchaserEmail(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter") handleSaveEmail(); }}
               className="w-full bg-secondary border border-border rounded-lg px-3 py-2.5 text-sm font-body text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary/50"
             />
             <div className="flex gap-2">
               <Button
-                onClick={async () => {
-                  if (!purchaserEmail.includes("@")) { toast.error("Please enter a valid email"); return; }
-                  setSavingEmail(true);
-                  try {
-                    const emailKey = `email-${purchaserEmail.toLowerCase().trim()}`;
-                    await fetch("/api/album/register-purchaser", {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ albumId: album.id, sessionKey: emailKey, email: purchaserEmail }),
-                    });
-                    try { localStorage.setItem(`wv_email_${albumId}`, purchaserEmail); } catch {}
-                    setRegisteredEmail(purchaserEmail);
-                    toast.success("Email saved — your purchases are now linked to " + purchaserEmail);
-                    setShowEmailReg(false);
-                    setPurchaserEmail("");
-                  } catch { toast.error("Failed to save email"); }
-                  setSavingEmail(false);
-                }}
+                onClick={handleSaveEmail}
                 disabled={savingEmail}
                 className="flex-1 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-sm"
               >
-                {savingEmail ? "Saving…" : "Save Email"}
+                {savingEmail ? "Saving…" : pendingStripeParams ? "Save & Pay" : "Save Email"}
               </Button>
-              <Button variant="outline" onClick={() => { setShowEmailReg(false); setEmailSkippedThisSession(true); }} className="font-body text-sm border-border">
-                Skip
-              </Button>
+              {/* Don't offer Skip when Stripe payment is waiting — email is required */}
+              {!pendingStripeParams && (
+                <Button variant="outline" onClick={() => { setShowEmailReg(false); setEmailSkippedThisSession(true); }} className="font-body text-sm border-border">
+                  Skip
+                </Button>
+              )}
             </div>
           </div>
         </DialogContent>
