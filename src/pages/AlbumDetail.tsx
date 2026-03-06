@@ -4,7 +4,6 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Info, Building2, Copy, Check as CheckIcon, Lock, Download, Grid, List, LayoutGrid, CreditCard, X, ChevronLeft, ChevronRight, Star, Camera, CheckCircle2, Clock, Sparkles, Maximize2, ArrowUpDown, SlidersHorizontal } from "lucide-react";
 import Header from "@/components/Header";
 import Footer from "@/components/Footer";
-import WatermarkedImage from "@/components/WatermarkedImage";
 import PurchasePanel from "@/components/PurchasePanel";
 import { getAlbumBySlug, getSettings, updateAlbum } from "@/lib/storage";
 import { useBackfillThumbnails } from "@/hooks/use-backfill-thumbnails";
@@ -26,9 +25,29 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Label } from "@/components/ui/label";
 import type { Album, AlbumDownloadRecord, DownloadQuality, DownloadHistoryEntry, Photo } from "@/lib/types";
 
-const TARGET_LIGHTBOX_BYTES = 600 * 1024; // ~600KB
+/** Append or replace a query param on a URL (skips data URLs). */
+function withParam(src: string, key: string, value: string): string {
+  if (!src || src.startsWith("data:")) return src;
+  const sep = src.includes("?") ? "&" : "?";
+  // Remove existing key first
+  const cleaned = src.replace(new RegExp(`([?&])${key}=[^&]*`, "g"), "$1").replace(/[?&]$/, "");
+  return `${cleaned}${cleaned.includes("?") ? "&" : "?"}${key}=${value}`;
+}
 
-/** Uses baked watermarked variants for unpaid photos and clean assets for unlocked photos. */
+/** Build a server URL for the photo with optional watermark disable and responsive width. */
+function buildServerSrc(src: string, disableWatermark: boolean, width?: number): string {
+  if (!src || src.startsWith("data:")) return src;
+  let url = src;
+  if (disableWatermark) url = withParam(url, "wm", "0");
+  if (width) url = withParam(url, "w", String(width));
+  return url;
+}
+
+/**
+ * LightboxImage: shows a low-res placeholder immediately, then loads the server-side
+ * watermarked image at ~2000px wide (≈600KB) for sharp, full-quality display.
+ * Falls back to any baked medium variant if the server URL is unavailable.
+ */
 function LightboxImage({ photo, cache, onCacheUpdate, wmDisabled, watermarkVersion }: {
   photo: Photo;
   cache: Record<string, string>;
@@ -36,41 +55,105 @@ function LightboxImage({ photo, cache, onCacheUpdate, wmDisabled, watermarkVersi
   wmDisabled?: boolean;
   watermarkVersion?: number;
 }) {
-  const previewSrc = getPhotoVariantSrc(photo, "thumbnail", !!wmDisabled);
-  const fullSrc = getPhotoVariantSrc(photo, "medium", !!wmDisabled);
-  const cacheKey = `${photo.id}:${wmDisabled ? "clean" : "wm"}:v${watermarkVersion || 0}:${fullSrc}`;
+  const p = photo as any;
+  // Quick placeholder: baked thumbnail data URL or raw thumbnail
+  const previewSrc = wmDisabled
+    ? (photo.thumbnail || buildServerSrc(photo.src, true, 300))
+    : (p.thumbnailWatermarked || photo.thumbnail || photo.src);
 
-  const [src, setSrc] = useState(cache[cacheKey] || previewSrc);
+  // High-quality target: server-rendered at 2000px wide (~600KB watermarked)
+  // For clean (paid/disabled) photos serve a clean resized version; for watermarked use server default
+  const serverFullSrc = buildServerSrc(photo.src, !!wmDisabled, 2000);
+  // Fall back to baked medium if available (offline / no server)
+  const bakedMedium = wmDisabled ? null : (p.mediumWatermarked || null);
+  const fullSrc = bakedMedium || serverFullSrc;
+
+  const cacheKey = `${photo.id}:${wmDisabled ? "clean" : "wm"}:v${watermarkVersion || 0}:lb`;
+
+  const [src, setSrc] = useState<string>(cache[cacheKey] || previewSrc);
+  const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
     if (cache[cacheKey]) {
       setSrc(cache[cacheKey]);
+      setLoaded(true);
       return;
     }
 
     setSrc(previewSrc);
+    setLoaded(false);
 
-    if (fullSrc === previewSrc) return;
+    if (fullSrc === previewSrc) { setLoaded(true); return; }
 
     const img = new Image();
     img.onload = () => {
       onCacheUpdate(cacheKey, fullSrc);
       setSrc(fullSrc);
+      setLoaded(true);
     };
-    img.onerror = () => setSrc(previewSrc);
+    img.onerror = () => { setSrc(previewSrc); setLoaded(true); };
     img.src = fullSrc;
   }, [cache, cacheKey, fullSrc, onCacheUpdate, previewSrc]);
 
   return (
+    <div className="relative w-full h-full flex items-center justify-center">
+      {!loaded && (
+        <div className="absolute inset-0 flex items-center justify-center">
+          <div className="w-6 h-6 border-2 border-primary/40 border-t-primary rounded-full animate-spin" />
+        </div>
+      )}
+      <img
+        src={src}
+        alt={photo.title}
+        className={`max-w-full max-h-full w-full h-full object-contain rounded-lg transition-opacity duration-300 ${loaded ? "opacity-100" : "opacity-40"}`}
+        loading="eager"
+        decoding="async"
+      />
+    </div>
+  );
+}
+
+/**
+ * GalleryImage: renders a gallery grid cell with progressive quality.
+ * Shows the baked thumbnail (data URL) immediately, then upgrades to the
+ * server-served image at ~900px wide when it loads. This gives instant
+ * display with sharp images on desktop.
+ */
+function GalleryImage({ photo, disableWatermark }: { photo: Photo; disableWatermark: boolean }) {
+  const p = photo as any;
+  const thumbSrc = disableWatermark
+    ? (photo.thumbnail || buildServerSrc(photo.src, true, 300))
+    : (p.thumbnailWatermarked || photo.thumbnail || photo.src);
+
+  // High quality from server: 900px wide for gallery grid
+  const hqSrc = buildServerSrc(photo.src, disableWatermark, 900);
+
+  const [displaySrc, setDisplaySrc] = useState(thumbSrc);
+  const [hqLoaded, setHqLoaded] = useState(false);
+
+  useEffect(() => {
+    setDisplaySrc(thumbSrc);
+    setHqLoaded(false);
+    // Only upgrade if photo.src is a server URL (not data:)
+    if (!photo.src || photo.src.startsWith("data:")) return;
+    const img = new Image();
+    img.onload = () => { setDisplaySrc(hqSrc); setHqLoaded(true); };
+    img.onerror = () => {};
+    img.src = hqSrc;
+    return () => { img.onload = null; img.onerror = null; };
+  }, [photo.id, photo.src, thumbSrc, hqSrc]);
+
+  return (
     <img
-      src={src}
-      alt={photo.title}
-      className="max-w-full max-h-full w-full h-full object-contain rounded-lg"
-      loading="eager"
+      src={displaySrc}
+      alt=""
+      className={`w-full block transition-opacity duration-500 ${hqLoaded ? "opacity-100" : "opacity-90"}`}
+      loading="lazy"
       decoding="async"
     />
   );
 }
+
 // Session key priority: client token (works across devices) > PIN > generic per-album fallback
 function getSessionKey(album: Album, pin: string, token?: string): string {
   // Token is the most portable — same magic link URL works on any device
@@ -107,8 +190,122 @@ function getPhotoVariantSrc(photo: Photo, variant: "thumbnail" | "medium" | "ful
   return p.fullWatermarked || p.mediumWatermarked || p.thumbnailWatermarked || photo.src;
 }
 
-function getGalleryPhotoSrc(photo: Photo, disableWatermark: boolean): string {
-  return getPhotoVariantSrc(photo, "thumbnail", disableWatermark);
+/** Full-screen lightbox overlay with touch-swipe support for mobile. */
+function LightboxOverlay({
+  photo, idx, total, cache, onCacheUpdate, wmDisabled, watermarkVersion,
+  isSelected, onClose, onPrev, onNext, onToggleSelect,
+}: {
+  photo: Photo; idx: number; total: number;
+  cache: Record<string, string>;
+  onCacheUpdate: (key: string, url: string) => void;
+  wmDisabled?: boolean; watermarkVersion?: number;
+  isSelected: boolean;
+  onClose: () => void; onPrev: () => void; onNext: () => void;
+  onToggleSelect: () => void;
+}) {
+  const touchStartX = useRef<number | null>(null);
+
+  // Lock body scroll while lightbox is open
+  useEffect(() => {
+    document.body.classList.add("lightbox-open");
+    return () => document.body.classList.remove("lightbox-open");
+  }, []);
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    touchStartX.current = e.touches[0].clientX;
+  };
+  const handleTouchEnd = (e: React.TouchEvent) => {
+    if (touchStartX.current === null) return;
+    const dx = e.changedTouches[0].clientX - touchStartX.current;
+    touchStartX.current = null;
+    if (Math.abs(dx) > 50) {
+      if (dx < 0) onNext(); else onPrev();
+    }
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-[100] bg-background/95 backdrop-blur-sm flex items-center justify-center"
+      style={{ paddingTop: "env(safe-area-inset-top)", paddingBottom: "env(safe-area-inset-bottom)" }}
+      onClick={onClose}
+      onTouchStart={handleTouchStart}
+      onTouchEnd={handleTouchEnd}
+    >
+      {/* Close button */}
+      <button
+        className="absolute top-3 right-3 sm:top-4 sm:right-4 z-10 w-11 h-11 rounded-full bg-card/80 backdrop-blur-sm flex items-center justify-center text-foreground hover:bg-card transition-colors"
+        onClick={onClose}
+        aria-label="Close"
+      >
+        <X className="w-5 h-5" />
+      </button>
+
+      {/* Nav arrows (hidden on mobile — use swipe instead) */}
+      {idx > 0 && (
+        <button
+          className="absolute left-2 sm:left-4 z-10 w-11 h-11 rounded-full bg-card/80 backdrop-blur-sm hidden sm:flex items-center justify-center text-foreground hover:bg-card transition-colors"
+          onClick={(e) => { e.stopPropagation(); onPrev(); }}
+          aria-label="Previous photo"
+        >
+          <ChevronLeft className="w-5 h-5" />
+        </button>
+      )}
+      {idx < total - 1 && (
+        <button
+          className="absolute right-2 sm:right-4 z-10 w-11 h-11 rounded-full bg-card/80 backdrop-blur-sm hidden sm:flex items-center justify-center text-foreground hover:bg-card transition-colors"
+          onClick={(e) => { e.stopPropagation(); onNext(); }}
+          aria-label="Next photo"
+        >
+          <ChevronRight className="w-5 h-5" />
+        </button>
+      )}
+
+      {/* Photo container */}
+      <div
+        className="relative w-full h-full flex items-center justify-center p-3 sm:p-8"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <LightboxImage
+          photo={photo}
+          cache={cache}
+          onCacheUpdate={onCacheUpdate}
+          wmDisabled={wmDisabled}
+          watermarkVersion={watermarkVersion}
+        />
+
+        {/* Bottom bar: title + select */}
+        <div className="absolute bottom-0 left-0 right-0 p-3 sm:p-4 bg-gradient-to-t from-background/90 to-transparent rounded-b-lg flex items-center justify-between gap-2">
+          <p className="text-sm font-body text-foreground truncate flex-1 min-w-0">{photo.title}</p>
+          <div className="flex items-center gap-2 shrink-0">
+            {/* Mobile swipe hint */}
+            <span className="text-[10px] font-body text-muted-foreground/60 sm:hidden">Swipe to navigate</span>
+            <Button
+              size="sm"
+              variant={isSelected ? "default" : "outline"}
+              onClick={onToggleSelect}
+              className="gap-1.5 font-body text-xs h-8"
+            >
+              {isSelected ? (
+                <><CheckIcon className="w-3.5 h-3.5" /> Selected</>
+              ) : (
+                <><Download className="w-3.5 h-3.5" /> Select</>
+              )}
+            </Button>
+          </div>
+        </div>
+      </div>
+
+      {/* Counter pill */}
+      <div className="absolute bottom-3 sm:bottom-5 left-1/2 -translate-x-1/2 pointer-events-none">
+        <p className="text-xs font-body text-muted-foreground bg-card/80 backdrop-blur-sm px-3 py-1.5 rounded-full">
+          {idx + 1} / {total}
+        </p>
+      </div>
+    </motion.div>
+  );
 }
 
 export default function AlbumDetail() {
@@ -816,46 +1013,79 @@ export default function AlbumDetail() {
             </div>
           ) : (
             <div className={gridClass}>
-              {displayedPhotos.map((photo, i) => (
-                <div key={photo.id} className="relative group">
-                  <WatermarkedImage
-                src={getGalleryPhotoSrc(photo, !!((album as any).watermarkDisabled || isPhotoPaid(photo.id)))}
-                  title={photo.title}
-                  selected={isProofing ? starredIds.has(photo.id) : selectedIds.has(photo.id)}
-                  onSelect={() => isProofing ? toggleStar(photo.id) : toggleSelect(photo.id)}
-                  locked={!isProofing && !isPhotoPaid(photo.id) && freeRemaining <= 0 && !selectedIds.has(photo.id)}
-                  index={i}
-                  showWatermark={false}
-                  renderWatermarkOverlay={false}
-                  watermarkPosition={watermarkPosition}
-                  watermarkText={settings.watermarkText}
-                  watermarkImage={settings.watermarkImage}
-                  watermarkOpacity={settings.watermarkOpacity}
-                  watermarkSize={settings.watermarkSize ?? 40}
-                />
-                  {/* Expand button */}
-                  {!isProofing && (
-                    <button
-                      onClick={e => { e.stopPropagation(); setLightboxPhotoId(photo.id); }}
-                      className="absolute top-2 left-2 w-7 h-7 rounded-full bg-black/50 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity z-10"
-                    >
-                      <Maximize2 className="w-3 h-3" />
-                    </button>
-                  )}
-                                    {isProofing && (
-                    <button
-                      onClick={() => toggleStar(photo.id)}
-                      className={`absolute top-2 right-2 w-8 h-8 rounded-full flex items-center justify-center transition-all shadow-lg ${
-                        starredIds.has(photo.id)
-                          ? "bg-yellow-400 text-yellow-900 scale-110"
-                          : "bg-black/50 text-white/70 opacity-0 group-hover:opacity-100"
-                      }`}
-                    >
-                      <Star className={`w-4 h-4 ${starredIds.has(photo.id) ? "fill-yellow-900" : ""}`} />
-                    </button>
-                  )}
-                </div>
-              ))}
+              {displayedPhotos.map((photo, i) => {
+                const isWmDisabled = !!((album as any).watermarkDisabled || isPhotoPaid(photo.id));
+                const isSelected = isProofing ? starredIds.has(photo.id) : selectedIds.has(photo.id);
+                const isLocked = !isProofing && !isPhotoPaid(photo.id) && freeRemaining <= 0 && !selectedIds.has(photo.id);
+                return (
+                  <motion.div
+                    key={photo.id}
+                    initial={{ opacity: 0, y: 16 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: Math.min(i * 0.03, 0.5), duration: 0.35 }}
+                    className="break-inside-avoid mb-4 relative group cursor-pointer rounded-lg overflow-hidden"
+                    onClick={() => isProofing ? toggleStar(photo.id) : toggleSelect(photo.id)}
+                  >
+                    {/* Progressive gallery image: thumbnail → server 900px */}
+                    <GalleryImage photo={photo} disableWatermark={isWmDisabled} />
+
+                    {/* Hover overlay */}
+                    <div className="absolute inset-0 bg-background/0 group-hover:bg-background/40 transition-all duration-300 flex items-center justify-center pointer-events-none">
+                      <div className="opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex items-center gap-3">
+                        {isLocked ? (
+                          <div className="flex items-center gap-2 bg-card/90 backdrop-blur-sm px-4 py-2 rounded-full">
+                            <Lock className="w-4 h-4 text-primary" />
+                            <span className="text-xs font-body tracking-wider uppercase text-foreground">Purchase</span>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-2 bg-card/90 backdrop-blur-sm px-4 py-2 rounded-full">
+                            <Download className="w-4 h-4 text-primary" />
+                            <span className="text-xs font-body tracking-wider uppercase text-foreground">Select</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Selection checkmark */}
+                    {isSelected && (
+                      <div className="absolute top-3 right-3 w-7 h-7 rounded-full bg-primary flex items-center justify-center shadow-lg pointer-events-none">
+                        <CheckIcon className="w-4 h-4 text-primary-foreground" />
+                      </div>
+                    )}
+
+                    {/* Photo title on hover */}
+                    <div className="absolute bottom-0 left-0 right-0 p-3 bg-gradient-to-t from-background/80 to-transparent opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+                      <p className="text-xs font-body text-foreground tracking-wide">{photo.title}</p>
+                    </div>
+
+                    {/* Expand button */}
+                    {!isProofing && (
+                      <button
+                        onClick={e => { e.stopPropagation(); setLightboxPhotoId(photo.id); }}
+                        className="absolute top-2 left-2 w-7 h-7 rounded-full bg-black/50 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity z-10"
+                        aria-label="Open fullscreen"
+                      >
+                        <Maximize2 className="w-3 h-3" />
+                      </button>
+                    )}
+
+                    {/* Proofing star button */}
+                    {isProofing && (
+                      <button
+                        onClick={e => { e.stopPropagation(); toggleStar(photo.id); }}
+                        className={`absolute top-2 right-2 w-8 h-8 rounded-full flex items-center justify-center transition-all shadow-lg ${
+                          starredIds.has(photo.id)
+                            ? "bg-yellow-400 text-yellow-900 scale-110"
+                            : "bg-black/50 text-white/70 opacity-0 group-hover:opacity-100"
+                        }`}
+                        aria-label={starredIds.has(photo.id) ? "Unstar photo" : "Star photo"}
+                      >
+                        <Star className={`w-4 h-4 ${starredIds.has(photo.id) ? "fill-yellow-900" : ""}`} />
+                      </button>
+                    )}
+                  </motion.div>
+                );
+              })}
             </div>
           )}
         </div>
@@ -1224,70 +1454,20 @@ export default function AlbumDetail() {
       {/* Fullscreen Lightbox */}
       <AnimatePresence>
         {lbPhoto ? (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[100] bg-background/95 backdrop-blur-sm flex items-center justify-center p-3 sm:p-6"
-            onClick={() => setLightboxPhotoId(null)}
-          >
-            {/* Close button */}
-            <button className="absolute top-3 right-3 sm:top-4 sm:right-4 z-10 w-11 h-11 rounded-full bg-card/80 backdrop-blur-sm flex items-center justify-center text-foreground hover:bg-card transition-colors"
-              onClick={() => setLightboxPhotoId(null)}>
-              <X className="w-5 h-5" />
-            </button>
-
-            {/* Nav arrows */}
-            {lbIdx > 0 && (
-              <button className="absolute left-2 sm:left-4 z-10 w-11 h-11 rounded-full bg-card/80 backdrop-blur-sm flex items-center justify-center text-foreground hover:bg-card transition-colors"
-                onClick={(e) => { e.stopPropagation(); setLightboxPhotoId(displayedPhotos[lbIdx - 1].id); }}>
-                <ChevronLeft className="w-5 h-5" />
-              </button>
-            )}
-            {lbIdx < displayedPhotos.length - 1 && (
-              <button className="absolute right-2 sm:right-4 z-10 w-11 h-11 rounded-full bg-card/80 backdrop-blur-sm flex items-center justify-center text-foreground hover:bg-card transition-colors"
-                onClick={(e) => { e.stopPropagation(); setLightboxPhotoId(displayedPhotos[lbIdx + 1].id); }}>
-                <ChevronRight className="w-5 h-5" />
-              </button>
-            )}
-
-            {/* Photo */}
-            <div className="relative w-full max-w-[96vw] sm:max-w-[90vw] h-[78vh] sm:h-[84vh] flex items-center justify-center" onClick={(e) => e.stopPropagation()}>
-              <LightboxImage
-                photo={lbPhoto}
-                cache={lightboxSrcCache}
-                onCacheUpdate={(cacheKey, url) => setLightboxSrcCache(prev => ({ ...prev, [cacheKey]: url }))}
-                wmDisabled={!!((album as any).watermarkDisabled || isPhotoPaid(lbPhoto.id))}
-                watermarkVersion={(settings as any).watermarkVersion || (lbPhoto as any).watermarkVersion || 0}
-              />
-
-              {/* Bottom bar with select/title */}
-              <div className="absolute bottom-0 left-0 right-0 p-3 sm:p-4 bg-gradient-to-t from-background/85 to-transparent rounded-b-lg flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
-                <p className="text-sm font-body text-foreground pr-12 sm:pr-0">{lbPhoto.title}</p>
-                <div className="flex gap-2">
-                  <Button
-                    size="sm"
-                    variant={selectedIds.has(lbPhoto.id) ? "default" : "outline"}
-                    onClick={() => toggleSelect(lbPhoto.id)}
-                    className="gap-1.5 font-body text-xs"
-                  >
-                    {selectedIds.has(lbPhoto.id) ? (
-                      <><CheckIcon className="w-3.5 h-3.5" /> Selected</>
-                    ) : (
-                      <><Download className="w-3.5 h-3.5" /> Select</>
-                    )}
-                  </Button>
-                </div>
-              </div>
-            </div>
-
-            {/* Counter */}
-            <div className="absolute bottom-3 sm:bottom-4 left-1/2 -translate-x-1/2">
-              <p className="text-xs font-body text-muted-foreground bg-card/80 backdrop-blur-sm px-3 py-1.5 rounded-full">
-                {lbIdx + 1} / {displayedPhotos.length}
-              </p>
-            </div>
-          </motion.div>
+          <LightboxOverlay
+            photo={lbPhoto}
+            idx={lbIdx}
+            total={displayedPhotos.length}
+            cache={lightboxSrcCache}
+            onCacheUpdate={(cacheKey, url) => setLightboxSrcCache(prev => ({ ...prev, [cacheKey]: url }))}
+            wmDisabled={!!((album as any).watermarkDisabled || isPhotoPaid(lbPhoto.id))}
+            watermarkVersion={(settings as any).watermarkVersion || (lbPhoto as any).watermarkVersion || 0}
+            isSelected={selectedIds.has(lbPhoto.id)}
+            onClose={() => setLightboxPhotoId(null)}
+            onPrev={() => lbIdx > 0 && setLightboxPhotoId(displayedPhotos[lbIdx - 1].id)}
+            onNext={() => lbIdx < displayedPhotos.length - 1 && setLightboxPhotoId(displayedPhotos[lbIdx + 1].id)}
+            onToggleSelect={() => toggleSelect(lbPhoto.id)}
+          />
         ) : null}
       </AnimatePresence>
 

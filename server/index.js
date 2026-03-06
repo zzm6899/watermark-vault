@@ -14,6 +14,32 @@ const DATA_DIR = process.env.DATA_DIR || "/data";
 const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
 const DB_FILE = path.join(DATA_DIR, "db.json");
 
+// ── In-memory image cache ──────────────────────────────
+// Stores processed (watermarked + optionally resized) images to avoid
+// re-running Sharp on every request.  Key = "filename:w:wmVersion"
+const imageCache = new Map();
+const IMAGE_CACHE_MAX = 300;     // max entries
+const IMAGE_CACHE_TTL = 60 * 60 * 1000; // 1 hour ms
+
+function getCachedImage(key) {
+  const entry = imageCache.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.ts > IMAGE_CACHE_TTL) { imageCache.delete(key); return null; }
+  return entry.buf;
+}
+
+function setCachedImage(key, buf) {
+  if (imageCache.size >= IMAGE_CACHE_MAX) {
+    // Evict oldest entry
+    imageCache.delete(imageCache.keys().next().value);
+  }
+  imageCache.set(key, { buf, ts: Date.now() });
+}
+
+function clearImageCache() {
+  imageCache.clear();
+}
+
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 if (!fs.existsSync(DB_FILE)) fs.writeFileSync(DB_FILE, JSON.stringify({}));
 
@@ -87,6 +113,10 @@ app.put("/api/store/:key", (req, res) => {
   const db = readDb();
   db[req.params.key] = req.body.value;
   writeDb(db);
+  // Clear image cache when watermark settings change so new requests get fresh watermarks
+  if (req.params.key === "wv_settings") {
+    clearImageCache();
+  }
   res.json({ ok: true });
 });
 app.delete("/api/store/:key", (req, res) => {
@@ -294,8 +324,29 @@ app.get("/uploads/:filename", async (req, res) => {
 
   if (!fs.existsSync(filepath)) return res.status(404).send("Not found");
 
-  // ?wm=0 means watermark disabled for this album — serve original
+  // ?w=N — optional responsive width (e.g. ?w=900 for gallery, ?w=2000 for lightbox)
+  const requestedWidth = req.query.w ? parseInt(req.query.w, 10) : 0;
+  const targetWidth = (!isNaN(requestedWidth) && requestedWidth > 0 && requestedWidth <= 4000) ? requestedWidth : 0;
+
+  // ?wm=0 means watermark disabled — serve original (or resized clean)
   if (req.query.wm === "0") {
+    if (targetWidth > 0) {
+      const cacheKey = `${safeName}:clean:${targetWidth}`;
+      const cached = getCachedImage(cacheKey);
+      if (cached) {
+        res.set({ "Content-Type": "image/jpeg", "Cache-Control": "public, max-age=3600" });
+        return res.send(cached);
+      }
+      try {
+        const buf = await sharp(filepath)
+          .resize(targetWidth, null, { fit: "inside", withoutEnlargement: true })
+          .jpeg({ quality: 88, progressive: true })
+          .toBuffer();
+        setCachedImage(cacheKey, buf);
+        res.set({ "Content-Type": "image/jpeg", "Cache-Control": "public, max-age=3600" });
+        return res.send(buf);
+      } catch { return res.sendFile(filepath); }
+    }
     return res.sendFile(filepath);
   }
 
@@ -306,35 +357,62 @@ app.get("/uploads/:filename", async (req, res) => {
     : false;
 
   if (hasAccess) {
-    // Serve original
+    if (targetWidth > 0) {
+      try {
+        const buf = await sharp(filepath)
+          .resize(targetWidth, null, { fit: "inside", withoutEnlargement: true })
+          .jpeg({ quality: 88, progressive: true })
+          .toBuffer();
+        res.set({ "Content-Type": "image/jpeg", "Cache-Control": "public, max-age=3600" });
+        return res.send(buf);
+      } catch {}
+    }
     return res.sendFile(filepath);
   }
 
-  // Serve watermarked version — cache in memory briefly
+  // Serve watermarked version — use in-memory cache keyed by filename + width + watermark version
   try {
     const wm = getWatermarkSettings();
-    const img = sharp(filepath);
-    const meta = await img.metadata();
-    const { width, height } = meta;
+    // Build cache key including watermark settings fingerprint
+    const wmFingerprint = `${wm.position}:${wm.opacity}:${wm.size}:${wm.text}:${wm.imageBase64 ? "img" : "txt"}`;
+    const cacheKey = `${safeName}:wm:${targetWidth}:${wmFingerprint}`;
+
+    const cached = getCachedImage(cacheKey);
+    if (cached) {
+      res.set({ "Content-Type": "image/jpeg", "Cache-Control": "public, max-age=3600", "X-Watermarked": "true", "X-Cache": "HIT" });
+      return res.send(cached);
+    }
+
+    let pipeline = sharp(filepath);
+    const meta = await pipeline.metadata();
+    let { width, height } = meta;
+
+    // Apply resize if requested, THEN watermark at that size
+    if (targetWidth > 0 && width > targetWidth) {
+      const scale = targetWidth / width;
+      width = targetWidth;
+      height = Math.round(height * scale);
+      pipeline = pipeline.resize(targetWidth, null, { fit: "inside", withoutEnlargement: true });
+    }
 
     const overlay = await buildWatermarkOverlay(width, height, wm);
-    const composites = [overlay];
 
-    // For image watermarks with opacity, we need to handle differently
-    const result = await sharp(filepath)
-      .composite(composites)
-      .jpeg({ quality: 82, progressive: true })
+    const result = await pipeline
+      .composite([overlay])
+      .jpeg({ quality: 84, progressive: true })
       .toBuffer();
+
+    setCachedImage(cacheKey, result);
 
     res.set({
       "Content-Type": "image/jpeg",
       "Cache-Control": "public, max-age=3600",
       "X-Watermarked": "true",
+      "X-Cache": "MISS",
     });
     return res.send(result);
   } catch (err) {
     console.error("Watermark error for", safeName, err.message);
-    // Fallback: serve original if Sharp fails
     return res.sendFile(filepath);
   }
 });
