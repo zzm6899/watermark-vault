@@ -9,6 +9,7 @@ import { toast } from "sonner";
 import { getBookings, getAlbums, getSettings, updateAlbum, addAlbum, updateBooking } from "@/lib/storage";
 import { uploadPhotosToServer, isServerMode, recheckServer, sendEmail } from "@/lib/api";
 import { generateThumbnail } from "@/lib/image-utils";
+import { bakeWatermarkedAsset } from "@/lib/watermark-utils";
 import CameraUsb from "@/plugins/camera-usb";
 import type { CameraFile } from "@/plugins/camera-usb";
 import { Capacitor } from "@capacitor/core";
@@ -433,6 +434,27 @@ function MobileCaptureInner() {
         sessionUploadedRef.current = true;
         setImportLabel("");
         if (newPhotos.length > 0) toast.success(`${newPhotos.length} photos imported`);
+
+        // Bake watermarked variants in background so gallery shows correct previews
+        const wmSettings = getSettings();
+        const wmVersion = (wmSettings as any).watermarkVersion ?? 0;
+        for (const np of newPhotos) {
+          if (!np.src || np.src.startsWith("data:")) continue;
+          Promise.all([
+            bakeWatermarkedAsset(np.src, wmSettings, "thumbnail"),
+            bakeWatermarkedAsset(np.src, wmSettings, "medium"),
+            bakeWatermarkedAsset(np.src, wmSettings, "full"),
+          ]).then(([thumbnailWatermarked, mediumWatermarked, fullWatermarked]) => {
+            const patch = { thumbnailWatermarked, mediumWatermarked, fullWatermarked, watermarkVersion: wmVersion, watermarkUpdatedAt: new Date().toISOString() };
+            setTargetAlbum(prev => {
+              if (!prev) return prev;
+              const photos = prev.photos.map(p => p.id === np.id ? { ...p, ...patch } : p);
+              const upd = { ...prev, photos };
+              updateAlbum(upd);
+              return upd;
+            });
+          }).catch(() => {});
+        }
         // Warn about failures separately so success count is honest
       }
       // Store "name:size" keys — handles name collisions across sessions
@@ -496,6 +518,27 @@ function MobileCaptureInner() {
         setUploadedCount(p => p + newPhotos.length);
         sessionUploadedRef.current = true;
         toast.success(`${newPhotos.length} photos uploaded`);
+
+        // Bake watermarked variants in background
+        const wmSettings = getSettings();
+        const wmVersion = (wmSettings as any).watermarkVersion ?? 0;
+        for (const np of newPhotos) {
+          if (!np.src || np.src.startsWith("data:")) continue;
+          Promise.all([
+            bakeWatermarkedAsset(np.src, wmSettings, "thumbnail"),
+            bakeWatermarkedAsset(np.src, wmSettings, "medium"),
+            bakeWatermarkedAsset(np.src, wmSettings, "full"),
+          ]).then(([thumbnailWatermarked, mediumWatermarked, fullWatermarked]) => {
+            const patch = { thumbnailWatermarked, mediumWatermarked, fullWatermarked, watermarkVersion: wmVersion, watermarkUpdatedAt: new Date().toISOString() };
+            setTargetAlbum(prev => {
+              if (!prev) return prev;
+              const photos = prev.photos.map(p => p.id === np.id ? { ...p, ...patch } : p);
+              const upd = { ...prev, photos };
+              updateAlbum(upd);
+              return upd;
+            });
+          }).catch(() => {});
+        }
       } else {
         setOfflineQueue(q => [...q, ...imageFiles]);
         toast.info(`${imageFiles.length} file${imageFiles.length !== 1 ? "s" : ""} queued — will upload when server is back`);
