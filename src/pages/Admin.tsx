@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from "react";
+import React, { useState, useCallback, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   LayoutDashboard, Calendar, Settings, Plus, Upload,
@@ -23,7 +23,8 @@ import {
   getEmailTemplates, addEmailTemplate, updateEmailTemplate, deleteEmailTemplate,
 } from "@/lib/storage";
 import { compressImage, formatBytes, getLocalStorageUsage, generateThumbnail } from "@/lib/image-utils";
-import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar, getServerStorageStats, syncFromServer, sendEmail, bulkDeleteFiles, syncBookingsToSheet, getBookingEmailLog, sendBookingReminder, sendCustomEmail, getWaitlistEntries, deleteWaitlistEntry, notifyWaitlistOnCancel, notifyDiscord } from "@/lib/api";
+import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar, getServerStorageStats, syncFromServer, sendEmail, bulkDeleteFiles, syncBookingsToSheet, getBookingEmailLog, sendBookingReminder, sendCustomEmail, getWaitlistEntries, deleteWaitlistEntry, notifyWaitlistOnCancel, notifyDiscord, getCacheStats } from "@/lib/api";
+import type { CacheBreakdown } from "@/lib/api";
 import RichTextEditor, { RichTextDisplay } from "@/components/RichTextEditor";
 import Login from "@/pages/Login";
 import type {
@@ -3542,15 +3543,44 @@ function FinanceView() {
 
         if (allDownloads.length === 0) return null;
 
+        const handleDeleteDownloadEntry = (albumId: string, downloadedAt: string) => {
+          const albums = getAlbums();
+          const album = albums.find(a => a.id === albumId);
+          if (!album) return;
+          const updated = { ...album, downloadHistory: (album.downloadHistory || []).filter((entry: any) => entry.downloadedAt !== downloadedAt) };
+          updateAlbum(updated);
+          setAlbumsState(getAlbums());
+          toast.success("Download log entry removed");
+        };
+
+        const handleClearAllDownloadLog = () => {
+          if (!confirm(`Clear all ${allDownloads.length} download log entries? This cannot be undone.`)) return;
+          const albums = getAlbums();
+          const updated = albums.map(a => ({ ...a, downloadHistory: [] }));
+          updated.forEach(a => updateAlbum(a));
+          setAlbumsState(getAlbums());
+          toast.success("Download log cleared");
+        };
+
         return (
           <div className="glass-panel rounded-xl overflow-hidden">
-            <div className="p-4 border-b border-border">
-              <h3 className="font-display text-base text-foreground">Download Log</h3>
-              <p className="text-xs font-body text-muted-foreground mt-0.5">{allDownloads.length} download event{allDownloads.length !== 1 ? "s" : ""}</p>
+            <div className="p-4 border-b border-border flex items-center justify-between">
+              <div>
+                <h3 className="font-display text-base text-foreground">Download Log</h3>
+                <p className="text-xs font-body text-muted-foreground mt-0.5">{allDownloads.length} download event{allDownloads.length !== 1 ? "s" : ""}</p>
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleClearAllDownloadLog}
+                className="gap-1.5 font-body text-xs border-destructive/40 text-destructive hover:bg-destructive/10"
+              >
+                <Trash2 className="w-3 h-3" /> Clear All
+              </Button>
             </div>
             <div className="divide-y divide-border max-h-80 overflow-y-auto">
               {allDownloads.map((d: any, i: number) => (
-                <div key={i} className="flex items-center gap-4 px-4 py-2.5">
+                <div key={i} className="flex items-center gap-4 px-4 py-2.5 hover:bg-secondary/30 transition-colors group">
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
                       <p className="text-xs font-body text-foreground">{d.clientName}</p>
@@ -3564,9 +3594,18 @@ function FinanceView() {
                       {d.sessionKey && <span className="ml-1 opacity-40">({d.sessionKey.slice(0, 16)}…)</span>}
                     </p>
                   </div>
-                  <div className="shrink-0 text-right">
-                    <p className="text-sm font-display text-foreground">{d.photoCount ?? d.photoIds?.length ?? "?"}</p>
-                    <p className="text-[10px] font-body text-muted-foreground">photos</p>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <div className="text-right">
+                      <p className="text-sm font-display text-foreground">{d.photoCount ?? d.photoIds?.length ?? "?"}</p>
+                      <p className="text-[10px] font-body text-muted-foreground">photos</p>
+                    </div>
+                    <button
+                      onClick={() => handleDeleteDownloadEntry(d.albumId, d.downloadedAt)}
+                      className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded hover:bg-red-500/10 text-muted-foreground/40 hover:text-red-400"
+                      title="Remove log entry"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
                   </div>
                 </div>
               ))}
@@ -4237,6 +4276,9 @@ function StorageView() {
     const saved = readWatermarkRebuildStatus();
     return { running: saved.running, mode: safePreviewMode(saved.mode), done: saved.done, total: saved.total, stage: saved.stage };
   });
+  const [cacheStats, setCacheStats] = useState<{ total: number; breakdown: CacheBreakdown } | null>(null);
+  const [lastClearStats, setLastClearStats] = useState<{ cleared: number; breakdown: CacheBreakdown } | null>(null);
+  const clearAbortRef = useRef<AbortController | null>(null);
 
   const refreshStorageState = useCallback(async () => {
     const nextAlbums = getAlbums();
@@ -4247,6 +4289,10 @@ function StorageView() {
       try {
         const s = await getServerStorageStats();
         setServerStats(s);
+      } catch {}
+      try {
+        const cs = await getCacheStats();
+        setCacheStats(cs);
       } catch {}
     }
   }, []);
@@ -4270,10 +4316,10 @@ function StorageView() {
     return () => window.removeEventListener("wm-rebuild-status", handler);
   }, [refreshStorageState]);
 
-  // Poll server stats every 30 s while Storage tab is open so counts stay fresh
+  // Poll server stats every 10 s while Storage tab is open so counts stay fresh
   useEffect(() => {
     if (!isServerMode()) return;
-    const id = setInterval(() => { refreshStorageState(); }, 30_000);
+    const id = setInterval(() => { refreshStorageState(); }, 10_000);
     return () => clearInterval(id);
   }, [refreshStorageState]);
 
@@ -4314,19 +4360,31 @@ function StorageView() {
     if (isServerMode()) {
       // In server mode the server watermarks on demand — just clear the cache so
       // fresh variants are served on the next gallery load.
+      const ctrl = new AbortController();
+      clearAbortRef.current = ctrl;
       const jobState = { running: true, mode: (forceAll ? "all" : "missing") as "all" | "missing", done: 1, total: 1, stage: "Clearing server image cache…" };
       setPreviewJob(jobState);
+      setLastClearStats(null);
       writeWatermarkRebuildStatus(jobState);
       try {
-        const cacheRes = await fetch("/api/cache/clear", { method: "POST" });
+        const cacheRes = await fetch("/api/cache/clear", { method: "POST", signal: ctrl.signal });
         const cacheData = cacheRes.ok ? await cacheRes.json() : null;
-        const clearedMsg = formatClearedMsg(cacheData?.cleared);
+        const cleared: number = cacheData?.cleared ?? 0;
+        const breakdown: CacheBreakdown | null = cacheData?.breakdown ?? null;
+        if (breakdown) setLastClearStats({ cleared, breakdown });
+        const clearedMsg = formatClearedMsg(cleared);
         toast.success(`Server image cache cleared${clearedMsg} — gallery will fetch fresh watermarked images`);
         writeWatermarkRebuildStatus({ running: false, mode: forceAll ? "all" : "missing", done: 1, total: 1, stage: `Cache cleared${clearedMsg}.` });
-      } catch {
-        toast.error("Failed to clear server cache");
-        writeWatermarkRebuildStatus({ running: false, stage: "Cache clear failed." });
+      } catch (err: any) {
+        if (err?.name === "AbortError") {
+          toast.info("Cache clear cancelled");
+          writeWatermarkRebuildStatus({ running: false, stage: "Cancelled." });
+        } else {
+          toast.error("Failed to clear server cache");
+          writeWatermarkRebuildStatus({ running: false, stage: "Cache clear failed." });
+        }
       }
+      clearAbortRef.current = null;
       setPreviewJob({ running: false, mode: null, done: 0, total: 0 });
       await refreshStorageState();
       return;
@@ -4489,7 +4547,35 @@ function StorageView() {
             <p className="text-[10px] font-body text-muted-foreground/50 mt-2">
               ✓ Watermarks are applied by the server on every image request. No local baking needed. Clear the cache after changing watermark settings.
             </p>
-            <div className="mt-4">
+            {/* Last clear result — exact stats */}
+            {lastClearStats && !previewJob.running && (
+              <div className="mt-3 p-3 rounded-lg bg-green-500/5 border border-green-500/20 text-[10px] font-body text-muted-foreground space-y-1">
+                <p className="text-green-400 font-medium">✓ Cleared {lastClearStats.cleared} cached file{lastClearStats.cleared !== 1 ? "s" : ""}</p>
+                <div className="grid grid-cols-3 gap-x-4 gap-y-0.5 mt-1">
+                  <span>Thumbs (WM): <span className="text-foreground">{lastClearStats.breakdown.thumb_wm}</span></span>
+                  <span>Medium (WM): <span className="text-foreground">{lastClearStats.breakdown.medium_wm}</span></span>
+                  <span>Full (WM): <span className="text-foreground">{lastClearStats.breakdown.full_wm}</span></span>
+                  <span>Thumbs (clean): <span className="text-foreground">{lastClearStats.breakdown.thumb_clean}</span></span>
+                  <span>Medium (clean): <span className="text-foreground">{lastClearStats.breakdown.medium_clean}</span></span>
+                  <span>Full (clean): <span className="text-foreground">{lastClearStats.breakdown.full_clean}</span></span>
+                </div>
+              </div>
+            )}
+            {/* Current cache stats */}
+            {cacheStats && cacheStats.total > 0 && !previewJob.running && (
+              <div className="mt-3 p-3 rounded-lg bg-secondary/50 border border-border/30 text-[10px] font-body text-muted-foreground">
+                <p className="text-xs font-body text-foreground mb-1.5">Current Cache — {cacheStats.total} file{cacheStats.total !== 1 ? "s" : ""} · {formatBytes(cacheStats.breakdown.totalBytes)}</p>
+                <div className="grid grid-cols-3 gap-x-4 gap-y-0.5">
+                  <span>Thumbs watermarked: <span className="text-foreground">{cacheStats.breakdown.thumb_wm}</span></span>
+                  <span>Medium watermarked: <span className="text-foreground">{cacheStats.breakdown.medium_wm}</span></span>
+                  <span>Full watermarked: <span className="text-foreground">{cacheStats.breakdown.full_wm}</span></span>
+                  <span>Thumbs clean: <span className="text-foreground">{cacheStats.breakdown.thumb_clean}</span></span>
+                  <span>Medium clean: <span className="text-foreground">{cacheStats.breakdown.medium_clean}</span></span>
+                  <span>Full clean: <span className="text-foreground">{cacheStats.breakdown.full_clean}</span></span>
+                </div>
+              </div>
+            )}
+            <div className="mt-4 flex gap-2">
               <Button
                 size="sm"
                 onClick={() => handleRebuildPreviews(true)}
@@ -4499,10 +4585,20 @@ function StorageView() {
                 <RefreshCw className={`w-4 h-4 ${previewJob.running ? "animate-spin" : ""}`} />
                 {previewJob.running ? "Clearing…" : "Clear Server Image Cache"}
               </Button>
-              <p className="text-[10px] font-body text-muted-foreground/50 mt-2">
-                Run this after updating watermark settings so the gallery fetches fresh watermarked images.
-              </p>
+              {previewJob.running && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => { clearAbortRef.current?.abort(); }}
+                  className="gap-2 font-body text-xs border-border text-foreground"
+                >
+                  <X className="w-3.5 h-3.5" /> Cancel
+                </Button>
+              )}
             </div>
+            <p className="text-[10px] font-body text-muted-foreground/50 mt-2">
+              Run this after updating watermark settings so the gallery fetches fresh watermarked images.
+            </p>
           </>
         ) : (
           <>
