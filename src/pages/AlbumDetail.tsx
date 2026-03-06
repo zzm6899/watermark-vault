@@ -1,5 +1,5 @@
 import { useParams, useSearchParams } from "react-router-dom";
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Info, Building2, Copy, Check as CheckIcon, Lock, Download, Grid, List, LayoutGrid, CreditCard, X, ChevronLeft, ChevronRight, Star, Camera, CheckCircle2, Clock, Sparkles, Maximize2, ArrowUpDown, SlidersHorizontal } from "lucide-react";
 import Header from "@/components/Header";
@@ -35,7 +35,13 @@ function LightboxImage({ photo, cache, onCacheUpdate, wmDisabled }: {
   onCacheUpdate: (id: string, url: string) => void;
   wmDisabled?: boolean;
 }) {
-  const photoSrc = photo.src + (wmDisabled ? "?wm=0" : "");
+  const photoSrc = (() => {
+    const baseSrc = photo.src;
+    if (!wmDisabled) return baseSrc;
+    if (baseSrc.startsWith("data:")) return baseSrc;
+    return `${baseSrc}${baseSrc.includes("?") ? "&" : "?"}wm=0`;
+  })();
+
   // Show cached version immediately, or fall back to original src (no blank flash)
   const [src, setSrc] = useState(cache[photo.id] || photoSrc);
 
@@ -45,8 +51,10 @@ function LightboxImage({ photo, cache, onCacheUpdate, wmDisabled }: {
       setSrc(cache[photo.id]);
       return;
     }
+
     // Show original immediately so navigation feels instant
     setSrc(photoSrc);
+
     // Then upgrade to resized version in background
     let cancelled = false;
     resizeToTargetSize(photoSrc, TARGET_LIGHTBOX_BYTES)
@@ -56,15 +64,20 @@ function LightboxImage({ photo, cache, onCacheUpdate, wmDisabled }: {
         onCacheUpdate(photo.id, url);
         setSrc(url);
       })
-      .catch(() => { /* keep original src */ });
-    return () => { cancelled = true; };
-  }, [photo.id, photo.src]);
+      .catch(() => {
+        /* keep original src */
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [photo.id, photoSrc, cache, onCacheUpdate]);
 
   return (
     <img
       src={src}
       alt={photo.title}
-      className="max-w-full max-h-[85vh] object-contain rounded-lg"
+      className="w-auto max-w-[94vw] max-h-[72vh] sm:max-h-[85vh] object-contain rounded-lg"
     />
   );
 }
@@ -186,22 +199,6 @@ export default function AlbumDetail() {
     });
   }, []));
 
-  // Keyboard navigation for lightbox
-  const displayedPhotosRef = useRef<any[]>([]);
-  const pendingStripeRef = useRef<(() => void) | null>(null);
-  useEffect(() => {
-    if (lightboxPhotoId === null) return;
-    const handler = (e: KeyboardEvent) => {
-      const lbPhotos = displayedPhotosRef.current;
-      const lbIdx = lbPhotos.findIndex((p: any) => p.id === lightboxPhotoId);
-      if (e.key === "Escape") setLightboxPhotoId(null);
-      if (e.key === "ArrowLeft" && lbIdx > 0) setLightboxPhotoId(lbPhotos[lbIdx - 1].id);
-      if (e.key === "ArrowRight" && lbIdx < lbPhotos.length - 1) setLightboxPhotoId(lbPhotos[lbIdx + 1].id);
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [lightboxPhotoId]);
-
   if (!album || album.enabled === false) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
@@ -270,7 +267,23 @@ export default function AlbumDetail() {
     const _timeCmp = _dA !== _dB ? _dA - _dB : _tCmp;
     return sortOrder === "asc" ? _timeCmp : -_timeCmp;
   });
-  displayedPhotosRef.current = displayedPhotos;
+  // Lightbox photo lookup — must be after displayedPhotos
+  const lbPhoto = lightboxPhotoId ? displayedPhotos.find((p: any) => p.id === lightboxPhotoId) ?? null : null;
+  const lbIdx = lbPhoto ? displayedPhotos.findIndex((p: any) => p.id === lightboxPhotoId) : -1;
+
+  // Keyboard navigation for lightbox
+  useEffect(() => {
+    if (lightboxPhotoId === null) return;
+    const handler = (e: KeyboardEvent) => {
+      const lbPhotos = displayedPhotos;
+      const currentIdx = lbPhotos.findIndex((p: any) => p.id === lightboxPhotoId);
+      if (e.key === "Escape") setLightboxPhotoId(null);
+      if (e.key === "ArrowLeft" && currentIdx > 0) setLightboxPhotoId(lbPhotos[currentIdx - 1].id);
+      if (e.key === "ArrowRight" && currentIdx < lbPhotos.length - 1) setLightboxPhotoId(lbPhotos[currentIdx + 1].id);
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [lightboxPhotoId, displayedPhotos]);
   // During proofing, starred photos = client's current picks
   const starredIds = new Set<string>(album.photos.filter((p: any) => p.starred).map(p => p.id));
 
@@ -515,9 +528,6 @@ export default function AlbumDetail() {
   const previewPaidCount = Math.max(0, unpaidSelected.length - freeRemaining);
   const previewCheckoutAmount = previewIsFullAlbum ? priceFullAlbum : (previewPaidCount * pricePerPhoto);
 
-  // Lightbox — computed at render level (no IIFE in JSX to avoid bundler TDZ issues)
-  const lbPhoto = lightboxPhotoId ? displayedPhotos.find((p: any) => p.id === lightboxPhotoId) ?? null : null;
-  const lbIdx = lbPhoto ? displayedPhotos.findIndex((p: any) => p.id === lightboxPhotoId) : -1;
 
   // Pre-computed JSX to avoid IIFEs inside render (causes TDZ crash when minified)
   const _wmOp = settings.watermarkOpacity / 100;
@@ -829,13 +839,13 @@ export default function AlbumDetail() {
               {displayedPhotos.map((photo, i) => (
                 <div key={photo.id} className="relative group">
                   <WatermarkedImage
-                src={(photo.thumbnail || photo.src) + ((album as any).watermarkDisabled || isPhotoPaid(photo.id) ? "?wm=0" : "")}
+                src={photo.thumbnail || photo.src}
                   title={photo.title}
                   selected={isProofing ? starredIds.has(photo.id) : selectedIds.has(photo.id)}
                   onSelect={() => isProofing ? toggleStar(photo.id) : toggleSelect(photo.id)}
                   locked={!isProofing && !isPhotoPaid(photo.id) && freeRemaining <= 0 && !selectedIds.has(photo.id)}
                   index={i}
-                  showWatermark={false}
+                  showWatermark={!(album as any).watermarkDisabled && !isPhotoPaid(photo.id)}
                   watermarkPosition={watermarkPosition}
                   watermarkText={settings.watermarkText}
                   watermarkImage={settings.watermarkImage}
@@ -1214,7 +1224,6 @@ export default function AlbumDetail() {
                     toast.success("Email saved — your purchases are now linked to " + purchaserEmail);
                     setShowEmailReg(false);
                     setPurchaserEmail("");
-                    if (pendingStripeRef.current) { const fn = pendingStripeRef.current; pendingStripeRef.current = null; setTimeout(fn, 150); }
                   } catch { toast.error("Failed to save email"); }
                   setSavingEmail(false);
                 }}
@@ -1223,7 +1232,7 @@ export default function AlbumDetail() {
               >
                 {savingEmail ? "Saving…" : "Save Email"}
               </Button>
-              <Button variant="outline" onClick={() => { setShowEmailReg(false); setEmailSkippedThisSession(true); if (pendingStripeRef.current) { const fn = pendingStripeRef.current; pendingStripeRef.current = null; setTimeout(fn, 150); } }} className="font-body text-sm border-border">
+              <Button variant="outline" onClick={() => { setShowEmailReg(false); setEmailSkippedThisSession(true); }} className="font-body text-sm border-border">
                 Skip
               </Button>
             </div>
@@ -1238,43 +1247,43 @@ export default function AlbumDetail() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[100] bg-background/95 backdrop-blur-sm flex items-center justify-center"
+            className="fixed inset-0 z-[100] bg-background/95 backdrop-blur-sm flex items-center justify-center p-3 sm:p-6"
             onClick={() => setLightboxPhotoId(null)}
           >
             {/* Close button */}
-            <button className="absolute top-4 right-4 z-10 w-10 h-10 rounded-full bg-card/80 backdrop-blur-sm flex items-center justify-center text-foreground hover:bg-card transition-colors"
-              onClick={() => setLightboxIndex(null)}>
+            <button className="absolute top-3 right-3 sm:top-4 sm:right-4 z-10 w-11 h-11 rounded-full bg-card/80 backdrop-blur-sm flex items-center justify-center text-foreground hover:bg-card transition-colors"
+              onClick={() => setLightboxPhotoId(null)}>
               <X className="w-5 h-5" />
             </button>
 
             {/* Nav arrows */}
             {lbIdx > 0 && (
-              <button className="absolute left-4 z-10 w-10 h-10 rounded-full bg-card/80 backdrop-blur-sm flex items-center justify-center text-foreground hover:bg-card transition-colors"
+              <button className="absolute left-2 sm:left-4 z-10 w-11 h-11 rounded-full bg-card/80 backdrop-blur-sm flex items-center justify-center text-foreground hover:bg-card transition-colors"
                 onClick={(e) => { e.stopPropagation(); setLightboxPhotoId(displayedPhotos[lbIdx - 1].id); }}>
                 <ChevronLeft className="w-5 h-5" />
               </button>
             )}
             {lbIdx < displayedPhotos.length - 1 && (
-              <button className="absolute right-4 z-10 w-10 h-10 rounded-full bg-card/80 backdrop-blur-sm flex items-center justify-center text-foreground hover:bg-card transition-colors"
+              <button className="absolute right-2 sm:right-4 z-10 w-11 h-11 rounded-full bg-card/80 backdrop-blur-sm flex items-center justify-center text-foreground hover:bg-card transition-colors"
                 onClick={(e) => { e.stopPropagation(); setLightboxPhotoId(displayedPhotos[lbIdx + 1].id); }}>
                 <ChevronRight className="w-5 h-5" />
               </button>
             )}
 
             {/* Photo */}
-            <div className="relative max-w-[90vw] max-h-[90vh]" onClick={(e) => e.stopPropagation()}>
+            <div className="relative w-full max-w-[96vw] sm:max-w-[90vw] max-h-[92vh] flex items-center justify-center" onClick={(e) => e.stopPropagation()}>
               <LightboxImage
                 photo={lbPhoto}
                 cache={lightboxSrcCache}
                 onCacheUpdate={(id, url) => setLightboxSrcCache(prev => ({ ...prev, [id]: url }))}
-                wmDisabled={(album as any).watermarkDisabled || isPhotoPaid(lbPhoto.id)}
+                wmDisabled={(album as any).watermarkDisabled}
               />
               {/* Watermark overlay in lightbox */}
-              {/* watermark burned server-side */}
+              {!(album as any).watermarkDisabled && !isPhotoPaid(lbPhoto.id) && _lbWatermark}
 
               {/* Bottom bar with select/title */}
-              <div className="absolute bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-background/80 to-transparent rounded-b-lg flex items-center justify-between">
-                <p className="text-sm font-body text-foreground">{lbPhoto.title}</p>
+              <div className="absolute bottom-0 left-0 right-0 p-3 sm:p-4 bg-gradient-to-t from-background/85 to-transparent rounded-b-lg flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
+                <p className="text-sm font-body text-foreground pr-12 sm:pr-0">{lbPhoto.title}</p>
                 <div className="flex gap-2">
                   <Button
                     size="sm"
@@ -1293,7 +1302,7 @@ export default function AlbumDetail() {
             </div>
 
             {/* Counter */}
-            <div className="absolute bottom-4 left-1/2 -translate-x-1/2">
+            <div className="absolute bottom-3 sm:bottom-4 left-1/2 -translate-x-1/2">
               <p className="text-xs font-body text-muted-foreground bg-card/80 backdrop-blur-sm px-3 py-1.5 rounded-full">
                 {lbIdx + 1} / {displayedPhotos.length}
               </p>
