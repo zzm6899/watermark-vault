@@ -26,18 +26,17 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Label } from "@/components/ui/label";
 import type { Album, AlbumDownloadRecord, DownloadQuality, DownloadHistoryEntry, Photo } from "@/lib/types";
 
-const TARGET_LIGHTBOX_BYTES = 600 * 1024; // ~600KB
+const TARGET_LIGHTBOX_BYTES = 300 * 1024; // ~300KB
 
-/** Renders a medium-quality lightbox image, caching the optimized URL. */
-function LightboxImage({ photo, cache, onCacheUpdate, wmDisabled }: {
+/** Renders a fast-loading lightbox image: preview first, then a ~300KB clean upgrade. */
+function LightboxImage({ photo, cache, onCacheUpdate }: {
   photo: Photo;
   cache: Record<string, string>;
   onCacheUpdate: (cacheKey: string, url: string) => void;
-  wmDisabled?: boolean;
 }) {
-  const previewSrc = buildPhotoSrc(photo.thumbnail || photo.src, !!wmDisabled);
-  const fullSrc = buildPhotoSrc(photo.src, !!wmDisabled);
-  const cacheKey = `${photo.id}:${wmDisabled ? "wm0" : "wm1"}:${fullSrc}`;
+  const previewSrc = buildPhotoSrc(photo.thumbnail || photo.src, true);
+  const fullSrc = buildPhotoSrc(photo.src, true);
+  const cacheKey = `${photo.id}:lightbox:${fullSrc}`;
 
   const [src, setSrc] = useState(cache[cacheKey] || previewSrc);
 
@@ -47,7 +46,6 @@ function LightboxImage({ photo, cache, onCacheUpdate, wmDisabled }: {
       return;
     }
 
-    // Show the lightweight preview immediately, then upgrade to a full-screen optimized image.
     setSrc(previewSrc);
 
     if (fullSrc.startsWith("blob:") || fullSrc.startsWith("data:")) {
@@ -81,6 +79,69 @@ function LightboxImage({ photo, cache, onCacheUpdate, wmDisabled }: {
     />
   );
 }
+
+function LightboxWatermarkOverlay({
+  watermarkPosition,
+  watermarkText,
+  watermarkImage,
+  watermarkOpacity,
+  watermarkSize,
+}: {
+  watermarkPosition: any;
+  watermarkText?: string;
+  watermarkImage?: string;
+  watermarkOpacity?: number;
+  watermarkSize?: number;
+}) {
+  const opacityValue = (watermarkOpacity ?? 15) / 100;
+  const size = watermarkSize ?? 40;
+
+  if (watermarkPosition === "tiled") {
+    return (
+      <div className="absolute inset-0 pointer-events-none select-none overflow-hidden rounded-lg">
+        <div className="absolute inset-0 flex flex-wrap items-start justify-start gap-x-16 gap-y-12 rotate-[-30deg] scale-150 origin-center" style={{ opacity: opacityValue }}>
+          {Array.from({ length: 20 }).map((_, i) => (
+            watermarkImage ? (
+              <img key={i} src={watermarkImage} alt="" style={{ height: `${Math.max(20, size * 0.4)}px`, width: "auto" }} />
+            ) : (
+              <p key={i} className="font-display text-foreground tracking-widest whitespace-nowrap" style={{ fontSize: `${Math.max(10, size * 0.3)}px` }}>
+                {watermarkText}
+              </p>
+            )
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  const positionStyle = watermarkPosition === "center" ? {
+    position: "absolute",
+    inset: 0,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+  } : {
+    position: "absolute",
+    top: watermarkPosition?.startsWith?.("top") ? "16px" : "auto",
+    bottom: watermarkPosition?.startsWith?.("bottom") ? "16px" : "auto",
+    left: watermarkPosition?.endsWith?.("left") ? "16px" : "auto",
+    right: watermarkPosition?.endsWith?.("right") ? "16px" : "auto",
+  };
+
+  return (
+    <div className="absolute inset-0 pointer-events-none select-none rounded-lg" style={positionStyle}>
+      <div style={{ transform: watermarkPosition === "center" ? "rotate(-30deg)" : undefined }}>
+        {watermarkImage ? (
+          <img src={watermarkImage} alt="" style={{ opacity: opacityValue, width: `${size}%`, maxWidth: "100%", height: "auto" }} />
+        ) : (
+          <p className="font-display text-foreground tracking-widest whitespace-nowrap" style={{ opacity: opacityValue, fontSize: `${(size / 40).toFixed(2)}em` }}>
+            {watermarkText}
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
 // Session key priority: client token (works across devices) > PIN > generic per-album fallback
 function getSessionKey(album: Album, pin: string, token?: string): string {
   // Token is the most portable — same magic link URL works on any device
@@ -101,9 +162,9 @@ function buildPhotoSrc(src: string, disableWatermark: boolean): string {
   return `${src}${src.includes("?") ? "&" : "?"}wm=0`;
 }
 
-function getGalleryPhotoSrc(photo: Photo, disableWatermark: boolean): string {
-  const base = disableWatermark ? photo.src : (photo.thumbnail || photo.src);
-  return buildPhotoSrc(base, disableWatermark);
+function getGalleryPhotoSrc(photo: Photo): string {
+  const base = photo.thumbnail || photo.src;
+  return buildPhotoSrc(base, true);
 }
 
 export default function AlbumDetail() {
@@ -210,6 +271,7 @@ export default function AlbumDetail() {
     });
   }, []));
 
+
   if (!album || album.enabled === false) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
@@ -286,15 +348,17 @@ export default function AlbumDetail() {
   useEffect(() => {
     if (lightboxPhotoId === null) return;
     const handler = (e: KeyboardEvent) => {
-      const lbPhotos = displayedPhotos;
-      const currentIdx = lbPhotos.findIndex((p: any) => p.id === lightboxPhotoId);
+      const currentIdx = displayedPhotos.findIndex((p: any) => p.id === lightboxPhotoId);
       if (e.key === "Escape") setLightboxPhotoId(null);
-      if (e.key === "ArrowLeft" && currentIdx > 0) setLightboxPhotoId(lbPhotos[currentIdx - 1].id);
-      if (e.key === "ArrowRight" && currentIdx < lbPhotos.length - 1) setLightboxPhotoId(lbPhotos[currentIdx + 1].id);
+      if (e.key === "ArrowLeft" && currentIdx > 0) setLightboxPhotoId(displayedPhotos[currentIdx - 1].id);
+      if (e.key === "ArrowRight" && currentIdx < displayedPhotos.length - 1) setLightboxPhotoId(displayedPhotos[currentIdx + 1].id);
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [lightboxPhotoId, displayedPhotos]);
+
+  const shouldShowLightboxWatermark = !!(lbPhoto && !(album as any).watermarkDisabled && !isPhotoPaid(lbPhoto.id));
+
   // During proofing, starred photos = client's current picks
   const starredIds = new Set<string>(album.photos.filter((p: any) => p.starred).map(p => p.id));
 
@@ -809,7 +873,7 @@ export default function AlbumDetail() {
               {displayedPhotos.map((photo, i) => (
                 <div key={photo.id} className="relative group">
                   <WatermarkedImage
-                src={photo.thumbnail || photo.src}
+                src={getGalleryPhotoSrc(photo)}
                   title={photo.title}
                   selected={isProofing ? starredIds.has(photo.id) : selectedIds.has(photo.id)}
                   onSelect={() => isProofing ? toggleStar(photo.id) : toggleSelect(photo.id)}
@@ -916,7 +980,7 @@ export default function AlbumDetail() {
         <motion.div initial={{ y: 100, opacity: 0 }} animate={{ y: 0, opacity: 1 }}
           className="fixed bottom-0 left-0 right-0 z-40 glass-panel border-t border-border/50 p-4" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 1rem)' }}>
           <div className="container mx-auto flex items-center justify-between">
-            <p className="text-sm font-body text-foreground">
+            <p className="text-sm font-body text-foreground pr-12 sm:pr-0">
               <span className="font-semibold">{selectedIds.size}</span> paid photo{selectedIds.size !== 1 ? 's' : ''} selected
             </p>
             <Button onClick={() => setShowDownloadOptions(true)} size="sm" className="gap-2 bg-primary text-primary-foreground hover:bg-primary/90">
@@ -1217,40 +1281,49 @@ export default function AlbumDetail() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[100] bg-background/95 backdrop-blur-sm flex items-center justify-center"
+            className="fixed inset-0 z-[100] bg-background/95 backdrop-blur-sm flex items-center justify-center p-3 sm:p-6"
             onClick={() => setLightboxPhotoId(null)}
           >
             {/* Close button */}
-            <button className="absolute top-4 right-4 z-10 w-10 h-10 rounded-full bg-card/80 backdrop-blur-sm flex items-center justify-center text-foreground hover:bg-card transition-colors"
+            <button className="absolute top-3 right-3 sm:top-4 sm:right-4 z-10 w-11 h-11 rounded-full bg-card/80 backdrop-blur-sm flex items-center justify-center text-foreground hover:bg-card transition-colors"
               onClick={() => setLightboxPhotoId(null)}>
               <X className="w-5 h-5" />
             </button>
 
             {/* Nav arrows */}
             {lbIdx > 0 && (
-              <button className="absolute left-4 z-10 w-10 h-10 rounded-full bg-card/80 backdrop-blur-sm flex items-center justify-center text-foreground hover:bg-card transition-colors"
+              <button className="absolute left-2 sm:left-4 z-10 w-11 h-11 rounded-full bg-card/80 backdrop-blur-sm flex items-center justify-center text-foreground hover:bg-card transition-colors"
                 onClick={(e) => { e.stopPropagation(); setLightboxPhotoId(displayedPhotos[lbIdx - 1].id); }}>
                 <ChevronLeft className="w-5 h-5" />
               </button>
             )}
             {lbIdx < displayedPhotos.length - 1 && (
-              <button className="absolute right-4 z-10 w-10 h-10 rounded-full bg-card/80 backdrop-blur-sm flex items-center justify-center text-foreground hover:bg-card transition-colors"
+              <button className="absolute right-2 sm:right-4 z-10 w-11 h-11 rounded-full bg-card/80 backdrop-blur-sm flex items-center justify-center text-foreground hover:bg-card transition-colors"
                 onClick={(e) => { e.stopPropagation(); setLightboxPhotoId(displayedPhotos[lbIdx + 1].id); }}>
                 <ChevronRight className="w-5 h-5" />
               </button>
             )}
 
             {/* Photo */}
-            <div className="relative flex items-center justify-center w-[96vw] h-[88vh] sm:w-[92vw] sm:h-[90vh] max-w-[1600px]" onClick={(e) => e.stopPropagation()}>
+            <div className="relative w-full max-w-[96vw] sm:max-w-[90vw] max-h-[92vh] flex items-center justify-center" onClick={(e) => e.stopPropagation()}>
               <LightboxImage
                 photo={lbPhoto}
                 cache={lightboxSrcCache}
                 onCacheUpdate={(cacheKey, url) => setLightboxSrcCache(prev => ({ ...prev, [cacheKey]: url }))}
               />
+              {shouldShowLightboxWatermark && (
+                <LightboxWatermarkOverlay
+                  watermarkPosition={watermarkPosition}
+                  watermarkText={settings.watermarkText}
+                  watermarkImage={settings.watermarkImage}
+                  watermarkOpacity={settings.watermarkOpacity}
+                  watermarkSize={settings.watermarkSize ?? 40}
+                />
+              )}
 
               {/* Bottom bar with select/title */}
-              <div className="absolute bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-background/80 to-transparent rounded-b-lg flex items-center justify-between">
-                <p className="text-sm font-body text-foreground">{lbPhoto.title}</p>
+              <div className="absolute bottom-0 left-0 right-0 p-3 sm:p-4 bg-gradient-to-t from-background/85 to-transparent rounded-b-lg flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
+                <p className="text-sm font-body text-foreground pr-12 sm:pr-0">{lbPhoto.title}</p>
                 <div className="flex gap-2">
                   <Button
                     size="sm"
@@ -1269,7 +1342,7 @@ export default function AlbumDetail() {
             </div>
 
             {/* Counter */}
-            <div className="absolute bottom-4 left-1/2 -translate-x-1/2">
+            <div className="absolute bottom-3 sm:bottom-4 left-1/2 -translate-x-1/2">
               <p className="text-xs font-body text-muted-foreground bg-card/80 backdrop-blur-sm px-3 py-1.5 rounded-full">
                 {lbIdx + 1} / {displayedPhotos.length}
               </p>
