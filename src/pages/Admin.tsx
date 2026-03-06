@@ -3665,9 +3665,11 @@ function SettingsView() {
       setRebuildProgress({ running: true, done: 0, total: 1, stage: "Clearing server image cache…" });
       writeWatermarkRebuildStatus({ running: true, mode: "save", done: 0, total: 1, stage: "Clearing server image cache…" });
       try {
-        await fetch("/api/cache/clear", { method: "POST" });
-        toast.success("Settings saved — server cache cleared, gallery will serve fresh watermarked images.");
-        writeWatermarkRebuildStatus({ running: false, mode: "save", done: 1, total: 1, stage: "Server cache cleared." });
+        const cacheRes = await fetch("/api/cache/clear", { method: "POST" });
+        const cacheData = cacheRes.ok ? await cacheRes.json() : null;
+        const clearedMsg = cacheData?.cleared != null ? ` (${cacheData.cleared} cached file${cacheData.cleared !== 1 ? "s" : ""} removed)` : "";
+        toast.success(`Settings saved — server cache cleared${clearedMsg}, gallery will serve fresh watermarked images.`);
+        writeWatermarkRebuildStatus({ running: false, mode: "save", done: 1, total: 1, stage: `Server cache cleared${clearedMsg}.` });
       } catch {
         toast.error("Settings saved, but failed to clear server cache. Run 'Clear Server Image Cache' manually.");
         writeWatermarkRebuildStatus({ running: false, mode: "save", stage: "Cache clear failed." });
@@ -4275,8 +4277,10 @@ function StorageView() {
       // fresh variants are served on the next gallery load.
       setPreviewJob({ running: true, mode: forceAll ? "all" : "missing", done: 1, total: 1, stage: "Clearing server image cache…" });
       try {
-        await fetch("/api/cache/clear", { method: "POST" });
-        toast.success("Server image cache cleared — gallery will fetch fresh watermarked images");
+        const cacheRes = await fetch("/api/cache/clear", { method: "POST" });
+        const cacheData = cacheRes.ok ? await cacheRes.json() : null;
+        const clearedMsg = cacheData?.cleared != null ? ` — ${cacheData.cleared} cached file${cacheData.cleared !== 1 ? "s" : ""} removed` : "";
+        toast.success(`Server image cache cleared${clearedMsg} — gallery will fetch fresh watermarked images`);
       } catch {
         toast.error("Failed to clear server cache");
       }

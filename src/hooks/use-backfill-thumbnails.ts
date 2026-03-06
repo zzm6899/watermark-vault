@@ -28,7 +28,7 @@ export function useBackfillThumbnails(
       for (const photo of missing) {
         if (photo.src.startsWith("data:")) continue; // skip base64 blobs
         processedRef.current.add(photo.id);
-        onUpdate(photo.id, photo.src + "?w=200&wm=0");
+        onUpdate(photo.id, photo.src + "?size=thumb&wm=0");
       }
       return;
     }

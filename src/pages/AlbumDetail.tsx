@@ -98,6 +98,13 @@ function getPhotoVariantSrc(photo: Photo, variant: "thumbnail" | "medium" | "ful
   const stripWm = (src: string) =>
     src ? src.replace(/[?&]wm=0(?=&|$)/g, "").replace(/[?&]$/, "").replace(/\?&/, "?") : src;
 
+  // Ensure a server-hosted thumbnail URL always includes ?size=thumb for smaller payloads.
+  const ensureThumbSize = (src: string) => {
+    if (!src || !src.startsWith("/uploads/")) return src;
+    if (src.includes("size=")) return src; // already has a size param
+    return `${src}${src.includes("?") ? "&" : "?"}size=thumb`;
+  };
+
   // Upgrade a server thumbnail URL to medium quality for lightbox use.
   // If the URL already uses ?size=thumb, swap to ?size=medium.
   // If it's a server-hosted image with no size param, add ?size=medium.
@@ -115,12 +122,13 @@ function getPhotoVariantSrc(photo: Photo, variant: "thumbnail" | "medium" | "ful
 
   if (disableWatermark) {
     const rawBase = variant === "full" ? photo.src : (photo.thumbnail || photo.src);
-    const sized = variant === "medium" ? upgradeToMedium(rawBase) : rawBase;
+    const sized = variant === "medium" ? upgradeToMedium(rawBase) : variant === "thumbnail" ? ensureThumbSize(rawBase) : rawBase;
     return buildPhotoSrc(sized, true);
   }
 
   if (variant === "thumbnail") {
-    return stripWm(p.thumbnailWatermarked || photo.thumbnail || photo.src);
+    const src = p.thumbnailWatermarked || photo.thumbnail || photo.src;
+    return ensureThumbSize(stripWm(src));
   }
   if (variant === "medium") {
     // Prefer baked watermarked variants; fall back to thumb → upgrade to medium for lightbox

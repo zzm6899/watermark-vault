@@ -425,15 +425,23 @@ export async function saveCalendarSettings(settings: { autoSync?: boolean; calen
 
 // ── Bulk file delete (orphan cleanup) ──────────────────
 
+const BULK_DELETE_CHUNK_SIZE = 500;
+
 export async function bulkDeleteFiles(filenames: string[]): Promise<{ ok: boolean; deleted: number }> {
   if (!(await checkServer())) return { ok: false, deleted: 0 };
+  let totalDeleted = 0;
   try {
-    const res = await fetch("/api/upload/bulk-delete", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filenames }),
-    });
-    return await res.json();
+    for (let i = 0; i < filenames.length; i += BULK_DELETE_CHUNK_SIZE) {
+      const chunk = filenames.slice(i, i + BULK_DELETE_CHUNK_SIZE);
+      const res = await fetch("/api/upload/bulk-delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filenames: chunk }),
+      });
+      const data = await res.json();
+      if (data.deleted) totalDeleted += data.deleted;
+    }
+    return { ok: true, deleted: totalDeleted };
   } catch { return { ok: false, deleted: 0 }; }
 }
 
