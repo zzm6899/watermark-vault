@@ -437,6 +437,43 @@ app.get("/api/photo/:filename/original", async (req, res) => {
   res.sendFile(filepath);
 });
 
+// ── Clear image cache ──────────────────────────────────
+app.post("/api/cache/clear", (_req, res) => {
+  clearImageCache();
+  res.json({ ok: true });
+});
+
+// ── Delete ALL uploaded photos from disk ───────────────
+app.delete("/api/upload/all", async (req, res) => {
+  try {
+    const files = fs.readdirSync(UPLOADS_DIR);
+    let deleted = 0;
+    for (const f of files) {
+      try { fs.unlinkSync(path.join(UPLOADS_DIR, f)); deleted++; } catch {}
+    }
+    clearImageCache();
+
+    // Wipe all photo records from db.json so album refs don't break
+    const db = readDb();
+    if (db["wv_albums"]) {
+      const albums = typeof db["wv_albums"] === "string" ? JSON.parse(db["wv_albums"]) : db["wv_albums"];
+      if (Array.isArray(albums)) {
+        const wiped = albums.map(a => ({ ...a, photos: [], photoCount: 0, coverImage: "" }));
+        db["wv_albums"] = JSON.stringify(wiped);
+      }
+    }
+    if (db["wv_library"]) {
+      db["wv_library"] = JSON.stringify([]);
+    }
+    writeDb(db);
+
+    res.json({ ok: true, deleted });
+  } catch (err) {
+    console.error("Delete all error:", err.message);
+    res.status(500).json({ error: "Failed to delete files" });
+  }
+});
+
 // ── Integrations ──────────────────────────────────────
 registerGoogleCalendarRoutes(app);
 registerEmailRoutes(app);

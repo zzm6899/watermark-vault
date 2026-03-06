@@ -2953,24 +2953,40 @@ function PhotosView() {
   };
 
   const handleClearDuplicates = () => {
+    // Always use fresh data from storage to avoid acting on stale component state
+    const freshAlbums = getAlbums();
+    const freshLibrary = getPhotoLibrary();
     let totalRemoved = 0;
-    const updAlbums: Album[] = [];
-    for (const alb of albums) {
+
+    for (const alb of freshAlbums) {
       const seen = new Set<string>();
-      const deduped = alb.photos.filter(p => { if (seen.has(p.src)) return false; seen.add(p.src); return true; });
+      const deduped = alb.photos.filter(p => {
+        const key = p.id + "|" + p.src; // dedup by both id and src
+        if (seen.has(p.id) || seen.has(p.src)) return false;
+        seen.add(p.id); seen.add(p.src);
+        return true;
+      });
       if (deduped.length < alb.photos.length) {
         totalRemoved += alb.photos.length - deduped.length;
-        const upd = { ...alb, photos: deduped, photoCount: deduped.length };
-        updateAlbum(upd); updAlbums.push(upd);
+        updateAlbum({ ...alb, photos: deduped, photoCount: deduped.length });
       }
     }
+
     const seenLib = new Set<string>();
-    const dedupLib = libraryPhotos.filter(p => { if (seenLib.has(p.src)) return false; seenLib.add(p.src); return true; });
-    if (dedupLib.length < libraryPhotos.length) {
-      totalRemoved += libraryPhotos.length - dedupLib.length;
-      setPhotoLibrary(dedupLib); setLibraryPhotosState(dedupLib);
+    const dedupLib = freshLibrary.filter(p => {
+      if (seenLib.has(p.id) || seenLib.has(p.src)) return false;
+      seenLib.add(p.id); seenLib.add(p.src);
+      return true;
+    });
+    if (dedupLib.length < freshLibrary.length) {
+      totalRemoved += freshLibrary.length - dedupLib.length;
+      setPhotoLibrary(dedupLib);
+      setLibraryPhotosState(dedupLib);
     }
-    if (updAlbums.length > 0) setAlbumsState(getAlbums());
+
+    // Refresh from storage after all writes
+    setAlbumsState(getAlbums());
+
     if (totalRemoved === 0) toast.info("No duplicates found");
     else toast.success(`Removed ${totalRemoved} duplicate photo${totalRemoved !== 1 ? "s" : ""}`);
   };
@@ -4241,6 +4257,21 @@ function StorageView() {
   }, []);
 
   const handleRebuildPreviews = useCallback(async (forceAll: boolean) => {
+    if (isServerMode()) {
+      // In server mode the server watermarks on demand — just clear the cache so
+      // fresh variants are served on the next gallery load.
+      setPreviewJob({ running: true, mode: forceAll ? "all" : "missing", done: 1, total: 1, stage: "Clearing server image cache…" });
+      try {
+        await fetch("/api/cache/clear", { method: "POST" });
+        toast.success("Server image cache cleared — gallery will fetch fresh watermarked images");
+      } catch {
+        toast.error("Failed to clear server cache");
+      }
+      setPreviewJob({ running: false, mode: null, done: 0, total: 0 });
+      return;
+    }
+
+    // localStorage mode: bake client-side previews
     const currentSettings = getSettings() as AppSettings & { watermarkVersion?: number };
     const currentAlbums = getAlbums();
     const currentLibrary = getPhotoLibrary();
@@ -4282,10 +4313,30 @@ function StorageView() {
     dataDir: string;
   } | null>(null);
   const [loading, setLoading] = useState(true);
+  const [deleteAllState, setDeleteAllState] = useState<"idle" | "confirming" | "deleting">("idle");
 
   useEffect(() => {
     getServerStorageStats().then(s => { setServerStats(s); setLoading(false); });
   }, []);
+
+  const handleDeleteAllPhotos = async () => {
+    if (deleteAllState === "idle") { setDeleteAllState("confirming"); return; }
+    if (deleteAllState !== "confirming") return;
+    setDeleteAllState("deleting");
+    try {
+      const res = await fetch("/api/upload/all", { method: "DELETE" });
+      if (!res.ok) throw new Error("Server error");
+      const { deleted } = await res.json();
+      // Clear local state
+      setAlbumsState(getAlbums());
+      setLibraryPhotosState(getPhotoLibrary());
+      await refreshStorageState();
+      toast.success(`Deleted ${deleted} photo file${deleted !== 1 ? "s" : ""} and cleared all album photo records`);
+    } catch {
+      toast.error("Failed to delete all photos");
+    }
+    setDeleteAllState("idle");
+  };
 
   // Backfill thumbnails and track progress
   const allPhotos = [...libraryPhotos, ...albums.flatMap(a => a.photos)];
@@ -4365,64 +4416,77 @@ function StorageView() {
         <h3 className="font-display text-base text-foreground mb-3 flex items-center gap-2">
           <Sparkles className="w-4 h-4 text-primary" /> Preview & Watermark Rendering
         </h3>
-        <div className="flex items-center justify-between text-xs font-body text-muted-foreground mb-1.5">
-          <span>
-            {previewJob.running
-              ? (previewJob.stage || "Regenerating baked previews…")
-              : (thumbnailPct === 100
-                ? "Baked previews are ready"
-                : `${withThumbnails} of ${totalPhotos} photos optimised`)}
-          </span>
-          <span className={previewJob.running ? "text-primary" : (thumbnailPct === 100 ? "text-green-500" : "text-primary")}>
-            {previewJob.running
-              ? (previewJob.total > 0 ? `${previewJob.done}/${previewJob.total}` : "Working…")
-              : `${thumbnailPct}%`}
-          </span>
-        </div>
-        <div className="h-3 rounded-full bg-secondary overflow-hidden">
-          <div
-            className={`h-full rounded-full transition-all duration-500 ${previewJob.running ? "bg-primary" : (thumbnailPct === 100 ? "bg-green-500" : "bg-primary")}`}
-            style={{ width: `${previewJob.running ? (previewJob.total > 0 ? Math.max(4, (previewJob.done / previewJob.total) * 100) : 12) : thumbnailPct}%` }}
-          />
-        </div>
-        <p className="text-[10px] font-body text-muted-foreground/50 mt-2">
-          {previewJob.running
-            ? `${previewJob.stage || "Regenerating baked previews…"}${previewJob.total > 0 ? ` ${previewJob.done}/${previewJob.total}` : ""}`
-            : (thumbnailPct === 100
-              ? "✓ All photos have baked thumbnail, medium and protected preview variants ready for gallery and lightbox use."
-              : `Generating ${totalPhotos - withThumbnails} missing preview(s) in background…`)}
-        </p>
-
-        <div className="mt-4 flex flex-col sm:flex-row gap-2">
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => handleRebuildPreviews(false)}
-            disabled={previewJob.running}
-            className="gap-2 font-body text-xs border-border text-foreground"
-          >
-            <RefreshCw className={`w-4 h-4 ${previewJob.running && previewJob.mode === "missing" ? "animate-spin" : ""}`} />
-            {previewJob.running && previewJob.mode === "missing"
-              ? `Generating… ${previewJob.done}/${previewJob.total || "?"}`
-              : "Regenerate Missing Baked Previews"}
-          </Button>
-
-          <Button
-            size="sm"
-            onClick={() => handleRebuildPreviews(true)}
-            disabled={previewJob.running}
-            className="gap-2 font-body text-xs"
-          >
-            <Sparkles className={`w-4 h-4 ${previewJob.running && (previewJob.mode === "all" || previewJob.mode === "save") ? "animate-pulse" : ""}`} />
-            {previewJob.running && (previewJob.mode === "all" || previewJob.mode === "save")
-              ? `Rebuilding… ${previewJob.done}/${previewJob.total || "?"}`
-              : "Force Rebuild All Baked Previews"}
-          </Button>
-        </div>
-
-        <p className="text-[10px] font-body text-muted-foreground/50 mt-2">
-          Use this after changing watermark text, image, size, position or opacity so gallery thumbnails and lightbox previews match the saved admin watermark config.
-        </p>
+        {isServerMode() ? (
+          <>
+            <div className="flex items-center justify-between text-xs font-body text-muted-foreground mb-1.5">
+              <span>{previewJob.running ? (previewJob.stage || "Clearing cache…") : "Server-side watermarking active"}</span>
+              <span className="text-green-500">{previewJob.running ? "Working…" : "✓ Live"}</span>
+            </div>
+            <div className="h-3 rounded-full bg-secondary overflow-hidden">
+              <div className={`h-full rounded-full bg-green-500 transition-all duration-500`} style={{ width: previewJob.running ? "60%" : "100%" }} />
+            </div>
+            <p className="text-[10px] font-body text-muted-foreground/50 mt-2">
+              ✓ Watermarks are applied by the server on every image request. No local baking needed. Clear the cache after changing watermark settings.
+            </p>
+            <div className="mt-4">
+              <Button
+                size="sm"
+                onClick={() => handleRebuildPreviews(true)}
+                disabled={previewJob.running}
+                className="gap-2 font-body text-xs"
+              >
+                <RefreshCw className={`w-4 h-4 ${previewJob.running ? "animate-spin" : ""}`} />
+                {previewJob.running ? "Clearing…" : "Clear Server Image Cache"}
+              </Button>
+              <p className="text-[10px] font-body text-muted-foreground/50 mt-2">
+                Run this after updating watermark settings so the gallery fetches fresh watermarked images.
+              </p>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="flex items-center justify-between text-xs font-body text-muted-foreground mb-1.5">
+              <span>
+                {previewJob.running
+                  ? (previewJob.stage || "Regenerating baked previews…")
+                  : (thumbnailPct === 100
+                    ? "Baked previews are ready"
+                    : `${withThumbnails} of ${totalPhotos} photos optimised`)}
+              </span>
+              <span className={previewJob.running ? "text-primary" : (thumbnailPct === 100 ? "text-green-500" : "text-primary")}>
+                {previewJob.running
+                  ? (previewJob.total > 0 ? `${previewJob.done}/${previewJob.total}` : "Working…")
+                  : `${thumbnailPct}%`}
+              </span>
+            </div>
+            <div className="h-3 rounded-full bg-secondary overflow-hidden">
+              <div
+                className={`h-full rounded-full transition-all duration-500 ${previewJob.running ? "bg-primary" : (thumbnailPct === 100 ? "bg-green-500" : "bg-primary")}`}
+                style={{ width: `${previewJob.running ? (previewJob.total > 0 ? Math.max(4, (previewJob.done / previewJob.total) * 100) : 12) : thumbnailPct}%` }}
+              />
+            </div>
+            <p className="text-[10px] font-body text-muted-foreground/50 mt-2">
+              {previewJob.running
+                ? `${previewJob.stage || "Regenerating baked previews…"}${previewJob.total > 0 ? ` ${previewJob.done}/${previewJob.total}` : ""}`
+                : (thumbnailPct === 100
+                  ? "✓ All photos have baked thumbnail, medium and protected preview variants ready for gallery and lightbox use."
+                  : `Generating ${totalPhotos - withThumbnails} missing preview(s) in background…`)}
+            </p>
+            <div className="mt-4 flex flex-col sm:flex-row gap-2">
+              <Button size="sm" variant="outline" onClick={() => handleRebuildPreviews(false)} disabled={previewJob.running} className="gap-2 font-body text-xs border-border text-foreground">
+                <RefreshCw className={`w-4 h-4 ${previewJob.running && previewJob.mode === "missing" ? "animate-spin" : ""}`} />
+                {previewJob.running && previewJob.mode === "missing" ? `Generating… ${previewJob.done}/${previewJob.total || "?"}` : "Regenerate Missing Baked Previews"}
+              </Button>
+              <Button size="sm" onClick={() => handleRebuildPreviews(true)} disabled={previewJob.running} className="gap-2 font-body text-xs">
+                <Sparkles className={`w-4 h-4 ${previewJob.running && (previewJob.mode === "all" || previewJob.mode === "save") ? "animate-pulse" : ""}`} />
+                {previewJob.running && (previewJob.mode === "all" || previewJob.mode === "save") ? `Rebuilding… ${previewJob.done}/${previewJob.total || "?"}` : "Force Rebuild All Baked Previews"}
+              </Button>
+            </div>
+            <p className="text-[10px] font-body text-muted-foreground/50 mt-2">
+              Use this after changing watermark text, image, size, position or opacity so gallery thumbnails and lightbox previews match the saved admin watermark config.
+            </p>
+          </>
+        )}
       </div>
 
       {/* TrueNAS Volume / Disk Usage */}
@@ -4471,9 +4535,39 @@ function StorageView() {
               </div>
             </div>
 
+            {/* Danger zone: Delete all photos */}
+            <div className="mt-4 pt-4 border-t border-destructive/20">
+              <p className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-2">Danger Zone</p>
+              {deleteAllState === "confirming" ? (
+                <div className="p-3 rounded-lg border border-destructive/40 bg-destructive/5 space-y-2">
+                  <p className="text-xs font-body text-destructive">This will permanently delete all {serverStats.photoCount} photo files from disk and clear all photo records from every album. This cannot be undone.</p>
+                  <div className="flex gap-2">
+                    <Button size="sm" variant="destructive" onClick={handleDeleteAllPhotos} disabled={deleteAllState as string === "deleting"} className="font-body text-xs gap-1.5">
+                      <Trash2 className="w-3.5 h-3.5" /> Yes, Delete Everything
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={() => setDeleteAllState("idle")} className="font-body text-xs border-border text-foreground">
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={handleDeleteAllPhotos}
+                  disabled={deleteAllState === "deleting" || !isServerMode()}
+                  className="gap-2 font-body text-xs border-destructive/40 text-destructive hover:bg-destructive/10"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  {deleteAllState === "deleting" ? "Deleting…" : "Delete All Photos"}
+                </Button>
+              )}
+              <p className="text-[10px] font-body text-muted-foreground/50 mt-1">Removes all uploaded photos from disk and clears album photo records. Album metadata (titles, clients, bookings) is preserved.</p>
+            </div>
+
             {/* Largest files */}
             {serverStats.photoFiles.length > 0 && (
-              <div>
+              <div className="mt-4 pt-4 border-t border-border/30">
                 <p className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-2">Largest Files</p>
                 <div className="space-y-1 max-h-48 overflow-y-auto">
                   {serverStats.photoFiles.slice(0, 20).map((f) => (

@@ -56,10 +56,10 @@ function LightboxImage({ photo, cache, onCacheUpdate, wmDisabled, watermarkVersi
   watermarkVersion?: number;
 }) {
   const p = photo as any;
-  // Quick placeholder: baked thumbnail data URL or raw thumbnail
+  // Quick placeholder: baked thumbnail data URL or server-served 300px watermarked thumbnail
   const previewSrc = wmDisabled
     ? (photo.thumbnail || buildServerSrc(photo.src, true, 300))
-    : (p.thumbnailWatermarked || photo.thumbnail || photo.src);
+    : (p.thumbnailWatermarked || buildServerSrc(photo.src, false, 300));
 
   // High-quality target: server-rendered at 2000px wide (~600KB watermarked)
   // For clean (paid/disabled) photos serve a clean resized version; for watermarked use server default
@@ -121,9 +121,11 @@ function LightboxImage({ photo, cache, onCacheUpdate, wmDisabled, watermarkVersi
  */
 function GalleryImage({ photo, disableWatermark }: { photo: Photo; disableWatermark: boolean }) {
   const p = photo as any;
+  // Watermarked placeholder: use baked data URL if available, else server-served 300px (with watermark)
+  // Never use photo.thumbnail here — that's the no-watermark admin preview URL
   const thumbSrc = disableWatermark
     ? (photo.thumbnail || buildServerSrc(photo.src, true, 300))
-    : (p.thumbnailWatermarked || photo.thumbnail || photo.src);
+    : (p.thumbnailWatermarked || buildServerSrc(photo.src, false, 300));
 
   // High quality from server: 900px wide for gallery grid
   const hqSrc = buildServerSrc(photo.src, disableWatermark, 900);
