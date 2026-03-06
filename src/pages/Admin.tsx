@@ -945,6 +945,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
 
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [bookingSearch, setBookingSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"all" | "pending" | "confirmed" | "completed" | "cancelled">("all");
   const [emailLogs, setEmailLogs] = useState<Record<string, { id: string; type: string; sentAt: string; openedAt?: string; subject: string; to: string }[]>>({});
   const [sendingReminder, setSendingReminder] = useState<string | null>(null);
   const [customEmailTarget, setCustomEmailTarget] = useState<string | null>(null);
@@ -1001,6 +1002,32 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
     toast.success(`Payment marked as ${paymentStatus}`);
   };
 
+  const handleExportCsv = () => {
+    const headers = ["Name", "Email", "Date", "Time", "Duration (min)", "Type", "Status", "Payment", "Amount ($)", "Instagram", "Notes", "Booked At"];
+    const rows = sortedBookings.map(bk => [
+      bk.clientName,
+      bk.clientEmail,
+      bk.date,
+      bk.time,
+      String(bk.duration || ""),
+      bk.type || "",
+      bk.status || "",
+      bk.paymentStatus || "",
+      String(bk.paymentAmount || ""),
+      bk.instagramHandle || "",
+      bk.notes || "",
+      bk.createdAt ? new Date(bk.createdAt).toLocaleDateString("en-AU") : "",
+    ]);
+    const csv = [headers, ...rows].map(row => row.map(v => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `bookings-${new Date().toISOString().split("T")[0]}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   const handleSheetsSync = async () => {
     setSheetsSyncing(true);
     const result = await syncBookingsToSheet(bookings, getEventTypes());
@@ -1021,6 +1048,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
   };
 
   const filteredBookings = bookings.filter(bk => {
+    if (statusFilter !== "all" && bk.status !== statusFilter) return false;
     if (!bookingSearch) return true;
     const q = bookingSearch.toLowerCase();
     return (bk.clientName || "").toLowerCase().includes(q)
