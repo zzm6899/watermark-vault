@@ -14,6 +14,7 @@ const PORT = process.env.PORT || 5066;
 const DATA_DIR = process.env.DATA_DIR || "/data";
 const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
 const DB_FILE = path.join(DATA_DIR, "db.json");
+const MAX_ZIP_FILES = 1000; // Reasonable upper bound per request to prevent resource abuse
 
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 if (!fs.existsSync(DB_FILE)) fs.writeFileSync(DB_FILE, JSON.stringify({}));
@@ -356,6 +357,30 @@ function isPhotoAccessible(filename, sessionKey, albumId) {
   }
 }
 
+/** Generate (or load from cache) a watermarked full-res buffer for a file. */
+async function getWatermarkedBuffer(safeName, filepath) {
+  const cacheDir = path.join(UPLOADS_DIR, "_cache");
+  fs.mkdirSync(cacheDir, { recursive: true });
+  const baseName = path.basename(safeName, path.extname(safeName));
+  const cacheFile = path.join(cacheDir, getCacheFilename(baseName, "full", true));
+
+  if (fs.existsSync(cacheFile)) {
+    return fs.readFileSync(cacheFile);
+  }
+
+  const origMeta = await sharp(filepath).metadata();
+  const origW = origMeta.width || 800;
+  const origH = origMeta.height || 600;
+  const wm = getWatermarkSettings();
+  const overlay = await buildWatermarkOverlay(origW, origH, wm);
+  const result = await sharp(filepath)
+    .composite([overlay])
+    .jpeg({ quality: 82, progressive: true })
+    .toBuffer();
+  try { fs.writeFileSync(cacheFile, result); } catch {}
+  return result;
+}
+
 // ── Serve watermarked / resized photo ────────────────────────
 // Supports:
 //   ?size=thumb   → resize to 700 px wide (for gallery grids)
@@ -545,23 +570,38 @@ app.post("/api/upload/bulk-delete", async (req, res) => {
 });
 
 // ── Download original photos as a zip (authenticated) ──────────
+// Accepts either:
+//   { filenames: string[], sessionKey, albumId }   — all clean originals (legacy)
+//   { files: [{filename, clean}], sessionKey, albumId } — per-file clean/watermarked
 app.post("/api/download/zip", makeRateLimiter(5_000), async (req, res) => {
-  const { filenames, sessionKey, albumId } = req.body;
-  if (!Array.isArray(filenames) || !sessionKey || !albumId) {
-    return res.status(400).json({ error: "filenames array, sessionKey and albumId required" });
+  const { filenames, files, sessionKey, albumId } = req.body;
+
+  // Normalise to a [{filename, clean}] array regardless of which format was sent
+  let fileList;
+  if (Array.isArray(files)) {
+    fileList = files.map(f => ({ filename: String(f.filename || ""), clean: f.clean === true }));
+  } else if (Array.isArray(filenames)) {
+    fileList = filenames.map(n => ({ filename: String(n), clean: true }));
+  } else {
+    return res.status(400).json({ error: "files array (or filenames), sessionKey and albumId required" });
   }
-  if (filenames.length > 1000) {
-    return res.status(400).json({ error: "Too many files in a single zip request (max 1000)" });
+
+  if (!sessionKey || !albumId) {
+    return res.status(400).json({ error: "sessionKey and albumId required" });
+  }
+  // Reasonable upper bound to prevent resource abuse
+  if (fileList.length > MAX_ZIP_FILES) {
+    return res.status(400).json({ error: `Too many files in a single zip request (max ${MAX_ZIP_FILES})` });
   }
 
   // Collect accessible files
   const accessibleFiles = [];
-  for (const name of filenames) {
-    const safeName = path.basename(String(name));
+  for (const { filename, clean } of fileList) {
+    const safeName = path.basename(filename);
     const filepath = path.join(UPLOADS_DIR, safeName);
     if (!fs.existsSync(filepath)) continue;
     if (!isPhotoAccessible(safeName, sessionKey, albumId)) continue;
-    accessibleFiles.push({ safeName, filepath });
+    accessibleFiles.push({ safeName, filepath, clean });
   }
 
   if (accessibleFiles.length === 0) {
@@ -581,15 +621,28 @@ app.post("/api/download/zip", makeRateLimiter(5_000), async (req, res) => {
   res.setHeader("Content-Type", "application/zip");
   res.setHeader("Content-Disposition", `attachment; filename="${albumName}.zip"`);
 
-  const archive = archiver("zip", { zlib: { level: 0 } }); // store-only — images are already compressed
+  // JPEG images are already compressed — store them as-is (level 0) to keep zip creation fast
+  const archive = archiver("zip", { zlib: { level: 0 } });
   archive.on("error", (err) => {
     console.error("Zip archive error:", err.message);
     if (!res.headersSent) res.status(500).json({ error: "Failed to create zip" });
   });
 
   archive.pipe(res);
-  for (const { safeName, filepath } of accessibleFiles) {
-    archive.file(filepath, { name: safeName });
+  for (const { safeName, filepath, clean } of accessibleFiles) {
+    if (clean) {
+      // Serve the original file untouched
+      archive.file(filepath, { name: safeName });
+    } else {
+      // Serve the server-watermarked version (from cache or generated on-the-fly)
+      try {
+        const buf = await getWatermarkedBuffer(safeName, filepath);
+        archive.append(buf, { name: safeName });
+      } catch {
+        // Fallback: serve original if watermarking fails
+        archive.file(filepath, { name: safeName });
+      }
+    }
   }
   await archive.finalize();
 });

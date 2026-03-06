@@ -148,6 +148,7 @@ export interface Album {
   downloadExpiresAt?: string;
   watermarkDisabled?: boolean;
   purchasingDisabled?: boolean;
+  sessionPurchases?: Record<string, { fullAlbum?: boolean; photoIds?: string[] }>;
 }
 
 export interface BankTransferSettings {

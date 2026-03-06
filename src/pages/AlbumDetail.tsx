@@ -226,8 +226,8 @@ export default function AlbumDetail() {
     if (!stripeSuccess) return;
     const hasPurchase = album && (
       album.allUnlocked ||
-      (album as any).paidPhotoIds?.length > 0 ||
-      Object.keys((album as any).sessionPurchases || {}).length > 0
+      album.paidPhotoIds?.length > 0 ||
+      Object.keys(album.sessionPurchases || {}).length > 0
     );
     if (hasPurchase) {
       toast.success("Payment confirmed! Your photos are now unlocked.");
@@ -298,24 +298,24 @@ export default function AlbumDetail() {
   const isFullyUnlocked = album.allUnlocked === true; // admin-set only (proofing delivery, manual unlock)
   const isExpired = !!(album.downloadExpiresAt && new Date(album.downloadExpiresAt) < new Date());
   // Per-session purchase record for this viewer
-  const sessionPurchase = (album as any).sessionPurchases?.[sessionKey];
+  const sessionPurchase = album.sessionPurchases?.[sessionKey];
   const sessionFullAlbum = sessionPurchase?.fullAlbum === true;
   const sessionPaidIds = new Set<string>(sessionPurchase?.photoIds || []);
   // Legacy global paidPhotoIds (kept for backwards compat with old purchases)
-  const globalPaidSet = new Set<string>((album as any).paidPhotoIds || []);
+  const globalPaidSet = new Set<string>(album.paidPhotoIds || []);
   // Approved/completed bank transfer requests also unlock their photos
   const bankPaidIds = new Set<string>(
-    ((album as any).downloadRequests || [])
+    (album.downloadRequests || [])
       .filter((r: any) => r.status === "approved" || r.status === "completed")
       .flatMap((r: any) => r.photoIds || [])
   );
   const paidPhotoIdSet = new Set<string>([...sessionPaidIds, ...globalPaidSet, ...bankPaidIds]);
-  const canDownload = (isFullyUnlocked || sessionFullAlbum) && !isExpired && !(album as any).purchasingDisabled;
+  const canDownload = (isFullyUnlocked || sessionFullAlbum) && !isExpired && !album.purchasingDisabled;
   const isPhotoPaid = (id: string) => canDownload || paidPhotoIdSet.has(id);
 
   // Proofing derived values
   const proofingStage = album.proofingStage || "not-started";
-  const isProofing = proofingStage === "proofing" && !!settings.proofingEnabled && (!!(album as any).proofingEnabled || tokenMatchesAlbum);
+  const isProofing = proofingStage === "proofing" && !!settings.proofingEnabled && (!!album.proofingEnabled || tokenMatchesAlbum);
   const latestRound = album.proofingRounds?.[album.proofingRounds.length - 1];
   const adminNote = latestRound?.adminNote;
   // Visible photos: hide photos marked hidden (non-selected after round approval)
@@ -354,21 +354,43 @@ export default function AlbumDetail() {
     setTimeout(() => setCopiedField(null), 2000);
   };
 
-  /** Returns the clean (watermark-free) URL for a server-hosted photo. */
-  const getCleanSrc = (photo: { src: string }) => {
+  /**
+   * A photo download is watermark-free when:
+   *  - Watermarks are explicitly disabled for this album (trusted client / gifted session), OR
+   *  - The client has actually paid for the photo (Stripe per-photo or full-album, bank transfer).
+   *
+   * Admin "All Downloads Unlocked" alone keeps watermarks because the photographer may still want
+   * their branding on freely-distributed copies.  Only `watermarkDisabled` or real payment
+   * removes the mark.
+   */
+  const isCleanDownload = (photoId: string): boolean => {
+    if (album.watermarkDisabled) return true;
+    if (sessionFullAlbum) return true;
+    if (paidPhotoIdSet.has(photoId)) return true;
+    return false;
+  };
+
+  /** Returns the URL to use when downloading a photo.
+   *  Clean photos → authenticated /api/photo/original endpoint (no watermark).
+   *  Watermarked photos → plain /uploads/ URL so the server applies the watermark. */
+  const getDownloadSrc = (photo: { src: string; id: string }) => {
     if (isServerMode() && photo.src.startsWith("/uploads/")) {
       const filename = photo.src.split("/").pop() || "";
-      return `/api/photo/${encodeURIComponent(filename)}/original?sessionKey=${encodeURIComponent(sessionKey)}&albumId=${encodeURIComponent(album.id)}`;
+      if (isCleanDownload(photo.id)) {
+        return `/api/photo/${encodeURIComponent(filename)}/original?sessionKey=${encodeURIComponent(sessionKey)}&albumId=${encodeURIComponent(album.id)}`;
+      }
+      // Watermarked — the plain upload URL causes the server to apply the watermark
+      return photo.src;
     }
-    // localStorage mode — data URL, already watermark-free on the client
+    // localStorage / data-URL mode — no server watermarking, serve as-is
     return photo.src;
   };
 
-  const downloadPhoto = async (photo: { src: string; title: string }, quality: DownloadQuality) => {
-    const cleanSrc = getCleanSrc(photo);
+  const downloadPhoto = async (photo: { src: string; id: string; title: string }, quality: DownloadQuality) => {
+    const downloadSrc = getDownloadSrc(photo);
     if (quality === "original") {
       const link = document.createElement("a");
-      link.href = cleanSrc;
+      link.href = downloadSrc;
       link.download = `${photo.title}.jpg`;
       document.body.appendChild(link);
       link.click();
@@ -376,7 +398,7 @@ export default function AlbumDetail() {
     } else {
       const targetBytes = quality === "2mb" ? 2 * 1024 * 1024 : 5 * 1024 * 1024;
       try {
-        const blob = await resizeToTargetSize(cleanSrc, targetBytes);
+        const blob = await resizeToTargetSize(downloadSrc, targetBytes);
         const url = URL.createObjectURL(blob);
         const link = document.createElement("a");
         link.href = url;
@@ -386,9 +408,9 @@ export default function AlbumDetail() {
         document.body.removeChild(link);
         URL.revokeObjectURL(url);
       } catch {
-        // Fallback to clean original
+        // Fallback to direct download
         const link = document.createElement("a");
-        link.href = cleanSrc;
+        link.href = downloadSrc;
         link.download = `${photo.title}.jpg`;
         document.body.appendChild(link);
         link.click();
@@ -409,12 +431,16 @@ export default function AlbumDetail() {
 
     if (serverPhotos.length === 0) return;
 
-    const filenames = serverPhotos.map(p => p.src.split("/").pop() || "");
+    // Pass per-file clean/watermarked flag so the server renders each correctly
+    const files = serverPhotos.map(p => ({
+      filename: p.src.split("/").pop() || "",
+      clean: isCleanDownload(p.id),
+    }));
     try {
       const res = await fetch("/api/download/zip", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ filenames, sessionKey, albumId: album.id }),
+        body: JSON.stringify({ files, sessionKey, albumId: album.id }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -672,7 +698,7 @@ export default function AlbumDetail() {
               </div>
 
               {/* ── Proofing Stage Banner ───────────────────────────── */}
-              {settings.proofingEnabled && (album as any).proofingEnabled && proofingStage === "proofing" && (
+              {settings.proofingEnabled && album.proofingEnabled && proofingStage === "proofing" && (
                 <div className="glass-panel rounded-xl p-5 border border-yellow-500/30 bg-yellow-500/5">
                   <div className="flex items-start gap-3">
                     <Star className="w-5 h-5 text-yellow-400 mt-0.5 shrink-0 fill-yellow-400/30" />
@@ -695,7 +721,7 @@ export default function AlbumDetail() {
                   </div>
                 </div>
               )}
-              {settings.proofingEnabled && (album as any).proofingEnabled && proofingStage === "selections-submitted" && (
+              {settings.proofingEnabled && album.proofingEnabled && proofingStage === "selections-submitted" && (
                 <div className="glass-panel rounded-xl p-5 border border-primary/30 bg-primary/5">
                   <div className="flex items-start gap-3">
                     <Clock className="w-5 h-5 text-primary mt-0.5 shrink-0" />
@@ -706,7 +732,7 @@ export default function AlbumDetail() {
                   </div>
                 </div>
               )}
-              {settings.proofingEnabled && (album as any).proofingEnabled && proofingStage === "editing" && (
+              {settings.proofingEnabled && album.proofingEnabled && proofingStage === "editing" && (
                 <div className="glass-panel rounded-xl p-5 border border-primary/30 bg-primary/5">
                   <div className="flex items-start gap-3">
                     <Camera className="w-5 h-5 text-primary mt-0.5 shrink-0" />
@@ -717,7 +743,7 @@ export default function AlbumDetail() {
                   </div>
                 </div>
               )}
-              {settings.proofingEnabled && (album as any).proofingEnabled && proofingStage === "finals-delivered" && (
+              {settings.proofingEnabled && album.proofingEnabled && proofingStage === "finals-delivered" && (
                 <div className="glass-panel rounded-xl p-5 border border-green-500/30 bg-green-500/5">
                   <div className="flex items-start gap-3">
                     <Sparkles className="w-5 h-5 text-green-400 mt-0.5 shrink-0" />
@@ -787,7 +813,7 @@ export default function AlbumDetail() {
                       )}
                     </div>
 
-                    {!(album as any).purchasingDisabled && (
+                    {!album.purchasingDisabled && (
                       <div className="pt-1">
                         {previewCheckoutAmount === 0 ? (
                           <Button
@@ -910,7 +936,7 @@ export default function AlbumDetail() {
               {displayedPhotos.map((photo, i) => (
                 <div key={photo.id} className="relative group">
                   <WatermarkedImage
-                src={getGalleryPhotoSrc(photo, !!((album as any).watermarkDisabled || isPhotoPaid(photo.id)))}
+                src={getGalleryPhotoSrc(photo, !!(album.watermarkDisabled || isPhotoPaid(photo.id)))}
                   title={photo.title}
                   selected={isProofing ? starredIds.has(photo.id) : selectedIds.has(photo.id)}
                   onSelect={() => isProofing ? toggleStar(photo.id) : toggleSelect(photo.id)}
@@ -995,7 +1021,7 @@ export default function AlbumDetail() {
       )}
 
       {/* Show PurchasePanel unless every selected photo is already paid, or we're in proofing mode, or purchasing disabled */}
-      {!canDownload && !isProofing && !(album as any).purchasingDisabled && !(selectedIds.size > 0 && Array.from(selectedIds).every(id => isPhotoPaid(id))) && (
+      {!canDownload && !isProofing && !album.purchasingDisabled && !(selectedIds.size > 0 && Array.from(selectedIds).every(id => isPhotoPaid(id))) && (
         <PurchasePanel
           selectedCount={selectedIds.size}
           unpaidCount={unpaidSelected.length}
@@ -1373,7 +1399,7 @@ export default function AlbumDetail() {
                 photo={lbPhoto}
                 cache={lightboxSrcCache}
                 onCacheUpdate={(cacheKey, url) => setLightboxSrcCache(prev => ({ ...prev, [cacheKey]: url }))}
-                wmDisabled={!!((album as any).watermarkDisabled || isPhotoPaid(lbPhoto.id))}
+                wmDisabled={!!(album.watermarkDisabled || isPhotoPaid(lbPhoto.id))}
                 watermarkVersion={(settings as any).watermarkVersion || (lbPhoto as any).watermarkVersion || 0}
               />
 
