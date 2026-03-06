@@ -28,17 +28,17 @@ import type { Album, AlbumDownloadRecord, DownloadQuality, DownloadHistoryEntry,
 
 const TARGET_LIGHTBOX_BYTES = 600 * 1024; // ~600KB
 
-/** Renders a fast-loading lightbox image using the same watermark mode as the gallery source. */
-function LightboxImage({ photo, cache, onCacheUpdate, watermarkDisabled }: {
+/** Uses baked watermarked variants for unpaid photos and clean assets for unlocked photos. */
+function LightboxImage({ photo, cache, onCacheUpdate, wmDisabled, watermarkVersion }: {
   photo: Photo;
   cache: Record<string, string>;
   onCacheUpdate: (cacheKey: string, url: string) => void;
-  watermarkDisabled: boolean;
+  wmDisabled?: boolean;
+  watermarkVersion?: number;
 }) {
-  const previewBase = watermarkDisabled ? (photo.thumbnail || photo.src) : (photo.thumbnail || photo.src);
-  const previewSrc = buildPhotoSrc(previewBase, watermarkDisabled);
-  const fullSrc = buildPhotoSrc(photo.src, watermarkDisabled);
-  const cacheKey = `${photo.id}:lightbox:${watermarkDisabled ? "clean" : "wm"}:${fullSrc}`;
+  const previewSrc = getPhotoVariantSrc(photo, "thumbnail", !!wmDisabled);
+  const fullSrc = getPhotoVariantSrc(photo, "medium", !!wmDisabled);
+  const cacheKey = `${photo.id}:${wmDisabled ? "clean" : "wm"}:v${watermarkVersion || 0}:${fullSrc}`;
 
   const [src, setSrc] = useState(cache[cacheKey] || previewSrc);
 
@@ -50,25 +50,15 @@ function LightboxImage({ photo, cache, onCacheUpdate, watermarkDisabled }: {
 
     setSrc(previewSrc);
 
-    if (fullSrc.startsWith("blob:") || fullSrc.startsWith("data:")) {
-      return;
-    }
+    if (fullSrc === previewSrc) return;
 
-    let cancelled = false;
-    resizeToTargetSize(fullSrc, TARGET_LIGHTBOX_BYTES)
-      .then(blob => {
-        if (cancelled) return;
-        const url = URL.createObjectURL(blob);
-        onCacheUpdate(cacheKey, url);
-        setSrc(url);
-      })
-      .catch(() => {
-        setSrc(previewSrc);
-      });
-
-    return () => {
-      cancelled = true;
+    const img = new Image();
+    img.onload = () => {
+      onCacheUpdate(cacheKey, fullSrc);
+      setSrc(fullSrc);
     };
+    img.onerror = () => setSrc(previewSrc);
+    img.src = fullSrc;
   }, [cache, cacheKey, fullSrc, onCacheUpdate, previewSrc]);
 
   return (
@@ -81,7 +71,6 @@ function LightboxImage({ photo, cache, onCacheUpdate, watermarkDisabled }: {
     />
   );
 }
-
 // Session key priority: client token (works across devices) > PIN > generic per-album fallback
 function getSessionKey(album: Album, pin: string, token?: string): string {
   // Token is the most portable — same magic link URL works on any device
@@ -102,9 +91,24 @@ function buildPhotoSrc(src: string, disableWatermark: boolean): string {
   return `${src}${src.includes("?") ? "&" : "?"}wm=0`;
 }
 
-function getGalleryPhotoSrc(photo: Photo, watermarkDisabled: boolean): string {
-  const base = photo.thumbnail || photo.src;
-  return buildPhotoSrc(base, watermarkDisabled);
+function getPhotoVariantSrc(photo: Photo, variant: "thumbnail" | "medium" | "full", disableWatermark: boolean): string {
+  const p = photo as any;
+  if (disableWatermark) {
+    const cleanBase = variant === "full" ? photo.src : (photo.thumbnail || photo.src);
+    return buildPhotoSrc(cleanBase, true);
+  }
+
+  if (variant === "thumbnail") {
+    return p.thumbnailWatermarked || photo.thumbnail || photo.src;
+  }
+  if (variant === "medium") {
+    return p.mediumWatermarked || p.thumbnailWatermarked || photo.thumbnail || photo.src;
+  }
+  return p.fullWatermarked || p.mediumWatermarked || p.thumbnailWatermarked || photo.src;
+}
+
+function getGalleryPhotoSrc(photo: Photo, disableWatermark: boolean): string {
+  return getPhotoVariantSrc(photo, "thumbnail", disableWatermark);
 }
 
 export default function AlbumDetail() {
@@ -211,6 +215,19 @@ export default function AlbumDetail() {
     });
   }, []));
 
+  // Keyboard navigation for lightbox
+  useEffect(() => {
+    if (lightboxPhotoId === null) return;
+    const handler = (e: KeyboardEvent) => {
+      const lbPhotos = displayedPhotos;
+      const lbIdx = lbPhotos.findIndex((p: any) => p.id === lightboxPhotoId);
+      if (e.key === "Escape") setLightboxPhotoId(null);
+      if (e.key === "ArrowLeft" && lbIdx > 0) setLightboxPhotoId(lbPhotos[lbIdx - 1].id);
+      if (e.key === "ArrowRight" && lbIdx < lbPhotos.length - 1) setLightboxPhotoId(lbPhotos[lbIdx + 1].id);
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [lightboxPhotoId, displayedPhotos]);
 
   if (!album || album.enabled === false) {
     return (
@@ -283,21 +300,6 @@ export default function AlbumDetail() {
   // Lightbox photo lookup — must be after displayedPhotos
   const lbPhoto = lightboxPhotoId ? displayedPhotos.find((p: any) => p.id === lightboxPhotoId) ?? null : null;
   const lbIdx = lbPhoto ? displayedPhotos.findIndex((p: any) => p.id === lightboxPhotoId) : -1;
-
-  // Keyboard navigation for lightbox
-  useEffect(() => {
-    if (lightboxPhotoId === null) return;
-    const handler = (e: KeyboardEvent) => {
-      const currentIdx = displayedPhotos.findIndex((p: any) => p.id === lightboxPhotoId);
-      if (e.key === "Escape") setLightboxPhotoId(null);
-      if (e.key === "ArrowLeft" && currentIdx > 0) setLightboxPhotoId(displayedPhotos[currentIdx - 1].id);
-      if (e.key === "ArrowRight" && currentIdx < displayedPhotos.length - 1) setLightboxPhotoId(displayedPhotos[currentIdx + 1].id);
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [lightboxPhotoId, displayedPhotos]);
-
-
   // During proofing, starred photos = client's current picks
   const starredIds = new Set<string>(album.photos.filter((p: any) => p.starred).map(p => p.id));
 
@@ -648,97 +650,103 @@ export default function AlbumDetail() {
 
               {_expiryBanner}
 
-              <div className="glass-panel rounded-lg p-4 space-y-4">
+              <div className="glass-panel rounded-lg p-4 flex items-center gap-6">
                 {canDownload ? (
-                  <div className="text-center sm:text-left">
+                  <div className="text-center">
                     <p className="text-lg font-display text-green-400">✓ Unlocked</p>
                     <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">All Photos</p>
                   </div>
                 ) : (
                   <>
-                    <div className="grid grid-cols-4 gap-3 sm:gap-4 items-start">
-                      <div className="text-center min-w-0">
-                        <p className="text-lg font-display text-primary">{freeRemaining}</p>
-                        <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground leading-tight">Free Left</p>
-                      </div>
-                      <div className="text-center min-w-0">
-                        <p className="text-lg font-display text-foreground">${album.pricePerPhoto}</p>
-                        <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground leading-tight">Per Photo</p>
-                      </div>
-                      <div className="text-center min-w-0">
-                        <p className="text-lg font-display text-foreground">${album.priceFullAlbum}</p>
-                        <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground leading-tight">Full Album</p>
-                      </div>
-                      {registeredEmail ? (
-                        <div className="text-center group/email min-w-0">
-                          <div className="cursor-pointer" onClick={() => setShowEmailReg(true)} title="Change email">
-                            <p className="text-[10px] sm:text-[11px] font-body text-green-400 truncate">{registeredEmail}</p>
-                            <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground group-hover/email:text-foreground transition-colors leading-tight">Linked ✓</p>
-                          </div>
-                          <button
-                            onClick={(e) => { e.stopPropagation(); try { localStorage.removeItem(`wv_email_${albumId}`); } catch {} setRegisteredEmail(""); }}
-                            className="text-[9px] font-body text-muted-foreground/30 hover:text-red-400 transition-colors mt-0.5 block w-full leading-none"
-                            title="Unlink email"
-                          >unlink</button>
-                        </div>
-                      ) : (
-                        <button onClick={() => setShowEmailReg(true)} className="text-center hover:opacity-80 transition-opacity min-w-0">
-                          <p className="text-lg font-display text-muted-foreground">@</p>
-                          <p className="text-[10px] font-body uppercase tracking-wider text-primary leading-tight">Add Email</p>
-                        </button>
-                      )}
+                    <div className="text-center">
+                      <p className="text-lg font-display text-primary">{freeRemaining}</p>
+                      <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Free Left</p>
                     </div>
-
-                    {!(album as any).purchasingDisabled && (
-                      <div className="pt-1">
-                        {previewCheckoutAmount === 0 ? (
-                          <Button
-                            onClick={() => { setShowPaymentChoice(false); handleDownloadFree(); }}
-                            className="w-full sm:w-auto gap-3 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-sm h-12"
-                          >
-                            <Download className="w-5 h-5" />
-                            Download Free
-                          </Button>
-                        ) : (
-                          stripeAvailable ? (
-                            <Button
-                              onClick={async () => {
-                                setShowPaymentChoice(false);
-                                setProcessingStripe(true);
-                                const isFullAlbumPurchase =
-                                  requestedFullAlbum ||
-                                  fullAlbumCheaper ||
-                                  selectedIds.size === 0 ||
-                                  selectedIds.size === album.photos.length;
-                                const checkoutAmount = isFullAlbumPurchase ? album.priceFullAlbum : paidTotal;
-                                if (!isFullAlbumPurchase && checkoutAmount === 0) {
-                                  setProcessingStripe(false);
-                                  handleDownloadFree();
-                                  return;
-                                }
-                                const result = await createAlbumCheckout({
-                                  albumId: album.id,
-                                  albumTitle: album.title,
-                                  photoCount: isFullAlbumPurchase ? album.photos.length : unpaidSelected.length,
-                                  amount: checkoutAmount,
-                                  clientEmail: album.clientEmail,
-                                  photoIds: isFullAlbumPurchase ? [] : unpaidSelected.map(p => p.id),
-                                  isFullAlbum: isFullAlbumPurchase,
-                                  sessionKey,
-                                });
-                                setProcessingStripe(false);
-                                if (result.url) window.location.href = result.url;
-                                else toast.error(result.error || "Failed to create checkout session");
-                              }}
-                              disabled={processingStripe}
-                              className="w-full sm:w-auto gap-3 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-sm h-12"
-                            >
-                              <CreditCard className="w-5 h-5" />
-                              {processingStripe ? "Redirecting to Stripe..." : "Pay with Card (Stripe)"}
-                            </Button>
-                          ) : null
-                        )}
+                    <div className="w-px h-8 bg-border" />
+                    <div className="text-center">
+                      <p className="text-lg font-display text-foreground">${album.pricePerPhoto}</p>
+                      <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Per Photo</p>
+                    </div>
+                    <div className="w-px h-8 bg-border" />
+                    <div className="text-center">
+                      <p className="text-lg font-display text-foreground">${album.priceFullAlbum}</p>
+                      <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Full Album</p>
+                    </div>
+                    <div className="w-px h-8 bg-border" />
+                    {/* Email link button */}
+                    {registeredEmail ? (
+                      <div className="text-center group/email">
+                        <div className="cursor-pointer" onClick={() => setShowEmailReg(true)} title="Change email">
+                          <p className="text-[11px] font-body text-green-400 truncate max-w-[100px]">{registeredEmail}</p>
+                          <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground group-hover/email:text-foreground transition-colors">Linked ✓</p>
+                        </div>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); try { localStorage.removeItem(`wv_email_${albumId}`); } catch {} setRegisteredEmail(""); }}
+                          className="text-[9px] font-body text-muted-foreground/30 hover:text-red-400 transition-colors mt-0.5 block w-full leading-none"
+                          title="Unlink email"
+                        >unlink</button>
                       </div>
+                    ) : (
+                      <button onClick={() => setShowEmailReg(true)} className="text-center hover:opacity-80 transition-opacity">
+                        <p className="text-lg font-display text-muted-foreground">@</p>
+                        <p className="text-[10px] font-body uppercase tracking-wider text-primary">Add Email</p>
+                      </button>
+                    )}
+                    {!(album as any).purchasingDisabled && (
+                    <>
+                    <div className="w-px h-8 bg-border" />
+                    {/* Payment CTA(s): hidden when purchasing disabled */}
+                    {previewCheckoutAmount === 0 ? (
+                      <Button
+                        onClick={() => { setShowPaymentChoice(false); handleDownloadFree(); }}
+                        className="w-full gap-3 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-sm h-12"
+                      >
+                        <Download className="w-5 h-5" />
+                        Download Free
+                      </Button>
+                    ) : (
+                      stripeAvailable ? (
+                        <Button
+                          onClick={async () => {
+                            setShowPaymentChoice(false);
+                            setProcessingStripe(true);
+                            const isFullAlbumPurchase =
+                              requestedFullAlbum ||
+                              fullAlbumCheaper ||
+                              selectedIds.size === 0 ||
+                              selectedIds.size === album.photos.length;
+                            const photosBeingPaid = isFullAlbumPurchase
+                              ? []
+                              : album.photos.filter(p => selectedIds.has(p.id) && !paidPhotoIdSet.has(p.id) && !( unpaidSelected.indexOf(p) < freeRemaining ));
+                            const checkoutAmount = isFullAlbumPurchase ? album.priceFullAlbum : paidTotal;
+                            if (!isFullAlbumPurchase && checkoutAmount === 0) {
+                              setProcessingStripe(false);
+                              handleDownloadFree();
+                              return;
+                            }
+                            const result = await createAlbumCheckout({
+                              albumId: album.id,
+                              albumTitle: album.title,
+                              photoCount: isFullAlbumPurchase ? album.photos.length : unpaidSelected.length,
+                              amount: checkoutAmount,
+                              clientEmail: album.clientEmail,
+                              photoIds: isFullAlbumPurchase ? [] : unpaidSelected.map(p => p.id),
+                              isFullAlbum: isFullAlbumPurchase,
+                              sessionKey,
+                            });
+                            setProcessingStripe(false);
+                            if (result.url) window.location.href = result.url;
+                            else toast.error(result.error || "Failed to create checkout session");
+                          }}
+                          disabled={processingStripe}
+                          className="w-full gap-3 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-sm h-12"
+                        >
+                          <CreditCard className="w-5 h-5" />
+                          {processingStripe ? "Redirecting to Stripe..." : "Pay with Card (Stripe)"}
+                        </Button>
+                      ) : null
+                    )}
+                    </>
                     )}
                   </>
                 )}
@@ -818,7 +826,7 @@ export default function AlbumDetail() {
                   onSelect={() => isProofing ? toggleStar(photo.id) : toggleSelect(photo.id)}
                   locked={!isProofing && !isPhotoPaid(photo.id) && freeRemaining <= 0 && !selectedIds.has(photo.id)}
                   index={i}
-                  showWatermark={!(album as any).watermarkDisabled && !isPhotoPaid(photo.id)}
+                  showWatermark={false}
                   renderWatermarkOverlay={false}
                   watermarkPosition={watermarkPosition}
                   watermarkText={settings.watermarkText}
@@ -920,7 +928,7 @@ export default function AlbumDetail() {
         <motion.div initial={{ y: 100, opacity: 0 }} animate={{ y: 0, opacity: 1 }}
           className="fixed bottom-0 left-0 right-0 z-40 glass-panel border-t border-border/50 p-4" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 1rem)' }}>
           <div className="container mx-auto flex items-center justify-between">
-            <p className="text-sm font-body text-foreground pr-12 sm:pr-0">
+            <p className="text-sm font-body text-foreground">
               <span className="font-semibold">{selectedIds.size}</span> paid photo{selectedIds.size !== 1 ? 's' : ''} selected
             </p>
             <Button onClick={() => setShowDownloadOptions(true)} size="sm" className="gap-2 bg-primary text-primary-foreground hover:bg-primary/90">
@@ -1221,41 +1229,42 @@ export default function AlbumDetail() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[100] bg-background/95 backdrop-blur-sm flex items-center justify-center p-3 sm:p-6"
+            className="fixed inset-0 z-[100] bg-background/95 backdrop-blur-sm flex items-center justify-center"
             onClick={() => setLightboxPhotoId(null)}
           >
             {/* Close button */}
-            <button className="absolute top-3 right-3 sm:top-4 sm:right-4 z-10 w-11 h-11 rounded-full bg-card/80 backdrop-blur-sm flex items-center justify-center text-foreground hover:bg-card transition-colors"
-              onClick={() => setLightboxPhotoId(null)}>
+            <button className="absolute top-4 right-4 z-10 w-10 h-10 rounded-full bg-card/80 backdrop-blur-sm flex items-center justify-center text-foreground hover:bg-card transition-colors"
+              onClick={() => setLightboxIndex(null)}>
               <X className="w-5 h-5" />
             </button>
 
             {/* Nav arrows */}
             {lbIdx > 0 && (
-              <button className="absolute left-2 sm:left-4 z-10 w-11 h-11 rounded-full bg-card/80 backdrop-blur-sm flex items-center justify-center text-foreground hover:bg-card transition-colors"
+              <button className="absolute left-4 z-10 w-10 h-10 rounded-full bg-card/80 backdrop-blur-sm flex items-center justify-center text-foreground hover:bg-card transition-colors"
                 onClick={(e) => { e.stopPropagation(); setLightboxPhotoId(displayedPhotos[lbIdx - 1].id); }}>
                 <ChevronLeft className="w-5 h-5" />
               </button>
             )}
             {lbIdx < displayedPhotos.length - 1 && (
-              <button className="absolute right-2 sm:right-4 z-10 w-11 h-11 rounded-full bg-card/80 backdrop-blur-sm flex items-center justify-center text-foreground hover:bg-card transition-colors"
+              <button className="absolute right-4 z-10 w-10 h-10 rounded-full bg-card/80 backdrop-blur-sm flex items-center justify-center text-foreground hover:bg-card transition-colors"
                 onClick={(e) => { e.stopPropagation(); setLightboxPhotoId(displayedPhotos[lbIdx + 1].id); }}>
                 <ChevronRight className="w-5 h-5" />
               </button>
             )}
 
             {/* Photo */}
-            <div className="relative w-full max-w-[96vw] sm:max-w-[90vw] max-h-[92vh] flex items-center justify-center" onClick={(e) => e.stopPropagation()}>
+            <div className="relative max-w-[90vw] max-h-[90vh]" onClick={(e) => e.stopPropagation()}>
               <LightboxImage
                 photo={lbPhoto}
                 cache={lightboxSrcCache}
                 onCacheUpdate={(cacheKey, url) => setLightboxSrcCache(prev => ({ ...prev, [cacheKey]: url }))}
-                watermarkDisabled={!!((album as any).watermarkDisabled || isPhotoPaid(lbPhoto.id))}
+                wmDisabled={!!((album as any).watermarkDisabled || isPhotoPaid(lbPhoto.id))}
+                watermarkVersion={(settings as any).watermarkVersion || (lbPhoto as any).watermarkVersion || 0}
               />
 
               {/* Bottom bar with select/title */}
-              <div className="absolute bottom-0 left-0 right-0 p-3 sm:p-4 bg-gradient-to-t from-background/85 to-transparent rounded-b-lg flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
-                <p className="text-sm font-body text-foreground pr-12 sm:pr-0">{lbPhoto.title}</p>
+              <div className="absolute bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-background/80 to-transparent rounded-b-lg flex items-center justify-between">
+                <p className="text-sm font-body text-foreground">{lbPhoto.title}</p>
                 <div className="flex gap-2">
                   <Button
                     size="sm"
@@ -1274,7 +1283,7 @@ export default function AlbumDetail() {
             </div>
 
             {/* Counter */}
-            <div className="absolute bottom-3 sm:bottom-4 left-1/2 -translate-x-1/2">
+            <div className="absolute bottom-4 left-1/2 -translate-x-1/2">
               <p className="text-xs font-body text-muted-foreground bg-card/80 backdrop-blur-sm px-3 py-1.5 rounded-full">
                 {lbIdx + 1} / {displayedPhotos.length}
               </p>

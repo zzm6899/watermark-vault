@@ -17,6 +17,7 @@ interface WatermarkedImageProps {
   watermarkImage?: string;
   watermarkOpacity?: number;
   watermarkSize?: number;
+  /** Use only in admin/settings live preview. Client galleries should use baked assets instead. */
   renderWatermarkOverlay?: boolean;
 }
 
@@ -42,7 +43,7 @@ export default function WatermarkedImage({
   watermarkImage,
   watermarkOpacity = 15,
   watermarkSize = 40,
-  renderWatermarkOverlay = true,
+  renderWatermarkOverlay = false,
 }: WatermarkedImageProps) {
   const [loaded, setLoaded] = useState(false);
 
