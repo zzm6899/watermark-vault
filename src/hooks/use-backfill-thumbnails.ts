@@ -1,11 +1,14 @@
 import { useEffect, useRef } from "react";
 import { generateThumbnail } from "@/lib/image-utils";
+import { isServerMode } from "@/lib/api";
 import type { Photo } from "@/lib/types";
 
 /**
  * Background-generates missing thumbnails for photos that don't have them.
  * Calls onUpdate(photoId, thumbnailDataUrl) for each generated thumbnail.
- * Runs once per mount (or when photos array reference changes).
+ *
+ * In server mode: assigns ?w=200&wm=0 URLs instantly (no canvas work).
+ * In localStorage mode: generates canvas-based thumbnails in batches of 3.
  */
 export function useBackfillThumbnails(
   photos: Photo[],
@@ -20,7 +23,17 @@ export function useBackfillThumbnails(
     );
     if (missing.length === 0) return;
 
-    // Process in batches of 3 to avoid blocking
+    if (isServerMode()) {
+      // Server mode: immediately assign server-served thumbnails, no canvas needed
+      for (const photo of missing) {
+        if (photo.src.startsWith("data:")) continue; // skip base64 blobs
+        processedRef.current.add(photo.id);
+        onUpdate(photo.id, photo.src + "?w=200&wm=0");
+      }
+      return;
+    }
+
+    // localStorage mode: generate canvas-based thumbnails in batches to avoid blocking
     (async () => {
       for (let i = 0; i < missing.length; i += 3) {
         if (cancelled) break;

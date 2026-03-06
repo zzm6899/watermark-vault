@@ -401,8 +401,7 @@ function MobileCaptureInner() {
             setImportLabel(`${i + 1} / ${imported.length} — ${f.localPath?.split("/").pop() ?? "photo"}`);
             const results = await uploadPhotosToServer([file], () => {});
             for (const r of results) {
-              const thumb = await generateThumbnail(r.url, 300, 0.6).catch(() => r.url);
-              newPhotos.push({ id: r.id, src: r.url, thumbnail: thumb, title: r.originalName, width: 0, height: 0, proofing: true });
+              newPhotos.push({ id: r.id, src: r.url, thumbnail: r.url + "?w=300", title: r.originalName, width: 0, height: 0, proofing: true });
             }
           } catch (e) {
             console.error("Upload error:", e);
@@ -485,11 +484,10 @@ function MobileCaptureInner() {
     try {
       if (serverOnline) {
         const results = await uploadPhotosToServer(imageFiles, (done, total) => setUploadProgress(Math.round(done/total*100)));
-        const newPhotos: Photo[] = [];
-        for (const r of results) {
-          const thumb = await generateThumbnail(r.url, 300, 0.6).catch(() => r.url);
-          newPhotos.push({ id: r.id, src: r.url, thumbnail: thumb, title: r.originalName, width: 0, height: 0, proofing: true });
-        }
+        // Use server-side thumbnails — no client-side canvas work needed
+        const newPhotos: Photo[] = results.map(r => ({
+          id: r.id, src: r.url, thumbnail: r.url + "?w=300", title: r.originalName, width: 0, height: 0, proofing: true,
+        }));
         const fresh = getAlbums().find(a => a.id === targetAlbum.id) || targetAlbum;
         const updated: Album = { ...fresh, photos: [...fresh.photos, ...newPhotos], photoCount: fresh.photos.length + newPhotos.length, coverImage: fresh.coverImage || newPhotos[0]?.src || "" };
         updateAlbum(updated); setTargetAlbum(updated);
@@ -526,11 +524,9 @@ function MobileCaptureInner() {
     setUploading(true); setUploadProgress(0);
     try {
       const results = await uploadPhotosToServer(files, (done, total) => setUploadProgress(Math.round(done / total * 100)));
-      const newPhotos: Photo[] = [];
-      for (const r of results) {
-        const thumb = await generateThumbnail(r.url, 300, 0.6).catch(() => r.url);
-        newPhotos.push({ id: r.id, src: r.url, thumbnail: thumb, title: r.originalName, width: 0, height: 0, proofing: true });
-      }
+      const newPhotos: Photo[] = results.map(r => ({
+        id: r.id, src: r.url, thumbnail: r.url + "?w=300", title: r.originalName, width: 0, height: 0, proofing: true,
+      }));
       const fresh = getAlbums().find(a => a.id === targetAlbum.id) || targetAlbum;
       const upd: Album = { ...fresh, photos: [...fresh.photos, ...newPhotos], photoCount: fresh.photos.length + newPhotos.length, coverImage: fresh.coverImage || newPhotos[0]?.src || "" };
       updateAlbum(upd); setTargetAlbum(upd);
