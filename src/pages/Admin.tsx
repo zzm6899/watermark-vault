@@ -3850,12 +3850,94 @@ function StorageView() {
   const [libraryPhotos, setLibraryPhotosState] = useState(getPhotoLibrary());
   const bookings = getBookings();
   const eventTypes = getEventTypes();
+  const [previewJob, setPreviewJob] = useState<{ running: boolean; mode: "missing" | "all" | null; done: number; total: number }>({ running: false, mode: null, done: 0, total: 0 });
+
+  const refreshStorageState = useCallback(async () => {
+    const nextAlbums = getAlbums();
+    const nextLibrary = getPhotoLibrary();
+    setAlbumsState(nextAlbums);
+    setLibraryPhotosState(nextLibrary);
+    if (isServerMode()) {
+      try {
+        const s = await getServerStorageStats();
+        setServerStats(s);
+      } catch {}
+    }
+  }, []);
+
+  const applyThumbnailToStores = useCallback((photoId: string, thumb?: string) => {
+    if (!thumb) return;
+
+    setLibraryPhotosState(prev => {
+      let changed = false;
+      const updated = prev.map(p => {
+        if (p.id !== photoId) return p;
+        changed = true;
+        return { ...p, thumbnail: thumb };
+      });
+      if (changed) setPhotoLibrary(updated);
+      return changed ? updated : prev;
+    });
+
+    setAlbumsState(prev => {
+      let changed = false;
+      const updatedAlbums = prev.map(a => {
+        let albumChanged = false;
+        const photos = a.photos.map(p => {
+          if (p.id !== photoId) return p;
+          albumChanged = true;
+          return { ...p, thumbnail: thumb };
+        });
+        if (!albumChanged) return a;
+        changed = true;
+        const updatedAlbum = { ...a, photos, photoCount: photos.length };
+        updateAlbum(updatedAlbum);
+        return updatedAlbum;
+      });
+      return changed ? updatedAlbums : prev;
+    });
+  }, []);
+
+  const handleRebuildPreviews = useCallback(async (forceAll: boolean) => {
+    const currentAlbums = getAlbums();
+    const currentLibrary = getPhotoLibrary();
+    const photos = Array.from(new Map([...currentLibrary, ...currentAlbums.flatMap(a => a.photos)].map(p => [p.id, p])).values()) as Photo[];
+    const targets = forceAll ? photos : photos.filter(p => !p.thumbnail);
+
+    if (targets.length === 0) {
+      toast.info(forceAll ? "All previews are already up to date" : "No missing previews found");
+      return;
+    }
+
+    setPreviewJob({ running: true, mode: forceAll ? "all" : "missing", done: 0, total: targets.length });
+
+    let success = 0;
+    let failed = 0;
+    for (let i = 0; i < targets.length; i += 1) {
+      const photo = targets[i];
+      try {
+        const cleanSrc = (photo.src || "").replace(/([?&])wm=0(?=&|$)/g, "$1").replace(/[?&]$/, "");
+        const thumb = await generateThumbnail(cleanSrc || photo.src);
+        applyThumbnailToStores(photo.id, thumb);
+        success += 1;
+      } catch {
+        failed += 1;
+      }
+      setPreviewJob({ running: true, mode: forceAll ? "all" : "missing", done: i + 1, total: targets.length });
+    }
+
+    setPreviewJob({ running: false, mode: null, done: 0, total: 0 });
+    await refreshStorageState();
+
+    if (failed === 0) toast.success(`${forceAll ? "Rebuilt" : "Generated"} ${success} preview${success !== 1 ? "s" : ""}`);
+    else if (success > 0) toast.success(`${forceAll ? "Rebuilt" : "Generated"} ${success} preview${success !== 1 ? "s" : ""} (${failed} failed)`);
+    else toast.error(`Failed to ${forceAll ? "rebuild" : "generate"} previews`);
+  }, [applyThumbnailToStores, refreshStorageState]);
 
   // Refresh from storage on mount so we always show current counts
   useEffect(() => {
-    setAlbumsState(getAlbums());
-    setLibraryPhotosState(getPhotoLibrary());
-  }, []);
+    refreshStorageState();
+  }, [refreshStorageState]);
 
   const [serverStats, setServerStats] = useState<{
     totalBytes: number;
@@ -3962,6 +4044,37 @@ function StorageView() {
           {thumbnailPct === 100
             ? "✓ All photos have optimised thumbnails for fast grid loading"
             : `Generating ${totalPhotos - withThumbnails} thumbnail(s) in background… Grid will use low-res placeholders until ready.`}
+        </p>
+
+        <div className="mt-4 flex flex-col sm:flex-row gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => handleRebuildPreviews(false)}
+            disabled={previewJob.running}
+            className="gap-2 font-body text-xs border-border text-foreground"
+          >
+            <RefreshCw className={`w-4 h-4 ${previewJob.running && previewJob.mode === "missing" ? "animate-spin" : ""}`} />
+            {previewJob.running && previewJob.mode === "missing"
+              ? `Generating… ${previewJob.done}/${previewJob.total}`
+              : "Regenerate Missing Previews"}
+          </Button>
+
+          <Button
+            size="sm"
+            onClick={() => handleRebuildPreviews(true)}
+            disabled={previewJob.running}
+            className="gap-2 font-body text-xs"
+          >
+            <Sparkles className={`w-4 h-4 ${previewJob.running && previewJob.mode === "all" ? "animate-pulse" : ""}`} />
+            {previewJob.running && previewJob.mode === "all"
+              ? `Rebuilding… ${previewJob.done}/${previewJob.total}`
+              : "Force Rebuild All Previews"}
+          </Button>
+        </div>
+
+        <p className="text-[10px] font-body text-muted-foreground/50 mt-2">
+          Use this after changing watermark behaviour or if older preview thumbnails look stale.
         </p>
       </div>
 

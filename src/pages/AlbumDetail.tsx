@@ -683,27 +683,24 @@ export default function AlbumDetail() {
                   </div>
                 ) : (
                   <>
-                    <div className="flex flex-wrap items-center gap-x-5 gap-y-3">
-                      <div className="text-center min-w-[68px]">
+                    <div className="grid grid-cols-4 gap-3 sm:gap-4 items-start">
+                      <div className="text-center min-w-0">
                         <p className="text-lg font-display text-primary">{freeRemaining}</p>
-                        <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Free Left</p>
+                        <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground leading-tight">Free Left</p>
                       </div>
-                      <div className="hidden sm:block w-px h-8 bg-border" />
-                      <div className="text-center min-w-[68px]">
+                      <div className="text-center min-w-0">
                         <p className="text-lg font-display text-foreground">${album.pricePerPhoto}</p>
-                        <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Per Photo</p>
+                        <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground leading-tight">Per Photo</p>
                       </div>
-                      <div className="hidden sm:block w-px h-8 bg-border" />
-                      <div className="text-center min-w-[68px]">
+                      <div className="text-center min-w-0">
                         <p className="text-lg font-display text-foreground">${album.priceFullAlbum}</p>
-                        <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Full Album</p>
+                        <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground leading-tight">Full Album</p>
                       </div>
-                      <div className="hidden sm:block w-px h-8 bg-border" />
                       {registeredEmail ? (
-                        <div className="text-center group/email min-w-[88px]">
+                        <div className="text-center group/email min-w-0">
                           <div className="cursor-pointer" onClick={() => setShowEmailReg(true)} title="Change email">
-                            <p className="text-[11px] font-body text-green-400 truncate max-w-[100px]">{registeredEmail}</p>
-                            <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground group-hover/email:text-foreground transition-colors">Linked ✓</p>
+                            <p className="text-[10px] sm:text-[11px] font-body text-green-400 truncate">{registeredEmail}</p>
+                            <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground group-hover/email:text-foreground transition-colors leading-tight">Linked ✓</p>
                           </div>
                           <button
                             onClick={(e) => { e.stopPropagation(); try { localStorage.removeItem(`wv_email_${albumId}`); } catch {} setRegisteredEmail(""); }}
@@ -712,9 +709,9 @@ export default function AlbumDetail() {
                           >unlink</button>
                         </div>
                       ) : (
-                        <button onClick={() => setShowEmailReg(true)} className="text-center hover:opacity-80 transition-opacity min-w-[88px]">
+                        <button onClick={() => setShowEmailReg(true)} className="text-center hover:opacity-80 transition-opacity min-w-0">
                           <p className="text-lg font-display text-muted-foreground">@</p>
-                          <p className="text-[10px] font-body uppercase tracking-wider text-primary">Add Email</p>
+                          <p className="text-[10px] font-body uppercase tracking-wider text-primary leading-tight">Add Email</p>
                         </button>
                       )}
                     </div>
