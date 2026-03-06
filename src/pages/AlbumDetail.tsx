@@ -1,5 +1,5 @@
 import { useParams, useSearchParams } from "react-router-dom";
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Info, Building2, Copy, Check as CheckIcon, Lock, Download, Grid, List, LayoutGrid, CreditCard, X, ChevronLeft, ChevronRight, Star, Camera, CheckCircle2, Clock, Sparkles, Maximize2, ArrowUpDown, SlidersHorizontal } from "lucide-react";
 import Header from "@/components/Header";
@@ -138,6 +138,7 @@ export default function AlbumDetail() {
   const [showEmailCapture, setShowEmailCapture] = useState(false);
   const [clientNote, setClientNote] = useState("");
   const [lightboxPhotoId, setLightboxPhotoId] = useState<string | null>(null);
+  const displayedPhotosRef = useRef<Photo[]>([]);
   const [showStarredOnly, setShowStarredOnly] = useState(false);
   const [sortOrder, setSortOrder] = useState<"default" | "asc" | "desc">("default");
   const [lightboxSrcCache, setLightboxSrcCache] = useState<Record<string, string>>({});
@@ -219,15 +220,15 @@ export default function AlbumDetail() {
   useEffect(() => {
     if (lightboxPhotoId === null) return;
     const handler = (e: KeyboardEvent) => {
-      const lbPhotos = displayedPhotos;
-      const lbIdx = lbPhotos.findIndex((p: any) => p.id === lightboxPhotoId);
+      const lbPhotos = displayedPhotosRef.current;
+      const currentIdx = lbPhotos.findIndex((p: any) => p.id === lightboxPhotoId);
       if (e.key === "Escape") setLightboxPhotoId(null);
-      if (e.key === "ArrowLeft" && lbIdx > 0) setLightboxPhotoId(lbPhotos[lbIdx - 1].id);
-      if (e.key === "ArrowRight" && lbIdx < lbPhotos.length - 1) setLightboxPhotoId(lbPhotos[lbIdx + 1].id);
+      if (e.key === "ArrowLeft" && currentIdx > 0) setLightboxPhotoId(lbPhotos[currentIdx - 1].id);
+      if (e.key === "ArrowRight" && currentIdx < lbPhotos.length - 1) setLightboxPhotoId(lbPhotos[currentIdx + 1].id);
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [lightboxPhotoId, displayedPhotos]);
+  }, [lightboxPhotoId]);
 
   if (!album || album.enabled === false) {
     return (
@@ -297,6 +298,10 @@ export default function AlbumDetail() {
     const _timeCmp = _dA !== _dB ? _dA - _dB : _tCmp;
     return sortOrder === "asc" ? _timeCmp : -_timeCmp;
   });
+
+  useEffect(() => {
+    displayedPhotosRef.current = displayedPhotos as Photo[];
+  }, [displayedPhotos]);
   // Lightbox photo lookup — must be after displayedPhotos
   const lbPhoto = lightboxPhotoId ? displayedPhotos.find((p: any) => p.id === lightboxPhotoId) ?? null : null;
   const lbIdx = lbPhoto ? displayedPhotos.findIndex((p: any) => p.id === lightboxPhotoId) : -1;

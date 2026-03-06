@@ -75,6 +75,43 @@ function slugify(text: string): string {
   return text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
 }
 
+const WATERMARK_REBUILD_STATUS_KEY = "wm_rebuild_status_v1";
+
+type WatermarkRebuildStatus = {
+  running: boolean;
+  mode: "save" | "missing" | "all" | null;
+  done: number;
+  total: number;
+  stage: string;
+  updatedAt: string;
+};
+
+function readWatermarkRebuildStatus(): WatermarkRebuildStatus {
+  try {
+    const raw = localStorage.getItem(WATERMARK_REBUILD_STATUS_KEY);
+    if (!raw) return { running: false, mode: null, done: 0, total: 0, stage: "", updatedAt: "" };
+    const parsed = JSON.parse(raw);
+    return {
+      running: !!parsed.running,
+      mode: parsed.mode ?? null,
+      done: Number(parsed.done || 0),
+      total: Number(parsed.total || 0),
+      stage: String(parsed.stage || ""),
+      updatedAt: String(parsed.updatedAt || ""),
+    };
+  } catch {
+    return { running: false, mode: null, done: 0, total: 0, stage: "", updatedAt: "" };
+  }
+}
+
+function writeWatermarkRebuildStatus(status: Partial<WatermarkRebuildStatus>) {
+  const next = { ...readWatermarkRebuildStatus(), ...status, updatedAt: new Date().toISOString() };
+  try {
+    localStorage.setItem(WATERMARK_REBUILD_STATUS_KEY, JSON.stringify(next));
+    window.dispatchEvent(new CustomEvent("wm-rebuild-status"));
+  } catch {}
+}
+
 function stripWmParam(src: string): string {
   return (src || "").replace(/([?&])wm=0(?=&|$)/g, "$1").replace(/[?&]$/, "");
 }
@@ -3624,13 +3661,53 @@ function SettingsView() {
 
     setSettings(nextSettings as AppSettings);
     setSettingsState(nextSettings as AppSettings);
+    writeWatermarkRebuildStatus({
+      running: true,
+      mode: "save",
+      done: 0,
+      total: 0,
+      stage: "Saving watermark settings…",
+    });
     toast.info("Saving settings and regenerating baked watermark previews…");
 
-    const { success, failed, total } = await rebuildWatermarkedAssets(nextSettings, true);
-    if (total === 0) toast.success("Settings saved!");
-    else if (failed === 0) toast.success(`Settings saved — rebuilt ${success} protected preview${success !== 1 ? "s" : ""}.`);
-    else if (success > 0) toast.success(`Settings saved — rebuilt ${success}/${total} protected previews (${failed} failed).`);
-    else toast.error("Settings saved, but preview regeneration failed.");
+    try {
+      writeWatermarkRebuildStatus({
+        running: true,
+        mode: "save",
+        done: 0,
+        total: 0,
+        stage: "Regenerating baked thumbnail / medium / full assets…",
+      });
+      const { success, failed, total } = await rebuildWatermarkedAssets(nextSettings, true, (done, totalCount) => {
+        writeWatermarkRebuildStatus({
+          running: true,
+          mode: "save",
+          done,
+          total: totalCount,
+          stage: "Regenerating baked thumbnail / medium / full assets…",
+        });
+      });
+
+      if (total === 0) toast.success("Settings saved!");
+      else if (failed === 0) toast.success(`Settings saved — rebuilt ${success} protected preview${success !== 1 ? "s" : ""}.`);
+      else if (success > 0) toast.success(`Settings saved — rebuilt ${success}/${total} protected previews (${failed} failed).`);
+      else toast.error("Settings saved, but preview regeneration failed.");
+
+      writeWatermarkRebuildStatus({
+        running: false,
+        mode: "save",
+        done: total,
+        total,
+        stage: total > 0 ? "Watermark regeneration complete." : "Settings saved.",
+      });
+    } catch {
+      writeWatermarkRebuildStatus({
+        running: false,
+        mode: "save",
+        stage: "Watermark regeneration failed.",
+      });
+      toast.error("Settings saved, but preview regeneration failed.");
+    }
   };
 
   return (
@@ -4317,6 +4394,56 @@ function StorageView() {
         <p className="text-[10px] font-body text-muted-foreground/50 mt-2">
           Use this after changing watermark settings. It regenerates baked thumbnail, medium and protected preview variants using the saved admin watermark config.
         </p>
+      </div>
+
+      <div className="glass-panel rounded-xl p-6 mb-6">
+        <h3 className="font-display text-base text-foreground mb-3 flex items-center gap-2">
+          <Sparkles className="w-4 h-4 text-primary" /> Watermark Asset Generation
+        </h3>
+        <div className="flex items-center justify-between text-xs font-body text-muted-foreground mb-1.5">
+          <span>{previewJob.running ? (previewJob.stage || "Regenerating baked watermark assets…") : "Baked watermark previews are ready"}</span>
+          <span className={previewJob.running ? "text-primary" : "text-green-500"}>
+            {previewJob.running && previewJob.total > 0 ? `${previewJob.done}/${previewJob.total}` : (previewJob.running ? "Working…" : "Idle")}
+          </span>
+        </div>
+        <div className="h-3 rounded-full bg-secondary overflow-hidden">
+          <div
+            className={`h-full rounded-full transition-all duration-500 ${previewJob.running ? "bg-primary" : "bg-green-500"}`}
+            style={{ width: `${previewJob.running ? (previewJob.total > 0 ? Math.max(4, (previewJob.done / previewJob.total) * 100) : 12) : 100}%` }}
+          />
+        </div>
+        <p className="text-[10px] font-body text-muted-foreground/50 mt-2">
+          {previewJob.running
+            ? `${previewJob.stage || "Regenerating baked watermark assets…"}${previewJob.total > 0 ? ` ${previewJob.done}/${previewJob.total}` : ""}`
+            : "Use this after changing watermark text/image/size/position/opacity so gallery thumbnails and lightbox previews match the admin preview."}
+        </p>
+
+        <div className="mt-4 flex flex-col sm:flex-row gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => handleRebuildPreviews(false)}
+            disabled={previewJob.running}
+            className="gap-2 font-body text-xs border-border text-foreground"
+          >
+            <RefreshCw className={`w-4 h-4 ${previewJob.running && previewJob.mode === "missing" ? "animate-spin" : ""}`} />
+            {previewJob.running && previewJob.mode === "missing"
+              ? `Generating… ${previewJob.done}/${previewJob.total || "?"}`
+              : "Regenerate Missing Baked Previews"}
+          </Button>
+
+          <Button
+            size="sm"
+            onClick={() => handleRebuildPreviews(true)}
+            disabled={previewJob.running}
+            className="gap-2 font-body text-xs"
+          >
+            <Sparkles className={`w-4 h-4 ${previewJob.running && (previewJob.mode === "all" || previewJob.mode === "save") ? "animate-pulse" : ""}`} />
+            {previewJob.running && (previewJob.mode === "all" || previewJob.mode === "save")
+              ? `Rebuilding… ${previewJob.done}/${previewJob.total || "?"}`
+              : "Force Rebuild All Baked Previews"}
+          </Button>
+        </div>
       </div>
 
       {/* TrueNAS Volume / Disk Usage */}
