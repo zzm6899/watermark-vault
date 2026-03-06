@@ -26,17 +26,19 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Label } from "@/components/ui/label";
 import type { Album, AlbumDownloadRecord, DownloadQuality, DownloadHistoryEntry, Photo } from "@/lib/types";
 
-const TARGET_LIGHTBOX_BYTES = 300 * 1024; // ~300KB
+const TARGET_LIGHTBOX_BYTES = 600 * 1024; // ~600KB
 
-/** Renders a fast-loading lightbox image: preview first, then a ~300KB clean upgrade. */
-function LightboxImage({ photo, cache, onCacheUpdate }: {
+/** Renders a fast-loading lightbox image using the same watermark mode as the gallery source. */
+function LightboxImage({ photo, cache, onCacheUpdate, watermarkDisabled }: {
   photo: Photo;
   cache: Record<string, string>;
   onCacheUpdate: (cacheKey: string, url: string) => void;
+  watermarkDisabled: boolean;
 }) {
-  const previewSrc = buildPhotoSrc(photo.thumbnail || photo.src, true);
-  const fullSrc = buildPhotoSrc(photo.src, true);
-  const cacheKey = `${photo.id}:lightbox:${fullSrc}`;
+  const previewBase = watermarkDisabled ? (photo.thumbnail || photo.src) : (photo.thumbnail || photo.src);
+  const previewSrc = buildPhotoSrc(previewBase, watermarkDisabled);
+  const fullSrc = buildPhotoSrc(photo.src, watermarkDisabled);
+  const cacheKey = `${photo.id}:lightbox:${watermarkDisabled ? "clean" : "wm"}:${fullSrc}`;
 
   const [src, setSrc] = useState(cache[cacheKey] || previewSrc);
 
@@ -80,68 +82,6 @@ function LightboxImage({ photo, cache, onCacheUpdate }: {
   );
 }
 
-function LightboxWatermarkOverlay({
-  watermarkPosition,
-  watermarkText,
-  watermarkImage,
-  watermarkOpacity,
-  watermarkSize,
-}: {
-  watermarkPosition: any;
-  watermarkText?: string;
-  watermarkImage?: string;
-  watermarkOpacity?: number;
-  watermarkSize?: number;
-}) {
-  const opacityValue = (watermarkOpacity ?? 15) / 100;
-  const size = watermarkSize ?? 40;
-
-  if (watermarkPosition === "tiled") {
-    return (
-      <div className="absolute inset-0 pointer-events-none select-none overflow-hidden rounded-lg">
-        <div className="absolute inset-0 flex flex-wrap items-start justify-start gap-x-16 gap-y-12 rotate-[-30deg] scale-150 origin-center" style={{ opacity: opacityValue }}>
-          {Array.from({ length: 20 }).map((_, i) => (
-            watermarkImage ? (
-              <img key={i} src={watermarkImage} alt="" style={{ height: `${Math.max(20, size * 0.4)}px`, width: "auto" }} />
-            ) : (
-              <p key={i} className="font-display text-foreground tracking-widest whitespace-nowrap" style={{ fontSize: `${Math.max(10, size * 0.3)}px` }}>
-                {watermarkText}
-              </p>
-            )
-          ))}
-        </div>
-      </div>
-    );
-  }
-
-  const positionStyle = watermarkPosition === "center" ? {
-    position: "absolute",
-    inset: 0,
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-  } : {
-    position: "absolute",
-    top: watermarkPosition?.startsWith?.("top") ? "16px" : "auto",
-    bottom: watermarkPosition?.startsWith?.("bottom") ? "16px" : "auto",
-    left: watermarkPosition?.endsWith?.("left") ? "16px" : "auto",
-    right: watermarkPosition?.endsWith?.("right") ? "16px" : "auto",
-  };
-
-  return (
-    <div className="absolute inset-0 pointer-events-none select-none rounded-lg" style={positionStyle}>
-      <div style={{ transform: watermarkPosition === "center" ? "rotate(-30deg)" : undefined }}>
-        {watermarkImage ? (
-          <img src={watermarkImage} alt="" style={{ opacity: opacityValue, width: `${size}%`, maxWidth: "100%", height: "auto" }} />
-        ) : (
-          <p className="font-display text-foreground tracking-widest whitespace-nowrap" style={{ opacity: opacityValue, fontSize: `${(size / 40).toFixed(2)}em` }}>
-            {watermarkText}
-          </p>
-        )}
-      </div>
-    </div>
-  );
-}
 // Session key priority: client token (works across devices) > PIN > generic per-album fallback
 function getSessionKey(album: Album, pin: string, token?: string): string {
   // Token is the most portable — same magic link URL works on any device
@@ -162,9 +102,9 @@ function buildPhotoSrc(src: string, disableWatermark: boolean): string {
   return `${src}${src.includes("?") ? "&" : "?"}wm=0`;
 }
 
-function getGalleryPhotoSrc(photo: Photo): string {
+function getGalleryPhotoSrc(photo: Photo, watermarkDisabled: boolean): string {
   const base = photo.thumbnail || photo.src;
-  return buildPhotoSrc(base, true);
+  return buildPhotoSrc(base, watermarkDisabled);
 }
 
 export default function AlbumDetail() {
@@ -357,7 +297,6 @@ export default function AlbumDetail() {
     return () => window.removeEventListener("keydown", handler);
   }, [lightboxPhotoId, displayedPhotos]);
 
-  const shouldShowLightboxWatermark = !!(lbPhoto && !(album as any).watermarkDisabled && !isPhotoPaid(lbPhoto.id));
 
   // During proofing, starred photos = client's current picks
   const starredIds = new Set<string>(album.photos.filter((p: any) => p.starred).map(p => p.id));
@@ -873,7 +812,7 @@ export default function AlbumDetail() {
               {displayedPhotos.map((photo, i) => (
                 <div key={photo.id} className="relative group">
                   <WatermarkedImage
-                src={getGalleryPhotoSrc(photo)}
+                src={getGalleryPhotoSrc(photo, !!((album as any).watermarkDisabled || isPhotoPaid(photo.id)))}
                   title={photo.title}
                   selected={isProofing ? starredIds.has(photo.id) : selectedIds.has(photo.id)}
                   onSelect={() => isProofing ? toggleStar(photo.id) : toggleSelect(photo.id)}
@@ -1310,16 +1249,8 @@ export default function AlbumDetail() {
                 photo={lbPhoto}
                 cache={lightboxSrcCache}
                 onCacheUpdate={(cacheKey, url) => setLightboxSrcCache(prev => ({ ...prev, [cacheKey]: url }))}
+                watermarkDisabled={!!((album as any).watermarkDisabled || isPhotoPaid(lbPhoto.id))}
               />
-              {shouldShowLightboxWatermark && (
-                <LightboxWatermarkOverlay
-                  watermarkPosition={watermarkPosition}
-                  watermarkText={settings.watermarkText}
-                  watermarkImage={settings.watermarkImage}
-                  watermarkOpacity={settings.watermarkOpacity}
-                  watermarkSize={settings.watermarkSize ?? 40}
-                />
-              )}
 
               {/* Bottom bar with select/title */}
               <div className="absolute bottom-0 left-0 right-0 p-3 sm:p-4 bg-gradient-to-t from-background/85 to-transparent rounded-b-lg flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
