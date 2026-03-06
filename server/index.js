@@ -4,6 +4,8 @@ const cors = require("cors");
 const path = require("path");
 const fs = require("fs");
 const sharp = require("sharp");
+const archiver = require("archiver");
+const rateLimit = require("express-rate-limit");
 const { registerRoutes: registerGoogleCalendarRoutes } = require("./google-calendar");
 const { registerRoutes: registerEmailRoutes } = require("./email");
 const { registerRoutes: registerStripeRoutes } = require("./stripe");
@@ -13,6 +15,7 @@ const PORT = process.env.PORT || 5066;
 const DATA_DIR = process.env.DATA_DIR || "/data";
 const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
 const DB_FILE = path.join(DATA_DIR, "db.json");
+const MAX_ZIP_FILES = 1000; // Reasonable upper bound per request to prevent resource abuse
 
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 if (!fs.existsSync(DB_FILE)) fs.writeFileSync(DB_FILE, JSON.stringify({}));
@@ -123,6 +126,38 @@ app.post("/api/upload", upload.array("photos", 100), (req, res) => {
     size: f.size,
   }));
   res.json({ files });
+});
+
+// ── Delete ALL uploaded photos from disk ───────────────
+const deleteAllLimiter = rateLimit({ windowMs: 10_000, max: 1, standardHeaders: true, legacyHeaders: false, message: { error: "Too many requests — please wait before retrying" } });
+app.delete("/api/upload/all", deleteAllLimiter, async (_req, res) => {
+  try {
+    const files = fs.readdirSync(UPLOADS_DIR);
+    let deleted = 0;
+    for (const f of files) {
+      try { fs.unlinkSync(path.join(UPLOADS_DIR, f)); deleted++; } catch {}
+    }
+    clearImageCache();
+
+    // Wipe all photo records from db.json so album refs don't break
+    const db = readDb();
+    if (db["wv_albums"]) {
+      const albums = typeof db["wv_albums"] === "string" ? JSON.parse(db["wv_albums"]) : db["wv_albums"];
+      if (Array.isArray(albums)) {
+        const wiped = albums.map(a => ({ ...a, photos: [], photoCount: 0, coverImage: "" }));
+        db["wv_albums"] = JSON.stringify(wiped);
+      }
+    }
+    if (db["wv_library"]) {
+      db["wv_library"] = JSON.stringify([]);
+    }
+    writeDb(db);
+
+    res.json({ ok: true, deleted });
+  } catch (err) {
+    console.error("Delete all error:", err.message);
+    res.status(500).json({ error: "Failed to delete files" });
+  }
 });
 
 app.delete("/api/upload/:filename", (req, res) => {
@@ -266,16 +301,36 @@ function isPhotoAccessible(filename, sessionKey, albumId) {
 
     // If purchasing is disabled, all photos are free
     if (album.purchasingDisabled) return true;
-    // If full album unlocked
+    // If full album unlocked by admin
     if (album.allUnlocked) return true;
 
-    const photo = album.photos?.find(p => p.url && p.url.includes(filename));
+    // Session-level full-album purchase (Stripe / bank transfer)
+    const sessionPurchase = album.sessionPurchases?.[sessionKey];
+    if (sessionPurchase?.fullAlbum === true) return true;
+
+    const photo = album.photos?.find(p => {
+      const url = p.url || p.src || "";
+      return url.includes(filename);
+    });
     if (!photo) return false;
 
-    // Check per-photo paid status
+    // Check per-photo paid flag set by admin
     if (photo.paid) return true;
 
-    // Check session-level free downloads
+    // Per-session Stripe purchase includes this photo
+    if (sessionPurchase?.photoIds?.includes(photo.id)) return true;
+
+    // Legacy global paidPhotoIds list
+    if (Array.isArray(album.paidPhotoIds) && album.paidPhotoIds.includes(photo.id)) return true;
+
+    // Bank transfer requests that have been approved/completed
+    const bankApproved = (album.downloadRequests || []).some(
+      r => (r.status === "approved" || r.status === "completed") &&
+           Array.isArray(r.photoIds) && r.photoIds.includes(photo.id)
+    );
+    if (bankApproved) return true;
+
+    // Check session-level free downloads (legacy wv_session_* key)
     const sessionData = db[`wv_session_${sessionKey}_${albumId}`];
     const sessionParsed = typeof sessionData === "string" ? JSON.parse(sessionData) : sessionData;
     if (sessionParsed?.unlockedPhotoIds?.includes(photo.id)) return true;
@@ -289,6 +344,30 @@ function isPhotoAccessible(filename, sessionKey, albumId) {
   } catch {
     return false;
   }
+}
+
+/** Generate (or load from cache) a watermarked full-res buffer for a file. */
+async function getWatermarkedBuffer(safeName, filepath) {
+  const cacheDir = path.join(UPLOADS_DIR, "_cache");
+  fs.mkdirSync(cacheDir, { recursive: true });
+  const baseName = path.basename(safeName, path.extname(safeName));
+  const cacheFile = path.join(cacheDir, getCacheFilename(baseName, "full", true));
+
+  if (fs.existsSync(cacheFile)) {
+    return fs.readFileSync(cacheFile);
+  }
+
+  const origMeta = await sharp(filepath).metadata();
+  const origW = origMeta.width || 800;
+  const origH = origMeta.height || 600;
+  const wm = getWatermarkSettings();
+  const overlay = await buildWatermarkOverlay(origW, origH, wm);
+  const result = await sharp(filepath)
+    .composite([overlay])
+    .jpeg({ quality: 82, progressive: true })
+    .toBuffer();
+  try { fs.writeFileSync(cacheFile, result); } catch {}
+  return result;
 }
 
 // ── Serve watermarked / resized photo ────────────────────────
@@ -417,48 +496,36 @@ app.get("/api/photo/:filename/original", async (req, res) => {
 });
 
 // ── Clear image cache ──────────────────────────────────
+function countAndDeleteDir(dirPath) {
+  let cleared = 0;
+  try {
+    const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+    for (const entry of entries) {
+      const entryPath = path.join(dirPath, entry.name);
+      if (entry.isDirectory()) {
+        cleared += countAndDeleteDir(entryPath);
+        try { fs.rmdirSync(entryPath); } catch {}
+      } else {
+        try { fs.unlinkSync(entryPath); cleared++; } catch {}
+      }
+    }
+  } catch {}
+  return cleared;
+}
+
 function clearImageCache() {
   const cacheDir = path.join(UPLOADS_DIR, "_cache");
+  let cleared = 0;
   if (fs.existsSync(cacheDir)) {
-    fs.rmSync(cacheDir, { recursive: true, force: true });
+    cleared = countAndDeleteDir(cacheDir);
     fs.mkdirSync(cacheDir, { recursive: true });
   }
+  return cleared;
 }
 
 app.post("/api/cache/clear", (_req, res) => {
-  clearImageCache();
-  res.json({ ok: true });
-});
-
-// ── Delete ALL uploaded photos from disk ───────────────
-app.delete("/api/upload/all", async (req, res) => {
-  try {
-    const files = fs.readdirSync(UPLOADS_DIR);
-    let deleted = 0;
-    for (const f of files) {
-      try { fs.unlinkSync(path.join(UPLOADS_DIR, f)); deleted++; } catch {}
-    }
-    clearImageCache();
-
-    // Wipe all photo records from db.json so album refs don't break
-    const db = readDb();
-    if (db["wv_albums"]) {
-      const albums = typeof db["wv_albums"] === "string" ? JSON.parse(db["wv_albums"]) : db["wv_albums"];
-      if (Array.isArray(albums)) {
-        const wiped = albums.map(a => ({ ...a, photos: [], photoCount: 0, coverImage: "" }));
-        db["wv_albums"] = JSON.stringify(wiped);
-      }
-    }
-    if (db["wv_library"]) {
-      db["wv_library"] = JSON.stringify([]);
-    }
-    writeDb(db);
-
-    res.json({ ok: true, deleted });
-  } catch (err) {
-    console.error("Delete all error:", err.message);
-    res.status(500).json({ error: "Failed to delete files" });
-  }
+  const cleared = clearImageCache();
+  res.json({ ok: true, cleared });
 });
 
 // ── Bulk-delete specific files (orphan cleanup) ──────────────
@@ -489,6 +556,85 @@ app.post("/api/upload/bulk-delete", async (req, res) => {
     } catch { /* skip individual failures */ }
   }
   res.json({ ok: true, deleted });
+});
+
+// ── Download original photos as a zip (authenticated) ──────────
+// Accepts either:
+//   { filenames: string[], sessionKey, albumId }   — all clean originals (legacy)
+//   { files: [{filename, clean}], sessionKey, albumId } — per-file clean/watermarked
+const downloadZipLimiter = rateLimit({ windowMs: 5_000, max: 1, standardHeaders: true, legacyHeaders: false, message: { error: "Too many requests — please wait before retrying" } });
+app.post("/api/download/zip", downloadZipLimiter, async (req, res) => {
+  const { filenames, files, sessionKey, albumId } = req.body;
+
+  // Normalise to a [{filename, clean}] array regardless of which format was sent
+  let fileList;
+  if (Array.isArray(files)) {
+    fileList = files.map(f => ({ filename: String(f.filename || ""), clean: f.clean === true }));
+  } else if (Array.isArray(filenames)) {
+    fileList = filenames.map(n => ({ filename: String(n), clean: true }));
+  } else {
+    return res.status(400).json({ error: "files array (or filenames), sessionKey and albumId required" });
+  }
+
+  if (!sessionKey || !albumId) {
+    return res.status(400).json({ error: "sessionKey and albumId required" });
+  }
+  // Reasonable upper bound to prevent resource abuse
+  if (fileList.length > MAX_ZIP_FILES) {
+    return res.status(400).json({ error: `Too many files in a single zip request (max ${MAX_ZIP_FILES})` });
+  }
+
+  // Collect accessible files
+  const accessibleFiles = [];
+  for (const { filename, clean } of fileList) {
+    const safeName = path.basename(filename);
+    const filepath = path.join(UPLOADS_DIR, safeName);
+    if (!fs.existsSync(filepath)) continue;
+    if (!isPhotoAccessible(safeName, sessionKey, albumId)) continue;
+    accessibleFiles.push({ safeName, filepath, clean });
+  }
+
+  if (accessibleFiles.length === 0) {
+    return res.status(403).json({ error: "No accessible photos found for this session" });
+  }
+
+  // Look up a friendly album name for the zip filename
+  let albumName = "photos";
+  try {
+    const db = readDb();
+    const albums = db["wv_albums"];
+    const parsed = typeof albums === "string" ? JSON.parse(albums) : albums;
+    const album = Array.isArray(parsed) ? parsed.find(a => a.id === albumId) : null;
+    if (album?.title) albumName = album.title.replace(/[^a-z0-9_\- ]/gi, "_").trim();
+  } catch {}
+
+  res.setHeader("Content-Type", "application/zip");
+  res.setHeader("Content-Disposition", `attachment; filename="${albumName}.zip"`);
+
+  // JPEG images are already compressed — store them as-is (level 0) to keep zip creation fast
+  const archive = archiver("zip", { zlib: { level: 0 } });
+  archive.on("error", (err) => {
+    console.error("Zip archive error:", err.message);
+    if (!res.headersSent) res.status(500).json({ error: "Failed to create zip" });
+  });
+
+  archive.pipe(res);
+  for (const { safeName, filepath, clean } of accessibleFiles) {
+    if (clean) {
+      // Serve the original file untouched
+      archive.file(filepath, { name: safeName });
+    } else {
+      // Serve the server-watermarked version (from cache or generated on-the-fly)
+      try {
+        const buf = await getWatermarkedBuffer(safeName, filepath);
+        archive.append(buf, { name: safeName });
+      } catch {
+        // Fallback: serve original if watermarking fails
+        archive.file(filepath, { name: safeName });
+      }
+    }
+  }
+  await archive.finalize();
 });
 
 // ── Integrations ──────────────────────────────────────

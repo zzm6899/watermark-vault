@@ -9,7 +9,7 @@ import PurchasePanel from "@/components/PurchasePanel";
 import { getAlbumBySlug, getSettings, updateAlbum } from "@/lib/storage";
 import { useBackfillThumbnails } from "@/hooks/use-backfill-thumbnails";
 import { Badge } from "@/components/ui/badge";
-import { createAlbumCheckout, getStripeStatus } from "@/lib/api";
+import { createAlbumCheckout, getStripeStatus, isServerMode } from "@/lib/api";
 import { toast } from "sonner";
 import { resizeToTargetSize } from "@/lib/image-utils";
 import {
@@ -27,6 +27,9 @@ import { Label } from "@/components/ui/label";
 import type { Album, AlbumDownloadRecord, DownloadQuality, DownloadHistoryEntry, Photo } from "@/lib/types";
 
 const TARGET_LIGHTBOX_BYTES = 600 * 1024; // ~600KB
+
+/** Type for Stripe checkout params — defined at file level to avoid re-creation on every render. */
+type StripeCheckoutParams = Parameters<typeof createAlbumCheckout>[0];
 
 /** Uses baked watermarked variants for unpaid photos and clean assets for unlocked photos. */
 function LightboxImage({ photo, cache, onCacheUpdate, wmDisabled, watermarkVersion }: {
@@ -98,6 +101,13 @@ function getPhotoVariantSrc(photo: Photo, variant: "thumbnail" | "medium" | "ful
   const stripWm = (src: string) =>
     src ? src.replace(/[?&]wm=0(?=&|$)/g, "").replace(/[?&]$/, "").replace(/\?&/, "?") : src;
 
+  // Ensure a server-hosted thumbnail URL always includes ?size=thumb for smaller payloads.
+  const ensureThumbSize = (src: string) => {
+    if (!src || !src.startsWith("/uploads/")) return src;
+    if (src.includes("size=thumb") || src.includes("size=medium")) return src; // already has a size param
+    return `${src}${src.includes("?") ? "&" : "?"}size=thumb`;
+  };
+
   // Upgrade a server thumbnail URL to medium quality for lightbox use.
   // If the URL already uses ?size=thumb, swap to ?size=medium.
   // If it's a server-hosted image with no size param, add ?size=medium.
@@ -115,12 +125,13 @@ function getPhotoVariantSrc(photo: Photo, variant: "thumbnail" | "medium" | "ful
 
   if (disableWatermark) {
     const rawBase = variant === "full" ? photo.src : (photo.thumbnail || photo.src);
-    const sized = variant === "medium" ? upgradeToMedium(rawBase) : rawBase;
+    const sized = variant === "medium" ? upgradeToMedium(rawBase) : variant === "thumbnail" ? ensureThumbSize(rawBase) : rawBase;
     return buildPhotoSrc(sized, true);
   }
 
   if (variant === "thumbnail") {
-    return stripWm(p.thumbnailWatermarked || photo.thumbnail || photo.src);
+    const src = p.thumbnailWatermarked || photo.thumbnail || photo.src;
+    return ensureThumbSize(stripWm(src));
   }
   if (variant === "medium") {
     // Prefer baked watermarked variants; fall back to thumb → upgrade to medium for lightbox
@@ -177,6 +188,9 @@ export default function AlbumDetail() {
   const [requestedFullAlbum, setRequestedFullAlbum] = useState(false);
   // When user explicitly requests bank transfer flow
   const [requestedBankTransfer, setRequestedBankTransfer] = useState(false);
+  // Pending Stripe checkout params — set when email is required before we can launch checkout
+  
+  const [pendingStripeParams, setPendingStripeParams] = useState<StripeCheckoutParams | null>(null);
 
   // Proofing state
   const [proofingClientNote, setProofingClientNote] = useState("");
@@ -218,8 +232,8 @@ export default function AlbumDetail() {
     if (!stripeSuccess) return;
     const hasPurchase = album && (
       album.allUnlocked ||
-      (album as any).paidPhotoIds?.length > 0 ||
-      Object.keys((album as any).sessionPurchases || {}).length > 0
+      album.paidPhotoIds?.length > 0 ||
+      Object.keys(album.sessionPurchases || {}).length > 0
     );
     if (hasPurchase) {
       toast.success("Payment confirmed! Your photos are now unlocked.");
@@ -290,24 +304,24 @@ export default function AlbumDetail() {
   const isFullyUnlocked = album.allUnlocked === true; // admin-set only (proofing delivery, manual unlock)
   const isExpired = !!(album.downloadExpiresAt && new Date(album.downloadExpiresAt) < new Date());
   // Per-session purchase record for this viewer
-  const sessionPurchase = (album as any).sessionPurchases?.[sessionKey];
+  const sessionPurchase = album.sessionPurchases?.[sessionKey];
   const sessionFullAlbum = sessionPurchase?.fullAlbum === true;
   const sessionPaidIds = new Set<string>(sessionPurchase?.photoIds || []);
   // Legacy global paidPhotoIds (kept for backwards compat with old purchases)
-  const globalPaidSet = new Set<string>((album as any).paidPhotoIds || []);
+  const globalPaidSet = new Set<string>(album.paidPhotoIds || []);
   // Approved/completed bank transfer requests also unlock their photos
   const bankPaidIds = new Set<string>(
-    ((album as any).downloadRequests || [])
+    (album.downloadRequests || [])
       .filter((r: any) => r.status === "approved" || r.status === "completed")
       .flatMap((r: any) => r.photoIds || [])
   );
   const paidPhotoIdSet = new Set<string>([...sessionPaidIds, ...globalPaidSet, ...bankPaidIds]);
-  const canDownload = (isFullyUnlocked || sessionFullAlbum) && !isExpired && !(album as any).purchasingDisabled;
+  const canDownload = (isFullyUnlocked || sessionFullAlbum) && !isExpired && !album.purchasingDisabled;
   const isPhotoPaid = (id: string) => canDownload || paidPhotoIdSet.has(id);
 
   // Proofing derived values
   const proofingStage = album.proofingStage || "not-started";
-  const isProofing = proofingStage === "proofing" && !!settings.proofingEnabled && (!!(album as any).proofingEnabled || tokenMatchesAlbum);
+  const isProofing = proofingStage === "proofing" && !!settings.proofingEnabled && (!!album.proofingEnabled || tokenMatchesAlbum);
   const latestRound = album.proofingRounds?.[album.proofingRounds.length - 1];
   const adminNote = latestRound?.adminNote;
   // Visible photos: hide photos marked hidden (non-selected after round approval)
@@ -346,10 +360,43 @@ export default function AlbumDetail() {
     setTimeout(() => setCopiedField(null), 2000);
   };
 
-  const downloadPhoto = async (photo: { src: string; title: string }, quality: DownloadQuality) => {
+  /**
+   * A photo download is watermark-free EXCEPT when the admin has set "All Downloads Unlocked"
+   * with watermarks still ON and the client has not actually paid for the photo.
+   * In that case the photographer wants branded (watermarked) copies for freely distributed photos.
+   *
+   * Every other case — free-tier quota, individual Stripe/bank payment, full-album purchase,
+   * watermarks explicitly disabled — serves the clean original.
+   */
+  const isCleanDownload = (photoId: string): boolean => {
+    // Admin branded giveaway: allUnlocked=true but watermarks still enabled and no real payment
+    if (isFullyUnlocked && !album.watermarkDisabled && !paidPhotoIdSet.has(photoId) && !sessionFullAlbum) {
+      return false;
+    }
+    return true; // free-tier, paid, watermarkDisabled, sessionFullAlbum — all get clean originals
+  };
+
+  /** Returns the URL to use when downloading a photo.
+   *  Clean photos → authenticated /api/photo/original endpoint (no watermark).
+   *  Watermarked photos → plain /uploads/ URL so the server applies the watermark. */
+  const getDownloadSrc = (photo: { src: string; id: string }) => {
+    if (isServerMode() && photo.src.startsWith("/uploads/")) {
+      const filename = photo.src.split("/").pop() || "";
+      if (isCleanDownload(photo.id)) {
+        return `/api/photo/${encodeURIComponent(filename)}/original?sessionKey=${encodeURIComponent(sessionKey)}&albumId=${encodeURIComponent(album.id)}`;
+      }
+      // Watermarked — the plain upload URL causes the server to apply the watermark
+      return photo.src;
+    }
+    // localStorage / data-URL mode — no server watermarking, serve as-is
+    return photo.src;
+  };
+
+  const downloadPhoto = async (photo: { src: string; id: string; title: string }, quality: DownloadQuality) => {
+    const downloadSrc = getDownloadSrc(photo);
     if (quality === "original") {
       const link = document.createElement("a");
-      link.href = photo.src;
+      link.href = downloadSrc;
       link.download = `${photo.title}.jpg`;
       document.body.appendChild(link);
       link.click();
@@ -357,7 +404,7 @@ export default function AlbumDetail() {
     } else {
       const targetBytes = quality === "2mb" ? 2 * 1024 * 1024 : 5 * 1024 * 1024;
       try {
-        const blob = await resizeToTargetSize(photo.src, targetBytes);
+        const blob = await resizeToTargetSize(downloadSrc, targetBytes);
         const url = URL.createObjectURL(blob);
         const link = document.createElement("a");
         link.href = url;
@@ -367,13 +414,58 @@ export default function AlbumDetail() {
         document.body.removeChild(link);
         URL.revokeObjectURL(url);
       } catch {
-        // Fallback to original
+        // Fallback to direct download
         const link = document.createElement("a");
-        link.href = photo.src;
+        link.href = downloadSrc;
         link.download = `${photo.title}.jpg`;
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
+      }
+    }
+  };
+
+  /** Downloads multiple photos as a single zip via the server zip endpoint. */
+  const downloadZip = async (photos: Photo[]) => {
+    const serverPhotos = photos.filter(p => p.src.startsWith("/uploads/"));
+    const localPhotos = photos.filter(p => !p.src.startsWith("/uploads/"));
+
+    // Download local (data-URL) photos individually as fallback
+    for (const p of localPhotos) {
+      await downloadPhoto(p, downloadQuality);
+    }
+
+    if (serverPhotos.length === 0) return;
+
+    // Pass per-file clean/watermarked flag so the server renders each correctly
+    const files = serverPhotos.map(p => ({
+      filename: p.src.split("/").pop() || "",
+      clean: isCleanDownload(p.id),
+    }));
+    try {
+      const res = await fetch("/api/download/zip", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ files, sessionKey, albumId: album.id }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || "Server error");
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${album.title || "photos"}.zip`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (err: any) {
+      toast.error(`Zip download failed: ${err.message || "unknown error"}`);
+      // Fallback: download individually
+      for (const p of serverPhotos) {
+        await downloadPhoto(p, downloadQuality);
       }
     }
   };
@@ -435,8 +527,12 @@ export default function AlbumDetail() {
     }
     setDownloading(true);
     const toDownload = [...alreadyPaid, ...notPaid.slice(0, canDownloadFree)];
-    for (const p of toDownload) {
-      await downloadPhoto(p, downloadQuality);
+    if (isServerMode() && toDownload.length > 1) {
+      await downloadZip(toDownload as Photo[]);
+    } else {
+      for (const p of toDownload) {
+        await downloadPhoto(p, downloadQuality);
+      }
     }
 
     const updated = { ...album };
@@ -469,8 +565,12 @@ export default function AlbumDetail() {
     const photos = selectedIds.size > 0
       ? album.photos.filter(p => selectedIds.has(p.id))
       : album.photos;
-    for (const p of photos) {
-      await downloadPhoto(p, downloadQuality);
+    if (isServerMode() && photos.length > 1) {
+      await downloadZip(photos as Photo[]);
+    } else {
+      for (const p of photos) {
+        await downloadPhoto(p, downloadQuality);
+      }
     }
     // Track download history
     const updated = { ...album };
@@ -486,7 +586,7 @@ export default function AlbumDetail() {
     setSelectedIds(new Set());
     setShowDownloadOptions(false);
     setDownloading(false);
-    toast.success(`Downloaded ${photos.length} photos`);
+    toast.success(`Downloaded ${photos.length} photo${photos.length !== 1 ? "s" : ""}`);
   };
 
   const handlePurchaseSelected = () => {
@@ -535,6 +635,55 @@ export default function AlbumDetail() {
     if (!registeredEmail && !emailSkippedThisSession) setTimeout(() => setShowEmailReg(true), 300);
     setShowPaymentChoice(true);
   };
+
+  /**
+   * Launch Stripe checkout.  If the buyer hasn't provided their email yet,
+   * save the params and show the email capture dialog (no Skip allowed) so
+   * we can log the purchase to their account before redirecting.
+   */
+  const launchStripe = async (params: StripeCheckoutParams) => {
+    if (!registeredEmail) {
+      // Store params so we can resume after email is captured
+      setPendingStripeParams(params);
+      setShowEmailReg(true);
+      return;
+    }
+    setProcessingStripe(true);
+    const result = await createAlbumCheckout({ ...params, sessionKey });
+    setProcessingStripe(false);
+    if (result.url) window.location.href = result.url;
+    else toast.error(result.error || "Failed to create checkout session");
+  };
+
+  /** Save the buyer's email, then resume any pending Stripe checkout. */
+  const handleSaveEmail = useCallback(async () => {
+    if (!purchaserEmail.includes("@")) { toast.error("Please enter a valid email"); return; }
+    setSavingEmail(true);
+    try {
+      const emailKey = `email-${purchaserEmail.toLowerCase().trim()}`;
+      await fetch("/api/album/register-purchaser", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ albumId: album.id, sessionKey: emailKey, email: purchaserEmail }),
+      });
+      try { localStorage.setItem(`wv_email_${albumId}`, purchaserEmail); } catch {}
+      setRegisteredEmail(purchaserEmail);
+      toast.success("Email saved — your purchases are now linked to " + purchaserEmail);
+      setShowEmailReg(false);
+      setPurchaserEmail("");
+      // If the user was mid-Stripe-checkout, resume it now with the email session key
+      if (pendingStripeParams) {
+        const params = { ...pendingStripeParams, sessionKey: emailKey };
+        setPendingStripeParams(null);
+        setProcessingStripe(true);
+        const result = await createAlbumCheckout(params);
+        setProcessingStripe(false);
+        if (result.url) window.location.href = result.url;
+        else toast.error(result.error || "Failed to create checkout session");
+      }
+    } catch { toast.error("Failed to save email"); }
+    setSavingEmail(false);
+  }, [purchaserEmail, album.id, albumId, pendingStripeParams]);
 
   const submitBankTransferRequest = () => {
     const selected = album.photos.filter(p => selectedIds.has(p.id) && !paidPhotoIdSet.has(p.id));
@@ -604,7 +753,7 @@ export default function AlbumDetail() {
               </div>
 
               {/* ── Proofing Stage Banner ───────────────────────────── */}
-              {settings.proofingEnabled && (album as any).proofingEnabled && proofingStage === "proofing" && (
+              {settings.proofingEnabled && album.proofingEnabled && proofingStage === "proofing" && (
                 <div className="glass-panel rounded-xl p-5 border border-yellow-500/30 bg-yellow-500/5">
                   <div className="flex items-start gap-3">
                     <Star className="w-5 h-5 text-yellow-400 mt-0.5 shrink-0 fill-yellow-400/30" />
@@ -627,7 +776,7 @@ export default function AlbumDetail() {
                   </div>
                 </div>
               )}
-              {settings.proofingEnabled && (album as any).proofingEnabled && proofingStage === "selections-submitted" && (
+              {settings.proofingEnabled && album.proofingEnabled && proofingStage === "selections-submitted" && (
                 <div className="glass-panel rounded-xl p-5 border border-primary/30 bg-primary/5">
                   <div className="flex items-start gap-3">
                     <Clock className="w-5 h-5 text-primary mt-0.5 shrink-0" />
@@ -638,7 +787,7 @@ export default function AlbumDetail() {
                   </div>
                 </div>
               )}
-              {settings.proofingEnabled && (album as any).proofingEnabled && proofingStage === "editing" && (
+              {settings.proofingEnabled && album.proofingEnabled && proofingStage === "editing" && (
                 <div className="glass-panel rounded-xl p-5 border border-primary/30 bg-primary/5">
                   <div className="flex items-start gap-3">
                     <Camera className="w-5 h-5 text-primary mt-0.5 shrink-0" />
@@ -649,7 +798,7 @@ export default function AlbumDetail() {
                   </div>
                 </div>
               )}
-              {settings.proofingEnabled && (album as any).proofingEnabled && proofingStage === "finals-delivered" && (
+              {settings.proofingEnabled && album.proofingEnabled && proofingStage === "finals-delivered" && (
                 <div className="glass-panel rounded-xl p-5 border border-green-500/30 bg-green-500/5">
                   <div className="flex items-start gap-3">
                     <Sparkles className="w-5 h-5 text-green-400 mt-0.5 shrink-0" />
@@ -719,7 +868,7 @@ export default function AlbumDetail() {
                       )}
                     </div>
 
-                    {!(album as any).purchasingDisabled && (
+                    {!album.purchasingDisabled && (
                       <div className="pt-1">
                         {previewCheckoutAmount === 0 ? (
                           <Button
@@ -732,9 +881,8 @@ export default function AlbumDetail() {
                         ) : (
                           stripeAvailable ? (
                             <Button
-                              onClick={async () => {
+                              onClick={() => {
                                 setShowPaymentChoice(false);
-                                setProcessingStripe(true);
                                 const isFullAlbumPurchase =
                                   requestedFullAlbum ||
                                   fullAlbumCheaper ||
@@ -742,11 +890,10 @@ export default function AlbumDetail() {
                                   selectedIds.size === album.photos.length;
                                 const checkoutAmount = isFullAlbumPurchase ? album.priceFullAlbum : paidTotal;
                                 if (!isFullAlbumPurchase && checkoutAmount === 0) {
-                                  setProcessingStripe(false);
                                   handleDownloadFree();
                                   return;
                                 }
-                                const result = await createAlbumCheckout({
+                                launchStripe({
                                   albumId: album.id,
                                   albumTitle: album.title,
                                   photoCount: isFullAlbumPurchase ? album.photos.length : unpaidSelected.length,
@@ -756,9 +903,6 @@ export default function AlbumDetail() {
                                   isFullAlbum: isFullAlbumPurchase,
                                   sessionKey,
                                 });
-                                setProcessingStripe(false);
-                                if (result.url) window.location.href = result.url;
-                                else toast.error(result.error || "Failed to create checkout session");
                               }}
                               disabled={processingStripe}
                               className="w-full sm:w-auto gap-3 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-sm h-12"
@@ -842,7 +986,7 @@ export default function AlbumDetail() {
               {displayedPhotos.map((photo, i) => (
                 <div key={photo.id} className="relative group">
                   <WatermarkedImage
-                src={getGalleryPhotoSrc(photo, !!((album as any).watermarkDisabled || isPhotoPaid(photo.id)))}
+                src={getGalleryPhotoSrc(photo, !!(album.watermarkDisabled || isPhotoPaid(photo.id)))}
                   title={photo.title}
                   selected={isProofing ? starredIds.has(photo.id) : selectedIds.has(photo.id)}
                   onSelect={() => isProofing ? toggleStar(photo.id) : toggleSelect(photo.id)}
@@ -927,7 +1071,7 @@ export default function AlbumDetail() {
       )}
 
       {/* Show PurchasePanel unless every selected photo is already paid, or we're in proofing mode, or purchasing disabled */}
-      {!canDownload && !isProofing && !(album as any).purchasingDisabled && !(selectedIds.size > 0 && Array.from(selectedIds).every(id => isPhotoPaid(id))) && (
+      {!canDownload && !isProofing && !album.purchasingDisabled && !(selectedIds.size > 0 && Array.from(selectedIds).every(id => isPhotoPaid(id))) && (
         <PurchasePanel
           selectedCount={selectedIds.size}
           unpaidCount={unpaidSelected.length}
@@ -983,42 +1127,67 @@ export default function AlbumDetail() {
           <DialogHeader>
             <DialogTitle className="font-display text-xl text-foreground flex items-center gap-2">
               <Download className="w-5 h-5 text-primary" />
-              Download Quality
+              Download Options
             </DialogTitle>
             <DialogDescription className="sr-only">Choose the quality for your photo downloads.</DialogDescription>
           </DialogHeader>
           <div className="space-y-4 mt-2">
-            <RadioGroup value={downloadQuality} onValueChange={(v) => setDownloadQuality(v as DownloadQuality)}>
-              <div className="flex items-center space-x-3 p-3 rounded-lg bg-secondary hover:bg-secondary/80 cursor-pointer">
-                <RadioGroupItem value="2mb" id="q-2mb" />
-                <Label htmlFor="q-2mb" className="font-body text-sm cursor-pointer flex-1">
-                  <span className="text-foreground">Web Quality</span>
-                  <span className="text-xs text-muted-foreground block">~2 MB per photo · Fast download</span>
-                </Label>
-              </div>
-              <div className="flex items-center space-x-3 p-3 rounded-lg bg-secondary hover:bg-secondary/80 cursor-pointer">
-                <RadioGroupItem value="5mb" id="q-5mb" />
-                <Label htmlFor="q-5mb" className="font-body text-sm cursor-pointer flex-1">
-                  <span className="text-foreground">High Quality</span>
-                  <span className="text-xs text-muted-foreground block">~5 MB per photo · Print ready</span>
-                </Label>
-              </div>
-              <div className="flex items-center space-x-3 p-3 rounded-lg bg-secondary hover:bg-secondary/80 cursor-pointer">
-                <RadioGroupItem value="original" id="q-original" />
-                <Label htmlFor="q-original" className="font-body text-sm cursor-pointer flex-1">
-                  <span className="text-foreground">Original</span>
-                  <span className="text-xs text-muted-foreground block">Full resolution · Largest file size</span>
-                </Label>
-              </div>
-            </RadioGroup>
-            <Button
-              onClick={canDownload ? executeDownloadAll : executeDownloadFree}
-              disabled={downloading}
-              className="w-full bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs tracking-wider uppercase gap-2"
-            >
-              <Download className="w-4 h-4" />
-              {downloading ? "Downloading..." : "Download"}
-            </Button>
+            {(() => {
+              const downloadCount = canDownload
+                ? (selectedIds.size > 0 ? selectedIds.size : album.photos.length)
+                : (() => {
+                    const sel = album.photos.filter(p => selectedIds.has(p.id));
+                    const paid = sel.filter(p => paidPhotoIdSet.has(p.id));
+                    const free = Math.min(sel.filter(p => !paidPhotoIdSet.has(p.id)).length, freeRemaining);
+                    return paid.length + free;
+                  })();
+              const useZip = isServerMode() && downloadCount > 1;
+              return (
+                <>
+                  {useZip ? (
+                    <div className="flex items-center gap-2 p-3 rounded-lg bg-primary/10 border border-primary/20">
+                      <Download className="w-4 h-4 text-primary flex-shrink-0" />
+                      <div>
+                        <p className="text-sm font-body text-foreground">Download as ZIP</p>
+                        <p className="text-xs text-muted-foreground">{downloadCount} original photos · Single zip file</p>
+                      </div>
+                    </div>
+                  ) : (
+                    <RadioGroup value={downloadQuality} onValueChange={(v) => setDownloadQuality(v as DownloadQuality)}>
+                      <div className="flex items-center space-x-3 p-3 rounded-lg bg-secondary hover:bg-secondary/80 cursor-pointer">
+                        <RadioGroupItem value="2mb" id="q-2mb" />
+                        <Label htmlFor="q-2mb" className="font-body text-sm cursor-pointer flex-1">
+                          <span className="text-foreground">Web Quality</span>
+                          <span className="text-xs text-muted-foreground block">~2 MB per photo · Fast download</span>
+                        </Label>
+                      </div>
+                      <div className="flex items-center space-x-3 p-3 rounded-lg bg-secondary hover:bg-secondary/80 cursor-pointer">
+                        <RadioGroupItem value="5mb" id="q-5mb" />
+                        <Label htmlFor="q-5mb" className="font-body text-sm cursor-pointer flex-1">
+                          <span className="text-foreground">High Quality</span>
+                          <span className="text-xs text-muted-foreground block">~5 MB per photo · Print ready</span>
+                        </Label>
+                      </div>
+                      <div className="flex items-center space-x-3 p-3 rounded-lg bg-secondary hover:bg-secondary/80 cursor-pointer">
+                        <RadioGroupItem value="original" id="q-original" />
+                        <Label htmlFor="q-original" className="font-body text-sm cursor-pointer flex-1">
+                          <span className="text-foreground">Original</span>
+                          <span className="text-xs text-muted-foreground block">Full resolution · Largest file size</span>
+                        </Label>
+                      </div>
+                    </RadioGroup>
+                  )}
+                  <Button
+                    onClick={canDownload ? executeDownloadAll : executeDownloadFree}
+                    disabled={downloading}
+                    className="w-full bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs tracking-wider uppercase gap-2"
+                  >
+                    <Download className="w-4 h-4" />
+                    {downloading ? (useZip ? "Preparing ZIP…" : "Downloading…") : (useZip ? `Download ZIP (${downloadCount})` : "Download")}
+                  </Button>
+                </>
+              );
+            })()}
           </div>
         </DialogContent>
       </Dialog>
@@ -1048,9 +1217,8 @@ export default function AlbumDetail() {
 
             {stripeAvailable && (
               <Button
-                onClick={async () => {
+                onClick={() => {
                   setShowPaymentChoice(false);
-                  setProcessingStripe(true);
                   const isFullAlbumPurchase =
                     requestedFullAlbum ||
                     fullAlbumCheaper ||
@@ -1063,26 +1231,19 @@ export default function AlbumDetail() {
                   const checkoutAmount = isFullAlbumPurchase ? album.priceFullAlbum : paidTotal;
                   // If nothing actually needs paying, just download
                   if (!isFullAlbumPurchase && checkoutAmount === 0) {
-                    setProcessingStripe(false);
                     handleDownloadFree();
                     return;
                   }
-                  const result = await createAlbumCheckout({
+                  launchStripe({
                     albumId: album.id,
                     albumTitle: album.title,
                     photoCount: isFullAlbumPurchase ? album.photos.length : unpaidSelected.length,
                     amount: checkoutAmount,
                     clientEmail: album.clientEmail,
-                    photoIds: isFullAlbumPurchase ? [] : unpaidSelected.map(p => p.id),
+                    photoIds: isFullAlbumPurchase ? [] : photosBeingPaid.map(p => p.id),
                     isFullAlbum: isFullAlbumPurchase,
                     sessionKey,
                   });
-                  setProcessingStripe(false);
-                  if (result.url) {
-                    window.location.href = result.url;
-                  } else {
-                    toast.error(result.error || "Failed to create checkout session");
-                  }
                 }}
                 disabled={processingStripe}
                 className="w-full gap-3 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-sm h-12"
@@ -1194,51 +1355,42 @@ export default function AlbumDetail() {
       </Dialog>
 
       {/* Post-payment email registration */}
-      <Dialog open={showEmailReg} onOpenChange={setShowEmailReg}>
+      <Dialog open={showEmailReg} onOpenChange={(open) => { setShowEmailReg(open); if (!open && !registeredEmail) { setPendingStripeParams(null); } }}>
         <DialogContent className="glass-panel border-border max-w-sm">
           <DialogHeader>
-            <DialogTitle className="font-display text-xl text-foreground">Save your access</DialogTitle>
+            <DialogTitle className="font-display text-xl text-foreground">
+              {pendingStripeParams ? "Email required for payment" : "Save your access"}
+            </DialogTitle>
             <DialogDescription className="sr-only">Add your email to link purchases to your account so you can access photos from any device.</DialogDescription>
           </DialogHeader>
           <div className="space-y-4 mt-2">
             <p className="text-sm font-body text-muted-foreground">
-              Add your email to link this purchase to your account — so you can re-access your photos from any device using the same gallery link.
+              {pendingStripeParams
+                ? "Enter your email so your purchase is logged and you can re-access your photos from any device."
+                : "Add your email to link this purchase to your account — so you can re-access your photos from any device using the same gallery link."}
             </p>
             <input
               type="email"
               placeholder="your@email.com"
               value={purchaserEmail}
               onChange={e => setPurchaserEmail(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter") handleSaveEmail(); }}
               className="w-full bg-secondary border border-border rounded-lg px-3 py-2.5 text-sm font-body text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary/50"
             />
             <div className="flex gap-2">
               <Button
-                onClick={async () => {
-                  if (!purchaserEmail.includes("@")) { toast.error("Please enter a valid email"); return; }
-                  setSavingEmail(true);
-                  try {
-                    const emailKey = `email-${purchaserEmail.toLowerCase().trim()}`;
-                    await fetch("/api/album/register-purchaser", {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ albumId: album.id, sessionKey: emailKey, email: purchaserEmail }),
-                    });
-                    try { localStorage.setItem(`wv_email_${albumId}`, purchaserEmail); } catch {}
-                    setRegisteredEmail(purchaserEmail);
-                    toast.success("Email saved — your purchases are now linked to " + purchaserEmail);
-                    setShowEmailReg(false);
-                    setPurchaserEmail("");
-                  } catch { toast.error("Failed to save email"); }
-                  setSavingEmail(false);
-                }}
+                onClick={handleSaveEmail}
                 disabled={savingEmail}
                 className="flex-1 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-sm"
               >
-                {savingEmail ? "Saving…" : "Save Email"}
+                {savingEmail ? "Saving…" : pendingStripeParams ? "Save & Pay" : "Save Email"}
               </Button>
-              <Button variant="outline" onClick={() => { setShowEmailReg(false); setEmailSkippedThisSession(true); }} className="font-body text-sm border-border">
-                Skip
-              </Button>
+              {/* Don't offer Skip when Stripe payment is waiting — email is required */}
+              {!pendingStripeParams && (
+                <Button variant="outline" onClick={() => { setShowEmailReg(false); setEmailSkippedThisSession(true); }} className="font-body text-sm border-border">
+                  Skip
+                </Button>
+              )}
             </div>
           </div>
         </DialogContent>
@@ -1280,7 +1432,7 @@ export default function AlbumDetail() {
                 photo={lbPhoto}
                 cache={lightboxSrcCache}
                 onCacheUpdate={(cacheKey, url) => setLightboxSrcCache(prev => ({ ...prev, [cacheKey]: url }))}
-                wmDisabled={!!((album as any).watermarkDisabled || isPhotoPaid(lbPhoto.id))}
+                wmDisabled={!!(album.watermarkDisabled || isPhotoPaid(lbPhoto.id))}
                 watermarkVersion={(settings as any).watermarkVersion || (lbPhoto as any).watermarkVersion || 0}
               />
 

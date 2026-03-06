@@ -116,6 +116,12 @@ function stripWmParam(src: string): string {
   return (src || "").replace(/([?&])wm=0(?=&|$)/g, "$1").replace(/[?&]$/, "");
 }
 
+/** Returns a human-readable description of how many cache files were cleared. */
+function formatClearedMsg(cleared: number | null | undefined): string {
+  if (cleared == null) return "";
+  return ` — ${cleared} cached file${cleared !== 1 ? "s" : ""} removed`;
+}
+
 type WatermarkBakeSettings = Pick<AppSettings, "watermarkText" | "watermarkImage" | "watermarkPosition" | "watermarkOpacity" | "watermarkSize"> & {
   watermarkVersion?: number;
 };
@@ -2362,7 +2368,10 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
       const newCover = coverImage || (allPhotos[0]?.src ?? "");
       if (!coverImage && newPhotos.length > 0) setCoverImage(newPhotos[0].src);
       setUploadStats(prev => prev ? { ...prev, done: fileArr.length, errors: fileArr.length - results.length, savedBytes: 0 } : null);
-      if (results.length > 0) toast.success(`${results.length} photos uploaded to server`);
+      if (results.length > 0) {
+        toast.success(`${results.length} photos uploaded to server`);
+        window.dispatchEvent(new CustomEvent("storage-synced"));
+      }
     } else {
       // Fallback: compress to base64 for localStorage
       for (const file of fileArr) {
@@ -3045,7 +3054,10 @@ function PhotosView() {
       for (const photo of newPhotos) addPhotoToTarget(photo);
       setUploadStats(prev => prev ? { ...prev, done: fileArr.length, errors: fileArr.length - results.length } : null);
       const target = selectedAlbum ? `"${selectedAlbum.title}"` : "library";
-      if (results.length > 0) toast.success(`${results.length} photos uploaded to ${target}`);
+      if (results.length > 0) {
+        toast.success(`${results.length} photos uploaded to ${target}`);
+        window.dispatchEvent(new CustomEvent("storage-synced"));
+      }
     } else {
       for (const file of fileArr) {
         try {
@@ -3665,9 +3677,11 @@ function SettingsView() {
       setRebuildProgress({ running: true, done: 0, total: 1, stage: "Clearing server image cache…" });
       writeWatermarkRebuildStatus({ running: true, mode: "save", done: 0, total: 1, stage: "Clearing server image cache…" });
       try {
-        await fetch("/api/cache/clear", { method: "POST" });
-        toast.success("Settings saved — server cache cleared, gallery will serve fresh watermarked images.");
-        writeWatermarkRebuildStatus({ running: false, mode: "save", done: 1, total: 1, stage: "Server cache cleared." });
+        const cacheRes = await fetch("/api/cache/clear", { method: "POST" });
+        const cacheData = cacheRes.ok ? await cacheRes.json() : null;
+        const clearedMsg = formatClearedMsg(cacheData?.cleared);
+        toast.success(`Settings saved — server cache cleared${clearedMsg}, gallery will serve fresh watermarked images.`);
+        writeWatermarkRebuildStatus({ running: false, mode: "save", done: 1, total: 1, stage: `Server cache cleared${clearedMsg}.` });
       } catch {
         toast.error("Settings saved, but failed to clear server cache. Run 'Clear Server Image Cache' manually.");
         writeWatermarkRebuildStatus({ running: false, mode: "save", stage: "Cache clear failed." });
@@ -4209,12 +4223,20 @@ function GoogleCalendarSection() {
 }
 
 // ─── Storage View ────────────────────────────────────
+const VALID_PREVIEW_MODES = new Set<string>(["missing", "all", "save"]);
+function safePreviewMode(mode: string | null | undefined): "missing" | "all" | "save" | null {
+  return mode && VALID_PREVIEW_MODES.has(mode) ? (mode as "missing" | "all" | "save") : null;
+}
+
 function StorageView() {
   const [albums, setAlbumsState] = useState(getAlbums());
   const [libraryPhotos, setLibraryPhotosState] = useState(getPhotoLibrary());
   const bookings = getBookings();
   const eventTypes = getEventTypes();
-  const [previewJob, setPreviewJob] = useState<{ running: boolean; mode: "missing" | "all" | "save" | null; done: number; total: number; stage?: string }>({ running: false, mode: null, done: 0, total: 0 });
+  const [previewJob, setPreviewJob] = useState<{ running: boolean; mode: "missing" | "all" | "save" | null; done: number; total: number; stage?: string }>(() => {
+    const saved = readWatermarkRebuildStatus();
+    return { running: saved.running, mode: safePreviewMode(saved.mode), done: saved.done, total: saved.total, stage: saved.stage };
+  });
 
   const refreshStorageState = useCallback(async () => {
     const nextAlbums = getAlbums();
@@ -4229,11 +4251,30 @@ function StorageView() {
     }
   }, []);
 
-  // Listen for storage sync events so counts refresh after AlbumsView sync
+  // Listen for storage sync events so counts refresh after uploads or syncs from anywhere
   useEffect(() => {
     const handler = () => { refreshStorageState(); };
     window.addEventListener("storage-synced", handler);
     return () => window.removeEventListener("storage-synced", handler);
+  }, [refreshStorageState]);
+
+  // Mirror watermark rebuild / cache-clear progress that originates from any tab (e.g. Settings)
+  useEffect(() => {
+    const handler = () => {
+      const status = readWatermarkRebuildStatus();
+      setPreviewJob({ running: status.running, mode: safePreviewMode(status.mode), done: status.done, total: status.total, stage: status.stage });
+      // Once a rebuild finishes, refresh server stats so file counts stay current
+      if (!status.running) refreshStorageState();
+    };
+    window.addEventListener("wm-rebuild-status", handler);
+    return () => window.removeEventListener("wm-rebuild-status", handler);
+  }, [refreshStorageState]);
+
+  // Poll server stats every 30 s while Storage tab is open so counts stay fresh
+  useEffect(() => {
+    if (!isServerMode()) return;
+    const id = setInterval(() => { refreshStorageState(); }, 30_000);
+    return () => clearInterval(id);
   }, [refreshStorageState]);
 
   const applyThumbnailToStores = useCallback((photoId: string, thumb?: string) => {
@@ -4273,14 +4314,21 @@ function StorageView() {
     if (isServerMode()) {
       // In server mode the server watermarks on demand — just clear the cache so
       // fresh variants are served on the next gallery load.
-      setPreviewJob({ running: true, mode: forceAll ? "all" : "missing", done: 1, total: 1, stage: "Clearing server image cache…" });
+      const jobState = { running: true, mode: (forceAll ? "all" : "missing") as "all" | "missing", done: 1, total: 1, stage: "Clearing server image cache…" };
+      setPreviewJob(jobState);
+      writeWatermarkRebuildStatus(jobState);
       try {
-        await fetch("/api/cache/clear", { method: "POST" });
-        toast.success("Server image cache cleared — gallery will fetch fresh watermarked images");
+        const cacheRes = await fetch("/api/cache/clear", { method: "POST" });
+        const cacheData = cacheRes.ok ? await cacheRes.json() : null;
+        const clearedMsg = formatClearedMsg(cacheData?.cleared);
+        toast.success(`Server image cache cleared${clearedMsg} — gallery will fetch fresh watermarked images`);
+        writeWatermarkRebuildStatus({ running: false, mode: forceAll ? "all" : "missing", done: 1, total: 1, stage: `Cache cleared${clearedMsg}.` });
       } catch {
         toast.error("Failed to clear server cache");
+        writeWatermarkRebuildStatus({ running: false, stage: "Cache clear failed." });
       }
       setPreviewJob({ running: false, mode: null, done: 0, total: 0 });
+      await refreshStorageState();
       return;
     }
 
