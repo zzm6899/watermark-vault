@@ -4346,76 +4346,37 @@ function StorageView() {
         </div>
       </div>
 
-      {/* Thumbnail Rendering Status */}
+      {/* Preview & Watermark Rendering */}
       <div className="glass-panel rounded-xl p-6 mb-6">
         <h3 className="font-display text-base text-foreground mb-3 flex items-center gap-2">
-          <Image className="w-4 h-4 text-primary" /> Thumbnail Rendering
+          <Sparkles className="w-4 h-4 text-primary" /> Preview & Watermark Rendering
         </h3>
         <div className="flex items-center justify-between text-xs font-body text-muted-foreground mb-1.5">
-          <span>{withThumbnails} of {totalPhotos} photos optimised</span>
-          <span className={thumbnailPct === 100 ? "text-green-500" : "text-primary"}>{thumbnailPct}%</span>
-        </div>
-        <div className="h-3 rounded-full bg-secondary overflow-hidden">
-          <div className={`h-full rounded-full transition-all duration-500 ${thumbnailPct === 100 ? "bg-green-500" : "bg-primary"}`} style={{ width: `${thumbnailPct}%` }} />
-        </div>
-        <p className="text-[10px] font-body text-muted-foreground/50 mt-2">
-          {thumbnailPct === 100
-            ? "✓ All photos have optimised thumbnails for fast grid loading"
-            : `Generating ${totalPhotos - withThumbnails} thumbnail(s) in background… Grid will use low-res placeholders until ready.`}
-        </p>
-
-        <div className="mt-4 flex flex-col sm:flex-row gap-2">
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => handleRebuildPreviews(false)}
-            disabled={previewJob.running}
-            className="gap-2 font-body text-xs border-border text-foreground"
-          >
-            <RefreshCw className={`w-4 h-4 ${previewJob.running && previewJob.mode === "missing" ? "animate-spin" : ""}`} />
-            {previewJob.running && previewJob.mode === "missing"
-              ? `Generating… ${previewJob.done}/${previewJob.total}`
-              : "Regenerate Missing Previews"}
-          </Button>
-
-          <Button
-            size="sm"
-            onClick={() => handleRebuildPreviews(true)}
-            disabled={previewJob.running}
-            className="gap-2 font-body text-xs"
-          >
-            <Sparkles className={`w-4 h-4 ${previewJob.running && previewJob.mode === "all" ? "animate-pulse" : ""}`} />
-            {previewJob.running && previewJob.mode === "all"
-              ? `Rebuilding… ${previewJob.done}/${previewJob.total}`
-              : "Force Rebuild All Previews"}
-          </Button>
-        </div>
-
-        <p className="text-[10px] font-body text-muted-foreground/50 mt-2">
-          Use this after changing watermark settings. It regenerates baked thumbnail, medium and protected preview variants using the saved admin watermark config.
-        </p>
-      </div>
-
-      <div className="glass-panel rounded-xl p-6 mb-6">
-        <h3 className="font-display text-base text-foreground mb-3 flex items-center gap-2">
-          <Sparkles className="w-4 h-4 text-primary" /> Watermark Asset Generation
-        </h3>
-        <div className="flex items-center justify-between text-xs font-body text-muted-foreground mb-1.5">
-          <span>{previewJob.running ? (previewJob.stage || "Regenerating baked watermark assets…") : "Baked watermark previews are ready"}</span>
-          <span className={previewJob.running ? "text-primary" : "text-green-500"}>
-            {previewJob.running && previewJob.total > 0 ? `${previewJob.done}/${previewJob.total}` : (previewJob.running ? "Working…" : "Idle")}
+          <span>
+            {previewJob.running
+              ? (previewJob.stage || "Regenerating baked previews…")
+              : (thumbnailPct === 100
+                ? "Baked previews are ready"
+                : `${withThumbnails} of ${totalPhotos} photos optimised`)}
+          </span>
+          <span className={previewJob.running ? "text-primary" : (thumbnailPct === 100 ? "text-green-500" : "text-primary")}>
+            {previewJob.running
+              ? (previewJob.total > 0 ? `${previewJob.done}/${previewJob.total}` : "Working…")
+              : `${thumbnailPct}%`}
           </span>
         </div>
         <div className="h-3 rounded-full bg-secondary overflow-hidden">
           <div
-            className={`h-full rounded-full transition-all duration-500 ${previewJob.running ? "bg-primary" : "bg-green-500"}`}
-            style={{ width: `${previewJob.running ? (previewJob.total > 0 ? Math.max(4, (previewJob.done / previewJob.total) * 100) : 12) : 100}%` }}
+            className={`h-full rounded-full transition-all duration-500 ${previewJob.running ? "bg-primary" : (thumbnailPct === 100 ? "bg-green-500" : "bg-primary")}`}
+            style={{ width: `${previewJob.running ? (previewJob.total > 0 ? Math.max(4, (previewJob.done / previewJob.total) * 100) : 12) : thumbnailPct}%` }}
           />
         </div>
         <p className="text-[10px] font-body text-muted-foreground/50 mt-2">
           {previewJob.running
-            ? `${previewJob.stage || "Regenerating baked watermark assets…"}${previewJob.total > 0 ? ` ${previewJob.done}/${previewJob.total}` : ""}`
-            : "Use this after changing watermark text/image/size/position/opacity so gallery thumbnails and lightbox previews match the admin preview."}
+            ? `${previewJob.stage || "Regenerating baked previews…"}${previewJob.total > 0 ? ` ${previewJob.done}/${previewJob.total}` : ""}`
+            : (thumbnailPct === 100
+              ? "✓ All photos have baked thumbnail, medium and protected preview variants ready for gallery and lightbox use."
+              : `Generating ${totalPhotos - withThumbnails} missing preview(s) in background…`)}
         </p>
 
         <div className="mt-4 flex flex-col sm:flex-row gap-2">
@@ -4444,6 +4405,10 @@ function StorageView() {
               : "Force Rebuild All Baked Previews"}
           </Button>
         </div>
+
+        <p className="text-[10px] font-body text-muted-foreground/50 mt-2">
+          Use this after changing watermark text, image, size, position or opacity so gallery thumbnails and lightbox previews match the saved admin watermark config.
+        </p>
       </div>
 
       {/* TrueNAS Volume / Disk Usage */}
