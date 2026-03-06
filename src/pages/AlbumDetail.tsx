@@ -29,13 +29,15 @@ import type { Album, AlbumDownloadRecord, DownloadQuality, DownloadHistoryEntry,
 const TARGET_LIGHTBOX_BYTES = 600 * 1024; // ~600KB
 
 /** Renders a medium-quality lightbox image, caching the resized blob URL. */
-function LightboxImage({ photo, cache, onCacheUpdate }: {
+function LightboxImage({ photo, cache, onCacheUpdate, wmDisabled }: {
   photo: Photo;
   cache: Record<string, string>;
   onCacheUpdate: (id: string, url: string) => void;
+  wmDisabled?: boolean;
 }) {
+  const photoSrc = photo.src + (wmDisabled ? "?wm=0" : "");
   // Show cached version immediately, or fall back to original src (no blank flash)
-  const [src, setSrc] = useState(cache[photo.id] || photo.src);
+  const [src, setSrc] = useState(cache[photo.id] || photoSrc);
 
   useEffect(() => {
     // If already cached, use it immediately
@@ -44,10 +46,10 @@ function LightboxImage({ photo, cache, onCacheUpdate }: {
       return;
     }
     // Show original immediately so navigation feels instant
-    setSrc(photo.src);
+    setSrc(photoSrc);
     // Then upgrade to resized version in background
     let cancelled = false;
-    resizeToTargetSize(photo.src, TARGET_LIGHTBOX_BYTES)
+    resizeToTargetSize(photoSrc, TARGET_LIGHTBOX_BYTES)
       .then(blob => {
         if (cancelled) return;
         const url = URL.createObjectURL(blob);
@@ -657,7 +659,7 @@ export default function AlbumDetail() {
 
               {_expiryBanner}
 
-              <div className="glass-panel rounded-lg p-3 md:p-5 flex flex-col gap-2 md:gap-3 md:min-w-[280px]">
+              <div className="glass-panel rounded-lg p-4 flex items-center gap-6">
                 {canDownload ? (
                   <div className="text-center">
                     <p className="text-lg font-display text-green-400">✓ Unlocked</p>
@@ -827,7 +829,7 @@ export default function AlbumDetail() {
               {displayedPhotos.map((photo, i) => (
                 <div key={photo.id} className="relative group">
                   <WatermarkedImage
-                src={photo.thumbnail || photo.src}
+                src={(photo.thumbnail || photo.src) + ((album as any).watermarkDisabled || isPhotoPaid(photo.id) ? "?wm=0" : "")}
                   title={photo.title}
                   selected={isProofing ? starredIds.has(photo.id) : selectedIds.has(photo.id)}
                   onSelect={() => isProofing ? toggleStar(photo.id) : toggleSelect(photo.id)}
@@ -1265,9 +1267,10 @@ export default function AlbumDetail() {
                 photo={lbPhoto}
                 cache={lightboxSrcCache}
                 onCacheUpdate={(id, url) => setLightboxSrcCache(prev => ({ ...prev, [id]: url }))}
+                wmDisabled={(album as any).watermarkDisabled || isPhotoPaid(lbPhoto.id)}
               />
               {/* Watermark overlay in lightbox */}
-              {/* lightbox watermark disabled — server burns it in */}
+              {/* watermark burned server-side */}
 
               {/* Bottom bar with select/title */}
               <div className="absolute bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-background/80 to-transparent rounded-b-lg flex items-center justify-between">
