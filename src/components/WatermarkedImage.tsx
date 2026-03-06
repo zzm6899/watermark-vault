@@ -17,6 +17,7 @@ interface WatermarkedImageProps {
   watermarkImage?: string;
   watermarkOpacity?: number;
   watermarkSize?: number;
+  renderWatermarkOverlay?: boolean;
 }
 
 const positionClasses: Record<WatermarkPosition, string> = {
@@ -41,12 +42,15 @@ export default function WatermarkedImage({
   watermarkImage,
   watermarkOpacity = 15,
   watermarkSize = 40,
+  renderWatermarkOverlay = true,
 }: WatermarkedImageProps) {
   const [loaded, setLoaded] = useState(false);
 
   const opacityValue = watermarkOpacity / 100;
   const imgSizePx = `${watermarkSize}%`;
   const fontSizeEm = `${(watermarkSize / 40).toFixed(2)}em`;
+  const tiledImageHeightPx = Math.max(20, watermarkSize * 0.4);
+  const tiledTextSizePx = Math.max(10, watermarkSize * 0.3);
 
   const renderWatermark = () => {
     if (watermarkImage) {
@@ -64,7 +68,7 @@ export default function WatermarkedImage({
                   alt=""
                   loading="lazy"
                   decoding="async"
-                  style={{ height: `${Math.max(20, watermarkSize * 0.4)}px`, width: "auto" }}
+                  style={{ height: `${tiledImageHeightPx}px`, width: "auto" }}
                 />
               ))}
             </div>
@@ -98,7 +102,7 @@ export default function WatermarkedImage({
               <p
                 key={i}
                 className="font-display text-foreground tracking-widest whitespace-nowrap"
-                style={{ fontSize: `${Math.max(10, watermarkSize * 0.3)}px` }}
+                style={{ fontSize: `${tiledTextSizePx}px` }}
               >
                 {watermarkText}
               </p>
@@ -141,7 +145,7 @@ export default function WatermarkedImage({
         decoding="async"
       />
 
-      {showWatermark && renderWatermark()}
+      {showWatermark && renderWatermarkOverlay && renderWatermark()}
 
       <div className="absolute inset-0 bg-background/0 group-hover:bg-background/40 transition-all duration-300 flex items-center justify-center">
         <div className="opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex items-center gap-3">

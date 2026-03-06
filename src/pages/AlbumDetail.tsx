@@ -819,6 +819,7 @@ export default function AlbumDetail() {
                   locked={!isProofing && !isPhotoPaid(photo.id) && freeRemaining <= 0 && !selectedIds.has(photo.id)}
                   index={i}
                   showWatermark={!(album as any).watermarkDisabled && !isPhotoPaid(photo.id)}
+                  renderWatermarkOverlay={false}
                   watermarkPosition={watermarkPosition}
                   watermarkText={settings.watermarkText}
                   watermarkImage={settings.watermarkImage}
