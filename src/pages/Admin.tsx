@@ -2233,6 +2233,26 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                 </p>
                 {alb.clientName && <p className="text-xs font-body text-primary">{alb.clientName}</p>}
                 {/* Download expiry badge */}
+                {/* Gallery expiry badge */}
+                {alb.expiresAt && (() => {
+                  const expired = new Date(alb.expiresAt + "T23:59:59") < new Date();
+                  const daysLeft = Math.ceil((new Date(alb.expiresAt + "T23:59:59").getTime() - Date.now()) / 86400000);
+                  if (expired) return (
+                    <span className="inline-flex items-center gap-1 text-[10px] font-body px-2 py-0.5 rounded-full bg-destructive/15 text-destructive">
+                      🔒 Gallery expired
+                    </span>
+                  );
+                  if (daysLeft <= 14) return (
+                    <span className="inline-flex items-center gap-1 text-[10px] font-body px-2 py-0.5 rounded-full bg-yellow-500/15 text-yellow-400">
+                      ⏳ Gallery expires in {daysLeft}d
+                    </span>
+                  );
+                  return (
+                    <span className="inline-flex items-center gap-1 text-[10px] font-body px-2 py-0.5 rounded-full bg-secondary text-muted-foreground">
+                      ⏳ Expires {new Date(alb.expiresAt + "T12:00:00").toLocaleDateString("en-AU", { day: "numeric", month: "short", year: "numeric" })}
+                    </span>
+                  );
+                })()}
                 {alb.downloadExpiresAt && alb.allUnlocked && (() => {
                   const expired = new Date(alb.downloadExpiresAt + "T12:00:00") < new Date();
                   const daysLeft = Math.ceil((new Date(alb.downloadExpiresAt + "T12:00:00").getTime() - Date.now()) / 86400000);
@@ -2390,6 +2410,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
     });
   }, [album]);
   const [downloadExpiresAt, setDownloadExpiresAt] = useState(album?.downloadExpiresAt || "");
+  const [expiresAt, setExpiresAt] = useState(album?.expiresAt || "");
   const [displaySize, setDisplaySize] = useState<AlbumDisplaySize>(album?.displaySize || "medium");
 
   const [uploadStats, setUploadStats] = useState<{ total: number; done: number; errors: number; savedBytes: number } | null>(null);
@@ -2473,6 +2494,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
       accessCode: accessCode || undefined,
       mergedFrom: album?.mergedFrom,
       allUnlocked,
+      expiresAt: expiresAt || undefined,
       downloadExpiresAt: downloadExpiresAt || undefined,
       proofingEnabled: albumProofingEnabled,
       watermarkDisabled,
@@ -2545,6 +2567,33 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
         <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Album PIN (optional)</label>
         <Input value={accessCode} onChange={(e) => setAccessCode(e.target.value)} placeholder="Leave empty for no PIN" className="bg-secondary border-border text-foreground font-body" />
         <p className="text-[10px] font-body text-muted-foreground/50 mt-1">Visitors must enter this PIN to view the gallery</p>
+      </div>
+
+      <div>
+        <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">
+          Gallery Expires On <span className="text-muted-foreground/40 normal-case">(optional)</span>
+        </label>
+        <div className="flex items-center gap-2">
+          <Input
+            type="date"
+            value={expiresAt}
+            onChange={e => setExpiresAt(e.target.value)}
+            className="bg-secondary border-border text-foreground font-body text-xs h-8 w-44"
+          />
+          {expiresAt && (
+            <button onClick={() => setExpiresAt("")} className="text-muted-foreground/50 hover:text-muted-foreground text-xs font-body">Clear</button>
+          )}
+        </div>
+        {expiresAt && (() => {
+          const expired = new Date(expiresAt + "T23:59:59") < new Date();
+          const daysLeft = Math.ceil((new Date(expiresAt + "T23:59:59").getTime() - Date.now()) / 86400000);
+          return (
+            <p className={`text-[10px] font-body mt-1 ${expired ? "text-destructive" : daysLeft <= 7 ? "text-yellow-400" : "text-muted-foreground/50"}`}>
+              {expired ? "⚠ Already expired — gallery is inaccessible to clients" : `Gallery accessible for ${daysLeft} more day${daysLeft !== 1 ? "s" : ""}`}
+            </p>
+          );
+        })()}
+        <p className="text-[10px] font-body text-muted-foreground/50 mt-1">After this date the gallery link shows an "expired" message to visitors</p>
       </div>
 
       {/* Unlock & Display */}

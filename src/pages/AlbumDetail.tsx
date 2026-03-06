@@ -284,6 +284,26 @@ export default function AlbumDetail() {
     );
   }
 
+  // Gallery-level expiry check — block all access after expiresAt
+  if (album.expiresAt && new Date(album.expiresAt + "T23:59:59") < new Date()) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="glass-panel rounded-xl p-8 max-w-sm w-full text-center">
+          <Lock className="w-8 h-8 text-muted-foreground/40 mx-auto mb-4" />
+          <h2 className="font-display text-xl text-foreground mb-2">Gallery Expired</h2>
+          <p className="text-sm font-body text-muted-foreground">
+            This gallery was available until{" "}
+            <span className="text-foreground font-medium">
+              {new Date(album.expiresAt + "T12:00:00").toLocaleDateString("en-AU", { day: "numeric", month: "long", year: "numeric" })}
+            </span>
+            {" "}and is no longer accessible.
+          </p>
+          <p className="text-xs font-body text-muted-foreground/60 mt-3">Please contact your photographer if you believe this is an error.</p>
+        </div>
+      </div>
+    );
+  }
+
   if (!accessGranted) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
@@ -740,6 +760,19 @@ export default function AlbumDetail() {
     </div>
   ) : null;
 
+  const _galleryExpiryDaysLeft = album?.expiresAt
+    ? Math.ceil((new Date(album.expiresAt + "T23:59:59").getTime() - Date.now()) / 86400000)
+    : null;
+  const _galleryExpiryBanner = (album?.expiresAt && _galleryExpiryDaysLeft !== null && _galleryExpiryDaysLeft <= 14) ? (
+    <div className="glass-panel rounded-xl p-4 border border-orange-500/20 bg-orange-500/5 flex items-center gap-3">
+      <Clock className="w-4 h-4 text-orange-400 shrink-0" />
+      <p className="text-xs font-body text-muted-foreground">
+        <span className="text-orange-400 font-medium">Gallery access expires in {_galleryExpiryDaysLeft} day{_galleryExpiryDaysLeft !== 1 ? "s" : ""}</span>
+        {" "}— {new Date(album.expiresAt + "T12:00:00").toLocaleDateString("en-AU", { day: "numeric", month: "long", year: "numeric" })}
+      </p>
+    </div>
+  ) : null;
+
   return (
     <div className="min-h-screen bg-background">
       <Header />
@@ -830,6 +863,7 @@ export default function AlbumDetail() {
                 </div>
               )}
 
+              {_galleryExpiryBanner}
               {_expiryBanner}
 
               <div className="glass-panel rounded-lg p-4 space-y-4">
