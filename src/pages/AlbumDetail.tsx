@@ -155,6 +155,7 @@ export default function AlbumDetail() {
   const [showPaymentChoice, setShowPaymentChoice] = useState(false);
   const [showDownloadOptions, setShowDownloadOptions] = useState(false);
   const [downloadQuality, setDownloadQuality] = useState<DownloadQuality>("original");
+  const [preferIndividualDownload, setPreferIndividualDownload] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [searchParams] = useSearchParams();
@@ -527,7 +528,7 @@ export default function AlbumDetail() {
     }
     setDownloading(true);
     const toDownload = [...alreadyPaid, ...notPaid.slice(0, canDownloadFree)];
-    if (isServerMode() && toDownload.length > 1) {
+    if (isServerMode() && toDownload.length > 1 && !preferIndividualDownload) {
       await downloadZip(toDownload as Photo[]);
     } else {
       for (const p of toDownload) {
@@ -565,7 +566,7 @@ export default function AlbumDetail() {
     const photos = selectedIds.size > 0
       ? album.photos.filter(p => selectedIds.has(p.id))
       : album.photos;
-    if (isServerMode() && photos.length > 1) {
+    if (isServerMode() && photos.length > 1 && !preferIndividualDownload) {
       await downloadZip(photos as Photo[]);
     } else {
       for (const p of photos) {
@@ -1129,7 +1130,7 @@ export default function AlbumDetail() {
               <Download className="w-5 h-5 text-primary" />
               Download Options
             </DialogTitle>
-            <DialogDescription className="sr-only">Choose the quality for your photo downloads.</DialogDescription>
+            <DialogDescription className="sr-only">Choose the quality and format for your photo downloads.</DialogDescription>
           </DialogHeader>
           <div className="space-y-4 mt-2">
             {(() => {
@@ -1141,18 +1142,37 @@ export default function AlbumDetail() {
                     const free = Math.min(sel.filter(p => !paidPhotoIdSet.has(p.id)).length, freeRemaining);
                     return paid.length + free;
                   })();
-              const useZip = isServerMode() && downloadCount > 1;
+              const canUseZip = isServerMode() && downloadCount > 1;
+              const useZip = canUseZip && !preferIndividualDownload;
               return (
                 <>
-                  {useZip ? (
-                    <div className="flex items-center gap-2 p-3 rounded-lg bg-primary/10 border border-primary/20">
-                      <Download className="w-4 h-4 text-primary flex-shrink-0" />
-                      <div>
-                        <p className="text-sm font-body text-foreground">Download as ZIP</p>
-                        <p className="text-xs text-muted-foreground">{downloadCount} original photos · Single zip file</p>
-                      </div>
+                  {/* ZIP vs Individual toggle — only shown in server mode with multiple photos */}
+                  {canUseZip && (
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => setPreferIndividualDownload(false)}
+                        className={`flex-1 flex items-center gap-2 p-3 rounded-lg border text-sm font-body transition-colors ${!preferIndividualDownload ? "bg-primary/10 border-primary/40 text-foreground" : "bg-secondary border-border text-muted-foreground hover:bg-secondary/80"}`}
+                      >
+                        <Download className="w-4 h-4 flex-shrink-0" />
+                        <div className="text-left">
+                          <p>Download as ZIP</p>
+                          <p className="text-[10px] text-muted-foreground">{downloadCount} photos · single file</p>
+                        </div>
+                      </button>
+                      <button
+                        onClick={() => setPreferIndividualDownload(true)}
+                        className={`flex-1 flex items-center gap-2 p-3 rounded-lg border text-sm font-body transition-colors ${preferIndividualDownload ? "bg-primary/10 border-primary/40 text-foreground" : "bg-secondary border-border text-muted-foreground hover:bg-secondary/80"}`}
+                      >
+                        <Download className="w-4 h-4 flex-shrink-0" />
+                        <div className="text-left">
+                          <p>Individual Files</p>
+                          <p className="text-[10px] text-muted-foreground">{downloadCount} separate downloads</p>
+                        </div>
+                      </button>
                     </div>
-                  ) : (
+                  )}
+                  {/* Quality selector — shown when downloading individually OR non-server mode */}
+                  {(!canUseZip || preferIndividualDownload) && (
                     <RadioGroup value={downloadQuality} onValueChange={(v) => setDownloadQuality(v as DownloadQuality)}>
                       <div className="flex items-center space-x-3 p-3 rounded-lg bg-secondary hover:bg-secondary/80 cursor-pointer">
                         <RadioGroupItem value="2mb" id="q-2mb" />
@@ -1183,7 +1203,9 @@ export default function AlbumDetail() {
                     className="w-full bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs tracking-wider uppercase gap-2"
                   >
                     <Download className="w-4 h-4" />
-                    {downloading ? (useZip ? "Preparing ZIP…" : "Downloading…") : (useZip ? `Download ZIP (${downloadCount})` : "Download")}
+                    {downloading
+                      ? (useZip ? "Preparing ZIP…" : "Downloading…")
+                      : (useZip ? `Download ZIP (${downloadCount})` : `Download (${downloadCount})`)}
                   </Button>
                 </>
               );

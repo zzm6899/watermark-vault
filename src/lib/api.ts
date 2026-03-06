@@ -163,6 +163,25 @@ export async function getServerStorageStats(): Promise<{
   }
 }
 
+export type CacheBreakdown = {
+  thumb_wm: number; thumb_clean: number;
+  medium_wm: number; medium_clean: number;
+  full_wm: number; full_clean: number;
+  other: number; totalBytes: number;
+};
+
+/** Fetch server-side image cache stats (counts per variant type, no clearing). */
+export async function getCacheStats(): Promise<{ total: number; breakdown: CacheBreakdown } | null> {
+  if (!(await checkServer())) return null;
+  try {
+    const res = await fetch("/api/cache/stats");
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
 // ── Stripe ──────────────────────────────────────────────
 
 export async function getStripeStatus(): Promise<{ configured: boolean; publishableKey: string | null }> {

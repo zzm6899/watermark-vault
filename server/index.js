@@ -11,6 +11,9 @@ const { registerRoutes: registerEmailRoutes } = require("./email");
 const { registerRoutes: registerStripeRoutes } = require("./stripe");
 
 const app = express();
+// Required for express-rate-limit to correctly identify clients behind a reverse proxy
+// (nginx / Coolify / TrueNAS) that sets X-Forwarded-For.
+app.set("trust proxy", 1);
 const PORT = process.env.PORT || 5066;
 const DATA_DIR = process.env.DATA_DIR || "/data";
 const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
@@ -513,19 +516,50 @@ function countAndDeleteDir(dirPath) {
   return cleared;
 }
 
+function getCacheBreakdown(cacheDir) {
+  const breakdown = { thumb_wm: 0, thumb_clean: 0, medium_wm: 0, medium_clean: 0, full_wm: 0, full_clean: 0, other: 0, totalBytes: 0 };
+  if (!fs.existsSync(cacheDir)) return breakdown;
+  try {
+    for (const f of fs.readdirSync(cacheDir)) {
+      try {
+        const stat = fs.statSync(path.join(cacheDir, f));
+        if (!stat.isFile()) continue;
+        breakdown.totalBytes += stat.size;
+        if (f.endsWith("_thumb_wm.jpg")) breakdown.thumb_wm++;
+        else if (f.endsWith("_thumb_clean.jpg")) breakdown.thumb_clean++;
+        else if (f.endsWith("_medium_wm.jpg")) breakdown.medium_wm++;
+        else if (f.endsWith("_medium_clean.jpg")) breakdown.medium_clean++;
+        else if (f.endsWith("_full_wm.jpg")) breakdown.full_wm++;
+        else if (f.endsWith("_full_clean.jpg")) breakdown.full_clean++;
+        else breakdown.other++;
+      } catch {}
+    }
+  } catch {}
+  return breakdown;
+}
+
 function clearImageCache() {
   const cacheDir = path.join(UPLOADS_DIR, "_cache");
+  const before = getCacheBreakdown(cacheDir);
   let cleared = 0;
   if (fs.existsSync(cacheDir)) {
     cleared = countAndDeleteDir(cacheDir);
     fs.mkdirSync(cacheDir, { recursive: true });
   }
-  return cleared;
+  return { cleared, breakdown: before };
 }
 
 app.post("/api/cache/clear", (_req, res) => {
-  const cleared = clearImageCache();
-  res.json({ ok: true, cleared });
+  const { cleared, breakdown } = clearImageCache();
+  res.json({ ok: true, cleared, breakdown });
+});
+
+// ── Cache stats (counts without clearing) ──────────────
+app.get("/api/cache/stats", (_req, res) => {
+  const cacheDir = path.join(UPLOADS_DIR, "_cache");
+  const breakdown = getCacheBreakdown(cacheDir);
+  const total = breakdown.thumb_wm + breakdown.thumb_clean + breakdown.medium_wm + breakdown.medium_clean + breakdown.full_wm + breakdown.full_clean + breakdown.other;
+  res.json({ ok: true, total, breakdown });
 });
 
 // ── Bulk-delete specific files (orphan cleanup) ──────────────
