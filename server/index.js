@@ -201,35 +201,36 @@ async function buildWatermarkOverlay(imgWidth, imgHeight, wm) {
   }
 
   // Text watermark via SVG
-  const fontSize = Math.max(16, Math.round(imgWidth * (wm.size / 100) * 0.12));
-  const text = wm.text.toUpperCase();
+  // Keep font size modest relative to image — ~3% of width, min 18px, max 48px
+  const fontSize = Math.min(48, Math.max(18, Math.round(imgWidth * 0.03)));
+  const text = wm.text;
   const alpha = Math.round(wm.opacity * 255).toString(16).padStart(2, "0");
 
   if (wm.position === "tiled") {
-    // Build tiled SVG
-    const lineH = fontSize * 2.5;
-    const lineW = fontSize * (text.length * 0.65);
-    const rows = Math.ceil(imgHeight / lineH) + 2;
-    const cols = Math.ceil(imgWidth / lineW) + 2;
+    // Widely spaced diagonal tiles — one instance per ~350x180px cell
+    const cellW = Math.round(imgWidth * 0.38);
+    const cellH = Math.round(imgHeight * 0.22);
+    const cols = Math.ceil(imgWidth / cellW) + 2;
+    const rows = Math.ceil(imgHeight / cellH) + 2;
     let svgContent = "";
     for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        const x = (c - 0.5) * lineW;
-        const y = (r - 0.5) * lineH;
+      for (let col = 0; col < cols; col++) {
+        const x = Math.round((col - 0.5) * cellW);
+        const y = Math.round((r - 0.5) * cellH);
         svgContent += `<text x="${x}" y="${y}" transform="rotate(-30, ${x}, ${y})">${text}</text>`;
       }
     }
     const svg = `<svg width="${imgWidth}" height="${imgHeight}" xmlns="http://www.w3.org/2000/svg">
-      <style>text { font-family: Georgia, serif; font-size: ${fontSize}px; fill: #ffffff${alpha}; letter-spacing: 3px; }</style>
+      <style>text { font-family: Georgia, serif; font-size: ${fontSize}px; fill: #ffffff${alpha}; letter-spacing: 2px; }</style>
       ${svgContent}
     </svg>`;
     return { input: Buffer.from(svg), blend: "over" };
   } else {
-    // Single text
+    // Single centred/positioned text
     const w = Math.round(fontSize * text.length * 0.65);
     const h = fontSize * 2;
     const svg = `<svg width="${w}" height="${h}" xmlns="http://www.w3.org/2000/svg">
-      <style>text { font-family: Georgia, serif; font-size: ${fontSize}px; fill: #ffffff${alpha}; letter-spacing: 3px; }</style>
+      <style>text { font-family: Georgia, serif; font-size: ${fontSize}px; fill: #ffffff${alpha}; letter-spacing: 2px; }</style>
       <text x="50%" y="60%" dominant-baseline="middle" text-anchor="middle" transform="rotate(-30, ${w/2}, ${h/2})">${text}</text>
     </svg>`;
     const positions = {
