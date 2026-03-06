@@ -290,6 +290,11 @@ app.get("/uploads/:filename", async (req, res) => {
 
   if (!fs.existsSync(filepath)) return res.status(404).send("Not found");
 
+  // ?wm=0 means watermark disabled for this album — serve original
+  if (req.query.wm === "0") {
+    return res.sendFile(filepath);
+  }
+
   // Check if caller has paid access via query params
   const { sessionKey, albumId, paid } = req.query;
   const hasAccess = paid === "1" && sessionKey && albumId
