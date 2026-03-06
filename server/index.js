@@ -291,54 +291,111 @@ function isPhotoAccessible(filename, sessionKey, albumId) {
   }
 }
 
-// ── Serve watermarked photo (public, replaces express.static) ──
+// ── Serve watermarked / resized photo ────────────────────────
+// Supports:
+//   ?size=thumb   → resize to 700 px wide (for gallery grids)
+//   ?size=medium  → resize to 1400 px wide (for lightbox)
+//   ?wm=0         → skip watermark (admin / paid access)
+// Resized variants are cached in _cache/ for fast re-delivery.
+// Run POST /api/cache/clear after changing watermark settings.
+
+const THUMB_WIDTH = 700;
+const MEDIUM_WIDTH = 1400;
+
+function getCacheFilename(baseName, sizeLabel, watermarked) {
+  return `${baseName}_${sizeLabel}_${watermarked ? "wm" : "clean"}.jpg`;
+}
+
 app.get("/uploads/:filename", async (req, res) => {
   const safeName = path.basename(req.params.filename);
   const filepath = path.join(UPLOADS_DIR, safeName);
 
   if (!fs.existsSync(filepath)) return res.status(404).send("Not found");
 
-  // ?wm=0 means watermark disabled for this album — serve original
-  if (req.query.wm === "0") {
-    return res.sendFile(filepath);
-  }
+  const sizeParam = req.query.size; // 'thumb' | 'medium' | undefined
+  const disableWm = req.query.wm === "0";
 
-  // Check if caller has paid access via query params
+  // Resize target widths
+  const targetWidth = sizeParam === "thumb" ? THUMB_WIDTH : sizeParam === "medium" ? MEDIUM_WIDTH : null;
+
+  // Check paid access via query params
   const { sessionKey, albumId, paid } = req.query;
   const hasAccess = paid === "1" && sessionKey && albumId
     ? isPhotoAccessible(safeName, sessionKey, albumId)
     : false;
 
-  if (hasAccess) {
-    // Serve original
+  const shouldWatermark = !disableWm && !hasAccess;
+
+  // Fast path: no resize, no watermark → serve original file directly
+  if (!targetWidth && !shouldWatermark) {
     return res.sendFile(filepath);
   }
 
-  // Serve watermarked version — cache in memory briefly
+  // ── File-based cache ────────────────────────────────────────
+  const cacheDir = path.join(UPLOADS_DIR, "_cache");
+  fs.mkdirSync(cacheDir, { recursive: true });
+  const baseName = path.basename(safeName, path.extname(safeName));
+  const sizeLabel = sizeParam || "full";
+  const cacheFile = path.join(cacheDir, getCacheFilename(baseName, sizeLabel, shouldWatermark));
+
   try {
-    const wm = getWatermarkSettings();
-    const img = sharp(filepath);
-    const meta = await img.metadata();
-    const { width, height } = meta;
+    if (fs.existsSync(cacheFile)) {
+      res.set({
+        "Content-Type": "image/jpeg",
+        "Cache-Control": "public, max-age=7200",
+        "X-Cache": "HIT",
+      });
+      return res.sendFile(cacheFile);
+    }
+  } catch { /* cache miss — compute below */ }
 
-    const overlay = await buildWatermarkOverlay(width, height, wm);
-    const composites = [overlay];
+  // ── Compute image ───────────────────────────────────────────
+  try {
+    // Get original dimensions (needed for watermark overlay sizing)
+    const origMeta = await sharp(filepath).metadata();
+    const origW = origMeta.width || 800;
+    const origH = origMeta.height || 600;
 
-    // For image watermarks with opacity, we need to handle differently
-    const result = await sharp(filepath)
-      .composite(composites)
-      .jpeg({ quality: 82, progressive: true })
-      .toBuffer();
+    // Compute post-resize dimensions for watermark overlay
+    let renderW = origW;
+    let renderH = origH;
+    if (targetWidth && origW > targetWidth) {
+      renderW = targetWidth;
+      renderH = Math.round(origH * (targetWidth / origW));
+    }
+
+    // Build watermark overlay (if needed) using the post-resize canvas size
+    const composites = [];
+    if (shouldWatermark) {
+      const wm = getWatermarkSettings();
+      const overlay = await buildWatermarkOverlay(renderW, renderH, wm);
+      composites.push(overlay);
+    }
+
+    // Build Sharp pipeline: optionally resize, then composite
+    let pipeline = sharp(filepath);
+    if (targetWidth && origW > targetWidth) {
+      pipeline = pipeline.resize(targetWidth, null, { withoutEnlargement: true });
+    }
+    if (composites.length > 0) {
+      pipeline = pipeline.composite(composites);
+    }
+
+    const result = await pipeline.jpeg({ quality: 82, progressive: true }).toBuffer();
+
+    // Persist to cache
+    try { fs.writeFileSync(cacheFile, result); } catch { /* non-critical */ }
 
     res.set({
       "Content-Type": "image/jpeg",
-      "Cache-Control": "public, max-age=3600",
-      "X-Watermarked": "true",
+      "Cache-Control": "public, max-age=7200",
+      "X-Watermarked": shouldWatermark ? "true" : "false",
+      "X-Cache": "MISS",
     });
     return res.send(result);
   } catch (err) {
-    console.error("Watermark error for", safeName, err.message);
-    // Fallback: serve original if Sharp fails
+    console.error("Image processing error for", safeName, err.message);
+    // Fallback: serve original file
     return res.sendFile(filepath);
   }
 });
@@ -402,6 +459,36 @@ app.delete("/api/upload/all", async (req, res) => {
     console.error("Delete all error:", err.message);
     res.status(500).json({ error: "Failed to delete files" });
   }
+});
+
+// ── Bulk-delete specific files (orphan cleanup) ──────────────
+app.post("/api/upload/bulk-delete", async (req, res) => {
+  const { filenames } = req.body;
+  if (!Array.isArray(filenames)) {
+    return res.status(400).json({ error: "filenames array required" });
+  }
+  // Cap the number of files per request to prevent abuse
+  if (filenames.length > 500) {
+    return res.status(400).json({ error: "Too many filenames in a single request (max 500)" });
+  }
+  let deleted = 0;
+  const cacheDir = path.join(UPLOADS_DIR, "_cache");
+  for (const name of filenames) {
+    const safeName = path.basename(String(name));
+    const filepath = path.join(UPLOADS_DIR, safeName);
+    try {
+      if (fs.existsSync(filepath)) { fs.unlinkSync(filepath); deleted++; }
+      // Remove any cached variants for this file
+      const base = path.basename(safeName, path.extname(safeName));
+      for (const sizeLabel of ["thumb", "medium", "full"]) {
+        for (const watermarked of [true, false]) {
+          const cf = path.join(cacheDir, getCacheFilename(base, sizeLabel, watermarked));
+          try { if (fs.existsSync(cf)) fs.unlinkSync(cf); } catch {}
+        }
+      }
+    } catch { /* skip individual failures */ }
+  }
+  res.json({ ok: true, deleted });
 });
 
 // ── Integrations ──────────────────────────────────────
