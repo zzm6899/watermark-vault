@@ -32,23 +32,27 @@ const TARGET_LIGHTBOX_BYTES = 600 * 1024; // ~600KB
 function LightboxImage({ photo, cache, onCacheUpdate, wmDisabled }: {
   photo: Photo;
   cache: Record<string, string>;
-  onCacheUpdate: (id: string, url: string) => void;
+  onCacheUpdate: (cacheKey: string, url: string) => void;
   wmDisabled?: boolean;
 }) {
   const photoSrc = buildPhotoSrc(photo.src, !!wmDisabled);
+  const cacheKey = `${photo.id}:${wmDisabled ? "wm0" : "wm1"}:${photoSrc}`;
 
-  // Show cached version immediately, or fall back to original src (no blank flash)
-  const [src, setSrc] = useState(cache[photo.id] || photoSrc);
+  // Show cached version immediately, or fall back to current source (no blank flash)
+  const [src, setSrc] = useState(cache[cacheKey] || photoSrc);
 
   useEffect(() => {
-    // If already cached, use it immediately
-    if (cache[photo.id]) {
-      setSrc(cache[photo.id]);
+    // If already cached for this exact source/watermark state, use it immediately
+    if (cache[cacheKey]) {
+      setSrc(cache[cacheKey]);
       return;
     }
 
-    // Show original immediately so navigation feels instant
+    // Show current source immediately so navigation feels instant
     setSrc(photoSrc);
+
+    // Don't try to resize an existing blob URL again
+    if (photoSrc.startsWith("blob:")) return;
 
     // Then upgrade to resized version in background
     let cancelled = false;
@@ -56,17 +60,17 @@ function LightboxImage({ photo, cache, onCacheUpdate, wmDisabled }: {
       .then(blob => {
         if (cancelled) return;
         const url = URL.createObjectURL(blob);
-        onCacheUpdate(photo.id, url);
+        onCacheUpdate(cacheKey, url);
         setSrc(url);
       })
       .catch(() => {
-        /* keep original src */
+        /* keep current src */
       });
 
     return () => {
       cancelled = true;
     };
-  }, [photo.id, photoSrc, cache, onCacheUpdate]);
+  }, [cache, cacheKey, onCacheUpdate, photoSrc]);
 
   return (
     <img
@@ -1278,7 +1282,7 @@ export default function AlbumDetail() {
               <LightboxImage
                 photo={lbPhoto}
                 cache={lightboxSrcCache}
-                onCacheUpdate={(id, url) => setLightboxSrcCache(prev => ({ ...prev, [id]: url }))}
+                onCacheUpdate={(cacheKey, url) => setLightboxSrcCache(prev => ({ ...prev, [cacheKey]: url }))}
                 wmDisabled={(album as any).watermarkDisabled || isPhotoPaid(lbPhoto.id)}
               />
               {/* Watermark overlay in lightbox */}
