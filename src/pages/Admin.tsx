@@ -135,7 +135,7 @@ async function loadImageFromSrc(src: string): Promise<HTMLImageElement> {
   const blob = await response.blob();
   const url = URL.createObjectURL(blob);
   return await new Promise((resolve, reject) => {
-    const img = new Image();
+    const img = document.createElement("img") as HTMLImageElement;
     img.onload = () => {
       URL.revokeObjectURL(url);
       resolve(img);
@@ -151,7 +151,7 @@ async function loadImageFromSrc(src: string): Promise<HTMLImageElement> {
 async function loadOptionalImage(src?: string): Promise<HTMLImageElement | null> {
   if (!src) return null;
   return await new Promise((resolve) => {
-    const img = new Image();
+    const img = document.createElement("img") as HTMLImageElement;
     img.onload = () => resolve(img);
     img.onerror = () => resolve(null);
     img.src = src;
@@ -2924,7 +2924,15 @@ function PhotosView() {
 
       const messages: string[] = [];
       if (repairedAlbums > 0) messages.push(`Repaired ${repairedAlbums} album(s) with missing file references`);
-      if (orphanedFileNames.length > 0) messages.push(`${orphanedFileNames.length} untracked file(s) on disk (not in any album)`);
+      if (orphanedFileNames.length > 0) {
+        // Actually delete the orphaned files from disk
+        try {
+          await bulkDeleteFiles(orphanedFileNames);
+          messages.push(`Deleted ${orphanedFileNames.length} untracked file(s) from disk`);
+        } catch {
+          messages.push(`Found ${orphanedFileNames.length} untracked file(s) but failed to delete them`);
+        }
+      }
 
       if (messages.length === 0) {
         toast.info("All storage files are tracked — nothing to fix");
@@ -3038,7 +3046,7 @@ function PhotosView() {
       });
       // Add all photos immediately — use server-side thumbnails (no heavy client-side canvas work)
       const newPhotos: Photo[] = results.map(r => ({
-        id: r.id, src: r.url, thumbnail: r.url + "?w=200&wm=0", title: r.originalName.replace(/\.[^.]+$/, ""), width: 800, height: 600,
+        id: r.id, src: r.url, thumbnail: r.url + "?w=200&wm=0", title: r.originalName.replace(/\.[^.]+$/, ""), width: 800, height: 600, uploadedAt: new Date().toISOString(),
       }));
       for (const photo of newPhotos) addPhotoToTarget(photo);
       setUploadStats(prev => prev ? { ...prev, done: fileArr.length, errors: fileArr.length - results.length } : null);
@@ -4173,7 +4181,7 @@ function StorageView() {
   const [libraryPhotos, setLibraryPhotosState] = useState(getPhotoLibrary());
   const bookings = getBookings();
   const eventTypes = getEventTypes();
-  const [previewJob, setPreviewJob] = useState<{ running: boolean; mode: "missing" | "all" | null; done: number; total: number }>({ running: false, mode: null, done: 0, total: 0 });
+  const [previewJob, setPreviewJob] = useState<{ running: boolean; mode: "missing" | "all" | "save" | null; done: number; total: number; stage?: string }>({ running: false, mode: null, done: 0, total: 0 });
 
   const refreshStorageState = useCallback(async () => {
     const nextAlbums = getAlbums();

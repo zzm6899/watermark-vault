@@ -360,6 +360,14 @@ app.get("/api/photo/:filename/original", async (req, res) => {
 });
 
 // ── Clear image cache ──────────────────────────────────
+function clearImageCache() {
+  const cacheDir = path.join(UPLOADS_DIR, "_cache");
+  if (fs.existsSync(cacheDir)) {
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+    fs.mkdirSync(cacheDir, { recursive: true });
+  }
+}
+
 app.post("/api/cache/clear", (_req, res) => {
   clearImageCache();
   res.json({ ok: true });

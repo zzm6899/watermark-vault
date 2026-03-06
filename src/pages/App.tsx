@@ -4,17 +4,17 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { useState, useCallback, useEffect } from "react";
-import Booking from "./pages/Booking";
-import AlbumDetail from "./pages/AlbumDetail";
-import BookingModify from "./pages/BookingModify";
-import Admin from "./pages/Admin";
-import Login from "./pages/Login";
-import Setup from "./pages/Setup";
-import NotFound from "./pages/NotFound";
-import MobileCapture from "./pages/MobileCapture";
-import ClientPortal from "./pages/ClientPortal";
-import { isSetupComplete, isLoggedIn } from "./lib/storage";
-import { syncFromServer } from "./lib/api";
+import Booking from "@/pages/Booking";
+import AlbumDetail from "@/pages/AlbumDetail";
+import BookingModify from "@/pages/BookingModify";
+import Admin from "@/pages/Admin";
+import Login from "@/pages/Login";
+import Setup from "@/pages/Setup";
+import NotFound from "@/pages/NotFound";
+import MobileCapture from "@/pages/MobileCapture";
+import ClientPortal from "@/pages/ClientPortal";
+import { isSetupComplete, isLoggedIn } from "@/lib/storage";
+import { syncFromServer } from "@/lib/api";
 
 const queryClient = new QueryClient();
 
