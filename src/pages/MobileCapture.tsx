@@ -117,6 +117,52 @@ class CameraErrorBoundary extends React.Component<
   }
 }
 
+// ── Lightbox image component — shows thumbnail immediately, upgrades to medium ──
+function CaptureLightboxImage({ photo, cache, onCacheUpdate }: {
+  photo: Photo;
+  cache: Record<string, string>;
+  onCacheUpdate: (id: string, url: string) => void;
+}) {
+  const thumbSrc = getThumbSrc(photo);
+  const mediumSrc = getMediumSrc(photo);
+  const [src, setSrc] = useState(cache[photo.id] || thumbSrc);
+  const [loaded, setLoaded] = useState(!!cache[photo.id]);
+
+  useEffect(() => {
+    if (cache[photo.id]) {
+      setSrc(cache[photo.id]);
+      setLoaded(true);
+      return;
+    }
+    setSrc(thumbSrc);
+    setLoaded(false);
+    if (mediumSrc === thumbSrc) { setLoaded(true); return; }
+    const img = new window.Image();
+    img.onload = () => {
+      onCacheUpdate(photo.id, mediumSrc);
+      setSrc(mediumSrc);
+      setLoaded(true);
+    };
+    img.onerror = () => setLoaded(true);
+    img.src = mediumSrc;
+  }, [cache, photo.id, thumbSrc, mediumSrc, onCacheUpdate]);
+
+  return (
+    <div className="relative flex items-center justify-center w-full h-full">
+      <img
+        src={src}
+        alt={photo.title}
+        className={`max-w-full max-h-[80vh] object-contain rounded transition-all duration-300 ${loaded ? "opacity-100 blur-0" : "opacity-70 blur-[2px]"}`}
+      />
+      {!loaded && (
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+          <RefreshCw className="w-6 h-6 text-white/40 animate-spin" />
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main Component ──────────────────────────────────────────────
 function AlbumEditModal({ album, onClose, onSave }: { album: Album; onClose: () => void; onSave: (updated: Album) => void }) {
   const [editTitle, setEditTitle] = useState(album.title || "");
@@ -185,6 +231,10 @@ function MobileCaptureInner() {
   const [watching, setWatching] = useState(false);
   const [notifyClient, setNotifyClient] = useState(true);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+  const [lightboxSrcCache, setLightboxSrcCache] = useState<Record<string, string>>({});
+  const updateLightboxCache = useCallback((id: string, url: string) => {
+    setLightboxSrcCache(prev => ({ ...prev, [id]: url }));
+  }, []);
   const [viewAllMode, setViewAllMode] = useState(false);
   const [viewAllStarFilter, setViewAllStarFilter] = useState(false);
   const touchStartX = useRef<number | null>(null);
@@ -1121,7 +1171,7 @@ function MobileCaptureInner() {
               onClick={() => setLightboxIndex(null)}
               className="absolute right-4 w-9 h-9 rounded-full bg-white/10 flex items-center justify-center text-white/80 text-lg hover:bg-white/20 active:scale-95 z-10" style={{ top: "calc(env(safe-area-inset-top) + 1rem)" }}
             >&#x2715;</button>
-            <p className="absolute top-5 left-0 right-0 text-center text-xs text-white/40 font-body pointer-events-none">
+            <p className="absolute top-5 left-0 right-0 text-center text-xs text-white/40 font-body pointer-events-none" style={{ top: "calc(env(safe-area-inset-top) + 1rem)" }}>
               {lightboxIndex + 1} / {allPhotos.length}
             </p>
             {hasPrev && (
@@ -1132,11 +1182,25 @@ function MobileCaptureInner() {
                 <ChevronLeft className="w-5 h-5 text-white" />
               </button>
             )}
-            <img
-              src={getMediumSrc(photo)}
-              alt={photo.title}
-              className="max-w-full max-h-[85vh] object-contain rounded"
-            />
+
+            {/* Photo with progressive loading + transition */}
+            <AnimatePresence mode="wait" initial={false}>
+              <motion.div
+                key={photo.id}
+                initial={{ opacity: 0, x: 20 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -20 }}
+                transition={{ duration: 0.18, ease: "easeOut" }}
+                className="w-full flex items-center justify-center px-14"
+              >
+                <CaptureLightboxImage
+                  photo={photo}
+                  cache={lightboxSrcCache}
+                  onCacheUpdate={updateLightboxCache}
+                />
+              </motion.div>
+            </AnimatePresence>
+
             {hasNext && (
               <button
                 onClick={() => setLightboxIndex(i => i! + 1)}
@@ -1145,14 +1209,15 @@ function MobileCaptureInner() {
                 <ChevronRight className="w-5 h-5 text-white" />
               </button>
             )}
+            <p className="absolute font-body truncate px-16 text-center text-xs text-white/30" style={{ bottom: "calc(env(safe-area-inset-bottom) + 3.5rem)", left: 0, right: 0 }}>{photo.title}</p>
             <button
               onClick={() => toggleStar(photo.id)}
-              className={`absolute bottom-5 left-1/2 -translate-x-1/2 flex items-center gap-1.5 px-3 py-1.5 rounded-full active:scale-95 transition-all z-10 ${(photo as any).starred ? "bg-yellow-500/25 text-yellow-400" : "bg-white/10 hover:bg-white/20"}`}
+              className={`absolute flex items-center gap-1.5 px-3 py-1.5 rounded-full active:scale-95 transition-all z-10 ${(photo as any).starred ? "bg-yellow-500/25 text-yellow-400" : "bg-white/10 hover:bg-white/20"}`}
+              style={{ bottom: "calc(env(safe-area-inset-bottom) + 1rem)", left: "50%", transform: "translateX(-50%)" }}
             >
               <Star className={`w-4 h-4 ${(photo as any).starred ? "text-yellow-400 fill-yellow-400" : "text-white/50"}`} />
               <span className="text-xs font-body text-white/70">{(photo as any).starred ? "Starred" : "Star"}</span>
             </button>
-            <p className="absolute bottom-16 left-0 right-0 text-center text-xs text-white/30 font-body truncate px-16">{photo.title}</p>
           </div>
         );
       })()}
