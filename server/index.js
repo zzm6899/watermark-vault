@@ -125,8 +125,21 @@ app.post("/api/upload", upload.array("photos", 100), (req, res) => {
   res.json({ files });
 });
 
+// ── Simple in-memory rate limiter (one call per window) ─────
+function makeRateLimiter(windowMs) {
+  let lastCallAt = 0;
+  return (_req, res, next) => {
+    const now = Date.now();
+    if (now - lastCallAt < windowMs) {
+      return res.status(429).json({ error: "Too many requests — please wait before retrying" });
+    }
+    lastCallAt = now;
+    next();
+  };
+}
+
 // ── Delete ALL uploaded photos from disk ───────────────
-app.delete("/api/upload/all", async (_req, res) => {
+app.delete("/api/upload/all", makeRateLimiter(10_000), async (_req, res) => {
   try {
     const files = fs.readdirSync(UPLOADS_DIR);
     let deleted = 0;
@@ -448,18 +461,28 @@ app.get("/api/photo/:filename/original", async (req, res) => {
 });
 
 // ── Clear image cache ──────────────────────────────────
+function countAndDeleteDir(dirPath) {
+  let cleared = 0;
+  try {
+    const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+    for (const entry of entries) {
+      const entryPath = path.join(dirPath, entry.name);
+      if (entry.isDirectory()) {
+        cleared += countAndDeleteDir(entryPath);
+        try { fs.rmdirSync(entryPath); } catch {}
+      } else {
+        try { fs.unlinkSync(entryPath); cleared++; } catch {}
+      }
+    }
+  } catch {}
+  return cleared;
+}
+
 function clearImageCache() {
   const cacheDir = path.join(UPLOADS_DIR, "_cache");
   let cleared = 0;
   if (fs.existsSync(cacheDir)) {
-    try {
-      const files = fs.readdirSync(cacheDir);
-      for (const f of files) {
-        try { fs.unlinkSync(path.join(cacheDir, f)); cleared++; } catch {}
-      }
-    } catch {
-      fs.rmSync(cacheDir, { recursive: true, force: true });
-    }
+    cleared = countAndDeleteDir(cacheDir);
     fs.mkdirSync(cacheDir, { recursive: true });
   }
   return cleared;

@@ -101,7 +101,7 @@ function getPhotoVariantSrc(photo: Photo, variant: "thumbnail" | "medium" | "ful
   // Ensure a server-hosted thumbnail URL always includes ?size=thumb for smaller payloads.
   const ensureThumbSize = (src: string) => {
     if (!src || !src.startsWith("/uploads/")) return src;
-    if (src.includes("size=")) return src; // already has a size param
+    if (src.includes("size=thumb") || src.includes("size=medium")) return src; // already has a size param
     return `${src}${src.includes("?") ? "&" : "?"}size=thumb`;
   };
 
