@@ -49,6 +49,17 @@ function formatDuration(mins: number) {
   if (mins >= 60) { const h = Math.floor(mins / 60); const m = mins % 60; return m > 0 ? `${h}h ${m}m` : `${h}h`; }
   return `${mins}m`;
 }
+/** Returns the best thumbnail URL for a photo: prefers stored thumbnail, then ?size=thumb for server photos. */
+function getThumbSrc(photo: Photo): string {
+  if (photo.thumbnail) return photo.thumbnail;
+  if (photo.src.startsWith("/uploads/")) return photo.src + "?size=thumb";
+  return photo.src;
+}
+/** Returns a medium-resolution URL suitable for the lightbox. */
+function getMediumSrc(photo: Photo): string {
+  if (photo.src.startsWith("/uploads/")) return photo.src + "?size=medium";
+  return photo.src;
+}
 type SessionStatus = "next-up" | "in-progress" | "upcoming" | "done" | "past";
 function getSessionStatus(bk: Booking, albums: Album[]): SessionStatus {
   const today = todayStr();
@@ -175,6 +186,8 @@ function MobileCaptureInner() {
   const [notifyClient, setNotifyClient] = useState(true);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   const [viewAllMode, setViewAllMode] = useState(false);
+  const [viewAllStarFilter, setViewAllStarFilter] = useState(false);
+  const touchStartX = useRef<number | null>(null);
   const [jpegOnly, setJpegOnly] = useState(true);
   const [importLabel, setImportLabel] = useState(""); // e.g. "3 / 11 — DSC_0042.JPG"
   const [failedHandles, setFailedHandles] = useState<number[]>([]);
@@ -1011,56 +1024,99 @@ function MobileCaptureInner() {
       {/* View All Gallery */}
       {viewAllMode && targetAlbum && (() => {
         const allPhotos = [...targetAlbum.photos].reverse();
+        const displayPhotos = viewAllStarFilter ? allPhotos.filter(p => (p as any).starred) : allPhotos;
+        const starredCount = allPhotos.filter(p => (p as any).starred).length;
         return (
           <div className="fixed inset-0 z-40 bg-background flex flex-col">
             <div className="flex items-center gap-3 px-4 border-b border-border/50 bg-background/95 backdrop-blur-sm" style={{ paddingTop: "calc(env(safe-area-inset-top) + 0.75rem)", paddingBottom: "0.75rem" }}>
               <button
-                onClick={() => setViewAllMode(false)}
+                onClick={() => { setViewAllMode(false); setViewAllStarFilter(false); }}
                 className="w-8 h-8 rounded-full bg-secondary flex items-center justify-center active:scale-95 transition-transform"
               >
                 <ArrowLeft className="w-4 h-4 text-foreground" />
               </button>
-              <div>
-                <p className="text-sm font-body text-foreground">{selectedBooking?.clientName || "Session"}</p>
-                <p className="text-xs font-body text-muted-foreground">{allPhotos.length} photos</p>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-body text-foreground truncate">{selectedBooking?.clientName || "Session"}</p>
+                <p className="text-xs font-body text-muted-foreground">{allPhotos.length} photos{starredCount > 0 ? ` · ${starredCount} starred` : ""}</p>
               </div>
+              {starredCount > 0 && (
+                <button
+                  onClick={() => setViewAllStarFilter(f => !f)}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-body transition-colors ${viewAllStarFilter ? "bg-yellow-500/20 text-yellow-400" : "bg-secondary text-muted-foreground"}`}
+                >
+                  <Star className={`w-3 h-3 ${viewAllStarFilter ? "fill-yellow-400" : ""}`} />
+                  {viewAllStarFilter ? "Starred" : "All"}
+                </button>
+              )}
             </div>
             <div className="flex-1 overflow-y-auto p-1">
-              <div className="grid grid-cols-3 gap-0.5">
-                {allPhotos.map((photo, idx) => (
-                  <div key={photo.id} className="relative aspect-square overflow-hidden bg-secondary">
-                    <button
-                      onClick={() => setLightboxIndex(idx)}
-                      className="absolute inset-0 w-full h-full active:scale-[0.98] transition-transform"
-                    >
-                      <img src={photo.thumbnail || photo.src} alt={photo.title} className="w-full h-full object-cover" />
-                    </button>
-                    {photo.proofing && (
-                      <span className="absolute top-1 left-1 text-[8px] font-body tracking-wider uppercase px-1 py-0.5 rounded bg-primary/90 text-primary-foreground leading-tight pointer-events-none">P</span>
-                    )}
-                    <button
-                      onClick={e => { e.stopPropagation(); toggleStar(photo.id); }}
-                      className="absolute bottom-1 right-1 w-6 h-6 rounded-full bg-black/40 flex items-center justify-center active:scale-90 transition-all"
-                    >
-                      <Star className={`w-3 h-3 ${(photo as any).starred ? "text-yellow-400 fill-yellow-400" : "text-white/60"}`} />
-                    </button>
-                  </div>
-                ))}
-              </div>
+              {displayPhotos.length === 0 ? (
+                <div className="flex flex-col items-center justify-center h-32 text-muted-foreground/50">
+                  <Star className="w-6 h-6 mb-2" />
+                  <p className="text-xs font-body">No starred photos yet</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-3 gap-0.5">
+                  {displayPhotos.map((photo, idx) => (
+                    <div key={photo.id} className="relative aspect-square overflow-hidden bg-secondary">
+                      <button
+                        onClick={() => setLightboxIndex(idx)}
+                        className="absolute inset-0 w-full h-full active:scale-[0.98] transition-transform"
+                      >
+                        <img
+                          src={getThumbSrc(photo)}
+                          alt={photo.title}
+                          className="w-full h-full object-cover"
+                          loading="lazy"
+                        />
+                      </button>
+                      {(photo as any).starred && (
+                        <span className="absolute top-1 left-1 w-4 h-4 flex items-center justify-center pointer-events-none">
+                          <Star className="w-3 h-3 text-yellow-400 fill-yellow-400 drop-shadow" />
+                        </span>
+                      )}
+                      <button
+                        onClick={e => { e.stopPropagation(); toggleStar(photo.id); }}
+                        className={`absolute bottom-1 right-1 w-6 h-6 rounded-full flex items-center justify-center active:scale-90 transition-all ${(photo as any).starred ? "bg-yellow-500/30" : "bg-black/40"}`}
+                      >
+                        <Star className={`w-3 h-3 ${(photo as any).starred ? "text-yellow-400 fill-yellow-400" : "text-white/60"}`} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         );
       })()}
 
-      {/* Lightbox with prev/next arrows */}
+      {/* Lightbox with prev/next arrows and touch swipe */}
       {lightboxIndex !== null && targetAlbum && (() => {
-        const allPhotos = [...targetAlbum.photos].reverse();
+        const allPhotos = viewAllMode
+          ? (viewAllStarFilter ? [...targetAlbum.photos].reverse().filter(p => (p as any).starred) : [...targetAlbum.photos].reverse())
+          : [...targetAlbum.photos].reverse();
         const photo = allPhotos[lightboxIndex];
         if (!photo) return null;
         const hasPrev = lightboxIndex > 0;
         const hasNext = lightboxIndex < allPhotos.length - 1;
+
+        const handleSwipe = (deltaX: number) => {
+          if (Math.abs(deltaX) < 40) return;
+          if (deltaX < 0 && hasNext) setLightboxIndex(i => i! + 1);
+          else if (deltaX > 0 && hasPrev) setLightboxIndex(i => i! - 1);
+        };
+
         return (
-          <div className="fixed inset-0 z-50 bg-black/98 flex flex-col items-center justify-center select-none">
+          <div
+            className="fixed inset-0 z-50 bg-black/98 flex flex-col items-center justify-center select-none"
+            onTouchStart={e => { touchStartX.current = e.touches[0].clientX; }}
+            onTouchEnd={e => {
+              if (touchStartX.current !== null) {
+                handleSwipe(touchStartX.current - e.changedTouches[0].clientX);
+                touchStartX.current = null;
+              }
+            }}
+          >
             <button
               onClick={() => setLightboxIndex(null)}
               className="absolute right-4 w-9 h-9 rounded-full bg-white/10 flex items-center justify-center text-white/80 text-lg hover:bg-white/20 active:scale-95 z-10" style={{ top: "calc(env(safe-area-inset-top) + 1rem)" }}
@@ -1077,7 +1133,7 @@ function MobileCaptureInner() {
               </button>
             )}
             <img
-              src={photo.src}
+              src={getMediumSrc(photo)}
               alt={photo.title}
               className="max-w-full max-h-[85vh] object-contain rounded"
             />
@@ -1091,10 +1147,10 @@ function MobileCaptureInner() {
             )}
             <button
               onClick={() => toggleStar(photo.id)}
-              className="absolute bottom-5 left-1/2 -translate-x-1/2 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/10 hover:bg-white/20 active:scale-95 transition-all z-10"
+              className={`absolute bottom-5 left-1/2 -translate-x-1/2 flex items-center gap-1.5 px-3 py-1.5 rounded-full active:scale-95 transition-all z-10 ${(photo as any).starred ? "bg-yellow-500/25 text-yellow-400" : "bg-white/10 hover:bg-white/20"}`}
             >
               <Star className={`w-4 h-4 ${(photo as any).starred ? "text-yellow-400 fill-yellow-400" : "text-white/50"}`} />
-              <span className="text-xs font-body text-white/60">{(photo as any).starred ? "Starred" : "Star"}</span>
+              <span className="text-xs font-body text-white/70">{(photo as any).starred ? "Starred" : "Star"}</span>
             </button>
             <p className="absolute bottom-16 left-0 right-0 text-center text-xs text-white/30 font-body truncate px-16">{photo.title}</p>
           </div>
@@ -1111,13 +1167,7 @@ function MobileCaptureInner() {
                 <p className="text-xs font-body text-foreground font-medium">Send Proofing Gallery</p>
                 <p className="text-[10px] font-body text-muted-foreground/70 mt-0.5">Email client a link to pick their favourite shots</p>
               </div>
-              <button
-                onClick={() => setEnableProofing(p => !p)}
-                className={`relative rounded-full transition-colors shrink-0 ${enableProofing ? "bg-primary" : "bg-border"}`}
-                style={{ height: "22px", width: "40px" }}
-              >
-                <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${enableProofing ? "translate-x-5" : "translate-x-0.5"}`} />
-              </button>
+              <Switch checked={enableProofing} onCheckedChange={setEnableProofing} />
             </div>
           )}
           <button

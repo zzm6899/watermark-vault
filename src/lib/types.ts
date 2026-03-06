@@ -183,6 +183,9 @@ export interface AppSettings {
   instagramFieldEnabled: boolean;
   notificationEmailTemplate: string;
   discordWebhookUrl: string;
+  discordNotifyBookings: boolean;
+  discordNotifyDownloads: boolean;
+  discordNotifyProofing: boolean;
   watermarkSize: number;
   proofingEnabled: boolean;
 }

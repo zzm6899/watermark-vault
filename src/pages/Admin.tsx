@@ -23,7 +23,7 @@ import {
   getEmailTemplates, addEmailTemplate, updateEmailTemplate, deleteEmailTemplate,
 } from "@/lib/storage";
 import { compressImage, formatBytes, getLocalStorageUsage, generateThumbnail } from "@/lib/image-utils";
-import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar, getServerStorageStats, syncFromServer, sendEmail, bulkDeleteFiles, syncBookingsToSheet, getBookingEmailLog, sendBookingReminder, sendCustomEmail, getWaitlistEntries, deleteWaitlistEntry, notifyWaitlistOnCancel, notifyDiscord, getCacheStats } from "@/lib/api";
+import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar, getServerStorageStats, syncFromServer, sendEmail, bulkDeleteFiles, syncBookingsToSheet, getBookingEmailLog, sendBookingReminder, sendCustomEmail, getWaitlistEntries, deleteWaitlistEntry, notifyWaitlistOnCancel, notifyDiscord, getCacheStats, warmCache } from "@/lib/api";
 import type { CacheBreakdown } from "@/lib/api";
 import RichTextEditor, { RichTextDisplay } from "@/components/RichTextEditor";
 import Login from "@/pages/Login";
@@ -1000,6 +1000,8 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
     updateBooking({ ...bk, paymentStatus });
     setBookingsState(getBookings());
     toast.success(`Payment marked as ${paymentStatus}`);
+    // Discord notification for payment status change
+    notifyDiscord({ type: "payment", booking: { ...bk, paymentStatus }, payment: paymentStatus }).catch(() => {});
   };
 
   const handleExportCsv = () => {
@@ -2687,16 +2689,13 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
             <p className="text-xs font-body text-foreground font-medium">Proofing for this album</p>
             <p className="text-[10px] font-body text-muted-foreground/70 mt-0.5">Let this client star and submit picks before editing</p>
           </div>
-          <button
-            onClick={() => {
-              setAlbumProofingEnabled(!albumProofingEnabled);
-              toast.success(!albumProofingEnabled ? "Proofing enabled for this album" : "Proofing disabled for this album");
+          <Switch
+            checked={albumProofingEnabled}
+            onCheckedChange={(v) => {
+              setAlbumProofingEnabled(v);
+              toast.success(v ? "Proofing enabled for this album" : "Proofing disabled for this album");
             }}
-            className={`relative rounded-full transition-colors shrink-0 ${albumProofingEnabled ? "bg-primary" : "bg-border"}`}
-            style={{ height: "22px", width: "40px" }}
-          >
-            <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${albumProofingEnabled ? "translate-x-5" : "translate-x-0.5"}`} />
-          </button>
+          />
         </div>
       )}
 
@@ -3114,8 +3113,9 @@ function PhotosView() {
 
   const addPhotoToTarget = (photo: Photo) => {
     if (selectedAlbum) {
-      // Upload directly to the selected album
-      const alb = albums.find(a => a.id === selectedAlbum.id);
+      // Read fresh from persistent store to avoid stale-closure overwrite when adding multiple photos
+      const currentAlbums = getAlbums();
+      const alb = currentAlbums.find(a => a.id === selectedAlbum.id);
       if (alb) {
         const updated = { ...alb, photos: [...alb.photos, photo], photoCount: alb.photos.length + 1 };
         if (!updated.coverImage) updated.coverImage = photo.src;
@@ -3142,11 +3142,28 @@ function PhotosView() {
       const results = await uploadPhotosToServer(fileArr, (done, total) => {
         setUploadStats(prev => prev ? { ...prev, done, total } : null);
       });
-      // Add all photos immediately — use server-side thumbnails (no heavy client-side canvas work)
+      // Add all photos in a single batch update to avoid stale-closure overwrite
       const newPhotos: Photo[] = results.map(r => ({
         id: r.id, src: r.url, thumbnail: r.url + "?size=thumb", title: r.originalName.replace(/\.[^.]+$/, ""), width: 800, height: 600, uploadedAt: new Date().toISOString(),
       }));
-      for (const photo of newPhotos) addPhotoToTarget(photo);
+      if (newPhotos.length > 0) {
+        if (selectedAlbum) {
+          const alb = getAlbums().find(a => a.id === selectedAlbum.id);
+          if (alb) {
+            const updatedPhotos = [...alb.photos, ...newPhotos];
+            const updated = { ...alb, photos: updatedPhotos, photoCount: updatedPhotos.length };
+            if (!updated.coverImage) updated.coverImage = newPhotos[0].src;
+            updateAlbum(updated);
+            setAlbumsState(getAlbums());
+          }
+        } else {
+          setLibraryPhotosState(prev => {
+            const updated = [...prev, ...newPhotos];
+            setPhotoLibrary(updated);
+            return updated;
+          });
+        }
+      }
       setUploadStats(prev => prev ? { ...prev, done: fileArr.length, errors: fileArr.length - results.length } : null);
       const target = selectedAlbum ? `"${selectedAlbum.title}"` : "library";
       if (results.length > 0) {
@@ -4018,30 +4035,50 @@ function SettingsView() {
             <div>
               <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Webhook URL</label>
               <Input value={settings.discordWebhookUrl} onChange={(e) => setSettingsState({ ...settings, discordWebhookUrl: e.target.value })} placeholder="https://discord.com/api/webhooks/..." className="bg-secondary border-border text-foreground font-body" />
-              <p className="text-[10px] font-body text-muted-foreground/50 mt-1">Receive notifications for new bookings, status changes and payments.</p>
+              <p className="text-[10px] font-body text-muted-foreground/50 mt-1">Receive notifications for new bookings, status changes, payments, downloads and proofing submissions.</p>
             </div>
             {settings.discordWebhookUrl && (
-              <Button
-                variant="outline"
-                size="sm"
-                className="font-body text-xs gap-2"
-                onClick={async () => {
-                  try {
-                    const res = await fetch("/api/discord/test", {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ webhookUrl: settings.discordWebhookUrl }),
-                    });
-                    const data = await res.json();
-                    if (data.ok) toast.success("Test message sent to Discord ✓");
-                    else toast.error(`Discord error: ${data.error || "Unknown"}`);
-                  } catch {
-                    toast.error("Failed to reach server");
-                  }
-                }}
-              >
-                <Bell className="w-3.5 h-3.5" /> Send Test Message
-              </Button>
+              <>
+                <div className="space-y-2 pt-1">
+                  {[
+                    { key: "discordNotifyBookings" as const, label: "Bookings & payments", desc: "New bookings, status changes, payment received" },
+                    { key: "discordNotifyDownloads" as const, label: "Album purchases & downloads", desc: "Photo purchases, album unlocks" },
+                    { key: "discordNotifyProofing" as const, label: "Proofing submissions", desc: "When clients submit their photo picks" },
+                  ].map(({ key, label, desc }) => (
+                    <div key={key} className="flex items-center justify-between py-2 border-t border-border/30">
+                      <div>
+                        <p className="text-xs font-body text-foreground">{label}</p>
+                        <p className="text-[10px] font-body text-muted-foreground/60">{desc}</p>
+                      </div>
+                      <Switch
+                        checked={settings[key] !== false}
+                        onCheckedChange={(v) => setSettingsState({ ...settings, [key]: v })}
+                      />
+                    </div>
+                  ))}
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="font-body text-xs gap-2"
+                  onClick={async () => {
+                    try {
+                      const res = await fetch("/api/discord/test", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ webhookUrl: settings.discordWebhookUrl }),
+                      });
+                      const data = await res.json();
+                      if (data.ok) toast.success("Test message sent to Discord ✓");
+                      else toast.error(`Discord error: ${data.error || "Unknown"}`);
+                    } catch {
+                      toast.error("Failed to reach server");
+                    }
+                  }}
+                >
+                  <Bell className="w-3.5 h-3.5" /> Send Test Message
+                </Button>
+              </>
             )}
           </div>
         </div>
@@ -4420,6 +4457,7 @@ function StorageView() {
   const [cacheStats, setCacheStats] = useState<{ total: number; breakdown: CacheBreakdown } | null>(null);
   const [lastClearStats, setLastClearStats] = useState<{ cleared: number; breakdown: CacheBreakdown } | null>(null);
   const clearAbortRef = useRef<AbortController | null>(null);
+  const [warmJob, setWarmJob] = useState<{ running: boolean; done: number; total: number; generated: number; skipped: number; failed: number; stage: string } | null>(null);
 
   const refreshStorageState = useCallback(async () => {
     const nextAlbums = getAlbums();
@@ -4555,6 +4593,22 @@ function StorageView() {
     if (result.failed === 0) toast.success(`${forceAll ? "Rebuilt" : "Generated"} ${result.success} protected preview${result.success !== 1 ? "s" : ""}`);
     else if (result.success > 0) toast.success(`${forceAll ? "Rebuilt" : "Generated"} ${result.success} protected preview${result.success !== 1 ? "s" : ""} (${result.failed} failed)`);
     else toast.error(`Failed to ${forceAll ? "rebuild" : "generate"} previews`);
+  }, [refreshStorageState]);
+
+  const handleWarmCache = useCallback(async (mode: "warm" | "force") => {
+    if (!isServerMode()) return;
+    const label = mode === "force" ? "Force Render All" : "Warm Cache";
+    setWarmJob({ running: true, done: 0, total: 0, generated: 0, skipped: 0, failed: 0, stage: "Starting…" });
+    const result = await warmCache(mode, (p) => {
+      setWarmJob({ running: true, done: p.done, total: p.total, generated: p.generated ?? 0, skipped: p.skipped ?? 0, failed: p.failed ?? 0, stage: p.stage });
+    });
+    setWarmJob(null);
+    await refreshStorageState();
+    if (result?.ok) {
+      toast.success(`${label} complete — ${result.generated} rendered, ${result.skipped} already cached${result.failed > 0 ? `, ${result.failed} failed` : ""}`);
+    } else {
+      toast.error(`${label} failed — check server logs`);
+    }
   }, [refreshStorageState]);
 
   // Refresh from storage on mount so we always show current counts
@@ -4743,15 +4797,39 @@ function StorageView() {
                 </div>
               </div>
             )}
-            <div className="mt-4 flex gap-2">
+            <div className="mt-4 flex flex-wrap gap-2">
               <Button
                 size="sm"
                 onClick={() => handleRebuildPreviews(true)}
-                disabled={previewJob.running}
+                disabled={previewJob.running || !!warmJob?.running}
                 className="gap-2 font-body text-xs"
               >
                 <RefreshCw className={`w-4 h-4 ${previewJob.running ? "animate-spin" : ""}`} />
                 {previewJob.running ? "Clearing…" : "Clear Server Image Cache"}
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => handleWarmCache("warm")}
+                disabled={previewJob.running || !!warmJob?.running}
+                className="gap-2 font-body text-xs border-border text-foreground"
+                title="Pre-render thumbnail variants for all photos so the first gallery load is instant. Skips files already in cache."
+              >
+                <Sparkles className={`w-4 h-4 ${warmJob?.running ? "animate-pulse text-primary" : ""}`} />
+                {warmJob?.running
+                  ? `Rendering ${warmJob.done}/${warmJob.total}…`
+                  : "Warm Cache"}
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => handleWarmCache("force")}
+                disabled={previewJob.running || !!warmJob?.running}
+                className="gap-2 font-body text-xs border-border text-foreground"
+                title="Force-render all variants (thumb + medium + full, watermarked + clean) for every photo. Overwrites existing cache."
+              >
+                <Sparkles className="w-4 h-4" />
+                Force Render All
               </Button>
               {previewJob.running && (
                 <Button
@@ -4764,8 +4842,20 @@ function StorageView() {
                 </Button>
               )}
             </div>
+            {warmJob?.running && (
+              <div className="mt-2 space-y-1">
+                <div className="flex items-center justify-between text-[10px] font-body text-muted-foreground">
+                  <span>{warmJob.stage}</span>
+                  <span className="text-primary">{warmJob.total > 0 ? `${Math.round((warmJob.done / warmJob.total) * 100)}%` : "…"}</span>
+                </div>
+                <div className="h-1.5 rounded-full bg-secondary overflow-hidden">
+                  <div className="h-full rounded-full bg-primary transition-all duration-300" style={{ width: warmJob.total > 0 ? `${(warmJob.done / warmJob.total) * 100}%` : "0%" }} />
+                </div>
+                <p className="text-[10px] font-body text-muted-foreground/50">{warmJob.generated} rendered · {warmJob.skipped} already cached{warmJob.failed > 0 ? ` · ${warmJob.failed} failed` : ""}</p>
+              </div>
+            )}
             <p className="text-[10px] font-body text-muted-foreground/50 mt-2">
-              Run this after updating watermark settings so the gallery fetches fresh watermarked images.
+              <strong className="text-muted-foreground">Clear Cache</strong> — wipe cached files so fresh watermarked images are served after settings changes. <strong className="text-muted-foreground">Warm Cache</strong> — pre-render thumbnails only (fast, skips existing). <strong className="text-muted-foreground">Force Render All</strong> — rebuild every variant (thumb + medium + full, watermarked + clean) from scratch.
             </p>
           </>
         ) : (
