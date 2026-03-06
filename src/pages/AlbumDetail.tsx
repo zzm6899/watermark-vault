@@ -174,6 +174,7 @@ export default function AlbumDetail() {
   const [clientNote, setClientNote] = useState("");
   const [lightboxPhotoId, setLightboxPhotoId] = useState<string | null>(null);
   const displayedPhotosRef = useRef<Photo[]>([]);
+  const touchStartX = useRef<number | null>(null);
   const [showStarredOnly, setShowStarredOnly] = useState(false);
   const [sortOrder, setSortOrder] = useState<"default" | "asc" | "desc">("default");
   // Local display size — defaults to admin-set album size (or "medium" fallback)
@@ -1457,6 +1458,18 @@ export default function AlbumDetail() {
             exit={{ opacity: 0 }}
             className="fixed inset-0 z-[100] bg-background/95 backdrop-blur-sm flex items-center justify-center p-3 sm:p-6"
             onClick={() => setLightboxPhotoId(null)}
+            onTouchStart={(e) => { touchStartX.current = e.touches[0].clientX; }}
+            onTouchEnd={(e) => {
+              if (touchStartX.current === null) return;
+              const dx = e.changedTouches[0].clientX - touchStartX.current;
+              touchStartX.current = null;
+              if (Math.abs(dx) < 50) return; // too short — treat as a tap, let onClick close
+              e.preventDefault(); // block the synthetic click so lightbox stays open
+              const photos = displayedPhotosRef.current;
+              const idx = photos.findIndex(p => p.id === lightboxPhotoId);
+              if (dx < 0 && idx < photos.length - 1) setLightboxPhotoId(photos[idx + 1].id); // swipe left → next
+              if (dx > 0 && idx > 0) setLightboxPhotoId(photos[idx - 1].id);                  // swipe right → prev
+            }}
           >
             {/* Close button */}
             <button className="absolute top-3 right-3 sm:top-4 sm:right-4 z-10 w-11 h-11 rounded-full bg-card/80 backdrop-blur-sm flex items-center justify-center text-foreground hover:bg-card transition-colors"
