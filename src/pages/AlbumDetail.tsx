@@ -174,8 +174,13 @@ export default function AlbumDetail() {
   const [clientNote, setClientNote] = useState("");
   const [lightboxPhotoId, setLightboxPhotoId] = useState<string | null>(null);
   const displayedPhotosRef = useRef<Photo[]>([]);
+  const touchStartX = useRef<number | null>(null);
   const [showStarredOnly, setShowStarredOnly] = useState(false);
   const [sortOrder, setSortOrder] = useState<"default" | "asc" | "desc">("default");
+  // Local display size — defaults to admin-set album size (or "medium" fallback)
+  const [localDisplaySize, setLocalDisplaySize] = useState<string>(
+    () => (albumId ? getAlbumBySlug(albumId) : undefined)?.displaySize ?? "medium"
+  );
   const [lightboxSrcCache, setLightboxSrcCache] = useState<Record<string, string>>({});
   const [stripeAvailable, setStripeAvailable] = useState(false);
   const [processingStripe, setProcessingStripe] = useState(false);
@@ -274,6 +279,26 @@ export default function AlbumDetail() {
         <div className="text-center">
           <p className="font-display text-2xl text-foreground mb-2">Album Not Found</p>
           <p className="text-muted-foreground font-body text-sm">This gallery may be private or the link is incorrect.</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Gallery-level expiry check — block all access after expiresAt
+  if (album.expiresAt && new Date(album.expiresAt + "T23:59:59") < new Date()) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="glass-panel rounded-xl p-8 max-w-sm w-full text-center">
+          <Lock className="w-8 h-8 text-muted-foreground/40 mx-auto mb-4" />
+          <h2 className="font-display text-xl text-foreground mb-2">Gallery Expired</h2>
+          <p className="text-sm font-body text-muted-foreground">
+            This gallery was available until{" "}
+            <span className="text-foreground font-medium">
+              {new Date(album.expiresAt + "T12:00:00").toLocaleDateString("en-AU", { day: "numeric", month: "long", year: "numeric" })}
+            </span>
+            {" "}and is no longer accessible.
+          </p>
+          <p className="text-xs font-body text-muted-foreground/60 mt-3">Please contact your photographer if you believe this is an error.</p>
         </div>
       </div>
     );
@@ -706,8 +731,7 @@ export default function AlbumDetail() {
     toast.success("Bank transfer request submitted! Pay using the details shown, then the photographer will unlock your photos.");
   };
 
-  const displaySize = album.displaySize || "medium";
-  const gridClass = displaySize === "small" ? "masonry-grid-sm" : displaySize === "large" ? "masonry-grid-lg" : displaySize === "list" ? "masonry-grid-list" : "masonry-grid";
+  const gridClass = localDisplaySize === "small" ? "masonry-grid-sm" : localDisplaySize === "large" ? "masonry-grid-lg" : localDisplaySize === "list" ? "masonry-grid-list" : "masonry-grid";
 
   const unpaidSelected = album.photos.filter(p => selectedIds.has(p.id) && !paidPhotoIdSet.has(p.id));
   const paidCount = Math.max(0, unpaidSelected.length - freeRemaining);
@@ -732,6 +756,19 @@ export default function AlbumDetail() {
       <p className="text-xs font-body text-muted-foreground">
         <span className="text-yellow-400 font-medium">Download expires in {_expiryDaysLeft} day{_expiryDaysLeft !== 1 ? "s" : ""}</span>
         {" "}— {new Date(album.downloadExpiresAt + "T12:00:00").toLocaleDateString("en-AU", { day: "numeric", month: "long" })}
+      </p>
+    </div>
+  ) : null;
+
+  const _galleryExpiryDaysLeft = album?.expiresAt
+    ? Math.ceil((new Date(album.expiresAt + "T23:59:59").getTime() - Date.now()) / 86400000)
+    : null;
+  const _galleryExpiryBanner = (album?.expiresAt && _galleryExpiryDaysLeft !== null && _galleryExpiryDaysLeft <= 14) ? (
+    <div className="glass-panel rounded-xl p-4 border border-orange-500/20 bg-orange-500/5 flex items-center gap-3">
+      <Clock className="w-4 h-4 text-orange-400 shrink-0" />
+      <p className="text-xs font-body text-muted-foreground">
+        <span className="text-orange-400 font-medium">Gallery access expires in {_galleryExpiryDaysLeft} day{_galleryExpiryDaysLeft !== 1 ? "s" : ""}</span>
+        {" "}— {new Date(album.expiresAt + "T12:00:00").toLocaleDateString("en-AU", { day: "numeric", month: "long", year: "numeric" })}
       </p>
     </div>
   ) : null;
@@ -826,6 +863,7 @@ export default function AlbumDetail() {
                 </div>
               )}
 
+              {_galleryExpiryBanner}
               {_expiryBanner}
 
               <div className="glass-panel rounded-lg p-4 space-y-4">
@@ -971,6 +1009,28 @@ export default function AlbumDetail() {
                   <X className="w-3 h-3" /> Clear
                 </button>
               )}
+              {/* Display size controls — push to right on larger screens */}
+              <div className="flex items-center gap-1 ml-auto">
+                {([
+                  { size: "small", icon: <LayoutGrid className="w-3.5 h-3.5" />, label: "Small" },
+                  { size: "medium", icon: <Grid className="w-3.5 h-3.5" />, label: "Medium" },
+                  { size: "large", icon: <List className="w-3.5 h-3.5 rotate-90" />, label: "Large" },
+                  { size: "list", icon: <List className="w-3.5 h-3.5" />, label: "List" },
+                ] as const).map(({ size, icon, label }) => (
+                  <button
+                    key={size}
+                    onClick={() => setLocalDisplaySize(size)}
+                    title={label}
+                    className={`p-1.5 rounded-lg border transition-all ${
+                      localDisplaySize === size
+                        ? "border-primary/50 text-primary bg-primary/10"
+                        : "border-border/50 text-muted-foreground hover:text-foreground hover:border-border"
+                    }`}
+                  >
+                    {icon}
+                  </button>
+                ))}
+              </div>
             </div>
           )}
 
@@ -987,7 +1047,12 @@ export default function AlbumDetail() {
               {displayedPhotos.map((photo, i) => (
                 <div key={photo.id} className="relative group">
                   <WatermarkedImage
-                src={getGalleryPhotoSrc(photo, !!(album.watermarkDisabled || isPhotoPaid(photo.id)))}
+                src={getGalleryPhotoSrc(photo,
+                  // Branded giveaway: allUnlocked but watermarks still active and no real payment → keep watermark in gallery (matches download behaviour)
+                  (isFullyUnlocked && !album.watermarkDisabled && !paidPhotoIdSet.has(photo.id) && !sessionFullAlbum)
+                    ? false
+                    : !!(album.watermarkDisabled || isPhotoPaid(photo.id))
+                )}
                   title={photo.title}
                   selected={isProofing ? starredIds.has(photo.id) : selectedIds.has(photo.id)}
                   onSelect={() => isProofing ? toggleStar(photo.id) : toggleSelect(photo.id)}
@@ -1427,6 +1492,18 @@ export default function AlbumDetail() {
             exit={{ opacity: 0 }}
             className="fixed inset-0 z-[100] bg-background/95 backdrop-blur-sm flex items-center justify-center p-3 sm:p-6"
             onClick={() => setLightboxPhotoId(null)}
+            onTouchStart={(e) => { touchStartX.current = e.touches[0].clientX; }}
+            onTouchEnd={(e) => {
+              if (touchStartX.current === null) return;
+              const dx = e.changedTouches[0].clientX - touchStartX.current;
+              touchStartX.current = null;
+              if (Math.abs(dx) < 50) return; // too short — treat as a tap, let onClick close
+              e.preventDefault(); // block the synthetic click so lightbox stays open
+              const photos = displayedPhotosRef.current;
+              const idx = photos.findIndex(p => p.id === lightboxPhotoId);
+              if (dx < 0 && idx < photos.length - 1) setLightboxPhotoId(photos[idx + 1].id); // swipe left → next
+              if (dx > 0 && idx > 0) setLightboxPhotoId(photos[idx - 1].id);                  // swipe right → prev
+            }}
           >
             {/* Close button */}
             <button className="absolute top-3 right-3 sm:top-4 sm:right-4 z-10 w-11 h-11 rounded-full bg-card/80 backdrop-blur-sm flex items-center justify-center text-foreground hover:bg-card transition-colors"

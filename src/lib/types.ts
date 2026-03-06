@@ -145,6 +145,7 @@ export interface Album {
   proofingStage?: string;
   proofingRounds?: ProofingRound[];
   clientToken?: string;
+  expiresAt?: string;         // YYYY-MM-DD — gallery access blocked after this date
   downloadExpiresAt?: string;
   watermarkDisabled?: boolean;
   purchasingDisabled?: boolean;
