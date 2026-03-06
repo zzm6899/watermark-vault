@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { getBookings, getAlbums, getSettings, updateAlbum, addAlbum, updateBooking } from "@/lib/storage";
 import { uploadPhotosToServer, isServerMode, recheckServer, sendEmail } from "@/lib/api";
-
+import { generateThumbnail } from "@/lib/image-utils";
 import CameraUsb from "@/plugins/camera-usb";
 import type { CameraFile } from "@/plugins/camera-usb";
 import { Capacitor } from "@capacitor/core";
@@ -432,7 +432,6 @@ function MobileCaptureInner() {
         sessionUploadedRef.current = true;
         setImportLabel("");
         if (newPhotos.length > 0) toast.success(`${newPhotos.length} photos imported`);
-
         // Warn about failures separately so success count is honest
       }
       // Store "name:size" keys — handles name collisions across sessions
