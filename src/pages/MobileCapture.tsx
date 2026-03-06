@@ -152,7 +152,7 @@ function CaptureLightboxImage({ photo, cache, onCacheUpdate }: {
       <img
         src={src}
         alt={photo.title}
-        className={`max-w-full max-h-[80vh] object-contain rounded transition-all duration-300 ${loaded ? "opacity-100 blur-0" : "opacity-70 blur-[2px]"}`}
+        className={`max-w-full max-h-[88vh] w-full object-contain rounded transition-all duration-300 ${loaded ? "opacity-100 blur-0" : "opacity-70 blur-[2px]"}`}
       />
       {!loaded && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
@@ -162,6 +162,12 @@ function CaptureLightboxImage({ photo, cache, onCacheUpdate }: {
     </div>
   );
 }
+
+// ── Lightbox zoom constants ──────────────────────────────────────
+const LIGHTBOX_MIN_ZOOM = 1;
+const LIGHTBOX_MAX_ZOOM = 5;
+const LIGHTBOX_DOUBLE_TAP_ZOOM = 2.5;
+const LIGHTBOX_DOUBLE_TAP_MS = 300;
 
 // ── Main Component ──────────────────────────────────────────────
 function AlbumEditModal({ album, onClose, onSave }: { album: Album; onClose: () => void; onSave: (updated: Album) => void }) {
@@ -238,6 +244,10 @@ function MobileCaptureInner() {
   const [viewAllMode, setViewAllMode] = useState(false);
   const [viewAllStarFilter, setViewAllStarFilter] = useState(false);
   const touchStartX = useRef<number | null>(null);
+  const [lightboxZoom, setLightboxZoom] = useState(1);
+  const pinchStartDist = useRef<number | null>(null);
+  const pinchStartScale = useRef(1);
+  const lastTapTime = useRef(0);
   const [jpegOnly, setJpegOnly] = useState(true);
   const [importLabel, setImportLabel] = useState(""); // e.g. "3 / 11 — DSC_0042.JPG"
   const [failedHandles, setFailedHandles] = useState<number[]>([]);
@@ -269,6 +279,9 @@ function MobileCaptureInner() {
     setAlbums(getAlbums());
     recheckServer().then(ok => setServerOnline(ok));
   }, []);
+
+  // Reset zoom whenever the lightbox navigates to a different photo
+  useEffect(() => { setLightboxZoom(1); }, [lightboxIndex]);
 
   // ── Filtered + grouped bookings ──────────────────────────────
   const { nextUp, todayRest, upcoming, done } = useMemo(() => {
@@ -1140,7 +1153,7 @@ function MobileCaptureInner() {
         );
       })()}
 
-      {/* Lightbox with prev/next arrows and touch swipe */}
+      {/* Lightbox with prev/next arrows, touch swipe, pinch & double-tap zoom */}
       {lightboxIndex !== null && targetAlbum && (() => {
         const allPhotos = viewAllMode
           ? (viewAllStarFilter ? [...targetAlbum.photos].reverse().filter(p => (p as any).starred) : [...targetAlbum.photos].reverse())
@@ -1156,34 +1169,62 @@ function MobileCaptureInner() {
           else if (deltaX > 0 && hasPrev) setLightboxIndex(i => i! - 1);
         };
 
+        const getPinchDist = (touches: React.TouchList) => {
+          const dx = touches[0].clientX - touches[1].clientX;
+          const dy = touches[0].clientY - touches[1].clientY;
+          return Math.sqrt(dx * dx + dy * dy);
+        };
+
         return (
           <div
-            className="fixed inset-0 z-50 bg-black/98 flex flex-col items-center justify-center select-none"
-            onTouchStart={e => { touchStartX.current = e.touches[0].clientX; }}
+            className="fixed inset-0 z-50 bg-black select-none overflow-hidden"
+            onTouchStart={e => {
+              if (e.touches.length === 2) {
+                pinchStartDist.current = getPinchDist(e.touches);
+                pinchStartScale.current = lightboxZoom;
+                touchStartX.current = null;
+              } else if (e.touches.length === 1) {
+                const now = Date.now();
+                if (now - lastTapTime.current < LIGHTBOX_DOUBLE_TAP_MS) {
+                  setLightboxZoom(s => s > LIGHTBOX_MIN_ZOOM ? LIGHTBOX_MIN_ZOOM : LIGHTBOX_DOUBLE_TAP_ZOOM);
+                  lastTapTime.current = 0;
+                  touchStartX.current = null;
+                } else {
+                  lastTapTime.current = now;
+                  if (lightboxZoom === 1) touchStartX.current = e.touches[0].clientX;
+                  else touchStartX.current = null;
+                }
+              }
+            }}
+            onTouchMove={e => {
+              if (e.touches.length === 2 && pinchStartDist.current !== null) {
+                const scale = (getPinchDist(e.touches) / pinchStartDist.current) * pinchStartScale.current;
+                setLightboxZoom(Math.max(LIGHTBOX_MIN_ZOOM, Math.min(LIGHTBOX_MAX_ZOOM, scale)));
+              }
+            }}
             onTouchEnd={e => {
-              if (touchStartX.current !== null) {
+              if (pinchStartDist.current !== null && e.touches.length < 2) {
+                pinchStartDist.current = null;
+                return;
+              }
+              if (touchStartX.current !== null && lightboxZoom === 1) {
                 handleSwipe(touchStartX.current - e.changedTouches[0].clientX);
                 touchStartX.current = null;
               }
             }}
           >
+            {/* Close button */}
             <button
               onClick={() => setLightboxIndex(null)}
-              className="absolute right-4 w-9 h-9 rounded-full bg-white/10 flex items-center justify-center text-white/80 text-lg hover:bg-white/20 active:scale-95 z-10" style={{ top: "calc(env(safe-area-inset-top) + 1rem)" }}
+              className="absolute right-4 w-9 h-9 rounded-full bg-white/10 flex items-center justify-center text-white/80 text-lg hover:bg-white/20 active:scale-95 z-20" style={{ top: "calc(env(safe-area-inset-top) + 1rem)" }}
             >&#x2715;</button>
-            <p className="absolute top-5 left-0 right-0 text-center text-xs text-white/40 font-body pointer-events-none" style={{ top: "calc(env(safe-area-inset-top) + 1rem)" }}>
+
+            {/* Counter */}
+            <p className="absolute left-0 right-0 text-center text-xs text-white/40 font-body pointer-events-none z-20" style={{ top: "calc(env(safe-area-inset-top) + 1rem)" }}>
               {lightboxIndex + 1} / {allPhotos.length}
             </p>
-            {hasPrev && (
-              <button
-                onClick={() => setLightboxIndex(i => i! - 1)}
-                className="absolute left-3 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-white/10 flex items-center justify-center hover:bg-white/20 active:scale-95 transition-all z-10"
-              >
-                <ChevronLeft className="w-5 h-5 text-white" />
-              </button>
-            )}
 
-            {/* Photo with progressive loading + transition */}
+            {/* Photo — fills entire viewport; AnimatePresence handles slide transitions */}
             <AnimatePresence mode="wait" initial={false}>
               <motion.div
                 key={photo.id}
@@ -1191,32 +1232,56 @@ function MobileCaptureInner() {
                 animate={{ opacity: 1, x: 0 }}
                 exit={{ opacity: 0, x: -20 }}
                 transition={{ duration: 0.18, ease: "easeOut" }}
-                className="w-full flex items-center justify-center px-14"
+                className="absolute inset-0 flex items-center justify-center"
               >
-                <CaptureLightboxImage
-                  photo={photo}
-                  cache={lightboxSrcCache}
-                  onCacheUpdate={updateLightboxCache}
-                />
+                <div
+                  className="w-full h-full flex items-center justify-center"
+                  style={{
+                    transform: `scale(${lightboxZoom})`,
+                    transformOrigin: "center",
+                    transition: lightboxZoom === 1 ? "transform 0.2s ease-out" : "none",
+                  }}
+                >
+                  <CaptureLightboxImage
+                    photo={photo}
+                    cache={lightboxSrcCache}
+                    onCacheUpdate={updateLightboxCache}
+                  />
+                </div>
               </motion.div>
             </AnimatePresence>
 
-            {hasNext && (
+            {/* Prev arrow — overlays the image; hidden when zoomed in */}
+            {hasPrev && lightboxZoom === 1 && (
+              <button
+                onClick={() => setLightboxIndex(i => i! - 1)}
+                className="absolute left-3 top-1/2 -translate-y-1/2 w-11 h-11 rounded-full bg-black/50 backdrop-blur-sm flex items-center justify-center hover:bg-black/70 active:scale-95 transition-all z-20"
+              >
+                <ChevronLeft className="w-5 h-5 text-white" />
+              </button>
+            )}
+
+            {/* Next arrow — overlays the image; hidden when zoomed in */}
+            {hasNext && lightboxZoom === 1 && (
               <button
                 onClick={() => setLightboxIndex(i => i! + 1)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-white/10 flex items-center justify-center hover:bg-white/20 active:scale-95 transition-all z-10"
+                className="absolute right-3 top-1/2 -translate-y-1/2 w-11 h-11 rounded-full bg-black/50 backdrop-blur-sm flex items-center justify-center hover:bg-black/70 active:scale-95 transition-all z-20"
               >
                 <ChevronRight className="w-5 h-5 text-white" />
               </button>
             )}
-            <p className="absolute font-body truncate px-16 text-center text-xs text-white/30" style={{ bottom: "calc(env(safe-area-inset-bottom) + 3.5rem)", left: 0, right: 0 }}>{photo.title}</p>
+
+            {/* Photo title */}
+            <p className="absolute font-body truncate px-4 text-center text-xs text-white/30 z-20" style={{ bottom: "calc(env(safe-area-inset-bottom) + 3.5rem)", left: 0, right: 0 }}>{photo.title}</p>
+
+            {/* Star button — overlay on image, bottom-left corner */}
             <button
               onClick={() => toggleStar(photo.id)}
-              className={`absolute flex items-center gap-1.5 px-3 py-1.5 rounded-full active:scale-95 transition-all z-10 ${(photo as any).starred ? "bg-yellow-500/25 text-yellow-400" : "bg-white/10 hover:bg-white/20"}`}
-              style={{ bottom: "calc(env(safe-area-inset-bottom) + 1rem)", left: "50%", transform: "translateX(-50%)" }}
+              className={`absolute flex items-center gap-1.5 px-3 py-2 rounded-full active:scale-95 transition-all z-20 ${(photo as any).starred ? "bg-yellow-500/30 text-yellow-400 border border-yellow-500/50" : "bg-black/50 backdrop-blur-sm text-white/70 border border-white/20"}`}
+              style={{ bottom: "calc(env(safe-area-inset-bottom) + 1rem)", left: "1rem" }}
             >
               <Star className={`w-4 h-4 ${(photo as any).starred ? "text-yellow-400 fill-yellow-400" : "text-white/50"}`} />
-              <span className="text-xs font-body text-white/70">{(photo as any).starred ? "Starred" : "Star"}</span>
+              <span className="text-xs font-body">{(photo as any).starred ? "Starred" : "Star"}</span>
             </button>
           </div>
         );
