@@ -7,6 +7,7 @@ import {
   Save, X, ChevronDown, ChevronUp, Globe, Upload, Search, Copy,
   DollarSign, MessageSquare, HardDrive, User, RefreshCw, Webhook, Star,
   ExternalLink, Mail, Send, Unlock, CreditCard, CheckCircle2, Download,
+  XSquare, CheckSquare,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -16,7 +17,7 @@ import { Slider } from "@/components/ui/slider";
 import WatermarkedImage from "@/components/WatermarkedImage";
 import { toast } from "sonner";
 import { getMobileTenantSession, setMobileTenantSession, hashPassword } from "@/lib/storage";
-import { generateThumbnail } from "@/lib/image-utils";
+import { generateThumbnail, compressImage, formatBytes } from "@/lib/image-utils";
 import {
   fetchTenantMobileData, getTenantSettings, saveTenantSettings,
   deleteTenantBooking, updateTenantBookingFull,
@@ -25,10 +26,12 @@ import {
   clearTenantImageCache, tenantPhotoSrc, saveTenantAlbum,
   uploadPhotosToServer, isServerMode, notifyTenantDiscord,
   getSuperAdminWebhooks, sendTenantEmail,
+  getServerStorageStats, bulkDeleteFiles, deletePhotoFromServer,
   getTenantGoogleCalendarStatus, startTenantGoogleCalendarAuth,
   disconnectTenantGoogleCalendar, getTenantGoogleCalendars,
   saveTenantCalendarSettings,
 } from "@/lib/api";
+import ProgressiveImg from "@/components/ProgressiveImg";
 import type {
   Booking, Album, Photo, AlbumDisplaySize, EventType, Invoice, InvoiceItem, InvoiceParty,
   Contact, TenantSettings, AvailabilitySlot, QuestionField, WatermarkPosition,
@@ -1545,239 +1548,548 @@ function TenantAlbumEditor({ slug, album, onSave, onCancel }: {
 // ─── Photos ──────────────────────────────────────────────────────────────────
 function TenantPhotos({ slug }: { slug: string }) {
   const [albums, setAlbums] = useState<Album[]>([]);
+  const [libraryPhotos, setLibraryPhotos] = useState<Photo[]>([]);
   const [loading, setLoading] = useState(true);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [viewSource, setViewSource] = useState<"all" | "library" | string>("all");
+  const [starredOnly, setStarredOnly] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [syncing, setSyncing] = useState(false);
+  const [showAddToAlbum, setShowAddToAlbum] = useState(false);
+  const [uploadStats, setUploadStats] = useState<{ total: number; done: number; errors: number; savedBytes: number } | null>(null);
 
-  // Filters
-  const [albumFilter, setAlbumFilter] = useState<"all" | string>("all");
-  const [starredFilter, setStarredFilter] = useState(false);
+  const photoUrl = (src: string) => tenantPhotoSrc(src, slug);
 
-  // Upload state
-  const [uploadTargetAlbumId, setUploadTargetAlbumId] = useState<string>("");
-  const [uploading, setUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState(0);
-  const uploadInputRef = useRef<HTMLInputElement>(null);
-
+  // ── Load data ──────────────────────────────────────────────────────────────
   const load = useCallback(async () => {
-    const d = await fetchTenantMobileData(slug);
-    const loaded: Album[] = d.albums || [];
-    setAlbums(loaded);
-    // Default upload target to first album if none chosen yet
-    setUploadTargetAlbumId(prev => prev || loaded[0]?.id || "");
+    const [mobileData, lib] = await Promise.all([
+      fetchTenantMobileData(slug),
+      getTenantStoreKey<Photo[]>(slug, "wv_photo_library"),
+    ]);
+    setAlbums(mobileData.albums || []);
+    setLibraryPhotos(Array.isArray(lib) ? lib : []);
     setLoading(false);
   }, [slug]);
 
   useEffect(() => { load(); }, [load]);
 
-  const photoUrl = (src: string) => tenantPhotoSrc(src, slug);
-
-  // Flat list enriched with album metadata
-  const allPhotos = albums.flatMap(a =>
-    (a.photos || []).map(p => ({ ...p, albumTitle: a.title, albumId: a.id }))
-  );
-
-  // Apply filters
-  const visiblePhotos = allPhotos.filter(p => {
-    if (albumFilter !== "all" && p.albumId !== albumFilter) return false;
-    if (starredFilter && !p.starred) return false;
-    return true;
-  });
-
-  // Toggle star on a photo and persist
-  const handleToggleStar = async (albumId: string, photoId: string) => {
-    const album = albums.find(a => a.id === albumId);
-    if (!album) return;
-    const updated: Album = {
-      ...album,
-      photos: (album.photos || []).map(p =>
-        p.id === photoId ? { ...p, starred: !p.starred } : p
-      ),
-    };
-    setAlbums(prev => prev.map(a => a.id === albumId ? updated : a));
-    await saveTenantAlbum(slug, updated);
+  // ── Persist library ────────────────────────────────────────────────────────
+  const saveLibrary = async (photos: Photo[]) => {
+    await saveTenantStoreKey(slug, "wv_photo_library", photos);
   };
 
-  // Upload photos to selected album
-  const handleUpload = async (files: FileList | null) => {
-    if (!files || files.length === 0) return;
-    if (!uploadTargetAlbumId) { toast.error("Select an album to upload to"); return; }
-    if (!isServerMode()) { toast.error("Server connection required for photo uploads"); return; }
-    const album = albums.find(a => a.id === uploadTargetAlbumId);
-    if (!album) { toast.error("Album not found"); return; }
+  // ── Build unified photo list ───────────────────────────────────────────────
+  // Photos are keyed by src to avoid cross-source duplicates in "All" view
+  const allPhotos: (Photo & { source: string })[] = [];
+  const seenSrc = new Set<string>();
+  for (const p of libraryPhotos) {
+    if (!seenSrc.has(p.src)) { allPhotos.push({ ...p, source: "Library" }); seenSrc.add(p.src); }
+  }
+  for (const alb of albums) {
+    for (const p of alb.photos || []) {
+      if (!seenSrc.has(p.src)) { allPhotos.push({ ...p, source: alb.title }); seenSrc.add(p.src); }
+    }
+  }
 
-    setUploading(true);
-    setUploadProgress(0);
-    const fileArr = Array.from(files);
-    const uploaded = await uploadPhotosToServer(fileArr, (done, total) => {
-      setUploadProgress(Math.round((done / total) * 100));
+  // For per-album filter, pull directly from that album's photos array
+  const getAlbumPhotos = (albumTitle: string): (Photo & { source: string })[] => {
+    const alb = albums.find(a => a.title === albumTitle);
+    return alb ? (alb.photos || []).map(p => ({ ...p, source: alb.title })) : [];
+  };
+
+  const starredPhotos = allPhotos.filter(p => p.starred);
+  const sourcePhotos =
+    viewSource === "all" ? allPhotos
+    : viewSource === "library" ? libraryPhotos.map(p => ({ ...p, source: "Library" }))
+    : getAlbumPhotos(viewSource);
+  const unfilteredPhotos = starredOnly ? sourcePhotos.filter(p => p.starred) : sourcePhotos;
+  const displayPhotos = searchQuery.trim()
+    ? unfilteredPhotos.filter(p =>
+        p.title.toLowerCase().includes(searchQuery.trim().toLowerCase()) ||
+        p.src.toLowerCase().includes(searchQuery.trim().toLowerCase())
+      )
+    : unfilteredPhotos;
+
+  // Album corresponding to the current view source (for upload targeting)
+  const selectedAlbum =
+    viewSource !== "all" && viewSource !== "library"
+      ? albums.find(a => a.title === viewSource)
+      : null;
+
+  // ── Toolbar actions ────────────────────────────────────────────────────────
+  const handleClearDuplicates = async () => {
+    let totalRemoved = 0;
+
+    // Deduplicate photos within each album
+    const updatedAlbums: Album[] = [];
+    for (const alb of albums) {
+      const seen = new Set<string>();
+      const deduped = (alb.photos || []).filter(p => {
+        if (seen.has(p.id) || seen.has(p.src)) return false;
+        seen.add(p.id); seen.add(p.src);
+        return true;
+      });
+      if (deduped.length < (alb.photos || []).length) {
+        totalRemoved += (alb.photos || []).length - deduped.length;
+        const updated = { ...alb, photos: deduped, photoCount: deduped.length };
+        await saveTenantAlbum(slug, updated);
+        updatedAlbums.push(updated);
+      } else {
+        updatedAlbums.push(alb);
+      }
+    }
+
+    // Deduplicate library
+    const seenLib = new Set<string>();
+    const dedupLib = libraryPhotos.filter(p => {
+      if (seenLib.has(p.id) || seenLib.has(p.src)) return false;
+      seenLib.add(p.id); seenLib.add(p.src);
+      return true;
     });
-    if (uploaded.length === 0) { setUploading(false); toast.error("Upload failed"); return; }
+    if (dedupLib.length < libraryPhotos.length) {
+      totalRemoved += libraryPhotos.length - dedupLib.length;
+      setLibraryPhotos(dedupLib);
+      await saveLibrary(dedupLib);
+    }
 
-    const newPhotos: Photo[] = await Promise.all(uploaded.map(async u => {
-      let thumbnail = "";
-      try { thumbnail = await generateThumbnail(u.url, 300, 0.65); } catch { thumbnail = u.url; }
-      return {
-        id: generateId("photo"),
-        src: u.url,
-        thumbnail,
-        title: u.originalName,
-        width: 0,
-        height: 0,
-        starred: false,
-        uploadedAt: new Date().toISOString(),
-      } as Photo;
-    }));
+    if (updatedAlbums.some((a, i) => a !== albums[i])) setAlbums(updatedAlbums);
+    if (totalRemoved === 0) toast.info("No duplicates found");
+    else toast.success(`Removed ${totalRemoved} duplicate photo${totalRemoved !== 1 ? "s" : ""}`);
+  };
 
-    const updatedAlbum: Album = {
-      ...album,
-      photos: [...(album.photos || []), ...newPhotos],
+  const handleSyncStorage = async () => {
+    if (!isServerMode()) { toast.error("Server not available"); return; }
+    setSyncing(true);
+    try {
+      const stats = await getServerStorageStats();
+      if (!stats || !stats.allFileNames) { toast.info("No storage data"); setSyncing(false); return; }
+
+      const serverFileNames = new Set(stats.allFileNames);
+      let repairedAlbums = 0;
+
+      // Repair albums with broken photo references
+      const updatedAlbums: Album[] = [];
+      for (const alb of albums) {
+        const brokenPhotos = (alb.photos || []).filter(p => {
+          const fn = p.src.split("/").pop();
+          return fn && !serverFileNames.has(fn) && p.src.startsWith("/uploads/");
+        });
+        if (brokenPhotos.length > 0) {
+          const repaired = (alb.photos || []).filter(p => !brokenPhotos.includes(p));
+          const updated = { ...alb, photos: repaired, photoCount: repaired.length };
+          await saveTenantAlbum(slug, updated);
+          updatedAlbums.push(updated);
+          repairedAlbums++;
+        } else {
+          updatedAlbums.push(alb);
+        }
+      }
+      if (repairedAlbums > 0) setAlbums(updatedAlbums);
+
+      // Collect all known filenames
+      const knownFilenames = new Set<string>();
+      for (const p of libraryPhotos) {
+        const fn = p.src.split("/").pop();
+        if (fn) knownFilenames.add(fn);
+      }
+      for (const alb of updatedAlbums) {
+        for (const p of alb.photos || []) {
+          const fn = p.src.split("/").pop();
+          if (fn) knownFilenames.add(fn);
+        }
+      }
+
+      // Delete orphaned files
+      const orphaned = stats.allFileNames.filter(f => !knownFilenames.has(f));
+      const messages: string[] = [];
+      if (repairedAlbums > 0) messages.push(`Repaired ${repairedAlbums} album(s) with missing file references`);
+      if (orphaned.length > 0) {
+        try {
+          await bulkDeleteFiles(orphaned);
+          messages.push(`Deleted ${orphaned.length} untracked file(s) from disk`);
+        } catch {
+          messages.push(`Found ${orphaned.length} untracked file(s) but failed to delete them`);
+        }
+      }
+
+      if (messages.length === 0) toast.info("All storage files are tracked — nothing to fix");
+      else toast.success(messages.join(" · "));
+    } catch { toast.error("Failed to sync from storage"); }
+    setSyncing(false);
+  };
+
+  // ── Toggle selection ───────────────────────────────────────────────────────
+  const toggleSelect = (id: string) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  // ── Toggle star ────────────────────────────────────────────────────────────
+  const handleToggleStar = async (photo: Photo & { source: string }) => {
+    if (photo.source === "Library") {
+      const updated = libraryPhotos.map(p => p.id === photo.id ? { ...p, starred: !p.starred } : p);
+      setLibraryPhotos(updated);
+      await saveLibrary(updated);
+    } else {
+      const alb = albums.find(a => a.title === photo.source);
+      if (!alb) return;
+      const updatedAlb: Album = {
+        ...alb,
+        photos: (alb.photos || []).map(p => p.id === photo.id ? { ...p, starred: !p.starred } : p),
+      };
+      setAlbums(prev => prev.map(a => a.id === alb.id ? updatedAlb : a));
+      await saveTenantAlbum(slug, updatedAlb);
+    }
+  };
+
+  // ── Delete single photo ────────────────────────────────────────────────────
+  const handleDeletePhoto = async (id: string, source: string, src: string) => {
+    if (source === "Library") {
+      const updated = libraryPhotos.filter(p => p.id !== id);
+      setLibraryPhotos(updated);
+      await saveLibrary(updated);
+      if (isServerMode()) deletePhotoFromServer(src);
+    } else {
+      const alb = albums.find(a => a.title === source);
+      if (alb) {
+        const updatedAlb = { ...alb, photos: (alb.photos || []).filter(p => p.id !== id), photoCount: Math.max(0, (alb.photos || []).length - 1) };
+        setAlbums(prev => prev.map(a => a.id === alb.id ? updatedAlb : a));
+        await saveTenantAlbum(slug, updatedAlb);
+      }
+    }
+    setSelectedIds(prev => { const next = new Set(prev); next.delete(id); return next; });
+  };
+
+  // ── Mass delete ────────────────────────────────────────────────────────────
+  const handleMassDelete = async () => {
+    if (selectedIds.size === 0) return;
+    if (!confirm(`Delete ${selectedIds.size} selected photo(s)? This cannot be undone.`)) return;
+
+    const libToDelete = new Set<string>();
+    const albumUpdates = new Map<string, Set<string>>();
+
+    for (const id of selectedIds) {
+      const photo = allPhotos.find(p => p.id === id);
+      if (!photo) continue;
+      if (photo.source === "Library") {
+        libToDelete.add(id);
+        const lp = libraryPhotos.find(p => p.id === id);
+        if (lp && isServerMode()) deletePhotoFromServer(lp.src);
+      } else {
+        const alb = albums.find(a => a.title === photo.source);
+        if (alb) {
+          if (!albumUpdates.has(alb.id)) albumUpdates.set(alb.id, new Set());
+          albumUpdates.get(alb.id)!.add(id);
+        }
+      }
+    }
+
+    if (libToDelete.size > 0) {
+      const remaining = libraryPhotos.filter(p => !libToDelete.has(p.id));
+      setLibraryPhotos(remaining);
+      await saveLibrary(remaining);
+    }
+
+    for (const [albumId, photoIds] of albumUpdates) {
+      const alb = albums.find(a => a.id === albumId);
+      if (alb) {
+        const filteredPhotos = (alb.photos || []).filter(p => !photoIds.has(p.id));
+        const updatedAlb = { ...alb, photos: filteredPhotos, photoCount: filteredPhotos.length };
+        await saveTenantAlbum(slug, updatedAlb);
+        setAlbums(prev => prev.map(a => a.id === albumId ? updatedAlb : a));
+      }
+    }
+
+    setSelectedIds(new Set());
+    toast.success(`Deleted ${selectedIds.size} photo${selectedIds.size !== 1 ? "s" : ""}`);
+  };
+
+  // ── Create album from selection ────────────────────────────────────────────
+  const handleCreateAlbumFromSelection = async () => {
+    if (selectedIds.size === 0) { toast.error("Select photos first"); return; }
+    const selectedPhotos = allPhotos.filter(p => selectedIds.has(p.id));
+    const newAlbum: Album = {
+      id: generateId("alb"),
+      slug: slugify(`album-${Date.now()}`),
+      title: "New Album",
+      description: "",
+      coverImage: selectedPhotos[0]?.src || "",
+      date: new Date().toISOString().split("T")[0],
+      photoCount: selectedPhotos.length,
+      freeDownloads: 0,
+      pricePerPhoto: 0,
+      priceFullAlbum: 0,
+      isPublic: true,
+      photos: selectedPhotos,
     };
-    const { ok, error } = await saveTenantAlbum(slug, updatedAlbum);
-    setUploading(false);
-    if (!ok) { toast.error(error || "Failed to save photos"); return; }
-    setAlbums(prev => prev.map(a => a.id === updatedAlbum.id ? updatedAlbum : a));
-    toast.success(`${newPhotos.length} photo${newPhotos.length !== 1 ? "s" : ""} uploaded to "${album.title}"`);
-    notifyTenantDiscord(slug, { event: "photos-uploaded", album: updatedAlbum, photoCount: newPhotos.length });
-    // Keep album filter showing the target album for easy review
-    setAlbumFilter(uploadTargetAlbumId);
-    if (uploadInputRef.current) uploadInputRef.current.value = "";
+    const { ok, error } = await saveTenantAlbum(slug, newAlbum);
+    if (!ok) { toast.error(error || "Failed to create album"); return; }
+    setAlbums(prev => [...prev, newAlbum]);
+    setSelectedIds(new Set());
+    toast.success(`Album created with ${selectedPhotos.length} photos — go to Albums tab to edit`);
+  };
+
+  // ── Add selection to existing album ───────────────────────────────────────
+  const handleAddToAlbum = async (albumId: string) => {
+    const selectedPhotos = allPhotos.filter(p => selectedIds.has(p.id));
+    const alb = albums.find(a => a.id === albumId);
+    if (!alb) return;
+    const existingSrcs = new Set((alb.photos || []).map(p => p.src));
+    const newPhotos = selectedPhotos.filter(p => !existingSrcs.has(p.src));
+    if (newPhotos.length === 0) { toast.info("All selected photos are already in this album"); return; }
+    const updatedAlb = { ...alb, photos: [...(alb.photos || []), ...newPhotos], photoCount: (alb.photos || []).length + newPhotos.length };
+    if (!updatedAlb.coverImage && newPhotos[0]) updatedAlb.coverImage = newPhotos[0].src;
+    const { ok, error } = await saveTenantAlbum(slug, updatedAlb);
+    if (!ok) { toast.error(error || "Failed to update album"); return; }
+    setAlbums(prev => prev.map(a => a.id === albumId ? updatedAlb : a));
+    setSelectedIds(new Set());
+    setShowAddToAlbum(false);
+    toast.success(`Added ${newPhotos.length} photo${newPhotos.length !== 1 ? "s" : ""} to "${alb.title}"`);
+  };
+
+  // ── Upload ─────────────────────────────────────────────────────────────────
+  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    const fileArr = Array.from(files);
+    setUploadStats({ total: fileArr.length, done: 0, errors: 0, savedBytes: 0 });
+
+    if (isServerMode()) {
+      const results = await uploadPhotosToServer(fileArr, (done, total) => {
+        setUploadStats(prev => prev ? { ...prev, done, total } : null);
+      });
+      const newPhotos: Photo[] = results.map(r => ({
+        id: r.id, src: r.url, thumbnail: r.url + "?size=thumb",
+        title: r.originalName.replace(/\.[^.]+$/, ""), width: 0, height: 0,
+        uploadedAt: new Date().toISOString(),
+      }));
+      if (newPhotos.length > 0) {
+        if (selectedAlbum) {
+          const alb = albums.find(a => a.id === selectedAlbum.id);
+          if (alb) {
+            const updatedPhotos = [...(alb.photos || []), ...newPhotos];
+            const updatedAlb = { ...alb, photos: updatedPhotos, photoCount: updatedPhotos.length };
+            if (!updatedAlb.coverImage) updatedAlb.coverImage = newPhotos[0].src;
+            await saveTenantAlbum(slug, updatedAlb);
+            setAlbums(prev => prev.map(a => a.id === alb.id ? updatedAlb : a));
+          }
+        } else {
+          const updated = [...libraryPhotos, ...newPhotos];
+          setLibraryPhotos(updated);
+          await saveLibrary(updated);
+        }
+      }
+      setUploadStats(prev => prev ? { ...prev, done: fileArr.length, errors: fileArr.length - results.length } : null);
+      const target = selectedAlbum ? `"${selectedAlbum.title}"` : "library";
+      if (results.length > 0) toast.success(`${results.length} photos uploaded to ${target}`);
+    } else {
+      for (const file of fileArr) {
+        try {
+          const result = await compressImage(file);
+          const thumb = await generateThumbnail(result.src).catch(() => undefined);
+          const photo: Photo = {
+            id: generateId("ph"), src: result.src, thumbnail: thumb,
+            title: file.name.replace(/\.[^.]+$/, ""), width: result.width, height: result.height,
+            uploadedAt: new Date().toISOString(),
+          };
+          if (selectedAlbum) {
+            const alb = albums.find(a => a.id === selectedAlbum.id);
+            if (alb) {
+              const updatedAlb = { ...alb, photos: [...(alb.photos || []), photo], photoCount: (alb.photos || []).length + 1 };
+              await saveTenantAlbum(slug, updatedAlb);
+              setAlbums(prev => prev.map(a => a.id === alb.id ? updatedAlb : a));
+            }
+          } else {
+            setLibraryPhotos(prev => {
+              const u = [...prev, photo];
+              saveLibrary(u);
+              return u;
+            });
+          }
+          setUploadStats(prev => prev ? { ...prev, done: prev.done + 1, savedBytes: prev.savedBytes + (result.originalSize - result.compressedSize) } : null);
+        } catch {
+          setUploadStats(prev => prev ? { ...prev, done: prev.done + 1, errors: prev.errors + 1 } : null);
+          toast.error(`Failed to process: ${file.name}`);
+        }
+      }
+    }
+    if (e.target) e.target.value = "";
   };
 
   if (loading) return <div className="py-16 text-center text-muted-foreground font-body text-sm animate-pulse">Loading…</div>;
 
-  const starredCount = allPhotos.filter(p => p.starred).length;
-
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-      {/* Header row */}
-      <div className="flex items-center justify-between mb-4">
-        <div>
-          <h2 className="font-display text-2xl text-foreground">Photos</h2>
-          <p className="text-xs font-body text-muted-foreground mt-0.5">
-            {visiblePhotos.length} showing
-            {visiblePhotos.length !== allPhotos.length ? ` of ${allPhotos.length} total` : ""}
-            {starredCount > 0 ? ` · ★ ${starredCount} starred` : ""}
-          </p>
-        </div>
-        {albums.length > 0 && (
-          <Button
-            size="sm"
-            className="font-body text-xs gap-1.5 bg-primary text-primary-foreground"
-            onClick={() => uploadInputRef.current?.click()}
-            disabled={uploading || !uploadTargetAlbumId}
-          >
-            <Upload className="w-3.5 h-3.5" />
-            {uploading ? `${uploadProgress}%…` : "Upload"}
+      {/* ── Toolbar ── */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+        <h2 className="font-display text-2xl text-foreground">Photo Library</h2>
+        <div className="flex gap-2 items-center flex-wrap">
+          <Button size="sm" variant="outline" onClick={handleClearDuplicates} className="gap-2 font-body text-xs border-border text-foreground">
+            <XSquare className="w-4 h-4" /> Clear Dupes
           </Button>
+          <Button size="sm" variant="outline" onClick={handleSyncStorage} disabled={syncing} className="gap-2 font-body text-xs border-border text-foreground">
+            <RefreshCw className={`w-4 h-4 ${syncing ? "animate-spin" : ""}`} /> {syncing ? "Syncing…" : "Sync Storage"}
+          </Button>
+          {selectedIds.size > 0 && (
+            <>
+              <Button size="sm" variant="outline" onClick={handleMassDelete}
+                className="gap-2 font-body text-xs border-destructive/30 text-destructive hover:bg-destructive/10">
+                <Trash2 className="w-4 h-4" /> Delete ({selectedIds.size})
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => setSelectedIds(new Set())}
+                className="gap-1 font-body text-xs text-muted-foreground">
+                <XSquare className="w-4 h-4" /> Clear
+              </Button>
+              <div className="relative">
+                <Button size="sm" variant="outline" onClick={() => setShowAddToAlbum(v => !v)}
+                  className="gap-2 font-body text-xs border-border text-foreground">
+                  <Plus className="w-4 h-4" /> Add to Album ({selectedIds.size})
+                </Button>
+                {showAddToAlbum && albums.length > 0 && (
+                  <div className="absolute top-full right-0 mt-1 z-50 glass-panel rounded-lg border border-border shadow-lg min-w-[200px]">
+                    {albums.map(alb => (
+                      <button key={alb.id} onClick={() => handleAddToAlbum(alb.id)}
+                        className="w-full text-left px-4 py-2.5 text-sm font-body text-foreground hover:bg-secondary transition-colors first:rounded-t-lg last:rounded-b-lg">
+                        {alb.title} ({(alb.photos || []).length} photos)
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <Button size="sm" onClick={handleCreateAlbumFromSelection}
+                className="gap-2 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs tracking-wider uppercase">
+                <Plus className="w-4 h-4" /> Create Album ({selectedIds.size})
+              </Button>
+            </>
+          )}
+          <Button size="sm" variant="ghost"
+            onClick={() => {
+              if (selectedIds.size === displayPhotos.length && displayPhotos.length > 0) setSelectedIds(new Set());
+              else setSelectedIds(new Set(displayPhotos.map(p => p.id)));
+            }}
+            className="gap-1 font-body text-xs text-muted-foreground">
+            <CheckSquare className="w-4 h-4" />
+            {selectedIds.size === displayPhotos.length && displayPhotos.length > 0 ? "Deselect All" : "Select All"}
+          </Button>
+        </div>
+      </div>
+
+      {/* ── Search ── */}
+      <div className="relative mb-4">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+        <Input
+          placeholder="Search by filename…"
+          value={searchQuery}
+          onChange={e => setSearchQuery(e.target.value)}
+          className="pl-9 h-9 text-sm font-body bg-secondary/50 border-border"
+        />
+        {searchQuery && (
+          <button onClick={() => setSearchQuery("")} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+            <X className="w-4 h-4" />
+          </button>
         )}
       </div>
 
-      {/* Upload controls */}
-      {albums.length > 0 && (
-        <div className="flex items-center gap-2 mb-4 flex-wrap">
-          <span className="text-xs font-body text-muted-foreground">Upload to:</span>
-          <select
-            value={uploadTargetAlbumId}
-            onChange={e => setUploadTargetAlbumId(e.target.value)}
-            className="bg-secondary border border-border text-foreground font-body text-xs rounded-md px-2.5 py-1.5 max-w-[180px] truncate"
-          >
-            {albums.map(a => (
-              <option key={a.id} value={a.id}>{a.title}</option>
-            ))}
-          </select>
-          <input
-            ref={uploadInputRef}
-            type="file"
-            accept="image/*"
-            multiple
-            className="hidden"
-            onChange={e => handleUpload(e.target.files)}
-          />
-        </div>
-      )}
-
-      {/* Upload progress bar */}
-      {uploading && (
-        <div className="mb-4 h-1.5 bg-secondary rounded-full overflow-hidden">
-          <div className="h-full bg-primary transition-all duration-300 rounded-full" style={{ width: `${uploadProgress}%` }} />
-        </div>
-      )}
-
-      {/* Filter controls */}
-      <div className="flex items-center gap-2 mb-4 flex-wrap">
-        {/* Album pills */}
-        <div className="flex items-center gap-1.5 flex-wrap">
-          <button
-            onClick={() => setAlbumFilter("all")}
-            className={`text-xs font-body px-3 py-1.5 rounded-full border transition-all ${albumFilter === "all" ? "bg-primary/10 text-primary border-primary/30" : "border-border text-muted-foreground hover:text-foreground hover:bg-secondary"}`}
-          >
-            All Albums
-          </button>
-          {albums.map(a => (
-            <button
-              key={a.id}
-              onClick={() => setAlbumFilter(a.id)}
-              className={`text-xs font-body px-3 py-1.5 rounded-full border transition-all ${albumFilter === a.id ? "bg-primary/10 text-primary border-primary/30" : "border-border text-muted-foreground hover:text-foreground hover:bg-secondary"}`}
-            >
-              {a.title}
-              <span className="ml-1 opacity-60">({a.photos?.length || 0})</span>
-            </button>
-          ))}
-        </div>
-
-        {/* Starred toggle */}
-        <button
-          onClick={() => setStarredFilter(v => !v)}
-          className={`text-xs font-body px-3 py-1.5 rounded-full border transition-all flex items-center gap-1.5 ${starredFilter ? "bg-yellow-500/10 text-yellow-400 border-yellow-500/30" : "border-border text-muted-foreground hover:text-foreground hover:bg-secondary"}`}
-        >
-          <Star className={`w-3 h-3 ${starredFilter ? "fill-yellow-400 text-yellow-400" : ""}`} />
-          Starred{starredCount > 0 ? ` (${starredCount})` : ""}
+      {/* ── Source filter pills ── */}
+      <div className="flex gap-2 mb-4 overflow-x-auto pb-1">
+        <button onClick={() => setViewSource("all")}
+          className={`text-xs font-body px-3 py-1.5 rounded-full whitespace-nowrap transition-all ${viewSource === "all" ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground hover:text-foreground"}`}>
+          All ({allPhotos.length})
         </button>
+        <button onClick={() => setViewSource("library")}
+          className={`text-xs font-body px-3 py-1.5 rounded-full whitespace-nowrap transition-all ${viewSource === "library" ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground hover:text-foreground"}`}>
+          Library ({libraryPhotos.length})
+        </button>
+        {starredPhotos.length > 0 && (
+          <button onClick={() => setStarredOnly(v => !v)}
+            className={`text-xs font-body px-3 py-1.5 rounded-full whitespace-nowrap transition-all ${starredOnly ? "bg-yellow-500 text-black" : "bg-secondary text-yellow-400 hover:text-yellow-300"}`}>
+            ⭐ Starred ({starredPhotos.length})
+          </button>
+        )}
+        {albums.map(a => (
+          <button key={a.id} onClick={() => setViewSource(a.title)}
+            className={`text-xs font-body px-3 py-1.5 rounded-full whitespace-nowrap transition-all ${viewSource === a.title ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground hover:text-foreground"}`}>
+            {a.title} ({(a.photos || []).length})
+          </button>
+        ))}
       </div>
 
-      {/* Photo grid */}
-      {visiblePhotos.length === 0 ? (
-        <div className="text-center py-16 text-muted-foreground">
-          <Camera className="w-10 h-10 mx-auto mb-3 opacity-30" />
+      {/* ── Upload zone ── */}
+      <div className="glass-panel rounded-xl p-6 mb-6">
+        <div className="border-2 border-dashed border-border rounded-lg p-8 text-center hover:border-primary/30 transition-colors cursor-pointer relative">
+          <Upload className="w-8 h-8 text-muted-foreground/50 mx-auto mb-2" />
+          <p className="text-sm font-body text-muted-foreground">
+            Upload photos to {selectedAlbum ? `"${selectedAlbum.title}"` : "your library"}
+          </p>
+          <p className="text-[10px] font-body text-muted-foreground/50 mt-1">
+            {selectedAlbum ? "Photos will be added directly to this album" : "Select photos then create albums or add to existing ones"}
+          </p>
+          <input type="file" accept="image/*" multiple className="absolute inset-0 opacity-0 cursor-pointer" onChange={handleUpload} />
+        </div>
+        {uploadStats && (
+          <div className="mt-3 p-3 rounded-lg bg-secondary/50 border border-border">
+            <div className="flex items-center justify-between text-xs font-body text-muted-foreground">
+              <span>Processed {uploadStats.done}/{uploadStats.total} photos{uploadStats.errors > 0 ? ` (${uploadStats.errors} failed)` : ""}</span>
+              {uploadStats.savedBytes > 0 && <span className="text-green-500">Saved {formatBytes(uploadStats.savedBytes)}</span>}
+            </div>
+            {uploadStats.done < uploadStats.total && (
+              <div className="mt-1.5 h-1.5 rounded-full bg-border overflow-hidden">
+                <div className="h-full bg-primary rounded-full transition-all" style={{ width: `${(uploadStats.done / uploadStats.total) * 100}%` }} />
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* ── Photo grid ── */}
+      {displayPhotos.length === 0 ? (
+        <div className="glass-panel rounded-xl p-12 text-center">
+          <Image className="w-10 h-10 text-muted-foreground/30 mx-auto mb-3" />
           {allPhotos.length === 0 ? (
             <>
-              <p className="font-body text-sm">No photos yet</p>
-              <p className="font-body text-xs text-muted-foreground/60 mt-1">
-                {albums.length === 0
-                  ? "Create an album first, then upload photos here."
-                  : "Upload photos using the button above."}
-              </p>
+              <p className="text-sm font-body text-muted-foreground">No photos yet</p>
+              <p className="text-xs font-body text-muted-foreground/60 mt-1">Upload photos to your library or select an album filter.</p>
             </>
           ) : (
             <>
-              <p className="font-body text-sm">No photos match the current filters</p>
-              <button onClick={() => { setAlbumFilter("all"); setStarredFilter(false); }} className="text-xs font-body text-primary hover:underline mt-2">Clear filters</button>
+              <p className="text-sm font-body text-muted-foreground">No photos match the current filter</p>
+              <button onClick={() => { setViewSource("all"); setStarredOnly(false); setSearchQuery(""); }}
+                className="text-xs font-body text-primary hover:underline mt-2">Clear filters</button>
             </>
           )}
         </div>
       ) : (
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2">
-          {visiblePhotos.map(photo => (
-            <div key={photo.id} className="group relative aspect-square rounded-lg overflow-hidden bg-secondary">
-              <img
-                src={photoUrl(photo.thumbnail || (photo.src.startsWith("/uploads/") ? `${photo.src}?size=thumb` : photo.src))}
-                alt={photo.title}
+        <div className="grid grid-cols-3 sm:grid-cols-5 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-1.5">
+          {displayPhotos.map(p => (
+            <div
+              key={`${p.id}::${p.source}`}
+              className={`relative group aspect-square rounded-md overflow-hidden bg-secondary cursor-pointer border-2 transition-all ${selectedIds.has(p.id) ? "border-primary ring-2 ring-primary/20" : "border-transparent hover:border-border"}`}
+              onClick={() => toggleSelect(p.id)}
+            >
+              <ProgressiveImg
+                thumbSrc={photoUrl(p.thumbnail || (p.src.startsWith("/uploads/") ? `${p.src}?size=thumb` : p.src))}
+                fullSrc={photoUrl(p.src)}
+                alt={p.title}
                 className="w-full h-full object-cover"
                 loading="lazy"
               />
-
-              {/* Star button — always visible on touch, hover on desktop */}
-              <button
-                onClick={() => handleToggleStar(photo.albumId, photo.id)}
-                className={`absolute top-1.5 right-1.5 w-7 h-7 rounded-full flex items-center justify-center transition-all active:scale-90 ${photo.starred ? "bg-yellow-500/30 opacity-100" : "bg-black/40 opacity-0 group-hover:opacity-100"}`}
-                title={photo.starred ? "Remove star" : "Star photo"}
-              >
-                <Star className={`w-3.5 h-3.5 ${photo.starred ? "text-yellow-400 fill-yellow-400" : "text-white/80"}`} />
-              </button>
-
-              {/* Album label */}
-              <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent px-2 pt-4 pb-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                <p className="text-[10px] font-body text-white/90 truncate">{photo.albumTitle}</p>
+              {p.starred && <span className="absolute top-1 left-1 text-[10px] leading-none">⭐</span>}
+              <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-background/80 to-transparent p-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                <p className="text-[9px] font-body text-foreground font-medium truncate">{p.title}</p>
+                <p className="text-[8px] font-body text-muted-foreground truncate">{p.source}</p>
               </div>
+              {selectedIds.has(p.id) && (
+                <div className="absolute top-1 right-1 w-5 h-5 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-[10px] font-bold">✓</div>
+              )}
+              <button
+                onClick={e => { e.stopPropagation(); handleDeletePhoto(p.id, p.source, p.src); }}
+                className="absolute bottom-1 right-1 w-5 h-5 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+              >
+                <X className="w-3 h-3" />
+              </button>
             </div>
           ))}
         </div>
