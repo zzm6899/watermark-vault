@@ -11,7 +11,7 @@ function getStripe() {
   return stripeClient;
 }
 
-function registerRoutes(app) {
+function registerRoutes(app, { writeDb } = {}) {
   const checkoutLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHeaders: true, legacyHeaders: false, message: { error: "Too many checkout requests — please wait" } });
   // ── Status ─────────────────────────────────────────
   app.get("/api/stripe/status", (_req, res) => {
@@ -157,6 +157,9 @@ function registerRoutes(app) {
       const fs = require("fs");
       const path = require("path");
       const DB_FILE = path.join(process.env.DATA_DIR || "/data", "db.json");
+      // Use the shared writeDb helper when available so that the in-memory DB cache is
+      // invalidated immediately, ensuring subsequent reads reflect the updated payment status.
+      const saveDb = writeDb || ((data) => fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2)));
       try {
         const db = JSON.parse(fs.readFileSync(DB_FILE, "utf-8"));
         
@@ -168,7 +171,7 @@ function registerRoutes(app) {
             bookings[idx].depositPaidAt = new Date().toISOString();
             bookings[idx].stripeSessionId = session.id;
             db.bookings = JSON.stringify(bookings);
-            fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
+            saveDb(db);
             console.log(`📝 Booking ${metadata.bookingId} marked as paid`);
           }
         }
@@ -198,7 +201,7 @@ function registerRoutes(app) {
             album.sessionPurchases = sessionPurchases;
             albums[albumIdx] = album;
             db["wv_albums"] = JSON.stringify(albums);
-            fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
+            saveDb(db);
           } else {
             console.warn(`Album ${metadata.albumId} not found in wv_albums`);
           }
@@ -213,7 +216,7 @@ function registerRoutes(app) {
             invoices[idx].paidAt = new Date().toISOString();
             invoices[idx].stripeSessionId = session.id;
             db["wv_invoices"] = JSON.stringify(invoices);
-            fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
+            saveDb(db);
             console.log(`📝 Invoice ${metadata.invoiceId} marked as paid via Stripe`);
           }
         }

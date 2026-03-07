@@ -223,7 +223,9 @@ export default function AlbumDetail() {
     }
   }, [albumId]);
 
-  // Poll until Stripe webhook updates album (runs on stripeSuccess/pollingCount changes)
+  // Poll until Stripe webhook updates album (runs on stripeSuccess/pollingCount changes).
+  // We must fetch fresh data from the server because the webhook writes sessionPurchases
+  // directly to db.json — it never goes through the client's localStorage.
   useEffect(() => {
     if (!stripeSuccess) return;
     if (pollingCount >= 15) {
@@ -231,7 +233,18 @@ export default function AlbumDetail() {
       setStripeSuccess(false);
       return;
     }
-    const timer = setTimeout(() => {
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetch("/api/store/wv_albums");
+        if (res.ok) {
+          const { value } = await res.json();
+          if (value != null) {
+            localStorage.setItem("wv_albums", typeof value === "string" ? value : JSON.stringify(value));
+          }
+        }
+      } catch (err) {
+        console.error("Failed to fetch album data from server:", err);
+      }
       refreshAlbum();
       setPollingCount(n => n + 1);
     }, 2000);
