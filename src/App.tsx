@@ -15,7 +15,6 @@ import MobileCapture from "./pages/MobileCapture";
 import InvoiceView from "./pages/InvoiceView";
 import TenantBookingPage from "./pages/TenantBookingPage";
 import TenantSetup from "./pages/TenantSetup";
-import TenantAdmin from "./pages/TenantAdmin";
 import LoginPage from "./pages/LoginPage";
 import { isSetupComplete, isLoggedIn } from "./lib/storage";
 import { syncFromServer } from "./lib/api";

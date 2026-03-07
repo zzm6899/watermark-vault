@@ -62,7 +62,7 @@ export default function LoginPage() {
         timezone: result.tenant!.timezone,
         loggedAt: new Date().toISOString(),
       });
-      navigate(`/tenant-admin/${result.tenant!.slug}`, { replace: true });
+      navigate("/capture", { replace: true });
     } finally {
       setLoading(false);
     }
