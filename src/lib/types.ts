@@ -313,6 +313,8 @@ export interface LicenseKey {
   trialMaxEvents?: number;
   /** Max number of bookings allowed under a trial key (default 10) */
   trialMaxBookings?: number;
+  /** Secure random token used to generate a one-time tenant setup URL */
+  setupToken?: string;
 }
 
 // ─── Tenants ──────────────────────────────────────────────────────────────────

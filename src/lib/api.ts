@@ -1070,3 +1070,41 @@ export async function getTenantStripeStatus(slug: string): Promise<{ configured:
     return await res.json();
   } catch { return { configured: false }; }
 }
+
+
+// ── Tenant Setup (via setup token) ─────────────────────────────────────────
+
+/** Look up license key info by setup token. */
+export async function getTenantSetupInfo(token: string): Promise<{
+  key?: string;
+  issuedTo?: string;
+  isTrial?: boolean;
+  trialMaxEvents?: number;
+  trialMaxBookings?: number;
+  expiresAt?: string;
+  error?: string;
+}> {
+  try {
+    const res = await fetch(`/api/tenant-setup/${encodeURIComponent(token)}`);
+    const json = await res.json();
+    if (!res.ok) return { error: json.error || "Invalid setup link" };
+    return json;
+  } catch { return { error: "Network error" }; }
+}
+
+/** Complete tenant setup: create tenant and activate license key. */
+export async function completeTenantSetup(
+  token: string,
+  data: { slug: string; displayName: string; email: string; bio?: string; timezone?: string },
+): Promise<{ ok: boolean; tenant?: import("./types").Tenant; error?: string }> {
+  try {
+    const res = await fetch(`/api/tenant-setup/${encodeURIComponent(token)}/complete`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+    const json = await res.json();
+    if (!res.ok) return { ok: false, error: json.error || "Failed to complete setup" };
+    return { ok: true, tenant: json.tenant };
+  } catch { return { ok: false, error: "Network error" }; }
+}

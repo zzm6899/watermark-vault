@@ -5785,6 +5785,11 @@ function LicenseKeysPanel() {
     navigator.clipboard.writeText(key).then(() => toast.success("Copied!")).catch(() => toast.error("Copy failed"));
   };
 
+  const copySetupUrl = (setupToken: string) => {
+    const url = `${window.location.origin}/tenant-setup/${setupToken}`;
+    navigator.clipboard.writeText(url).then(() => toast.success("Setup URL copied!")).catch(() => toast.error("Copy failed"));
+  };
+
   return (
     <div className="glass-panel rounded-xl p-6 space-y-4">
       <button
@@ -5800,8 +5805,7 @@ function LicenseKeysPanel() {
       {expanded && (
         <div className="space-y-5">
           <p className="text-xs font-body text-muted-foreground">
-            Generate license keys to share with other photographers who want to deploy their own Watermark Vault instance.
-            When keys exist, new deployments must enter a valid key during setup.
+            Generate license keys for tenant photographers. Each key includes a one-time setup URL you can send to the tenant — they use it to register their URL slug and configure their booking page.
           </p>
 
           {/* Generate new key */}
@@ -5920,6 +5924,19 @@ function LicenseKeysPanel() {
                     {k.usedAt && k.usedBy && <span>· Used by: {k.usedBy} on {k.usedAt.slice(0, 10)}</span>}
                     {k.notes && <span>· {k.notes}</span>}
                   </div>
+                  {!k.usedAt && k.setupToken && (
+                    <div className="mt-1.5 flex items-center gap-1.5">
+                      <span className="text-[11px] font-body text-muted-foreground truncate max-w-[220px]">
+                        {window.location.origin}/tenant-setup/{k.setupToken.slice(0, 8)}…
+                      </span>
+                      <button
+                        onClick={() => copySetupUrl(k.setupToken!)}
+                        className="text-[10px] font-body text-primary hover:text-primary/80 flex items-center gap-1 shrink-0"
+                      >
+                        <Copy className="w-3 h-3" /> Copy Setup URL
+                      </button>
+                    </div>
+                  )}
                 </div>
                 <Button
                   variant="ghost"
