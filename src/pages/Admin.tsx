@@ -24,6 +24,7 @@ import {
   getPhotoLibrary, setPhotoLibrary,
   getEmailTemplates, addEmailTemplate, updateEmailTemplate, deleteEmailTemplate,
   getInvoices, addInvoice, updateInvoice, deleteInvoice, getNextInvoiceNumber,
+  getContacts, addContact, updateContact, deleteContact,
 } from "@/lib/storage";
 import { compressImage, formatBytes, getLocalStorageUsage, generateThumbnail } from "@/lib/image-utils";
 import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar, getServerStorageStats, syncFromServer, sendEmail, bulkDeleteFiles, syncBookingsToSheet, getBookingEmailLog, sendBookingReminder, sendCustomEmail, getWaitlistEntries, deleteWaitlistEntry, notifyWaitlistOnCancel, notifyDiscord, getCacheStats, warmCache, createInvoiceCheckout, sendInvoiceEmail, getStripeStatus } from "@/lib/api";
@@ -34,7 +35,7 @@ import type {
   EventType, QuestionField, AvailabilitySlot,
   ProfileSettings, AppSettings, Booking, WatermarkPosition,
   Album, Photo, PaymentStatus, AlbumDisplaySize, AlbumDownloadRecord, DownloadHistoryEntry,
-  EmailTemplate, WaitlistEntry, Invoice, InvoiceItem, InvoiceParty, InvoiceStatus,
+  EmailTemplate, WaitlistEntry, Invoice, InvoiceItem, InvoiceParty, InvoiceStatus, Contact,
 } from "@/lib/types";
 import WatermarkedImage from "@/components/WatermarkedImage";
 import ProgressiveImg from "@/components/ProgressiveImg";
@@ -46,7 +47,7 @@ import sampleWedding from "@/assets/sample-wedding.jpg";
 import sampleEvent from "@/assets/sample-event.jpg";
 import sampleFood from "@/assets/sample-food.jpg";
 
-type Tab = "dashboard" | "bookings" | "events" | "albums" | "photos" | "finance" | "invoices" | "profile" | "settings" | "storage";
+type Tab = "dashboard" | "bookings" | "events" | "albums" | "photos" | "finance" | "invoices" | "contacts" | "profile" | "settings" | "storage";
 
 const TAB_ROUTE_MAP: Record<string, Tab> = {
   dashboard: "dashboard",
@@ -56,6 +57,7 @@ const TAB_ROUTE_MAP: Record<string, Tab> = {
   photos: "photos",
   finance: "finance",
   invoices: "invoices",
+  contacts: "contacts",
   profile: "profile",
   settings: "settings",
   storage: "storage",
@@ -475,6 +477,7 @@ export default function Admin() {
     { id: "photos" as Tab, label: "Photos", icon: Upload },
     { id: "finance" as Tab, label: "Finance", icon: DollarSign },
     { id: "invoices" as Tab, label: "Invoices", icon: Receipt },
+    { id: "contacts" as Tab, label: "Contacts", icon: Users },
     { id: "profile" as Tab, label: "Profile", icon: Camera },
     { id: "settings" as Tab, label: "Settings", icon: Settings },
     { id: "storage" as Tab, label: "Storage", icon: HardDrive },
@@ -571,6 +574,7 @@ export default function Admin() {
           {activeTab === "photos" && <PhotosView />}
           {activeTab === "finance" && <FinanceView />}
           {activeTab === "invoices" && <InvoicesView />}
+          {activeTab === "contacts" && <ContactsView />}
           {activeTab === "profile" && <ProfileView />}
           {activeTab === "settings" && <SettingsView />}
           {activeTab === "storage" && <StorageView />}
@@ -3695,14 +3699,20 @@ function InvoicesView() {
   const openCreate = () => {
     const now = new Date();
     const due = new Date(now); due.setDate(due.getDate() + 30);
+    const invFrom = settings.invoiceFrom;
     const blankInv: Invoice = {
       id: generateId("inv"),
       number: getNextInvoiceNumber(),
       status: "draft",
-      from: { name: profile.name || "", email: "", address: "", abn: "" },
+      from: {
+        name: (invFrom?.name) || profile.name || "",
+        email: invFrom?.email || "",
+        address: invFrom?.address || "",
+        abn: invFrom?.abn || "",
+      },
       to: emptyParty(),
       items: [emptyItem()],
-      notes: "",
+      notes: settings.invoiceNotes || "",
       dueDate: due.toISOString().slice(0, 10),
       createdAt: now.toISOString(),
       shareToken: Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2),
@@ -4098,6 +4108,8 @@ function InvoiceForm({
   onCancel: () => void;
 }) {
   const [inv, setInv] = React.useState<Invoice>({ ...initial });
+  const contacts = React.useMemo(() => getContacts(), []);
+  const [selectedContact, setSelectedContact] = React.useState("");
 
   const setFrom = (patch: Partial<InvoiceParty>) => setInv(p => ({ ...p, from: { ...p.from, ...patch } }));
   const setTo   = (patch: Partial<InvoiceParty>) => setInv(p => ({ ...p, to:   { ...p.to,   ...patch } }));
@@ -4131,6 +4143,14 @@ function InvoiceForm({
       if (!alb) return { ...p, albumId };
       return { ...p, albumId, to: { ...p.to, name: alb.clientName || p.to.name, email: alb.clientEmail || p.to.email } };
     });
+  };
+
+  // Auto-fill "To" from a saved contact
+  const handleContactSelect = (contactId: string) => {
+    if (!contactId) return;
+    const c = contacts.find(ct => ct.id === contactId);
+    if (!c) return;
+    setTo({ name: c.name, email: c.email, address: c.address, abn: c.abn || "" });
   };
 
   const sub = calcInvSubtotal(inv.items);
@@ -4202,7 +4222,23 @@ function InvoiceForm({
         </div>
         {/* TO */}
         <div className="glass-panel rounded-xl p-4 space-y-3">
-          <p className="text-xs font-body uppercase tracking-wider text-muted-foreground font-medium">Bill To</p>
+          <div className="flex items-center justify-between">
+            <p className="text-xs font-body uppercase tracking-wider text-muted-foreground font-medium">Bill To</p>
+            {contacts.length > 0 && (
+              <select
+                className="text-xs font-body bg-secondary border border-border text-muted-foreground rounded-md px-2 py-1 focus:outline-none focus:ring-1 focus:ring-primary/50"
+                value={selectedContact}
+                onChange={e => {
+                  const id = e.target.value;
+                  handleContactSelect(id);
+                  setSelectedContact("");
+                }}
+              >
+                <option value="">Fill from contact…</option>
+                {contacts.map(c => <option key={c.id} value={c.id}>{c.name}{c.company ? ` (${c.company})` : ""}</option>)}
+              </select>
+            )}
+          </div>
           <div><label className={labelClass}>Name *</label><input className={fieldClass} value={inv.to.name} onChange={e => setTo({ name: e.target.value })} placeholder="Client name" required /></div>
           <div><label className={labelClass}>ABN</label><input className={fieldClass} value={inv.to.abn || ""} onChange={e => setTo({ abn: e.target.value })} /></div>
           <div><label className={labelClass}>Email</label><input className={fieldClass} type="email" value={inv.to.email} onChange={e => setTo({ email: e.target.value })} /></div>
@@ -4752,6 +4788,150 @@ function ProfileView() {
   );
 }
 
+// ─── Contacts ────────────────────────────────────────
+function ContactsView() {
+  const [contacts, setContactsState] = useState<Contact[]>(() => getContacts());
+  const [editing, setEditing] = useState<Contact | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+
+  const emptyContact = (): Contact => ({
+    id: generateId("contact"),
+    name: "",
+    email: "",
+    address: "",
+    abn: "",
+    phone: "",
+    company: "",
+    notes: "",
+    createdAt: new Date().toISOString(),
+  });
+
+  const reload = () => setContactsState(getContacts());
+
+  const handleSave = () => {
+    if (!editing) return;
+    if (!editing.name.trim()) { toast.error("Name is required"); return; }
+    const exists = contacts.find(c => c.id === editing.id);
+    if (exists) { updateContact(editing); toast.success("Contact updated"); }
+    else { addContact(editing); toast.success("Contact saved"); }
+    reload();
+    setEditing(null);
+  };
+
+  const handleDelete = (id: string) => {
+    if (!confirm("Delete this contact?")) return;
+    deleteContact(id);
+    reload();
+    toast.success("Contact deleted");
+  };
+
+  const filtered = contacts.filter(c =>
+    !searchQuery ||
+    c.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    c.email.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    (c.company || "").toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
+  const fieldClass = "w-full bg-secondary border border-border text-foreground font-body text-sm rounded-lg px-3 py-2 placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary/50";
+  const labelClass = "block text-[10px] font-body uppercase tracking-wider text-muted-foreground mb-1.5";
+
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+      <div className="flex items-center justify-between mb-6">
+        <h2 className="font-display text-2xl text-foreground">Contacts</h2>
+        <Button onClick={() => setEditing(emptyContact())} className="gap-2 font-body text-sm">
+          <Plus className="w-4 h-4" /> New Contact
+        </Button>
+      </div>
+
+      {/* Edit / Create panel */}
+      {editing && (
+        <div className="glass-panel rounded-xl p-5 mb-6 space-y-4 max-w-lg">
+          <h3 className="font-display text-base text-foreground">{contacts.find(c => c.id === editing.id) ? "Edit Contact" : "New Contact"}</h3>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className={labelClass}>Name *</label>
+              <input className={fieldClass} value={editing.name} onChange={e => setEditing({ ...editing, name: e.target.value })} placeholder="Full name" />
+            </div>
+            <div>
+              <label className={labelClass}>Company</label>
+              <input className={fieldClass} value={editing.company || ""} onChange={e => setEditing({ ...editing, company: e.target.value })} placeholder="Business name" />
+            </div>
+            <div>
+              <label className={labelClass}>Email</label>
+              <input className={fieldClass} type="email" value={editing.email} onChange={e => setEditing({ ...editing, email: e.target.value })} />
+            </div>
+            <div>
+              <label className={labelClass}>Phone</label>
+              <input className={fieldClass} value={editing.phone || ""} onChange={e => setEditing({ ...editing, phone: e.target.value })} placeholder="+61 4xx xxx xxx" />
+            </div>
+            <div>
+              <label className={labelClass}>ABN</label>
+              <input className={fieldClass} value={editing.abn || ""} onChange={e => setEditing({ ...editing, abn: e.target.value })} placeholder="12 345 678 901" />
+            </div>
+            <div className="sm:col-span-2">
+              <label className={labelClass}>Address</label>
+              <textarea className={fieldClass} rows={2} value={editing.address} onChange={e => setEditing({ ...editing, address: e.target.value })} placeholder="Street address" />
+            </div>
+            <div className="sm:col-span-2">
+              <label className={labelClass}>Notes</label>
+              <textarea className={fieldClass} rows={2} value={editing.notes || ""} onChange={e => setEditing({ ...editing, notes: e.target.value })} placeholder="Internal notes" />
+            </div>
+          </div>
+          <div className="flex gap-2 pt-1">
+            <Button onClick={handleSave} className="font-body text-sm gap-1.5"><Save className="w-4 h-4" />Save</Button>
+            <Button variant="outline" onClick={() => setEditing(null)} className="font-body text-sm gap-1.5"><X className="w-4 h-4" />Cancel</Button>
+          </div>
+        </div>
+      )}
+
+      {/* Search */}
+      {contacts.length > 0 && (
+        <div className="relative mb-4 max-w-sm">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground/50" />
+          <input
+            className="w-full pl-9 pr-3 py-2 bg-secondary border border-border text-foreground font-body text-sm rounded-lg focus:outline-none focus:ring-1 focus:ring-primary/50 placeholder:text-muted-foreground/50"
+            placeholder="Search contacts…"
+            value={searchQuery}
+            onChange={e => setSearchQuery(e.target.value)}
+          />
+        </div>
+      )}
+
+      {/* Contact list */}
+      {contacts.length === 0 ? (
+        <div className="text-center py-16 text-muted-foreground">
+          <Users className="w-10 h-10 mx-auto mb-3 opacity-30" />
+          <p className="font-body text-sm">No contacts yet</p>
+          <p className="font-body text-xs text-muted-foreground/60 mt-1">Add clients here so you can quickly bill them on invoices.</p>
+          <Button onClick={() => setEditing(emptyContact())} variant="outline" className="mt-4 gap-2 font-body text-sm">
+            <Plus className="w-4 h-4" /> Add First Contact
+          </Button>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {filtered.map(c => (
+            <div key={c.id} className="glass-panel rounded-xl px-4 py-3 flex items-center justify-between gap-3">
+              <div className="min-w-0 flex-1">
+                <p className="font-body text-sm text-foreground font-medium truncate">{c.name}{c.company ? <span className="text-muted-foreground font-normal"> · {c.company}</span> : null}</p>
+                <p className="font-body text-xs text-muted-foreground truncate">{[c.email, c.phone].filter(Boolean).join(" · ")}</p>
+                {c.abn && <p className="font-body text-[10px] text-muted-foreground/60">ABN: {c.abn}</p>}
+              </div>
+              <div className="flex gap-1 shrink-0">
+                <button onClick={() => setEditing({ ...c })} className="p-1.5 rounded hover:bg-secondary text-muted-foreground/60 hover:text-foreground transition-colors"><Edit className="w-3.5 h-3.5" /></button>
+                <button onClick={() => handleDelete(c.id)} className="p-1.5 rounded hover:bg-red-500/10 text-muted-foreground/60 hover:text-red-400 transition-colors"><Trash2 className="w-3.5 h-3.5" /></button>
+              </div>
+            </div>
+          ))}
+          {filtered.length === 0 && searchQuery && (
+            <p className="text-center py-8 text-sm font-body text-muted-foreground">No contacts match "{searchQuery}"</p>
+          )}
+        </div>
+      )}
+    </motion.div>
+  );
+}
+
 // ─── Settings ────────────────────────────────────────
 function SettingsView() {
   const [settings, setSettingsState] = useState<AppSettings>(getSettings());
@@ -4910,6 +5090,45 @@ function SettingsView() {
             <div>
               <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Full Album Price ($)</label>
               <Input type="number" value={settings.defaultPriceFullAlbum} onChange={(e) => setSettingsState({ ...settings, defaultPriceFullAlbum: Number(e.target.value) })} className="bg-secondary border-border text-foreground font-body w-32" />
+            </div>
+          </div>
+        </div>
+
+        {/* Invoice Defaults */}
+        <div className="glass-panel rounded-xl p-6 space-y-4">
+          <h3 className="font-display text-base text-foreground flex items-center gap-2">
+            <Receipt className="w-4 h-4 text-primary" /> Invoice Defaults
+          </h3>
+          <p className="text-[10px] font-body text-muted-foreground/60">These details are pre-filled in the "From" section every time you create a new invoice.</p>
+          <div className="space-y-3">
+            {(() => {
+              const from = settings.invoiceFrom || { name: "", email: "", address: "", abn: "" };
+              const setFrom = (patch: Partial<InvoiceParty>) =>
+                setSettingsState({ ...settings, invoiceFrom: { ...from, ...patch } });
+              return (
+                <>
+                  <div>
+                    <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Business Name</label>
+                    <Input value={from.name} onChange={(e) => setFrom({ name: e.target.value })} placeholder="Your business name" className="bg-secondary border-border text-foreground font-body" />
+                  </div>
+                  <div>
+                    <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">ABN</label>
+                    <Input value={from.abn || ""} onChange={(e) => setFrom({ abn: e.target.value })} placeholder="12 345 678 901" className="bg-secondary border-border text-foreground font-body" />
+                  </div>
+                  <div>
+                    <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Email</label>
+                    <Input type="email" value={from.email} onChange={(e) => setFrom({ email: e.target.value })} className="bg-secondary border-border text-foreground font-body" />
+                  </div>
+                  <div>
+                    <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Address</label>
+                    <Textarea value={from.address} onChange={(e) => setFrom({ address: e.target.value })} placeholder="Street address" className="bg-secondary border-border text-foreground font-body min-h-[60px]" />
+                  </div>
+                </>
+              );
+            })()}
+            <div>
+              <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Default Invoice Notes</label>
+              <Textarea value={settings.invoiceNotes || ""} onChange={(e) => setSettingsState({ ...settings, invoiceNotes: e.target.value })} placeholder="e.g. Payment due within 30 days. Thank you for your business." className="bg-secondary border-border text-foreground font-body min-h-[60px]" />
             </div>
           </div>
         </div>

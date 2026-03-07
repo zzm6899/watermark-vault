@@ -1,6 +1,6 @@
 import type {
   EventType, Booking, Album, Photo, ProfileSettings,
-  AppSettings, AdminCredentials, BankTransferSettings, WaitlistEntry, EmailTemplate, Invoice,
+  AppSettings, AdminCredentials, BankTransferSettings, WaitlistEntry, EmailTemplate, Invoice, Contact,
 } from "./types";
 import { persistToServer } from "./api";
 
@@ -204,12 +204,19 @@ const defaultSettings: AppSettings = {
   discordNotifyProofing: true,
   discordNotifyInvoices: true,
   proofingEnabled: false,
+  invoiceFrom: { name: "", email: "", address: "", abn: "" },
+  invoiceNotes: "",
 };
 
 export function getSettings(): AppSettings {
   const stored = get(KEYS.SETTINGS, defaultSettings);
   // Merge with defaults to handle new fields
-  return { ...defaultSettings, ...stored, bankTransfer: { ...defaultSettings.bankTransfer, ...stored.bankTransfer } };
+  return {
+    ...defaultSettings,
+    ...stored,
+    bankTransfer: { ...defaultSettings.bankTransfer, ...stored.bankTransfer },
+    invoiceFrom: { ...defaultSettings.invoiceFrom, ...(stored.invoiceFrom || {}) },
+  };
 }
 
 export function setSettings(s: AppSettings) {
@@ -323,4 +330,27 @@ export function getNextInvoiceNumber(): string {
     .filter(n => !isNaN(n));
   const next = nums.length > 0 ? Math.max(...nums) + 1 : 1;
   return `INV-${String(next).padStart(4, "0")}`;
+}
+
+// ── Contacts ────────────────────────────────────────
+export function getContacts(): Contact[] {
+  return get<Contact[]>("wv_contacts", []);
+}
+
+export function setContacts(contacts: Contact[]) {
+  set("wv_contacts", contacts);
+}
+
+export function addContact(contact: Contact) {
+  const list = getContacts();
+  list.push(contact);
+  setContacts(list);
+}
+
+export function updateContact(contact: Contact) {
+  setContacts(getContacts().map(c => (c.id === contact.id ? contact : c)));
+}
+
+export function deleteContact(id: string) {
+  setContacts(getContacts().filter(c => c.id !== id));
 }

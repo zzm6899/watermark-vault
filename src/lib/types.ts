@@ -189,6 +189,8 @@ export interface AppSettings {
   discordNotifyInvoices: boolean;
   watermarkSize: number;
   proofingEnabled: boolean;
+  invoiceFrom?: InvoiceParty;
+  invoiceNotes?: string;
 }
 
 export interface ProofingRound {
@@ -248,6 +250,20 @@ export interface InvoiceEmailLogEntry {
   type: "invoice" | "reminder" | "custom";
   to: string;
   subject?: string;
+}
+
+// ─── Contacts ─────────────────────────────────────────────────────────────────
+
+export interface Contact {
+  id: string;
+  name: string;
+  email: string;
+  address: string;
+  abn?: string;
+  phone?: string;
+  company?: string;
+  notes?: string;
+  createdAt: string;
 }
 
 export interface Invoice {
