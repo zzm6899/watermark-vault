@@ -4,27 +4,29 @@ import { motion } from "framer-motion";
 import {
   LayoutDashboard, Calendar, Clock, Image, Receipt,
   Users, Settings, Key, LogOut, Camera, Plus, Edit, Trash2,
-  Save, X, ChevronDown, ChevronUp, Globe, Upload,
-  Search, DollarSign, HardDrive, FileText, Copy,
+  Save, X, ChevronDown, ChevronUp, Globe, Upload, Droplets, Search, Copy,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
+import { Slider } from "@/components/ui/slider";
+import WatermarkedImage from "@/components/WatermarkedImage";
 import { toast } from "sonner";
 import { getMobileTenantSession, setMobileTenantSession, hashPassword } from "@/lib/storage";
 import {
   fetchTenantMobileData, getTenantSettings, saveTenantSettings,
   deleteTenantBooking, updateTenantBookingFull,
-  getTenantLicenseInfo, deleteTenantAlbum, saveTenantAlbum,
+  getTenantLicenseInfo, deleteTenantAlbum,
   getTenantStoreKey, saveTenantStoreKey, updateTenant,
+  clearTenantImageCache, tenantPhotoSrc,
 } from "@/lib/api";
 import type {
   Booking, Album, EventType, Invoice, InvoiceItem, InvoiceParty,
-  Contact, TenantSettings, LicenseKey, AvailabilitySlot, QuestionField,
+  Contact, TenantSettings, AvailabilitySlot, QuestionField, WatermarkPosition,
 } from "@/lib/types";
 
-type Tab = "dashboard" | "bookings" | "events" | "gallery" | "invoices" | "contacts" | "settings" | "license";
+type Tab = "dashboard" | "bookings" | "events" | "gallery" | "invoices" | "contacts" | "settings" | "watermark" | "license";
 
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
@@ -73,6 +75,7 @@ export default function TenantAdmin() {
     { id: "invoices", label: "Invoices", icon: Receipt },
     { id: "contacts", label: "Contacts", icon: Users },
     { id: "settings", label: "Settings", icon: Settings },
+    { id: "watermark", label: "Watermark", icon: Droplets },
     { id: "license", label: "License", icon: Key },
   ];
 
@@ -153,6 +156,7 @@ export default function TenantAdmin() {
           {activeTab === "invoices" && <TenantInvoices slug={slug!} session={session} />}
           {activeTab === "contacts" && <TenantContacts slug={slug!} />}
           {activeTab === "settings" && <TenantSettingsView slug={slug!} session={session} />}
+          {activeTab === "watermark" && <TenantWatermarkView slug={slug!} />}
           {activeTab === "license" && <TenantLicense slug={slug!} />}
         </main>
       </div>
@@ -666,6 +670,9 @@ function TenantGallery({ slug }: { slug: string }) {
     load();
   };
 
+  /** Append ?tenant=slug so server uses this tenant's watermark settings */
+  const photoUrl = (src: string) => tenantPhotoSrc(src, slug);
+
   if (loading) return <div className="py-16 text-center text-muted-foreground font-body text-sm animate-pulse">Loading…</div>;
 
   if (selectedAlbum) {
@@ -685,7 +692,12 @@ function TenantGallery({ slug }: { slug: string }) {
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
             {selectedAlbum.photos.map(photo => (
               <div key={photo.id} className="aspect-square rounded-lg overflow-hidden bg-secondary">
-                <img src={photo.thumbnail || (photo.src.startsWith("/uploads/") ? `${photo.src}?size=thumb` : photo.src)} alt={photo.title} className="w-full h-full object-cover" loading="lazy" />
+                <img
+                  src={photoUrl(photo.thumbnail || (photo.src.startsWith("/uploads/") ? `${photo.src}?size=thumb` : photo.src))}
+                  alt={photo.title}
+                  className="w-full h-full object-cover"
+                  loading="lazy"
+                />
               </div>
             ))}
           </div>
@@ -714,23 +726,27 @@ function TenantGallery({ slug }: { slug: string }) {
         </div>
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
-          {albums.map(album => (
-            <div key={album.id} className="glass-panel rounded-xl overflow-hidden cursor-pointer hover:ring-1 hover:ring-primary/30 transition-all" onClick={() => setSelectedAlbum(album)}>
-              <div className="aspect-square bg-secondary overflow-hidden">
-                {album.coverImage ? (
-                  <img src={album.coverImage.startsWith("/uploads/") ? `${album.coverImage}?size=thumb` : album.coverImage} alt={album.title} className="w-full h-full object-cover" loading="lazy" />
-                ) : album.photos?.[0] ? (
-                  <img src={album.photos[0].thumbnail || (album.photos[0].src.startsWith("/uploads/") ? `${album.photos[0].src}?size=thumb` : album.photos[0].src)} alt={album.title} className="w-full h-full object-cover" loading="lazy" />
-                ) : (
-                  <div className="w-full h-full flex items-center justify-center"><Image className="w-8 h-8 text-muted-foreground/30" /></div>
-                )}
+          {albums.map(album => {
+            const coverSrc = album.coverImage
+              ? photoUrl(album.coverImage.startsWith("/uploads/") ? `${album.coverImage}?size=thumb` : album.coverImage)
+              : album.photos?.[0]
+                ? photoUrl(album.photos[0].thumbnail || (album.photos[0].src.startsWith("/uploads/") ? `${album.photos[0].src}?size=thumb` : album.photos[0].src))
+                : null;
+            return (
+              <div key={album.id} className="glass-panel rounded-xl overflow-hidden cursor-pointer hover:ring-1 hover:ring-primary/30 transition-all" onClick={() => setSelectedAlbum(album)}>
+                <div className="aspect-square bg-secondary overflow-hidden">
+                  {coverSrc
+                    ? <img src={coverSrc} alt={album.title} className="w-full h-full object-cover" loading="lazy" />
+                    : <div className="w-full h-full flex items-center justify-center"><Image className="w-8 h-8 text-muted-foreground/30" /></div>
+                  }
+                </div>
+                <div className="p-3">
+                  <p className="font-body text-sm text-foreground font-medium truncate">{album.title}</p>
+                  <p className="text-xs font-body text-muted-foreground">{album.photos?.length || 0} photos · {album.date}</p>
+                </div>
               </div>
-              <div className="p-3">
-                <p className="font-body text-sm text-foreground font-medium truncate">{album.title}</p>
-                <p className="text-xs font-body text-muted-foreground">{album.photos?.length || 0} photos · {album.date}</p>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </motion.div>
@@ -1248,6 +1264,248 @@ function TenantSettingsView({ slug, session }: { slug: string; session: { displa
           </Button>
         </div>
       )}
+    </motion.div>
+  );
+}
+
+// ─── Watermark ────────────────────────────────────────────────────────────────
+const WATERMARK_POSITIONS: { value: WatermarkPosition; label: string }[] = [
+  { value: "center", label: "Center" },
+  { value: "top-left", label: "Top Left" },
+  { value: "top-right", label: "Top Right" },
+  { value: "bottom-left", label: "Bottom Left" },
+  { value: "bottom-right", label: "Bottom Right" },
+  { value: "tiled", label: "Tiled" },
+];
+
+/** A small CSS-only watermark preview using a sample gradient background */
+function WatermarkPreview({ settings }: { settings: TenantSettings }) {
+  const wpos = settings.watermarkPosition ?? "tiled";
+  const opacity = (settings.watermarkOpacity ?? 20) / 100;
+  const sizePct = settings.watermarkSize ?? 40;
+  const text = settings.watermarkText || "YOUR WATERMARK";
+  const imgSrc = settings.watermarkImage || null;
+
+  const tileCount = 20;
+  const tiledImageH = Math.max(16, sizePct * 0.3);
+  const tiledTextPx = Math.max(9, sizePct * 0.25);
+  const fontSizeEm = `${(sizePct / 40).toFixed(2)}em`;
+
+  const positionStyle: Record<WatermarkPosition, React.CSSProperties> = {
+    center: { top: 0, right: 0, bottom: 0, left: 0, display: "flex", alignItems: "center", justifyContent: "center" },
+    "top-left": { top: "0.75rem", left: "0.75rem" },
+    "top-right": { top: "0.75rem", right: "0.75rem" },
+    "bottom-left": { bottom: "0.75rem", left: "0.75rem" },
+    "bottom-right": { bottom: "0.75rem", right: "0.75rem" },
+    tiled: { top: 0, right: 0, bottom: 0, left: 0 },
+  };
+
+  const renderWatermark = () => {
+    if (imgSrc) {
+      if (wpos === "tiled") {
+        return (
+          <div className="absolute inset-0 pointer-events-none select-none overflow-hidden">
+            <div className="absolute inset-0 flex flex-wrap items-start justify-start gap-x-16 gap-y-12 rotate-[-30deg] scale-150 origin-center" style={{ opacity }}>
+              {Array.from({ length: tileCount }).map((_, i) => (
+                <img key={i} src={imgSrc} alt="" style={{ height: `${tiledImageH}px`, width: "auto" }} />
+              ))}
+            </div>
+          </div>
+        );
+      }
+      return (
+        <div className="absolute pointer-events-none select-none" style={positionStyle[wpos]}>
+          <div className={wpos === "center" ? "rotate-[-30deg]" : ""}>
+            <img src={imgSrc} alt="" style={{ opacity, width: `${sizePct}%`, maxWidth: "100%", height: "auto" }} />
+          </div>
+        </div>
+      );
+    }
+
+    if (wpos === "tiled") {
+      return (
+        <div className="absolute inset-0 pointer-events-none select-none overflow-hidden">
+          <div className="absolute inset-0 flex flex-wrap items-start justify-start gap-x-16 gap-y-12 rotate-[-30deg] scale-150 origin-center" style={{ opacity }}>
+            {Array.from({ length: tileCount }).map((_, i) => (
+              <p key={i} className="font-display text-foreground tracking-widest whitespace-nowrap" style={{ fontSize: `${tiledTextPx}px` }}>{text}</p>
+            ))}
+          </div>
+        </div>
+      );
+    }
+    return (
+      <div className="absolute pointer-events-none select-none" style={positionStyle[wpos]}>
+        <div className={wpos === "center" ? "rotate-[-30deg]" : ""}>
+          <p className="font-display text-foreground tracking-widest whitespace-nowrap text-lg" style={{ opacity, fontSize: fontSizeEm }}>{text}</p>
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div className="relative rounded-lg overflow-hidden bg-secondary" style={{ paddingBottom: "60%" }}>
+      {/* Placeholder "photo" gradient */}
+      <div className="absolute inset-0 bg-gradient-to-br from-secondary via-muted to-secondary" />
+      <div className="absolute inset-0 flex items-center justify-center">
+        <Camera className="w-16 h-16 text-muted-foreground/10" />
+      </div>
+      {renderWatermark()}
+    </div>
+  );
+}
+
+function TenantWatermarkView({ slug }: { slug: string }) {
+  const [settings, setSettings] = useState<TenantSettings>({});
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [clearingCache, setClearingCache] = useState(false);
+
+  useEffect(() => {
+    getTenantSettings(slug).then(s => { setSettings(s); setLoading(false); });
+  }, [slug]);
+
+  const set = (patch: Partial<TenantSettings>) => setSettings(s => ({ ...s, ...patch }));
+
+  const handleWatermarkImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => set({ watermarkImage: reader.result as string });
+    reader.readAsDataURL(file);
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    const { ok, error } = await saveTenantSettings(slug, settings);
+    setSaving(false);
+    if (!ok) { toast.error(error || "Failed to save"); return; }
+    // Clear the tenant-specific image cache so photos re-render with new watermark
+    setClearingCache(true);
+    const { ok: cacheOk, cleared } = await clearTenantImageCache(slug);
+    setClearingCache(false);
+    if (cacheOk) {
+      toast.success(`Watermark settings saved — ${cleared ?? 0} cached images cleared, gallery will show your new watermark.`);
+    } else {
+      toast.success("Watermark settings saved. Clear server cache manually if images look stale.");
+    }
+  };
+
+  if (loading) return <div className="py-16 text-center text-muted-foreground font-body text-sm animate-pulse">Loading…</div>;
+
+  const watermarkText = settings.watermarkText || "";
+  const watermarkPosition = settings.watermarkPosition ?? "tiled";
+  const watermarkOpacity = settings.watermarkOpacity ?? 20;
+  const watermarkSize = settings.watermarkSize ?? 40;
+
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+      <h2 className="font-display text-2xl text-foreground mb-2">Watermark</h2>
+      <p className="text-sm font-body text-muted-foreground mb-6">
+        Customise the watermark applied to your photos. These settings are specific to your account and override the platform defaults.
+      </p>
+
+      <div className="space-y-6 max-w-lg">
+        <div className="glass-panel rounded-xl p-6 space-y-5">
+          {/* Text */}
+          <div>
+            <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Watermark Text</label>
+            <Input
+              value={watermarkText}
+              onChange={e => set({ watermarkText: e.target.value })}
+              placeholder="e.g. YOUR NAME PHOTOGRAPHY"
+              className="bg-secondary border-border text-foreground font-body"
+            />
+            <p className="text-[10px] font-body text-muted-foreground mt-1">Used when no watermark image is set.</p>
+          </div>
+
+          {/* Image upload */}
+          <div>
+            <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-3 block">
+              Watermark Image <span className="normal-case text-muted-foreground/60">(optional — overrides text)</span>
+            </label>
+            <div className="flex items-center gap-4">
+              <label className="cursor-pointer">
+                <div className="w-24 h-14 rounded-md bg-secondary border-2 border-dashed border-border flex items-center justify-center overflow-hidden hover:border-primary/50 transition-colors">
+                  {settings.watermarkImage
+                    ? <img src={settings.watermarkImage} alt="Watermark" className="w-full h-full object-contain p-1" />
+                    : <Upload className="w-4 h-4 text-muted-foreground/50" />
+                  }
+                </div>
+                <input type="file" accept="image/*" onChange={handleWatermarkImageUpload} className="hidden" />
+              </label>
+              {settings.watermarkImage && (
+                <button onClick={() => set({ watermarkImage: "" })} className="text-xs font-body text-destructive hover:underline">
+                  Remove image
+                </button>
+              )}
+            </div>
+            <p className="text-[10px] font-body text-muted-foreground mt-1">PNG with transparency recommended.</p>
+          </div>
+
+          {/* Position */}
+          <div>
+            <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-3 block">Position</label>
+            <div className="grid grid-cols-3 gap-2">
+              {WATERMARK_POSITIONS.map(opt => (
+                <button key={opt.value} onClick={() => set({ watermarkPosition: opt.value })}
+                  className={`text-xs font-body py-2.5 px-3 rounded-lg border transition-all ${
+                    watermarkPosition === opt.value
+                      ? "bg-primary text-primary-foreground border-primary"
+                      : "border-border text-muted-foreground hover:border-primary/50"
+                  }`}
+                >{opt.label}</button>
+              ))}
+            </div>
+          </div>
+
+          {/* Opacity */}
+          <div>
+            <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-3 block">
+              Opacity ({watermarkOpacity}%)
+            </label>
+            <Slider
+              value={[watermarkOpacity]}
+              onValueChange={v => set({ watermarkOpacity: v[0] })}
+              min={5} max={80} step={1}
+              className="mb-4"
+            />
+          </div>
+
+          {/* Size */}
+          <div>
+            <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-3 block">
+              Size ({watermarkSize}%)
+            </label>
+            <Slider
+              value={[watermarkSize]}
+              onValueChange={v => set({ watermarkSize: v[0] })}
+              min={10} max={100} step={1}
+              className="mb-4"
+            />
+          </div>
+
+          {/* Live preview */}
+          <div>
+            <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-3 block">Live Preview</label>
+            <WatermarkPreview settings={settings} />
+          </div>
+        </div>
+
+        <div className="p-3 rounded-lg bg-secondary/50 border border-border/50">
+          <p className="text-xs font-body text-muted-foreground">
+            <span className="text-foreground font-medium">How it works:</span> When your gallery photos are served, the server applies your watermark on-the-fly using these settings. Saving also clears your cached image variants so changes take effect immediately.
+          </p>
+        </div>
+
+        <Button
+          onClick={handleSave}
+          disabled={saving || clearingCache}
+          className="bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2 w-full"
+        >
+          <Save className="w-4 h-4" />
+          {saving ? "Saving…" : clearingCache ? "Clearing cache…" : "Save Watermark Settings"}
+        </Button>
+      </div>
     </motion.div>
   );
 }

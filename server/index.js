@@ -239,9 +239,27 @@ app.delete("/api/upload/:filename", (req, res) => {
 });
 
 // ── Watermarking helpers ──────────────────────────────
-function getWatermarkSettings() {
+function getWatermarkSettings(tenantSlug) {
   try {
     const db = readDb();
+    // If a tenant slug is provided, prefer their watermark settings (stored in t_{slug}_wv_tenant_settings)
+    if (tenantSlug) {
+      const raw = db[`t_${tenantSlug}_wv_tenant_settings`];
+      const ts = raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : {};
+      // Only use tenant watermark if at least one watermark field is explicitly configured
+      if (ts.watermarkText || ts.watermarkImage || ts.watermarkPosition) {
+        const globalSettings = (() => {
+          try { const s = db["wv_settings"]; return typeof s === "string" ? JSON.parse(s) : (s || {}); } catch { return {}; }
+        })();
+        return {
+          text: ts.watermarkText || globalSettings.watermarkText || "WATERMARK VAULT",
+          opacity: Math.min(1, Math.max(0, (ts.watermarkOpacity ?? globalSettings.watermarkOpacity ?? 20) / 100)),
+          position: ts.watermarkPosition || globalSettings.watermarkPosition || "tiled",
+          imageBase64: ts.watermarkImage || null,
+          size: ts.watermarkSize ?? globalSettings.watermarkSize ?? 40,
+        };
+      }
+    }
     const settings = db["wv_settings"];
     const parsed = typeof settings === "string" ? JSON.parse(settings) : settings;
     return {
@@ -448,8 +466,9 @@ async function getWatermarkedBuffer(safeName, filepath) {
 const THUMB_WIDTH = 700;
 const MEDIUM_WIDTH = 1400;
 
-function getCacheFilename(baseName, sizeLabel, watermarked) {
-  return `${baseName}_${sizeLabel}_${watermarked ? "wm" : "clean"}.jpg`;
+function getCacheFilename(baseName, sizeLabel, watermarked, tenantSlug) {
+  const tenantPart = tenantSlug ? `_t_${tenantSlug}` : "";
+  return `${baseName}_${sizeLabel}${tenantPart}_${watermarked ? "wm" : "clean"}.jpg`;
 }
 
 // Rate-limit the image endpoint: generous limit per IP to guard against DoS
@@ -470,6 +489,10 @@ app.get("/uploads/:filename", imageServeLimiter, async (req, res) => {
 
   const sizeParam = req.query.size; // 'thumb' | 'medium' | undefined
   const disableWm = req.query.wm === "0";
+  // Optional tenant slug — when provided, use that tenant's watermark settings
+  const tenantSlug = (req.query.tenant && typeof req.query.tenant === "string" && /^[a-z0-9][a-z0-9-]{0,28}[a-z0-9]$|^[a-z0-9]{1,2}$/.test(req.query.tenant))
+    ? req.query.tenant
+    : null;
 
   // Resize target widths
   const targetWidth = sizeParam === "thumb" ? THUMB_WIDTH : sizeParam === "medium" ? MEDIUM_WIDTH : null;
@@ -492,7 +515,8 @@ app.get("/uploads/:filename", imageServeLimiter, async (req, res) => {
   fs.mkdirSync(cacheDir, { recursive: true });
   const baseName = path.basename(safeName, path.extname(safeName));
   const sizeLabel = sizeParam || "full";
-  const cacheFile = path.join(cacheDir, getCacheFilename(baseName, sizeLabel, shouldWatermark));
+  // Include tenantSlug in cache filename so each tenant gets their own cached variant
+  const cacheFile = path.join(cacheDir, getCacheFilename(baseName, sizeLabel, shouldWatermark, tenantSlug));
 
   try {
     if (fs.existsSync(cacheFile)) {
@@ -532,7 +556,7 @@ app.get("/uploads/:filename", imageServeLimiter, async (req, res) => {
     // Build watermark overlay (if needed) using the post-resize canvas size
     const composites = [];
     if (shouldWatermark) {
-      const wm = getWatermarkSettings();
+      const wm = getWatermarkSettings(tenantSlug);
       const overlay = await buildWatermarkOverlay(renderW, renderH, wm);
       composites.push(overlay);
     }
@@ -1094,6 +1118,26 @@ app.put("/api/tenant/:slug/store/:key", tenantLimiter, (req, res) => {
   db[fullKey] = req.body.value;
   writeDb(db);
   res.json({ ok: true });
+});
+
+// Clear only the tenant-specific watermark cache entries for a given slug
+app.post("/api/tenant/:slug/cache/clear", tenantLimiter, (req, res) => {
+  const slug = req.params.slug;
+  const tenants = readTenants();
+  if (!tenants.find(t => t.slug === slug)) return res.status(404).json({ error: "Tenant not found" });
+  const cacheDir = path.join(UPLOADS_DIR, "_cache");
+  let cleared = 0;
+  if (fs.existsSync(cacheDir)) {
+    try {
+      for (const f of fs.readdirSync(cacheDir)) {
+        // Only delete files that contain the tenant's slug tag in their cache filename
+        if (f.includes(`_t_${slug}_`)) {
+          try { fs.unlinkSync(path.join(cacheDir, f)); cleared++; } catch {}
+        }
+      }
+    } catch {}
+  }
+  res.json({ ok: true, cleared });
 });
 
 // Create a booking on behalf of a tenant

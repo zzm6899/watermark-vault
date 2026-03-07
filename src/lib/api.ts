@@ -1180,3 +1180,20 @@ export async function saveTenantStoreKey(slug: string, key: string, value: unkno
     return { ok: !!json.ok, error: json.error };
   } catch { return { ok: false, error: "Network error" }; }
 }
+
+/** Clear the tenant-specific watermark image cache so photos re-render with new watermark settings. */
+export async function clearTenantImageCache(slug: string): Promise<{ ok: boolean; cleared?: number; error?: string }> {
+  try {
+    const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/cache/clear`, { method: "POST" });
+    const json = await res.json();
+    return { ok: !!json.ok, cleared: json.cleared, error: json.error };
+  } catch { return { ok: false, error: "Network error" }; }
+}
+
+/** Return a photo src URL with ?tenant=slug appended (for tenant-specific watermark). */
+export function tenantPhotoSrc(src: string, slug: string): string {
+  if (!src || src.startsWith("data:") || !src.startsWith("/uploads/")) return src;
+  const sep = src.includes("?") ? "&" : "?";
+  if (src.includes(`tenant=${slug}`)) return src;
+  return `${src}${sep}tenant=${encodeURIComponent(slug)}`;
+}
