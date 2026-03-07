@@ -1072,6 +1072,10 @@ registerTenantStripeRoutes(app, { readDb, readTenants: () => {
 }});
 registerGoogleSheetsRoutes(app);
 
+const tenantLimiter = rateLimit({ windowMs: 60_000, max: 60, standardHeaders: true, legacyHeaders: false, message: { error: "Too many requests" } });
+const tenantPublicLimiter = rateLimit({ windowMs: 60_000, max: 120, standardHeaders: true, legacyHeaders: false, message: { error: "Too many requests" } });
+const tenantBookingLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHeaders: true, legacyHeaders: false, message: { error: "Too many requests" } });
+
 // ── Per-tenant Google Calendar integration ────────────────────────────────
 // Allows each tenant to configure their own Google OAuth2 credentials and
 // connect their own Google Calendar account independently.
@@ -1287,10 +1291,6 @@ function readTenants() {
 function writeTenants(tenants) {
   fs.writeFileSync(TENANTS_FILE, JSON.stringify(tenants, null, 2));
 }
-
-const tenantLimiter = rateLimit({ windowMs: 60_000, max: 60, standardHeaders: true, legacyHeaders: false, message: { error: "Too many requests" } });
-const tenantPublicLimiter = rateLimit({ windowMs: 60_000, max: 120, standardHeaders: true, legacyHeaders: false, message: { error: "Too many requests" } });
-const tenantBookingLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHeaders: true, legacyHeaders: false, message: { error: "Too many requests" } });
 
 // List all tenants
 app.get("/api/tenants", tenantLimiter, (_req, res) => {
