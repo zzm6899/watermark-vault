@@ -75,6 +75,7 @@ export interface Booking {
   gcalEventId?: string;
   answerLabels?: Record<string, string>;
   emailLog?: any[];
+  tenantSlug?: string;   // set when booking is made via a tenant's public page
 }
 
 export interface Photo {
@@ -300,6 +301,25 @@ export interface LicenseKey {
   usedAt?: string;         // ISO timestamp, set when activated
   usedBy?: string;         // username of the admin who activated it
   notes?: string;
+}
+
+// ─── Tenants ──────────────────────────────────────────────────────────────────
+
+/**
+ * A tenant is a photographer/user who shares a single Watermark Vault deployment.
+ * Each tenant gets a public booking page at /book/:slug and their data is
+ * namespaced (tenant bookings are tagged with tenantSlug in wv_bookings;
+ * tenant-specific event types are stored in t_{slug}_wv_event_types).
+ */
+export interface Tenant {
+  slug: string;          // URL-safe handle, e.g. "johndoe" → /book/johndoe
+  displayName: string;   // shown on their public booking page
+  email: string;         // contact email
+  bio?: string;          // short bio for booking page
+  timezone?: string;     // IANA timezone, e.g. "Australia/Sydney"
+  licenseKey?: string;   // optional link to a license key
+  active: boolean;
+  createdAt: string;     // ISO timestamp
 }
 
 // ─── Enquiries ────────────────────────────────────────────────────────────────

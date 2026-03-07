@@ -950,6 +950,172 @@ app.get("/api/invoice/share/:token", invoiceShareLimiter, (req, res) => {
   res.json(invoice);
 });
 
+// ── Tenants ──────────────────────────────────────────
+const TENANTS_FILE = path.join(DATA_DIR, "tenants.json");
+
+/** Slugs must be lowercase alphanumeric with optional hyphens, 2-30 chars */
+const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,28}[a-z0-9]$|^[a-z0-9]{1,2}$/;
+
+function readTenants() {
+  try {
+    if (!fs.existsSync(TENANTS_FILE)) return [];
+    return JSON.parse(fs.readFileSync(TENANTS_FILE, "utf-8"));
+  } catch {
+    return [];
+  }
+}
+
+function writeTenants(tenants) {
+  fs.writeFileSync(TENANTS_FILE, JSON.stringify(tenants, null, 2));
+}
+
+const tenantLimiter = rateLimit({ windowMs: 60_000, max: 60, standardHeaders: true, legacyHeaders: false, message: { error: "Too many requests" } });
+const tenantPublicLimiter = rateLimit({ windowMs: 60_000, max: 120, standardHeaders: true, legacyHeaders: false, message: { error: "Too many requests" } });
+const tenantBookingLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHeaders: true, legacyHeaders: false, message: { error: "Too many requests" } });
+
+// List all tenants
+app.get("/api/tenants", tenantLimiter, (_req, res) => {
+  res.json(readTenants());
+});
+
+// Create tenant
+app.post("/api/tenants", tenantLimiter, (req, res) => {
+  const { slug, displayName, email, bio, timezone, licenseKey } = req.body || {};
+  if (!slug || typeof slug !== "string" || !SLUG_RE.test(slug)) {
+    return res.status(400).json({ error: "Invalid slug — use lowercase letters, numbers, and hyphens (2-30 chars)" });
+  }
+  if (!displayName || typeof displayName !== "string" || !displayName.trim()) {
+    return res.status(400).json({ error: "displayName is required" });
+  }
+  const tenants = readTenants();
+  if (tenants.find(t => t.slug === slug)) {
+    return res.status(409).json({ error: "Slug already in use" });
+  }
+  const tenant = {
+    slug,
+    displayName: displayName.trim(),
+    email: (email || "").trim(),
+    bio: (bio || "").trim() || undefined,
+    timezone: timezone || "Australia/Sydney",
+    licenseKey: licenseKey || undefined,
+    active: true,
+    createdAt: new Date().toISOString(),
+  };
+  tenants.push(tenant);
+  writeTenants(tenants);
+  res.json(tenant);
+});
+
+// Update tenant
+app.put("/api/tenants/:slug", tenantLimiter, (req, res) => {
+  const tenants = readTenants();
+  const idx = tenants.findIndex(t => t.slug === req.params.slug);
+  if (idx === -1) return res.status(404).json({ error: "Tenant not found" });
+  const { slug: _ignoreSlug, createdAt: _ignoreCreatedAt, ...updates } = req.body || {};
+  tenants[idx] = { ...tenants[idx], ...updates, slug: req.params.slug };
+  writeTenants(tenants);
+  res.json(tenants[idx]);
+});
+
+// Delete tenant
+app.delete("/api/tenants/:slug", tenantLimiter, (req, res) => {
+  const tenants = readTenants();
+  const slug = req.params.slug;
+  const filtered = tenants.filter(t => t.slug !== slug);
+  if (filtered.length === tenants.length) return res.status(404).json({ error: "Tenant not found" });
+  writeTenants(filtered);
+  res.json({ ok: true });
+});
+
+// Public tenant data for booking page — returns event types + profile
+app.get("/api/tenant/:slug/public", tenantPublicLimiter, (req, res) => {
+  const slug = req.params.slug;
+  const tenants = readTenants();
+  const tenant = tenants.find(t => t.slug === slug && t.active !== false);
+  if (!tenant) return res.status(404).json({ error: "Tenant not found" });
+  const db = readDb();
+  // Try tenant-specific event types; fall back to main admin's event types
+  const tenantKey = `t_${slug}_wv_event_types`;
+  const raw = db[tenantKey] ?? db["wv_event_types"];
+  const allEventTypes = raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : [];
+  const eventTypes = Array.isArray(allEventTypes)
+    ? allEventTypes.filter(e => e.active !== false)
+    : [];
+  res.json({ tenant, eventTypes });
+});
+
+// Get tenant-scoped store key (for main admin to manage tenant data)
+app.get("/api/tenant/:slug/store/:key", tenantLimiter, (req, res) => {
+  const db = readDb();
+  const fullKey = `t_${req.params.slug}_${req.params.key}`;
+  res.json({ value: db[fullKey] ?? null });
+});
+
+// Set tenant-scoped store key
+app.put("/api/tenant/:slug/store/:key", tenantLimiter, (req, res) => {
+  const db = readDb();
+  const fullKey = `t_${req.params.slug}_${req.params.key}`;
+  db[fullKey] = req.body.value;
+  writeDb(db);
+  res.json({ ok: true });
+});
+
+// Create a booking on behalf of a tenant
+app.post("/api/tenant/:slug/booking", tenantBookingLimiter, (req, res) => {
+  const slug = req.params.slug;
+  const tenants = readTenants();
+  const tenant = tenants.find(t => t.slug === slug && t.active !== false);
+  if (!tenant) return res.status(404).json({ error: "Tenant not found" });
+
+  const { clientName, clientEmail, date, time, eventTypeId, type, duration, notes, answers } = req.body || {};
+  if (!clientName || typeof clientName !== "string" || !clientName.trim()) {
+    return res.status(400).json({ error: "clientName is required" });
+  }
+  if (!clientEmail || typeof clientEmail !== "string" || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clientEmail.trim())) {
+    return res.status(400).json({ error: "Valid clientEmail is required" });
+  }
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return res.status(400).json({ error: "date (YYYY-MM-DD) is required" });
+  }
+  if (!time || !/^\d{2}:\d{2}$/.test(time)) {
+    return res.status(400).json({ error: "time (HH:MM) is required" });
+  }
+
+  const booking = {
+    id: `bk-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    clientName: clientName.trim(),
+    clientEmail: clientEmail.trim(),
+    date,
+    time,
+    eventTypeId: eventTypeId || "",
+    type: type || "",
+    duration: typeof duration === "number" ? duration : 60,
+    status: "pending",
+    notes: (notes || "").trim(),
+    answers: (answers && typeof answers === "object") ? answers : {},
+    createdAt: new Date().toISOString(),
+    tenantSlug: slug,
+  };
+
+  const db = readDb();
+  const raw = db["wv_bookings"];
+  const bookings = raw ? (typeof raw === "string" ? JSON.parse(raw) : (Array.isArray(raw) ? raw : [])) : [];
+  bookings.push(booking);
+  db["wv_bookings"] = JSON.stringify(bookings);
+  writeDb(db);
+
+  // Fire Discord notification if configured (non-fatal)
+  try {
+    const settings = db["wv_settings"];
+    const settingsParsed = typeof settings === "string" ? JSON.parse(settings) : (settings || {});
+    if (settingsParsed?.discordWebhookUrl && settingsParsed?.discordNotifyBookings !== false) {
+      notifyNewBooking(settingsParsed.discordWebhookUrl, { ...booking, type: `${booking.type} (${tenant.displayName})` }).catch(() => {});
+    }
+  } catch {}
+
+  res.json({ ok: true, booking });
+});
+
 // ── License Keys ──────────────────────────────────────
 const LICENSE_KEYS_FILE = path.join(DATA_DIR, "license_keys.json");
 
