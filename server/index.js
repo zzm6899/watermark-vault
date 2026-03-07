@@ -18,6 +18,7 @@ const {
   notifyAlbumPurchase,
   notifyProofingSubmission,
   notifyWaitlistNotified,
+  notifyInvoice,
 } = require("./discord");
 
 const app = express();
@@ -737,6 +738,17 @@ app.post("/api/discord/notify", async (req, res) => {
       case "proofing-submission":
         if (parsed?.discordNotifyProofing !== false && album) await notifyProofingSubmission(webhookUrl, album, photoCount || 0, clientNote);
         break;
+      case "invoice-created":
+      case "invoice-sent":
+      case "invoice-paid":
+      case "invoice-overdue":
+      case "invoice-cancelled":
+      case "invoice-reminder": {
+        const invoice = req.body.invoice;
+        const subType = eventType.replace("invoice-", "");
+        if (parsed?.discordNotifyInvoices !== false && invoice) await notifyInvoice(webhookUrl, invoice, subType);
+        break;
+      }
       default:
         // Generic passthrough embed
         if (req.body.embeds) await sendDiscordEmbed(webhookUrl, req.body);

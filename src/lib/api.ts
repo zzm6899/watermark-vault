@@ -591,6 +591,28 @@ export async function getInvoiceByToken(token: string): Promise<{ invoice?: impo
   }
 }
 
+/** Create a Stripe Checkout session for an invoice. */
+export async function createInvoiceCheckout(params: {
+  invoiceId: string;
+  invoiceNumber: string;
+  clientName: string;
+  clientEmail?: string;
+  amount: number;
+  description?: string;
+  shareToken: string;
+}): Promise<{ url?: string; sessionId?: string; error?: string }> {
+  try {
+    const res = await fetch("/api/stripe/checkout/invoice", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(params),
+    });
+    return await res.json();
+  } catch {
+    return { error: "Network error" };
+  }
+}
+
 /** Send an invoice or payment-reminder email. The HTML body is built client-side. */
 export async function sendInvoiceEmail(
   to: string,

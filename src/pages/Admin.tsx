@@ -7,7 +7,7 @@ import {
   Image, DollarSign, Link2, Merge, Send, Copy, ExternalLink,
   MapPin, Lock, Bell, Download, Unlock, Eye, Grid, List, LayoutGrid, HardDrive, CheckSquare, XSquare, Search, RefreshCw, Mail,
   MessageSquare
-, Star, CheckCircle2, Sparkles, ChevronLeft, ChevronRight, Flag } from "lucide-react";
+, Star, CheckCircle2, Sparkles, ChevronLeft, ChevronRight, Flag, FileText, Receipt, Printer, AlertCircle, BookOpen } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -21,9 +21,10 @@ import {
   getAlbums, addAlbum, updateAlbum, deleteAlbum,
   getPhotoLibrary, setPhotoLibrary,
   getEmailTemplates, addEmailTemplate, updateEmailTemplate, deleteEmailTemplate,
+  getInvoices, addInvoice, updateInvoice, deleteInvoice, getNextInvoiceNumber,
 } from "@/lib/storage";
 import { compressImage, formatBytes, getLocalStorageUsage, generateThumbnail } from "@/lib/image-utils";
-import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar, getServerStorageStats, syncFromServer, sendEmail, bulkDeleteFiles, syncBookingsToSheet, getBookingEmailLog, sendBookingReminder, sendCustomEmail, getWaitlistEntries, deleteWaitlistEntry, notifyWaitlistOnCancel, notifyDiscord, getCacheStats, warmCache } from "@/lib/api";
+import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar, getServerStorageStats, syncFromServer, sendEmail, bulkDeleteFiles, syncBookingsToSheet, getBookingEmailLog, sendBookingReminder, sendCustomEmail, getWaitlistEntries, deleteWaitlistEntry, notifyWaitlistOnCancel, notifyDiscord, getCacheStats, warmCache, createInvoiceCheckout, sendInvoiceEmail, getStripeStatus } from "@/lib/api";
 import type { CacheBreakdown } from "@/lib/api";
 import RichTextEditor, { RichTextDisplay } from "@/components/RichTextEditor";
 import Login from "@/pages/Login";
@@ -31,7 +32,7 @@ import type {
   EventType, QuestionField, AvailabilitySlot,
   ProfileSettings, AppSettings, Booking, WatermarkPosition,
   Album, Photo, PaymentStatus, AlbumDisplaySize, AlbumDownloadRecord, DownloadHistoryEntry,
-  EmailTemplate, WaitlistEntry,
+  EmailTemplate, WaitlistEntry, Invoice, InvoiceItem, InvoiceParty, InvoiceStatus,
 } from "@/lib/types";
 import WatermarkedImage from "@/components/WatermarkedImage";
 import ProgressiveImg from "@/components/ProgressiveImg";
@@ -52,6 +53,7 @@ const TAB_ROUTE_MAP: Record<string, Tab> = {
   albums: "albums",
   photos: "photos",
   finance: "finance",
+  invoices: "invoices",
   profile: "profile",
   settings: "settings",
   storage: "storage",
@@ -470,6 +472,7 @@ export default function Admin() {
     { id: "albums" as Tab, label: "Albums", icon: Image },
     { id: "photos" as Tab, label: "Photos", icon: Upload },
     { id: "finance" as Tab, label: "Finance", icon: DollarSign },
+    { id: "invoices" as Tab, label: "Invoices", icon: Receipt },
     { id: "profile" as Tab, label: "Profile", icon: Camera },
     { id: "settings" as Tab, label: "Settings", icon: Settings },
     { id: "storage" as Tab, label: "Storage", icon: HardDrive },
@@ -530,6 +533,7 @@ export default function Admin() {
           {activeTab === "albums" && <AlbumsView prefillBookingId={prefillBookingId} onClearPrefill={() => setPrefillBookingId(null)} />}
           {activeTab === "photos" && <PhotosView />}
           {activeTab === "finance" && <FinanceView />}
+          {activeTab === "invoices" && <InvoicesView />}
           {activeTab === "profile" && <ProfileView />}
           {activeTab === "settings" && <SettingsView />}
           {activeTab === "storage" && <StorageView />}
@@ -3512,9 +3516,580 @@ function PhotosView() {
 }
 
 // ─── Profile ─────────────────────────────────────────
+// ─── Invoices ──────────────────────────────────────────
+
+function calcInvSubtotal(items: InvoiceItem[]) {
+  return items.reduce((s, it) => s + it.quantity * it.unitPrice, 0);
+}
+function calcInvTotal(inv: Invoice) {
+  const sub = calcInvSubtotal(inv.items);
+  const disc = inv.discount ?? 0;
+  return (sub - disc) * (1 + (inv.tax ?? 0) / 100);
+}
+
+const INV_STATUS_META: Record<InvoiceStatus, { label: string; color: string; bg: string }> = {
+  draft:     { label: "Draft",     color: "text-gray-400",   bg: "bg-gray-500/10"   },
+  sent:      { label: "Sent",      color: "text-blue-400",   bg: "bg-blue-500/10"   },
+  paid:      { label: "Paid",      color: "text-green-400",  bg: "bg-green-500/10"  },
+  overdue:   { label: "Overdue",   color: "text-red-400",    bg: "bg-red-500/10"    },
+  cancelled: { label: "Cancelled", color: "text-gray-400",   bg: "bg-gray-500/10"   },
+};
+
+function emptyParty(): InvoiceParty { return { name: "", email: "", address: "", abn: "" }; }
+function emptyItem(): InvoiceItem   { return { id: generateId("item"), description: "", quantity: 1, unitPrice: 0 }; }
+
+function buildInvoiceEmailHtml(inv: Invoice, shareUrl: string, isReminder = false): string {
+  const total = calcInvTotal(inv);
+  const sub   = calcInvSubtotal(inv.items);
+  const disc  = inv.discount ?? 0;
+  const taxRate = inv.tax ?? 0;
+  const taxAmt  = (sub - disc) * (taxRate / 100);
+  const rows = inv.items.map(it =>
+    `<tr><td style="padding:8px 12px;border-bottom:1px solid #333">${it.description}</td>
+     <td style="padding:8px 12px;border-bottom:1px solid #333;text-align:right">${it.quantity}</td>
+     <td style="padding:8px 12px;border-bottom:1px solid #333;text-align:right">$${it.unitPrice.toFixed(2)}</td>
+     <td style="padding:8px 12px;border-bottom:1px solid #333;text-align:right">$${(it.quantity * it.unitPrice).toFixed(2)}</td></tr>`
+  ).join("");
+  return `<!DOCTYPE html><html><body style="background:#0a0a0a;color:#e5e5e5;font-family:sans-serif;margin:0;padding:32px">
+  <div style="max-width:600px;margin:auto">
+    <h2 style="font-size:22px;margin-bottom:4px">${isReminder ? "⏰ Payment Reminder" : "📄 Invoice"} — ${inv.number}</h2>
+    <p style="color:#888;margin-bottom:24px">Hi ${inv.to.name}, ${isReminder ? "this is a reminder that your invoice is due." : "please find your invoice below."}</p>
+    <table style="width:100%;border-collapse:collapse;margin-bottom:16px">
+      <thead><tr style="background:#1a1a1a">
+        <th style="padding:8px 12px;text-align:left;font-size:11px;color:#888">Description</th>
+        <th style="padding:8px 12px;text-align:right;font-size:11px;color:#888">Qty</th>
+        <th style="padding:8px 12px;text-align:right;font-size:11px;color:#888">Unit</th>
+        <th style="padding:8px 12px;text-align:right;font-size:11px;color:#888">Amount</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <table style="width:220px;margin-left:auto;border-collapse:collapse;margin-bottom:24px">
+      <tr><td style="padding:4px 8px;color:#888">Subtotal</td><td style="padding:4px 8px;text-align:right">$${sub.toFixed(2)}</td></tr>
+      ${disc > 0 ? `<tr><td style="padding:4px 8px;color:#4ade80">Discount</td><td style="padding:4px 8px;text-align:right;color:#4ade80">−$${disc.toFixed(2)}</td></tr>` : ""}
+      ${taxRate > 0 ? `<tr><td style="padding:4px 8px;color:#888">GST (${taxRate}%)</td><td style="padding:4px 8px;text-align:right">$${taxAmt.toFixed(2)}</td></tr>` : ""}
+      <tr style="background:#1a1a1a"><td style="padding:8px;font-weight:bold">Total</td><td style="padding:8px;text-align:right;font-size:18px;font-weight:bold">$${total.toFixed(2)}</td></tr>
+    </table>
+    ${inv.notes ? `<p style="padding:12px;background:#1a1a1a;border-radius:8px;color:#aaa;margin-bottom:24px">${inv.notes}</p>` : ""}
+    ${shareUrl ? `<a href="${shareUrl}" style="display:inline-block;padding:12px 24px;background:#7c3aed;color:white;border-radius:8px;text-decoration:none;font-weight:bold">View Invoice &amp; Pay Online</a>` : ""}
+    <p style="color:#555;font-size:12px;margin-top:32px">Invoice ${inv.number} · Due ${inv.dueDate || "on receipt"} · Watermark Vault</p>
+  </div></body></html>`;
+}
+
+function InvoicesView() {
+  const profile = getProfile();
+  const settings = getSettings();
+  const bankSettings = settings.bankTransfer;
+
+  const [invoices, setInvoices] = React.useState<Invoice[]>(() => getInvoices());
+  const [view, setView] = React.useState<"list" | "form">("list");
+  const [editing, setEditing] = React.useState<Invoice | null>(null);
+  const [filterStatus, setFilterStatus] = React.useState<InvoiceStatus | "all">("all");
+  const [expandedEmailLog, setExpandedEmailLog] = React.useState<string | null>(null);
+  const [stripeAvailable, setStripeAvailable] = React.useState(false);
+  const [sendingEmail, setSendingEmail] = React.useState(false);
+  const [processingPay, setProcessingPay] = React.useState(false);
+
+  React.useEffect(() => {
+    getStripeStatus().then(s => setStripeAvailable(s.configured));
+  }, []);
+
+  const reload = () => setInvoices(getInvoices());
+
+  // ── helpers ──────────────────────────────────────────────
+  const shareUrl = (inv: Invoice) => `${window.location.origin}/invoice/${inv.shareToken}`;
+
+  const openCreate = () => {
+    const now = new Date();
+    const due = new Date(now); due.setDate(due.getDate() + 30);
+    const blankInv: Invoice = {
+      id: generateId("inv"),
+      number: getNextInvoiceNumber(),
+      status: "draft",
+      from: { name: profile.name || "", email: "", address: "", abn: "" },
+      to: emptyParty(),
+      items: [emptyItem()],
+      notes: "",
+      dueDate: due.toISOString().slice(0, 10),
+      createdAt: now.toISOString(),
+      shareToken: Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2),
+      emailLog: [],
+      paymentMethods: [],
+    };
+    setEditing(blankInv);
+    setView("form");
+  };
+
+  const openEdit = (inv: Invoice) => { setEditing({ ...inv }); setView("form"); };
+
+  const handleClone = (inv: Invoice) => {
+    const now = new Date();
+    const due = new Date(now); due.setDate(due.getDate() + 30);
+    const cloned: Invoice = {
+      ...inv,
+      id: generateId("inv"),
+      number: getNextInvoiceNumber(),
+      status: "draft",
+      createdAt: now.toISOString(),
+      dueDate: due.toISOString().slice(0, 10),
+      sentAt: undefined,
+      paidAt: undefined,
+      stripeSessionId: undefined,
+      shareToken: Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2),
+      emailLog: [],
+    };
+    addInvoice(cloned);
+    reload();
+    toast.success("Invoice cloned as draft");
+  };
+
+  const handleDelete = (inv: Invoice) => {
+    if (!confirm(`Delete invoice ${inv.number}? This cannot be undone.`)) return;
+    deleteInvoice(inv.id);
+    reload();
+    toast.success("Invoice deleted");
+  };
+
+  const handleMarkPaid = (inv: Invoice) => {
+    if (!confirm(`Mark ${inv.number} as paid?`)) return;
+    const updated: Invoice = { ...inv, status: "paid", paidAt: new Date().toISOString() };
+    updateInvoice(updated);
+    reload();
+    notifyDiscord({ event: "invoice-paid", invoice: updated });
+    toast.success("Invoice marked as paid");
+  };
+
+  const handleMarkOverdue = (inv: Invoice) => {
+    const updated: Invoice = { ...inv, status: "overdue" };
+    updateInvoice(updated);
+    reload();
+    notifyDiscord({ event: "invoice-overdue", invoice: updated });
+    toast.info("Invoice marked as overdue");
+  };
+
+  const handleCopyLink = (inv: Invoice) => {
+    navigator.clipboard.writeText(shareUrl(inv));
+    toast.success("Share link copied");
+  };
+
+  const handleExportPDF = (inv: Invoice) => {
+    window.open(`${shareUrl(inv)}?print=1`, "_blank");
+  };
+
+  const handleSendInvoice = async (inv: Invoice) => {
+    if (!inv.to.email) { toast.error("No client email on invoice"); return; }
+    setSendingEmail(true);
+    const url = shareUrl(inv);
+    const html = buildInvoiceEmailHtml(inv, url, false);
+    const subject = `Invoice ${inv.number} from ${inv.from.name || "Us"}`;
+    const { ok, error } = await sendInvoiceEmail(inv.to.email, subject, html);
+    if (!ok) { toast.error(error || "Failed to send email"); setSendingEmail(false); return; }
+    const logEntry = { sentAt: new Date().toISOString(), type: "invoice" as const, to: inv.to.email, subject };
+    const updated: Invoice = { ...inv, status: inv.status === "draft" ? "sent" : inv.status, sentAt: inv.sentAt || new Date().toISOString(), emailLog: [...(inv.emailLog || []), logEntry] };
+    updateInvoice(updated);
+    reload();
+    notifyDiscord({ event: "invoice-sent", invoice: updated });
+    setSendingEmail(false);
+    toast.success(`Invoice sent to ${inv.to.email}`);
+  };
+
+  const handleSendReminder = async (inv: Invoice) => {
+    if (!inv.to.email) { toast.error("No client email on invoice"); return; }
+    setSendingEmail(true);
+    const url = shareUrl(inv);
+    const html = buildInvoiceEmailHtml(inv, url, true);
+    const subject = `Payment Reminder — ${inv.number}`;
+    const { ok, error } = await sendInvoiceEmail(inv.to.email, subject, html);
+    if (!ok) { toast.error(error || "Failed to send reminder"); setSendingEmail(false); return; }
+    const logEntry = { sentAt: new Date().toISOString(), type: "reminder" as const, to: inv.to.email, subject };
+    const updated: Invoice = { ...inv, emailLog: [...(inv.emailLog || []), logEntry] };
+    updateInvoice(updated);
+    reload();
+    notifyDiscord({ event: "invoice-reminder", invoice: updated });
+    setSendingEmail(false);
+    toast.success("Payment reminder sent");
+  };
+
+  const handleStripeCheckout = async (inv: Invoice) => {
+    setProcessingPay(true);
+    const total = calcInvTotal(inv);
+    const { url, error } = await createInvoiceCheckout({
+      invoiceId: inv.id, invoiceNumber: inv.number,
+      clientName: inv.to.name, clientEmail: inv.to.email,
+      amount: total, shareToken: inv.shareToken,
+    });
+    setProcessingPay(false);
+    if (error || !url) { toast.error(error || "Stripe checkout failed"); return; }
+    window.open(url, "_blank");
+  };
+
+  const filteredInvoices = filterStatus === "all" ? invoices : invoices.filter(i => i.status === filterStatus);
+  const sortedInvoices = [...filteredInvoices].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+  // ── LIST VIEW ──────────────────────────────────────────────
+  if (view === "list") {
+    return (
+      <div className="space-y-6">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="font-display text-2xl text-foreground mb-1">Invoices</h2>
+            <p className="text-sm font-body text-muted-foreground">Create and manage invoices &amp; quotes</p>
+          </div>
+          <Button onClick={openCreate} className="gap-2 font-body text-sm">
+            <Plus className="w-4 h-4" /> New Invoice
+          </Button>
+        </div>
+
+        {/* Status filter */}
+        <div className="flex gap-2 flex-wrap">
+          {(["all", "draft", "sent", "paid", "overdue", "cancelled"] as const).map(s => (
+            <button
+              key={s}
+              onClick={() => setFilterStatus(s)}
+              className={`px-3 py-1.5 rounded-full text-xs font-body transition-colors ${filterStatus === s ? "bg-primary/20 text-primary border border-primary/30" : "bg-secondary/50 text-muted-foreground border border-border hover:text-foreground"}`}
+            >
+              {s === "all" ? `All (${invoices.length})` : `${INV_STATUS_META[s].label} (${invoices.filter(i => i.status === s).length})`}
+            </button>
+          ))}
+        </div>
+
+        {sortedInvoices.length === 0 ? (
+          <div className="glass-panel rounded-xl p-12 text-center">
+            <Receipt className="w-8 h-8 text-muted-foreground/30 mx-auto mb-3" />
+            <p className="text-sm font-body text-muted-foreground">No invoices yet</p>
+            <p className="text-xs font-body text-muted-foreground/60 mt-1">Create your first invoice to get started</p>
+            <Button onClick={openCreate} className="mt-4 gap-2 font-body text-sm" variant="outline">
+              <Plus className="w-4 h-4" /> Create Invoice
+            </Button>
+          </div>
+        ) : (
+          <div className="glass-panel rounded-xl overflow-hidden">
+            <div className="divide-y divide-border">
+              {sortedInvoices.map(inv => {
+                const meta = INV_STATUS_META[inv.status];
+                const total = calcInvTotal(inv);
+                const logOpen = expandedEmailLog === inv.id;
+                return (
+                  <div key={inv.id} className="group">
+                    <div className="flex items-center gap-3 px-4 py-3 hover:bg-secondary/30 transition-colors">
+                      {/* Left */}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <p className="text-sm font-body text-foreground font-medium">{inv.number}</p>
+                          <span className={`text-[10px] font-body px-2 py-0.5 rounded-full ${meta.color} ${meta.bg}`}>{meta.label}</span>
+                          {inv.bookingId && <span className="text-[10px] font-body px-2 py-0.5 rounded-full text-primary/70 bg-primary/10"><BookOpen className="w-2.5 h-2.5 inline mr-0.5" />Booking</span>}
+                          {inv.albumId && <span className="text-[10px] font-body px-2 py-0.5 rounded-full text-purple-400/70 bg-purple-500/10"><Image className="w-2.5 h-2.5 inline mr-0.5" />Album</span>}
+                        </div>
+                        <div className="flex items-center gap-2 mt-0.5 text-xs font-body text-muted-foreground flex-wrap">
+                          <span>{inv.to.name || "—"}</span>
+                          {inv.to.email && <span className="text-primary/60">{inv.to.email}</span>}
+                          <span>· Due {inv.dueDate || "—"}</span>
+                          {inv.paymentMethods && inv.paymentMethods.length > 0 && (
+                            <span className="text-muted-foreground/50">[{inv.paymentMethods.join(", ")}]</span>
+                          )}
+                        </div>
+                      </div>
+                      {/* Amount */}
+                      <p className="text-sm font-display text-foreground w-20 text-right shrink-0">${total.toFixed(2)}</p>
+                      {/* Actions */}
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button onClick={() => openEdit(inv)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground" title="Edit"><Edit className="w-3.5 h-3.5" /></button>
+                        <button onClick={() => handleCopyLink(inv)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground" title="Copy share link"><Link2 className="w-3.5 h-3.5" /></button>
+                        <button onClick={() => handleExportPDF(inv)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground" title="Export PDF"><Printer className="w-3.5 h-3.5" /></button>
+                        <button onClick={() => setExpandedEmailLog(logOpen ? null : inv.id)} className={`p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground ${logOpen ? "text-primary" : ""}`} title="Email history"><Mail className="w-3.5 h-3.5" /></button>
+                        <div className="w-px h-4 bg-border mx-0.5" />
+                        {inv.status !== "paid" && inv.status !== "cancelled" && (
+                          <>
+                            <button onClick={() => handleSendInvoice(inv)} disabled={sendingEmail} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-blue-400" title="Send invoice email"><Send className="w-3.5 h-3.5" /></button>
+                            <button onClick={() => handleSendReminder(inv)} disabled={sendingEmail} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-yellow-400" title="Send payment reminder"><Bell className="w-3.5 h-3.5" /></button>
+                          </>
+                        )}
+                        {inv.status !== "paid" && inv.status !== "cancelled" && (
+                          <button onClick={() => handleMarkPaid(inv)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-green-400" title="Mark as paid (bank / manual)"><CheckCircle2 className="w-3.5 h-3.5" /></button>
+                        )}
+                        {inv.status === "sent" && (
+                          <button onClick={() => handleMarkOverdue(inv)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-red-400" title="Mark as overdue"><AlertCircle className="w-3.5 h-3.5" /></button>
+                        )}
+                        {stripeAvailable && inv.status !== "paid" && inv.status !== "cancelled" && (inv.paymentMethods || []).includes("stripe") && (
+                          <button onClick={() => handleStripeCheckout(inv)} disabled={processingPay} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-purple-400" title="Open Stripe checkout"><CreditCard className="w-3.5 h-3.5" /></button>
+                        )}
+                        <button onClick={() => handleClone(inv)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground" title="Clone"><Copy className="w-3.5 h-3.5" /></button>
+                        <button onClick={() => handleDelete(inv)} className="opacity-0 group-hover:opacity-100 transition-opacity p-1.5 rounded hover:bg-red-500/10 text-muted-foreground/40 hover:text-red-400" title="Delete"><Trash2 className="w-3.5 h-3.5" /></button>
+                      </div>
+                    </div>
+
+                    {/* Email History Panel */}
+                    {logOpen && (
+                      <div className="px-4 pb-3 bg-secondary/20">
+                        <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground mb-2">Email History</p>
+                        {(inv.emailLog || []).length === 0 ? (
+                          <p className="text-xs font-body text-muted-foreground/50">No emails sent yet</p>
+                        ) : (
+                          <div className="space-y-1">
+                            {[...(inv.emailLog || [])].reverse().map((log, i) => (
+                              <div key={i} className="flex items-center gap-3 text-xs font-body">
+                                <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${log.type === "invoice" ? "bg-blue-400" : log.type === "reminder" ? "bg-yellow-400" : "bg-gray-400"}`} />
+                                <span className="capitalize text-muted-foreground">{log.type}</span>
+                                <span className="text-muted-foreground/50">→</span>
+                                <span className="text-foreground">{log.to}</span>
+                                <span className="text-muted-foreground/50 ml-auto">{new Date(log.sentAt).toLocaleString("en-AU", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // ── FORM VIEW ──────────────────────────────────────────────
+  return editing ? (
+    <InvoiceForm
+      invoice={editing}
+      stripeAvailable={stripeAvailable}
+      bankSettings={bankSettings}
+      bookings={getBookings()}
+      albums={getAlbums()}
+      onSave={(inv) => {
+        const existing = getInvoices().find(i => i.id === inv.id);
+        if (existing) updateInvoice(inv);
+        else { addInvoice(inv); notifyDiscord({ event: "invoice-created", invoice: inv }); }
+        reload();
+        setView("list");
+        setEditing(null);
+        toast.success(`Invoice ${inv.number} saved`);
+      }}
+      onCancel={() => { setView("list"); setEditing(null); }}
+    />
+  ) : null;
+}
+
+// ─── Invoice Form ─────────────────────────────────────────────────────────────
+function InvoiceForm({
+  invoice: initial, stripeAvailable, bankSettings, bookings, albums, onSave, onCancel,
+}: {
+  invoice: Invoice;
+  stripeAvailable: boolean;
+  bankSettings: import("@/lib/types").BankTransferSettings;
+  bookings: import("@/lib/types").Booking[];
+  albums: import("@/lib/types").Album[];
+  onSave: (inv: Invoice) => void;
+  onCancel: () => void;
+}) {
+  const [inv, setInv] = React.useState<Invoice>({ ...initial });
+
+  const setFrom = (patch: Partial<InvoiceParty>) => setInv(p => ({ ...p, from: { ...p.from, ...patch } }));
+  const setTo   = (patch: Partial<InvoiceParty>) => setInv(p => ({ ...p, to:   { ...p.to,   ...patch } }));
+
+  const addItem = () => setInv(p => ({ ...p, items: [...p.items, emptyItem()] }));
+  const removeItem = (id: string) => setInv(p => ({ ...p, items: p.items.filter(it => it.id !== id) }));
+  const setItem = (id: string, patch: Partial<InvoiceItem>) =>
+    setInv(p => ({ ...p, items: p.items.map(it => it.id === id ? { ...it, ...patch } : it) }));
+
+  const toggleMethod = (m: "stripe" | "bank") =>
+    setInv(p => {
+      const methods = p.paymentMethods || [];
+      return { ...p, paymentMethods: methods.includes(m) ? methods.filter(x => x !== m) : [...methods, m] };
+    });
+
+  // Auto-fill "To" from linked booking
+  const handleBookingLink = (bookingId: string) => {
+    setInv(p => {
+      if (!bookingId) return { ...p, bookingId: undefined };
+      const bk = bookings.find(b => b.id === bookingId);
+      if (!bk) return { ...p, bookingId };
+      return { ...p, bookingId, to: { ...p.to, name: bk.clientName || p.to.name, email: bk.clientEmail || p.to.email } };
+    });
+  };
+
+  // Auto-fill "To" from linked album
+  const handleAlbumLink = (albumId: string) => {
+    setInv(p => {
+      if (!albumId) return { ...p, albumId: undefined };
+      const alb = albums.find(a => a.id === albumId);
+      if (!alb) return { ...p, albumId };
+      return { ...p, albumId, to: { ...p.to, name: alb.clientName || p.to.name, email: alb.clientEmail || p.to.email } };
+    });
+  };
+
+  const sub = calcInvSubtotal(inv.items);
+  const disc = inv.discount ?? 0;
+  const taxRate = inv.tax ?? 0;
+  const taxAmt = (sub - disc) * (taxRate / 100);
+  const total = sub - disc + taxAmt;
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!inv.to.name.trim()) { toast.error("Client name is required"); return; }
+    if (inv.items.length === 0) { toast.error("Add at least one line item"); return; }
+    onSave(inv);
+  };
+
+  const fieldClass = "w-full bg-secondary border border-border text-foreground font-body text-sm rounded-lg px-3 py-2 placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary/50";
+  const labelClass = "block text-[10px] font-body uppercase tracking-wider text-muted-foreground mb-1.5";
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-6 max-w-3xl">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="font-display text-2xl text-foreground mb-1">{initial.status === "draft" && !getInvoices().find(i => i.id === initial.id) ? "New" : "Edit"} Invoice</h2>
+          <p className="text-xs font-body text-muted-foreground">{inv.number} · <span className={`${INV_STATUS_META[inv.status].color}`}>{INV_STATUS_META[inv.status].label}</span></p>
+        </div>
+        <div className="flex gap-2">
+          <Button type="button" variant="outline" onClick={onCancel} className="font-body text-sm gap-1.5"><X className="w-4 h-4" />Cancel</Button>
+          <Button type="submit" className="font-body text-sm gap-1.5"><Save className="w-4 h-4" />Save Invoice</Button>
+        </div>
+      </div>
+
+      {/* Status + Due */}
+      <div className="glass-panel rounded-xl p-4 grid grid-cols-2 sm:grid-cols-4 gap-4">
+        <div>
+          <label className={labelClass}>Status</label>
+          <select value={inv.status} onChange={e => setInv(p => ({ ...p, status: e.target.value as InvoiceStatus }))} className={fieldClass}>
+            {(["draft","sent","paid","overdue","cancelled"] as InvoiceStatus[]).map(s => <option key={s} value={s}>{INV_STATUS_META[s].label}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className={labelClass}>Due Date</label>
+          <input type="date" value={inv.dueDate} onChange={e => setInv(p => ({ ...p, dueDate: e.target.value }))} className={fieldClass} />
+        </div>
+        <div>
+          <label className={labelClass}>Link to Booking</label>
+          <select value={inv.bookingId || ""} onChange={e => handleBookingLink(e.target.value)} className={fieldClass}>
+            <option value="">None</option>
+            {bookings.map(b => <option key={b.id} value={b.id}>{b.clientName} — {b.date}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className={labelClass}>Link to Album</label>
+          <select value={inv.albumId || ""} onChange={e => handleAlbumLink(e.target.value)} className={fieldClass}>
+            <option value="">None</option>
+            {albums.map(a => <option key={a.id} value={a.id}>{a.title}</option>)}
+          </select>
+        </div>
+      </div>
+
+      {/* From / To */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        {/* FROM */}
+        <div className="glass-panel rounded-xl p-4 space-y-3">
+          <p className="text-xs font-body uppercase tracking-wider text-muted-foreground font-medium">From</p>
+          <div><label className={labelClass}>Name</label><input className={fieldClass} value={inv.from.name} onChange={e => setFrom({ name: e.target.value })} placeholder="Your business name" /></div>
+          <div><label className={labelClass}>ABN</label><input className={fieldClass} value={inv.from.abn || ""} onChange={e => setFrom({ abn: e.target.value })} placeholder="12 345 678 901" /></div>
+          <div><label className={labelClass}>Email</label><input className={fieldClass} type="email" value={inv.from.email} onChange={e => setFrom({ email: e.target.value })} /></div>
+          <div><label className={labelClass}>Address</label><textarea className={fieldClass} rows={2} value={inv.from.address} onChange={e => setFrom({ address: e.target.value })} placeholder="Street address" /></div>
+        </div>
+        {/* TO */}
+        <div className="glass-panel rounded-xl p-4 space-y-3">
+          <p className="text-xs font-body uppercase tracking-wider text-muted-foreground font-medium">Bill To</p>
+          <div><label className={labelClass}>Name *</label><input className={fieldClass} value={inv.to.name} onChange={e => setTo({ name: e.target.value })} placeholder="Client name" required /></div>
+          <div><label className={labelClass}>ABN</label><input className={fieldClass} value={inv.to.abn || ""} onChange={e => setTo({ abn: e.target.value })} /></div>
+          <div><label className={labelClass}>Email</label><input className={fieldClass} type="email" value={inv.to.email} onChange={e => setTo({ email: e.target.value })} /></div>
+          <div><label className={labelClass}>Address</label><textarea className={fieldClass} rows={2} value={inv.to.address} onChange={e => setTo({ address: e.target.value })} /></div>
+        </div>
+      </div>
+
+      {/* Line Items */}
+      <div className="glass-panel rounded-xl overflow-hidden">
+        <div className="p-4 border-b border-border flex items-center justify-between">
+          <p className="text-sm font-body font-medium text-foreground">Line Items</p>
+          <Button type="button" size="sm" variant="outline" onClick={addItem} className="gap-1.5 font-body text-xs">
+            <Plus className="w-3.5 h-3.5" /> Add Item
+          </Button>
+        </div>
+        <div className="divide-y divide-border">
+          {inv.items.map((item, idx) => (
+            <div key={item.id} className="grid grid-cols-12 gap-2 px-4 py-2.5 items-center">
+              <div className="col-span-5">
+                {idx === 0 && <label className={labelClass}>Description</label>}
+                <input className={fieldClass} value={item.description} onChange={e => setItem(item.id, { description: e.target.value })} placeholder="Photography session" />
+              </div>
+              <div className="col-span-2">
+                {idx === 0 && <label className={labelClass}>Qty</label>}
+                <input className={fieldClass} type="number" min="0.01" step="0.01" value={item.quantity} onChange={e => setItem(item.id, { quantity: parseFloat(e.target.value) || 0 })} />
+              </div>
+              <div className="col-span-3">
+                {idx === 0 && <label className={labelClass}>Unit Price ($)</label>}
+                <input className={fieldClass} type="number" min="0" step="0.01" value={item.unitPrice} onChange={e => setItem(item.id, { unitPrice: parseFloat(e.target.value) || 0 })} />
+              </div>
+              <div className="col-span-1 text-right">
+                {idx === 0 && <label className={labelClass}>Total</label>}
+                <p className="text-sm font-body text-foreground pt-1">${(item.quantity * item.unitPrice).toFixed(2)}</p>
+              </div>
+              <div className="col-span-1 flex justify-end">
+                {idx === 0 && <div className="invisible text-[10px]">x</div>}
+                <button type="button" onClick={() => removeItem(item.id)} className="p-1 rounded hover:bg-red-500/10 text-muted-foreground/40 hover:text-red-400 transition-colors"><X className="w-3.5 h-3.5" /></button>
+              </div>
+            </div>
+          ))}
+        </div>
+        {/* Totals */}
+        <div className="p-4 border-t border-border flex flex-col items-end gap-1 text-sm font-body">
+          <div className="grid grid-cols-2 gap-4 w-64">
+            <label className={labelClass}>Discount ($)</label>
+            <input className={fieldClass} type="number" min="0" step="0.01" value={inv.discount ?? ""} placeholder="0" onChange={e => setInv(p => ({ ...p, discount: parseFloat(e.target.value) || 0 }))} />
+            <label className={labelClass}>Tax Rate (%)</label>
+            <input className={fieldClass} type="number" min="0" step="0.1" value={inv.tax ?? ""} placeholder="0" onChange={e => setInv(p => ({ ...p, tax: parseFloat(e.target.value) || 0 }))} />
+          </div>
+          <div className="w-64 mt-2 space-y-1 text-right">
+            <p className="text-muted-foreground">Subtotal <span className="text-foreground ml-4">${sub.toFixed(2)}</span></p>
+            {disc > 0 && <p className="text-green-400">Discount <span className="ml-4">−${disc.toFixed(2)}</span></p>}
+            {taxRate > 0 && <p className="text-muted-foreground">GST ({taxRate}%) <span className="text-foreground ml-4">${taxAmt.toFixed(2)}</span></p>}
+            <p className="text-foreground font-medium pt-1 border-t border-border">Total <span className="font-display text-lg ml-4">${total.toFixed(2)}</span></p>
+          </div>
+        </div>
+      </div>
+
+      {/* Notes */}
+      <div className="glass-panel rounded-xl p-4">
+        <label className={labelClass}>Notes / Terms</label>
+        <textarea className={fieldClass} rows={3} value={inv.notes} onChange={e => setInv(p => ({ ...p, notes: e.target.value }))} placeholder="Payment terms, thank-you note, etc." />
+      </div>
+
+      {/* Payment Methods */}
+      <div className="glass-panel rounded-xl p-4">
+        <p className="text-xs font-body uppercase tracking-wider text-muted-foreground mb-3">Available Payment Methods</p>
+        <div className="flex flex-col gap-3">
+          {/* Stripe */}
+          <label className="flex items-start gap-3 cursor-pointer">
+            <input type="checkbox" checked={(inv.paymentMethods || []).includes("stripe")} onChange={() => toggleMethod("stripe")} className="mt-0.5 accent-purple-500" disabled={!stripeAvailable} />
+            <div>
+              <div className="flex items-center gap-2">
+                <CreditCard className="w-4 h-4 text-purple-400" />
+                <p className={`text-sm font-body ${stripeAvailable ? "text-foreground" : "text-muted-foreground/50"}`}>Card payment (Stripe)</p>
+                {!stripeAvailable && <span className="text-[10px] font-body text-muted-foreground/40 bg-secondary px-1.5 py-0.5 rounded">Stripe not configured</span>}
+              </div>
+              <p className="text-xs font-body text-muted-foreground/60">Client can pay with a card from the invoice link</p>
+            </div>
+          </label>
+          {/* Bank */}
+          <label className="flex items-start gap-3 cursor-pointer">
+            <input type="checkbox" checked={(inv.paymentMethods || []).includes("bank")} onChange={() => toggleMethod("bank")} className="mt-0.5 accent-blue-500" disabled={!bankSettings?.enabled} />
+            <div>
+              <div className="flex items-center gap-2">
+                <Building2 className="w-4 h-4 text-blue-400" />
+                <p className={`text-sm font-body ${bankSettings?.enabled ? "text-foreground" : "text-muted-foreground/50"}`}>Bank transfer</p>
+                {!bankSettings?.enabled && <span className="text-[10px] font-body text-muted-foreground/40 bg-secondary px-1.5 py-0.5 rounded">Bank transfer not enabled in settings</span>}
+              </div>
+              {bankSettings?.enabled && <p className="text-xs font-body text-muted-foreground/60">BSB {bankSettings.bsb} · {bankSettings.accountNumber}</p>}
+            </div>
+          </label>
+        </div>
+      </div>
+    </form>
+  );
+}
+
 // ─── Finance ───────────────────────────────────────────
 function FinanceView() {
   const [albumsState, setAlbumsState] = React.useState(() => getAlbums());
+  const [invoicesState] = React.useState(() => getInvoices());
   const [deletingId, setDeletingId] = React.useState<string | null>(null);
   const [expandedDownloadKeys, setExpandedDownloadKeys] = React.useState<Set<string>>(new Set());
 
@@ -3607,6 +4182,15 @@ function FinanceView() {
   const stripeTotal = payments.filter(p => p.method === "stripe" && p.status === "completed").reduce((s, p) => s + p.amount, 0);
   const bankTotal = payments.filter(p => p.method === "bank-transfer" && p.status === "completed").reduce((s, p) => s + p.amount, 0);
 
+  // Invoice stats
+  const calcInvoiceTotal = (inv: Invoice) => {
+    const sub = (inv.items || []).reduce((s, it) => s + it.quantity * it.unitPrice, 0);
+    const disc = inv.discount ?? 0;
+    return (sub - disc) * (1 + (inv.tax ?? 0) / 100);
+  };
+  const invoicePaid = invoicesState.filter(i => i.status === "paid").reduce((s, i) => s + calcInvoiceTotal(i), 0);
+  const invoicePending = invoicesState.filter(i => i.status === "sent" || i.status === "overdue").reduce((s, i) => s + calcInvoiceTotal(i), 0);
+
   const handleDelete = (p: PaymentRecord) => {
     if (!confirm(`Delete this payment record? This will revoke the client's access to the purchased photos.`)) return;
     const albums = getAlbums();
@@ -3669,6 +4253,30 @@ function FinanceView() {
           <p className="text-[10px] font-body text-muted-foreground mt-1">{payments.filter(p => p.method === "bank-transfer" && p.status === "completed").length} transfers</p>
         </div>
       </div>
+
+      {/* Invoice summary row */}
+      {invoicesState.length > 0 && (
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="glass-panel rounded-xl p-5">
+            <p className="text-xs font-body text-muted-foreground tracking-wider uppercase mb-1">Invoices Paid</p>
+            <p className="font-display text-2xl text-green-400">${invoicePaid.toFixed(2)}</p>
+            <p className="text-[10px] font-body text-muted-foreground mt-1">{invoicesState.filter(i => i.status === "paid").length} paid invoices</p>
+          </div>
+          <div className="glass-panel rounded-xl p-5">
+            <p className="text-xs font-body text-muted-foreground tracking-wider uppercase mb-1">Invoices Outstanding</p>
+            <p className="font-display text-2xl text-yellow-400">${invoicePending.toFixed(2)}</p>
+            <p className="text-[10px] font-body text-muted-foreground mt-1">{invoicesState.filter(i => i.status === "sent" || i.status === "overdue").length} outstanding</p>
+          </div>
+          <div className="glass-panel rounded-xl p-5 col-span-2 flex items-center justify-between">
+            <div>
+              <p className="text-xs font-body text-muted-foreground tracking-wider uppercase mb-1">All Invoices</p>
+              <p className="font-display text-2xl text-foreground">{invoicesState.length}</p>
+              <p className="text-[10px] font-body text-muted-foreground mt-1">{invoicesState.filter(i => i.status === "draft").length} drafts · {invoicesState.filter(i => i.status === "overdue").length} overdue</p>
+            </div>
+            <Receipt className="w-8 h-8 text-muted-foreground/20" />
+          </div>
+        </div>
+      )}
 
       <div className="glass-panel rounded-xl overflow-hidden">
         <div className="p-4 border-b border-border">
@@ -4114,6 +4722,7 @@ function SettingsView() {
                     { key: "discordNotifyBookings" as const, label: "Bookings & payments", desc: "New bookings, status changes, payment received" },
                     { key: "discordNotifyDownloads" as const, label: "Album purchases & downloads", desc: "Photo purchases, album unlocks" },
                     { key: "discordNotifyProofing" as const, label: "Proofing submissions", desc: "When clients submit their photo picks" },
+                    { key: "discordNotifyInvoices" as const, label: "Invoice events", desc: "Invoice created, sent, paid, overdue, reminders" },
                   ].map(({ key, label, desc }) => (
                     <div key={key} className="flex items-center justify-between py-2 border-t border-border/30">
                       <div>

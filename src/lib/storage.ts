@@ -202,6 +202,7 @@ const defaultSettings: AppSettings = {
   discordNotifyBookings: true,
   discordNotifyDownloads: true,
   discordNotifyProofing: true,
+  discordNotifyInvoices: true,
   proofingEnabled: false,
 };
 

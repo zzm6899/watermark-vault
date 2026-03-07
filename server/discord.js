@@ -200,6 +200,58 @@ async function notifyWaitlistNotified(webhookUrl, cancelledBooking, notifiedName
   });
 }
 
+// ── Invoice Events ─────────────────────────────────────────
+async function notifyInvoice(webhookUrl, invoice, eventType) {
+  if (!webhookUrl) return;
+  const total = (invoice.items || []).reduce((s, it) => s + it.quantity * it.unitPrice, 0);
+  const disc = invoice.discount || 0;
+  const taxRate = invoice.tax || 0;
+  const taxAmt = (total - disc) * (taxRate / 100);
+  const grandTotal = total - disc + taxAmt;
+
+  const titles = {
+    created: "🧾 Invoice Created",
+    sent: "📤 Invoice Sent",
+    paid: "✅ Invoice Paid",
+    overdue: "⚠️ Invoice Overdue",
+    cancelled: "❌ Invoice Cancelled",
+    reminder: "🔔 Payment Reminder Sent",
+  };
+  const colors = {
+    created: 0x6b7280,
+    sent: 0x3b82f6,
+    paid: 0x22c55e,
+    overdue: 0xef4444,
+    cancelled: 0x6b7280,
+    reminder: 0xf59e0b,
+  };
+
+  const adminUrl = APP_URL ? `${APP_URL}/admin/invoices` : null;
+  const shareUrl = APP_URL && invoice.shareToken ? `${APP_URL}/invoice/${invoice.shareToken}` : null;
+  const components = [];
+  if (adminUrl) components.push(adminButton("View in Admin", adminUrl));
+
+  const fields = [
+    { name: "🧾 Invoice", value: invoice.number || invoice.id, inline: true },
+    { name: "👤 Client", value: invoice.to?.name || "Unknown", inline: true },
+    { name: "💵 Total", value: `$${grandTotal.toFixed(2)}`, inline: true },
+  ];
+  if (invoice.to?.email) fields.push({ name: "📧 Email", value: invoice.to.email, inline: true });
+  if (invoice.dueDate) fields.push({ name: "📅 Due", value: invoice.dueDate, inline: true });
+  if (shareUrl) fields.push({ name: "🔗 Share Link", value: shareUrl, inline: false });
+
+  await sendDiscordEmbed(webhookUrl, {
+    embeds: [{
+      title: titles[eventType] || `🧾 Invoice ${eventType}`,
+      color: colors[eventType] || 0x7c3aed,
+      fields,
+      footer: { text: `Invoice ${invoice.number || invoice.id} · Watermark Vault` },
+      timestamp: new Date().toISOString(),
+    }],
+    ...(components.length ? { components } : {}),
+  });
+}
+
 module.exports = {
   sendDiscordEmbed,
   notifyNewBooking,
@@ -208,4 +260,5 @@ module.exports = {
   notifyAlbumPurchase,
   notifyProofingSubmission,
   notifyWaitlistNotified,
+  notifyInvoice,
 };

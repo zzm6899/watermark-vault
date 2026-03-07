@@ -186,6 +186,7 @@ export interface AppSettings {
   discordNotifyBookings: boolean;
   discordNotifyDownloads: boolean;
   discordNotifyProofing: boolean;
+  discordNotifyInvoices: boolean;
   watermarkSize: number;
   proofingEnabled: boolean;
 }
@@ -264,6 +265,9 @@ export interface Invoice {
   shareToken: string;       // random token for public share link
   emailLog: InvoiceEmailLogEntry[];
   bookingId?: string;       // optional link to a booking
+  albumId?: string;         // optional link to an album
   tax?: number;             // tax rate percent (e.g. 10 for 10% GST)
   discount?: number;        // discount amount in dollars
+  paymentMethods?: ("stripe" | "bank")[];  // which payment methods are available for this invoice
+  stripeSessionId?: string; // Stripe checkout session ID once created
 }
