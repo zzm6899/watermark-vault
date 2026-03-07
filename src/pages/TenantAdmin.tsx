@@ -6,6 +6,8 @@ import {
   Users, Settings, Key, LogOut, Camera, Plus, Edit, Trash2,
   Save, X, ChevronDown, ChevronUp, Globe, Upload, Search, Copy,
   DollarSign, MessageSquare, HardDrive, User, RefreshCw, Webhook, Star,
+  ExternalLink, Mail, Send, Unlock, CreditCard, CheckCircle2, Download,
+  XSquare, CheckSquare,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,7 +17,7 @@ import { Slider } from "@/components/ui/slider";
 import WatermarkedImage from "@/components/WatermarkedImage";
 import { toast } from "sonner";
 import { getMobileTenantSession, setMobileTenantSession, hashPassword } from "@/lib/storage";
-import { generateThumbnail } from "@/lib/image-utils";
+import { generateThumbnail, compressImage, formatBytes } from "@/lib/image-utils";
 import {
   fetchTenantMobileData, getTenantSettings, saveTenantSettings,
   deleteTenantBooking, updateTenantBookingFull,
@@ -23,22 +25,30 @@ import {
   getTenantStoreKey, saveTenantStoreKey, updateTenant,
   clearTenantImageCache, tenantPhotoSrc, saveTenantAlbum,
   uploadPhotosToServer, isServerMode, notifyTenantDiscord,
-  getSuperAdminWebhooks,
+  getSuperAdminWebhooks, sendTenantEmail,
+  getServerStorageStats, bulkDeleteFiles, deletePhotoFromServer,
   getTenantGoogleCalendarStatus, startTenantGoogleCalendarAuth,
   disconnectTenantGoogleCalendar, getTenantGoogleCalendars,
   saveTenantCalendarSettings,
 } from "@/lib/api";
+import ProgressiveImg from "@/components/ProgressiveImg";
 import type {
-  Booking, Album, EventType, Invoice, InvoiceItem, InvoiceParty,
+  Booking, Album, Photo, AlbumDisplaySize, EventType, Invoice, InvoiceItem, InvoiceParty,
   Contact, TenantSettings, AvailabilitySlot, QuestionField, WatermarkPosition,
 } from "@/lib/types";
 
 type Tab = "dashboard" | "bookings" | "events" | "albums" | "photos" | "finance" | "invoices" | "contacts" | "enquiries" | "profile" | "settings" | "storage" | "license";
+type AlbumSortKey = "date" | "name" | "photos" | "client";
+type SortDir = "asc" | "desc";
+type BookingSortKey = "date" | "name" | "type" | "status" | "payment" | "booked";
 
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
 function generateId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+}
+function slugify(text: string): string {
+  return text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 }
 function formatDuration(mins: number) {
   if (mins >= 60) { const h = Math.floor(mins / 60); const m = mins % 60; return m > 0 ? `${h}h ${m}m` : `${h}h`; }
@@ -184,6 +194,9 @@ function TenantDashboard({ slug, session }: { slug: string; session: { displayNa
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [albums, setAlbums] = useState<Album[]>([]);
   const [loading, setLoading] = useState(true);
+  const [calView, setCalView] = useState<"month" | "week">("month");
+  const [calDate, setCalDate] = useState(() => new Date());
+  const [calSelectedDay, setCalSelectedDay] = useState<string | null>(null);
 
   useEffect(() => {
     fetchTenantMobileData(slug).then(data => {
@@ -199,6 +212,7 @@ function TenantDashboard({ slug, session }: { slug: string; session: { displayNa
   const upcoming = bookings.filter(b => b.status !== "cancelled" && b.date >= today).sort((a, b) => a.date.localeCompare(b.date));
   const pending = bookings.filter(b => b.status === "pending");
   const totalPhotos = albums.reduce((s, a) => s + (a.photos?.length || 0), 0);
+  const paidIncome = bookings.filter(b => b.paymentStatus === "paid").reduce((s, b) => s + (b.paymentAmount || 0), 0);
 
   const stats = [
     { label: "Total Bookings", value: bookings.length, icon: Calendar, color: "text-primary" },
@@ -206,7 +220,84 @@ function TenantDashboard({ slug, session }: { slug: string; session: { displayNa
     { label: "Pending Approval", value: pending.length, icon: Calendar, color: "text-yellow-400" },
     { label: "Albums", value: albums.length, icon: Image, color: "text-purple-400" },
     { label: "Photos", value: totalPhotos, icon: Camera, color: "text-green-400" },
+    { label: "Paid Income", value: `$${paidIncome}`, icon: DollarSign, color: "text-green-400" },
   ];
+
+  // Calendar helpers
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const toDateStr = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const todayStr = toDateStr(new Date());
+
+  const bookingsByDate: Record<string, Booking[]> = {};
+  for (const b of bookings) {
+    if (b.status === "cancelled") continue;
+    if (!bookingsByDate[b.date]) bookingsByDate[b.date] = [];
+    bookingsByDate[b.date].push(b);
+  }
+
+  const monthStart = new Date(calDate.getFullYear(), calDate.getMonth(), 1);
+  const monthEnd = new Date(calDate.getFullYear(), calDate.getMonth() + 1, 0);
+  const gridStart = new Date(monthStart);
+  gridStart.setDate(gridStart.getDate() - ((gridStart.getDay() + 6) % 7));
+  const gridDays: Date[] = [];
+  const cursor = new Date(gridStart);
+  while (cursor <= monthEnd || gridDays.length % 7 !== 0) {
+    gridDays.push(new Date(cursor));
+    cursor.setDate(cursor.getDate() + 1);
+    if (gridDays.length > 42) break;
+  }
+
+  const weekStart = new Date(calDate);
+  weekStart.setDate(calDate.getDate() - ((calDate.getDay() + 6) % 7));
+  const weekDays: Date[] = Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(weekStart);
+    d.setDate(weekStart.getDate() + i);
+    return d;
+  });
+
+  const prevPeriod = () => {
+    const d = new Date(calDate);
+    calView === "month" ? d.setMonth(d.getMonth() - 1) : d.setDate(d.getDate() - 7);
+    setCalDate(d);
+  };
+  const nextPeriod = () => {
+    const d = new Date(calDate);
+    calView === "month" ? d.setMonth(d.getMonth() + 1) : d.setDate(d.getDate() + 7);
+    setCalDate(d);
+  };
+
+  const selectedDayBookings = calSelectedDay ? (bookingsByDate[calSelectedDay] || []) : [];
+  const monthLabel = calDate.toLocaleString("en-AU", { month: "long", year: "numeric" });
+  const weekLabel = `${weekDays[0].toLocaleString("en-AU", { day: "numeric", month: "short" })} – ${weekDays[6].toLocaleString("en-AU", { day: "numeric", month: "short", year: "numeric" })}`;
+
+  const DayCell = ({ date, inMonth }: { date: Date; inMonth: boolean }) => {
+    const ds = toDateStr(date);
+    const bks = bookingsByDate[ds] || [];
+    const isToday = ds === todayStr;
+    const isSelected = ds === calSelectedDay;
+    return (
+      <div
+        onClick={() => setCalSelectedDay(ds === calSelectedDay ? null : ds)}
+        className={`relative min-h-[56px] p-1 rounded-lg border cursor-pointer transition-all
+          ${isSelected ? "border-primary bg-primary/10" : "border-transparent hover:border-border/50 hover:bg-secondary/40"}
+          ${!inMonth ? "opacity-30" : ""}`}
+      >
+        <span className={`text-[11px] font-body block mb-0.5 ${isToday ? "bg-primary text-primary-foreground rounded-full w-5 h-5 flex items-center justify-center font-medium" : "text-muted-foreground"}`}>
+          {date.getDate()}
+        </span>
+        <div className="space-y-0.5">
+          {bks.slice(0, 2).map(b => (
+            <div key={b.id} className={`text-[9px] font-body truncate px-1 rounded ${
+              b.status === "confirmed" ? "bg-green-500/20 text-green-400" :
+              b.status === "pending" ? "bg-yellow-500/20 text-yellow-400" :
+              "bg-primary/20 text-primary"
+            }`}>{b.clientName}</div>
+          ))}
+          {bks.length > 2 && <div className="text-[9px] font-body text-muted-foreground/60 pl-1">+{bks.length - 2}</div>}
+        </div>
+      </div>
+    );
+  };
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
@@ -215,7 +306,7 @@ function TenantDashboard({ slug, session }: { slug: string; session: { displayNa
         <p className="text-sm font-body text-muted-foreground mt-1">Your photographer dashboard</p>
       </div>
 
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mb-8">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-8">
         {stats.map(s => (
           <div key={s.label} className="glass-panel rounded-xl p-4 space-y-1">
             <s.icon className={`w-4 h-4 ${s.color}`} />
@@ -223,6 +314,60 @@ function TenantDashboard({ slug, session }: { slug: string; session: { displayNa
             <p className="text-xs font-body text-muted-foreground">{s.label}</p>
           </div>
         ))}
+      </div>
+
+      {/* Calendar */}
+      <div className="glass-panel rounded-xl p-4 mb-6">
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-2">
+            <button onClick={prevPeriod} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors"><ChevronDown className="w-4 h-4 rotate-90" /></button>
+            <span className="font-display text-sm text-foreground min-w-[160px] text-center">{calView === "month" ? monthLabel : weekLabel}</span>
+            <button onClick={nextPeriod} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors"><ChevronDown className="w-4 h-4 -rotate-90" /></button>
+          </div>
+          <div className="flex gap-1">
+            {(["month", "week"] as const).map(v => (
+              <button key={v} onClick={() => setCalView(v)}
+                className={`px-2.5 py-1 rounded text-xs font-body transition-colors capitalize ${calView === v ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground hover:bg-secondary"}`}>
+                {v}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-7 gap-0.5 mb-1">
+          {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map(d => (
+            <div key={d} className="text-[10px] font-body text-muted-foreground/50 text-center py-1">{d}</div>
+          ))}
+        </div>
+
+        {calView === "month" ? (
+          <div className="grid grid-cols-7 gap-0.5">
+            {gridDays.map((d, i) => <DayCell key={i} date={d} inMonth={d.getMonth() === calDate.getMonth()} />)}
+          </div>
+        ) : (
+          <div className="grid grid-cols-7 gap-0.5">
+            {weekDays.map((d, i) => <DayCell key={i} date={d} inMonth={true} />)}
+          </div>
+        )}
+
+        {calSelectedDay && selectedDayBookings.length > 0 && (
+          <div className="mt-3 space-y-2 border-t border-border/30 pt-3">
+            <p className="text-xs font-body text-muted-foreground">{new Date(calSelectedDay + "T12:00:00").toLocaleDateString("en-AU", { weekday: "long", day: "numeric", month: "long" })}</p>
+            {selectedDayBookings.map(bk => (
+              <div key={bk.id} className="flex items-center justify-between py-1.5 px-3 rounded-lg bg-secondary/50">
+                <div>
+                  <p className="text-sm font-body text-foreground">{bk.clientName}</p>
+                  <p className="text-xs font-body text-muted-foreground">{bk.time} · {formatDuration(bk.duration)} · {bk.type}</p>
+                </div>
+                <span className={`text-[10px] font-body px-2 py-0.5 rounded-full ${
+                  bk.status === "confirmed" ? "bg-green-500/10 text-green-400" :
+                  bk.status === "pending" ? "bg-yellow-500/10 text-yellow-400" :
+                  "bg-secondary text-muted-foreground"
+                }`}>{bk.status}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {upcoming.length > 0 && (
@@ -256,6 +401,8 @@ function TenantBookings({ slug }: { slug: string }) {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "pending" | "confirmed" | "completed" | "cancelled">("all");
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [sortKey, setSortKey] = useState<BookingSortKey>("date");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
 
   const load = useCallback(() => {
     fetchTenantMobileData(slug).then(d => { setBookings(d.bookings || []); setLoading(false); });
@@ -285,22 +432,70 @@ function TenantBookings({ slug }: { slug: string }) {
     load();
   };
 
+  const toggleSort = (key: BookingSortKey) => {
+    if (sortKey === key) setSortDir(d => d === "asc" ? "desc" : "asc");
+    else { setSortKey(key); setSortDir(key === "date" ? "desc" : "asc"); }
+  };
+
   const filtered = bookings.filter(bk => {
     if (statusFilter !== "all" && bk.status !== statusFilter) return false;
     if (search && !`${bk.clientName} ${bk.clientEmail} ${bk.type}`.toLowerCase().includes(search.toLowerCase())) return false;
     return true;
-  }).sort((a, b) => b.date.localeCompare(a.date) || b.time.localeCompare(a.time));
+  });
+
+  const sorted = [...filtered].sort((a, b) => {
+    const dir = sortDir === "asc" ? 1 : -1;
+    switch (sortKey) {
+      case "date": return dir * ((new Date(`${a.date}T${a.time || "00:00"}:00`).getTime()) - (new Date(`${b.date}T${b.time || "00:00"}:00`).getTime()));
+      case "name": return dir * (a.clientName || "").localeCompare(b.clientName || "");
+      case "type": return dir * (a.type || "").localeCompare(b.type || "");
+      case "status": return dir * (a.status || "").localeCompare(b.status || "");
+      case "payment": return dir * (a.paymentStatus || "").localeCompare(b.paymentStatus || "");
+      case "booked": return dir * (new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime());
+      default: return 0;
+    }
+  });
+
+  const handleExportCsv = () => {
+    const headers = ["Name", "Email", "Date", "Time", "Duration (min)", "Type", "Status", "Payment", "Amount ($)", "Notes", "Booked At"];
+    const rows = sorted.map(bk => [
+      bk.clientName, bk.clientEmail, bk.date, bk.time, String(bk.duration || ""),
+      bk.type || "", bk.status || "", bk.paymentStatus || "", String(bk.paymentAmount || ""),
+      bk.notes || "", bk.createdAt ? new Date(bk.createdAt).toLocaleDateString("en-AU") : "",
+    ]);
+    const csv = [headers, ...rows].map(row => row.map(v => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `bookings-${new Date().toISOString().split("T")[0]}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const SortBtn = ({ k, label }: { k: BookingSortKey; label: string }) => (
+    <button onClick={() => toggleSort(k)} className={`text-[10px] font-body tracking-wider uppercase px-2 py-1 rounded transition-colors ${sortKey === k ? "bg-primary/15 text-primary" : "text-muted-foreground hover:text-foreground"}`}>
+      {label} {sortKey === k ? (sortDir === "asc" ? "↑" : "↓") : ""}
+    </button>
+  );
 
   if (loading) return <div className="py-16 text-center text-muted-foreground font-body text-sm animate-pulse">Loading…</div>;
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
       <div className="flex items-center justify-between mb-6">
-        <h2 className="font-display text-2xl text-foreground">Bookings</h2>
-        <span className="text-sm font-body text-muted-foreground">{bookings.length} total</span>
+        <div>
+          <h2 className="font-display text-2xl text-foreground">Bookings</h2>
+          <span className="text-sm font-body text-muted-foreground">{bookings.length} total</span>
+        </div>
+        {bookings.length > 0 && (
+          <Button size="sm" variant="outline" onClick={handleExportCsv} className="font-body text-xs gap-1.5 border-border">
+            <Download className="w-3.5 h-3.5" /> Export CSV
+          </Button>
+        )}
       </div>
 
-      <div className="flex flex-col sm:flex-row gap-3 mb-4">
+      <div className="flex flex-col sm:flex-row gap-3 mb-3">
         <div className="relative flex-1 max-w-sm">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground/50" />
           <Input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search bookings…" className="pl-9 bg-secondary border-border text-foreground font-body text-sm" />
@@ -315,14 +510,24 @@ function TenantBookings({ slug }: { slug: string }) {
         </select>
       </div>
 
-      {filtered.length === 0 ? (
+      <div className="flex items-center gap-1 flex-wrap mb-4">
+        <span className="text-[10px] font-body text-muted-foreground/50 mr-1">Sort:</span>
+        <SortBtn k="date" label="Date" />
+        <SortBtn k="name" label="Name" />
+        <SortBtn k="type" label="Type" />
+        <SortBtn k="status" label="Status" />
+        <SortBtn k="payment" label="Payment" />
+        <SortBtn k="booked" label="Booked" />
+      </div>
+
+      {sorted.length === 0 ? (
         <div className="text-center py-16 text-muted-foreground">
           <Calendar className="w-10 h-10 mx-auto mb-3 opacity-30" />
           <p className="font-body text-sm">{bookings.length === 0 ? "No bookings yet" : "No bookings match your filter"}</p>
         </div>
       ) : (
         <div className="space-y-2">
-          {filtered.map(bk => (
+          {sorted.map(bk => (
             <div key={bk.id} className="glass-panel rounded-xl overflow-hidden">
               <div className="flex items-center justify-between p-4 cursor-pointer" onClick={() => setExpandedId(expandedId === bk.id ? null : bk.id)}>
                 <div className="min-w-0 flex-1">
@@ -347,8 +552,10 @@ function TenantBookings({ slug }: { slug: string }) {
                 <div className="border-t border-border/30 p-4 space-y-4">
                   <div className="grid grid-cols-2 gap-3 text-xs font-body">
                     <div><span className="text-muted-foreground">Email: </span><span className="text-foreground">{bk.clientEmail}</span></div>
+                    {bk.instagramHandle && <div><span className="text-muted-foreground">Instagram: </span><span className="text-foreground">{bk.instagramHandle}</span></div>}
                     {bk.notes && <div className="col-span-2"><span className="text-muted-foreground">Notes: </span><span className="text-foreground">{bk.notes}</span></div>}
                     {bk.paymentStatus && <div><span className="text-muted-foreground">Payment: </span><span className="text-foreground">{bk.paymentStatus}</span></div>}
+                    {bk.createdAt && <div><span className="text-muted-foreground">Booked: </span><span className="text-foreground">{new Date(bk.createdAt).toLocaleDateString("en-AU")}</span></div>}
                   </div>
 
                   <div className="flex flex-wrap gap-2">
@@ -369,6 +576,19 @@ function TenantBookings({ slug }: { slug: string }) {
                     ))}
                   </div>
 
+                  {bk.clientEmail && (
+                    <button
+                      onClick={() => {
+                        const subject = `Your session is confirmed — ${bk.clientName}`;
+                        const link = `mailto:${bk.clientEmail}?subject=${encodeURIComponent(subject)}`;
+                        window.open(link);
+                      }}
+                      className="flex items-center gap-1.5 text-xs font-body text-primary hover:text-primary/80 transition-colors"
+                    >
+                      <Mail className="w-3.5 h-3.5" /> Email client
+                    </button>
+                  )}
+
                   <button onClick={() => handleDelete(bk)} className="flex items-center gap-1.5 text-xs font-body text-destructive hover:text-destructive/80 transition-colors">
                     <Trash2 className="w-3.5 h-3.5" /> Delete booking
                   </button>
@@ -381,6 +601,7 @@ function TenantBookings({ slug }: { slug: string }) {
     </motion.div>
   );
 }
+
 
 // ─── Event Types ─────────────────────────────────────────────────────────────
 function TenantEvents({ slug }: { slug: string }) {
@@ -662,20 +883,15 @@ function TenantEventEditor({ eventType, onSave, onCancel }: { eventType: EventTy
   );
 }
 
-// ─── Gallery ─────────────────────────────────────────────────────────────────
+// ─── Albums ───────────────────────────────────────────────────────────────────
 function TenantAlbums({ slug }: { slug: string }) {
   const [albums, setAlbums] = useState<Album[]>([]);
   const [loading, setLoading] = useState(true);
-  const [selectedAlbum, setSelectedAlbum] = useState<Album | null>(null);
-  const [showCreateForm, setShowCreateForm] = useState(false);
-  const [newTitle, setNewTitle] = useState("");
-  const [newClient, setNewClient] = useState("");
-  const [newDate, setNewDate] = useState(() => new Date().toISOString().split("T")[0]);
-  const [newSlug, setNewSlug] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [uploading, setUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState(0);
-  const uploadInputRef = useRef<HTMLInputElement>(null);
+  const [editing, setEditing] = useState<Album | null>(null);
+  const [showNew, setShowNew] = useState(false);
+  const [albumSortKey, setAlbumSortKey] = useState<AlbumSortKey>("date");
+  const [albumSortDir, setAlbumSortDir] = useState<SortDir>("desc");
+  const [albumSearch, setAlbumSearch] = useState("");
 
   const load = useCallback(async () => {
     const data = await fetchTenantMobileData(slug);
@@ -685,118 +901,629 @@ function TenantAlbums({ slug }: { slug: string }) {
 
   useEffect(() => { load(); }, [load]);
 
+  const photoUrl = (src: string) => tenantPhotoSrc(src, slug);
+
   const handleDelete = async (albumId: string) => {
     if (!confirm("Delete this album and all its photos?")) return;
     const { ok, error } = await deleteTenantAlbum(slug, albumId);
     if (!ok) { toast.error(error || "Failed to delete"); return; }
     toast.success("Album deleted");
-    setSelectedAlbum(null);
     load();
   };
 
-  const handleCreateAlbum = async () => {
-    if (!newTitle.trim()) { toast.error("Album title is required"); return; }
-    setSaving(true);
-    const id = generateId("album");
-    const albumSlug = newSlug.trim() || newTitle.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-    const album: Album = {
-      id,
-      slug: albumSlug,
-      title: newTitle.trim(),
-      clientName: newClient.trim(),
-      date: newDate,
-      photos: [],
-      isPublic: false,
-      freeDownloads: 0,
-      pricePerPhoto: 0,
-      priceFullAlbum: 0,
-      createdAt: new Date().toISOString(),
-    };
-    const { ok, error } = await saveTenantAlbum(slug, album);
-    setSaving(false);
-    if (!ok) { toast.error(error || "Failed to create album"); return; }
-    toast.success("Album created");
-    setNewTitle(""); setNewClient(""); setNewSlug("");
-    setNewDate(new Date().toISOString().split("T")[0]);
-    setShowCreateForm(false);
-    await load();
-    const fresh = (await fetchTenantMobileData(slug)).albums?.find((a: Album) => a.id === id);
-    if (fresh) setSelectedAlbum(fresh);
+  const handleToggle = async (alb: Album) => {
+    const updated = { ...alb, enabled: alb.enabled === false ? true : false };
+    const { ok, error } = await saveTenantAlbum(slug, updated);
+    if (!ok) { toast.error(error || "Failed to update"); return; }
+    setAlbums(prev => prev.map(a => a.id === alb.id ? updated : a));
+    toast.success(updated.enabled !== false ? "Album enabled" : "Album disabled");
   };
 
-  const handleUploadPhotos = async (files: FileList | null) => {
-    if (!files || files.length === 0 || !selectedAlbum) return;
+  const copyLink = (albumSlug: string) => {
+    const url = `${window.location.origin}/gallery/${albumSlug}`;
+    navigator.clipboard.writeText(url).then(() => toast.success("Gallery link copied!")).catch(() => {
+      const ta = document.createElement("textarea");
+      ta.value = url;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+      toast.success("Gallery link copied!");
+    });
+  };
+
+  const handleSendNotification = async (alb: Album) => {
+    if (!alb.clientEmail) { toast.error("No client email on this album"); return; }
+    const tok = (alb as any).clientToken;
+    const link = `${window.location.origin}/gallery/${alb.slug}${tok ? `?token=${tok}` : ""}`;
+    const message = `Hey ${alb.clientName || "there"}, your photos are ready! Check them out here: ${link}`;
+    const html = `<div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:32px;background:#0a0a0a;color:#f5f5f5;border-radius:12px;"><h2 style="font-size:22px;margin:0 0 16px;">📸 Your photos are ready!</h2><p style="color:#aaa;line-height:1.6;">${message.replace(link, "")}</p><a href="${link}" style="display:inline-block;margin-top:24px;padding:12px 28px;background:#fff;color:#000;border-radius:8px;text-decoration:none;font-weight:600;">View Your Gallery →</a><p style="margin-top:32px;font-size:11px;color:#555;">${link}</p></div>`;
+    const result = await sendTenantEmail(slug, alb.clientEmail, `Your photos are ready — ${alb.clientName || "Gallery"}`, html, message);
+    if (result.ok) toast.success(`Email sent to ${alb.clientEmail}`);
+    else toast.error(`Failed: ${result.error || "Unknown error"}`);
+  };
+
+  if (loading) return <div className="py-16 text-center text-muted-foreground font-body text-sm animate-pulse">Loading…</div>;
+
+  if (showNew || editing) {
+    return (
+      <TenantAlbumEditor
+        slug={slug}
+        album={editing}
+        onSave={async (alb) => {
+          const { ok, error } = await saveTenantAlbum(slug, alb);
+          if (!ok) { toast.error(error || "Failed to save album"); return; }
+          await load();
+          setEditing(null);
+          setShowNew(false);
+          toast.success(editing ? "Album updated" : "Album created");
+        }}
+        onCancel={() => { setEditing(null); setShowNew(false); }}
+      />
+    );
+  }
+
+  const toggleAlbumSort = (key: AlbumSortKey) => {
+    if (albumSortKey === key) setAlbumSortDir(d => d === "asc" ? "desc" : "asc");
+    else { setAlbumSortKey(key); setAlbumSortDir(key === "date" ? "desc" : "asc"); }
+  };
+
+  const filteredAlbums = albums.filter(a => {
+    if (!albumSearch) return true;
+    const q = albumSearch.toLowerCase();
+    return a.title.toLowerCase().includes(q)
+      || (a.clientName || "").toLowerCase().includes(q)
+      || (a.clientEmail || "").toLowerCase().includes(q)
+      || (a.description || "").toLowerCase().includes(q)
+      || (a.slug || "").toLowerCase().includes(q);
+  });
+
+  const sortedAlbums = [...filteredAlbums].sort((a, b) => {
+    const dir = albumSortDir === "asc" ? 1 : -1;
+    switch (albumSortKey) {
+      case "date": return dir * (new Date(a.date).getTime() - new Date(b.date).getTime());
+      case "name": return dir * a.title.localeCompare(b.title);
+      case "photos": return dir * ((a.photos?.length || 0) - (b.photos?.length || 0));
+      case "client": return dir * (a.clientName || "").localeCompare(b.clientName || "");
+      default: return 0;
+    }
+  });
+
+  const AlbumSortBtn = ({ k, label }: { k: AlbumSortKey; label: string }) => (
+    <button onClick={() => toggleAlbumSort(k)} className={`text-[10px] font-body tracking-wider uppercase px-2 py-1 rounded transition-colors ${albumSortKey === k ? "bg-primary/15 text-primary" : "text-muted-foreground hover:text-foreground"}`}>
+      {label} {albumSortKey === k ? (albumSortDir === "asc" ? "↑" : "↓") : ""}
+    </button>
+  );
+
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
+        <h2 className="font-display text-2xl text-foreground">Albums</h2>
+        <Button size="sm" onClick={() => setShowNew(true)} className="gap-2 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs tracking-wider uppercase">
+          <Plus className="w-4 h-4" /> New Album
+        </Button>
+      </div>
+
+      {albums.length === 0 ? (
+        <div className="glass-panel rounded-xl p-12 text-center">
+          <Image className="w-10 h-10 text-muted-foreground/30 mx-auto mb-3" />
+          <p className="text-sm font-body text-muted-foreground">No albums yet. Create one to get started.</p>
+        </div>
+      ) : (
+        <>
+          <div className="flex flex-col sm:flex-row sm:items-center gap-2 mb-3">
+            <div className="relative flex-1 sm:max-w-xs">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+              <Input value={albumSearch} onChange={e => setAlbumSearch(e.target.value)} placeholder="Search albums…" className="pl-8 h-8 text-xs font-body" />
+            </div>
+            <div className="flex items-center gap-1 flex-wrap overflow-x-auto">
+              <span className="text-[10px] font-body text-muted-foreground/50 mr-1">Sort:</span>
+              <AlbumSortBtn k="date" label="Date" />
+              <AlbumSortBtn k="name" label="Name" />
+              <AlbumSortBtn k="photos" label="Photos" />
+              <AlbumSortBtn k="client" label="Client" />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+            {sortedAlbums.map((alb) => {
+              const coverSrc = alb.coverImage
+                ? photoUrl(alb.coverImage.startsWith("/uploads/") ? `${alb.coverImage}?size=thumb` : alb.coverImage)
+                : alb.photos?.[0]
+                  ? photoUrl(alb.photos[0].thumbnail || (alb.photos[0].src.startsWith("/uploads/") ? `${alb.photos[0].src}?size=thumb` : alb.photos[0].src))
+                  : null;
+              return (
+                <div key={alb.id} className={`glass-panel rounded-xl overflow-hidden transition-all ${alb.enabled === false ? "opacity-50" : ""}`}>
+                  {coverSrc && (
+                    <div className="aspect-[16/9] bg-secondary overflow-hidden">
+                      <img src={coverSrc} alt={alb.title} className="w-full h-full object-cover" loading="lazy" />
+                    </div>
+                  )}
+                  <div className="p-3 space-y-1">
+                    <h3 className="font-display text-base text-foreground">{alb.title}</h3>
+                    <p className="text-xs font-body text-muted-foreground">
+                      {alb.photos?.length || 0} photos · {alb.freeDownloads ?? 0} free · ${alb.pricePerPhoto ?? 0}/photo
+                    </p>
+                    {alb.clientName && <p className="text-xs font-body text-primary">{alb.clientName}</p>}
+                    {alb.expiresAt && (() => {
+                      const expired = new Date(alb.expiresAt + "T23:59:59") < new Date();
+                      const daysLeft = Math.ceil((new Date(alb.expiresAt + "T23:59:59").getTime() - Date.now()) / 86400000);
+                      if (expired) return <span className="inline-flex items-center gap-1 text-[10px] font-body px-2 py-0.5 rounded-full bg-destructive/15 text-destructive">🔒 Gallery expired</span>;
+                      if (daysLeft <= 14) return <span className="inline-flex items-center gap-1 text-[10px] font-body px-2 py-0.5 rounded-full bg-yellow-500/15 text-yellow-400">⏳ Expires in {daysLeft}d</span>;
+                      return null;
+                    })()}
+                    {alb.proofingEnabled && alb.proofingStage && alb.proofingStage !== "not-started" && (
+                      <span className={`inline-flex items-center gap-1 text-[10px] font-body px-2 py-0.5 rounded-full ${
+                        alb.proofingStage === "proofing" ? "bg-yellow-500/15 text-yellow-400" :
+                        alb.proofingStage === "selections-submitted" ? "bg-orange-500/15 text-orange-400" :
+                        alb.proofingStage === "editing" ? "bg-blue-500/15 text-blue-400" :
+                        alb.proofingStage === "finals-delivered" ? "bg-green-500/15 text-green-400" : ""
+                      }`}>
+                        {alb.proofingStage === "proofing" && "★ Proofing"}
+                        {alb.proofingStage === "selections-submitted" && "⏳ Picks submitted"}
+                        {alb.proofingStage === "editing" && "✏️ Editing"}
+                        {alb.proofingStage === "finals-delivered" && "✓ Finals delivered"}
+                      </span>
+                    )}
+                    <div className="flex items-center gap-2 pt-2 border-t border-border/50">
+                      <Switch
+                        checked={alb.enabled !== false}
+                        onCheckedChange={() => handleToggle(alb)}
+                      />
+                      <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary" title="Copy gallery link" onClick={() => copyLink(alb.slug)}>
+                        <Copy className="w-3.5 h-3.5" />
+                      </Button>
+                      <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary" title="Email client" onClick={() => handleSendNotification(alb)}>
+                        <Send className="w-3.5 h-3.5" />
+                      </Button>
+                      <a href={`/gallery/${alb.slug}`} target="_blank" rel="noopener noreferrer">
+                        <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary" title="View gallery">
+                          <ExternalLink className="w-3.5 h-3.5" />
+                        </Button>
+                      </a>
+                      {(() => {
+                        const starredPhotos = (alb.photos || []).filter(p => p.starred);
+                        if (starredPhotos.length === 0) return null;
+                        return (
+                          <Button
+                            variant="ghost" size="icon"
+                            className="h-7 w-7 text-yellow-500 hover:text-yellow-400"
+                            title={`Export ${starredPhotos.length} starred filenames`}
+                            onClick={() => {
+                              const lines = [
+                                `# Starred photos — ${alb.title}`,
+                                `# Album: ${alb.slug}`,
+                                `# Exported: ${new Date().toISOString().slice(0, 10)}`,
+                                `# ${starredPhotos.length} of ${alb.photos.length} photos starred`,
+                                ``,
+                                ...starredPhotos.map(p => p.title?.trim() || p.id),
+                              ];
+                              const blob = new Blob([lines.join("\n")], { type: "text/plain" });
+                              const url = URL.createObjectURL(blob);
+                              const a = document.createElement("a");
+                              a.href = url;
+                              a.download = `starred_${alb.slug}_${new Date().toISOString().slice(0, 10)}.txt`;
+                              a.click();
+                              URL.revokeObjectURL(url);
+                              toast.success(`Exported ${starredPhotos.length} starred filenames`);
+                            }}
+                          >
+                            <Star className="w-3.5 h-3.5 fill-yellow-500/40" />
+                          </Button>
+                        );
+                      })()}
+                      <div className="flex-1" />
+                      <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-foreground" onClick={() => setEditing(alb)}>
+                        <Edit className="w-3.5 h-3.5" />
+                      </Button>
+                      <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={() => handleDelete(alb.id)}>
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+    </motion.div>
+  );
+}
+
+// ─── Album Editor (tenant) ────────────────────────────────────────────────────
+function TenantAlbumEditor({ slug, album, onSave, onCancel }: {
+  slug: string;
+  album: Album | null;
+  onSave: (alb: Album) => void;
+  onCancel: () => void;
+}) {
+  const isNew = !album;
+  const [title, setTitle] = useState(album?.title || "");
+  const [albumSlug, setAlbumSlug] = useState(album?.slug || "");
+  const [description, setDescription] = useState(album?.description || "");
+  const [clientName, setClientName] = useState(album?.clientName || "");
+  const [clientEmail, setClientEmail] = useState(album?.clientEmail || "");
+  const [freeDownloads, setFreeDownloads] = useState(album?.freeDownloads ?? 0);
+  const [pricePerPhoto, setPricePerPhoto] = useState(album?.pricePerPhoto ?? 0);
+  const [priceFullAlbum, setPriceFullAlbum] = useState(album?.priceFullAlbum ?? 0);
+  const [accessCode, setAccessCode] = useState(album?.accessCode || "");
+  const [allUnlocked, setAllUnlocked] = useState(album?.allUnlocked || false);
+  const [watermarkDisabled, setWatermarkDisabled] = useState((album as any)?.watermarkDisabled || false);
+  const [purchasingDisabled, setPurchasingDisabled] = useState((album as any)?.purchasingDisabled || false);
+  const [proofingEnabled, setProofingEnabled] = useState(album?.proofingEnabled || false);
+  const [expiresAt, setExpiresAt] = useState(album?.expiresAt || "");
+  const [downloadExpiresAt, setDownloadExpiresAt] = useState(album?.downloadExpiresAt || "");
+  const [displaySize, setDisplaySize] = useState<AlbumDisplaySize>(album?.displaySize || "medium");
+  const [liveAlbum, setLiveAlbum] = useState<Album | null>(album);
+  const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const uploadRef = useRef<HTMLInputElement>(null);
+
+  const updateLiveAlbum = async (updated: Album) => {
+    const { ok, error } = await saveTenantAlbum(slug, updated);
+    if (!ok) { toast.error(error || "Failed to update album"); return; }
+    setLiveAlbum(updated);
+  };
+
+  const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0 || !liveAlbum) return;
     if (!isServerMode()) { toast.error("Server required for photo uploads"); return; }
     setUploading(true);
     setUploadProgress(0);
     const fileArr = Array.from(files);
-    const uploaded = await uploadPhotosToServer(fileArr, (done, total) => {
+    const results = await uploadPhotosToServer(fileArr, (done, total) => {
       setUploadProgress(Math.round((done / total) * 100));
     });
-    if (uploaded.length === 0) { setUploading(false); toast.error("Upload failed"); return; }
-    const newPhotos: Photo[] = await Promise.all(uploaded.map(async (u) => {
-      let thumbnail = "";
-      try { thumbnail = await generateThumbnail(u.url, 300, 0.65); } catch { thumbnail = u.url; }
-      return {
-        id: generateId("photo"),
-        src: u.url,
-        thumbnail,
-        title: u.originalName,
-        width: 0,
-        height: 0,
-        starred: false,
-        uploadedAt: new Date().toISOString(),
-      } as Photo;
+    const newPhotos: Photo[] = results.map(r => ({
+      id: r.id, src: r.url, thumbnail: r.url + "?size=thumb",
+      title: r.originalName.replace(/\.[^.]+$/, ""), width: 800, height: 600,
+      uploadedAt: new Date().toISOString(),
     }));
-    const updatedAlbum: Album = {
-      ...selectedAlbum,
-      photos: [...(selectedAlbum.photos || []), ...newPhotos],
-    };
-    const { ok, error } = await saveTenantAlbum(slug, updatedAlbum);
+    const updatedAlbum = { ...liveAlbum, photos: [...(liveAlbum.photos || []), ...newPhotos] };
+    await updateLiveAlbum(updatedAlbum);
     setUploading(false);
-    if (!ok) { toast.error(error || "Failed to save photos"); return; }
-    setSelectedAlbum(updatedAlbum);
-    setAlbums(prev => prev.map(a => a.id === updatedAlbum.id ? updatedAlbum : a));
-    toast.success(`${newPhotos.length} photo${newPhotos.length !== 1 ? "s" : ""} uploaded`);
-    notifyTenantDiscord(slug, { event: "photos-uploaded", album: updatedAlbum, photoCount: newPhotos.length });
+    if (results.length > 0) toast.success(`${results.length} photos uploaded`);
+    if (e.target) e.target.value = "";
   };
 
-  /** Append ?tenant=slug so server uses this tenant's watermark settings */
-  const photoUrl = (src: string) => tenantPhotoSrc(src, slug);
+  const handleSave = () => {
+    if (!title.trim()) { toast.error("Title required"); return; }
+    const finalSlug = albumSlug.trim() || slugify(title);
+    const albumId = album?.id || generateId("alb");
+    onSave({
+      id: albumId,
+      slug: finalSlug,
+      title: title.trim(),
+      description: description.trim(),
+      coverImage: album?.coverImage || (liveAlbum?.photos?.[0]?.src || ""),
+      date: album?.date || new Date().toISOString().split("T")[0],
+      photoCount: liveAlbum?.photos?.length || 0,
+      freeDownloads,
+      pricePerPhoto,
+      priceFullAlbum,
+      isPublic: true,
+      photos: liveAlbum?.photos || [],
+      clientName: clientName.trim(),
+      clientEmail: clientEmail.trim(),
+      accessCode: accessCode || undefined,
+      allUnlocked,
+      watermarkDisabled,
+      purchasingDisabled,
+      proofingEnabled,
+      expiresAt: expiresAt || undefined,
+      downloadExpiresAt: downloadExpiresAt || undefined,
+      displaySize,
+      mergedFrom: album?.mergedFrom,
+      usedFreeDownloads: album?.usedFreeDownloads,
+      downloadRequests: album?.downloadRequests,
+      proofingStage: liveAlbum?.proofingStage,
+      proofingRounds: liveAlbum?.proofingRounds,
+      clientToken: liveAlbum?.clientToken,
+      proofingExpiresAt: liveAlbum?.proofingExpiresAt,
+    } as Album);
+  };
 
-  if (loading) return <div className="py-16 text-center text-muted-foreground font-body text-sm animate-pulse">Loading…</div>;
+  return (
+    <div className="glass-panel rounded-xl p-6 mb-6 space-y-5">
+      <div className="flex items-center justify-between">
+        <h3 className="font-display text-lg text-foreground">{isNew ? "New Album" : "Edit Album"}</h3>
+        <Button variant="ghost" size="icon" onClick={onCancel}><X className="w-4 h-4" /></Button>
+      </div>
 
-  if (selectedAlbum) {
-    return (
-      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-        <div className="flex items-center justify-between mb-6">
-          <button onClick={() => setSelectedAlbum(null)} className="flex items-center gap-2 text-sm font-body text-muted-foreground hover:text-foreground transition-colors">
-            ← Back to Albums
-          </button>
+      <div className="grid md:grid-cols-2 gap-4">
+        <div>
+          <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Title *</label>
+          <Input value={title} onChange={e => { setTitle(e.target.value); if (!albumSlug || albumSlug === slugify(album?.title || "")) setAlbumSlug(slugify(e.target.value)); }} className="bg-secondary border-border text-foreground font-body" />
+        </div>
+        <div>
+          <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Custom URL Slug</label>
           <div className="flex items-center gap-2">
-            <Button size="sm" variant="outline" className="font-body text-xs gap-1.5 border-border" onClick={() => uploadInputRef.current?.click()} disabled={uploading}>
-              <Upload className="w-3.5 h-3.5" />
-              {uploading ? `Uploading ${uploadProgress}%…` : "Upload Photos"}
-            </Button>
-            <button onClick={() => handleDelete(selectedAlbum.id)} className="flex items-center gap-1.5 text-xs font-body text-destructive hover:text-destructive/80">
-              <Trash2 className="w-3.5 h-3.5" /> Delete Album
-            </button>
+            <span className="text-xs font-body text-muted-foreground">/gallery/</span>
+            <Input value={albumSlug} onChange={e => setAlbumSlug(slugify(e.target.value))} className="bg-secondary border-border text-foreground font-body flex-1" />
           </div>
         </div>
-        <input ref={uploadInputRef} type="file" accept="image/*" multiple className="hidden" onChange={e => handleUploadPhotos(e.target.files)} />
-        <h2 className="font-display text-2xl text-foreground mb-2">{selectedAlbum.title}</h2>
-        <p className="text-sm font-body text-muted-foreground mb-6">{selectedAlbum.photos?.length || 0} photos · {selectedAlbum.date}</p>
+      </div>
+
+      <div>
+        <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Description</label>
+        <Textarea value={description} onChange={e => setDescription(e.target.value)} className="bg-secondary border-border text-foreground font-body min-h-[50px]" />
+      </div>
+
+      <div className="grid md:grid-cols-2 gap-4">
+        <div>
+          <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Client Name</label>
+          <Input value={clientName} onChange={e => setClientName(e.target.value)} className="bg-secondary border-border text-foreground font-body" />
+        </div>
+        <div>
+          <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Client Email</label>
+          <Input type="email" value={clientEmail} onChange={e => setClientEmail(e.target.value)} className="bg-secondary border-border text-foreground font-body" />
+        </div>
+      </div>
+
+      <div>
+        <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Album PIN (optional)</label>
+        <Input value={accessCode} onChange={e => setAccessCode(e.target.value)} placeholder="Leave empty for no PIN" className="bg-secondary border-border text-foreground font-body" />
+      </div>
+
+      <div>
+        <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Gallery Expires On <span className="text-muted-foreground/40 normal-case">(optional)</span></label>
+        <div className="flex items-center gap-2">
+          <Input type="date" value={expiresAt} onChange={e => setExpiresAt(e.target.value)} className="bg-secondary border-border text-foreground font-body text-xs h-8 w-44" />
+          {expiresAt && <button onClick={() => setExpiresAt("")} className="text-muted-foreground/50 hover:text-muted-foreground text-xs font-body">Clear</button>}
+        </div>
+      </div>
+
+      <div className="grid md:grid-cols-2 gap-4">
+        <div className="p-4 rounded-lg bg-secondary/50 border border-border/50 space-y-3">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-body text-muted-foreground flex items-center gap-2"><Unlock className="w-3.5 h-3.5" /> All Downloads Unlocked</span>
+            <Switch checked={allUnlocked} onCheckedChange={setAllUnlocked} />
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-body text-muted-foreground flex items-center gap-2"><Camera className="w-3.5 h-3.5" /> Watermarks Disabled</span>
+            <Switch checked={watermarkDisabled} onCheckedChange={setWatermarkDisabled} />
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-body text-muted-foreground flex items-center gap-2"><CreditCard className="w-3.5 h-3.5" /> Purchasing Disabled</span>
+            <Switch checked={purchasingDisabled} onCheckedChange={setPurchasingDisabled} />
+          </div>
+          {allUnlocked && (
+            <div className="space-y-1 pt-2 border-t border-border/30">
+              <label className="text-[10px] font-body tracking-wider uppercase text-muted-foreground block">Download Expires On <span className="text-muted-foreground/40 normal-case">(optional)</span></label>
+              <div className="flex items-center gap-2">
+                <Input type="date" value={downloadExpiresAt} onChange={e => setDownloadExpiresAt(e.target.value)} className="bg-secondary border-border text-foreground font-body text-xs h-8" />
+                {downloadExpiresAt && <button onClick={() => setDownloadExpiresAt("")} className="text-muted-foreground/50 hover:text-muted-foreground text-xs font-body">Clear</button>}
+              </div>
+            </div>
+          )}
+        </div>
+        <div>
+          <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Display Size</label>
+          <div className="flex gap-2 flex-wrap">
+            {(["small", "medium", "large", "list"] as AlbumDisplaySize[]).map(size => (
+              <button key={size} onClick={() => setDisplaySize(size)}
+                className={`text-xs font-body py-2 px-3 rounded-lg border transition-all capitalize ${displaySize === size ? "bg-primary text-primary-foreground border-primary" : "border-border text-muted-foreground hover:border-primary/50"}`}>
+                {size}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-3 gap-4">
+        <div>
+          <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Free Downloads</label>
+          <Input type="number" value={freeDownloads} onChange={e => setFreeDownloads(Number(e.target.value))} className="bg-secondary border-border text-foreground font-body" />
+        </div>
+        <div>
+          <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">$/Photo</label>
+          <Input type="number" value={pricePerPhoto} onChange={e => setPricePerPhoto(Number(e.target.value))} className="bg-secondary border-border text-foreground font-body" />
+        </div>
+        <div>
+          <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Full Album $</label>
+          <Input type="number" value={priceFullAlbum} onChange={e => setPriceFullAlbum(Number(e.target.value))} className="bg-secondary border-border text-foreground font-body" />
+        </div>
+      </div>
+
+      {/* Proofing toggle */}
+      {album && (
+        <div className="flex items-center justify-between p-3 rounded-lg bg-secondary">
+          <div>
+            <p className="text-xs font-body text-foreground font-medium">Proofing for this album</p>
+            <p className="text-[10px] font-body text-muted-foreground/70 mt-0.5">Let this client star and submit picks before editing</p>
+          </div>
+          <Switch checked={proofingEnabled} onCheckedChange={v => { setProofingEnabled(v); toast.success(v ? "Proofing enabled" : "Proofing disabled"); }} />
+        </div>
+      )}
+
+      {/* Proofing controls */}
+      {liveAlbum && proofingEnabled && album && (() => {
+        const stage = liveAlbum.proofingStage || "not-started";
+        const rounds = liveAlbum.proofingRounds || [];
+        const latest = rounds[rounds.length - 1];
+        const email = liveAlbum.clientEmail;
+
+        const startProofing = async () => {
+          const noteEl = document.getElementById("t-proofing-note") as HTMLTextAreaElement;
+          const expiryEl = document.getElementById("t-proofing-expiry") as HTMLInputElement;
+          const note = noteEl?.value || "";
+          const expiryHours = expiryEl && expiryEl.value !== "" ? Math.max(1, parseInt(expiryEl.value, 10) || 48) : 48;
+          const proofingExpiresAt = new Date(Date.now() + expiryHours * 3600 * 1000).toISOString();
+          const clientToken = liveAlbum.clientToken || `ct-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+          const newRound = { roundNumber: rounds.length + 1, sentAt: new Date().toISOString(), selectedPhotoIds: [], adminNote: note || undefined };
+          const updated = { ...liveAlbum, proofingEnabled: true, proofingStage: "proofing" as const, proofingRounds: [...rounds, newRound], clientToken, proofingExpiresAt };
+          await updateLiveAlbum(updated);
+          if (email) {
+            const galleryUrl = `${window.location.origin}/gallery/${liveAlbum.slug}?token=${clientToken}`;
+            const expiryDateStr = new Date(proofingExpiresAt).toLocaleString("en-AU", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+            const html = `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;"><h2 style="margin:0 0 16px;font-size:20px;">Your photos are ready to review!</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${liveAlbum.clientName || "there"},</p><p style="color:#9ca3af;margin:0 0 12px;">Your proofing gallery for <strong style="color:#e5e7eb;">${liveAlbum.title}</strong> is ready. Browse and star the ones you love, then hit Submit Picks.</p><p style="color:#ef4444;margin:0 0 12px;padding:10px 14px;background:#1f1f1f;border-radius:8px;font-size:13px;">⏰ <strong>Proofing window closes: ${expiryDateStr}</strong></p>${note ? `<p style="color:#9ca3af;margin:0 0 20px;padding:12px;background:#1f1f1f;border-radius:8px;"><em>"${note}"</em></p>` : ""}<a href="${galleryUrl}" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">View Your Gallery →</a></div>`;
+            sendTenantEmail(slug, email, `📸 Your proofing gallery is ready — ${liveAlbum.title}`, html).catch(() => {});
+          }
+          toast.success("Proofing round started" + (email ? " — invite sent to client" : " (no client email on file)"));
+        };
+
+        const approveSelections = async (free: boolean) => {
+          if (!latest?.selectedPhotoIds?.length) { toast.error("No selections to approve yet"); return; }
+          const selectedSet = new Set(latest.selectedPhotoIds);
+          const updatedPhotos = (liveAlbum.photos || []).map(p => ({ ...p, hidden: !selectedSet.has(p.id) }));
+          const updated = { ...liveAlbum, photos: updatedPhotos, proofingStage: "editing" as const, allUnlocked: free ? true : liveAlbum.allUnlocked };
+          await updateLiveAlbum(updated);
+          toast.success(`${latest.selectedPhotoIds.length} photos kept — ${free ? "album unlocked" : "moving to editing"}`);
+        };
+
+        const sendEditingEmail = async () => {
+          if (!email) { toast.error("No client email on file"); return; }
+          const tok = liveAlbum.clientToken;
+          const galleryUrl = `${window.location.origin}/gallery/${liveAlbum.slug}${tok ? `?token=${tok}` : ""}`;
+          const html = `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;"><h2 style="margin:0 0 16px;font-size:20px;">Your photos are being edited ✏️</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${liveAlbum.clientName || "there"},</p><p style="color:#9ca3af;margin:0 0 20px;">Your selections for <strong style="color:#e5e7eb;">${liveAlbum.title}</strong> are confirmed and editing has begun.</p><a href="${galleryUrl}" style="display:inline-block;background:#374151;color:#e5e7eb;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">Preview Gallery →</a></div>`;
+          await sendTenantEmail(slug, email, `✏️ Your photos are being edited — ${liveAlbum.title}`, html);
+          toast.success("Editing notification sent");
+        };
+
+        const deliverFinals = async (free: boolean) => {
+          const updated = { ...liveAlbum, proofingStage: "finals-delivered" as const, allUnlocked: free ? true : liveAlbum.allUnlocked };
+          await updateLiveAlbum(updated);
+          if (email) {
+            const tok = liveAlbum.clientToken;
+            const galleryUrl = `${window.location.origin}/gallery/${liveAlbum.slug}${tok ? `?token=${tok}` : ""}`;
+            const html = `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;"><h2 style="margin:0 0 16px;font-size:20px;">Your edited photos are ready! ✨</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${liveAlbum.clientName || "there"},</p><p style="color:#9ca3af;margin:0 0 20px;">Your final edited photos for <strong style="color:#e5e7eb;">${liveAlbum.title}</strong> are now available.</p><a href="${galleryUrl}" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">${free ? "Download Your Photos →" : "View & Download Photos →"}</a></div>`;
+            sendTenantEmail(slug, email, `✨ Your final photos are ready — ${liveAlbum.title}`, html).catch(() => {});
+          }
+          toast.success("Finals delivered!" + (email ? " — client notified" : ""));
+        };
+
+        const resetProofing = async () => {
+          if (!confirm("Reset proofing? This will un-hide all photos and clear the proofing stage.")) return;
+          const updatedPhotos = (liveAlbum.photos || []).map(p => ({ ...p, hidden: false }));
+          await updateLiveAlbum({ ...liveAlbum, photos: updatedPhotos, proofingStage: "not-started" as const, proofingRounds: [] });
+          toast.success("Proofing reset");
+        };
+
+        return (
+          <div className="border border-border rounded-lg p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-body tracking-wider uppercase text-muted-foreground">
+                Proofing{rounds.length > 0 ? ` — Round ${rounds.length}` : ""}
+              </label>
+              <span className={`text-[10px] font-body px-2 py-0.5 rounded-full ${
+                stage === "not-started" ? "bg-secondary text-muted-foreground" :
+                stage === "proofing" ? "bg-yellow-500/15 text-yellow-400" :
+                stage === "selections-submitted" ? "bg-orange-500/15 text-orange-400" :
+                stage === "editing" ? "bg-blue-500/15 text-blue-400" :
+                "bg-green-500/15 text-green-400"
+              }`}>
+                {stage === "not-started" && "Not started"}
+                {stage === "proofing" && "★ Awaiting picks"}
+                {stage === "selections-submitted" && `⏳ ${latest?.selectedPhotoIds?.length || 0} picks submitted`}
+                {stage === "editing" && "✏️ Editing"}
+                {stage === "finals-delivered" && "✓ Delivered"}
+              </span>
+            </div>
+
+            {stage === "not-started" && (
+              <div className="space-y-2">
+                <textarea id="t-proofing-note" placeholder="Optional message to client (e.g. 'Please pick your top 30')" rows={2} className="w-full bg-secondary border border-border rounded px-3 py-2 text-xs font-body text-foreground placeholder:text-muted-foreground/50 resize-none" />
+                <div className="flex items-center gap-2">
+                  <label className="text-[11px] font-body text-muted-foreground shrink-0">Window open for</label>
+                  <input id="t-proofing-expiry" type="number" min={1} max={720} defaultValue={48} className="w-20 bg-secondary border border-border rounded px-2 py-1 text-xs font-body text-foreground text-center" />
+                  <label className="text-[11px] font-body text-muted-foreground">hours</label>
+                </div>
+                <button onClick={startProofing} className="flex items-center gap-2 w-full justify-center bg-yellow-500/15 hover:bg-yellow-500/25 text-yellow-400 border border-yellow-500/30 rounded-lg px-4 py-2 text-xs font-body tracking-wider uppercase transition-colors">
+                  <Star className="w-3.5 h-3.5" /> Start Proofing Round {rounds.length + 1}
+                </button>
+              </div>
+            )}
+
+            {stage === "proofing" && (
+              <div className="space-y-1.5">
+                <p className="text-xs font-body text-muted-foreground">Waiting for {liveAlbum.clientName || "client"} to star photos and submit picks.</p>
+                {liveAlbum.proofingExpiresAt && (() => {
+                  const exp = new Date(liveAlbum.proofingExpiresAt as string);
+                  const isExpired = new Date() > exp;
+                  return isExpired ? (
+                    <p className="text-[11px] font-body text-destructive flex items-center gap-1"><Clock className="w-3 h-3" /> Proofing window closed</p>
+                  ) : (
+                    <p className="text-[11px] font-body text-yellow-400/80 flex items-center gap-1"><Clock className="w-3 h-3" /> Closes {exp.toLocaleString("en-AU", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</p>
+                  );
+                })()}
+              </div>
+            )}
+
+            {stage === "selections-submitted" && latest && (
+              <div className="space-y-3">
+                <div className="bg-secondary rounded-lg p-3 space-y-1">
+                  <p className="text-xs font-body text-foreground font-medium">{latest.selectedPhotoIds.length} photos selected by client</p>
+                  {latest.clientNote && <p className="text-xs font-body text-muted-foreground italic">"{latest.clientNote}"</p>}
+                </div>
+                <p className="text-[10px] font-body text-muted-foreground/70 uppercase tracking-wider">Does this album require payment?</p>
+                <div className="grid grid-cols-2 gap-2">
+                  <button onClick={() => approveSelections(true)} className="flex flex-col items-center gap-1 bg-green-500/10 hover:bg-green-500/20 text-green-400 border border-green-500/30 rounded-lg px-3 py-2.5 text-[10px] font-body tracking-wider uppercase transition-colors">
+                    <Unlock className="w-3.5 h-3.5" />No — Free<span className="text-[9px] text-green-400/60 normal-case tracking-normal">Unlock immediately</span>
+                  </button>
+                  <button onClick={() => approveSelections(false)} className="flex flex-col items-center gap-1 bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 border border-blue-500/30 rounded-lg px-3 py-2.5 text-[10px] font-body tracking-wider uppercase transition-colors">
+                    <CreditCard className="w-3.5 h-3.5" />Yes — Paid<span className="text-[9px] text-blue-400/60 normal-case tracking-normal">Client pays to download</span>
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {stage === "editing" && (
+              <div className="space-y-2">
+                <p className="text-xs font-body text-muted-foreground">
+                  {(liveAlbum.photos || []).filter(p => !p.hidden).length} visible · {(liveAlbum.photos || []).filter(p => p.hidden).length} hidden
+                </p>
+                {email && (
+                  <button onClick={sendEditingEmail} className="flex items-center gap-2 w-full justify-center bg-secondary hover:bg-secondary/80 text-muted-foreground hover:text-foreground border border-border rounded-lg px-4 py-2 text-xs font-body tracking-wider uppercase transition-colors">
+                    <Mail className="w-3.5 h-3.5" /> Notify — Photos Being Edited
+                  </button>
+                )}
+                <p className="text-[10px] font-body text-muted-foreground/70 uppercase tracking-wider pt-1">Finished editing?</p>
+                <div className="grid grid-cols-2 gap-2">
+                  <button onClick={() => deliverFinals(true)} className="flex flex-col items-center gap-1 bg-green-500/10 hover:bg-green-500/20 text-green-400 border border-green-500/30 rounded-lg px-3 py-2.5 text-[10px] font-body tracking-wider uppercase transition-colors">
+                    <Unlock className="w-3.5 h-3.5" />Deliver Free<span className="text-[9px] text-green-400/60 normal-case tracking-normal">Unlock + notify client</span>
+                  </button>
+                  <button onClick={() => deliverFinals(false)} className="flex flex-col items-center gap-1 bg-purple-500/10 hover:bg-purple-500/20 text-purple-400 border border-purple-500/30 rounded-lg px-3 py-2.5 text-[10px] font-body tracking-wider uppercase transition-colors">
+                    <CreditCard className="w-3.5 h-3.5" />Deliver Paid<span className="text-[9px] text-purple-400/60 normal-case tracking-normal">Notify, client pays</span>
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {stage === "finals-delivered" && (
+              <p className={`text-xs font-body flex items-center gap-1.5 ${liveAlbum.allUnlocked ? "text-green-400/80" : "text-purple-400/80"}`}>
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                {liveAlbum.allUnlocked ? "Delivered free — album unlocked" : "Delivered — client pays to download"}
+              </p>
+            )}
+
+            {stage !== "not-started" && (
+              <button onClick={resetProofing} className="text-[10px] font-body text-muted-foreground/50 hover:text-muted-foreground underline">Reset proofing</button>
+            )}
+          </div>
+        );
+      })()}
+
+      {/* Photo Upload */}
+      <div>
+        <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-3 block">Photos ({liveAlbum?.photos?.length || 0})</label>
+        <div className="border-2 border-dashed border-border rounded-lg p-6 text-center hover:border-primary/30 transition-colors cursor-pointer relative mb-3">
+          <Upload className="w-6 h-6 text-muted-foreground/50 mx-auto mb-2" />
+          <p className="text-xs font-body text-muted-foreground">Click to upload photos</p>
+          <input ref={uploadRef} type="file" accept="image/*" multiple className="absolute inset-0 opacity-0 cursor-pointer" onChange={handlePhotoUpload} />
+        </div>
         {uploading && (
-          <div className="mb-4 h-1.5 bg-secondary rounded-full overflow-hidden">
-            <div className="h-full bg-primary transition-all duration-300 rounded-full" style={{ width: `${uploadProgress}%` }} />
+          <div className="mb-3 h-1.5 bg-secondary rounded-full overflow-hidden">
+            <div className="h-full bg-primary rounded-full transition-all" style={{ width: `${uploadProgress}%` }} />
           </div>
         )}
-        {selectedAlbum.photos?.length > 0 ? (
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
-            {selectedAlbum.photos.map(photo => (
-              <div key={photo.id} className="aspect-square rounded-lg overflow-hidden bg-secondary">
+        {liveAlbum && liveAlbum.photos && liveAlbum.photos.length > 0 && (
+          <div className="grid grid-cols-4 sm:grid-cols-6 gap-1.5 max-h-48 overflow-y-auto rounded-lg">
+            {liveAlbum.photos.map(photo => (
+              <div key={photo.id} className={`aspect-square rounded overflow-hidden bg-secondary relative ${photo.hidden ? "opacity-40" : ""}`}>
                 <img
-                  src={photoUrl(photo.thumbnail || (photo.src.startsWith("/uploads/") ? `${photo.src}?size=thumb` : photo.src))}
+                  src={tenantPhotoSrc(photo.thumbnail || (photo.src.startsWith("/uploads/") ? `${photo.src}?size=thumb` : photo.src), slug)}
                   alt={photo.title}
                   className="w-full h-full object-cover"
                   loading="lazy"
@@ -804,90 +1531,16 @@ function TenantAlbums({ slug }: { slug: string }) {
               </div>
             ))}
           </div>
-        ) : (
-          <div className="text-center py-16 text-muted-foreground">
-            <Camera className="w-10 h-10 mx-auto mb-3 opacity-30" />
-            <p className="font-body text-sm">No photos in this album yet</p>
-            <p className="font-body text-xs text-muted-foreground/60 mt-1">Click "Upload Photos" to add images, or use the Capture feature.</p>
-          </div>
         )}
-      </motion.div>
-    );
-  }
-
-  return (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-      <div className="flex items-center justify-between mb-6">
-        <h2 className="font-display text-2xl text-foreground">Albums</h2>
-        <Button size="sm" className="font-body text-xs gap-1.5 bg-primary text-primary-foreground" onClick={() => setShowCreateForm(v => !v)}>
-          <Plus className="w-3.5 h-3.5" /> New Album
-        </Button>
       </div>
 
-      {showCreateForm && (
-        <div className="glass-panel rounded-xl p-5 mb-6 space-y-4">
-          <h3 className="font-display text-base text-foreground">Create New Album</h3>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
-              <label className="text-xs font-body text-muted-foreground mb-1 block">Album Title *</label>
-              <Input value={newTitle} onChange={e => setNewTitle(e.target.value)} placeholder="Wedding · Smith Family" className="bg-background border-border text-foreground font-body text-sm" />
-            </div>
-            <div>
-              <label className="text-xs font-body text-muted-foreground mb-1 block">Client Name</label>
-              <Input value={newClient} onChange={e => setNewClient(e.target.value)} placeholder="Jane Smith" className="bg-background border-border text-foreground font-body text-sm" />
-            </div>
-            <div>
-              <label className="text-xs font-body text-muted-foreground mb-1 block">Date</label>
-              <Input type="date" value={newDate} onChange={e => setNewDate(e.target.value)} className="bg-background border-border text-foreground font-body text-sm" />
-            </div>
-            <div>
-              <label className="text-xs font-body text-muted-foreground mb-1 block">Slug (optional)</label>
-              <Input value={newSlug} onChange={e => setNewSlug(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""))} placeholder="auto-generated" className="bg-background border-border text-foreground font-body text-sm font-mono" />
-            </div>
-          </div>
-          <div className="flex items-center gap-2 pt-1">
-            <Button size="sm" onClick={handleCreateAlbum} disabled={saving} className="font-body text-xs gap-1.5">
-              <Save className="w-3.5 h-3.5" /> {saving ? "Creating…" : "Create Album"}
-            </Button>
-            <Button size="sm" variant="outline" onClick={() => setShowCreateForm(false)} className="font-body text-xs border-border">
-              <X className="w-3.5 h-3.5" />
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {albums.length === 0 ? (
-        <div className="text-center py-16 text-muted-foreground">
-          <Image className="w-10 h-10 mx-auto mb-3 opacity-30" />
-          <p className="font-body text-sm">No albums yet</p>
-          <p className="font-body text-xs text-muted-foreground/60 mt-1">Create one manually or capture photos for a booking.</p>
-        </div>
-      ) : (
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
-          {albums.map(album => {
-            const coverSrc = album.coverImage
-              ? photoUrl(album.coverImage.startsWith("/uploads/") ? `${album.coverImage}?size=thumb` : album.coverImage)
-              : album.photos?.[0]
-                ? photoUrl(album.photos[0].thumbnail || (album.photos[0].src.startsWith("/uploads/") ? `${album.photos[0].src}?size=thumb` : album.photos[0].src))
-                : null;
-            return (
-              <div key={album.id} className="glass-panel rounded-xl overflow-hidden cursor-pointer hover:ring-1 hover:ring-primary/30 transition-all" onClick={() => setSelectedAlbum(album)}>
-                <div className="aspect-square bg-secondary overflow-hidden">
-                  {coverSrc
-                    ? <img src={coverSrc} alt={album.title} className="w-full h-full object-cover" loading="lazy" />
-                    : <div className="w-full h-full flex items-center justify-center"><Image className="w-8 h-8 text-muted-foreground/30" /></div>
-                  }
-                </div>
-                <div className="p-3">
-                  <p className="font-body text-sm text-foreground font-medium truncate">{album.title}</p>
-                  <p className="text-xs font-body text-muted-foreground">{album.photos?.length || 0} photos · {album.date}</p>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </motion.div>
+      <div className="flex gap-3 pt-2 border-t border-border/50">
+        <Button variant="outline" onClick={onCancel} className="font-body text-xs border-border text-foreground">Cancel</Button>
+        <Button onClick={handleSave} className="bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2">
+          <Save className="w-4 h-4" /> {isNew ? "Create" : "Save Changes"}
+        </Button>
+      </div>
+    </div>
   );
 }
 
@@ -895,239 +1548,548 @@ function TenantAlbums({ slug }: { slug: string }) {
 // ─── Photos ──────────────────────────────────────────────────────────────────
 function TenantPhotos({ slug }: { slug: string }) {
   const [albums, setAlbums] = useState<Album[]>([]);
+  const [libraryPhotos, setLibraryPhotos] = useState<Photo[]>([]);
   const [loading, setLoading] = useState(true);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [viewSource, setViewSource] = useState<"all" | "library" | string>("all");
+  const [starredOnly, setStarredOnly] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [syncing, setSyncing] = useState(false);
+  const [showAddToAlbum, setShowAddToAlbum] = useState(false);
+  const [uploadStats, setUploadStats] = useState<{ total: number; done: number; errors: number; savedBytes: number } | null>(null);
 
-  // Filters
-  const [albumFilter, setAlbumFilter] = useState<"all" | string>("all");
-  const [starredFilter, setStarredFilter] = useState(false);
+  const photoUrl = (src: string) => tenantPhotoSrc(src, slug);
 
-  // Upload state
-  const [uploadTargetAlbumId, setUploadTargetAlbumId] = useState<string>("");
-  const [uploading, setUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState(0);
-  const uploadInputRef = useRef<HTMLInputElement>(null);
-
+  // ── Load data ──────────────────────────────────────────────────────────────
   const load = useCallback(async () => {
-    const d = await fetchTenantMobileData(slug);
-    const loaded: Album[] = d.albums || [];
-    setAlbums(loaded);
-    // Default upload target to first album if none chosen yet
-    setUploadTargetAlbumId(prev => prev || loaded[0]?.id || "");
+    const [mobileData, lib] = await Promise.all([
+      fetchTenantMobileData(slug),
+      getTenantStoreKey<Photo[]>(slug, "wv_photo_library"),
+    ]);
+    setAlbums(mobileData.albums || []);
+    setLibraryPhotos(Array.isArray(lib) ? lib : []);
     setLoading(false);
   }, [slug]);
 
   useEffect(() => { load(); }, [load]);
 
-  const photoUrl = (src: string) => tenantPhotoSrc(src, slug);
-
-  // Flat list enriched with album metadata
-  const allPhotos = albums.flatMap(a =>
-    (a.photos || []).map(p => ({ ...p, albumTitle: a.title, albumId: a.id }))
-  );
-
-  // Apply filters
-  const visiblePhotos = allPhotos.filter(p => {
-    if (albumFilter !== "all" && p.albumId !== albumFilter) return false;
-    if (starredFilter && !p.starred) return false;
-    return true;
-  });
-
-  // Toggle star on a photo and persist
-  const handleToggleStar = async (albumId: string, photoId: string) => {
-    const album = albums.find(a => a.id === albumId);
-    if (!album) return;
-    const updated: Album = {
-      ...album,
-      photos: (album.photos || []).map(p =>
-        p.id === photoId ? { ...p, starred: !p.starred } : p
-      ),
-    };
-    setAlbums(prev => prev.map(a => a.id === albumId ? updated : a));
-    await saveTenantAlbum(slug, updated);
+  // ── Persist library ────────────────────────────────────────────────────────
+  const saveLibrary = async (photos: Photo[]) => {
+    await saveTenantStoreKey(slug, "wv_photo_library", photos);
   };
 
-  // Upload photos to selected album
-  const handleUpload = async (files: FileList | null) => {
-    if (!files || files.length === 0) return;
-    if (!uploadTargetAlbumId) { toast.error("Select an album to upload to"); return; }
-    if (!isServerMode()) { toast.error("Server connection required for photo uploads"); return; }
-    const album = albums.find(a => a.id === uploadTargetAlbumId);
-    if (!album) { toast.error("Album not found"); return; }
+  // ── Build unified photo list ───────────────────────────────────────────────
+  // Photos are keyed by src to avoid cross-source duplicates in "All" view
+  const allPhotos: (Photo & { source: string })[] = [];
+  const seenSrc = new Set<string>();
+  for (const p of libraryPhotos) {
+    if (!seenSrc.has(p.src)) { allPhotos.push({ ...p, source: "Library" }); seenSrc.add(p.src); }
+  }
+  for (const alb of albums) {
+    for (const p of alb.photos || []) {
+      if (!seenSrc.has(p.src)) { allPhotos.push({ ...p, source: alb.title }); seenSrc.add(p.src); }
+    }
+  }
 
-    setUploading(true);
-    setUploadProgress(0);
-    const fileArr = Array.from(files);
-    const uploaded = await uploadPhotosToServer(fileArr, (done, total) => {
-      setUploadProgress(Math.round((done / total) * 100));
+  // For per-album filter, pull directly from that album's photos array
+  const getAlbumPhotos = (albumTitle: string): (Photo & { source: string })[] => {
+    const alb = albums.find(a => a.title === albumTitle);
+    return alb ? (alb.photos || []).map(p => ({ ...p, source: alb.title })) : [];
+  };
+
+  const starredPhotos = allPhotos.filter(p => p.starred);
+  const sourcePhotos =
+    viewSource === "all" ? allPhotos
+    : viewSource === "library" ? libraryPhotos.map(p => ({ ...p, source: "Library" }))
+    : getAlbumPhotos(viewSource);
+  const unfilteredPhotos = starredOnly ? sourcePhotos.filter(p => p.starred) : sourcePhotos;
+  const displayPhotos = searchQuery.trim()
+    ? unfilteredPhotos.filter(p =>
+        p.title.toLowerCase().includes(searchQuery.trim().toLowerCase()) ||
+        p.src.toLowerCase().includes(searchQuery.trim().toLowerCase())
+      )
+    : unfilteredPhotos;
+
+  // Album corresponding to the current view source (for upload targeting)
+  const selectedAlbum =
+    viewSource !== "all" && viewSource !== "library"
+      ? albums.find(a => a.title === viewSource)
+      : null;
+
+  // ── Toolbar actions ────────────────────────────────────────────────────────
+  const handleClearDuplicates = async () => {
+    let totalRemoved = 0;
+
+    // Deduplicate photos within each album
+    const updatedAlbums: Album[] = [];
+    for (const alb of albums) {
+      const seen = new Set<string>();
+      const deduped = (alb.photos || []).filter(p => {
+        if (seen.has(p.id) || seen.has(p.src)) return false;
+        seen.add(p.id); seen.add(p.src);
+        return true;
+      });
+      if (deduped.length < (alb.photos || []).length) {
+        totalRemoved += (alb.photos || []).length - deduped.length;
+        const updated = { ...alb, photos: deduped, photoCount: deduped.length };
+        await saveTenantAlbum(slug, updated);
+        updatedAlbums.push(updated);
+      } else {
+        updatedAlbums.push(alb);
+      }
+    }
+
+    // Deduplicate library
+    const seenLib = new Set<string>();
+    const dedupLib = libraryPhotos.filter(p => {
+      if (seenLib.has(p.id) || seenLib.has(p.src)) return false;
+      seenLib.add(p.id); seenLib.add(p.src);
+      return true;
     });
-    if (uploaded.length === 0) { setUploading(false); toast.error("Upload failed"); return; }
+    if (dedupLib.length < libraryPhotos.length) {
+      totalRemoved += libraryPhotos.length - dedupLib.length;
+      setLibraryPhotos(dedupLib);
+      await saveLibrary(dedupLib);
+    }
 
-    const newPhotos: Photo[] = await Promise.all(uploaded.map(async u => {
-      let thumbnail = "";
-      try { thumbnail = await generateThumbnail(u.url, 300, 0.65); } catch { thumbnail = u.url; }
-      return {
-        id: generateId("photo"),
-        src: u.url,
-        thumbnail,
-        title: u.originalName,
-        width: 0,
-        height: 0,
-        starred: false,
-        uploadedAt: new Date().toISOString(),
-      } as Photo;
-    }));
+    if (updatedAlbums.some((a, i) => a !== albums[i])) setAlbums(updatedAlbums);
+    if (totalRemoved === 0) toast.info("No duplicates found");
+    else toast.success(`Removed ${totalRemoved} duplicate photo${totalRemoved !== 1 ? "s" : ""}`);
+  };
 
-    const updatedAlbum: Album = {
-      ...album,
-      photos: [...(album.photos || []), ...newPhotos],
+  const handleSyncStorage = async () => {
+    if (!isServerMode()) { toast.error("Server not available"); return; }
+    setSyncing(true);
+    try {
+      const stats = await getServerStorageStats();
+      if (!stats || !stats.allFileNames) { toast.info("No storage data"); setSyncing(false); return; }
+
+      const serverFileNames = new Set(stats.allFileNames);
+      let repairedAlbums = 0;
+
+      // Repair albums with broken photo references
+      const updatedAlbums: Album[] = [];
+      for (const alb of albums) {
+        const brokenPhotos = (alb.photos || []).filter(p => {
+          const fn = p.src.split("/").pop();
+          return fn && !serverFileNames.has(fn) && p.src.startsWith("/uploads/");
+        });
+        if (brokenPhotos.length > 0) {
+          const repaired = (alb.photos || []).filter(p => !brokenPhotos.includes(p));
+          const updated = { ...alb, photos: repaired, photoCount: repaired.length };
+          await saveTenantAlbum(slug, updated);
+          updatedAlbums.push(updated);
+          repairedAlbums++;
+        } else {
+          updatedAlbums.push(alb);
+        }
+      }
+      if (repairedAlbums > 0) setAlbums(updatedAlbums);
+
+      // Collect all known filenames
+      const knownFilenames = new Set<string>();
+      for (const p of libraryPhotos) {
+        const fn = p.src.split("/").pop();
+        if (fn) knownFilenames.add(fn);
+      }
+      for (const alb of updatedAlbums) {
+        for (const p of alb.photos || []) {
+          const fn = p.src.split("/").pop();
+          if (fn) knownFilenames.add(fn);
+        }
+      }
+
+      // Delete orphaned files
+      const orphaned = stats.allFileNames.filter(f => !knownFilenames.has(f));
+      const messages: string[] = [];
+      if (repairedAlbums > 0) messages.push(`Repaired ${repairedAlbums} album(s) with missing file references`);
+      if (orphaned.length > 0) {
+        try {
+          await bulkDeleteFiles(orphaned);
+          messages.push(`Deleted ${orphaned.length} untracked file(s) from disk`);
+        } catch {
+          messages.push(`Found ${orphaned.length} untracked file(s) but failed to delete them`);
+        }
+      }
+
+      if (messages.length === 0) toast.info("All storage files are tracked — nothing to fix");
+      else toast.success(messages.join(" · "));
+    } catch { toast.error("Failed to sync from storage"); }
+    setSyncing(false);
+  };
+
+  // ── Toggle selection ───────────────────────────────────────────────────────
+  const toggleSelect = (id: string) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  // ── Toggle star ────────────────────────────────────────────────────────────
+  const handleToggleStar = async (photo: Photo & { source: string }) => {
+    if (photo.source === "Library") {
+      const updated = libraryPhotos.map(p => p.id === photo.id ? { ...p, starred: !p.starred } : p);
+      setLibraryPhotos(updated);
+      await saveLibrary(updated);
+    } else {
+      const alb = albums.find(a => a.title === photo.source);
+      if (!alb) return;
+      const updatedAlb: Album = {
+        ...alb,
+        photos: (alb.photos || []).map(p => p.id === photo.id ? { ...p, starred: !p.starred } : p),
+      };
+      setAlbums(prev => prev.map(a => a.id === alb.id ? updatedAlb : a));
+      await saveTenantAlbum(slug, updatedAlb);
+    }
+  };
+
+  // ── Delete single photo ────────────────────────────────────────────────────
+  const handleDeletePhoto = async (id: string, source: string, src: string) => {
+    if (source === "Library") {
+      const updated = libraryPhotos.filter(p => p.id !== id);
+      setLibraryPhotos(updated);
+      await saveLibrary(updated);
+      if (isServerMode()) deletePhotoFromServer(src);
+    } else {
+      const alb = albums.find(a => a.title === source);
+      if (alb) {
+        const updatedAlb = { ...alb, photos: (alb.photos || []).filter(p => p.id !== id), photoCount: Math.max(0, (alb.photos || []).length - 1) };
+        setAlbums(prev => prev.map(a => a.id === alb.id ? updatedAlb : a));
+        await saveTenantAlbum(slug, updatedAlb);
+      }
+    }
+    setSelectedIds(prev => { const next = new Set(prev); next.delete(id); return next; });
+  };
+
+  // ── Mass delete ────────────────────────────────────────────────────────────
+  const handleMassDelete = async () => {
+    if (selectedIds.size === 0) return;
+    if (!confirm(`Delete ${selectedIds.size} selected photo(s)? This cannot be undone.`)) return;
+
+    const libToDelete = new Set<string>();
+    const albumUpdates = new Map<string, Set<string>>();
+
+    for (const id of selectedIds) {
+      const photo = allPhotos.find(p => p.id === id);
+      if (!photo) continue;
+      if (photo.source === "Library") {
+        libToDelete.add(id);
+        const lp = libraryPhotos.find(p => p.id === id);
+        if (lp && isServerMode()) deletePhotoFromServer(lp.src);
+      } else {
+        const alb = albums.find(a => a.title === photo.source);
+        if (alb) {
+          if (!albumUpdates.has(alb.id)) albumUpdates.set(alb.id, new Set());
+          albumUpdates.get(alb.id)!.add(id);
+        }
+      }
+    }
+
+    if (libToDelete.size > 0) {
+      const remaining = libraryPhotos.filter(p => !libToDelete.has(p.id));
+      setLibraryPhotos(remaining);
+      await saveLibrary(remaining);
+    }
+
+    for (const [albumId, photoIds] of albumUpdates) {
+      const alb = albums.find(a => a.id === albumId);
+      if (alb) {
+        const filteredPhotos = (alb.photos || []).filter(p => !photoIds.has(p.id));
+        const updatedAlb = { ...alb, photos: filteredPhotos, photoCount: filteredPhotos.length };
+        await saveTenantAlbum(slug, updatedAlb);
+        setAlbums(prev => prev.map(a => a.id === albumId ? updatedAlb : a));
+      }
+    }
+
+    setSelectedIds(new Set());
+    toast.success(`Deleted ${selectedIds.size} photo${selectedIds.size !== 1 ? "s" : ""}`);
+  };
+
+  // ── Create album from selection ────────────────────────────────────────────
+  const handleCreateAlbumFromSelection = async () => {
+    if (selectedIds.size === 0) { toast.error("Select photos first"); return; }
+    const selectedPhotos = allPhotos.filter(p => selectedIds.has(p.id));
+    const newAlbum: Album = {
+      id: generateId("alb"),
+      slug: slugify(`album-${Date.now()}`),
+      title: "New Album",
+      description: "",
+      coverImage: selectedPhotos[0]?.src || "",
+      date: new Date().toISOString().split("T")[0],
+      photoCount: selectedPhotos.length,
+      freeDownloads: 0,
+      pricePerPhoto: 0,
+      priceFullAlbum: 0,
+      isPublic: true,
+      photos: selectedPhotos,
     };
-    const { ok, error } = await saveTenantAlbum(slug, updatedAlbum);
-    setUploading(false);
-    if (!ok) { toast.error(error || "Failed to save photos"); return; }
-    setAlbums(prev => prev.map(a => a.id === updatedAlbum.id ? updatedAlbum : a));
-    toast.success(`${newPhotos.length} photo${newPhotos.length !== 1 ? "s" : ""} uploaded to "${album.title}"`);
-    notifyTenantDiscord(slug, { event: "photos-uploaded", album: updatedAlbum, photoCount: newPhotos.length });
-    // Keep album filter showing the target album for easy review
-    setAlbumFilter(uploadTargetAlbumId);
-    if (uploadInputRef.current) uploadInputRef.current.value = "";
+    const { ok, error } = await saveTenantAlbum(slug, newAlbum);
+    if (!ok) { toast.error(error || "Failed to create album"); return; }
+    setAlbums(prev => [...prev, newAlbum]);
+    setSelectedIds(new Set());
+    toast.success(`Album created with ${selectedPhotos.length} photos — go to Albums tab to edit`);
+  };
+
+  // ── Add selection to existing album ───────────────────────────────────────
+  const handleAddToAlbum = async (albumId: string) => {
+    const selectedPhotos = allPhotos.filter(p => selectedIds.has(p.id));
+    const alb = albums.find(a => a.id === albumId);
+    if (!alb) return;
+    const existingSrcs = new Set((alb.photos || []).map(p => p.src));
+    const newPhotos = selectedPhotos.filter(p => !existingSrcs.has(p.src));
+    if (newPhotos.length === 0) { toast.info("All selected photos are already in this album"); return; }
+    const updatedAlb = { ...alb, photos: [...(alb.photos || []), ...newPhotos], photoCount: (alb.photos || []).length + newPhotos.length };
+    if (!updatedAlb.coverImage && newPhotos[0]) updatedAlb.coverImage = newPhotos[0].src;
+    const { ok, error } = await saveTenantAlbum(slug, updatedAlb);
+    if (!ok) { toast.error(error || "Failed to update album"); return; }
+    setAlbums(prev => prev.map(a => a.id === albumId ? updatedAlb : a));
+    setSelectedIds(new Set());
+    setShowAddToAlbum(false);
+    toast.success(`Added ${newPhotos.length} photo${newPhotos.length !== 1 ? "s" : ""} to "${alb.title}"`);
+  };
+
+  // ── Upload ─────────────────────────────────────────────────────────────────
+  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    const fileArr = Array.from(files);
+    setUploadStats({ total: fileArr.length, done: 0, errors: 0, savedBytes: 0 });
+
+    if (isServerMode()) {
+      const results = await uploadPhotosToServer(fileArr, (done, total) => {
+        setUploadStats(prev => prev ? { ...prev, done, total } : null);
+      });
+      const newPhotos: Photo[] = results.map(r => ({
+        id: r.id, src: r.url, thumbnail: r.url + "?size=thumb",
+        title: r.originalName.replace(/\.[^.]+$/, ""), width: 0, height: 0,
+        uploadedAt: new Date().toISOString(),
+      }));
+      if (newPhotos.length > 0) {
+        if (selectedAlbum) {
+          const alb = albums.find(a => a.id === selectedAlbum.id);
+          if (alb) {
+            const updatedPhotos = [...(alb.photos || []), ...newPhotos];
+            const updatedAlb = { ...alb, photos: updatedPhotos, photoCount: updatedPhotos.length };
+            if (!updatedAlb.coverImage) updatedAlb.coverImage = newPhotos[0].src;
+            await saveTenantAlbum(slug, updatedAlb);
+            setAlbums(prev => prev.map(a => a.id === alb.id ? updatedAlb : a));
+          }
+        } else {
+          const updated = [...libraryPhotos, ...newPhotos];
+          setLibraryPhotos(updated);
+          await saveLibrary(updated);
+        }
+      }
+      setUploadStats(prev => prev ? { ...prev, done: fileArr.length, errors: fileArr.length - results.length } : null);
+      const target = selectedAlbum ? `"${selectedAlbum.title}"` : "library";
+      if (results.length > 0) toast.success(`${results.length} photos uploaded to ${target}`);
+    } else {
+      for (const file of fileArr) {
+        try {
+          const result = await compressImage(file);
+          const thumb = await generateThumbnail(result.src).catch(() => undefined);
+          const photo: Photo = {
+            id: generateId("ph"), src: result.src, thumbnail: thumb,
+            title: file.name.replace(/\.[^.]+$/, ""), width: result.width, height: result.height,
+            uploadedAt: new Date().toISOString(),
+          };
+          if (selectedAlbum) {
+            const alb = albums.find(a => a.id === selectedAlbum.id);
+            if (alb) {
+              const updatedAlb = { ...alb, photos: [...(alb.photos || []), photo], photoCount: (alb.photos || []).length + 1 };
+              await saveTenantAlbum(slug, updatedAlb);
+              setAlbums(prev => prev.map(a => a.id === alb.id ? updatedAlb : a));
+            }
+          } else {
+            setLibraryPhotos(prev => {
+              const u = [...prev, photo];
+              saveLibrary(u);
+              return u;
+            });
+          }
+          setUploadStats(prev => prev ? { ...prev, done: prev.done + 1, savedBytes: prev.savedBytes + (result.originalSize - result.compressedSize) } : null);
+        } catch {
+          setUploadStats(prev => prev ? { ...prev, done: prev.done + 1, errors: prev.errors + 1 } : null);
+          toast.error(`Failed to process: ${file.name}`);
+        }
+      }
+    }
+    if (e.target) e.target.value = "";
   };
 
   if (loading) return <div className="py-16 text-center text-muted-foreground font-body text-sm animate-pulse">Loading…</div>;
 
-  const starredCount = allPhotos.filter(p => p.starred).length;
-
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-      {/* Header row */}
-      <div className="flex items-center justify-between mb-4">
-        <div>
-          <h2 className="font-display text-2xl text-foreground">Photos</h2>
-          <p className="text-xs font-body text-muted-foreground mt-0.5">
-            {visiblePhotos.length} showing
-            {visiblePhotos.length !== allPhotos.length ? ` of ${allPhotos.length} total` : ""}
-            {starredCount > 0 ? ` · ★ ${starredCount} starred` : ""}
-          </p>
-        </div>
-        {albums.length > 0 && (
-          <Button
-            size="sm"
-            className="font-body text-xs gap-1.5 bg-primary text-primary-foreground"
-            onClick={() => uploadInputRef.current?.click()}
-            disabled={uploading || !uploadTargetAlbumId}
-          >
-            <Upload className="w-3.5 h-3.5" />
-            {uploading ? `${uploadProgress}%…` : "Upload"}
+      {/* ── Toolbar ── */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+        <h2 className="font-display text-2xl text-foreground">Photo Library</h2>
+        <div className="flex gap-2 items-center flex-wrap">
+          <Button size="sm" variant="outline" onClick={handleClearDuplicates} className="gap-2 font-body text-xs border-border text-foreground">
+            <XSquare className="w-4 h-4" /> Clear Dupes
           </Button>
+          <Button size="sm" variant="outline" onClick={handleSyncStorage} disabled={syncing} className="gap-2 font-body text-xs border-border text-foreground">
+            <RefreshCw className={`w-4 h-4 ${syncing ? "animate-spin" : ""}`} /> {syncing ? "Syncing…" : "Sync Storage"}
+          </Button>
+          {selectedIds.size > 0 && (
+            <>
+              <Button size="sm" variant="outline" onClick={handleMassDelete}
+                className="gap-2 font-body text-xs border-destructive/30 text-destructive hover:bg-destructive/10">
+                <Trash2 className="w-4 h-4" /> Delete ({selectedIds.size})
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => setSelectedIds(new Set())}
+                className="gap-1 font-body text-xs text-muted-foreground">
+                <XSquare className="w-4 h-4" /> Clear
+              </Button>
+              <div className="relative">
+                <Button size="sm" variant="outline" onClick={() => setShowAddToAlbum(v => !v)}
+                  className="gap-2 font-body text-xs border-border text-foreground">
+                  <Plus className="w-4 h-4" /> Add to Album ({selectedIds.size})
+                </Button>
+                {showAddToAlbum && albums.length > 0 && (
+                  <div className="absolute top-full right-0 mt-1 z-50 glass-panel rounded-lg border border-border shadow-lg min-w-[200px]">
+                    {albums.map(alb => (
+                      <button key={alb.id} onClick={() => handleAddToAlbum(alb.id)}
+                        className="w-full text-left px-4 py-2.5 text-sm font-body text-foreground hover:bg-secondary transition-colors first:rounded-t-lg last:rounded-b-lg">
+                        {alb.title} ({(alb.photos || []).length} photos)
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <Button size="sm" onClick={handleCreateAlbumFromSelection}
+                className="gap-2 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs tracking-wider uppercase">
+                <Plus className="w-4 h-4" /> Create Album ({selectedIds.size})
+              </Button>
+            </>
+          )}
+          <Button size="sm" variant="ghost"
+            onClick={() => {
+              if (selectedIds.size === displayPhotos.length && displayPhotos.length > 0) setSelectedIds(new Set());
+              else setSelectedIds(new Set(displayPhotos.map(p => p.id)));
+            }}
+            className="gap-1 font-body text-xs text-muted-foreground">
+            <CheckSquare className="w-4 h-4" />
+            {selectedIds.size === displayPhotos.length && displayPhotos.length > 0 ? "Deselect All" : "Select All"}
+          </Button>
+        </div>
+      </div>
+
+      {/* ── Search ── */}
+      <div className="relative mb-4">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+        <Input
+          placeholder="Search by filename…"
+          value={searchQuery}
+          onChange={e => setSearchQuery(e.target.value)}
+          className="pl-9 h-9 text-sm font-body bg-secondary/50 border-border"
+        />
+        {searchQuery && (
+          <button onClick={() => setSearchQuery("")} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+            <X className="w-4 h-4" />
+          </button>
         )}
       </div>
 
-      {/* Upload controls */}
-      {albums.length > 0 && (
-        <div className="flex items-center gap-2 mb-4 flex-wrap">
-          <span className="text-xs font-body text-muted-foreground">Upload to:</span>
-          <select
-            value={uploadTargetAlbumId}
-            onChange={e => setUploadTargetAlbumId(e.target.value)}
-            className="bg-secondary border border-border text-foreground font-body text-xs rounded-md px-2.5 py-1.5 max-w-[180px] truncate"
-          >
-            {albums.map(a => (
-              <option key={a.id} value={a.id}>{a.title}</option>
-            ))}
-          </select>
-          <input
-            ref={uploadInputRef}
-            type="file"
-            accept="image/*"
-            multiple
-            className="hidden"
-            onChange={e => handleUpload(e.target.files)}
-          />
-        </div>
-      )}
-
-      {/* Upload progress bar */}
-      {uploading && (
-        <div className="mb-4 h-1.5 bg-secondary rounded-full overflow-hidden">
-          <div className="h-full bg-primary transition-all duration-300 rounded-full" style={{ width: `${uploadProgress}%` }} />
-        </div>
-      )}
-
-      {/* Filter controls */}
-      <div className="flex items-center gap-2 mb-4 flex-wrap">
-        {/* Album pills */}
-        <div className="flex items-center gap-1.5 flex-wrap">
-          <button
-            onClick={() => setAlbumFilter("all")}
-            className={`text-xs font-body px-3 py-1.5 rounded-full border transition-all ${albumFilter === "all" ? "bg-primary/10 text-primary border-primary/30" : "border-border text-muted-foreground hover:text-foreground hover:bg-secondary"}`}
-          >
-            All Albums
-          </button>
-          {albums.map(a => (
-            <button
-              key={a.id}
-              onClick={() => setAlbumFilter(a.id)}
-              className={`text-xs font-body px-3 py-1.5 rounded-full border transition-all ${albumFilter === a.id ? "bg-primary/10 text-primary border-primary/30" : "border-border text-muted-foreground hover:text-foreground hover:bg-secondary"}`}
-            >
-              {a.title}
-              <span className="ml-1 opacity-60">({a.photos?.length || 0})</span>
-            </button>
-          ))}
-        </div>
-
-        {/* Starred toggle */}
-        <button
-          onClick={() => setStarredFilter(v => !v)}
-          className={`text-xs font-body px-3 py-1.5 rounded-full border transition-all flex items-center gap-1.5 ${starredFilter ? "bg-yellow-500/10 text-yellow-400 border-yellow-500/30" : "border-border text-muted-foreground hover:text-foreground hover:bg-secondary"}`}
-        >
-          <Star className={`w-3 h-3 ${starredFilter ? "fill-yellow-400 text-yellow-400" : ""}`} />
-          Starred{starredCount > 0 ? ` (${starredCount})` : ""}
+      {/* ── Source filter pills ── */}
+      <div className="flex gap-2 mb-4 overflow-x-auto pb-1">
+        <button onClick={() => setViewSource("all")}
+          className={`text-xs font-body px-3 py-1.5 rounded-full whitespace-nowrap transition-all ${viewSource === "all" ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground hover:text-foreground"}`}>
+          All ({allPhotos.length})
         </button>
+        <button onClick={() => setViewSource("library")}
+          className={`text-xs font-body px-3 py-1.5 rounded-full whitespace-nowrap transition-all ${viewSource === "library" ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground hover:text-foreground"}`}>
+          Library ({libraryPhotos.length})
+        </button>
+        {starredPhotos.length > 0 && (
+          <button onClick={() => setStarredOnly(v => !v)}
+            className={`text-xs font-body px-3 py-1.5 rounded-full whitespace-nowrap transition-all ${starredOnly ? "bg-yellow-500 text-black" : "bg-secondary text-yellow-400 hover:text-yellow-300"}`}>
+            ⭐ Starred ({starredPhotos.length})
+          </button>
+        )}
+        {albums.map(a => (
+          <button key={a.id} onClick={() => setViewSource(a.title)}
+            className={`text-xs font-body px-3 py-1.5 rounded-full whitespace-nowrap transition-all ${viewSource === a.title ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground hover:text-foreground"}`}>
+            {a.title} ({(a.photos || []).length})
+          </button>
+        ))}
       </div>
 
-      {/* Photo grid */}
-      {visiblePhotos.length === 0 ? (
-        <div className="text-center py-16 text-muted-foreground">
-          <Camera className="w-10 h-10 mx-auto mb-3 opacity-30" />
+      {/* ── Upload zone ── */}
+      <div className="glass-panel rounded-xl p-6 mb-6">
+        <div className="border-2 border-dashed border-border rounded-lg p-8 text-center hover:border-primary/30 transition-colors cursor-pointer relative">
+          <Upload className="w-8 h-8 text-muted-foreground/50 mx-auto mb-2" />
+          <p className="text-sm font-body text-muted-foreground">
+            Upload photos to {selectedAlbum ? `"${selectedAlbum.title}"` : "your library"}
+          </p>
+          <p className="text-[10px] font-body text-muted-foreground/50 mt-1">
+            {selectedAlbum ? "Photos will be added directly to this album" : "Select photos then create albums or add to existing ones"}
+          </p>
+          <input type="file" accept="image/*" multiple className="absolute inset-0 opacity-0 cursor-pointer" onChange={handleUpload} />
+        </div>
+        {uploadStats && (
+          <div className="mt-3 p-3 rounded-lg bg-secondary/50 border border-border">
+            <div className="flex items-center justify-between text-xs font-body text-muted-foreground">
+              <span>Processed {uploadStats.done}/{uploadStats.total} photos{uploadStats.errors > 0 ? ` (${uploadStats.errors} failed)` : ""}</span>
+              {uploadStats.savedBytes > 0 && <span className="text-green-500">Saved {formatBytes(uploadStats.savedBytes)}</span>}
+            </div>
+            {uploadStats.done < uploadStats.total && (
+              <div className="mt-1.5 h-1.5 rounded-full bg-border overflow-hidden">
+                <div className="h-full bg-primary rounded-full transition-all" style={{ width: `${(uploadStats.done / uploadStats.total) * 100}%` }} />
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* ── Photo grid ── */}
+      {displayPhotos.length === 0 ? (
+        <div className="glass-panel rounded-xl p-12 text-center">
+          <Image className="w-10 h-10 text-muted-foreground/30 mx-auto mb-3" />
           {allPhotos.length === 0 ? (
             <>
-              <p className="font-body text-sm">No photos yet</p>
-              <p className="font-body text-xs text-muted-foreground/60 mt-1">
-                {albums.length === 0
-                  ? "Create an album first, then upload photos here."
-                  : "Upload photos using the button above."}
-              </p>
+              <p className="text-sm font-body text-muted-foreground">No photos yet</p>
+              <p className="text-xs font-body text-muted-foreground/60 mt-1">Upload photos to your library or select an album filter.</p>
             </>
           ) : (
             <>
-              <p className="font-body text-sm">No photos match the current filters</p>
-              <button onClick={() => { setAlbumFilter("all"); setStarredFilter(false); }} className="text-xs font-body text-primary hover:underline mt-2">Clear filters</button>
+              <p className="text-sm font-body text-muted-foreground">No photos match the current filter</p>
+              <button onClick={() => { setViewSource("all"); setStarredOnly(false); setSearchQuery(""); }}
+                className="text-xs font-body text-primary hover:underline mt-2">Clear filters</button>
             </>
           )}
         </div>
       ) : (
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2">
-          {visiblePhotos.map(photo => (
-            <div key={photo.id} className="group relative aspect-square rounded-lg overflow-hidden bg-secondary">
-              <img
-                src={photoUrl(photo.thumbnail || (photo.src.startsWith("/uploads/") ? `${photo.src}?size=thumb` : photo.src))}
-                alt={photo.title}
+        <div className="grid grid-cols-3 sm:grid-cols-5 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-1.5">
+          {displayPhotos.map(p => (
+            <div
+              key={`${p.id}::${p.source}`}
+              className={`relative group aspect-square rounded-md overflow-hidden bg-secondary cursor-pointer border-2 transition-all ${selectedIds.has(p.id) ? "border-primary ring-2 ring-primary/20" : "border-transparent hover:border-border"}`}
+              onClick={() => toggleSelect(p.id)}
+            >
+              <ProgressiveImg
+                thumbSrc={photoUrl(p.thumbnail || (p.src.startsWith("/uploads/") ? `${p.src}?size=thumb` : p.src))}
+                fullSrc={photoUrl(p.src)}
+                alt={p.title}
                 className="w-full h-full object-cover"
                 loading="lazy"
               />
-
-              {/* Star button — always visible on touch, hover on desktop */}
-              <button
-                onClick={() => handleToggleStar(photo.albumId, photo.id)}
-                className={`absolute top-1.5 right-1.5 w-7 h-7 rounded-full flex items-center justify-center transition-all active:scale-90 ${photo.starred ? "bg-yellow-500/30 opacity-100" : "bg-black/40 opacity-0 group-hover:opacity-100"}`}
-                title={photo.starred ? "Remove star" : "Star photo"}
-              >
-                <Star className={`w-3.5 h-3.5 ${photo.starred ? "text-yellow-400 fill-yellow-400" : "text-white/80"}`} />
-              </button>
-
-              {/* Album label */}
-              <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent px-2 pt-4 pb-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                <p className="text-[10px] font-body text-white/90 truncate">{photo.albumTitle}</p>
+              {p.starred && <span className="absolute top-1 left-1 text-[10px] leading-none">⭐</span>}
+              <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-background/80 to-transparent p-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                <p className="text-[9px] font-body text-foreground font-medium truncate">{p.title}</p>
+                <p className="text-[8px] font-body text-muted-foreground truncate">{p.source}</p>
               </div>
+              {selectedIds.has(p.id) && (
+                <div className="absolute top-1 right-1 w-5 h-5 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-[10px] font-bold">✓</div>
+              )}
+              <button
+                onClick={e => { e.stopPropagation(); handleDeletePhoto(p.id, p.source, p.src); }}
+                className="absolute bottom-1 right-1 w-5 h-5 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+              >
+                <X className="w-3 h-3" />
+              </button>
             </div>
           ))}
         </div>
