@@ -60,7 +60,12 @@ function writeDb(data) {
 }
 
 app.use(cors());
-app.use(express.json({ limit: "50mb" }));
+// Skip JSON body parsing for the Stripe webhook route — it requires the raw Buffer for
+// signature verification.  The route itself applies express.raw() instead.
+app.use((req, res, next) => {
+  if (req.path === "/api/stripe/webhook") return next();
+  express.json({ limit: "50mb" })(req, res, next);
+});
 
 // ── Health check ──────────────────────────────────────
 app.get("/api/health", (_req, res) => {
@@ -931,7 +936,7 @@ app.post("/api/cache/warm", cacheWarmLimiter, async (req, res) => {
 // ── Integrations ──────────────────────────────────────
 registerGoogleCalendarRoutes(app);
 registerEmailRoutes(app);
-registerStripeRoutes(app);
+registerStripeRoutes(app, { writeDb });
 registerGoogleSheetsRoutes(app);
 
 // ── Invoice share endpoint (public — no auth required) ────────

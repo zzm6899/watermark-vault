@@ -70,7 +70,7 @@ export default function InvoiceView() {
       setInvoice(inv);
       setLoading(false);
       // Check Stripe availability if needed
-      if ((inv.paymentMethods || []).includes("stripe") && inv.status !== "paid") {
+      if ((inv.paymentMethods || []).includes("stripe") && inv.status !== "paid" && !justPaid) {
         getStripeStatus().then(s => setStripeAvailable(s.configured));
       }
     });
@@ -145,7 +145,7 @@ export default function InvoiceView() {
   const { sub, disc, taxAmt, taxRate, total } = calcTotals(invoice);
   const statusInfo = STATUS_STYLES[invoice.status];
   const methods = invoice.paymentMethods || [];
-  const canPay = invoice.status !== "paid" && invoice.status !== "cancelled" && methods.length > 0;
+  const canPay = !justPaid && invoice.status !== "paid" && invoice.status !== "cancelled" && methods.length > 0;
 
   return (
     <>
