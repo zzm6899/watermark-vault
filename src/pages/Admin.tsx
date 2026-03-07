@@ -8,7 +8,7 @@ import {
   MapPin, Lock, Bell, Download, Unlock, Eye, Grid, List, LayoutGrid, HardDrive, CheckSquare, XSquare, Search, RefreshCw, Mail,
   MessageSquare,
   Star, CheckCircle2, Sparkles, ChevronLeft, ChevronRight, Flag, FileText, Receipt, Printer, AlertCircle, BookOpen,
-  ArrowUpDown, MoreHorizontal, TrendingUp, TrendingDown,
+  ArrowUpDown, MoreHorizontal, TrendingUp, TrendingDown, Key, Globe,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -26,9 +26,10 @@ import {
   getInvoices, addInvoice, updateInvoice, deleteInvoice, getNextInvoiceNumber,
   getContacts, addContact, updateContact, deleteContact,
   getEnquiries, updateEnquiry, deleteEnquiry,
+  isSuperAdmin, setSuperAdmin, getAdminCredentials,
 } from "@/lib/storage";
 import { compressImage, formatBytes, getLocalStorageUsage, generateThumbnail } from "@/lib/image-utils";
-import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar, getServerStorageStats, syncFromServer, sendEmail, bulkDeleteFiles, syncBookingsToSheet, getBookingEmailLog, sendBookingReminder, sendCustomEmail, getWaitlistEntries, deleteWaitlistEntry, notifyWaitlistOnCancel, notifyDiscord, getCacheStats, warmCache, createInvoiceCheckout, sendInvoiceEmail, getStripeStatus, sendEnquiryAcceptedEmail, sendEnquiryDeclinedEmail } from "@/lib/api";
+import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar, getServerStorageStats, syncFromServer, sendEmail, bulkDeleteFiles, syncBookingsToSheet, getBookingEmailLog, sendBookingReminder, sendCustomEmail, getWaitlistEntries, deleteWaitlistEntry, notifyWaitlistOnCancel, notifyDiscord, getCacheStats, warmCache, createInvoiceCheckout, sendInvoiceEmail, getStripeStatus, sendEnquiryAcceptedEmail, sendEnquiryDeclinedEmail, getLicenseKeys, generateLicenseKey, revokeLicenseKey, getTenants, createTenant, updateTenant, deleteTenant, getSuperAdminInfo, getSuperStats, getAllBookings, getLicensePlans, createLicensePlan, updateLicensePlan, deleteLicensePlan, getLicensePurchases, activateBankPurchase, getLicensePlanCheckout, getTenantSettings, saveTenantSettings } from "@/lib/api";
 import type { CacheBreakdown } from "@/lib/api";
 import RichTextEditor, { RichTextDisplay } from "@/components/RichTextEditor";
 import Login from "@/pages/Login";
@@ -37,7 +38,7 @@ import type {
   ProfileSettings, AppSettings, Booking, WatermarkPosition,
   Album, Photo, PaymentStatus, AlbumDisplaySize, AlbumDownloadRecord, DownloadHistoryEntry,
   EmailTemplate, WaitlistEntry, Invoice, InvoiceItem, InvoiceParty, InvoiceStatus, Contact,
-  Enquiry, EnquiryStatus,
+  Enquiry, EnquiryStatus, LicenseKey, Tenant, LicensePlan, LicensePurchase, TenantSettings,
 } from "@/lib/types";
 import WatermarkedImage from "@/components/WatermarkedImage";
 import ProgressiveImg from "@/components/ProgressiveImg";
@@ -49,7 +50,7 @@ import sampleWedding from "@/assets/sample-wedding.jpg";
 import sampleEvent from "@/assets/sample-event.jpg";
 import sampleFood from "@/assets/sample-food.jpg";
 
-type Tab = "dashboard" | "bookings" | "events" | "albums" | "photos" | "finance" | "invoices" | "contacts" | "enquiries" | "profile" | "settings" | "storage";
+type Tab = "dashboard" | "bookings" | "events" | "albums" | "photos" | "finance" | "invoices" | "contacts" | "enquiries" | "profile" | "settings" | "storage" | "platform";
 
 const TAB_ROUTE_MAP: Record<string, Tab> = {
   dashboard: "dashboard",
@@ -64,6 +65,7 @@ const TAB_ROUTE_MAP: Record<string, Tab> = {
   profile: "profile",
   settings: "settings",
   storage: "storage",
+  platform: "platform",
 };
 
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
@@ -446,6 +448,20 @@ export default function Admin() {
   const [activeTab, setActiveTabState] = useState<Tab>(resolvedTab);
   const [authed, setAuthed] = useState(() => isLoggedIn());
   const [prefillBookingId, setPrefillBookingId] = useState<string | null>(null);
+  const [superAdminFlag, setSuperAdminFlag] = useState(() => isSuperAdmin());
+
+  // Detect if the logged-in user is the super admin (configured via SUPER_ADMIN_USERNAME env var)
+  useEffect(() => {
+    if (!isLoggedIn()) return;
+    getSuperAdminInfo().then(({ superAdminUsername }) => {
+      if (!superAdminUsername) return;
+      const creds = getAdminCredentials();
+      if (creds?.username && creds.username === superAdminUsername) {
+        setSuperAdmin(true);
+        setSuperAdminFlag(true);
+      }
+    });
+  }, []);
 
   useEffect(() => {
     if (!isSetupComplete()) navigate("/setup", { replace: true });
@@ -485,6 +501,7 @@ export default function Admin() {
     { id: "profile" as Tab, label: "Profile", icon: Camera },
     { id: "settings" as Tab, label: "Settings", icon: Settings },
     { id: "storage" as Tab, label: "Storage", icon: HardDrive },
+    ...(superAdminFlag ? [{ id: "platform" as Tab, label: "Platform", icon: Globe }] : []),
   ];
 
   return (
@@ -585,6 +602,7 @@ export default function Admin() {
           {activeTab === "profile" && <ProfileView />}
           {activeTab === "settings" && <SettingsView />}
           {activeTab === "storage" && <StorageView />}
+          {activeTab === "platform" && superAdminFlag && <PlatformView />}
         </main>
       </div>
     </div>
@@ -2883,13 +2901,19 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
 
         const startProofing = async () => {
           const note = (document.getElementById("proofing-admin-note") as HTMLInputElement)?.value || "";
+          const expiryInput = document.getElementById("proofing-expiry-hours") as HTMLInputElement;
+          const expiryHours = expiryInput && expiryInput.value !== ""
+            ? Math.max(1, parseInt(expiryInput.value, 10) || 48)
+            : (liveAlbum!.proofingExpiryHours ?? settings.defaultProofingExpiryHours ?? 48);
+          const proofingExpiresAt = new Date(Date.now() + expiryHours * 3600 * 1000).toISOString();
           const clientToken = liveAlbum!.clientToken || `ct-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
           const newRound = { roundNumber: rounds.length + 1, sentAt: new Date().toISOString(), selectedPhotoIds: [], adminNote: note || undefined };
-          const updated = { ...liveAlbum!, proofingEnabled: true, proofingStage: "proofing" as const, proofingRounds: [...rounds, newRound], clientToken };
+          const updated = { ...liveAlbum!, proofingEnabled: true, proofingStage: "proofing" as const, proofingRounds: [...rounds, newRound], clientToken, proofingExpiresAt };
           updateLiveAlbum(updated);
           if (clientEmail) {
             const galleryUrl = `${window.location.origin}/gallery/${liveAlbum!.slug}?token=${clientToken}`;
-            fetch("/api/email/send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ to: clientEmail, subject: `📸 Your proofing gallery is ready — ${liveAlbum!.title}`, html: `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;"><h2 style="margin:0 0 16px;font-size:20px;">Your photos are ready to review!</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${liveAlbum!.clientName || "there"},</p><p style="color:#9ca3af;margin:0 0 12px;">Your proofing gallery for <strong style="color:#e5e7eb;">${liveAlbum!.title}</strong> is ready. Browse and star the ones you love, then hit Submit Picks.</p>${note ? `<p style="color:#9ca3af;margin:0 0 20px;padding:12px;background:#1f1f1f;border-radius:8px;"><em>"${note}"</em></p>` : ""}<a href="${galleryUrl}" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">View Your Gallery →</a></div>` }) }).catch(() => {});
+            const expiryDateStr = new Date(proofingExpiresAt).toLocaleString("en-AU", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+            fetch("/api/email/send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ to: clientEmail, subject: `📸 Your proofing gallery is ready — ${liveAlbum!.title}`, html: `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;"><h2 style="margin:0 0 16px;font-size:20px;">Your photos are ready to review!</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${liveAlbum!.clientName || "there"},</p><p style="color:#9ca3af;margin:0 0 12px;">Your proofing gallery for <strong style="color:#e5e7eb;">${liveAlbum!.title}</strong> is ready. Browse and star the ones you love, then hit Submit Picks.</p><p style="color:#ef4444;margin:0 0 12px;padding:10px 14px;background:#1f1f1f;border-radius:8px;font-size:13px;">⏰ <strong>Proofing window closes: ${expiryDateStr}</strong></p>${note ? `<p style="color:#9ca3af;margin:0 0 20px;padding:12px;background:#1f1f1f;border-radius:8px;"><em>"${note}"</em></p>` : ""}<a href="${galleryUrl}" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">View Your Gallery →</a></div>` }) }).catch(() => {});
           }
           toast.success("Proofing round started" + (clientEmail ? " — invite sent to client" : " (no client email on file)"));
           onUpdate?.(updated);
@@ -2959,6 +2983,18 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
             {stage === "not-started" && (
               <div className="space-y-2">
                 <textarea id="proofing-admin-note" placeholder="Optional message to client (e.g. 'Please pick your top 30')" rows={2} className="w-full bg-secondary border border-border rounded px-3 py-2 text-xs font-body text-foreground placeholder:text-muted-foreground/50 resize-none" />
+                <div className="flex items-center gap-2">
+                  <label className="text-[11px] font-body text-muted-foreground shrink-0">Window open for</label>
+                  <input
+                    id="proofing-expiry-hours"
+                    type="number"
+                    min={1}
+                    max={720}
+                    defaultValue={liveAlbum!.proofingExpiryHours ?? settings.defaultProofingExpiryHours ?? 48}
+                    className="w-20 bg-secondary border border-border rounded px-2 py-1 text-xs font-body text-foreground text-center focus:outline-none focus:ring-1 focus:ring-ring"
+                  />
+                  <label className="text-[11px] font-body text-muted-foreground">hours</label>
+                </div>
                 <button onClick={startProofing} className="flex items-center gap-2 w-full justify-center bg-yellow-500/15 hover:bg-yellow-500/25 text-yellow-400 border border-yellow-500/30 rounded-lg px-4 py-2 text-xs font-body tracking-wider uppercase transition-colors">
                   <Star className="w-3.5 h-3.5" /> Start Proofing Round {rounds.length + 1}
                 </button>
@@ -2967,10 +3003,25 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
 
             {/* AWAITING PICKS */}
             {stage === "proofing" && (
-              <p className="text-xs font-body text-muted-foreground">
-                Waiting for {liveAlbum!.clientName || "client"} to star photos and submit picks.
-                {latest?.adminNote && <span className="block mt-1 text-muted-foreground/70">Your note: "{latest.adminNote}"</span>}
-              </p>
+              <div className="space-y-1.5">
+                <p className="text-xs font-body text-muted-foreground">
+                  Waiting for {liveAlbum!.clientName || "client"} to star photos and submit picks.
+                  {latest?.adminNote && <span className="block mt-1 text-muted-foreground/70">Your note: "{latest.adminNote}"</span>}
+                </p>
+                {liveAlbum!.proofingExpiresAt && (() => {
+                  const expiresAt = new Date(liveAlbum!.proofingExpiresAt as string);
+                  const isExpiredNow = new Date() > expiresAt;
+                  return isExpiredNow ? (
+                    <p className="text-[11px] font-body text-destructive flex items-center gap-1">
+                      <Clock className="w-3 h-3" /> Proofing window closed — client can no longer submit picks
+                    </p>
+                  ) : (
+                    <p className="text-[11px] font-body text-yellow-400/80 flex items-center gap-1">
+                      <Clock className="w-3 h-3" /> Closes {expiresAt.toLocaleString("en-AU", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
+                    </p>
+                  );
+                })()}
+              </div>
             )}
 
             {/* PICKS SUBMITTED — paid vs free decision */}
@@ -5546,6 +5597,27 @@ function SettingsView() {
               onCheckedChange={(v) => setSettingsState({ ...settings, proofingEnabled: v })}
             />
           </div>
+          {settings.proofingEnabled && (
+            <div className="flex items-center gap-3 pt-1 border-t border-border/50">
+              <div className="flex-1">
+                <p className="text-sm font-body text-foreground font-medium">Default Proofing Window</p>
+                <p className="text-[10px] font-body text-muted-foreground/70 mt-0.5">
+                  How long clients have to submit picks after a round is started. Can be overridden per album.
+                </p>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <input
+                  type="number"
+                  min={1}
+                  max={720}
+                  value={settings.defaultProofingExpiryHours ?? 48}
+                  onChange={(e) => setSettingsState({ ...settings, defaultProofingExpiryHours: Math.max(1, parseInt(e.target.value) || 48) })}
+                  className="w-20 bg-secondary border border-border rounded-md px-2 py-1.5 text-sm font-body text-foreground text-center focus:outline-none focus:ring-2 focus:ring-ring"
+                />
+                <span className="text-xs font-body text-muted-foreground">hours</span>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Payment Methods */}
@@ -5605,6 +5677,9 @@ function SettingsView() {
         {/* Google Calendar */}
         <GoogleCalendarSection />
 
+        {/* License Keys */}
+        <LicenseKeysPanel />
+
         {/* Watermark rebuild / cache clear progress */}
         {rebuildProgress && (
           <div className="p-3 rounded-lg bg-secondary/50 border border-border">
@@ -5632,6 +5707,806 @@ function SettingsView() {
           <Save className="w-4 h-4" /> Save All Settings
         </Button>
       </div>
+    </motion.div>
+  );
+}
+
+// ─── License Keys Panel ───────────────────────────────
+// Default trial limits — used in both the UI and server-side enforcement
+const TRIAL_DEFAULT_MAX_EVENTS = 1;
+const TRIAL_DEFAULT_MAX_BOOKINGS = 10;
+
+function LicenseKeysPanel() {
+  const [keys, setKeys] = useState<LicenseKey[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [newIssuedTo, setNewIssuedTo] = useState("");
+  const [newExpiresAt, setNewExpiresAt] = useState("");
+  const [newNotes, setNewNotes] = useState("");
+  const [newIsTrial, setNewIsTrial] = useState(false);
+  const [newTrialMaxEvents, setNewTrialMaxEvents] = useState(String(TRIAL_DEFAULT_MAX_EVENTS));
+  const [newTrialMaxBookings, setNewTrialMaxBookings] = useState(String(TRIAL_DEFAULT_MAX_BOOKINGS));
+  const [generating, setGenerating] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+
+  const loadKeys = async () => {
+    setLoading(true);
+    const result = await getLicenseKeys();
+    setKeys(result);
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    if (expanded) loadKeys();
+  }, [expanded]);
+
+  const handleGenerate = async () => {
+    if (!newIssuedTo.trim()) {
+      toast.error("Issued To is required");
+      return;
+    }
+    setGenerating(true);
+    const { key, error } = await generateLicenseKey(
+      newIssuedTo.trim(),
+      newExpiresAt || undefined,
+      newNotes || undefined,
+      newIsTrial ? {
+        isTrial: true,
+        trialMaxEvents: parseInt(newTrialMaxEvents) || 1,
+        trialMaxBookings: parseInt(newTrialMaxBookings) || 10,
+      } : undefined,
+    );
+    setGenerating(false);
+    if (error || !key) {
+      toast.error(error || "Failed to generate key");
+      return;
+    }
+    toast.success(`Key generated: ${key.key}`);
+    setNewIssuedTo("");
+    setNewExpiresAt("");
+    setNewNotes("");
+    setNewIsTrial(false);
+    setNewTrialMaxEvents(String(TRIAL_DEFAULT_MAX_EVENTS));
+    setNewTrialMaxBookings(String(TRIAL_DEFAULT_MAX_BOOKINGS));
+    setKeys((prev) => [...prev, key]);
+  };
+
+  const handleRevoke = async (k: LicenseKey) => {
+    if (!confirm(`Revoke key ${k.key} issued to ${k.issuedTo}?`)) return;
+    const { ok, error } = await revokeLicenseKey(k.key);
+    if (!ok) {
+      toast.error(error || "Failed to revoke key");
+      return;
+    }
+    toast.success("Key revoked");
+    setKeys((prev) => prev.filter((x) => x.key !== k.key));
+  };
+
+  const copyKey = (key: string) => {
+    navigator.clipboard.writeText(key).then(() => toast.success("Copied!")).catch(() => toast.error("Copy failed"));
+  };
+
+  return (
+    <div className="glass-panel rounded-xl p-6 space-y-4">
+      <button
+        className="w-full flex items-center justify-between"
+        onClick={() => setExpanded((v) => !v)}
+      >
+        <h3 className="font-display text-base text-foreground flex items-center gap-2">
+          <Key className="w-4 h-4 text-primary" /> License Keys
+        </h3>
+        {expanded ? <ChevronUp className="w-4 h-4 text-muted-foreground" /> : <ChevronDown className="w-4 h-4 text-muted-foreground" />}
+      </button>
+
+      {expanded && (
+        <div className="space-y-5">
+          <p className="text-xs font-body text-muted-foreground">
+            Generate license keys to share with other photographers who want to deploy their own Watermark Vault instance.
+            When keys exist, new deployments must enter a valid key during setup.
+          </p>
+
+          {/* Generate new key */}
+          <div className="space-y-3 p-4 rounded-lg bg-secondary/50 border border-border/50">
+            <h4 className="text-xs font-body tracking-wider uppercase text-muted-foreground">Generate New Key</h4>
+            <div>
+              <label className="text-xs font-body text-muted-foreground mb-1 block">Issued To *</label>
+              <Input
+                value={newIssuedTo}
+                onChange={(e) => setNewIssuedTo(e.target.value)}
+                placeholder="e.g. Jane Smith or jane@example.com"
+                className="bg-background border-border text-foreground font-body text-sm"
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs font-body text-muted-foreground mb-1 block">Expires (optional)</label>
+                <Input
+                  type="date"
+                  value={newExpiresAt}
+                  onChange={(e) => setNewExpiresAt(e.target.value)}
+                  className="bg-background border-border text-foreground font-body text-sm"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-body text-muted-foreground mb-1 block">Notes (optional)</label>
+                <Input
+                  value={newNotes}
+                  onChange={(e) => setNewNotes(e.target.value)}
+                  placeholder="e.g. Wedding photographer"
+                  className="bg-background border-border text-foreground font-body text-sm"
+                />
+              </div>
+            </div>
+
+            {/* Free Trial Toggle */}
+            <div className="flex items-center gap-3 pt-1">
+              <Switch
+                checked={newIsTrial}
+                onCheckedChange={setNewIsTrial}
+                id="trial-toggle"
+              />
+              <label htmlFor="trial-toggle" className="text-xs font-body text-foreground cursor-pointer">
+                Free Trial Key
+              </label>
+              {newIsTrial && (
+                <span className="text-[10px] font-body bg-amber-500/10 text-amber-500 px-1.5 py-0.5 rounded-full">Limited Usage</span>
+              )}
+            </div>
+
+            {newIsTrial && (
+              <div className="grid grid-cols-2 gap-3 p-3 rounded-lg bg-amber-500/5 border border-amber-500/20">
+                <div>
+                  <label className="text-xs font-body text-muted-foreground mb-1 block">Max Event Types</label>
+                  <Input
+                    type="number"
+                    min={1}
+                    value={newTrialMaxEvents}
+                    onChange={(e) => setNewTrialMaxEvents(e.target.value)}
+                    className="bg-background border-border text-foreground font-body text-sm"
+                  />
+                  <p className="text-[10px] font-body text-muted-foreground mt-0.5">Event type slots for this trial</p>
+                </div>
+                <div>
+                  <label className="text-xs font-body text-muted-foreground mb-1 block">Max Bookings</label>
+                  <Input
+                    type="number"
+                    min={1}
+                    value={newTrialMaxBookings}
+                    onChange={(e) => setNewTrialMaxBookings(e.target.value)}
+                    className="bg-background border-border text-foreground font-body text-sm"
+                  />
+                  <p className="text-[10px] font-body text-muted-foreground mt-0.5">Total bookings allowed</p>
+                </div>
+              </div>
+            )}
+
+            <Button
+              onClick={handleGenerate}
+              disabled={generating}
+              className="bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2"
+              size="sm"
+            >
+              <Key className="w-3 h-3" /> {generating ? "Generating…" : "Generate Key"}
+            </Button>
+          </div>
+
+          {/* Key list */}
+          <div className="space-y-2">
+            {loading && <p className="text-xs font-body text-muted-foreground">Loading…</p>}
+            {!loading && keys.length === 0 && (
+              <p className="text-xs font-body text-muted-foreground">No license keys yet. Generate one above.</p>
+            )}
+            {keys.map((k) => (
+              <div key={k.key} className="flex flex-col sm:flex-row sm:items-center gap-2 p-3 rounded-lg bg-secondary/30 border border-border/40">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-mono text-xs text-foreground tracking-widest">{k.key}</span>
+                    <button onClick={() => copyKey(k.key)} className="text-muted-foreground hover:text-foreground">
+                      <Copy className="w-3 h-3" />
+                    </button>
+                    {k.usedAt ? (
+                      <span className="text-[10px] font-body bg-green-500/10 text-green-500 px-1.5 py-0.5 rounded-full">Used</span>
+                    ) : (
+                      <span className="text-[10px] font-body bg-primary/10 text-primary px-1.5 py-0.5 rounded-full">Active</span>
+                    )}
+                    {k.isTrial && (
+                      <span className="text-[10px] font-body bg-amber-500/10 text-amber-500 px-1.5 py-0.5 rounded-full">
+                        Free Trial · {k.trialMaxEvents ?? 1} event{(k.trialMaxEvents ?? 1) !== 1 ? "s" : ""} · {k.trialMaxBookings ?? 10} bookings
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-[11px] font-body text-muted-foreground mt-0.5 flex flex-wrap gap-2">
+                    <span>Issued to: {k.issuedTo}</span>
+                    {k.expiresAt && <span>· Expires: {k.expiresAt.slice(0, 10)}</span>}
+                    {k.usedAt && k.usedBy && <span>· Used by: {k.usedBy} on {k.usedAt.slice(0, 10)}</span>}
+                    {k.notes && <span>· {k.notes}</span>}
+                  </div>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => handleRevoke(k)}
+                  className="shrink-0 text-destructive hover:text-destructive hover:bg-destructive/10 font-body text-xs gap-1"
+                >
+                  <Trash2 className="w-3 h-3" /> Revoke
+                </Button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Tenant Settings Panel ────────────────────────────
+function TenantSettingsPanel({ tenant, onClose }: { tenant: Tenant; onClose: () => void }) {
+  const [settings, setSettings] = useState<TenantSettings>({});
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    getTenantSettings(tenant.slug).then((s) => {
+      setSettings(s);
+      setLoading(false);
+    });
+  }, [tenant.slug]);
+
+  const handleSave = async () => {
+    setSaving(true);
+    const { ok, error } = await saveTenantSettings(tenant.slug, settings);
+    setSaving(false);
+    if (!ok) { toast.error(error || "Failed to save"); return; }
+    toast.success(`Settings saved for ${tenant.displayName}`);
+    onClose();
+  };
+
+  const set = (patch: Partial<TenantSettings>) => setSettings((s) => ({ ...s, ...patch }));
+
+  if (loading) return <div className="py-8 text-center text-xs font-body text-muted-foreground animate-pulse">Loading…</div>;
+
+  return (
+    <div className="space-y-5">
+      <div className="flex items-center justify-between">
+        <h3 className="font-display text-sm text-foreground">
+          Settings for <span className="text-primary">{tenant.displayName}</span>
+          <span className="text-muted-foreground font-mono ml-1 text-[11px]">/{tenant.slug}</span>
+        </h3>
+        <button onClick={onClose} className="text-muted-foreground hover:text-foreground text-xs font-body">✕ Close</button>
+      </div>
+
+      {/* ── Stripe ─────────────────────────────────── */}
+      <div className="space-y-3 p-4 rounded-lg bg-secondary/40 border border-border/50">
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-body tracking-wider uppercase text-muted-foreground">Stripe</span>
+          {(() => {
+            const stripeConfigured = !!(settings.stripePublishableKey || settings.stripeSecretKey);
+            const stripeActive = settings.stripeEnabled !== false && stripeConfigured;
+            return (
+              <>
+                <Switch checked={stripeActive} onCheckedChange={(v) => set({ stripeEnabled: v })} />
+                <span className="text-xs font-body text-muted-foreground">{stripeActive ? "Enabled" : "Disabled"}</span>
+              </>
+            );
+          })()}
+        </div>
+        <p className="text-[10px] font-body text-muted-foreground -mt-1">Tenant's own Stripe account — payments go directly to them.</p>
+        <div>
+          <label className="text-xs font-body text-muted-foreground mb-1 block">Publishable Key</label>
+          <Input
+            value={settings.stripePublishableKey || ""}
+            onChange={(e) => set({ stripePublishableKey: e.target.value, stripeEnabled: true })}
+            placeholder="pk_live_..."
+            className="bg-background border-border text-foreground font-body text-xs font-mono"
+          />
+        </div>
+        <div>
+          <label className="text-xs font-body text-muted-foreground mb-1 block">Secret Key</label>
+          <Input
+            type="password"
+            value={settings.stripeSecretKey || ""}
+            onChange={(e) => set({ stripeSecretKey: e.target.value, stripeEnabled: true })}
+            placeholder="sk_live_..."
+            className="bg-background border-border text-foreground font-body text-xs font-mono"
+          />
+        </div>
+        <div>
+          <label className="text-xs font-body text-muted-foreground mb-1 block">Webhook Secret</label>
+          <Input
+            type="password"
+            value={settings.stripeWebhookSecret || ""}
+            onChange={(e) => set({ stripeWebhookSecret: e.target.value })}
+            placeholder="whsec_..."
+            className="bg-background border-border text-foreground font-body text-xs font-mono"
+          />
+          <p className="text-[10px] font-body text-muted-foreground mt-1">
+            Set webhook URL to: <code className="bg-secondary px-1 rounded text-[10px]">/api/tenant/{tenant.slug}/stripe/webhook</code>
+          </p>
+        </div>
+        <div>
+          <label className="text-xs font-body text-muted-foreground mb-1 block">Currency</label>
+          <Input
+            value={settings.stripeCurrency || ""}
+            onChange={(e) => set({ stripeCurrency: e.target.value.toLowerCase() })}
+            placeholder="aud"
+            maxLength={3}
+            className="bg-background border-border text-foreground font-body text-xs font-mono w-24"
+          />
+          <p className="text-[10px] font-body text-muted-foreground mt-0.5">ISO 4217 code, e.g. aud, usd, gbp. Defaults to aud.</p>
+        </div>
+      </div>
+
+      {/* ── Bank Transfer ──────────────────────────── */}
+      <div className="space-y-3 p-4 rounded-lg bg-secondary/40 border border-border/50">
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-body tracking-wider uppercase text-muted-foreground">Bank Transfer</span>
+          <Switch
+            checked={!!settings.bankTransferEnabled}
+            onCheckedChange={(v) => set({ bankTransferEnabled: v })}
+          />
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="text-xs font-body text-muted-foreground mb-1 block">Account Name</label>
+            <Input value={settings.bankAccountName || ""} onChange={(e) => set({ bankAccountName: e.target.value })}
+              placeholder="Jane Smith Photography" className="bg-background border-border text-foreground font-body text-xs" />
+          </div>
+          <div>
+            <label className="text-xs font-body text-muted-foreground mb-1 block">BSB</label>
+            <Input value={settings.bankBsb || ""} onChange={(e) => set({ bankBsb: e.target.value })}
+              placeholder="000-000" className="bg-background border-border text-foreground font-body text-xs" />
+          </div>
+          <div>
+            <label className="text-xs font-body text-muted-foreground mb-1 block">Account Number</label>
+            <Input value={settings.bankAccountNumber || ""} onChange={(e) => set({ bankAccountNumber: e.target.value })}
+              placeholder="00000000" className="bg-background border-border text-foreground font-body text-xs" />
+          </div>
+          <div>
+            <label className="text-xs font-body text-muted-foreground mb-1 block">PayID</label>
+            <Input value={settings.bankPayId || ""} onChange={(e) => set({ bankPayId: e.target.value })}
+              placeholder="jane@example.com" className="bg-background border-border text-foreground font-body text-xs" />
+          </div>
+        </div>
+        <div>
+          <label className="text-xs font-body text-muted-foreground mb-1 block">Payment Instructions</label>
+          <Input value={settings.bankInstructions || ""} onChange={(e) => set({ bankInstructions: e.target.value })}
+            placeholder="Use your name as reference" className="bg-background border-border text-foreground font-body text-xs" />
+        </div>
+      </div>
+
+      {/* ── Discord ────────────────────────────────── */}
+      <div className="space-y-3 p-4 rounded-lg bg-secondary/40 border border-border/50">
+        <span className="text-xs font-body tracking-wider uppercase text-muted-foreground">Discord</span>
+        <div>
+          <label className="text-xs font-body text-muted-foreground mb-1 block">Webhook URL</label>
+          <Input
+            value={settings.discordWebhookUrl || ""}
+            onChange={(e) => set({ discordWebhookUrl: e.target.value })}
+            placeholder="https://discord.com/api/webhooks/..."
+            className="bg-background border-border text-foreground font-body text-xs"
+          />
+          <p className="text-[10px] font-body text-muted-foreground mt-1">Notifications for this tenant's bookings will go to this webhook.</p>
+        </div>
+        <div className="flex flex-wrap gap-4">
+          {([
+            { key: "discordNotifyBookings", label: "Bookings" },
+            { key: "discordNotifyDownloads", label: "Downloads" },
+            { key: "discordNotifyProofing", label: "Proofing" },
+          ] as { key: keyof TenantSettings; label: string }[]).map(({ key, label }) => (
+            <div key={key} className="flex items-center gap-2">
+              <Switch
+                checked={settings[key] !== false}
+                onCheckedChange={(v) => set({ [key]: v })}
+              />
+              <label className="text-xs font-body text-foreground">{label}</label>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* ── SMTP ──────────────────────────────────── */}
+      <div className="space-y-3 p-4 rounded-lg bg-secondary/40 border border-border/50">
+        <span className="text-xs font-body tracking-wider uppercase text-muted-foreground">Email SMTP</span>
+        <p className="text-[10px] font-body text-muted-foreground -mt-1">Booking confirmation emails will be sent from this tenant's own email server.</p>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="text-xs font-body text-muted-foreground mb-1 block">SMTP Host</label>
+            <Input value={settings.smtpHost || ""} onChange={(e) => set({ smtpHost: e.target.value })}
+              placeholder="smtp.gmail.com" className="bg-background border-border text-foreground font-body text-xs" />
+          </div>
+          <div>
+            <label className="text-xs font-body text-muted-foreground mb-1 block">Port</label>
+            <Input type="number" value={settings.smtpPort || ""} onChange={(e) => set({ smtpPort: parseInt(e.target.value) || undefined })}
+              placeholder="587" className="bg-background border-border text-foreground font-body text-xs" />
+          </div>
+          <div>
+            <label className="text-xs font-body text-muted-foreground mb-1 block">Username</label>
+            <Input value={settings.smtpUser || ""} onChange={(e) => set({ smtpUser: e.target.value })}
+              placeholder="jane@example.com" className="bg-background border-border text-foreground font-body text-xs" />
+          </div>
+          <div>
+            <label className="text-xs font-body text-muted-foreground mb-1 block">Password / App Password</label>
+            <Input type="password" value={settings.smtpPassword || ""} onChange={(e) => set({ smtpPassword: e.target.value })}
+              placeholder="••••••••" className="bg-background border-border text-foreground font-body text-xs" />
+          </div>
+          <div>
+            <label className="text-xs font-body text-muted-foreground mb-1 block">From Address</label>
+            <Input value={settings.smtpFrom || ""} onChange={(e) => set({ smtpFrom: e.target.value })}
+              placeholder="Jane Smith <jane@example.com>" className="bg-background border-border text-foreground font-body text-xs" />
+          </div>
+          <div className="flex items-center gap-2 pt-5">
+            <Switch checked={!!settings.smtpSecure} onCheckedChange={(v) => set({ smtpSecure: v })} />
+            <label className="text-xs font-body text-foreground">Use TLS (port 465)</label>
+          </div>
+        </div>
+      </div>
+
+      <Button
+        onClick={handleSave}
+        disabled={saving}
+        className="bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2 w-full"
+        size="sm"
+      >
+        {saving ? "Saving…" : "Save Tenant Settings"}
+      </Button>
+    </div>
+  );
+}
+
+// ─── Platform View (Super Admin Only) ────────────────
+function PlatformView() {
+  const [stats, setStats] = useState<{
+    tenantCount: number; totalBookings: number; mainBookings: number;
+    tenants: (Tenant & { bookingCount: number; pendingBookings: number })[];
+  } | null>(null);
+  const [allBookings, setAllBookings] = useState<Booking[]>([]);
+  const [plans, setPlans] = useState<LicensePlan[]>([]);
+  const [purchases, setPurchases] = useState<LicensePurchase[]>([]);
+  const [loadingStats, setLoadingStats] = useState(true);
+  const [activeSection, setActiveSection] = useState<"overview" | "bookings" | "plans" | "purchases">("overview");
+  const [selectedTenantForSettings, setSelectedTenantForSettings] = useState<Tenant | null>(null);
+
+  // Plan form state
+  const [newPlanName, setNewPlanName] = useState("");
+  const [newPlanType, setNewPlanType] = useState<"one-time" | "monthly" | "yearly">("one-time");
+  const [newPlanPrice, setNewPlanPrice] = useState("");
+  const [newPlanDuration, setNewPlanDuration] = useState("365");
+  const [newPlanDesc, setNewPlanDesc] = useState("");
+  const [savingPlan, setSavingPlan] = useState(false);
+
+  // Checkout form
+  const [checkoutPlanId, setCheckoutPlanId] = useState("");
+  const [checkoutEmail, setCheckoutEmail] = useState("");
+  const [checkoutName, setCheckoutName] = useState("");
+  const [generatingCheckout, setGeneratingCheckout] = useState(false);
+
+  useEffect(() => {
+    Promise.all([
+      getSuperStats(), getAllBookings(), getLicensePlans(), getLicensePurchases(),
+    ]).then(([s, bks, p, pur]) => {
+      setStats(s);
+      setAllBookings(bks);
+      setPlans(p);
+      setPurchases(pur);
+      setLoadingStats(false);
+    });
+  }, []);
+
+  const handleCreatePlan = async () => {
+    const price = parseFloat(newPlanPrice);
+    if (!newPlanName.trim() || isNaN(price) || price <= 0) {
+      toast.error("Name and a valid price are required");
+      return;
+    }
+    setSavingPlan(true);
+    const { plan, error } = await createLicensePlan({
+      name: newPlanName.trim(),
+      type: newPlanType,
+      price,
+      currency: "AUD",
+      durationDays: newPlanType === "one-time" ? parseInt(newPlanDuration) || 365 : undefined,
+      description: newPlanDesc.trim() || undefined,
+    });
+    setSavingPlan(false);
+    if (error || !plan) { toast.error(error || "Failed"); return; }
+    setPlans(prev => [...prev, plan]);
+    setNewPlanName(""); setNewPlanPrice(""); setNewPlanDesc("");
+    toast.success("Plan created");
+  };
+
+  const handleDeletePlan = async (id: string) => {
+    if (!confirm("Delete this plan?")) return;
+    const { ok } = await deleteLicensePlan(id);
+    if (ok) setPlans(prev => prev.filter(p => p.id !== id));
+    else toast.error("Failed to delete");
+  };
+
+  const handleGenerateCheckout = async () => {
+    if (!checkoutPlanId || !checkoutEmail.trim()) { toast.error("Select a plan and enter buyer email"); return; }
+    setGeneratingCheckout(true);
+    const { url, error } = await getLicensePlanCheckout(checkoutPlanId, checkoutEmail.trim(), checkoutName.trim() || undefined);
+    setGeneratingCheckout(false);
+    if (error || !url) { toast.error(error || "Failed to create checkout"); return; }
+    window.open(url, "_blank");
+    toast.success("Checkout opened — share with the buyer if needed");
+  };
+
+  const handleActivatePurchase = async (purchaseId: string) => {
+    const { ok, key, error } = await activateBankPurchase(purchaseId);
+    if (!ok) { toast.error(error || "Failed"); return; }
+    toast.success(`Key activated: ${key}`);
+    const updatedPurchases = await getLicensePurchases();
+    setPurchases(updatedPurchases);
+  };
+
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text).then(() => toast.success("Copied!")).catch(() => toast.error("Copy failed"));
+  };
+
+  if (loadingStats) {
+    return <div className="py-20 text-center"><div className="animate-pulse text-muted-foreground font-body text-sm">Loading platform data…</div></div>;
+  }
+
+  const sections = [
+    { id: "overview", label: "Overview" },
+    { id: "bookings", label: "All Bookings" },
+    { id: "plans", label: "License Plans" },
+    { id: "purchases", label: "Purchases" },
+  ] as const;
+
+  return (
+    <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
+      <div className="flex items-center gap-3">
+        <Globe className="w-5 h-5 text-primary" />
+        <h2 className="font-display text-xl text-foreground">Platform Admin</h2>
+        <span className="text-[10px] font-body bg-primary/10 text-primary px-2 py-0.5 rounded-full">Super Admin</span>
+      </div>
+
+      {/* Section navigation */}
+      <div className="flex gap-1 p-1 bg-secondary rounded-xl w-fit">
+        {sections.map(s => (
+          <button key={s.id} onClick={() => setActiveSection(s.id as typeof activeSection)}
+            className={`px-3 py-1.5 rounded-lg text-xs font-body transition-all ${activeSection === s.id ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+          >
+            {s.label}
+          </button>
+        ))}
+      </div>
+
+      {/* ── Overview ── */}
+      {activeSection === "overview" && (
+        <div className="space-y-6">
+          {/* Stats */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+            {[
+              { label: "Tenants", value: stats?.tenantCount ?? 0, sub: "active" },
+              { label: "Total Bookings", value: stats?.totalBookings ?? 0, sub: "all tenants" },
+              { label: "Main Bookings", value: stats?.mainBookings ?? 0, sub: "direct" },
+              { label: "License Plans", value: plans.length, sub: `${purchases.length} sold` },
+            ].map(s => (
+              <div key={s.label} className="glass-panel rounded-xl p-4">
+                <p className="text-xs font-body tracking-wider uppercase text-muted-foreground">{s.label}</p>
+                <p className="font-display text-2xl text-foreground mt-1">{s.value}</p>
+                <p className="text-[10px] font-body text-muted-foreground">{s.sub}</p>
+              </div>
+            ))}
+          </div>
+
+          {/* Tenant list */}
+          <div className="glass-panel rounded-xl p-6">
+            <h3 className="font-display text-base text-foreground mb-4">Tenants</h3>
+            {!stats?.tenants.length ? (
+              <p className="text-sm font-body text-muted-foreground">No tenants yet. Create them in Admin → Settings → Tenants.</p>
+            ) : (
+              <div className="space-y-2">
+                {stats.tenants.map(t => (
+                  <div key={t.slug} className="space-y-0">
+                    <div className="flex items-center gap-3 p-3 rounded-lg bg-secondary/50 border border-border/40">
+                      <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center shrink-0">
+                        <Camera className="w-3.5 h-3.5 text-primary" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-body text-foreground">{t.displayName}</span>
+                          <span className="text-[10px] font-mono text-muted-foreground">/{t.slug}</span>
+                          {!t.active && <span className="text-[10px] font-body bg-muted text-muted-foreground px-1.5 py-0.5 rounded-full">Inactive</span>}
+                        </div>
+                        <p className="text-xs font-body text-muted-foreground">{t.email}</p>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <p className="text-xs font-body text-foreground">{t.bookingCount} bookings</p>
+                        {t.pendingBookings > 0 && <p className="text-[10px] font-body text-orange-400">{t.pendingBookings} pending</p>}
+                      </div>
+                      <button
+                        onClick={() => copyToClipboard(`${window.location.origin}/book/${t.slug}`)}
+                        className="text-muted-foreground hover:text-primary transition-colors" title="Copy booking URL"
+                      >
+                        <Copy className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        onClick={() => setSelectedTenantForSettings(selectedTenantForSettings?.slug === t.slug ? null : t)}
+                        className={`text-xs font-body px-2 py-1 rounded-md border transition-colors ${selectedTenantForSettings?.slug === t.slug ? "bg-primary text-primary-foreground border-primary" : "border-border text-muted-foreground hover:text-foreground hover:border-foreground"}`}
+                        title="Configure tenant settings"
+                      >
+                        ⚙ Settings
+                      </button>
+                    </div>
+                    {selectedTenantForSettings?.slug === t.slug && (
+                      <div className="mt-1 p-4 rounded-lg bg-secondary/30 border border-primary/20">
+                        <TenantSettingsPanel tenant={t} onClose={() => setSelectedTenantForSettings(null)} />
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── All Bookings ── */}
+      {activeSection === "bookings" && (
+        <div className="glass-panel rounded-xl p-6 space-y-4">
+          <h3 className="font-display text-base text-foreground">All Bookings <span className="text-sm font-body text-muted-foreground font-normal">({allBookings.length} total)</span></h3>
+          <div className="space-y-2 max-h-[600px] overflow-y-auto">
+            {allBookings.length === 0 && <p className="text-sm font-body text-muted-foreground">No bookings yet.</p>}
+            {[...allBookings].sort((a, b) => b.createdAt?.localeCompare(a.createdAt ?? "") ?? 0).map(bk => (
+              <div key={bk.id} className="flex flex-wrap gap-2 items-center p-3 rounded-lg bg-secondary/40 border border-border/40 text-xs font-body">
+                <div className="flex-1 min-w-0">
+                  <span className="text-foreground font-medium">{bk.clientName}</span>
+                  <span className="text-muted-foreground ml-2">{bk.date} @ {bk.time}</span>
+                  {bk.type && <span className="text-muted-foreground ml-2">· {bk.type}</span>}
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  {bk.tenantSlug ? (
+                    <span className="bg-primary/10 text-primary px-1.5 py-0.5 rounded-full text-[10px]">/{bk.tenantSlug}</span>
+                  ) : (
+                    <span className="bg-secondary text-muted-foreground px-1.5 py-0.5 rounded-full text-[10px]">main</span>
+                  )}
+                  <span className={`px-1.5 py-0.5 rounded-full text-[10px] ${
+                    bk.status === "confirmed" ? "bg-green-500/10 text-green-500"
+                      : bk.status === "cancelled" ? "bg-destructive/10 text-destructive"
+                      : "bg-orange-500/10 text-orange-500"
+                  }`}>{bk.status || "pending"}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── License Plans ── */}
+      {activeSection === "plans" && (
+        <div className="space-y-6">
+          {/* Create plan */}
+          <div className="glass-panel rounded-xl p-6 space-y-4">
+            <h3 className="font-display text-base text-foreground">Create a Plan</h3>
+            <div className="grid sm:grid-cols-2 gap-4">
+              <div>
+                <label className="text-xs font-body text-muted-foreground mb-1 block">Plan Name *</label>
+                <Input value={newPlanName} onChange={e => setNewPlanName(e.target.value)} placeholder="e.g. Starter, Pro" className="bg-secondary border-border text-foreground font-body" />
+              </div>
+              <div>
+                <label className="text-xs font-body text-muted-foreground mb-1 block">Type *</label>
+                <select value={newPlanType} onChange={e => setNewPlanType(e.target.value as any)} className="w-full bg-secondary border border-border text-foreground font-body text-sm rounded-md px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-ring">
+                  <option value="one-time">One-time (fixed period)</option>
+                  <option value="monthly">Monthly subscription</option>
+                  <option value="yearly">Yearly subscription</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-xs font-body text-muted-foreground mb-1 block">Price (AUD) *</label>
+                <Input type="number" value={newPlanPrice} onChange={e => setNewPlanPrice(e.target.value)} placeholder="29.00" className="bg-secondary border-border text-foreground font-body" />
+              </div>
+              {newPlanType === "one-time" && (
+                <div>
+                  <label className="text-xs font-body text-muted-foreground mb-1 block">Duration (days)</label>
+                  <Input type="number" value={newPlanDuration} onChange={e => setNewPlanDuration(e.target.value)} placeholder="365" className="bg-secondary border-border text-foreground font-body" />
+                </div>
+              )}
+              <div className="sm:col-span-2">
+                <label className="text-xs font-body text-muted-foreground mb-1 block">Description (optional)</label>
+                <Input value={newPlanDesc} onChange={e => setNewPlanDesc(e.target.value)} placeholder="What's included in this plan…" className="bg-secondary border-border text-foreground font-body" />
+              </div>
+            </div>
+            <Button onClick={handleCreatePlan} disabled={savingPlan} className="bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2" size="sm">
+              <Plus className="w-3 h-3" /> {savingPlan ? "Creating…" : "Create Plan"}
+            </Button>
+          </div>
+
+          {/* Plan list */}
+          <div className="glass-panel rounded-xl p-6">
+            <h3 className="font-display text-base text-foreground mb-4">Your Plans</h3>
+            {plans.length === 0 ? (
+              <p className="text-sm font-body text-muted-foreground">No plans yet. Create one above to sell license keys.</p>
+            ) : (
+              <div className="space-y-3">
+                {plans.map(p => (
+                  <div key={p.id} className="flex items-center gap-3 p-4 rounded-lg bg-secondary/50 border border-border/40">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-body text-foreground font-medium">{p.name}</span>
+                        <span className="text-[10px] font-body bg-primary/10 text-primary px-1.5 py-0.5 rounded-full">{p.type}</span>
+                        {!p.active && <span className="text-[10px] font-body bg-muted text-muted-foreground px-1.5 py-0.5 rounded-full">Inactive</span>}
+                      </div>
+                      <p className="text-xs font-body text-muted-foreground mt-0.5">
+                        ${p.price} {p.currency}{p.type === "one-time" ? ` · ${p.durationDays} days` : ""}
+                        {p.description && ` · ${p.description}`}
+                      </p>
+                    </div>
+                    <Button variant="ghost" size="sm" onClick={() => handleDeletePlan(p.id)} className="text-destructive hover:text-destructive hover:bg-destructive/10 font-body text-xs gap-1">
+                      <Trash2 className="w-3 h-3" />
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Generate Stripe checkout */}
+          {plans.filter(p => p.active !== false).length > 0 && (
+            <div className="glass-panel rounded-xl p-6 space-y-4">
+              <h3 className="font-display text-base text-foreground">Generate Checkout Link</h3>
+              <p className="text-xs font-body text-muted-foreground">Create a Stripe checkout link to send to a buyer. After payment, a license key is automatically generated.</p>
+              <div className="grid sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="text-xs font-body text-muted-foreground mb-1 block">Plan *</label>
+                  <select value={checkoutPlanId} onChange={e => setCheckoutPlanId(e.target.value)} className="w-full bg-secondary border border-border text-foreground font-body text-sm rounded-md px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-ring">
+                    <option value="">Select plan…</option>
+                    {plans.filter(p => p.active !== false).map(p => <option key={p.id} value={p.id}>{p.name} — ${p.price}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs font-body text-muted-foreground mb-1 block">Buyer Email *</label>
+                  <Input value={checkoutEmail} onChange={e => setCheckoutEmail(e.target.value)} placeholder="buyer@example.com" className="bg-secondary border-border text-foreground font-body" />
+                </div>
+                <div>
+                  <label className="text-xs font-body text-muted-foreground mb-1 block">Buyer Name</label>
+                  <Input value={checkoutName} onChange={e => setCheckoutName(e.target.value)} placeholder="Jane Smith" className="bg-secondary border-border text-foreground font-body" />
+                </div>
+              </div>
+              <Button onClick={handleGenerateCheckout} disabled={generatingCheckout} className="bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2" size="sm">
+                <CreditCard className="w-3 h-3" /> {generatingCheckout ? "Opening…" : "Open Stripe Checkout"}
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Purchases ── */}
+      {activeSection === "purchases" && (
+        <div className="glass-panel rounded-xl p-6 space-y-4">
+          <h3 className="font-display text-base text-foreground">License Purchases <span className="text-sm font-body text-muted-foreground font-normal">({purchases.length})</span></h3>
+          {purchases.length === 0 ? (
+            <p className="text-sm font-body text-muted-foreground">No purchases yet.</p>
+          ) : (
+            <div className="space-y-2">
+              {[...purchases].sort((a, b) => b.createdAt?.localeCompare(a.createdAt ?? "") ?? 0).map(pur => (
+                <div key={pur.id} className="flex flex-col sm:flex-row sm:items-center gap-2 p-3 rounded-lg bg-secondary/40 border border-border/40">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-body text-foreground">{pur.buyerEmail}</span>
+                      <span className={`text-[10px] font-body px-1.5 py-0.5 rounded-full ${pur.status === "active" ? "bg-green-500/10 text-green-500" : "bg-orange-500/10 text-orange-500"}`}>{pur.status}</span>
+                      <span className="text-[10px] font-body text-muted-foreground">{pur.method}</span>
+                    </div>
+                    <p className="text-xs font-body text-muted-foreground">{pur.planName} · ${pur.amount} {pur.currency} · {pur.createdAt?.slice(0, 10)}</p>
+                    {pur.licenseKey && (
+                      <div className="flex items-center gap-1.5 mt-0.5">
+                        <span className="font-mono text-[11px] text-foreground">{pur.licenseKey}</span>
+                        <button onClick={() => copyToClipboard(pur.licenseKey!)} className="text-muted-foreground hover:text-foreground"><Copy className="w-3 h-3" /></button>
+                      </div>
+                    )}
+                  </div>
+                  {pur.status === "pending" && !pur.licenseKey && (
+                    <Button size="sm" onClick={() => handleActivatePurchase(pur.id)} className="bg-primary text-primary-foreground font-body text-xs gap-1 shrink-0">
+                      <CheckCircle2 className="w-3 h-3" /> Activate
+                    </Button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </motion.div>
   );
 }

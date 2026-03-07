@@ -75,6 +75,7 @@ export interface Booking {
   gcalEventId?: string;
   answerLabels?: Record<string, string>;
   emailLog?: any[];
+  tenantSlug?: string;   // set when booking is made via a tenant's public page
 }
 
 export interface Photo {
@@ -145,6 +146,10 @@ export interface Album {
   proofingStage?: string;
   proofingRounds?: ProofingRound[];
   clientToken?: string;
+  /** ISO timestamp of when the proofing window closes. Set automatically when startProofing runs. */
+  proofingExpiresAt?: string;
+  /** Per-album override for how long the proofing window stays open (hours). Falls back to settings.defaultProofingExpiryHours. */
+  proofingExpiryHours?: number;
   expiresAt?: string;         // YYYY-MM-DD — gallery access blocked after this date
   downloadExpiresAt?: string;
   watermarkDisabled?: boolean;
@@ -189,6 +194,8 @@ export interface AppSettings {
   discordNotifyInvoices: boolean;
   watermarkSize: number;
   proofingEnabled: boolean;
+  /** Default number of hours a proofing window stays open after being started. Default: 48. */
+  defaultProofingExpiryHours?: number;
   invoiceFrom?: InvoiceParty;
   invoiceNotes?: string;
   enquiryEnabled?: boolean;
@@ -288,6 +295,115 @@ export interface Invoice {
   discount?: number;        // discount amount in dollars
   paymentMethods?: ("stripe" | "bank")[];  // which payment methods are available for this invoice
   stripeSessionId?: string; // Stripe checkout session ID once created
+}
+
+// ─── License Keys ─────────────────────────────────────────────────────────────
+
+export interface LicenseKey {
+  key: string;             // e.g. "WV-XXXX-XXXX-XXXX-XXXX"
+  issuedTo: string;        // name or email of the recipient
+  createdAt: string;       // ISO timestamp
+  expiresAt?: string;      // ISO timestamp, undefined = never expires
+  usedAt?: string;         // ISO timestamp, set when activated
+  usedBy?: string;         // username of the admin who activated it
+  notes?: string;
+  /** If true this is a free-trial key with usage limits */
+  isTrial?: boolean;
+  /** Max number of event-type slots allowed under a trial key (default 1) */
+  trialMaxEvents?: number;
+  /** Max number of bookings allowed under a trial key (default 10) */
+  trialMaxBookings?: number;
+}
+
+// ─── Tenants ──────────────────────────────────────────────────────────────────
+
+/**
+ * A tenant is a photographer/user who shares a single Watermark Vault deployment.
+ * Each tenant gets a public booking page at /book/:slug and their data is
+ * namespaced (tenant bookings are tagged with tenantSlug in wv_bookings;
+ * tenant-specific event types are stored in t_{slug}_wv_event_types).
+ */
+export interface Tenant {
+  slug: string;          // URL-safe handle, e.g. "johndoe" → /book/johndoe
+  displayName: string;   // shown on their public booking page
+  email: string;         // contact email
+  bio?: string;          // short bio for booking page
+  timezone?: string;     // IANA timezone, e.g. "Australia/Sydney"
+  licenseKey?: string;   // optional link to a license key
+  passwordHash?: string; // SHA-256 hash of tenant's password (for mobile login)
+  active: boolean;
+  createdAt: string;     // ISO timestamp
+}
+
+// ─── Tenant Settings ─────────────────────────────────────────────────────────
+
+/**
+ * Per-tenant overrides for integrations. When set these take precedence over
+ * the global environment-variable / AppSettings values for that tenant's data.
+ */
+export interface TenantSettings {
+  // ── Stripe ────────────────────────────────────────────────
+  stripeEnabled?: boolean;
+  stripePublishableKey?: string;
+  stripeSecretKey?: string;
+  stripeWebhookSecret?: string;
+  /** ISO 4217 currency code for Stripe checkout, e.g. "aud", "usd", "gbp". Defaults to "aud". */
+  stripeCurrency?: string;
+  // ── Bank Transfer ─────────────────────────────────────────
+  bankTransferEnabled?: boolean;
+  bankAccountName?: string;
+  bankBsb?: string;
+  bankAccountNumber?: string;
+  bankPayId?: string;
+  bankPayIdType?: "email" | "phone" | "abn";
+  bankInstructions?: string;
+  // ── Discord ───────────────────────────────────────────────
+  discordWebhookUrl?: string;
+  discordNotifyBookings?: boolean;
+  discordNotifyDownloads?: boolean;
+  discordNotifyProofing?: boolean;
+  discordNotifyInvoices?: boolean;
+  // ── SMTP ──────────────────────────────────────────────────
+  smtpHost?: string;
+  smtpPort?: number;
+  smtpUser?: string;
+  smtpPassword?: string;
+  smtpSecure?: boolean;
+  smtpFrom?: string;
+}
+
+
+
+export type LicensePlanType = "monthly" | "yearly" | "one-time";
+
+export interface LicensePlan {
+  id: string;
+  name: string;               // e.g. "Starter", "Pro"
+  type: LicensePlanType;
+  price: number;              // in the plan's currency, e.g. 29.00
+  currency: string;           // e.g. "AUD"
+  durationDays?: number;      // for "one-time" plans, e.g. 365
+  description?: string;
+  features: string[];
+  active: boolean;
+  createdAt: string;
+}
+
+export interface LicensePurchase {
+  id: string;
+  planId: string;
+  planName: string;
+  buyerEmail: string;
+  buyerName: string;
+  amount: number;
+  currency: string;
+  method: "stripe" | "bank";
+  status: "pending" | "active" | "expired" | "cancelled";
+  licenseKey?: string;        // generated after payment is confirmed
+  stripeSessionId?: string;
+  createdAt: string;
+  activatedAt?: string;
+  expiresAt?: string;
 }
 
 // ─── Enquiries ────────────────────────────────────────────────────────────────

@@ -66,6 +66,54 @@ export function login() {
 export function logout() {
   // Only clear local session — server session key is ignored on sync anyway
   localStorage.removeItem(KEYS.SESSION);
+  // Also clear super admin + mobile tenant sessions
+  try {
+    sessionStorage.removeItem("wv_super_admin");
+    localStorage.removeItem("wv_mobile_tenant");
+  } catch {}
+}
+
+// ── Super Admin Session ──────────────────────────────
+// Stored in sessionStorage so it is cleared when the browser tab/window closes.
+export function isSuperAdmin(): boolean {
+  try { return sessionStorage.getItem("wv_super_admin") === "1"; } catch { return false; }
+}
+
+export function setSuperAdmin(value: boolean) {
+  try {
+    if (value) sessionStorage.setItem("wv_super_admin", "1");
+    else sessionStorage.removeItem("wv_super_admin");
+  } catch {}
+}
+
+// ── Mobile Tenant Session ────────────────────────────
+export interface MobileTenantSession {
+  slug: string;
+  displayName: string;
+  email: string;
+  timezone?: string;
+  loggedAt: string;
+}
+
+export function getMobileTenantSession(): MobileTenantSession | null {
+  try {
+    const raw = localStorage.getItem("wv_mobile_tenant");
+    if (!raw) return null;
+    const session: MobileTenantSession = JSON.parse(raw);
+    // Expire after 30 days
+    if (Date.now() - new Date(session.loggedAt).getTime() > 30 * 86400 * 1000) {
+      localStorage.removeItem("wv_mobile_tenant");
+      return null;
+    }
+    return session;
+  } catch { return null; }
+}
+
+export function setMobileTenantSession(session: MobileTenantSession | null) {
+  try {
+    if (session) localStorage.setItem("wv_mobile_tenant", JSON.stringify(session));
+    else localStorage.removeItem("wv_mobile_tenant");
+  } catch {}
 }
 
 // ── Profile ─────────────────────────────────────────
@@ -204,6 +252,7 @@ const defaultSettings: AppSettings = {
   discordNotifyProofing: true,
   discordNotifyInvoices: true,
   proofingEnabled: false,
+  defaultProofingExpiryHours: 48,
   invoiceFrom: { name: "", email: "", address: "", abn: "" },
   invoiceNotes: "",
   enquiryEnabled: false,

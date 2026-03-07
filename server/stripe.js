@@ -243,6 +243,58 @@ function registerRoutes(app, { writeDb } = {}) {
             }
           }
         }
+
+        // ── License Plan Purchase ─────────────────────────────
+        if (metadata.type === "license-plan" && metadata.planId) {
+          try {
+            const crypto = require("crypto");
+            const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+            // Use crypto.randomInt for unbiased cryptographically secure selection
+            const seg = () => Array.from({ length: 4 }, () => chars[crypto.randomInt(chars.length)]).join("");
+            const newKey = `WV-${seg()}-${seg()}-${seg()}-${seg()}`;
+            const KEYS_FILE = path.join(process.env.DATA_DIR || "/data", "license_keys.json");
+            let keys = [];
+            try { keys = JSON.parse(fs.readFileSync(KEYS_FILE, "utf-8")); } catch {}
+            const durationDays = metadata.durationDays ? parseInt(metadata.durationDays) : undefined;
+            const expiresAt = durationDays
+              ? new Date(Date.now() + durationDays * 86400 * 1000).toISOString()
+              : undefined;
+            keys.push({
+              key: newKey,
+              issuedTo: metadata.buyerEmail || session.customer_email || "Customer",
+              createdAt: new Date().toISOString(),
+              ...(expiresAt ? { expiresAt } : {}),
+              notes: `${metadata.planName || ""} — Stripe`,
+            });
+            fs.writeFileSync(KEYS_FILE, JSON.stringify(keys, null, 2));
+
+            // Store purchase record
+            const purchasesRaw = db["wv_license_purchases"];
+            const purchases = purchasesRaw
+              ? (typeof purchasesRaw === "string" ? JSON.parse(purchasesRaw) : (Array.isArray(purchasesRaw) ? purchasesRaw : []))
+              : [];
+            purchases.push({
+              id: `purchase-${Date.now()}`,
+              planId: metadata.planId,
+              planName: metadata.planName || "",
+              buyerEmail: metadata.buyerEmail || session.customer_email || "",
+              buyerName: metadata.buyerName || "",
+              amount: (session.amount_total || 0) / 100,
+              currency: (session.currency || "aud").toUpperCase(),
+              method: "stripe",
+              status: "active",
+              licenseKey: newKey,
+              stripeSessionId: session.id,
+              createdAt: new Date().toISOString(),
+              ...(expiresAt ? { expiresAt } : {}),
+            });
+            db["wv_license_purchases"] = JSON.stringify(purchases);
+            saveDb(db);
+            console.log(`🔑 License key ${newKey} generated for ${metadata.buyerEmail} (plan: ${metadata.planName})`);
+          } catch (keyErr) {
+            console.error("Failed to generate license key after payment:", keyErr);
+          }
+        }
       } catch (dbErr) {
         console.error("Failed to update DB after payment:", dbErr);
       }
@@ -252,7 +304,130 @@ function registerRoutes(app, { writeDb } = {}) {
   });
 }
 
+/**
+ * Create a Stripe client from per-tenant settings, or null if not configured.
+ * @param {object} tenantSettings - TenantSettings object
+ */
+function getTenantStripe(tenantSettings) {
+  const key = tenantSettings?.stripeSecretKey;
+  if (!key) return null;
+  return stripe(key);
+}
+
+/**
+ * Register per-tenant Stripe routes.
+ * Tenants can take deposits/payments using their own Stripe keys.
+ */
+function registerTenantStripeRoutes(app, { readDb, readTenants }) {
+  const tenantCheckoutLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHeaders: true, legacyHeaders: false, message: { error: "Too many requests" } });
+
+  // Status — check if a tenant has Stripe configured
+  app.get("/api/tenant/:slug/stripe/status", tenantCheckoutLimiter, (req, res) => {
+    const { slug } = req.params;
+    const tenants = readTenants();
+    if (!tenants.find(t => t.slug === slug)) return res.status(404).json({ error: "Tenant not found" });
+    const db = readDb();
+    const raw = db[`t_${slug}_wv_tenant_settings`];
+    const ts = raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : {};
+    res.json({
+      configured: !!(ts.stripeSecretKey && ts.stripeEnabled !== false),
+      publishableKey: ts.stripePublishableKey || null,
+    });
+  });
+
+  // Checkout — booking deposit using tenant Stripe keys
+  app.post("/api/tenant/:slug/stripe/checkout/booking", tenantCheckoutLimiter, async (req, res) => {
+    const { slug } = req.params;
+    const tenants = readTenants();
+    if (!tenants.find(t => t.slug === slug)) return res.status(404).json({ error: "Tenant not found" });
+    const db = readDb();
+    const raw = db[`t_${slug}_wv_tenant_settings`];
+    const ts = raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : {};
+    const s = getTenantStripe(ts);
+    if (!s) return res.status(400).json({ error: "Stripe not configured for this tenant" });
+    const { bookingId, clientName, clientEmail, amount, eventTitle, successUrl, cancelUrl } = req.body;
+    if (!amount || amount <= 0) return res.status(400).json({ error: "Invalid amount" });
+    const currency = (ts.stripeCurrency || "aud").toLowerCase();
+    try {
+      const session = await s.checkout.sessions.create({
+        payment_method_types: ["card"],
+        customer_email: clientEmail || undefined,
+        line_items: [{
+          price_data: {
+            currency,
+            product_data: {
+              name: `Deposit — ${eventTitle || "Booking"}`,
+              description: `Booking for ${clientName || "Client"}`,
+            },
+            unit_amount: Math.round(amount * 100),
+          },
+          quantity: 1,
+        }],
+        mode: "payment",
+        success_url: successUrl || `${req.headers.origin || ""}/book/${slug}?success=1&bookingId=${bookingId}`,
+        cancel_url: cancelUrl || `${req.headers.origin || ""}/book/${slug}?cancelled=1`,
+        metadata: { bookingId, tenantSlug: slug, type: "tenant-booking-deposit" },
+      });
+      res.json({ url: session.url, sessionId: session.id });
+    } catch (err) {
+      console.error("Tenant Stripe checkout error:", err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Webhook — per-tenant Stripe webhook handler
+  app.post("/api/tenant/:slug/stripe/webhook", tenantCheckoutLimiter, express.raw({ type: "application/json" }), async (req, res) => {
+    const { slug } = req.params;
+    const tenants = readTenants();
+    if (!tenants.find(t => t.slug === slug)) return res.status(404).json({ error: "Tenant not found" });
+    const db = readDb();
+    const raw = db[`t_${slug}_wv_tenant_settings`];
+    const ts = raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : {};
+    const s = getTenantStripe(ts);
+    if (!s) return res.status(400).json({ error: "Stripe not configured for this tenant" });
+    const sig = req.headers["stripe-signature"];
+    const webhookSecret = ts.stripeWebhookSecret;
+    let event;
+    try {
+      if (webhookSecret && sig) {
+        event = s.webhooks.constructEvent(req.body, sig, webhookSecret);
+      } else {
+        event = JSON.parse(req.body.toString());
+      }
+    } catch (err) {
+      console.error("Tenant webhook signature verification failed:", err.message);
+      return res.status(400).json({ error: "Webhook verification failed" });
+    }
+    if (event.type === "checkout.session.completed") {
+      const session = event.data.object;
+      const metadata = session.metadata || {};
+      if (metadata.type === "tenant-booking-deposit" && metadata.bookingId) {
+        try {
+          const fs = require("fs");
+          const path = require("path");
+          const DB_FILE = path.join(process.env.DATA_DIR || "/data", "db.json");
+          const dbData = JSON.parse(fs.readFileSync(DB_FILE, "utf-8"));
+          const bookingsRaw = dbData["wv_bookings"];
+          const bookings = bookingsRaw ? (typeof bookingsRaw === "string" ? JSON.parse(bookingsRaw) : bookingsRaw) : [];
+          const idx = bookings.findIndex(b => b.id === metadata.bookingId);
+          if (idx >= 0) {
+            bookings[idx].paymentStatus = "deposit-paid";
+            bookings[idx].depositPaidAt = new Date().toISOString();
+            bookings[idx].stripeSessionId = session.id;
+            dbData["wv_bookings"] = JSON.stringify(bookings);
+            fs.writeFileSync(DB_FILE, JSON.stringify(dbData, null, 2));
+            console.log(`📝 Tenant booking ${metadata.bookingId} deposit marked as paid`);
+          }
+        } catch (dbErr) {
+          console.error("Failed to update DB after tenant payment:", dbErr);
+        }
+      }
+    }
+    res.json({ received: true });
+  });
+}
+
 // Need express for the raw body parser
 const express = require("express");
 
-module.exports = { registerRoutes };
+module.exports = { registerRoutes, getTenantStripe, registerTenantStripeRoutes };

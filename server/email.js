@@ -19,6 +19,25 @@ function getFromAddress() {
   return process.env.EMAIL_FROM || process.env.EMAIL_SERVER_USER || "";
 }
 
+/**
+ * Build a one-off transporter from per-tenant SMTP settings.
+ * Returns null if the settings are incomplete.
+ * @param {object} tenantSettings - TenantSettings object
+ */
+function buildTenantTransporter(tenantSettings) {
+  if (!tenantSettings) return null;
+  const { smtpHost, smtpPort, smtpUser, smtpPassword } = tenantSettings;
+  if (!smtpHost || !smtpUser || !smtpPassword) return null;
+  const port = smtpPort || 587;
+  const secure = tenantSettings.smtpSecure === true;
+  return nodemailer.createTransport({ host: smtpHost, port, secure, auth: { user: smtpUser, pass: smtpPassword } });
+}
+
+function getTenantFromAddress(tenantSettings) {
+  if (!tenantSettings) return getFromAddress();
+  return tenantSettings.smtpFrom || tenantSettings.smtpUser || getFromAddress();
+}
+
 // ── Helpers ───────────────────────────────────────────────────
 function buildGoogleCalendarUrl({ title, date, time, duration, description = "", location = "" }) {
   const [year, month, day] = date.split("-").map(Number);
@@ -600,4 +619,4 @@ async function sendInvoicePaidEmail(invoice, shareUrl) {
   }
 }
 
-module.exports = { registerRoutes, getTransporter, getFromAddress, sendBookingConfirmationEmail, sendInvoicePaidEmail };
+module.exports = { registerRoutes, getTransporter, getFromAddress, buildTenantTransporter, getTenantFromAddress, sendBookingConfirmationEmail, sendInvoicePaidEmail };

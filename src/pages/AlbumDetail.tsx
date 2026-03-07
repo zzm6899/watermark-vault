@@ -368,7 +368,8 @@ export default function AlbumDetail() {
 
   // Proofing derived values
   const proofingStage = album.proofingStage || "not-started";
-  const isProofing = proofingStage === "proofing" && !!settings.proofingEnabled && (!!album.proofingEnabled || tokenMatchesAlbum);
+  const isProofingWindowExpired = !!(album.proofingExpiresAt && new Date() > new Date(album.proofingExpiresAt));
+  const isProofing = proofingStage === "proofing" && !!settings.proofingEnabled && (!!album.proofingEnabled || tokenMatchesAlbum) && !isProofingWindowExpired;
   const latestRound = album.proofingRounds?.[album.proofingRounds.length - 1];
   const adminNote = latestRound?.adminNote;
   // Visible photos: hide photos marked hidden (non-selected after round approval)
@@ -812,7 +813,25 @@ export default function AlbumDetail() {
               </div>
 
               {/* ── Proofing Stage Banner ───────────────────────────── */}
-              {settings.proofingEnabled && album.proofingEnabled && proofingStage === "proofing" && (
+
+              {/* Expired window banner (shown instead of the star UI) */}
+              {settings.proofingEnabled && album.proofingEnabled && proofingStage === "proofing" && isProofingWindowExpired && (
+                <div className="glass-panel rounded-xl p-5 border border-destructive/30 bg-destructive/5">
+                  <div className="flex items-start gap-3">
+                    <Clock className="w-5 h-5 text-destructive mt-0.5 shrink-0" />
+                    <div>
+                      <p className="text-sm font-display text-foreground mb-1">Proofing window has closed</p>
+                      <p className="text-xs font-body text-muted-foreground">
+                        The deadline to submit your photo picks has passed.
+                        Please contact your photographer if you need more time.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Active proofing banner (only when window is open) */}
+              {settings.proofingEnabled && album.proofingEnabled && proofingStage === "proofing" && !isProofingWindowExpired && (
                 <div className="glass-panel rounded-xl p-5 border border-yellow-500/30 bg-yellow-500/5">
                   <div className="flex items-start gap-3">
                     <Star className="w-5 h-5 text-yellow-400 mt-0.5 shrink-0 fill-yellow-400/30" />
@@ -828,7 +847,25 @@ export default function AlbumDetail() {
                       <p className="text-xs font-body text-muted-foreground">
                         {adminNote || "Tap ★ on the photos you love — star as many as you like, then submit your picks below."}
                       </p>
-                      <p className="text-xs font-body text-yellow-400/80 mt-2">
+                      {album.proofingExpiresAt && (() => {
+                        const expiresAt = new Date(album.proofingExpiresAt!);
+                        const msLeft = expiresAt.getTime() - Date.now();
+                        // Guard: window expired (parent condition should catch this, but be safe)
+                        if (msLeft <= 0) return null;
+                        const hoursLeft = Math.floor(msLeft / 3600000);
+                        const minsLeft = Math.floor((msLeft % 3600000) / 60000);
+                        const timeLabel = hoursLeft > 0
+                          ? `${hoursLeft}h ${minsLeft}m`
+                          : `${Math.max(1, minsLeft)}m`;
+                        const isUrgent = msLeft < 3 * 3600000; // < 3 hours
+                        return (
+                          <p className={`text-xs font-body mt-1.5 flex items-center gap-1 ${isUrgent ? "text-orange-400" : "text-yellow-400/70"}`}>
+                            <Clock className="w-3 h-3 shrink-0" />
+                            {isUrgent ? `⚠ Only ${timeLabel} left to submit` : `Closes in ${timeLabel}`}
+                          </p>
+                        );
+                      })()}
+                      <p className="text-xs font-body text-yellow-400/80 mt-1">
                         {starredIds.size === 0 ? "No photos starred yet" : `${starredIds.size} photo${starredIds.size !== 1 ? "s" : ""} starred`}
                       </p>
                     </div>

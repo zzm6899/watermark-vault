@@ -2,7 +2,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { useState, useCallback, useEffect } from "react";
 import Booking from "./pages/Booking";
 import AlbumDetail from "./pages/AlbumDetail";
@@ -13,6 +13,7 @@ import Setup from "./pages/Setup";
 import NotFound from "./pages/NotFound";
 import MobileCapture from "./pages/MobileCapture";
 import InvoiceView from "./pages/InvoiceView";
+import TenantBookingPage from "./pages/TenantBookingPage";
 import { isSetupComplete, isLoggedIn } from "./lib/storage";
 import { syncFromServer } from "./lib/api";
 
@@ -54,6 +55,7 @@ const App = () => {
         <BrowserRouter>
           <Routes>
             <Route path="/" element={<Booking />} />
+            <Route path="/book/:tenantSlug" element={<TenantBookingPage />} />
             <Route path="/gallery/:albumId" element={<AlbumDetail />} />
             <Route path="/booking/modify/:bookingId" element={<BookingModify />} />
             <Route path="/capture" element={<MobileCapture />} />
