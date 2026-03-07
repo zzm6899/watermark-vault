@@ -1,5 +1,7 @@
 const stripe = require("stripe");
 const rateLimit = require("express-rate-limit");
+const { notifyInvoice } = require("./discord");
+const { sendInvoicePaidEmail } = require("./email");
 
 let stripeClient = null;
 
@@ -218,6 +220,27 @@ function registerRoutes(app, { writeDb } = {}) {
             db["wv_invoices"] = JSON.stringify(invoices);
             saveDb(db);
             console.log(`📝 Invoice ${metadata.invoiceId} marked as paid via Stripe`);
+
+            // Discord notification
+            try {
+              const rawSettings = db["wv_settings"];
+              const settings = typeof rawSettings === "string" ? JSON.parse(rawSettings) : (rawSettings || {});
+              const discordUrl = settings?.discordWebhookUrl;
+              if (discordUrl && settings?.discordNotifyInvoices !== false) {
+                notifyInvoice(discordUrl, invoices[idx], "paid").catch(err => console.error("Discord invoice-paid notify error:", err.message));
+              }
+            } catch (discordErr) {
+              console.error("Discord settings read error:", discordErr.message);
+            }
+
+            // Email confirmation to client
+            try {
+              const appBaseUrl = process.env.APP_BASE_URL || "";
+              const shareUrl = appBaseUrl && invoices[idx].shareToken ? `${appBaseUrl}/invoice/${invoices[idx].shareToken}` : "";
+              sendInvoicePaidEmail(invoices[idx], shareUrl).catch(err => console.error("Invoice paid email error:", err.message));
+            } catch (emailErr) {
+              console.error("Invoice paid email setup error:", emailErr.message);
+            }
           }
         }
       } catch (dbErr) {

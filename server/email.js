@@ -537,4 +537,67 @@ function buildEnquiryDeclinedHtml({ clientName, adminNote }) {
 </body></html>`;
 }
 
-module.exports = { registerRoutes, getTransporter, getFromAddress, sendBookingConfirmationEmail };
+// ── Invoice Paid Confirmation Email ──────────────────────────
+function escapeHtml(str) {
+  return String(str || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+async function sendInvoicePaidEmail(invoice, shareUrl) {
+  const t = getTransporter();
+  if (!t || !invoice?.to?.email) return { ok: false, reason: "not_configured" };
+
+  const sub = (invoice.items || []).reduce((s, it) => s + it.quantity * it.unitPrice, 0);
+  const disc = invoice.discount || 0;
+  const taxRate = invoice.tax || 0;
+  const taxAmt = (sub - disc) * (taxRate / 100);
+  const total = sub - disc + taxAmt;
+
+  const paidAt = invoice.paidAt
+    ? new Date(invoice.paidAt).toLocaleDateString("en-AU", { day: "numeric", month: "long", year: "numeric" })
+    : new Date().toLocaleDateString("en-AU", { day: "numeric", month: "long", year: "numeric" });
+
+  // Validate shareUrl to only allow known-safe https:// links
+  const safeShareUrl = shareUrl && /^https?:\/\//.test(shareUrl) ? shareUrl : null;
+
+  const clientName = escapeHtml(invoice.to?.name || "there");
+  const invoiceNumber = escapeHtml(invoice.number || "");
+
+  const subject = `Payment Received — ${invoice.number}`;
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#0a0a0a;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;">
+  <div style="max-width:560px;margin:40px auto;background:#111111;border-radius:16px;overflow:hidden;border:1px solid #1f1f1f;">
+    <div style="background:linear-gradient(135deg,#052e16 0%,#14532d 100%);padding:32px 32px 24px;text-align:center;border-bottom:1px solid #166534;">
+      <div style="width:52px;height:52px;background:rgba(34,197,94,0.2);border-radius:50%;display:inline-flex;align-items:center;justify-content:center;margin-bottom:16px;font-size:28px;">✅</div>
+      <h1 style="color:#22c55e;font-size:22px;font-weight:700;margin:0 0 6px;">Payment Received</h1>
+      <p style="color:#86efac;font-size:14px;margin:0;">Thank you — your invoice has been paid.</p>
+    </div>
+    <div style="padding:28px 32px;">
+      <p style="color:#9ca3af;font-size:14px;margin:0 0 20px;">Hi ${clientName},<br>We've received your payment for invoice <strong style="color:#e5e7eb;">${invoiceNumber}</strong>. Paid on ${escapeHtml(paidAt)}.</p>
+      <table style="width:100%;border-collapse:collapse;background:#1a1a1a;border-radius:8px;overflow:hidden;margin-bottom:24px;">
+        <tr><td style="padding:10px 16px;color:#9ca3af;font-size:14px;">Invoice</td><td style="padding:10px 16px;color:#e5e7eb;font-size:14px;text-align:right;">${invoiceNumber}</td></tr>
+        <tr style="border-top:1px solid #333;"><td style="padding:10px 16px;color:#9ca3af;font-size:14px;font-weight:bold;">Total Paid</td><td style="padding:10px 16px;color:#22c55e;font-size:18px;font-weight:bold;text-align:right;">$${total.toFixed(2)}</td></tr>
+      </table>
+      ${safeShareUrl ? `<a href="${safeShareUrl}" style="display:inline-block;padding:12px 24px;background:#7c3aed;color:#ffffff;text-decoration:none;border-radius:10px;font-size:14px;font-weight:600;">View Invoice →</a>` : ""}
+    </div>
+    <div style="padding:20px 32px;border-top:1px solid #1f1f1f;text-align:center;">
+      <p style="color:#4b5563;font-size:12px;margin:0;">Questions? Simply reply to this email.<br>Ref: <span style="color:#6b7280;">${invoiceNumber}</span></p>
+    </div>
+  </div>
+</body></html>`;
+
+  try {
+    const info = await t.sendMail({ from: getFromAddress(), to: invoice.to.email, subject, html });
+    console.log(`📧 Invoice paid confirmation sent to ${invoice.to.email}: ${info.messageId}`);
+    return { ok: true, messageId: info.messageId };
+  } catch (err) {
+    console.error("📧 Invoice paid email error:", err.message);
+    return { ok: false, error: err.message };
+  }
+}
+
+module.exports = { registerRoutes, getTransporter, getFromAddress, sendBookingConfirmationEmail, sendInvoicePaidEmail };

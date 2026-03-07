@@ -338,7 +338,8 @@ function BankTransferPanel({ invoice }: { invoice: Invoice }) {
     fetch("/api/store/wv_settings")
       .then(r => r.json())
       .then(raw => {
-        const s = typeof raw === "string" ? JSON.parse(raw) : raw;
+        const stored = raw?.value ?? raw;
+        const s = typeof stored === "string" ? JSON.parse(stored) : stored;
         if (s?.bankTransfer?.enabled) setBank(s.bankTransfer);
       })
       .catch(() => {});
