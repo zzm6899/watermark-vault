@@ -5,7 +5,7 @@ import {
   LayoutDashboard, Calendar, Clock, Image, Receipt,
   Users, Settings, Key, LogOut, Camera, Plus, Edit, Trash2,
   Save, X, ChevronDown, ChevronUp, Globe, Upload, Search, Copy,
-  DollarSign, MessageSquare, HardDrive, User, RefreshCw, Webhook,
+  DollarSign, MessageSquare, HardDrive, User, RefreshCw, Webhook, Star,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -742,8 +742,10 @@ function TenantAlbums({ slug }: { slug: string }) {
         src: u.url,
         thumbnail,
         title: u.originalName,
-        isStarred: false,
-        isPublic: true,
+        width: 0,
+        height: 0,
+        starred: false,
+        uploadedAt: new Date().toISOString(),
       } as Photo;
     }));
     const updatedAlbum: Album = {
@@ -895,36 +897,216 @@ function TenantPhotos({ slug }: { slug: string }) {
   const [albums, setAlbums] = useState<Album[]>([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    fetchTenantMobileData(slug).then(d => {
-      setAlbums(d.albums || []);
-      setLoading(false);
-    });
+  // Filters
+  const [albumFilter, setAlbumFilter] = useState<"all" | string>("all");
+  const [starredFilter, setStarredFilter] = useState(false);
+
+  // Upload state
+  const [uploadTargetAlbumId, setUploadTargetAlbumId] = useState<string>("");
+  const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const uploadInputRef = useRef<HTMLInputElement>(null);
+
+  const load = useCallback(async () => {
+    const d = await fetchTenantMobileData(slug);
+    const loaded: Album[] = d.albums || [];
+    setAlbums(loaded);
+    // Default upload target to first album if none chosen yet
+    setUploadTargetAlbumId(prev => prev || loaded[0]?.id || "");
+    setLoading(false);
   }, [slug]);
+
+  useEffect(() => { load(); }, [load]);
 
   const photoUrl = (src: string) => tenantPhotoSrc(src, slug);
 
+  // Flat list enriched with album metadata
   const allPhotos = albums.flatMap(a =>
     (a.photos || []).map(p => ({ ...p, albumTitle: a.title, albumId: a.id }))
   );
 
+  // Apply filters
+  const visiblePhotos = allPhotos.filter(p => {
+    if (albumFilter !== "all" && p.albumId !== albumFilter) return false;
+    if (starredFilter && !p.starred) return false;
+    return true;
+  });
+
+  // Toggle star on a photo and persist
+  const handleToggleStar = async (albumId: string, photoId: string) => {
+    const album = albums.find(a => a.id === albumId);
+    if (!album) return;
+    const updated: Album = {
+      ...album,
+      photos: (album.photos || []).map(p =>
+        p.id === photoId ? { ...p, starred: !p.starred } : p
+      ),
+    };
+    setAlbums(prev => prev.map(a => a.id === albumId ? updated : a));
+    await saveTenantAlbum(slug, updated);
+  };
+
+  // Upload photos to selected album
+  const handleUpload = async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    if (!uploadTargetAlbumId) { toast.error("Select an album to upload to"); return; }
+    if (!isServerMode()) { toast.error("Server connection required for photo uploads"); return; }
+    const album = albums.find(a => a.id === uploadTargetAlbumId);
+    if (!album) { toast.error("Album not found"); return; }
+
+    setUploading(true);
+    setUploadProgress(0);
+    const fileArr = Array.from(files);
+    const uploaded = await uploadPhotosToServer(fileArr, (done, total) => {
+      setUploadProgress(Math.round((done / total) * 100));
+    });
+    if (uploaded.length === 0) { setUploading(false); toast.error("Upload failed"); return; }
+
+    const newPhotos: Photo[] = await Promise.all(uploaded.map(async u => {
+      let thumbnail = "";
+      try { thumbnail = await generateThumbnail(u.url, 300, 0.65); } catch { thumbnail = u.url; }
+      return {
+        id: generateId("photo"),
+        src: u.url,
+        thumbnail,
+        title: u.originalName,
+        width: 0,
+        height: 0,
+        starred: false,
+        uploadedAt: new Date().toISOString(),
+      } as Photo;
+    }));
+
+    const updatedAlbum: Album = {
+      ...album,
+      photos: [...(album.photos || []), ...newPhotos],
+    };
+    const { ok, error } = await saveTenantAlbum(slug, updatedAlbum);
+    setUploading(false);
+    if (!ok) { toast.error(error || "Failed to save photos"); return; }
+    setAlbums(prev => prev.map(a => a.id === updatedAlbum.id ? updatedAlbum : a));
+    toast.success(`${newPhotos.length} photo${newPhotos.length !== 1 ? "s" : ""} uploaded to "${album.title}"`);
+    notifyTenantDiscord(slug, { event: "photos-uploaded", album: updatedAlbum, photoCount: newPhotos.length });
+    // Keep album filter showing the target album for easy review
+    setAlbumFilter(uploadTargetAlbumId);
+    if (uploadInputRef.current) uploadInputRef.current.value = "";
+  };
+
   if (loading) return <div className="py-16 text-center text-muted-foreground font-body text-sm animate-pulse">Loading…</div>;
+
+  const starredCount = allPhotos.filter(p => p.starred).length;
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-      <div className="flex items-center justify-between mb-6">
-        <h2 className="font-display text-2xl text-foreground">Photos</h2>
-        <span className="text-sm font-body text-muted-foreground">{allPhotos.length} total</span>
+      {/* Header row */}
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <h2 className="font-display text-2xl text-foreground">Photos</h2>
+          <p className="text-xs font-body text-muted-foreground mt-0.5">
+            {visiblePhotos.length} showing
+            {visiblePhotos.length !== allPhotos.length ? ` of ${allPhotos.length} total` : ""}
+            {starredCount > 0 ? ` · ★ ${starredCount} starred` : ""}
+          </p>
+        </div>
+        {albums.length > 0 && (
+          <Button
+            size="sm"
+            className="font-body text-xs gap-1.5 bg-primary text-primary-foreground"
+            onClick={() => uploadInputRef.current?.click()}
+            disabled={uploading || !uploadTargetAlbumId}
+          >
+            <Upload className="w-3.5 h-3.5" />
+            {uploading ? `${uploadProgress}%…` : "Upload"}
+          </Button>
+        )}
       </div>
-      {allPhotos.length === 0 ? (
+
+      {/* Upload controls */}
+      {albums.length > 0 && (
+        <div className="flex items-center gap-2 mb-4 flex-wrap">
+          <span className="text-xs font-body text-muted-foreground">Upload to:</span>
+          <select
+            value={uploadTargetAlbumId}
+            onChange={e => setUploadTargetAlbumId(e.target.value)}
+            className="bg-secondary border border-border text-foreground font-body text-xs rounded-md px-2.5 py-1.5 max-w-[180px] truncate"
+          >
+            {albums.map(a => (
+              <option key={a.id} value={a.id}>{a.title}</option>
+            ))}
+          </select>
+          <input
+            ref={uploadInputRef}
+            type="file"
+            accept="image/*"
+            multiple
+            className="hidden"
+            onChange={e => handleUpload(e.target.files)}
+          />
+        </div>
+      )}
+
+      {/* Upload progress bar */}
+      {uploading && (
+        <div className="mb-4 h-1.5 bg-secondary rounded-full overflow-hidden">
+          <div className="h-full bg-primary transition-all duration-300 rounded-full" style={{ width: `${uploadProgress}%` }} />
+        </div>
+      )}
+
+      {/* Filter controls */}
+      <div className="flex items-center gap-2 mb-4 flex-wrap">
+        {/* Album pills */}
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <button
+            onClick={() => setAlbumFilter("all")}
+            className={`text-xs font-body px-3 py-1.5 rounded-full border transition-all ${albumFilter === "all" ? "bg-primary/10 text-primary border-primary/30" : "border-border text-muted-foreground hover:text-foreground hover:bg-secondary"}`}
+          >
+            All Albums
+          </button>
+          {albums.map(a => (
+            <button
+              key={a.id}
+              onClick={() => setAlbumFilter(a.id)}
+              className={`text-xs font-body px-3 py-1.5 rounded-full border transition-all ${albumFilter === a.id ? "bg-primary/10 text-primary border-primary/30" : "border-border text-muted-foreground hover:text-foreground hover:bg-secondary"}`}
+            >
+              {a.title}
+              <span className="ml-1 opacity-60">({a.photos?.length || 0})</span>
+            </button>
+          ))}
+        </div>
+
+        {/* Starred toggle */}
+        <button
+          onClick={() => setStarredFilter(v => !v)}
+          className={`text-xs font-body px-3 py-1.5 rounded-full border transition-all flex items-center gap-1.5 ${starredFilter ? "bg-yellow-500/10 text-yellow-400 border-yellow-500/30" : "border-border text-muted-foreground hover:text-foreground hover:bg-secondary"}`}
+        >
+          <Star className={`w-3 h-3 ${starredFilter ? "fill-yellow-400 text-yellow-400" : ""}`} />
+          Starred{starredCount > 0 ? ` (${starredCount})` : ""}
+        </button>
+      </div>
+
+      {/* Photo grid */}
+      {visiblePhotos.length === 0 ? (
         <div className="text-center py-16 text-muted-foreground">
           <Camera className="w-10 h-10 mx-auto mb-3 opacity-30" />
-          <p className="font-body text-sm">No photos yet</p>
-          <p className="font-body text-xs text-muted-foreground/60 mt-1">Photos appear here once captured for bookings.</p>
+          {allPhotos.length === 0 ? (
+            <>
+              <p className="font-body text-sm">No photos yet</p>
+              <p className="font-body text-xs text-muted-foreground/60 mt-1">
+                {albums.length === 0
+                  ? "Create an album first, then upload photos here."
+                  : "Upload photos using the button above."}
+              </p>
+            </>
+          ) : (
+            <>
+              <p className="font-body text-sm">No photos match the current filters</p>
+              <button onClick={() => { setAlbumFilter("all"); setStarredFilter(false); }} className="text-xs font-body text-primary hover:underline mt-2">Clear filters</button>
+            </>
+          )}
         </div>
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2">
-          {allPhotos.map(photo => (
+          {visiblePhotos.map(photo => (
             <div key={photo.id} className="group relative aspect-square rounded-lg overflow-hidden bg-secondary">
               <img
                 src={photoUrl(photo.thumbnail || (photo.src.startsWith("/uploads/") ? `${photo.src}?size=thumb` : photo.src))}
@@ -932,8 +1114,19 @@ function TenantPhotos({ slug }: { slug: string }) {
                 className="w-full h-full object-cover"
                 loading="lazy"
               />
-              <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent p-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                <p className="text-[10px] font-body text-white truncate">{photo.albumTitle}</p>
+
+              {/* Star button — always visible on touch, hover on desktop */}
+              <button
+                onClick={() => handleToggleStar(photo.albumId, photo.id)}
+                className={`absolute top-1.5 right-1.5 w-7 h-7 rounded-full flex items-center justify-center transition-all active:scale-90 ${photo.starred ? "bg-yellow-500/30 opacity-100" : "bg-black/40 opacity-0 group-hover:opacity-100"}`}
+                title={photo.starred ? "Remove star" : "Star photo"}
+              >
+                <Star className={`w-3.5 h-3.5 ${photo.starred ? "text-yellow-400 fill-yellow-400" : "text-white/80"}`} />
+              </button>
+
+              {/* Album label */}
+              <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent px-2 pt-4 pb-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                <p className="text-[10px] font-body text-white/90 truncate">{photo.albumTitle}</p>
               </div>
             </div>
           ))}
@@ -942,6 +1135,7 @@ function TenantPhotos({ slug }: { slug: string }) {
     </motion.div>
   );
 }
+
 
 // ─── Finance ─────────────────────────────────────────────────────────────────
 function TenantFinance({ slug }: { slug: string }) {
@@ -1905,7 +2099,7 @@ function TenantStorage({ slug }: { slug: string }) {
   if (loading) return <div className="py-16 text-center text-muted-foreground font-body text-sm animate-pulse">Loading…</div>;
 
   const totalPhotos = albums.reduce((s, a) => s + (a.photos?.length || 0), 0);
-  const totalStarred = albums.reduce((s, a) => s + (a.photos?.filter(p => p.isStarred)?.length || 0), 0);
+  const totalStarred = albums.reduce((s, a) => s + (a.photos?.filter(p => p.starred)?.length || 0), 0);
 
   function fmtBytes(b: number) {
     if (b < 1024) return `${b} B`;
@@ -1985,7 +2179,7 @@ function TenantStorage({ slug }: { slug: string }) {
             <div className="space-y-2 max-h-80 overflow-y-auto">
               {albums.map(a => {
                 const count = a.photos?.length || 0;
-                const starred = a.photos?.filter(p => p.isStarred)?.length || 0;
+                const starred = a.photos?.filter(p => p.starred)?.length || 0;
                 const pct = totalPhotos > 0 ? Math.round((count / totalPhotos) * 100) : 0;
                 return (
                   <div key={a.id} className="space-y-1">
