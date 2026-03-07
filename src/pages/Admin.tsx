@@ -6,8 +6,10 @@ import {
   Camera, Save, X, LogOut, ChevronDown, ChevronUp,
   Image, DollarSign, Link2, Merge, Send, Copy, ExternalLink,
   MapPin, Lock, Bell, Download, Unlock, Eye, Grid, List, LayoutGrid, HardDrive, CheckSquare, XSquare, Search, RefreshCw, Mail,
-  MessageSquare
-, Star, CheckCircle2, Sparkles, ChevronLeft, ChevronRight, Flag, FileText, Receipt, Printer, AlertCircle, BookOpen } from "lucide-react";
+  MessageSquare,
+  Star, CheckCircle2, Sparkles, ChevronLeft, ChevronRight, Flag, FileText, Receipt, Printer, AlertCircle, BookOpen,
+  ArrowUpDown, MoreHorizontal, TrendingUp, TrendingDown,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -481,7 +483,7 @@ export default function Admin() {
   return (
     <div className="min-h-screen bg-background">
       <div className="flex">
-        <aside className="w-56 fixed left-0 top-0 bottom-0 border-r border-border bg-card/50 p-4 hidden lg:flex flex-col" style={{ paddingTop: "calc(env(safe-area-inset-top) + 1rem)" }}>
+        <aside className="w-56 fixed left-0 top-0 bottom-0 border-r border-border bg-card/50 p-4 hidden lg:flex flex-col" style={{ paddingTop: "calc(env(safe-area-inset-top, 0px) + 1rem)" }}>
           <div className="flex items-center gap-2.5 px-3 mb-6 pt-2">
             <Camera className="w-5 h-5 text-primary" />
             <span className="font-display text-base text-foreground">Zacmphotos</span>
@@ -512,21 +514,56 @@ export default function Admin() {
           </div>
         </aside>
 
-        <div className="lg:hidden fixed top-0 left-0 right-0 z-30 bg-card/95 backdrop-blur-sm border-b border-border" style={{ paddingTop: "env(safe-area-inset-top)" }}>
-          <div className="flex overflow-x-auto scrollbar-hide">
-            {tabs.map((tab) => (
-              <button key={tab.id} onClick={() => setActiveTab(tab.id)}
-                className={`flex items-center gap-1.5 px-3 py-3.5 min-h-[48px] text-[10px] font-body tracking-wider uppercase whitespace-nowrap transition-colors border-b-2 flex-shrink-0 ${
-                  activeTab === tab.id ? "text-primary border-primary" : "text-muted-foreground border-transparent"
-                }`}
-              >
-                <tab.icon className="w-3.5 h-3.5" />{tab.label}
-              </button>
-            ))}
+        {/* ── Mobile: top title bar (shows active tab name) ── */}
+        <div className="lg:hidden fixed top-0 left-0 right-0 z-30 bg-card/95 backdrop-blur-sm border-b border-border flex items-center justify-between px-4" style={{ height: "calc(env(safe-area-inset-top, 0px) + 3rem)", paddingTop: "env(safe-area-inset-top, 0px)" }}>
+          <div className="flex items-center gap-2">
+            <Camera className="w-4 h-4 text-primary" />
+            <span className="font-display text-sm text-foreground capitalize">{tabs.find(t => t.id === activeTab)?.label ?? "Admin"}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button onClick={() => navigate("/capture")} className="flex items-center gap-1.5 text-xs font-body text-primary px-2.5 py-1.5 rounded-lg bg-primary/10 active:bg-primary/20">
+              <Upload className="w-3.5 h-3.5" /><span className="hidden xs:inline">Capture</span>
+            </button>
           </div>
         </div>
 
-        <main className="flex-1 lg:ml-56 p-4 sm:p-6 lg:p-8 lg:pt-8" style={{ paddingTop: "calc(env(safe-area-inset-top) + 4.5rem)" }}>
+        {/* ── Mobile: bottom tab bar ── */}
+        <div className="lg:hidden fixed bottom-0 left-0 right-0 z-30 bg-card/95 backdrop-blur-sm border-t border-border" style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}>
+          <div className="flex overflow-x-auto scrollbar-hide">
+            {tabs.map((tab) => {
+              const isActive = activeTab === tab.id;
+              const pendingBadge = tab.id === "albums" && settings.proofingEnabled
+                ? albums.filter(a => a.proofingEnabled && a.proofingStage === "selections-submitted").length
+                : tab.id === "invoices"
+                  ? getInvoices().filter(i => i.status === "overdue").length
+                  : 0;
+              return (
+                <button
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id)}
+                  className={`relative flex flex-col items-center justify-center gap-0.5 px-3 py-2 min-w-[56px] min-h-[52px] flex-shrink-0 transition-colors ${isActive ? "text-primary" : "text-muted-foreground"}`}
+                >
+                  <tab.icon className="w-5 h-5" />
+                  <span className="text-[9px] font-body tracking-wide whitespace-nowrap">{tab.label}</span>
+                  {pendingBadge > 0 && (
+                    <span className="absolute top-1.5 right-1.5 bg-orange-500 text-white text-[8px] font-bold min-w-[14px] h-3.5 px-0.5 rounded-full flex items-center justify-center">
+                      {pendingBadge}
+                    </span>
+                  )}
+                  {isActive && <span className="absolute top-0 inset-x-2 h-0.5 rounded-full bg-primary" />}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <main
+          className="flex-1 lg:ml-56 p-4 sm:p-6 lg:p-8 lg:pt-8"
+          style={{ paddingTop: "calc(env(safe-area-inset-top, 0px) + 3.5rem)", paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 4rem)" }}
+          id="admin-main"
+        >
+          {/* lg: use default, overridden by inline paddingBottom for desktop */}
+          <style>{`@media (min-width: 1024px) { #admin-main { padding-bottom: 2rem; } }`}</style>
           {activeTab === "dashboard" && <DashboardView />}
           {activeTab === "bookings" && <BookingsView onCreateAlbum={handleCreateAlbumForBooking} />}
           {activeTab === "events" && <EventTypesView />}
@@ -548,6 +585,7 @@ function DashboardView() {
   const bookings = getBookings();
   const albums = getAlbums();
   const settings = getSettings();
+  const invoices = getInvoices();
 
   const totalIncome = bookings.reduce((sum, b) => sum + (b.paymentAmount || 0), 0);
   const paidIncome = bookings.filter(b => b.paymentStatus === "paid").reduce((sum, b) => sum + (b.paymentAmount || 0), 0);
@@ -611,6 +649,18 @@ function DashboardView() {
     { label: "Pending Requests", value: allPendingRequests.length, icon: Download, color: "text-yellow-400" },
     { label: "Session Time", value: totalSessionLabel, icon: Clock, color: "text-blue-400" },
   ];
+
+  // Invoice stats for dashboard
+  const invPaid       = invoices.filter(i => i.status === "paid");
+  const invOutstanding = invoices.filter(i => i.status === "sent" || i.status === "overdue");
+  const invOverdue    = invoices.filter(i => i.status === "overdue");
+  const invPaidTotal  = invPaid.reduce((s, i) => s + calcInvTotal(i), 0);
+  const invOutTotal   = invOutstanding.reduce((s, i) => s + calcInvTotal(i), 0);
+  const invoiceStats = invoices.length > 0 ? [
+    { label: "Invoices Paid",        value: `$${invPaidTotal.toFixed(2)}`,  sub: `${invPaid.length} invoice${invPaid.length !== 1 ? "s" : ""}`,        icon: Receipt,      color: "text-green-400" },
+    { label: "Outstanding",          value: `$${invOutTotal.toFixed(2)}`,   sub: `${invOutstanding.length} awaiting payment`,                           icon: TrendingUp,   color: "text-yellow-400" },
+    { label: "Overdue",              value: invOverdue.length,               sub: invOverdue.length > 0 ? "requires attention" : "all on time",         icon: TrendingDown, color: invOverdue.length > 0 ? "text-red-400" : "text-muted-foreground" },
+  ] : [];
 
   // ── Booking Calendar ────────────────────────────────────────
   const [calView, setCalView] = useState<"month" | "week">("month");
@@ -715,7 +765,7 @@ function DashboardView() {
       </div>
 
       {/* ── Stats grid ── */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mb-6">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mb-3">
         {stats.map((stat) => (
           <div key={stat.label} className="glass-panel rounded-xl p-3 sm:p-5">
             <stat.icon className={`w-4 h-4 ${stat.color} mb-2`} />
@@ -724,6 +774,20 @@ function DashboardView() {
           </div>
         ))}
       </div>
+
+      {/* ── Invoice stats row (only when invoices exist) ── */}
+      {invoiceStats.length > 0 && (
+        <div className="grid grid-cols-3 gap-3 mb-6">
+          {invoiceStats.map((stat) => (
+            <div key={stat.label} className="glass-panel rounded-xl p-3 sm:p-5">
+              <stat.icon className={`w-4 h-4 ${stat.color} mb-2`} />
+              <p className="font-display text-xl sm:text-2xl text-foreground">{stat.value}</p>
+              <p className="text-[10px] font-body text-muted-foreground tracking-wider uppercase mt-0.5 leading-tight">{stat.label}</p>
+              {stat.sub && <p className="text-[10px] font-body text-muted-foreground/60 mt-0.5 truncate">{stat.sub}</p>}
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* ── Booking Calendar ── */}
       <div className="glass-panel rounded-xl p-4 mb-6">
@@ -1416,15 +1480,22 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                       </div>
                     </div>
                     <div className="flex items-center gap-2 flex-shrink-0 flex-wrap pl-13 sm:pl-0" onClick={(e) => e.stopPropagation()}>
+                      {/* Status & payment badges shown on mobile, selects on sm+ */}
+                      <span className={`sm:hidden text-[10px] font-body px-2 py-0.5 rounded-full border ${
+                        bk.status === "confirmed" ? "text-green-400 border-green-500/30 bg-green-500/10" :
+                        bk.status === "completed" ? "text-blue-400 border-blue-500/30 bg-blue-500/10" :
+                        bk.status === "cancelled" ? "text-red-400 border-red-500/30 bg-red-500/10" :
+                        "text-yellow-400 border-yellow-500/30 bg-yellow-500/10"
+                      }`}>{bk.status}</span>
                       <select value={bk.status} onChange={(e) => handleStatusChange(bk, e.target.value as Booking["status"])}
-                        className="text-xs font-body px-2.5 py-1 rounded-full bg-secondary border border-border text-foreground cursor-pointer">
+                        className="hidden sm:block text-xs font-body px-2.5 py-1 rounded-full bg-secondary border border-border text-foreground cursor-pointer">
                         <option value="pending">Pending</option>
                         <option value="confirmed">Confirmed</option>
                         <option value="completed">Completed</option>
                         <option value="cancelled">Cancelled</option>
                       </select>
                       <select value={bk.paymentStatus || "unpaid"} onChange={(e) => handlePaymentChange(bk, e.target.value as PaymentStatus)}
-                        className="text-xs font-body px-2.5 py-1 rounded-full bg-secondary border border-border text-foreground cursor-pointer">
+                        className="hidden sm:block text-xs font-body px-2.5 py-1 rounded-full bg-secondary border border-border text-foreground cursor-pointer">
                         <option value="unpaid">Unpaid</option>
                         <option value="deposit-paid">Deposit Paid</option>
                         <option value="paid">Paid in Full</option>
@@ -1440,6 +1511,24 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                 </div>
                 {isExpanded && (
                   <div className="px-4 pb-4 border-t border-border/50 pt-3 space-y-3">
+                    {/* Mobile-only: status/payment selects in expanded section */}
+                    <div className="flex gap-2 sm:hidden" onClick={e => e.stopPropagation()}>
+                      <select value={bk.status} onChange={(e) => handleStatusChange(bk, e.target.value as Booking["status"])}
+                        className="flex-1 text-xs font-body px-2.5 py-2 rounded-lg bg-secondary border border-border text-foreground cursor-pointer">
+                        <option value="pending">Pending</option>
+                        <option value="confirmed">Confirmed</option>
+                        <option value="completed">Completed</option>
+                        <option value="cancelled">Cancelled</option>
+                      </select>
+                      <select value={bk.paymentStatus || "unpaid"} onChange={(e) => handlePaymentChange(bk, e.target.value as PaymentStatus)}
+                        className="flex-1 text-xs font-body px-2.5 py-2 rounded-lg bg-secondary border border-border text-foreground cursor-pointer">
+                        <option value="unpaid">Unpaid</option>
+                        <option value="deposit-paid">Deposit Paid</option>
+                        <option value="paid">Paid in Full</option>
+                        <option value="cash">Cash</option>
+                        <option value="pending-confirmation">Bank Transfer Pending</option>
+                      </select>
+                    </div>
                     <div className="grid sm:grid-cols-3 gap-3">
                       <div className="p-3 rounded-lg bg-secondary/50">
                         <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-1">Email</p>
@@ -3589,6 +3678,7 @@ function InvoicesView() {
   const [filterTo, setFilterTo] = React.useState("");
   const [sortDir, setSortDir] = React.useState<"desc" | "asc">("desc");
   const [expandedEmailLog, setExpandedEmailLog] = React.useState<string | null>(null);
+  const [overflowMenuId, setOverflowMenuId] = React.useState<string | null>(null);
   const [stripeAvailable, setStripeAvailable] = React.useState(false);
   const [sendingEmail, setSendingEmail] = React.useState(false);
   const [processingPay, setProcessingPay] = React.useState(false);
@@ -3738,6 +3828,7 @@ function InvoicesView() {
         i.to.email.toLowerCase().includes(q) ||
         (i.from.name || "").toLowerCase().includes(q)
       )) return false;
+      // createdAt is always ISO 8601 (set via new Date().toISOString()), so YYYY-MM-DD slice is lexicographically safe
       if (filterFrom && i.createdAt.slice(0, 10) < filterFrom) return false;
       if (filterTo   && i.createdAt.slice(0, 10) > filterTo)   return false;
       return true;
@@ -3859,48 +3950,81 @@ function InvoicesView() {
                 const meta = INV_STATUS_META[inv.status];
                 const total = calcInvTotal(inv);
                 const logOpen = expandedEmailLog === inv.id;
+                const menuOpen = overflowMenuId === inv.id;
+                const canAct = inv.status !== "paid" && inv.status !== "cancelled";
                 return (
                   <div key={inv.id} className="group">
-                    <div className="flex items-center gap-3 px-4 py-3 hover:bg-secondary/30 transition-colors">
-                      {/* Left */}
+                    {/* ── Row ── */}
+                    <div className="flex items-start sm:items-center gap-3 px-3 sm:px-4 py-3 hover:bg-secondary/30 transition-colors">
+                      {/* Left info */}
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
                           <p className="text-sm font-body text-foreground font-medium">{inv.number}</p>
                           <span className={`text-[10px] font-body px-2 py-0.5 rounded-full ${meta.color} ${meta.bg}`}>{meta.label}</span>
-                          {inv.bookingId && <span className="text-[10px] font-body px-2 py-0.5 rounded-full text-primary/70 bg-primary/10"><BookOpen className="w-2.5 h-2.5 inline mr-0.5" />Booking</span>}
-                          {inv.albumId && <span className="text-[10px] font-body px-2 py-0.5 rounded-full text-purple-400/70 bg-purple-500/10"><Image className="w-2.5 h-2.5 inline mr-0.5" />Album</span>}
+                          {inv.bookingId && <span className="text-[10px] font-body px-1.5 py-0.5 rounded-full text-primary/70 bg-primary/10"><BookOpen className="w-2.5 h-2.5 inline mr-0.5" />Booking</span>}
+                          {inv.albumId && <span className="text-[10px] font-body px-1.5 py-0.5 rounded-full text-purple-400/70 bg-purple-500/10"><Image className="w-2.5 h-2.5 inline mr-0.5" />Album</span>}
                         </div>
                         <div className="flex items-center gap-2 mt-0.5 text-xs font-body text-muted-foreground flex-wrap">
-                          <span>{inv.to.name || "—"}</span>
-                          {inv.to.email && <span className="text-primary/60">{inv.to.email}</span>}
+                          <span className="font-medium text-foreground/80">{inv.to.name || "—"}</span>
+                          {inv.to.email && <span className="text-primary/60 hidden sm:inline">{inv.to.email}</span>}
                           <span>· Due {inv.dueDate || "—"}</span>
-                          {inv.paymentMethods && inv.paymentMethods.length > 0 && (
-                            <span className="text-muted-foreground/50">[{inv.paymentMethods.join(", ")}]</span>
-                          )}
+                        </div>
+                        {/* Mobile-only: action row */}
+                        <div className="flex items-center gap-1.5 mt-2 sm:hidden flex-wrap">
+                          <button onClick={() => openEdit(inv)} className="flex items-center gap-1 text-[10px] font-body px-2 py-1 rounded-md bg-secondary text-muted-foreground hover:text-foreground"><Edit className="w-3 h-3" />Edit</button>
+                          {canAct && <button onClick={() => handleMarkPaid(inv)} className="flex items-center gap-1 text-[10px] font-body px-2 py-1 rounded-md bg-green-500/10 text-green-400 hover:bg-green-500/20"><CheckCircle2 className="w-3 h-3" />Mark Paid</button>}
+                          {canAct && <button onClick={() => handleSendInvoice(inv)} disabled={sendingEmail} className="flex items-center gap-1 text-[10px] font-body px-2 py-1 rounded-md bg-blue-500/10 text-blue-400 hover:bg-blue-500/20"><Send className="w-3 h-3" />Send</button>}
+                          <button onClick={() => handleExportPDF(inv)} className="flex items-center gap-1 text-[10px] font-body px-2 py-1 rounded-md bg-secondary text-muted-foreground hover:text-foreground"><Printer className="w-3 h-3" />PDF</button>
+                          {/* ⋯ overflow menu trigger */}
+                          <div className="relative">
+                            <button
+                              onClick={() => setOverflowMenuId(menuOpen ? null : inv.id)}
+                              onKeyDown={e => { if (e.key === "Escape") setOverflowMenuId(null); }}
+                              aria-label="More actions"
+                              aria-haspopup="menu"
+                              aria-expanded={menuOpen}
+                              className="flex items-center gap-0.5 text-[10px] font-body px-2 py-1 rounded-md bg-secondary text-muted-foreground hover:text-foreground"
+                            >
+                              <MoreHorizontal className="w-3.5 h-3.5" />
+                            </button>
+                            {menuOpen && (
+                              <div
+                                role="menu"
+                                className="absolute left-0 bottom-full mb-1 z-50 bg-card border border-border rounded-xl shadow-xl p-1 min-w-[160px] space-y-0.5"
+                                onClick={e => e.stopPropagation()}
+                                onKeyDown={e => { if (e.key === "Escape") setOverflowMenuId(null); }}
+                              >
+                                <button role="menuitem" onClick={() => { handleCopyLink(inv); setOverflowMenuId(null); }} className="w-full flex items-center gap-2 px-3 py-2 text-xs font-body text-muted-foreground hover:text-foreground hover:bg-secondary rounded-lg"><Link2 className="w-3.5 h-3.5" />Copy share link</button>
+                                <button role="menuitem" onClick={() => { setExpandedEmailLog(logOpen ? null : inv.id); setOverflowMenuId(null); }} className="w-full flex items-center gap-2 px-3 py-2 text-xs font-body text-muted-foreground hover:text-foreground hover:bg-secondary rounded-lg"><Mail className="w-3.5 h-3.5" />Email history</button>
+                                {canAct && <button role="menuitem" onClick={() => { handleSendReminder(inv); setOverflowMenuId(null); }} disabled={sendingEmail} className="w-full flex items-center gap-2 px-3 py-2 text-xs font-body text-muted-foreground hover:text-yellow-400 hover:bg-secondary rounded-lg"><Bell className="w-3.5 h-3.5" />Reminder</button>}
+                                {inv.status === "sent" && <button role="menuitem" onClick={() => { handleMarkOverdue(inv); setOverflowMenuId(null); }} className="w-full flex items-center gap-2 px-3 py-2 text-xs font-body text-muted-foreground hover:text-red-400 hover:bg-secondary rounded-lg"><AlertCircle className="w-3.5 h-3.5" />Mark overdue</button>}
+                                {stripeAvailable && canAct && (inv.paymentMethods || []).includes("stripe") && <button role="menuitem" onClick={() => { handleStripeCheckout(inv); setOverflowMenuId(null); }} disabled={processingPay} className="w-full flex items-center gap-2 px-3 py-2 text-xs font-body text-muted-foreground hover:text-purple-400 hover:bg-secondary rounded-lg"><CreditCard className="w-3.5 h-3.5" />Stripe checkout</button>}
+                                <button role="menuitem" onClick={() => { handleClone(inv); setOverflowMenuId(null); }} className="w-full flex items-center gap-2 px-3 py-2 text-xs font-body text-muted-foreground hover:text-foreground hover:bg-secondary rounded-lg"><Copy className="w-3.5 h-3.5" />Clone</button>
+                                <div className="h-px bg-border my-0.5" />
+                                <button role="menuitem" onClick={() => { handleDelete(inv); setOverflowMenuId(null); }} className="w-full flex items-center gap-2 px-3 py-2 text-xs font-body text-red-400 hover:bg-red-500/10 rounded-lg"><Trash2 className="w-3.5 h-3.5" />Delete</button>
+                              </div>
+                            )}
+                          </div>
                         </div>
                       </div>
                       {/* Amount */}
                       <p className="text-sm font-display text-foreground w-20 text-right shrink-0">${total.toFixed(2)}</p>
-                      {/* Actions */}
-                      <div className="flex items-center gap-1 shrink-0">
+                      {/* Desktop actions */}
+                      <div className="hidden sm:flex items-center gap-1 shrink-0">
                         <button onClick={() => openEdit(inv)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground" title="Edit"><Edit className="w-3.5 h-3.5" /></button>
                         <button onClick={() => handleCopyLink(inv)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground" title="Copy share link"><Link2 className="w-3.5 h-3.5" /></button>
-                        <button onClick={() => handleExportPDF(inv)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground" title="Export PDF"><Printer className="w-3.5 h-3.5" /></button>
+                        <button onClick={() => handleExportPDF(inv)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground" title="Export / Download PDF"><Printer className="w-3.5 h-3.5" /></button>
                         <button onClick={() => setExpandedEmailLog(logOpen ? null : inv.id)} className={`p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground ${logOpen ? "text-primary" : ""}`} title="Email history"><Mail className="w-3.5 h-3.5" /></button>
                         <div className="w-px h-4 bg-border mx-0.5" />
-                        {inv.status !== "paid" && inv.status !== "cancelled" && (
+                        {canAct && (
                           <>
                             <button onClick={() => handleSendInvoice(inv)} disabled={sendingEmail} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-blue-400" title="Send invoice email"><Send className="w-3.5 h-3.5" /></button>
                             <button onClick={() => handleSendReminder(inv)} disabled={sendingEmail} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-yellow-400" title="Send payment reminder"><Bell className="w-3.5 h-3.5" /></button>
                           </>
                         )}
-                        {inv.status !== "paid" && inv.status !== "cancelled" && (
-                          <button onClick={() => handleMarkPaid(inv)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-green-400" title="Mark as paid (bank / manual)"><CheckCircle2 className="w-3.5 h-3.5" /></button>
-                        )}
-                        {inv.status === "sent" && (
-                          <button onClick={() => handleMarkOverdue(inv)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-red-400" title="Mark as overdue"><AlertCircle className="w-3.5 h-3.5" /></button>
-                        )}
-                        {stripeAvailable && inv.status !== "paid" && inv.status !== "cancelled" && (inv.paymentMethods || []).includes("stripe") && (
+                        {canAct && <button onClick={() => handleMarkPaid(inv)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-green-400" title="Mark as paid (bank / manual)"><CheckCircle2 className="w-3.5 h-3.5" /></button>}
+                        {inv.status === "sent" && <button onClick={() => handleMarkOverdue(inv)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-red-400" title="Mark as overdue"><AlertCircle className="w-3.5 h-3.5" /></button>}
+                        {stripeAvailable && canAct && (inv.paymentMethods || []).includes("stripe") && (
                           <button onClick={() => handleStripeCheckout(inv)} disabled={processingPay} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-purple-400" title="Open Stripe checkout"><CreditCard className="w-3.5 h-3.5" /></button>
                         )}
                         <button onClick={() => handleClone(inv)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground" title="Clone"><Copy className="w-3.5 h-3.5" /></button>
@@ -3917,12 +4041,12 @@ function InvoicesView() {
                         ) : (
                           <div className="space-y-1">
                             {[...(inv.emailLog || [])].reverse().map((log, i) => (
-                              <div key={i} className="flex items-center gap-3 text-xs font-body">
+                              <div key={i} className="flex items-center gap-2 sm:gap-3 text-xs font-body flex-wrap sm:flex-nowrap">
                                 <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${log.type === "invoice" ? "bg-blue-400" : log.type === "reminder" ? "bg-yellow-400" : "bg-gray-400"}`} />
                                 <span className="capitalize text-muted-foreground">{log.type}</span>
-                                <span className="text-muted-foreground/50">→</span>
-                                <span className="text-foreground">{log.to}</span>
-                                <span className="text-muted-foreground/50 ml-auto">{new Date(log.sentAt).toLocaleString("en-AU", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</span>
+                                <span className="text-muted-foreground/50 hidden sm:inline">→</span>
+                                <span className="text-foreground truncate">{log.to}</span>
+                                <span className="text-muted-foreground/50 sm:ml-auto text-[10px]">{new Date(log.sentAt).toLocaleString("en-AU", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</span>
                               </div>
                             ))}
                           </div>
@@ -4027,14 +4151,14 @@ function InvoiceForm({
 
   return (
     <form onSubmit={handleSubmit} className="space-y-6 max-w-3xl">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
           <h2 className="font-display text-2xl text-foreground mb-1">{initial.status === "draft" && !getInvoices().find(i => i.id === initial.id) ? "New" : "Edit"} Invoice</h2>
           <p className="text-xs font-body text-muted-foreground">{inv.number} · <span className={`${INV_STATUS_META[inv.status].color}`}>{INV_STATUS_META[inv.status].label}</span></p>
         </div>
-        <div className="flex gap-2">
-          <Button type="button" variant="outline" onClick={onCancel} className="font-body text-sm gap-1.5"><X className="w-4 h-4" />Cancel</Button>
-          <Button type="submit" className="font-body text-sm gap-1.5"><Save className="w-4 h-4" />Save Invoice</Button>
+        <div className="flex gap-2 sm:justify-end">
+          <Button type="button" variant="outline" onClick={onCancel} className="font-body text-sm gap-1.5 flex-1 sm:flex-none"><X className="w-4 h-4" />Cancel</Button>
+          <Button type="submit" className="font-body text-sm gap-1.5 flex-1 sm:flex-none"><Save className="w-4 h-4" />Save Invoice</Button>
         </div>
       </div>
 
@@ -4096,39 +4220,64 @@ function InvoiceForm({
         </div>
         <div className="divide-y divide-border">
           {inv.items.map((item, idx) => (
-            <div key={item.id} className="grid grid-cols-12 gap-2 px-4 py-2.5 items-center">
-              <div className="col-span-5">
-                {idx === 0 && <label className={labelClass}>Description</label>}
-                <input className={fieldClass} value={item.description} onChange={e => setItem(item.id, { description: e.target.value })} placeholder="Photography session" />
+            <div key={item.id} className="px-4 py-3">
+              {/* Mobile: stacked layout */}
+              <div className="flex items-end gap-2 sm:hidden">
+                <div className="flex-1">
+                  {idx === 0 && <label className={labelClass}>Description</label>}
+                  <input className={fieldClass} value={item.description} onChange={e => setItem(item.id, { description: e.target.value })} placeholder="Photography session" />
+                </div>
+                <button type="button" onClick={() => removeItem(item.id)} className="shrink-0 mb-0.5 p-2 rounded hover:bg-red-500/10 text-muted-foreground/40 hover:text-red-400 transition-colors"><X className="w-4 h-4" /></button>
               </div>
-              <div className="col-span-2">
-                {idx === 0 && <label className={labelClass}>Qty</label>}
-                <input className={fieldClass} type="number" min="0.01" step="0.01" value={item.quantity} onChange={e => setItem(item.id, { quantity: parseFloat(e.target.value) || 0 })} />
+              <div className="grid grid-cols-3 gap-2 mt-2 sm:hidden">
+                <div>
+                  <label className={labelClass}>Qty</label>
+                  <input className={fieldClass} type="number" min="0.01" step="0.01" value={item.quantity} onChange={e => setItem(item.id, { quantity: parseFloat(e.target.value) || 0 })} />
+                </div>
+                <div>
+                  <label className={labelClass}>Unit ($)</label>
+                  <input className={fieldClass} type="number" min="0" step="0.01" value={item.unitPrice} onChange={e => setItem(item.id, { unitPrice: parseFloat(e.target.value) || 0 })} />
+                </div>
+                <div>
+                  <label className={labelClass}>Total</label>
+                  <p className="text-sm font-body text-foreground pt-2 pl-1">${(item.quantity * item.unitPrice).toFixed(2)}</p>
+                </div>
               </div>
-              <div className="col-span-3">
-                {idx === 0 && <label className={labelClass}>Unit Price ($)</label>}
-                <input className={fieldClass} type="number" min="0" step="0.01" value={item.unitPrice} onChange={e => setItem(item.id, { unitPrice: parseFloat(e.target.value) || 0 })} />
-              </div>
-              <div className="col-span-1 text-right">
-                {idx === 0 && <label className={labelClass}>Total</label>}
-                <p className="text-sm font-body text-foreground pt-1">${(item.quantity * item.unitPrice).toFixed(2)}</p>
-              </div>
-              <div className="col-span-1 flex justify-end">
-                {idx === 0 && <div className="invisible text-[10px]">x</div>}
-                <button type="button" onClick={() => removeItem(item.id)} className="p-1 rounded hover:bg-red-500/10 text-muted-foreground/40 hover:text-red-400 transition-colors"><X className="w-3.5 h-3.5" /></button>
+              {/* Desktop: grid layout */}
+              <div className="hidden sm:grid grid-cols-12 gap-2 items-center">
+                <div className="col-span-5">
+                  {idx === 0 && <label className={labelClass}>Description</label>}
+                  <input className={fieldClass} value={item.description} onChange={e => setItem(item.id, { description: e.target.value })} placeholder="Photography session" />
+                </div>
+                <div className="col-span-2">
+                  {idx === 0 && <label className={labelClass}>Qty</label>}
+                  <input className={fieldClass} type="number" min="0.01" step="0.01" value={item.quantity} onChange={e => setItem(item.id, { quantity: parseFloat(e.target.value) || 0 })} />
+                </div>
+                <div className="col-span-3">
+                  {idx === 0 && <label className={labelClass}>Unit Price ($)</label>}
+                  <input className={fieldClass} type="number" min="0" step="0.01" value={item.unitPrice} onChange={e => setItem(item.id, { unitPrice: parseFloat(e.target.value) || 0 })} />
+                </div>
+                <div className="col-span-1 text-right">
+                  {idx === 0 && <label className={labelClass}>Total</label>}
+                  <p className="text-sm font-body text-foreground pt-1">${(item.quantity * item.unitPrice).toFixed(2)}</p>
+                </div>
+                <div className="col-span-1 flex justify-end">
+                  {idx === 0 && <div className="invisible text-[10px]">x</div>}
+                  <button type="button" onClick={() => removeItem(item.id)} className="p-1 rounded hover:bg-red-500/10 text-muted-foreground/40 hover:text-red-400 transition-colors"><X className="w-3.5 h-3.5" /></button>
+                </div>
               </div>
             </div>
           ))}
         </div>
         {/* Totals */}
         <div className="p-4 border-t border-border flex flex-col items-end gap-1 text-sm font-body">
-          <div className="grid grid-cols-2 gap-4 w-64">
+          <div className="grid grid-cols-2 gap-4 w-full sm:w-64">
             <label className={labelClass}>Discount ($)</label>
             <input className={fieldClass} type="number" min="0" step="0.01" value={inv.discount ?? ""} placeholder="0" onChange={e => setInv(p => ({ ...p, discount: parseFloat(e.target.value) || 0 }))} />
             <label className={labelClass}>Tax Rate (%)</label>
             <input className={fieldClass} type="number" min="0" step="0.1" value={inv.tax ?? ""} placeholder="0" onChange={e => setInv(p => ({ ...p, tax: parseFloat(e.target.value) || 0 }))} />
           </div>
-          <div className="w-64 mt-2 space-y-1 text-right">
+          <div className="w-full sm:w-64 mt-2 space-y-1 text-right">
             <p className="text-muted-foreground">Subtotal <span className="text-foreground ml-4">${sub.toFixed(2)}</span></p>
             {disc > 0 && <p className="text-green-400">Discount <span className="ml-4">−${disc.toFixed(2)}</span></p>}
             {taxRate > 0 && <p className="text-muted-foreground">GST ({taxRate}%) <span className="text-foreground ml-4">${taxAmt.toFixed(2)}</span></p>}

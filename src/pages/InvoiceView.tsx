@@ -139,20 +139,21 @@ export default function InvoiceView() {
         }
       `}</style>
 
-      <div className="min-h-screen bg-background py-10 px-4 print-page">
-        <div className="max-w-2xl mx-auto">
+      {/* ── Sticky download bar (hidden in print) ── */}
+      <div className="no-print fixed top-0 left-0 right-0 z-40 bg-background/90 backdrop-blur-sm border-b border-border/50 px-4 py-2 flex items-center justify-between gap-3" style={{ paddingTop: "calc(env(safe-area-inset-top, 0px) + 0.5rem)" }}>
+        <p className="text-xs font-body text-muted-foreground truncate">Invoice {invoice?.number ?? ""}</p>
+        <Button
+          size="sm"
+          variant="default"
+          className="gap-1.5 font-body text-xs shrink-0"
+          onClick={() => window.print()}
+        >
+          <Printer className="w-3.5 h-3.5" /> Download PDF
+        </Button>
+      </div>
 
-          {/* ── Toolbar (hidden in print) ── */}
-          <div className="no-print flex items-center justify-end gap-2 mb-6">
-            <Button
-              size="sm"
-              variant="outline"
-              className="gap-1.5 font-body text-xs"
-              onClick={() => window.print()}
-            >
-              <Printer className="w-3.5 h-3.5" /> Print / Save PDF
-            </Button>
-          </div>
+      <div className="min-h-screen bg-background px-4 print-page" style={{ paddingTop: "calc(env(safe-area-inset-top, 0px) + 4rem)", paddingBottom: "2rem" }}>
+        <div className="max-w-2xl mx-auto">
 
           {/* ── Header ── */}
           <div className="flex items-start justify-between mb-8">
