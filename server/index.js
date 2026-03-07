@@ -1680,6 +1680,29 @@ app.get("/api/tenant/:slug/settings", tenantLimiter, (req, res) => {
   res.json(settings);
 });
 
+// Send email via tenant's own SMTP settings
+app.post("/api/tenant/:slug/email/send", tenantLimiter, async (req, res) => {
+  const { slug } = req.params;
+  const tenants = readTenants();
+  if (!tenants.find(t => t.slug === slug)) return res.status(404).json({ ok: false, error: "Tenant not found" });
+  const db = readDb();
+  const raw = db[`t_${slug}_wv_tenant_settings`];
+  const tenantSettings = raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : {};
+  const { buildTenantTransporter, getTenantFromAddress, getTransporter, getFromAddress } = require("./email");
+  // Prefer tenant SMTP, fall back to global SMTP
+  const t = buildTenantTransporter(tenantSettings) || getTransporter();
+  const from = buildTenantTransporter(tenantSettings) ? getTenantFromAddress(tenantSettings) : getFromAddress();
+  if (!t) return res.status(400).json({ ok: false, error: "SMTP not configured" });
+  const { to, subject, html, text } = req.body;
+  if (!to || !subject) return res.status(400).json({ ok: false, error: "Missing to/subject" });
+  try {
+    const info = await t.sendMail({ from, to, subject, html, text });
+    res.json({ ok: true, messageId: info.messageId });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // Save tenant settings
 app.put("/api/tenant/:slug/settings", tenantLimiter, (req, res) => {
   const slug = req.params.slug;

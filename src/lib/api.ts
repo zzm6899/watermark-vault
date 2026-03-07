@@ -1282,6 +1282,19 @@ export async function saveTenantStoreKey(slug: string, key: string, value: unkno
   } catch { return { ok: false, error: "Network error" }; }
 }
 
+/** Send an email using the tenant's own SMTP settings (falls back to global SMTP). */
+export async function sendTenantEmail(slug: string, to: string, subject: string, html?: string, text?: string): Promise<{ ok: boolean; messageId?: string; error?: string }> {
+  try {
+    const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/email/send`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ to, subject, html, text }),
+    });
+    const json = await res.json();
+    return { ok: !!json.ok, messageId: json.messageId, error: json.error };
+  } catch { return { ok: false, error: "Network error" }; }
+}
+
 /** Clear the tenant-specific watermark image cache so photos re-render with new watermark settings. */
 export async function clearTenantImageCache(slug: string): Promise<{ ok: boolean; cleared?: number; error?: string }> {
   try {
