@@ -6,8 +6,10 @@ import {
   Camera, Save, X, LogOut, ChevronDown, ChevronUp,
   Image, DollarSign, Link2, Merge, Send, Copy, ExternalLink,
   MapPin, Lock, Bell, Download, Unlock, Eye, Grid, List, LayoutGrid, HardDrive, CheckSquare, XSquare, Search, RefreshCw, Mail,
-  MessageSquare
-, Star, CheckCircle2, Sparkles, ChevronLeft, ChevronRight, Flag } from "lucide-react";
+  MessageSquare,
+  Star, CheckCircle2, Sparkles, ChevronLeft, ChevronRight, Flag, FileText, Receipt, Printer, AlertCircle, BookOpen,
+  ArrowUpDown, MoreHorizontal, TrendingUp, TrendingDown,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -21,9 +23,10 @@ import {
   getAlbums, addAlbum, updateAlbum, deleteAlbum,
   getPhotoLibrary, setPhotoLibrary,
   getEmailTemplates, addEmailTemplate, updateEmailTemplate, deleteEmailTemplate,
+  getInvoices, addInvoice, updateInvoice, deleteInvoice, getNextInvoiceNumber,
 } from "@/lib/storage";
 import { compressImage, formatBytes, getLocalStorageUsage, generateThumbnail } from "@/lib/image-utils";
-import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar, getServerStorageStats, syncFromServer, sendEmail, bulkDeleteFiles, syncBookingsToSheet, getBookingEmailLog, sendBookingReminder, sendCustomEmail, getWaitlistEntries, deleteWaitlistEntry, notifyWaitlistOnCancel, notifyDiscord, getCacheStats, warmCache } from "@/lib/api";
+import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar, getServerStorageStats, syncFromServer, sendEmail, bulkDeleteFiles, syncBookingsToSheet, getBookingEmailLog, sendBookingReminder, sendCustomEmail, getWaitlistEntries, deleteWaitlistEntry, notifyWaitlistOnCancel, notifyDiscord, getCacheStats, warmCache, createInvoiceCheckout, sendInvoiceEmail, getStripeStatus } from "@/lib/api";
 import type { CacheBreakdown } from "@/lib/api";
 import RichTextEditor, { RichTextDisplay } from "@/components/RichTextEditor";
 import Login from "@/pages/Login";
@@ -31,7 +34,7 @@ import type {
   EventType, QuestionField, AvailabilitySlot,
   ProfileSettings, AppSettings, Booking, WatermarkPosition,
   Album, Photo, PaymentStatus, AlbumDisplaySize, AlbumDownloadRecord, DownloadHistoryEntry,
-  EmailTemplate, WaitlistEntry,
+  EmailTemplate, WaitlistEntry, Invoice, InvoiceItem, InvoiceParty, InvoiceStatus,
 } from "@/lib/types";
 import WatermarkedImage from "@/components/WatermarkedImage";
 import ProgressiveImg from "@/components/ProgressiveImg";
@@ -43,7 +46,7 @@ import sampleWedding from "@/assets/sample-wedding.jpg";
 import sampleEvent from "@/assets/sample-event.jpg";
 import sampleFood from "@/assets/sample-food.jpg";
 
-type Tab = "dashboard" | "bookings" | "events" | "albums" | "photos" | "finance" | "profile" | "settings" | "storage";
+type Tab = "dashboard" | "bookings" | "events" | "albums" | "photos" | "finance" | "invoices" | "profile" | "settings" | "storage";
 
 const TAB_ROUTE_MAP: Record<string, Tab> = {
   dashboard: "dashboard",
@@ -52,6 +55,7 @@ const TAB_ROUTE_MAP: Record<string, Tab> = {
   albums: "albums",
   photos: "photos",
   finance: "finance",
+  invoices: "invoices",
   profile: "profile",
   settings: "settings",
   storage: "storage",
@@ -470,6 +474,7 @@ export default function Admin() {
     { id: "albums" as Tab, label: "Albums", icon: Image },
     { id: "photos" as Tab, label: "Photos", icon: Upload },
     { id: "finance" as Tab, label: "Finance", icon: DollarSign },
+    { id: "invoices" as Tab, label: "Invoices", icon: Receipt },
     { id: "profile" as Tab, label: "Profile", icon: Camera },
     { id: "settings" as Tab, label: "Settings", icon: Settings },
     { id: "storage" as Tab, label: "Storage", icon: HardDrive },
@@ -478,7 +483,7 @@ export default function Admin() {
   return (
     <div className="min-h-screen bg-background">
       <div className="flex">
-        <aside className="w-56 fixed left-0 top-0 bottom-0 border-r border-border bg-card/50 p-4 hidden lg:flex flex-col" style={{ paddingTop: "calc(env(safe-area-inset-top) + 1rem)" }}>
+        <aside className="w-56 fixed left-0 top-0 bottom-0 border-r border-border bg-card/50 p-4 hidden lg:flex flex-col" style={{ paddingTop: "calc(env(safe-area-inset-top, 0px) + 1rem)" }}>
           <div className="flex items-center gap-2.5 px-3 mb-6 pt-2">
             <Camera className="w-5 h-5 text-primary" />
             <span className="font-display text-base text-foreground">Zacmphotos</span>
@@ -509,27 +514,63 @@ export default function Admin() {
           </div>
         </aside>
 
-        <div className="lg:hidden fixed top-0 left-0 right-0 z-30 bg-card/95 backdrop-blur-sm border-b border-border" style={{ paddingTop: "env(safe-area-inset-top)" }}>
-          <div className="flex overflow-x-auto scrollbar-hide">
-            {tabs.map((tab) => (
-              <button key={tab.id} onClick={() => setActiveTab(tab.id)}
-                className={`flex items-center gap-1.5 px-3 py-3.5 min-h-[48px] text-[10px] font-body tracking-wider uppercase whitespace-nowrap transition-colors border-b-2 flex-shrink-0 ${
-                  activeTab === tab.id ? "text-primary border-primary" : "text-muted-foreground border-transparent"
-                }`}
-              >
-                <tab.icon className="w-3.5 h-3.5" />{tab.label}
-              </button>
-            ))}
+        {/* ── Mobile: top title bar (shows active tab name) ── */}
+        <div className="lg:hidden fixed top-0 left-0 right-0 z-30 bg-card/95 backdrop-blur-sm border-b border-border flex items-center justify-between px-4" style={{ height: "calc(env(safe-area-inset-top, 0px) + 3rem)", paddingTop: "env(safe-area-inset-top, 0px)" }}>
+          <div className="flex items-center gap-2">
+            <Camera className="w-4 h-4 text-primary" />
+            <span className="font-display text-sm text-foreground capitalize">{tabs.find(t => t.id === activeTab)?.label ?? "Admin"}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button onClick={() => navigate("/capture")} className="flex items-center gap-1.5 text-xs font-body text-primary px-2.5 py-1.5 rounded-lg bg-primary/10 active:bg-primary/20">
+              <Upload className="w-3.5 h-3.5" /><span className="hidden xs:inline">Capture</span>
+            </button>
           </div>
         </div>
 
-        <main className="flex-1 lg:ml-56 p-4 sm:p-6 lg:p-8 lg:pt-8" style={{ paddingTop: "calc(env(safe-area-inset-top) + 4.5rem)" }}>
+        {/* ── Mobile: bottom tab bar ── */}
+        <div className="lg:hidden fixed bottom-0 left-0 right-0 z-30 bg-card/95 backdrop-blur-sm border-t border-border" style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}>
+          <div className="flex overflow-x-auto scrollbar-hide">
+            {tabs.map((tab) => {
+              const isActive = activeTab === tab.id;
+              const pendingBadge = tab.id === "albums" && settings.proofingEnabled
+                ? albums.filter(a => a.proofingEnabled && a.proofingStage === "selections-submitted").length
+                : tab.id === "invoices"
+                  ? getInvoices().filter(i => i.status === "overdue").length
+                  : 0;
+              return (
+                <button
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id)}
+                  className={`relative flex flex-col items-center justify-center gap-0.5 px-3 py-2 min-w-[56px] min-h-[52px] flex-shrink-0 transition-colors ${isActive ? "text-primary" : "text-muted-foreground"}`}
+                >
+                  <tab.icon className="w-5 h-5" />
+                  <span className="text-[9px] font-body tracking-wide whitespace-nowrap">{tab.label}</span>
+                  {pendingBadge > 0 && (
+                    <span className="absolute top-1.5 right-1.5 bg-orange-500 text-white text-[8px] font-bold min-w-[14px] h-3.5 px-0.5 rounded-full flex items-center justify-center">
+                      {pendingBadge}
+                    </span>
+                  )}
+                  {isActive && <span className="absolute top-0 inset-x-2 h-0.5 rounded-full bg-primary" />}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <main
+          className="flex-1 lg:ml-56 p-4 sm:p-6 lg:p-8 lg:pt-8"
+          style={{ paddingTop: "calc(env(safe-area-inset-top, 0px) + 3.5rem)", paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 4rem)" }}
+          id="admin-main"
+        >
+          {/* lg: use default, overridden by inline paddingBottom for desktop */}
+          <style>{`@media (min-width: 1024px) { #admin-main { padding-bottom: 2rem; } }`}</style>
           {activeTab === "dashboard" && <DashboardView />}
           {activeTab === "bookings" && <BookingsView onCreateAlbum={handleCreateAlbumForBooking} />}
           {activeTab === "events" && <EventTypesView />}
           {activeTab === "albums" && <AlbumsView prefillBookingId={prefillBookingId} onClearPrefill={() => setPrefillBookingId(null)} />}
           {activeTab === "photos" && <PhotosView />}
           {activeTab === "finance" && <FinanceView />}
+          {activeTab === "invoices" && <InvoicesView />}
           {activeTab === "profile" && <ProfileView />}
           {activeTab === "settings" && <SettingsView />}
           {activeTab === "storage" && <StorageView />}
@@ -544,6 +585,7 @@ function DashboardView() {
   const bookings = getBookings();
   const albums = getAlbums();
   const settings = getSettings();
+  const invoices = getInvoices();
 
   const totalIncome = bookings.reduce((sum, b) => sum + (b.paymentAmount || 0), 0);
   const paidIncome = bookings.filter(b => b.paymentStatus === "paid").reduce((sum, b) => sum + (b.paymentAmount || 0), 0);
@@ -607,6 +649,18 @@ function DashboardView() {
     { label: "Pending Requests", value: allPendingRequests.length, icon: Download, color: "text-yellow-400" },
     { label: "Session Time", value: totalSessionLabel, icon: Clock, color: "text-blue-400" },
   ];
+
+  // Invoice stats for dashboard
+  const invPaid       = invoices.filter(i => i.status === "paid");
+  const invOutstanding = invoices.filter(i => i.status === "sent" || i.status === "overdue");
+  const invOverdue    = invoices.filter(i => i.status === "overdue");
+  const invPaidTotal  = invPaid.reduce((s, i) => s + calcInvTotal(i), 0);
+  const invOutTotal   = invOutstanding.reduce((s, i) => s + calcInvTotal(i), 0);
+  const invoiceStats = invoices.length > 0 ? [
+    { label: "Invoices Paid",        value: `$${invPaidTotal.toFixed(2)}`,  sub: `${invPaid.length} invoice${invPaid.length !== 1 ? "s" : ""}`,        icon: Receipt,      color: "text-green-400" },
+    { label: "Outstanding",          value: `$${invOutTotal.toFixed(2)}`,   sub: `${invOutstanding.length} awaiting payment`,                           icon: TrendingUp,   color: "text-yellow-400" },
+    { label: "Overdue",              value: invOverdue.length,               sub: invOverdue.length > 0 ? "requires attention" : "all on time",         icon: TrendingDown, color: invOverdue.length > 0 ? "text-red-400" : "text-muted-foreground" },
+  ] : [];
 
   // ── Booking Calendar ────────────────────────────────────────
   const [calView, setCalView] = useState<"month" | "week">("month");
@@ -711,7 +765,7 @@ function DashboardView() {
       </div>
 
       {/* ── Stats grid ── */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mb-6">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mb-3">
         {stats.map((stat) => (
           <div key={stat.label} className="glass-panel rounded-xl p-3 sm:p-5">
             <stat.icon className={`w-4 h-4 ${stat.color} mb-2`} />
@@ -720,6 +774,20 @@ function DashboardView() {
           </div>
         ))}
       </div>
+
+      {/* ── Invoice stats row (only when invoices exist) ── */}
+      {invoiceStats.length > 0 && (
+        <div className="grid grid-cols-3 gap-3 mb-6">
+          {invoiceStats.map((stat) => (
+            <div key={stat.label} className="glass-panel rounded-xl p-3 sm:p-5">
+              <stat.icon className={`w-4 h-4 ${stat.color} mb-2`} />
+              <p className="font-display text-xl sm:text-2xl text-foreground">{stat.value}</p>
+              <p className="text-[10px] font-body text-muted-foreground tracking-wider uppercase mt-0.5 leading-tight">{stat.label}</p>
+              {stat.sub && <p className="text-[10px] font-body text-muted-foreground/60 mt-0.5 truncate">{stat.sub}</p>}
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* ── Booking Calendar ── */}
       <div className="glass-panel rounded-xl p-4 mb-6">
@@ -1412,15 +1480,22 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                       </div>
                     </div>
                     <div className="flex items-center gap-2 flex-shrink-0 flex-wrap pl-13 sm:pl-0" onClick={(e) => e.stopPropagation()}>
+                      {/* Status & payment badges shown on mobile, selects on sm+ */}
+                      <span className={`sm:hidden text-[10px] font-body px-2 py-0.5 rounded-full border ${
+                        bk.status === "confirmed" ? "text-green-400 border-green-500/30 bg-green-500/10" :
+                        bk.status === "completed" ? "text-blue-400 border-blue-500/30 bg-blue-500/10" :
+                        bk.status === "cancelled" ? "text-red-400 border-red-500/30 bg-red-500/10" :
+                        "text-yellow-400 border-yellow-500/30 bg-yellow-500/10"
+                      }`}>{bk.status}</span>
                       <select value={bk.status} onChange={(e) => handleStatusChange(bk, e.target.value as Booking["status"])}
-                        className="text-xs font-body px-2.5 py-1 rounded-full bg-secondary border border-border text-foreground cursor-pointer">
+                        className="hidden sm:block text-xs font-body px-2.5 py-1 rounded-full bg-secondary border border-border text-foreground cursor-pointer">
                         <option value="pending">Pending</option>
                         <option value="confirmed">Confirmed</option>
                         <option value="completed">Completed</option>
                         <option value="cancelled">Cancelled</option>
                       </select>
                       <select value={bk.paymentStatus || "unpaid"} onChange={(e) => handlePaymentChange(bk, e.target.value as PaymentStatus)}
-                        className="text-xs font-body px-2.5 py-1 rounded-full bg-secondary border border-border text-foreground cursor-pointer">
+                        className="hidden sm:block text-xs font-body px-2.5 py-1 rounded-full bg-secondary border border-border text-foreground cursor-pointer">
                         <option value="unpaid">Unpaid</option>
                         <option value="deposit-paid">Deposit Paid</option>
                         <option value="paid">Paid in Full</option>
@@ -1436,6 +1511,24 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                 </div>
                 {isExpanded && (
                   <div className="px-4 pb-4 border-t border-border/50 pt-3 space-y-3">
+                    {/* Mobile-only: status/payment selects in expanded section */}
+                    <div className="flex gap-2 sm:hidden" onClick={e => e.stopPropagation()}>
+                      <select value={bk.status} onChange={(e) => handleStatusChange(bk, e.target.value as Booking["status"])}
+                        className="flex-1 text-xs font-body px-2.5 py-2 rounded-lg bg-secondary border border-border text-foreground cursor-pointer">
+                        <option value="pending">Pending</option>
+                        <option value="confirmed">Confirmed</option>
+                        <option value="completed">Completed</option>
+                        <option value="cancelled">Cancelled</option>
+                      </select>
+                      <select value={bk.paymentStatus || "unpaid"} onChange={(e) => handlePaymentChange(bk, e.target.value as PaymentStatus)}
+                        className="flex-1 text-xs font-body px-2.5 py-2 rounded-lg bg-secondary border border-border text-foreground cursor-pointer">
+                        <option value="unpaid">Unpaid</option>
+                        <option value="deposit-paid">Deposit Paid</option>
+                        <option value="paid">Paid in Full</option>
+                        <option value="cash">Cash</option>
+                        <option value="pending-confirmation">Bank Transfer Pending</option>
+                      </select>
+                    </div>
                     <div className="grid sm:grid-cols-3 gap-3">
                       <div className="p-3 rounded-lg bg-secondary/50">
                         <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-1">Email</p>
@@ -3512,9 +3605,731 @@ function PhotosView() {
 }
 
 // ─── Profile ─────────────────────────────────────────
+// ─── Invoices ──────────────────────────────────────────
+
+function calcInvSubtotal(items: InvoiceItem[]) {
+  return items.reduce((s, it) => s + it.quantity * it.unitPrice, 0);
+}
+function calcInvTotal(inv: Invoice) {
+  const sub = calcInvSubtotal(inv.items);
+  const disc = inv.discount ?? 0;
+  return (sub - disc) * (1 + (inv.tax ?? 0) / 100);
+}
+
+const INV_STATUS_META: Record<InvoiceStatus, { label: string; color: string; bg: string }> = {
+  draft:     { label: "Draft",     color: "text-gray-400",   bg: "bg-gray-500/10"   },
+  sent:      { label: "Sent",      color: "text-blue-400",   bg: "bg-blue-500/10"   },
+  paid:      { label: "Paid",      color: "text-green-400",  bg: "bg-green-500/10"  },
+  overdue:   { label: "Overdue",   color: "text-red-400",    bg: "bg-red-500/10"    },
+  cancelled: { label: "Cancelled", color: "text-gray-400",   bg: "bg-gray-500/10"   },
+};
+
+function emptyParty(): InvoiceParty { return { name: "", email: "", address: "", abn: "" }; }
+function emptyItem(): InvoiceItem   { return { id: generateId("item"), description: "", quantity: 1, unitPrice: 0 }; }
+
+function buildInvoiceEmailHtml(inv: Invoice, shareUrl: string, isReminder = false): string {
+  const total = calcInvTotal(inv);
+  const sub   = calcInvSubtotal(inv.items);
+  const disc  = inv.discount ?? 0;
+  const taxRate = inv.tax ?? 0;
+  const taxAmt  = (sub - disc) * (taxRate / 100);
+  const rows = inv.items.map(it =>
+    `<tr><td style="padding:8px 12px;border-bottom:1px solid #333">${it.description}</td>
+     <td style="padding:8px 12px;border-bottom:1px solid #333;text-align:right">${it.quantity}</td>
+     <td style="padding:8px 12px;border-bottom:1px solid #333;text-align:right">$${it.unitPrice.toFixed(2)}</td>
+     <td style="padding:8px 12px;border-bottom:1px solid #333;text-align:right">$${(it.quantity * it.unitPrice).toFixed(2)}</td></tr>`
+  ).join("");
+  return `<!DOCTYPE html><html><body style="background:#0a0a0a;color:#e5e5e5;font-family:sans-serif;margin:0;padding:32px">
+  <div style="max-width:600px;margin:auto">
+    <h2 style="font-size:22px;margin-bottom:4px">${isReminder ? "⏰ Payment Reminder" : "📄 Invoice"} — ${inv.number}</h2>
+    <p style="color:#888;margin-bottom:24px">Hi ${inv.to.name}, ${isReminder ? "this is a reminder that your invoice is due." : "please find your invoice below."}</p>
+    <table style="width:100%;border-collapse:collapse;margin-bottom:16px">
+      <thead><tr style="background:#1a1a1a">
+        <th style="padding:8px 12px;text-align:left;font-size:11px;color:#888">Description</th>
+        <th style="padding:8px 12px;text-align:right;font-size:11px;color:#888">Qty</th>
+        <th style="padding:8px 12px;text-align:right;font-size:11px;color:#888">Unit</th>
+        <th style="padding:8px 12px;text-align:right;font-size:11px;color:#888">Amount</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <table style="width:220px;margin-left:auto;border-collapse:collapse;margin-bottom:24px">
+      <tr><td style="padding:4px 8px;color:#888">Subtotal</td><td style="padding:4px 8px;text-align:right">$${sub.toFixed(2)}</td></tr>
+      ${disc > 0 ? `<tr><td style="padding:4px 8px;color:#4ade80">Discount</td><td style="padding:4px 8px;text-align:right;color:#4ade80">−$${disc.toFixed(2)}</td></tr>` : ""}
+      ${taxRate > 0 ? `<tr><td style="padding:4px 8px;color:#888">GST (${taxRate}%)</td><td style="padding:4px 8px;text-align:right">$${taxAmt.toFixed(2)}</td></tr>` : ""}
+      <tr style="background:#1a1a1a"><td style="padding:8px;font-weight:bold">Total</td><td style="padding:8px;text-align:right;font-size:18px;font-weight:bold">$${total.toFixed(2)}</td></tr>
+    </table>
+    ${inv.notes ? `<p style="padding:12px;background:#1a1a1a;border-radius:8px;color:#aaa;margin-bottom:24px">${inv.notes}</p>` : ""}
+    ${shareUrl ? `<a href="${shareUrl}" style="display:inline-block;padding:12px 24px;background:#7c3aed;color:white;border-radius:8px;text-decoration:none;font-weight:bold">View Invoice &amp; Pay Online</a>` : ""}
+    <p style="color:#555;font-size:12px;margin-top:32px">Invoice ${inv.number} · Due ${inv.dueDate || "on receipt"} · Watermark Vault</p>
+  </div></body></html>`;
+}
+
+function InvoicesView() {
+  const profile = getProfile();
+  const settings = getSettings();
+  const bankSettings = settings.bankTransfer;
+
+  const [invoices, setInvoices] = React.useState<Invoice[]>(() => getInvoices());
+  const [view, setView] = React.useState<"list" | "form">("list");
+  const [editing, setEditing] = React.useState<Invoice | null>(null);
+  const [filterStatus, setFilterStatus] = React.useState<InvoiceStatus | "all">("all");
+  const [searchQuery, setSearchQuery] = React.useState("");
+  const [filterFrom, setFilterFrom] = React.useState("");
+  const [filterTo, setFilterTo] = React.useState("");
+  const [sortDir, setSortDir] = React.useState<"desc" | "asc">("desc");
+  const [expandedEmailLog, setExpandedEmailLog] = React.useState<string | null>(null);
+  const [overflowMenuId, setOverflowMenuId] = React.useState<string | null>(null);
+  const [stripeAvailable, setStripeAvailable] = React.useState(false);
+  const [sendingEmail, setSendingEmail] = React.useState(false);
+  const [processingPay, setProcessingPay] = React.useState(false);
+
+  React.useEffect(() => {
+    getStripeStatus().then(s => setStripeAvailable(s.configured));
+  }, []);
+
+  const reload = () => setInvoices(getInvoices());
+
+  // ── helpers ──────────────────────────────────────────────
+  const shareUrl = (inv: Invoice) => `${window.location.origin}/invoice/${inv.shareToken}`;
+
+  const openCreate = () => {
+    const now = new Date();
+    const due = new Date(now); due.setDate(due.getDate() + 30);
+    const blankInv: Invoice = {
+      id: generateId("inv"),
+      number: getNextInvoiceNumber(),
+      status: "draft",
+      from: { name: profile.name || "", email: "", address: "", abn: "" },
+      to: emptyParty(),
+      items: [emptyItem()],
+      notes: "",
+      dueDate: due.toISOString().slice(0, 10),
+      createdAt: now.toISOString(),
+      shareToken: Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2),
+      emailLog: [],
+      paymentMethods: [],
+    };
+    setEditing(blankInv);
+    setView("form");
+  };
+
+  const openEdit = (inv: Invoice) => { setEditing({ ...inv }); setView("form"); };
+
+  const handleClone = (inv: Invoice) => {
+    const now = new Date();
+    const due = new Date(now); due.setDate(due.getDate() + 30);
+    const cloned: Invoice = {
+      ...inv,
+      id: generateId("inv"),
+      number: getNextInvoiceNumber(),
+      status: "draft",
+      createdAt: now.toISOString(),
+      dueDate: due.toISOString().slice(0, 10),
+      sentAt: undefined,
+      paidAt: undefined,
+      stripeSessionId: undefined,
+      shareToken: Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2),
+      emailLog: [],
+    };
+    addInvoice(cloned);
+    reload();
+    toast.success("Invoice cloned as draft");
+  };
+
+  const handleDelete = (inv: Invoice) => {
+    if (!confirm(`Delete invoice ${inv.number}? This cannot be undone.`)) return;
+    deleteInvoice(inv.id);
+    reload();
+    toast.success("Invoice deleted");
+  };
+
+  const handleMarkPaid = (inv: Invoice) => {
+    if (!confirm(`Mark ${inv.number} as paid?`)) return;
+    const updated: Invoice = { ...inv, status: "paid", paidAt: new Date().toISOString() };
+    updateInvoice(updated);
+    reload();
+    notifyDiscord({ event: "invoice-paid", invoice: updated });
+    toast.success("Invoice marked as paid");
+  };
+
+  const handleMarkOverdue = (inv: Invoice) => {
+    const updated: Invoice = { ...inv, status: "overdue" };
+    updateInvoice(updated);
+    reload();
+    notifyDiscord({ event: "invoice-overdue", invoice: updated });
+    toast.info("Invoice marked as overdue");
+  };
+
+  const handleCopyLink = (inv: Invoice) => {
+    navigator.clipboard.writeText(shareUrl(inv));
+    toast.success("Share link copied");
+  };
+
+  const handleExportPDF = (inv: Invoice) => {
+    window.open(`${shareUrl(inv)}?print=1`, "_blank");
+  };
+
+  const handleSendInvoice = async (inv: Invoice) => {
+    if (!inv.to.email) { toast.error("No client email on invoice"); return; }
+    setSendingEmail(true);
+    const url = shareUrl(inv);
+    const html = buildInvoiceEmailHtml(inv, url, false);
+    const subject = `Invoice ${inv.number} from ${inv.from.name || "your photographer"}`;
+    const text = `Hi ${inv.to.name},\n\nPlease find your invoice ${inv.number} for $${calcInvTotal(inv).toFixed(2)}.\n\nView and pay online: ${url}\n\nDue: ${inv.dueDate || "on receipt"}\n\n${inv.notes || ""}`.trim();
+    const { ok, error } = await sendInvoiceEmail(inv.to.email, subject, html, text);
+    if (!ok) { toast.error(error || "Failed to send email"); setSendingEmail(false); return; }
+    const logEntry = { sentAt: new Date().toISOString(), type: "invoice" as const, to: inv.to.email, subject };
+    const updated: Invoice = { ...inv, status: inv.status === "draft" ? "sent" : inv.status, sentAt: inv.sentAt || new Date().toISOString(), emailLog: [...(inv.emailLog || []), logEntry] };
+    updateInvoice(updated);
+    reload();
+    notifyDiscord({ event: "invoice-sent", invoice: updated });
+    setSendingEmail(false);
+    toast.success(`Invoice sent to ${inv.to.email}`);
+  };
+
+  const handleSendReminder = async (inv: Invoice) => {
+    if (!inv.to.email) { toast.error("No client email on invoice"); return; }
+    setSendingEmail(true);
+    const url = shareUrl(inv);
+    const html = buildInvoiceEmailHtml(inv, url, true);
+    const subject = `Payment Reminder — ${inv.number}`;
+    const reminderText = `Hi ${inv.to.name},\n\nThis is a reminder that invoice ${inv.number} for $${calcInvTotal(inv).toFixed(2)} is due ${inv.dueDate ? `on ${inv.dueDate}` : "now"}.\n\nView and pay: ${url}`.trim();
+    const { ok, error } = await sendInvoiceEmail(inv.to.email, subject, html, reminderText);
+    if (!ok) { toast.error(error || "Failed to send reminder"); setSendingEmail(false); return; }
+    const logEntry = { sentAt: new Date().toISOString(), type: "reminder" as const, to: inv.to.email, subject };
+    const updated: Invoice = { ...inv, emailLog: [...(inv.emailLog || []), logEntry] };
+    updateInvoice(updated);
+    reload();
+    notifyDiscord({ event: "invoice-reminder", invoice: updated });
+    setSendingEmail(false);
+    toast.success("Payment reminder sent");
+  };
+
+  const handleStripeCheckout = async (inv: Invoice) => {
+    setProcessingPay(true);
+    const total = calcInvTotal(inv);
+    const { url, error } = await createInvoiceCheckout({
+      invoiceId: inv.id, invoiceNumber: inv.number,
+      clientName: inv.to.name, clientEmail: inv.to.email,
+      amount: total, shareToken: inv.shareToken,
+    });
+    setProcessingPay(false);
+    if (error || !url) { toast.error(error || "Stripe checkout failed"); return; }
+    window.open(url, "_blank");
+  };
+
+  const filteredInvoices = React.useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return invoices.filter(i => {
+      if (filterStatus !== "all" && i.status !== filterStatus) return false;
+      if (q && !(
+        i.number.toLowerCase().includes(q) ||
+        i.to.name.toLowerCase().includes(q) ||
+        i.to.email.toLowerCase().includes(q) ||
+        (i.from.name || "").toLowerCase().includes(q)
+      )) return false;
+      // createdAt is always ISO 8601 (set via new Date().toISOString()), so YYYY-MM-DD slice is lexicographically safe
+      if (filterFrom && i.createdAt.slice(0, 10) < filterFrom) return false;
+      if (filterTo   && i.createdAt.slice(0, 10) > filterTo)   return false;
+      return true;
+    });
+  }, [invoices, filterStatus, searchQuery, filterFrom, filterTo]);
+
+  const sortedInvoices = React.useMemo(() =>
+    [...filteredInvoices].sort((a, b) => {
+      const diff = new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+      return sortDir === "desc" ? diff : -diff;
+    }),
+    [filteredInvoices, sortDir],
+  );
+
+  // ── LIST VIEW ──────────────────────────────────────────────
+  if (view === "list") {
+    const hasActiveFilter = searchQuery.trim() || filterFrom || filterTo || filterStatus !== "all";
+    return (
+      <div className="space-y-6">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="font-display text-2xl text-foreground mb-1">Invoices</h2>
+            <p className="text-sm font-body text-muted-foreground">Create and manage invoices &amp; quotes</p>
+          </div>
+          <Button onClick={openCreate} className="gap-2 font-body text-sm">
+            <Plus className="w-4 h-4" /> New Invoice
+          </Button>
+        </div>
+
+        {/* Search + Date range + Sort */}
+        <div className="glass-panel rounded-xl p-3 space-y-3">
+          <div className="flex flex-col sm:flex-row gap-2">
+            {/* Search */}
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground/50 pointer-events-none" />
+              <Input
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                placeholder="Search by number, client name, or email…"
+                className="pl-8 bg-secondary border-border text-foreground font-body text-sm h-9"
+              />
+              {searchQuery && (
+                <button onClick={() => setSearchQuery("")} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground/50 hover:text-foreground">
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+            {/* Date from */}
+            <div className="flex items-center gap-1.5 shrink-0">
+              <label className="text-[10px] font-body uppercase tracking-wider text-muted-foreground whitespace-nowrap">From</label>
+              <input type="date" value={filterFrom} onChange={e => setFilterFrom(e.target.value)}
+                className="bg-secondary border border-border text-foreground font-body text-xs rounded-lg px-2 h-9 focus:outline-none focus:ring-1 focus:ring-primary/50" />
+            </div>
+            {/* Date to */}
+            <div className="flex items-center gap-1.5 shrink-0">
+              <label className="text-[10px] font-body uppercase tracking-wider text-muted-foreground whitespace-nowrap">To</label>
+              <input type="date" value={filterTo} onChange={e => setFilterTo(e.target.value)}
+                className="bg-secondary border border-border text-foreground font-body text-xs rounded-lg px-2 h-9 focus:outline-none focus:ring-1 focus:ring-primary/50" />
+            </div>
+            {/* Sort toggle */}
+            <button
+              onClick={() => setSortDir(d => d === "desc" ? "asc" : "desc")}
+              className="shrink-0 h-9 px-3 rounded-lg bg-secondary border border-border text-xs font-body text-muted-foreground hover:text-foreground flex items-center gap-1.5 transition-colors"
+              title="Toggle sort order"
+            >
+              <ArrowUpDown className="w-3.5 h-3.5" />
+              {sortDir === "desc" ? "Newest first" : "Oldest first"}
+            </button>
+          </div>
+
+          {/* Status pills */}
+          <div className="flex gap-2 flex-wrap">
+            {(["all", "draft", "sent", "paid", "overdue", "cancelled"] as const).map(s => (
+              <button
+                key={s}
+                onClick={() => setFilterStatus(s)}
+                className={`px-3 py-1.5 rounded-full text-xs font-body transition-colors ${filterStatus === s ? "bg-primary/20 text-primary border border-primary/30" : "bg-secondary/50 text-muted-foreground border border-border hover:text-foreground"}`}
+              >
+                {s === "all" ? `All (${invoices.length})` : `${INV_STATUS_META[s].label} (${invoices.filter(i => i.status === s).length})`}
+              </button>
+            ))}
+            {hasActiveFilter && (
+              <button
+                onClick={() => { setSearchQuery(""); setFilterFrom(""); setFilterTo(""); setFilterStatus("all"); }}
+                className="px-3 py-1.5 rounded-full text-xs font-body text-destructive border border-destructive/30 bg-destructive/5 hover:bg-destructive/10 transition-colors"
+              >
+                Clear filters
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Results count when filtering */}
+        {hasActiveFilter && (
+          <p className="text-xs font-body text-muted-foreground -mt-3">
+            Showing {sortedInvoices.length} of {invoices.length} invoice{invoices.length !== 1 ? "s" : ""}
+          </p>
+        )}
+
+        {sortedInvoices.length === 0 ? (
+          <div className="glass-panel rounded-xl p-12 text-center">
+            <Receipt className="w-8 h-8 text-muted-foreground/30 mx-auto mb-3" />
+            <p className="text-sm font-body text-muted-foreground">{invoices.length === 0 ? "No invoices yet" : "No invoices match your filters"}</p>
+            {invoices.length === 0 ? (
+              <>
+                <p className="text-xs font-body text-muted-foreground/60 mt-1">Create your first invoice to get started</p>
+                <Button onClick={openCreate} className="mt-4 gap-2 font-body text-sm" variant="outline">
+                  <Plus className="w-4 h-4" /> Create Invoice
+                </Button>
+              </>
+            ) : (
+              <button onClick={() => { setSearchQuery(""); setFilterFrom(""); setFilterTo(""); setFilterStatus("all"); }} className="mt-2 text-xs font-body text-primary hover:underline">Clear filters</button>
+            )}
+          </div>
+        ) : (
+          <div className="glass-panel rounded-xl overflow-hidden">
+            <div className="divide-y divide-border">
+              {sortedInvoices.map(inv => {
+                const meta = INV_STATUS_META[inv.status];
+                const total = calcInvTotal(inv);
+                const logOpen = expandedEmailLog === inv.id;
+                const menuOpen = overflowMenuId === inv.id;
+                const canAct = inv.status !== "paid" && inv.status !== "cancelled";
+                return (
+                  <div key={inv.id} className="group">
+                    {/* ── Row ── */}
+                    <div className="flex items-start sm:items-center gap-3 px-3 sm:px-4 py-3 hover:bg-secondary/30 transition-colors">
+                      {/* Left info */}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <p className="text-sm font-body text-foreground font-medium">{inv.number}</p>
+                          <span className={`text-[10px] font-body px-2 py-0.5 rounded-full ${meta.color} ${meta.bg}`}>{meta.label}</span>
+                          {inv.bookingId && <span className="text-[10px] font-body px-1.5 py-0.5 rounded-full text-primary/70 bg-primary/10"><BookOpen className="w-2.5 h-2.5 inline mr-0.5" />Booking</span>}
+                          {inv.albumId && <span className="text-[10px] font-body px-1.5 py-0.5 rounded-full text-purple-400/70 bg-purple-500/10"><Image className="w-2.5 h-2.5 inline mr-0.5" />Album</span>}
+                        </div>
+                        <div className="flex items-center gap-2 mt-0.5 text-xs font-body text-muted-foreground flex-wrap">
+                          <span className="font-medium text-foreground/80">{inv.to.name || "—"}</span>
+                          {inv.to.email && <span className="text-primary/60 hidden sm:inline">{inv.to.email}</span>}
+                          <span>· Due {inv.dueDate || "—"}</span>
+                        </div>
+                        {/* Mobile-only: action row */}
+                        <div className="flex items-center gap-1.5 mt-2 sm:hidden flex-wrap">
+                          <button onClick={() => openEdit(inv)} className="flex items-center gap-1 text-[10px] font-body px-2 py-1 rounded-md bg-secondary text-muted-foreground hover:text-foreground"><Edit className="w-3 h-3" />Edit</button>
+                          {canAct && <button onClick={() => handleMarkPaid(inv)} className="flex items-center gap-1 text-[10px] font-body px-2 py-1 rounded-md bg-green-500/10 text-green-400 hover:bg-green-500/20"><CheckCircle2 className="w-3 h-3" />Mark Paid</button>}
+                          {canAct && <button onClick={() => handleSendInvoice(inv)} disabled={sendingEmail} className="flex items-center gap-1 text-[10px] font-body px-2 py-1 rounded-md bg-blue-500/10 text-blue-400 hover:bg-blue-500/20"><Send className="w-3 h-3" />Send</button>}
+                          <button onClick={() => handleExportPDF(inv)} className="flex items-center gap-1 text-[10px] font-body px-2 py-1 rounded-md bg-secondary text-muted-foreground hover:text-foreground"><Printer className="w-3 h-3" />PDF</button>
+                          {/* ⋯ overflow menu trigger */}
+                          <div className="relative">
+                            <button
+                              onClick={() => setOverflowMenuId(menuOpen ? null : inv.id)}
+                              onKeyDown={e => { if (e.key === "Escape") setOverflowMenuId(null); }}
+                              aria-label="More actions"
+                              aria-haspopup="menu"
+                              aria-expanded={menuOpen}
+                              className="flex items-center gap-0.5 text-[10px] font-body px-2 py-1 rounded-md bg-secondary text-muted-foreground hover:text-foreground"
+                            >
+                              <MoreHorizontal className="w-3.5 h-3.5" />
+                            </button>
+                            {menuOpen && (
+                              <div
+                                role="menu"
+                                className="absolute left-0 bottom-full mb-1 z-50 bg-card border border-border rounded-xl shadow-xl p-1 min-w-[160px] space-y-0.5"
+                                onClick={e => e.stopPropagation()}
+                                onKeyDown={e => { if (e.key === "Escape") setOverflowMenuId(null); }}
+                              >
+                                <button role="menuitem" onClick={() => { handleCopyLink(inv); setOverflowMenuId(null); }} className="w-full flex items-center gap-2 px-3 py-2 text-xs font-body text-muted-foreground hover:text-foreground hover:bg-secondary rounded-lg"><Link2 className="w-3.5 h-3.5" />Copy share link</button>
+                                <button role="menuitem" onClick={() => { setExpandedEmailLog(logOpen ? null : inv.id); setOverflowMenuId(null); }} className="w-full flex items-center gap-2 px-3 py-2 text-xs font-body text-muted-foreground hover:text-foreground hover:bg-secondary rounded-lg"><Mail className="w-3.5 h-3.5" />Email history</button>
+                                {canAct && <button role="menuitem" onClick={() => { handleSendReminder(inv); setOverflowMenuId(null); }} disabled={sendingEmail} className="w-full flex items-center gap-2 px-3 py-2 text-xs font-body text-muted-foreground hover:text-yellow-400 hover:bg-secondary rounded-lg"><Bell className="w-3.5 h-3.5" />Reminder</button>}
+                                {inv.status === "sent" && <button role="menuitem" onClick={() => { handleMarkOverdue(inv); setOverflowMenuId(null); }} className="w-full flex items-center gap-2 px-3 py-2 text-xs font-body text-muted-foreground hover:text-red-400 hover:bg-secondary rounded-lg"><AlertCircle className="w-3.5 h-3.5" />Mark overdue</button>}
+                                {stripeAvailable && canAct && (inv.paymentMethods || []).includes("stripe") && <button role="menuitem" onClick={() => { handleStripeCheckout(inv); setOverflowMenuId(null); }} disabled={processingPay} className="w-full flex items-center gap-2 px-3 py-2 text-xs font-body text-muted-foreground hover:text-purple-400 hover:bg-secondary rounded-lg"><CreditCard className="w-3.5 h-3.5" />Stripe checkout</button>}
+                                <button role="menuitem" onClick={() => { handleClone(inv); setOverflowMenuId(null); }} className="w-full flex items-center gap-2 px-3 py-2 text-xs font-body text-muted-foreground hover:text-foreground hover:bg-secondary rounded-lg"><Copy className="w-3.5 h-3.5" />Clone</button>
+                                <div className="h-px bg-border my-0.5" />
+                                <button role="menuitem" onClick={() => { handleDelete(inv); setOverflowMenuId(null); }} className="w-full flex items-center gap-2 px-3 py-2 text-xs font-body text-red-400 hover:bg-red-500/10 rounded-lg"><Trash2 className="w-3.5 h-3.5" />Delete</button>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                      {/* Amount */}
+                      <p className="text-sm font-display text-foreground w-20 text-right shrink-0">${total.toFixed(2)}</p>
+                      {/* Desktop actions */}
+                      <div className="hidden sm:flex items-center gap-1 shrink-0">
+                        <button onClick={() => openEdit(inv)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground" title="Edit"><Edit className="w-3.5 h-3.5" /></button>
+                        <button onClick={() => handleCopyLink(inv)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground" title="Copy share link"><Link2 className="w-3.5 h-3.5" /></button>
+                        <button onClick={() => handleExportPDF(inv)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground" title="Export / Download PDF"><Printer className="w-3.5 h-3.5" /></button>
+                        <button onClick={() => setExpandedEmailLog(logOpen ? null : inv.id)} className={`p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground ${logOpen ? "text-primary" : ""}`} title="Email history"><Mail className="w-3.5 h-3.5" /></button>
+                        <div className="w-px h-4 bg-border mx-0.5" />
+                        {canAct && (
+                          <>
+                            <button onClick={() => handleSendInvoice(inv)} disabled={sendingEmail} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-blue-400" title="Send invoice email"><Send className="w-3.5 h-3.5" /></button>
+                            <button onClick={() => handleSendReminder(inv)} disabled={sendingEmail} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-yellow-400" title="Send payment reminder"><Bell className="w-3.5 h-3.5" /></button>
+                          </>
+                        )}
+                        {canAct && <button onClick={() => handleMarkPaid(inv)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-green-400" title="Mark as paid (bank / manual)"><CheckCircle2 className="w-3.5 h-3.5" /></button>}
+                        {inv.status === "sent" && <button onClick={() => handleMarkOverdue(inv)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-red-400" title="Mark as overdue"><AlertCircle className="w-3.5 h-3.5" /></button>}
+                        {stripeAvailable && canAct && (inv.paymentMethods || []).includes("stripe") && (
+                          <button onClick={() => handleStripeCheckout(inv)} disabled={processingPay} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-purple-400" title="Open Stripe checkout"><CreditCard className="w-3.5 h-3.5" /></button>
+                        )}
+                        <button onClick={() => handleClone(inv)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground" title="Clone"><Copy className="w-3.5 h-3.5" /></button>
+                        <button onClick={() => handleDelete(inv)} className="opacity-0 group-hover:opacity-100 transition-opacity p-1.5 rounded hover:bg-red-500/10 text-muted-foreground/40 hover:text-red-400" title="Delete"><Trash2 className="w-3.5 h-3.5" /></button>
+                      </div>
+                    </div>
+
+                    {/* Email History Panel */}
+                    {logOpen && (
+                      <div className="px-4 pb-3 bg-secondary/20">
+                        <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground mb-2">Email History</p>
+                        {(inv.emailLog || []).length === 0 ? (
+                          <p className="text-xs font-body text-muted-foreground/50">No emails sent yet</p>
+                        ) : (
+                          <div className="space-y-1">
+                            {[...(inv.emailLog || [])].reverse().map((log, i) => (
+                              <div key={i} className="flex items-center gap-2 sm:gap-3 text-xs font-body flex-wrap sm:flex-nowrap">
+                                <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${log.type === "invoice" ? "bg-blue-400" : log.type === "reminder" ? "bg-yellow-400" : "bg-gray-400"}`} />
+                                <span className="capitalize text-muted-foreground">{log.type}</span>
+                                <span className="text-muted-foreground/50 hidden sm:inline">→</span>
+                                <span className="text-foreground truncate">{log.to}</span>
+                                <span className="text-muted-foreground/50 sm:ml-auto text-[10px]">{new Date(log.sentAt).toLocaleString("en-AU", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // ── FORM VIEW ──────────────────────────────────────────────
+  return editing ? (
+    <InvoiceForm
+      invoice={editing}
+      stripeAvailable={stripeAvailable}
+      bankSettings={bankSettings}
+      bookings={getBookings()}
+      albums={getAlbums()}
+      onSave={(inv) => {
+        const existing = getInvoices().find(i => i.id === inv.id);
+        if (existing) updateInvoice(inv);
+        else { addInvoice(inv); notifyDiscord({ event: "invoice-created", invoice: inv }); }
+        reload();
+        setView("list");
+        setEditing(null);
+        toast.success(`Invoice ${inv.number} saved`);
+      }}
+      onCancel={() => { setView("list"); setEditing(null); }}
+    />
+  ) : null;
+}
+
+// ─── Invoice Form ─────────────────────────────────────────────────────────────
+function InvoiceForm({
+  invoice: initial, stripeAvailable, bankSettings, bookings, albums, onSave, onCancel,
+}: {
+  invoice: Invoice;
+  stripeAvailable: boolean;
+  bankSettings: import("@/lib/types").BankTransferSettings;
+  bookings: import("@/lib/types").Booking[];
+  albums: import("@/lib/types").Album[];
+  onSave: (inv: Invoice) => void;
+  onCancel: () => void;
+}) {
+  const [inv, setInv] = React.useState<Invoice>({ ...initial });
+
+  const setFrom = (patch: Partial<InvoiceParty>) => setInv(p => ({ ...p, from: { ...p.from, ...patch } }));
+  const setTo   = (patch: Partial<InvoiceParty>) => setInv(p => ({ ...p, to:   { ...p.to,   ...patch } }));
+
+  const addItem = () => setInv(p => ({ ...p, items: [...p.items, emptyItem()] }));
+  const removeItem = (id: string) => setInv(p => ({ ...p, items: p.items.filter(it => it.id !== id) }));
+  const setItem = (id: string, patch: Partial<InvoiceItem>) =>
+    setInv(p => ({ ...p, items: p.items.map(it => it.id === id ? { ...it, ...patch } : it) }));
+
+  const toggleMethod = (m: "stripe" | "bank") =>
+    setInv(p => {
+      const methods = p.paymentMethods || [];
+      return { ...p, paymentMethods: methods.includes(m) ? methods.filter(x => x !== m) : [...methods, m] };
+    });
+
+  // Auto-fill "To" from linked booking
+  const handleBookingLink = (bookingId: string) => {
+    setInv(p => {
+      if (!bookingId) return { ...p, bookingId: undefined };
+      const bk = bookings.find(b => b.id === bookingId);
+      if (!bk) return { ...p, bookingId };
+      return { ...p, bookingId, to: { ...p.to, name: bk.clientName || p.to.name, email: bk.clientEmail || p.to.email } };
+    });
+  };
+
+  // Auto-fill "To" from linked album
+  const handleAlbumLink = (albumId: string) => {
+    setInv(p => {
+      if (!albumId) return { ...p, albumId: undefined };
+      const alb = albums.find(a => a.id === albumId);
+      if (!alb) return { ...p, albumId };
+      return { ...p, albumId, to: { ...p.to, name: alb.clientName || p.to.name, email: alb.clientEmail || p.to.email } };
+    });
+  };
+
+  const sub = calcInvSubtotal(inv.items);
+  const disc = inv.discount ?? 0;
+  const taxRate = inv.tax ?? 0;
+  const taxAmt = (sub - disc) * (taxRate / 100);
+  const total = sub - disc + taxAmt;
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!inv.to.name.trim()) { toast.error("Client name is required"); return; }
+    if (inv.items.length === 0) { toast.error("Add at least one line item"); return; }
+    onSave(inv);
+  };
+
+  const fieldClass = "w-full bg-secondary border border-border text-foreground font-body text-sm rounded-lg px-3 py-2 placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary/50";
+  const labelClass = "block text-[10px] font-body uppercase tracking-wider text-muted-foreground mb-1.5";
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-6 max-w-3xl">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <div>
+          <h2 className="font-display text-2xl text-foreground mb-1">{initial.status === "draft" && !getInvoices().find(i => i.id === initial.id) ? "New" : "Edit"} Invoice</h2>
+          <p className="text-xs font-body text-muted-foreground">{inv.number} · <span className={`${INV_STATUS_META[inv.status].color}`}>{INV_STATUS_META[inv.status].label}</span></p>
+        </div>
+        <div className="flex gap-2 sm:justify-end">
+          <Button type="button" variant="outline" onClick={onCancel} className="font-body text-sm gap-1.5 flex-1 sm:flex-none"><X className="w-4 h-4" />Cancel</Button>
+          <Button type="submit" className="font-body text-sm gap-1.5 flex-1 sm:flex-none"><Save className="w-4 h-4" />Save Invoice</Button>
+        </div>
+      </div>
+
+      {/* Status + Due */}
+      <div className="glass-panel rounded-xl p-4 grid grid-cols-2 sm:grid-cols-4 gap-4">
+        <div>
+          <label className={labelClass}>Status</label>
+          <select value={inv.status} onChange={e => setInv(p => ({ ...p, status: e.target.value as InvoiceStatus }))} className={fieldClass}>
+            {(["draft","sent","paid","overdue","cancelled"] as InvoiceStatus[]).map(s => <option key={s} value={s}>{INV_STATUS_META[s].label}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className={labelClass}>Due Date</label>
+          <input type="date" value={inv.dueDate} onChange={e => setInv(p => ({ ...p, dueDate: e.target.value }))} className={fieldClass} />
+        </div>
+        <div>
+          <label className={labelClass}>Link to Booking</label>
+          <select value={inv.bookingId || ""} onChange={e => handleBookingLink(e.target.value)} className={fieldClass}>
+            <option value="">None</option>
+            {bookings.map(b => <option key={b.id} value={b.id}>{b.clientName} — {b.date}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className={labelClass}>Link to Album</label>
+          <select value={inv.albumId || ""} onChange={e => handleAlbumLink(e.target.value)} className={fieldClass}>
+            <option value="">None</option>
+            {albums.map(a => <option key={a.id} value={a.id}>{a.title}</option>)}
+          </select>
+        </div>
+      </div>
+
+      {/* From / To */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        {/* FROM */}
+        <div className="glass-panel rounded-xl p-4 space-y-3">
+          <p className="text-xs font-body uppercase tracking-wider text-muted-foreground font-medium">From</p>
+          <div><label className={labelClass}>Name</label><input className={fieldClass} value={inv.from.name} onChange={e => setFrom({ name: e.target.value })} placeholder="Your business name" /></div>
+          <div><label className={labelClass}>ABN</label><input className={fieldClass} value={inv.from.abn || ""} onChange={e => setFrom({ abn: e.target.value })} placeholder="12 345 678 901" /></div>
+          <div><label className={labelClass}>Email</label><input className={fieldClass} type="email" value={inv.from.email} onChange={e => setFrom({ email: e.target.value })} /></div>
+          <div><label className={labelClass}>Address</label><textarea className={fieldClass} rows={2} value={inv.from.address} onChange={e => setFrom({ address: e.target.value })} placeholder="Street address" /></div>
+        </div>
+        {/* TO */}
+        <div className="glass-panel rounded-xl p-4 space-y-3">
+          <p className="text-xs font-body uppercase tracking-wider text-muted-foreground font-medium">Bill To</p>
+          <div><label className={labelClass}>Name *</label><input className={fieldClass} value={inv.to.name} onChange={e => setTo({ name: e.target.value })} placeholder="Client name" required /></div>
+          <div><label className={labelClass}>ABN</label><input className={fieldClass} value={inv.to.abn || ""} onChange={e => setTo({ abn: e.target.value })} /></div>
+          <div><label className={labelClass}>Email</label><input className={fieldClass} type="email" value={inv.to.email} onChange={e => setTo({ email: e.target.value })} /></div>
+          <div><label className={labelClass}>Address</label><textarea className={fieldClass} rows={2} value={inv.to.address} onChange={e => setTo({ address: e.target.value })} /></div>
+        </div>
+      </div>
+
+      {/* Line Items */}
+      <div className="glass-panel rounded-xl overflow-hidden">
+        <div className="p-4 border-b border-border flex items-center justify-between">
+          <p className="text-sm font-body font-medium text-foreground">Line Items</p>
+          <Button type="button" size="sm" variant="outline" onClick={addItem} className="gap-1.5 font-body text-xs">
+            <Plus className="w-3.5 h-3.5" /> Add Item
+          </Button>
+        </div>
+        <div className="divide-y divide-border">
+          {inv.items.map((item, idx) => (
+            <div key={item.id} className="px-4 py-3">
+              {/* Mobile: stacked layout */}
+              <div className="flex items-end gap-2 sm:hidden">
+                <div className="flex-1">
+                  {idx === 0 && <label className={labelClass}>Description</label>}
+                  <input className={fieldClass} value={item.description} onChange={e => setItem(item.id, { description: e.target.value })} placeholder="Photography session" />
+                </div>
+                <button type="button" onClick={() => removeItem(item.id)} className="shrink-0 mb-0.5 p-2 rounded hover:bg-red-500/10 text-muted-foreground/40 hover:text-red-400 transition-colors"><X className="w-4 h-4" /></button>
+              </div>
+              <div className="grid grid-cols-3 gap-2 mt-2 sm:hidden">
+                <div>
+                  <label className={labelClass}>Qty</label>
+                  <input className={fieldClass} type="number" min="0.01" step="0.01" value={item.quantity} onChange={e => setItem(item.id, { quantity: parseFloat(e.target.value) || 0 })} />
+                </div>
+                <div>
+                  <label className={labelClass}>Unit ($)</label>
+                  <input className={fieldClass} type="number" min="0" step="0.01" value={item.unitPrice} onChange={e => setItem(item.id, { unitPrice: parseFloat(e.target.value) || 0 })} />
+                </div>
+                <div>
+                  <label className={labelClass}>Total</label>
+                  <p className="text-sm font-body text-foreground pt-2 pl-1">${(item.quantity * item.unitPrice).toFixed(2)}</p>
+                </div>
+              </div>
+              {/* Desktop: grid layout */}
+              <div className="hidden sm:grid grid-cols-12 gap-2 items-center">
+                <div className="col-span-5">
+                  {idx === 0 && <label className={labelClass}>Description</label>}
+                  <input className={fieldClass} value={item.description} onChange={e => setItem(item.id, { description: e.target.value })} placeholder="Photography session" />
+                </div>
+                <div className="col-span-2">
+                  {idx === 0 && <label className={labelClass}>Qty</label>}
+                  <input className={fieldClass} type="number" min="0.01" step="0.01" value={item.quantity} onChange={e => setItem(item.id, { quantity: parseFloat(e.target.value) || 0 })} />
+                </div>
+                <div className="col-span-3">
+                  {idx === 0 && <label className={labelClass}>Unit Price ($)</label>}
+                  <input className={fieldClass} type="number" min="0" step="0.01" value={item.unitPrice} onChange={e => setItem(item.id, { unitPrice: parseFloat(e.target.value) || 0 })} />
+                </div>
+                <div className="col-span-1 text-right">
+                  {idx === 0 && <label className={labelClass}>Total</label>}
+                  <p className="text-sm font-body text-foreground pt-1">${(item.quantity * item.unitPrice).toFixed(2)}</p>
+                </div>
+                <div className="col-span-1 flex justify-end">
+                  {idx === 0 && <div className="invisible text-[10px]">x</div>}
+                  <button type="button" onClick={() => removeItem(item.id)} className="p-1 rounded hover:bg-red-500/10 text-muted-foreground/40 hover:text-red-400 transition-colors"><X className="w-3.5 h-3.5" /></button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+        {/* Totals */}
+        <div className="p-4 border-t border-border flex flex-col items-end gap-1 text-sm font-body">
+          <div className="grid grid-cols-2 gap-4 w-full sm:w-64">
+            <label className={labelClass}>Discount ($)</label>
+            <input className={fieldClass} type="number" min="0" step="0.01" value={inv.discount ?? ""} placeholder="0" onChange={e => setInv(p => ({ ...p, discount: parseFloat(e.target.value) || 0 }))} />
+            <label className={labelClass}>Tax Rate (%)</label>
+            <input className={fieldClass} type="number" min="0" step="0.1" value={inv.tax ?? ""} placeholder="0" onChange={e => setInv(p => ({ ...p, tax: parseFloat(e.target.value) || 0 }))} />
+          </div>
+          <div className="w-full sm:w-64 mt-2 space-y-1 text-right">
+            <p className="text-muted-foreground">Subtotal <span className="text-foreground ml-4">${sub.toFixed(2)}</span></p>
+            {disc > 0 && <p className="text-green-400">Discount <span className="ml-4">−${disc.toFixed(2)}</span></p>}
+            {taxRate > 0 && <p className="text-muted-foreground">GST ({taxRate}%) <span className="text-foreground ml-4">${taxAmt.toFixed(2)}</span></p>}
+            <p className="text-foreground font-medium pt-1 border-t border-border">Total <span className="font-display text-lg ml-4">${total.toFixed(2)}</span></p>
+          </div>
+        </div>
+      </div>
+
+      {/* Notes */}
+      <div className="glass-panel rounded-xl p-4">
+        <label className={labelClass}>Notes / Terms</label>
+        <textarea className={fieldClass} rows={3} value={inv.notes} onChange={e => setInv(p => ({ ...p, notes: e.target.value }))} placeholder="Payment terms, thank-you note, etc." />
+      </div>
+
+      {/* Payment Methods */}
+      <div className="glass-panel rounded-xl p-4">
+        <p className="text-xs font-body uppercase tracking-wider text-muted-foreground mb-3">Available Payment Methods</p>
+        <div className="flex flex-col gap-3">
+          {/* Stripe */}
+          <label className="flex items-start gap-3 cursor-pointer">
+            <input type="checkbox" checked={(inv.paymentMethods || []).includes("stripe")} onChange={() => toggleMethod("stripe")} className="mt-0.5 accent-purple-500" disabled={!stripeAvailable} />
+            <div>
+              <div className="flex items-center gap-2">
+                <CreditCard className="w-4 h-4 text-purple-400" />
+                <p className={`text-sm font-body ${stripeAvailable ? "text-foreground" : "text-muted-foreground/50"}`}>Card payment (Stripe)</p>
+                {!stripeAvailable && <span className="text-[10px] font-body text-muted-foreground/40 bg-secondary px-1.5 py-0.5 rounded">Stripe not configured</span>}
+              </div>
+              <p className="text-xs font-body text-muted-foreground/60">Client can pay with a card from the invoice link</p>
+            </div>
+          </label>
+          {/* Bank */}
+          <label className="flex items-start gap-3 cursor-pointer">
+            <input type="checkbox" checked={(inv.paymentMethods || []).includes("bank")} onChange={() => toggleMethod("bank")} className="mt-0.5 accent-blue-500" disabled={!bankSettings?.enabled} />
+            <div>
+              <div className="flex items-center gap-2">
+                <Building2 className="w-4 h-4 text-blue-400" />
+                <p className={`text-sm font-body ${bankSettings?.enabled ? "text-foreground" : "text-muted-foreground/50"}`}>Bank transfer</p>
+                {!bankSettings?.enabled && <span className="text-[10px] font-body text-muted-foreground/40 bg-secondary px-1.5 py-0.5 rounded">Bank transfer not enabled in settings</span>}
+              </div>
+              {bankSettings?.enabled && <p className="text-xs font-body text-muted-foreground/60">BSB {bankSettings.bsb} · {bankSettings.accountNumber}</p>}
+            </div>
+          </label>
+        </div>
+      </div>
+    </form>
+  );
+}
+
 // ─── Finance ───────────────────────────────────────────
 function FinanceView() {
   const [albumsState, setAlbumsState] = React.useState(() => getAlbums());
+  const [invoicesState] = React.useState(() => getInvoices());
   const [deletingId, setDeletingId] = React.useState<string | null>(null);
   const [expandedDownloadKeys, setExpandedDownloadKeys] = React.useState<Set<string>>(new Set());
 
@@ -3607,6 +4422,10 @@ function FinanceView() {
   const stripeTotal = payments.filter(p => p.method === "stripe" && p.status === "completed").reduce((s, p) => s + p.amount, 0);
   const bankTotal = payments.filter(p => p.method === "bank-transfer" && p.status === "completed").reduce((s, p) => s + p.amount, 0);
 
+  // Invoice stats — reuse the module-level calcInvTotal helper
+  const invoicePaid = invoicesState.filter(i => i.status === "paid").reduce((s, i) => s + calcInvTotal(i), 0);
+  const invoicePending = invoicesState.filter(i => i.status === "sent" || i.status === "overdue").reduce((s, i) => s + calcInvTotal(i), 0);
+
   const handleDelete = (p: PaymentRecord) => {
     if (!confirm(`Delete this payment record? This will revoke the client's access to the purchased photos.`)) return;
     const albums = getAlbums();
@@ -3669,6 +4488,30 @@ function FinanceView() {
           <p className="text-[10px] font-body text-muted-foreground mt-1">{payments.filter(p => p.method === "bank-transfer" && p.status === "completed").length} transfers</p>
         </div>
       </div>
+
+      {/* Invoice summary row */}
+      {invoicesState.length > 0 && (
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="glass-panel rounded-xl p-5">
+            <p className="text-xs font-body text-muted-foreground tracking-wider uppercase mb-1">Invoices Paid</p>
+            <p className="font-display text-2xl text-green-400">${invoicePaid.toFixed(2)}</p>
+            <p className="text-[10px] font-body text-muted-foreground mt-1">{invoicesState.filter(i => i.status === "paid").length} paid invoices</p>
+          </div>
+          <div className="glass-panel rounded-xl p-5">
+            <p className="text-xs font-body text-muted-foreground tracking-wider uppercase mb-1">Invoices Outstanding</p>
+            <p className="font-display text-2xl text-yellow-400">${invoicePending.toFixed(2)}</p>
+            <p className="text-[10px] font-body text-muted-foreground mt-1">{invoicesState.filter(i => i.status === "sent" || i.status === "overdue").length} outstanding</p>
+          </div>
+          <div className="glass-panel rounded-xl p-5 col-span-2 flex items-center justify-between">
+            <div>
+              <p className="text-xs font-body text-muted-foreground tracking-wider uppercase mb-1">All Invoices</p>
+              <p className="font-display text-2xl text-foreground">{invoicesState.length}</p>
+              <p className="text-[10px] font-body text-muted-foreground mt-1">{invoicesState.filter(i => i.status === "draft").length} drafts · {invoicesState.filter(i => i.status === "overdue").length} overdue</p>
+            </div>
+            <Receipt className="w-8 h-8 text-muted-foreground/20" />
+          </div>
+        </div>
+      )}
 
       <div className="glass-panel rounded-xl overflow-hidden">
         <div className="p-4 border-b border-border">
@@ -4114,6 +4957,7 @@ function SettingsView() {
                     { key: "discordNotifyBookings" as const, label: "Bookings & payments", desc: "New bookings, status changes, payment received" },
                     { key: "discordNotifyDownloads" as const, label: "Album purchases & downloads", desc: "Photo purchases, album unlocks" },
                     { key: "discordNotifyProofing" as const, label: "Proofing submissions", desc: "When clients submit their photo picks" },
+                    { key: "discordNotifyInvoices" as const, label: "Invoice events", desc: "Invoice created, sent, paid, overdue, reminders" },
                   ].map(({ key, label, desc }) => (
                     <div key={key} className="flex items-center justify-between py-2 border-t border-border/30">
                       <div>

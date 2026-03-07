@@ -1,4 +1,5 @@
 const stripe = require("stripe");
+const rateLimit = require("express-rate-limit");
 
 let stripeClient = null;
 
@@ -11,6 +12,7 @@ function getStripe() {
 }
 
 function registerRoutes(app) {
+  const checkoutLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHeaders: true, legacyHeaders: false, message: { error: "Too many checkout requests — please wait" } });
   // ── Status ─────────────────────────────────────────
   app.get("/api/stripe/status", (_req, res) => {
     const configured = !!process.env.STRIPE_SECRET_KEY;
@@ -18,7 +20,7 @@ function registerRoutes(app) {
   });
 
   // ── Create Checkout Session (booking deposit) ──────
-  app.post("/api/stripe/checkout/booking", async (req, res) => {
+  app.post("/api/stripe/checkout/booking", checkoutLimiter, async (req, res) => {
     const s = getStripe();
     if (!s) return res.status(400).json({ error: "Stripe not configured" });
     const { bookingId, clientName, clientEmail, amount, eventTitle, successUrl, cancelUrl } = req.body;
@@ -50,7 +52,7 @@ function registerRoutes(app) {
     }
   });
 
-  app.post("/api/stripe/checkout/album", async (req, res) => {
+  app.post("/api/stripe/checkout/album", checkoutLimiter, async (req, res) => {
     const s = getStripe();
     if (!s) return res.status(400).json({ error: "Stripe not configured" });
     const { albumId, albumTitle, photoCount, amount, clientEmail, successUrl, cancelUrl, photoIds, isFullAlbum, sessionKey } = req.body;
@@ -90,9 +92,44 @@ function registerRoutes(app) {
     }
   });
 
+  // ── Create Checkout Session (invoice) ─────────────
+  app.post("/api/stripe/checkout/invoice", checkoutLimiter, async (req, res) => {
+    const s = getStripe();
+    if (!s) return res.status(400).json({ error: "Stripe not configured" });
+    const { invoiceId, invoiceNumber, clientName, clientEmail, amount, description, successUrl, cancelUrl } = req.body;
+    if (!amount || amount <= 0) return res.status(400).json({ error: "Invalid amount" });
+    try {
+      const session = await s.checkout.sessions.create({
+        payment_method_types: ["card"],
+        customer_email: clientEmail || undefined,
+        line_items: [{
+          price_data: {
+            currency: "aud",
+            product_data: {
+              name: invoiceNumber ? `Invoice ${invoiceNumber}` : "Invoice Payment",
+              description: description || `Payment for ${clientName || "Client"}`,
+            },
+            unit_amount: Math.round(amount * 100),
+          },
+          quantity: 1,
+        }],
+        mode: "payment",
+        success_url: successUrl || `${req.headers.origin || ""}/invoice/${req.body.shareToken}?paid=1`,
+        cancel_url: cancelUrl || `${req.headers.origin || ""}/invoice/${req.body.shareToken}`,
+        metadata: { invoiceId, invoiceNumber: invoiceNumber || "", type: "invoice-payment" },
+      });
+      res.json({ url: session.url, sessionId: session.id });
+    } catch (err) {
+      console.error("Stripe invoice checkout error:", err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // ── Webhook ────────────────────────────────────────
-  // NOTE: For webhooks, Stripe sends raw body. Use express.raw() middleware on this route.
-  app.post("/api/stripe/webhook", express.raw({ type: "application/json" }), async (req, res) => {
+  // Generous rate limit for Stripe webhooks — protects file-system writes while allowing
+  // burst retries from Stripe (which retries up to 3× in quick succession on failure).
+  const webhookLimiter = rateLimit({ windowMs: 10_000, max: 30, standardHeaders: true, legacyHeaders: false, message: { error: "Too many requests" } });
+  app.post("/api/stripe/webhook", webhookLimiter, express.raw({ type: "application/json" }), async (req, res) => {
     const s = getStripe();
     if (!s) return res.status(400).json({ error: "Stripe not configured" });
     const sig = req.headers["stripe-signature"];
@@ -164,6 +201,20 @@ function registerRoutes(app) {
             fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
           } else {
             console.warn(`Album ${metadata.albumId} not found in wv_albums`);
+          }
+        }
+
+        if (metadata.type === "invoice-payment" && metadata.invoiceId) {
+          const raw = db["wv_invoices"];
+          const invoices = raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : [];
+          const idx = invoices.findIndex(inv => inv.id === metadata.invoiceId);
+          if (idx >= 0) {
+            invoices[idx].status = "paid";
+            invoices[idx].paidAt = new Date().toISOString();
+            invoices[idx].stripeSessionId = session.id;
+            db["wv_invoices"] = JSON.stringify(invoices);
+            fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
+            console.log(`📝 Invoice ${metadata.invoiceId} marked as paid via Stripe`);
           }
         }
       } catch (dbErr) {

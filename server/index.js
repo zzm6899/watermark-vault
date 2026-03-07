@@ -18,6 +18,7 @@ const {
   notifyAlbumPurchase,
   notifyProofingSubmission,
   notifyWaitlistNotified,
+  notifyInvoice,
 } = require("./discord");
 
 const app = express();
@@ -737,6 +738,17 @@ app.post("/api/discord/notify", async (req, res) => {
       case "proofing-submission":
         if (parsed?.discordNotifyProofing !== false && album) await notifyProofingSubmission(webhookUrl, album, photoCount || 0, clientNote);
         break;
+      case "invoice-created":
+      case "invoice-sent":
+      case "invoice-paid":
+      case "invoice-overdue":
+      case "invoice-cancelled":
+      case "invoice-reminder": {
+        const invoice = req.body.invoice;
+        const subType = eventType.replace("invoice-", "");
+        if (parsed?.discordNotifyInvoices !== false && invoice) await notifyInvoice(webhookUrl, invoice, subType);
+        break;
+      }
       default:
         // Generic passthrough embed
         if (req.body.embeds) await sendDiscordEmbed(webhookUrl, req.body);
@@ -879,6 +891,17 @@ registerGoogleCalendarRoutes(app);
 registerEmailRoutes(app);
 registerStripeRoutes(app);
 registerGoogleSheetsRoutes(app);
+
+// ── Invoice share endpoint (public — no auth required) ────────
+const invoiceShareLimiter = rateLimit({ windowMs: 60_000, max: 60, standardHeaders: true, legacyHeaders: false, message: { error: "Too many requests" } });
+app.get("/api/invoice/share/:token", invoiceShareLimiter, (req, res) => {
+  const db = readDb();
+  const raw = db["wv_invoices"];
+  const invoices = raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : [];
+  const invoice = invoices.find(inv => inv.shareToken === req.params.token);
+  if (!invoice) return res.status(404).json({ error: "Invoice not found" });
+  res.json(invoice);
+});
 
 // ── Serve React app ───────────────────────────────────
 const distPath = path.join(__dirname, "../dist");

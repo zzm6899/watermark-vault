@@ -12,6 +12,7 @@ import Login from "./pages/Login";
 import Setup from "./pages/Setup";
 import NotFound from "./pages/NotFound";
 import MobileCapture from "./pages/MobileCapture";
+import InvoiceView from "./pages/InvoiceView";
 import { isSetupComplete, isLoggedIn } from "./lib/storage";
 import { syncFromServer } from "./lib/api";
 
@@ -59,6 +60,7 @@ const App = () => {
             <Route path="/admin" element={<AdminGuard />} />
             <Route path="/admin/:tab" element={<AdminGuard />} />
             <Route path="/admin/storage" element={<AdminGuard />} />
+            <Route path="/invoice/:token" element={<InvoiceView />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </BrowserRouter>

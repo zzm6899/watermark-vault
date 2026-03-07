@@ -1,7 +1,7 @@
 import { useParams, useSearchParams } from "react-router-dom";
 import { useState, useCallback, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Info, Building2, Copy, Check as CheckIcon, Lock, Download, Grid, List, LayoutGrid, CreditCard, X, ChevronLeft, ChevronRight, Star, Camera, CheckCircle2, Clock, Sparkles, Maximize2, ArrowUpDown, SlidersHorizontal } from "lucide-react";
+import { Info, Building2, Copy, Check as CheckIcon, Lock, Download, Grid, List, LayoutGrid, CreditCard, X, ChevronLeft, ChevronRight, Star, Camera, CheckCircle2, Clock, Sparkles, Maximize2, ArrowUpDown, SlidersHorizontal, ZoomIn, ZoomOut } from "lucide-react";
 import Header from "@/components/Header";
 import Footer from "@/components/Footer";
 import WatermarkedImage from "@/components/WatermarkedImage";
@@ -27,6 +27,8 @@ import { Label } from "@/components/ui/label";
 import type { Album, AlbumDownloadRecord, DownloadQuality, DownloadHistoryEntry, Photo } from "@/lib/types";
 
 const TARGET_LIGHTBOX_BYTES = 600 * 1024; // ~600KB
+// Scroll wheel zoom sensitivity — smaller = slower zoom per scroll tick
+const ZOOM_WHEEL_SENSITIVITY = 0.002;
 
 /** Type for Stripe checkout params — defined at file level to avoid re-creation on every render. */
 type StripeCheckoutParams = Parameters<typeof createAlbumCheckout>[0];
@@ -182,6 +184,9 @@ export default function AlbumDetail() {
     () => (albumId ? getAlbumBySlug(albumId) : undefined)?.displaySize ?? "medium"
   );
   const [lightboxSrcCache, setLightboxSrcCache] = useState<Record<string, string>>({});
+  const [lbZoom, setLbZoom] = useState(1);
+  const [lbPan, setLbPan] = useState({ x: 0, y: 0 });
+  const lbPanStart = useRef<{ mx: number; my: number; px: number; py: number } | null>(null);
   const [stripeAvailable, setStripeAvailable] = useState(false);
   const [processingStripe, setProcessingStripe] = useState(false);
   const [stripeSuccess, setStripeSuccess] = useState(() => searchParams.get("success") === "1");
@@ -265,9 +270,12 @@ export default function AlbumDetail() {
     const handler = (e: KeyboardEvent) => {
       const lbPhotos = displayedPhotosRef.current;
       const currentIdx = lbPhotos.findIndex((p: any) => p.id === lightboxPhotoId);
-      if (e.key === "Escape") setLightboxPhotoId(null);
-      if (e.key === "ArrowLeft" && currentIdx > 0) setLightboxPhotoId(lbPhotos[currentIdx - 1].id);
-      if (e.key === "ArrowRight" && currentIdx < lbPhotos.length - 1) setLightboxPhotoId(lbPhotos[currentIdx + 1].id);
+      if (e.key === "Escape") { setLightboxPhotoId(null); setLbZoom(1); setLbPan({ x: 0, y: 0 }); }
+      if (e.key === "ArrowLeft" && currentIdx > 0) { setLightboxPhotoId(lbPhotos[currentIdx - 1].id); setLbZoom(1); setLbPan({ x: 0, y: 0 }); }
+      if (e.key === "ArrowRight" && currentIdx < lbPhotos.length - 1) { setLightboxPhotoId(lbPhotos[currentIdx + 1].id); setLbZoom(1); setLbPan({ x: 0, y: 0 }); }
+      if ((e.key === "+" || e.key === "=") && !e.ctrlKey) setLbZoom(z => Math.min(4, +(z + 0.5).toFixed(1)));
+      if (e.key === "-" && !e.ctrlKey) setLbZoom(z => { const next = Math.max(1, +(z - 0.5).toFixed(1)); if (next === 1) setLbPan({ x: 0, y: 0 }); return next; });
+      if (e.key === "0") { setLbZoom(1); setLbPan({ x: 0, y: 0 }); }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
@@ -1491,52 +1499,113 @@ export default function AlbumDetail() {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             className="fixed inset-0 z-[100] bg-black/95 backdrop-blur-sm flex items-center justify-center p-3 sm:p-6"
-            onClick={() => setLightboxPhotoId(null)}
+            onClick={() => { if (lbZoom === 1) setLightboxPhotoId(null); }}
+            onWheel={(e) => {
+              e.preventDefault();
+              setLbZoom(z => {
+                const next = Math.min(4, Math.max(1, +(z - e.deltaY * ZOOM_WHEEL_SENSITIVITY).toFixed(2)));
+                if (next === 1) setLbPan({ x: 0, y: 0 });
+                return next;
+              });
+            }}
             onTouchStart={(e) => { touchStartX.current = e.touches[0].clientX; }}
             onTouchEnd={(e) => {
               if (touchStartX.current === null) return;
               const dx = e.changedTouches[0].clientX - touchStartX.current;
               touchStartX.current = null;
+              if (lbZoom > 1) return; // don't swipe-navigate when zoomed
               if (Math.abs(dx) < 50) return; // too short — treat as a tap, let onClick close
               e.preventDefault(); // block the synthetic click so lightbox stays open
               const photos = displayedPhotosRef.current;
               const idx = photos.findIndex(p => p.id === lightboxPhotoId);
-              if (dx < 0 && idx < photos.length - 1) setLightboxPhotoId(photos[idx + 1].id); // swipe left → next
-              if (dx > 0 && idx > 0) setLightboxPhotoId(photos[idx - 1].id);                  // swipe right → prev
+              if (dx < 0 && idx < photos.length - 1) { setLightboxPhotoId(photos[idx + 1].id); setLbZoom(1); setLbPan({ x: 0, y: 0 }); } // swipe left → next
+              if (dx > 0 && idx > 0) { setLightboxPhotoId(photos[idx - 1].id); setLbZoom(1); setLbPan({ x: 0, y: 0 }); }                  // swipe right → prev
             }}
           >
             {/* Close button */}
             <button className="absolute top-3 right-3 sm:top-4 sm:right-4 z-10 w-11 h-11 rounded-full bg-white/15 backdrop-blur-sm flex items-center justify-center text-white hover:bg-white/25 transition-colors"
-              onClick={() => setLightboxPhotoId(null)}>
+              onClick={() => { setLightboxPhotoId(null); setLbZoom(1); setLbPan({ x: 0, y: 0 }); }}>
               <X className="w-5 h-5" />
             </button>
 
-            {/* Nav arrows */}
-            {lbIdx > 0 && (
+            {/* Zoom controls */}
+            <div className="absolute top-3 left-3 sm:top-4 sm:left-4 z-10 flex items-center gap-1.5">
+              <button
+                onClick={(e) => { e.stopPropagation(); setLbZoom(z => { const next = Math.max(1, +(z - 0.5).toFixed(1)); if (next === 1) setLbPan({ x: 0, y: 0 }); return next; }); }}
+                disabled={lbZoom <= 1}
+                className="w-9 h-9 rounded-full bg-white/15 backdrop-blur-sm flex items-center justify-center text-white hover:bg-white/25 transition-colors disabled:opacity-30 disabled:cursor-default"
+                title="Zoom out (−)"
+              >
+                <ZoomOut className="w-4 h-4" />
+              </button>
+              {lbZoom !== 1 && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); setLbZoom(1); setLbPan({ x: 0, y: 0 }); }}
+                  className="h-9 px-3 rounded-full bg-white/15 backdrop-blur-sm text-white text-xs font-body hover:bg-white/25 transition-colors"
+                  title="Reset zoom (0)"
+                >
+                  {Math.round(lbZoom * 100)}%
+                </button>
+              )}
+              <button
+                onClick={(e) => { e.stopPropagation(); setLbZoom(z => Math.min(4, +(z + 0.5).toFixed(1))); }}
+                disabled={lbZoom >= 4}
+                className="w-9 h-9 rounded-full bg-white/15 backdrop-blur-sm flex items-center justify-center text-white hover:bg-white/25 transition-colors disabled:opacity-30 disabled:cursor-default"
+                title="Zoom in (+)"
+              >
+                <ZoomIn className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Nav arrows — hidden when zoomed */}
+            {lbZoom === 1 && lbIdx > 0 && (
               <button className="absolute left-2 sm:left-4 z-10 w-11 h-11 rounded-full bg-white/15 backdrop-blur-sm flex items-center justify-center text-white hover:bg-white/25 transition-colors"
-                onClick={(e) => { e.stopPropagation(); setLightboxPhotoId(displayedPhotos[lbIdx - 1].id); }}>
+                onClick={(e) => { e.stopPropagation(); setLightboxPhotoId(displayedPhotos[lbIdx - 1].id); setLbZoom(1); setLbPan({ x: 0, y: 0 }); }}>
                 <ChevronLeft className="w-5 h-5" />
               </button>
             )}
-            {lbIdx < displayedPhotos.length - 1 && (
+            {lbZoom === 1 && lbIdx < displayedPhotos.length - 1 && (
               <button className="absolute right-2 sm:right-4 z-10 w-11 h-11 rounded-full bg-white/15 backdrop-blur-sm flex items-center justify-center text-white hover:bg-white/25 transition-colors"
-                onClick={(e) => { e.stopPropagation(); setLightboxPhotoId(displayedPhotos[lbIdx + 1].id); }}>
+                onClick={(e) => { e.stopPropagation(); setLightboxPhotoId(displayedPhotos[lbIdx + 1].id); setLbZoom(1); setLbPan({ x: 0, y: 0 }); }}>
                 <ChevronRight className="w-5 h-5" />
               </button>
             )}
 
             {/* Photo */}
-            <div className="relative w-full max-w-[96vw] sm:max-w-[90vw] h-[78vh] sm:h-[84vh] flex items-center justify-center" onClick={(e) => e.stopPropagation()}>
-              <LightboxImage
-                photo={lbPhoto}
-                cache={lightboxSrcCache}
-                onCacheUpdate={(cacheKey, url) => setLightboxSrcCache(prev => ({ ...prev, [cacheKey]: url }))}
-                wmDisabled={!!(album.watermarkDisabled || isPhotoPaid(lbPhoto.id))}
-                watermarkVersion={(settings as any).watermarkVersion || (lbPhoto as any).watermarkVersion || 0}
-              />
+            <div
+              className="relative w-full max-w-[96vw] sm:max-w-[90vw] h-[78vh] sm:h-[84vh] flex items-center justify-center overflow-hidden"
+              onClick={(e) => e.stopPropagation()}
+              onDoubleClick={() => { if (lbZoom === 1) { setLbZoom(2); } else { setLbZoom(1); setLbPan({ x: 0, y: 0 }); } }}
+              onMouseDown={(e) => {
+                if (lbZoom > 1) {
+                  e.preventDefault();
+                  lbPanStart.current = { mx: e.clientX, my: e.clientY, px: lbPan.x, py: lbPan.y };
+                }
+              }}
+              onMouseMove={(e) => {
+                if (lbPanStart.current) {
+                  setLbPan({ x: lbPanStart.current.px + e.clientX - lbPanStart.current.mx, y: lbPanStart.current.py + e.clientY - lbPanStart.current.my });
+                }
+              }}
+              onMouseUp={() => { lbPanStart.current = null; }}
+              onMouseLeave={() => { lbPanStart.current = null; }}
+              style={{ cursor: lbZoom > 1 ? (lbPanStart.current ? "grabbing" : "grab") : "default" }}
+            >
+              <div
+                style={{ transform: `scale(${lbZoom}) translate(${lbPan.x / lbZoom}px, ${lbPan.y / lbZoom}px)`, transition: lbPanStart.current ? "none" : "transform 0.15s ease", transformOrigin: "center center", width: "100%", height: "100%" }}
+                className="flex items-center justify-center"
+              >
+                <LightboxImage
+                  photo={lbPhoto}
+                  cache={lightboxSrcCache}
+                  onCacheUpdate={(cacheKey, url) => setLightboxSrcCache(prev => ({ ...prev, [cacheKey]: url }))}
+                  wmDisabled={!!(album.watermarkDisabled || isPhotoPaid(lbPhoto.id))}
+                  watermarkVersion={(settings as any).watermarkVersion || (lbPhoto as any).watermarkVersion || 0}
+                />
+              </div>
 
               {/* Bottom bar with select/star/title */}
-              <div className="absolute bottom-0 left-0 right-0 p-3 sm:p-4 bg-gradient-to-t from-black/80 to-transparent rounded-b-lg flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
+              <div className="absolute bottom-0 left-0 right-0 p-3 sm:p-4 bg-gradient-to-t from-black/80 to-transparent rounded-b-lg flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2" style={{ pointerEvents: lbZoom > 1 ? "none" : undefined }}>
                 <p className="text-sm font-body text-white/90 pr-12 sm:pr-0">{lbPhoto.title}</p>
                 <div className="flex gap-2">
                   {isProofing && (

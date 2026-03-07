@@ -186,6 +186,7 @@ export interface AppSettings {
   discordNotifyBookings: boolean;
   discordNotifyDownloads: boolean;
   discordNotifyProofing: boolean;
+  discordNotifyInvoices: boolean;
   watermarkSize: number;
   proofingEnabled: boolean;
 }
@@ -222,4 +223,51 @@ export interface EmailTemplate {
 export interface AdminCredentials {
   username: string;
   passwordHash: string;
+}
+
+// ─── Invoices ─────────────────────────────────────────────────────────────────
+
+export interface InvoiceParty {
+  name: string;
+  email: string;
+  address: string;
+  abn?: string;
+}
+
+export interface InvoiceItem {
+  id: string;
+  description: string;
+  quantity: number;
+  unitPrice: number;
+}
+
+export type InvoiceStatus = "draft" | "sent" | "paid" | "overdue" | "cancelled";
+
+export interface InvoiceEmailLogEntry {
+  sentAt: string;
+  type: "invoice" | "reminder" | "custom";
+  to: string;
+  subject?: string;
+}
+
+export interface Invoice {
+  id: string;
+  number: string;           // e.g. "INV-0001"
+  status: InvoiceStatus;
+  from: InvoiceParty;
+  to: InvoiceParty;
+  items: InvoiceItem[];
+  notes: string;
+  dueDate: string;          // YYYY-MM-DD
+  createdAt: string;
+  sentAt?: string;
+  paidAt?: string;
+  shareToken: string;       // random token for public share link
+  emailLog: InvoiceEmailLogEntry[];
+  bookingId?: string;       // optional link to a booking
+  albumId?: string;         // optional link to an album
+  tax?: number;             // tax rate percent (e.g. 10 for 10% GST)
+  discount?: number;        // discount amount in dollars
+  paymentMethods?: ("stripe" | "bank")[];  // which payment methods are available for this invoice
+  stripeSessionId?: string; // Stripe checkout session ID once created
 }
