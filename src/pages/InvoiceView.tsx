@@ -2,11 +2,30 @@ import { useEffect, useState, useRef } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import { getInvoiceByToken, createInvoiceCheckout, getStripeStatus } from "@/lib/api";
 import type { Invoice } from "@/lib/types";
-import { Loader2, CheckCircle2, Clock, AlertCircle, XCircle, CreditCard, Building2, Printer, ExternalLink } from "lucide-react";
+import { Loader2, CheckCircle2, Clock, AlertCircle, XCircle, CreditCard, Building2, Printer, ExternalLink, Copy } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function CopyButton({ value, fieldKey, copiedField, onCopy }: {
+  value: string;
+  fieldKey: string;
+  copiedField: string | null;
+  onCopy: (value: string, field: string) => void;
+}) {
+  return (
+    <button
+      onClick={() => onCopy(value, fieldKey)}
+      className="text-muted-foreground/50 hover:text-muted-foreground transition-colors shrink-0"
+      title={`Copy ${fieldKey}`}
+    >
+      {copiedField === fieldKey
+        ? <CheckCircle2 className="w-3.5 h-3.5 text-green-400" />
+        : <Copy className="w-3.5 h-3.5" />}
+    </button>
+  );
+}
 
 function calcSubtotal(items: Invoice["items"]) {
   return items.reduce((sum, it) => sum + it.quantity * it.unitPrice, 0);
@@ -313,9 +332,9 @@ export default function InvoiceView() {
 // ─── Bank Transfer Panel (fetches bank details from server settings) ──────────
 function BankTransferPanel({ invoice }: { invoice: Invoice }) {
   const [bank, setBank] = useState<{ accountName?: string; bsb?: string; accountNumber?: string; payId?: string; payIdType?: string; instructions?: string } | null>(null);
+  const [copiedField, setCopiedField] = useState<string | null>(null);
 
   useEffect(() => {
-    // Fetch settings to get bank details
     fetch("/api/store/wv_settings")
       .then(r => r.json())
       .then(raw => {
@@ -324,6 +343,13 @@ function BankTransferPanel({ invoice }: { invoice: Invoice }) {
       })
       .catch(() => {});
   }, []);
+
+  const copyToClipboard = (value: string, field: string) => {
+    navigator.clipboard.writeText(value).then(() => {
+      setCopiedField(field);
+      setTimeout(() => setCopiedField(null), 2000);
+    }).catch(() => {});
+  };
 
   const { total: grandTotal } = calcTotals(invoice);
 
@@ -345,28 +371,43 @@ function BankTransferPanel({ invoice }: { invoice: Invoice }) {
         {bank.bsb && (
           <div>
             <p className="text-[10px] uppercase tracking-wider text-muted-foreground">BSB</p>
-            <p className="text-foreground">{bank.bsb}</p>
+            <div className="flex items-center gap-1.5">
+              <p className="text-foreground">{bank.bsb}</p>
+              <CopyButton value={bank.bsb} fieldKey="bsb" copiedField={copiedField} onCopy={copyToClipboard} />
+            </div>
           </div>
         )}
         {bank.accountNumber && (
           <div>
             <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Account Number</p>
-            <p className="text-foreground">{bank.accountNumber}</p>
+            <div className="flex items-center gap-1.5">
+              <p className="text-foreground">{bank.accountNumber}</p>
+              <CopyButton value={bank.accountNumber} fieldKey="accountNumber" copiedField={copiedField} onCopy={copyToClipboard} />
+            </div>
           </div>
         )}
         {bank.payId && (
           <div>
             <p className="text-[10px] uppercase tracking-wider text-muted-foreground">PayID ({bank.payIdType})</p>
-            <p className="text-foreground">{bank.payId}</p>
+            <div className="flex items-center gap-1.5">
+              <p className="text-foreground">{bank.payId}</p>
+              <CopyButton value={bank.payId} fieldKey="payId" copiedField={copiedField} onCopy={copyToClipboard} />
+            </div>
           </div>
         )}
         <div>
           <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Amount</p>
-          <p className="text-foreground font-medium">${grandTotal.toFixed(2)}</p>
+          <div className="flex items-center gap-1.5">
+            <p className="text-foreground font-medium">${grandTotal.toFixed(2)}</p>
+            <CopyButton value={grandTotal.toFixed(2)} fieldKey="amount" copiedField={copiedField} onCopy={copyToClipboard} />
+          </div>
         </div>
         <div>
           <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Reference</p>
-          <p className="text-foreground">{invoice.number}</p>
+          <div className="flex items-center gap-1.5">
+            <p className="text-foreground">{invoice.number}</p>
+            <CopyButton value={invoice.number} fieldKey="reference" copiedField={copiedField} onCopy={copyToClipboard} />
+          </div>
         </div>
       </div>
       {bank.instructions && (

@@ -1,6 +1,6 @@
 import type {
   EventType, Booking, Album, Photo, ProfileSettings,
-  AppSettings, AdminCredentials, BankTransferSettings, WaitlistEntry, EmailTemplate, Invoice, Contact,
+  AppSettings, AdminCredentials, BankTransferSettings, WaitlistEntry, EmailTemplate, Invoice, Contact, Enquiry,
 } from "./types";
 import { persistToServer } from "./api";
 
@@ -206,6 +206,8 @@ const defaultSettings: AppSettings = {
   proofingEnabled: false,
   invoiceFrom: { name: "", email: "", address: "", abn: "" },
   invoiceNotes: "",
+  enquiryEnabled: false,
+  enquiryLabel: "Make an Enquiry",
 };
 
 export function getSettings(): AppSettings {
@@ -353,4 +355,27 @@ export function updateContact(contact: Contact) {
 
 export function deleteContact(id: string) {
   setContacts(getContacts().filter(c => c.id !== id));
+}
+
+// ── Enquiries ────────────────────────────────────────
+export function getEnquiries(): Enquiry[] {
+  return get<Enquiry[]>("wv_enquiries", []);
+}
+
+export function setEnquiries(enquiries: Enquiry[]) {
+  set("wv_enquiries", enquiries);
+}
+
+export function addEnquiry(enquiry: Enquiry) {
+  const list = getEnquiries();
+  list.push(enquiry);
+  setEnquiries(list);
+}
+
+export function updateEnquiry(enquiry: Enquiry) {
+  setEnquiries(getEnquiries().map(e => (e.id === enquiry.id ? enquiry : e)));
+}
+
+export function deleteEnquiry(id: string) {
+  setEnquiries(getEnquiries().filter(e => e.id !== id));
 }

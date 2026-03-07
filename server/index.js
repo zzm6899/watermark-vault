@@ -34,11 +34,29 @@ const MAX_ZIP_FILES = 1000; // Reasonable upper bound per request to prevent res
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 if (!fs.existsSync(DB_FILE)) fs.writeFileSync(DB_FILE, JSON.stringify({}));
 
+// ── In-memory DB cache (avoids disk reads on every request) ──
+let _dbCache = null;
+let _dbCacheTime = 0;
+const DB_CACHE_TTL = 5000; // 5 seconds
+
 function readDb() {
-  try { return JSON.parse(fs.readFileSync(DB_FILE, "utf-8")); } catch { return {}; }
+  const now = Date.now();
+  if (_dbCache !== null && (now - _dbCacheTime) < DB_CACHE_TTL) return _dbCache;
+  try {
+    _dbCache = JSON.parse(fs.readFileSync(DB_FILE, "utf-8"));
+    _dbCacheTime = now;
+    return _dbCache;
+  } catch (err) {
+    // Log the full error so administrators are aware of database read issues
+    console.error("readDb error:", err);
+    return _dbCache || {};
+  }
 }
 function writeDb(data) {
   fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
+  // Invalidate cache immediately so the next read reflects the new data
+  _dbCache = data;
+  _dbCacheTime = Date.now();
 }
 
 app.use(cors());
@@ -399,7 +417,17 @@ function getCacheFilename(baseName, sizeLabel, watermarked) {
   return `${baseName}_${sizeLabel}_${watermarked ? "wm" : "clean"}.jpg`;
 }
 
-app.get("/uploads/:filename", async (req, res) => {
+// Rate-limit the image endpoint: generous limit per IP to guard against DoS
+// while allowing normal gallery browsing (600 requests / 60 s ≈ 10 images/s)
+const imageServeLimiter = rateLimit({
+  windowMs: 60_000,
+  max: 600,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many image requests — please slow down" },
+});
+
+app.get("/uploads/:filename", imageServeLimiter, async (req, res) => {
   const safeName = path.basename(req.params.filename);
   const filepath = path.join(UPLOADS_DIR, safeName);
 
@@ -433,9 +461,18 @@ app.get("/uploads/:filename", async (req, res) => {
 
   try {
     if (fs.existsSync(cacheFile)) {
+      const stat = fs.statSync(cacheFile);
+      const lastModified = stat.mtime.toUTCString();
+
+      // Honour conditional GET — avoid re-sending unchanged bytes (RFC 7232: 304 if not modified since)
+      if (req.headers["if-modified-since"] && new Date(req.headers["if-modified-since"]) >= stat.mtime) {
+        return res.status(304).end();
+      }
+
       res.set({
         "Content-Type": "image/jpeg",
-        "Cache-Control": "public, max-age=7200",
+        "Cache-Control": "public, max-age=86400",
+        "Last-Modified": lastModified,
         "X-Cache": "HIT",
       });
       return res.sendFile(cacheFile);
@@ -477,11 +514,16 @@ app.get("/uploads/:filename", async (req, res) => {
     const result = await pipeline.jpeg({ quality: 82, progressive: true }).toBuffer();
 
     // Persist to cache
-    try { fs.writeFileSync(cacheFile, result); } catch { /* non-critical */ }
+    let lastModified = new Date().toUTCString();
+    try {
+      fs.writeFileSync(cacheFile, result);
+      lastModified = fs.statSync(cacheFile).mtime.toUTCString();
+    } catch { /* non-critical */ }
 
     res.set({
       "Content-Type": "image/jpeg",
-      "Cache-Control": "public, max-age=7200",
+      "Cache-Control": "public, max-age=86400",
+      "Last-Modified": lastModified,
       "X-Watermarked": shouldWatermark ? "true" : "false",
       "X-Cache": "MISS",
     });

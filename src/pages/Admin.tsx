@@ -18,13 +18,14 @@ import { toast } from "sonner";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   getProfile, setProfile, getEventTypes, setEventTypes, addEventType,
-  deleteEventType, updateEventType, getBookings, deleteBooking,
+  deleteEventType, updateEventType, getBookings, addBooking, deleteBooking,
   updateBooking, getSettings, setSettings, logout, isLoggedIn, isSetupComplete,
   getAlbums, addAlbum, updateAlbum, deleteAlbum,
   getPhotoLibrary, setPhotoLibrary,
   getEmailTemplates, addEmailTemplate, updateEmailTemplate, deleteEmailTemplate,
   getInvoices, addInvoice, updateInvoice, deleteInvoice, getNextInvoiceNumber,
   getContacts, addContact, updateContact, deleteContact,
+  getEnquiries, updateEnquiry, deleteEnquiry,
 } from "@/lib/storage";
 import { compressImage, formatBytes, getLocalStorageUsage, generateThumbnail } from "@/lib/image-utils";
 import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar, getServerStorageStats, syncFromServer, sendEmail, bulkDeleteFiles, syncBookingsToSheet, getBookingEmailLog, sendBookingReminder, sendCustomEmail, getWaitlistEntries, deleteWaitlistEntry, notifyWaitlistOnCancel, notifyDiscord, getCacheStats, warmCache, createInvoiceCheckout, sendInvoiceEmail, getStripeStatus } from "@/lib/api";
@@ -36,6 +37,7 @@ import type {
   ProfileSettings, AppSettings, Booking, WatermarkPosition,
   Album, Photo, PaymentStatus, AlbumDisplaySize, AlbumDownloadRecord, DownloadHistoryEntry,
   EmailTemplate, WaitlistEntry, Invoice, InvoiceItem, InvoiceParty, InvoiceStatus, Contact,
+  Enquiry, EnquiryStatus,
 } from "@/lib/types";
 import WatermarkedImage from "@/components/WatermarkedImage";
 import ProgressiveImg from "@/components/ProgressiveImg";
@@ -47,7 +49,7 @@ import sampleWedding from "@/assets/sample-wedding.jpg";
 import sampleEvent from "@/assets/sample-event.jpg";
 import sampleFood from "@/assets/sample-food.jpg";
 
-type Tab = "dashboard" | "bookings" | "events" | "albums" | "photos" | "finance" | "invoices" | "contacts" | "profile" | "settings" | "storage";
+type Tab = "dashboard" | "bookings" | "events" | "albums" | "photos" | "finance" | "invoices" | "contacts" | "enquiries" | "profile" | "settings" | "storage";
 
 const TAB_ROUTE_MAP: Record<string, Tab> = {
   dashboard: "dashboard",
@@ -58,6 +60,7 @@ const TAB_ROUTE_MAP: Record<string, Tab> = {
   finance: "finance",
   invoices: "invoices",
   contacts: "contacts",
+  enquiries: "enquiries",
   profile: "profile",
   settings: "settings",
   storage: "storage",
@@ -478,6 +481,7 @@ export default function Admin() {
     { id: "finance" as Tab, label: "Finance", icon: DollarSign },
     { id: "invoices" as Tab, label: "Invoices", icon: Receipt },
     { id: "contacts" as Tab, label: "Contacts", icon: Users },
+    { id: "enquiries" as Tab, label: "Enquiries", icon: MessageSquare },
     { id: "profile" as Tab, label: "Profile", icon: Camera },
     { id: "settings" as Tab, label: "Settings", icon: Settings },
     { id: "storage" as Tab, label: "Storage", icon: HardDrive },
@@ -539,7 +543,9 @@ export default function Admin() {
                 ? albums.filter(a => a.proofingEnabled && a.proofingStage === "selections-submitted").length
                 : tab.id === "invoices"
                   ? getInvoices().filter(i => i.status === "overdue").length
-                  : 0;
+                  : tab.id === "enquiries"
+                    ? getEnquiries().filter(e => e.status === "pending").length
+                    : 0;
               return (
                 <button
                   key={tab.id}
@@ -575,6 +581,7 @@ export default function Admin() {
           {activeTab === "finance" && <FinanceView />}
           {activeTab === "invoices" && <InvoicesView />}
           {activeTab === "contacts" && <ContactsView />}
+          {activeTab === "enquiries" && <EnquiriesView />}
           {activeTab === "profile" && <ProfileView />}
           {activeTab === "settings" && <SettingsView />}
           {activeTab === "storage" && <StorageView />}
@@ -3609,6 +3616,240 @@ function PhotosView() {
 }
 
 // ─── Profile ─────────────────────────────────────────
+// ─── Enquiries ──────────────────────────────────────────
+
+const ENQ_STATUS_META: Record<EnquiryStatus, { label: string; color: string; bg: string }> = {
+  pending:  { label: "Pending",  color: "text-yellow-400", bg: "bg-yellow-500/10" },
+  accepted: { label: "Accepted", color: "text-green-400",  bg: "bg-green-500/10"  },
+  declined: { label: "Declined", color: "text-gray-400",   bg: "bg-gray-500/10"   },
+};
+
+function EnquiriesView() {
+  const eventTypes = getEventTypes();
+  const [enquiries, setEnquiriesState] = React.useState<Enquiry[]>(() =>
+    getEnquiries().slice().sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+  );
+  const [filter, setFilter] = React.useState<EnquiryStatus | "all">("pending");
+  const [decliningId, setDecliningId] = React.useState<string | null>(null);
+  const [adminNoteInput, setAdminNoteInput] = React.useState("");
+
+  const reload = () =>
+    setEnquiriesState(
+      getEnquiries().slice().sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+    );
+
+  const handleAccept = (enq: Enquiry) => {
+    const now = new Date().toISOString();
+    const modifyToken = `mod-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const matchedEvent = enq.eventTypeId ? eventTypes.find(e => e.id === enq.eventTypeId) : null;
+    const booking: Booking = {
+      id: `bk-${Date.now()}`,
+      clientName: enq.name,
+      clientEmail: enq.email,
+      date: enq.preferredDate || now.slice(0, 10),
+      time: enq.preferredStartTime || "09:00",
+      eventTypeId: enq.eventTypeId || "",
+      type: enq.eventTypeTitle || matchedEvent?.title || "Custom Enquiry",
+      duration: 60,
+      status: "pending",
+      notes: `Enquiry: ${enq.message}`,
+      answers: {},
+      answerLabels: {},
+      createdAt: now,
+      paymentStatus: "unpaid",
+      paymentAmount: matchedEvent?.price || 0,
+      instagramHandle: "",
+      modifyToken,
+    };
+    addBooking(booking);
+    const updated: Enquiry = { ...enq, status: "accepted", respondedAt: now, bookingId: booking.id };
+    updateEnquiry(updated);
+    reload();
+    toast.success(`Enquiry accepted — booking created for ${enq.name}. Check the Bookings tab.`);
+  };
+
+  const handleDecline = (enq: Enquiry) => {
+    setDecliningId(enq.id);
+    setAdminNoteInput("");
+  };
+
+  const confirmDecline = (enq: Enquiry) => {
+    const updated: Enquiry = {
+      ...enq,
+      status: "declined",
+      respondedAt: new Date().toISOString(),
+      adminNote: adminNoteInput.trim() || undefined,
+    };
+    updateEnquiry(updated);
+    setDecliningId(null);
+    reload();
+    toast.success("Enquiry declined");
+  };
+
+  const handleDelete = (id: string) => {
+    if (!confirm("Delete this enquiry?")) return;
+    deleteEnquiry(id);
+    reload();
+  };
+
+  const filtered = enquiries.filter(e => filter === "all" || e.status === filter);
+  const pendingCount = enquiries.filter(e => e.status === "pending").length;
+
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+      <div className="flex items-center gap-3 mb-6">
+        <h2 className="font-display text-2xl text-foreground">Enquiries</h2>
+        {pendingCount > 0 && (
+          <span className="bg-yellow-500/15 text-yellow-400 text-xs font-body px-2 py-0.5 rounded-full">
+            {pendingCount} pending
+          </span>
+        )}
+      </div>
+
+      {/* Filter tabs */}
+      <div className="flex gap-1.5 mb-5 flex-wrap">
+        {(["pending", "all", "accepted", "declined"] as const).map(s => (
+          <button
+            key={s}
+            onClick={() => setFilter(s)}
+            className={`px-3 py-1.5 rounded-lg text-xs font-body capitalize transition-colors ${
+              filter === s ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            {s === "all" ? "All" : ENQ_STATUS_META[s].label}
+            {" "}
+            ({s === "all" ? enquiries.length : enquiries.filter(e => e.status === s).length})
+          </button>
+        ))}
+      </div>
+
+      {filtered.length === 0 ? (
+        <div className="glass-panel rounded-xl p-12 text-center">
+          <MessageSquare className="w-10 h-10 text-muted-foreground/20 mx-auto mb-3" />
+          <p className="text-sm font-body text-muted-foreground">
+            {filter === "pending" ? "No pending enquiries" : `No ${filter} enquiries`}
+          </p>
+          <p className="text-xs font-body text-muted-foreground/50 mt-1">
+            Enable the Enquiry form in Settings → Booking Settings to start receiving enquiries.
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {filtered.map(enq => {
+            const meta = ENQ_STATUS_META[enq.status];
+            const matchedEvent = enq.eventTypeId ? eventTypes.find(e => e.id === enq.eventTypeId) : null;
+            return (
+              <div key={enq.id} className="glass-panel rounded-xl p-5">
+                {/* Header row */}
+                <div className="flex items-start justify-between gap-3 mb-3">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap mb-1">
+                      <p className="font-body text-sm text-foreground font-medium">{enq.name}</p>
+                      <span className={`inline-flex items-center text-[10px] font-body px-2 py-0.5 rounded-full ${meta.bg} ${meta.color}`}>
+                        {meta.label}
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap gap-2 text-xs font-body text-muted-foreground">
+                      <span>{enq.email}</span>
+                      {enq.phone && <span>· {enq.phone}</span>}
+                    </div>
+                  </div>
+                  <p className="text-[10px] font-body text-muted-foreground/50 shrink-0">
+                    {new Date(enq.createdAt).toLocaleDateString("en-AU", { day: "numeric", month: "short", year: "numeric" })}
+                  </p>
+                </div>
+
+                {/* Tags: event type, date, time range */}
+                {(matchedEvent || enq.eventTypeTitle || enq.preferredDate || enq.preferredStartTime || enq.preferredEndTime) && (
+                  <div className="flex flex-wrap gap-1.5 mb-3">
+                    {(matchedEvent?.title || enq.eventTypeTitle) && (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-body bg-primary/10 text-primary px-2 py-1 rounded-full">
+                        <Clock className="w-3 h-3" /> {matchedEvent?.title || enq.eventTypeTitle}
+                      </span>
+                    )}
+                    {enq.preferredDate && (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-body bg-secondary text-muted-foreground px-2 py-1 rounded-full">
+                        <Calendar className="w-3 h-3" />
+                        {new Date(enq.preferredDate + "T12:00:00").toLocaleDateString("en-AU", { day: "numeric", month: "short", year: "numeric" })}
+                      </span>
+                    )}
+                    {(enq.preferredStartTime || enq.preferredEndTime) && (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-body bg-secondary text-muted-foreground px-2 py-1 rounded-full">
+                        <Clock className="w-3 h-3" />
+                        {[enq.preferredStartTime, enq.preferredEndTime].filter(Boolean).join(" – ")}
+                      </span>
+                    )}
+                  </div>
+                )}
+
+                {/* Message */}
+                <p className="text-xs font-body text-muted-foreground bg-secondary/50 rounded-lg p-3 mb-4 whitespace-pre-line">
+                  {enq.message}
+                </p>
+
+                {enq.adminNote && (
+                  <p className="text-xs font-body text-muted-foreground/70 italic mb-3">Note: {enq.adminNote}</p>
+                )}
+                {enq.bookingId && (
+                  <p className="text-xs font-body text-green-400/80 mb-3">✓ Booking created — view it in the Bookings tab</p>
+                )}
+
+                {/* Actions */}
+                {decliningId === enq.id ? (
+                  <div className="space-y-2">
+                    <input
+                      value={adminNoteInput}
+                      onChange={e => setAdminNoteInput(e.target.value)}
+                      placeholder="Decline note (optional — client won't see this)"
+                      className="w-full bg-secondary border border-border rounded-lg px-3 py-2 text-xs font-body text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary/50"
+                    />
+                    <div className="flex gap-2">
+                      <Button size="sm" variant="outline" onClick={() => setDecliningId(null)} className="font-body text-xs">Cancel</Button>
+                      <Button size="sm" onClick={() => confirmDecline(enq)} className="font-body text-xs bg-destructive hover:bg-destructive/90 text-destructive-foreground">
+                        Confirm Decline
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex gap-2 flex-wrap items-center">
+                    {enq.status === "pending" && (
+                      <>
+                        <Button
+                          size="sm"
+                          onClick={() => handleAccept(enq)}
+                          className="font-body text-xs gap-1.5 bg-green-600/90 hover:bg-green-600 text-white"
+                        >
+                          <CheckCircle2 className="w-3.5 h-3.5" /> Accept & Create Booking
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleDecline(enq)}
+                          className="font-body text-xs gap-1.5 text-destructive border-destructive/30 hover:bg-destructive/10"
+                        >
+                          <XSquare className="w-3.5 h-3.5" /> Decline
+                        </Button>
+                      </>
+                    )}
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => handleDelete(enq.id)}
+                      className="font-body text-xs text-muted-foreground hover:text-destructive ml-auto"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </Button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </motion.div>
+  );
+}
+
 // ─── Invoices ──────────────────────────────────────────
 
 function calcInvSubtotal(items: InvoiceItem[]) {
@@ -3689,6 +3930,26 @@ function InvoicesView() {
 
   React.useEffect(() => {
     getStripeStatus().then(s => setStripeAvailable(s.configured));
+  }, []);
+
+  // Auto-detect overdue invoices on mount: mark any "sent" invoice whose due date
+  // has passed as "overdue" so the admin doesn't have to do it manually.
+  React.useEffect(() => {
+    const today = new Date().toISOString().slice(0, 10);
+    const current = getInvoices();
+    const overdueIds = new Set<string>();
+    const updated = current.map(inv => {
+      if (inv.status === "sent" && inv.dueDate && inv.dueDate < today) {
+        overdueIds.add(inv.id);
+        return { ...inv, status: "overdue" as InvoiceStatus };
+      }
+      return inv;
+    });
+    if (overdueIds.size > 0) {
+      updated.forEach(inv => { if (overdueIds.has(inv.id)) updateInvoice(inv); });
+      setInvoices(getInvoices());
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const reload = () => setInvoices(getInvoices());
@@ -5144,6 +5405,26 @@ function SettingsView() {
           <div className="flex items-center justify-between">
             <span className="text-xs font-body text-muted-foreground">Show Instagram Handle Field</span>
             <Switch checked={settings.instagramFieldEnabled} onCheckedChange={(v) => setSettingsState({ ...settings, instagramFieldEnabled: v })} />
+          </div>
+          <div className="border-t border-border/30 pt-3 space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs font-body text-foreground font-medium">Enable Client Enquiries</p>
+                <p className="text-[10px] font-body text-muted-foreground/60 mt-0.5">Show an enquiry form on the booking page for custom requests</p>
+              </div>
+              <Switch checked={settings.enquiryEnabled ?? false} onCheckedChange={(v) => setSettingsState({ ...settings, enquiryEnabled: v })} />
+            </div>
+            {settings.enquiryEnabled && (
+              <div>
+                <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Enquiry Button Label</label>
+                <Input
+                  value={settings.enquiryLabel ?? "Make an Enquiry"}
+                  onChange={(e) => setSettingsState({ ...settings, enquiryLabel: e.target.value })}
+                  placeholder="Make an Enquiry"
+                  className="bg-secondary border-border text-foreground font-body"
+                />
+              </div>
+            )}
           </div>
         </div>
 

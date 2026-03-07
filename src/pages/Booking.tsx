@@ -4,16 +4,17 @@ import {
   Clock, ChevronLeft, ChevronRight, ArrowLeft, Globe,
   CalendarDays, Upload, CheckCircle2, AlertCircle, Camera,
   MapPin, Calendar as CalendarIcon, ExternalLink, XCircle, Edit,
-  CreditCard, Bell, Users, Building2, Copy, Check as CheckIcon
+  CreditCard, Bell, Users, Building2, Copy, Check as CheckIcon,
+  MessageSquare,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import Footer from "@/components/Footer";
 import { toast } from "sonner";
-import { getEventTypes, getProfile, addBooking, getBookings, getSettings, isSlotBooked, updateBooking } from "@/lib/storage";
+import { getEventTypes, getProfile, addBooking, getBookings, getSettings, isSlotBooked, updateBooking, addEnquiry } from "@/lib/storage";
 import { syncBookingToCalendar, createBookingCheckout, getStripeStatus, sendBookingConfirmationEmail, getGoogleBusyTimes, joinWaitlist, notifyDiscord } from "@/lib/api";
-import type { EventType, QuestionField } from "@/lib/types";
+import type { EventType, QuestionField, Enquiry } from "@/lib/types";
 import { RichTextDisplay } from "@/components/RichTextEditor";
 
 function sendBookingEmail(payload: Parameters<typeof sendBookingConfirmationEmail>[0]) {
@@ -21,7 +22,12 @@ function sendBookingEmail(payload: Parameters<typeof sendBookingConfirmationEmai
   sendBookingConfirmationEmail(payload).catch(() => {});
 }
 
-type Step = "event-select" | "datetime" | "questions" | "payment" | "confirmed";
+type Step = "event-select" | "datetime" | "questions" | "payment" | "confirmed" | "enquiry" | "enquiry-confirmed";
+
+/** Basic email format check — covers the vast majority of real email addresses. */
+function isValidEmail(email: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+}
 
 function formatDuration(mins: number) {
   if (mins >= 60) {
@@ -230,6 +236,17 @@ export default function Booking() {
   const [processingPayment, setProcessingPayment] = useState(false);
   const [payFullInstead, setPayFullInstead] = useState(false);
 
+  // Enquiry form state
+  const [enquiryEventId, setEnquiryEventId] = useState("");
+  const [enquiryName, setEnquiryName] = useState("");
+  const [enquiryEmail, setEnquiryEmail] = useState("");
+  const [enquiryPhone, setEnquiryPhone] = useState("");
+  const [enquiryDate, setEnquiryDate] = useState("");
+  const [enquiryStartTime, setEnquiryStartTime] = useState("");
+  const [enquiryEndTime, setEnquiryEndTime] = useState("");
+  const [enquiryMessage, setEnquiryMessage] = useState("");
+  const [enquirySubmitting, setEnquirySubmitting] = useState(false);
+
   // Check Stripe availability on mount
   useEffect(() => {
     getStripeStatus().then(s => setStripeAvailable(s.configured));
@@ -289,7 +306,7 @@ export default function Booking() {
 
   const handleJoinWaitlist = async () => {
     if (!selectedEvent || !selectedDate) return;
-    if (!waitlistName.trim() || !waitlistEmail.includes("@")) {
+    if (!waitlistName.trim() || !isValidEmail(waitlistEmail)) {
       toast.error("Please enter your name and a valid email.");
       return;
     }
@@ -319,7 +336,7 @@ export default function Booking() {
     const emailQuestion = selectedEvent.questions.find(q => q.label.toLowerCase().includes("email"));
     if (emailQuestion) {
       const emailValue = answers[emailQuestion.id] || "";
-      if (!emailValue.includes("@") || !emailValue.includes(".")) {
+      if (!isValidEmail(emailValue)) {
         toast.error("Please enter a valid email address");
         return;
       }
@@ -461,6 +478,45 @@ export default function Booking() {
     setPayFullInstead(false);
   };
 
+  // Open the enquiry form, optionally pre-filling event and/or date
+  const handleOpenEnquiry = (prefillEventId?: string, prefillDate?: string) => {
+    setEnquiryEventId(prefillEventId || selectedEvent?.id || "");
+    setEnquiryDate(prefillDate || (selectedDate ? toDateStr(selectedDate) : ""));
+    setEnquiryStartTime("");
+    setEnquiryEndTime("");
+    setEnquiryName("");
+    setEnquiryEmail("");
+    setEnquiryPhone("");
+    setEnquiryMessage("");
+    setStep("enquiry");
+  };
+
+  const handleSubmitEnquiry = () => {
+    if (!enquiryName.trim()) { toast.error("Please enter your name"); return; }
+    if (!isValidEmail(enquiryEmail)) { toast.error("Please enter a valid email address"); return; }
+    if (!enquiryMessage.trim()) { toast.error("Please describe what you're looking for"); return; }
+    setEnquirySubmitting(true);
+    const matchedEvent = eventTypes.find(e => e.id === enquiryEventId);
+    const enquiry: Enquiry = {
+      id: `enq-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      name: enquiryName.trim(),
+      email: enquiryEmail.trim(),
+      phone: enquiryPhone.trim() || undefined,
+      eventTypeId: enquiryEventId || undefined,
+      eventTypeTitle: matchedEvent?.title,
+      preferredDate: enquiryDate || undefined,
+      preferredStartTime: enquiryStartTime || undefined,
+      preferredEndTime: enquiryEndTime || undefined,
+      message: enquiryMessage.trim(),
+      status: "pending",
+      createdAt: new Date().toISOString(),
+    };
+    addEnquiry(enquiry);
+    notifyDiscord({ event: "new-enquiry", enquiry }).catch(() => {});
+    setEnquirySubmitting(false);
+    setStep("enquiry-confirmed");
+  };
+
   return (
     <div className="min-h-screen bg-background">
       <section className="min-h-screen" style={{ paddingTop: "calc(env(safe-area-inset-top) + 2rem)", paddingBottom: "calc(env(safe-area-inset-bottom) + 6rem)" }}>
@@ -535,6 +591,16 @@ export default function Booking() {
                   <Globe className="w-3.5 h-3.5" />
                   <span>{profile.timezone}</span>
                 </div>
+
+                {settings.enquiryEnabled && (
+                  <button
+                    onClick={() => handleOpenEnquiry()}
+                    className="mt-4 w-full flex items-center justify-center gap-2 text-sm font-body text-muted-foreground hover:text-foreground border border-dashed border-border/60 hover:border-primary/40 rounded-xl py-3.5 transition-all group"
+                  >
+                    <MessageSquare className="w-4 h-4 group-hover:text-primary transition-colors" />
+                    {settings.enquiryLabel || "Make an Enquiry"}
+                  </button>
+                )}
               </motion.div>
             )}
 
@@ -696,13 +762,24 @@ export default function Booking() {
                                         <p className="text-sm font-body">No slots available on this date</p>
                                       </div>
                                       {!showWaitlist ? (
-                                        <button
-                                          onClick={() => setShowWaitlist(true)}
-                                          className="flex items-center gap-2 mx-auto text-xs font-body text-primary hover:text-primary/80 border border-primary/30 hover:border-primary/60 px-4 py-2 rounded-full transition-colors"
-                                        >
-                                          <Bell className="w-3.5 h-3.5" />
-                                          Join waitlist — get notified if a spot opens
-                                        </button>
+                                        <div className="flex flex-col items-center gap-2">
+                                          <button
+                                            onClick={() => setShowWaitlist(true)}
+                                            className="flex items-center gap-2 mx-auto text-xs font-body text-primary hover:text-primary/80 border border-primary/30 hover:border-primary/60 px-4 py-2 rounded-full transition-colors"
+                                          >
+                                            <Bell className="w-3.5 h-3.5" />
+                                            Join waitlist — get notified if a spot opens
+                                          </button>
+                                          {settings.enquiryEnabled && (
+                                            <button
+                                              onClick={() => handleOpenEnquiry(selectedEvent.id, toDateStr(selectedDate))}
+                                              className="flex items-center gap-2 mx-auto text-xs font-body text-muted-foreground hover:text-foreground border border-border/50 hover:border-primary/40 px-4 py-2 rounded-full transition-colors"
+                                            >
+                                              <MessageSquare className="w-3.5 h-3.5" />
+                                              Enquire for a custom time
+                                            </button>
+                                          )}
+                                        </div>
                                       ) : (
                                         <motion.div
                                           initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
@@ -1173,6 +1250,183 @@ export default function Booking() {
               </motion.div>
               );
             })()}
+
+            {/* ─── Enquiry Form ─── */}
+            {step === "enquiry" && (
+              <motion.div key="enquiry" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} className="max-w-lg mx-auto">
+                <button
+                  onClick={() => setStep(selectedEvent ? "datetime" : "event-select")}
+                  className="inline-flex items-center gap-2 text-xs font-body tracking-wider uppercase text-muted-foreground hover:text-primary transition-colors mb-6"
+                >
+                  <ArrowLeft className="w-3.5 h-3.5" /> Back
+                </button>
+
+                <div className="glass-panel rounded-xl p-6 space-y-5">
+                  <div className="flex items-center gap-3 mb-1">
+                    <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
+                      <MessageSquare className="w-5 h-5 text-primary" />
+                    </div>
+                    <div>
+                      <h2 className="font-display text-xl text-foreground">Make an Enquiry</h2>
+                      <p className="text-xs font-body text-muted-foreground">Tell us what you're looking for and we'll get back to you</p>
+                    </div>
+                  </div>
+
+                  {/* Event type selector */}
+                  {eventTypes.length > 0 && (
+                    <div>
+                      <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Event Type (optional)</label>
+                      <select
+                        value={enquiryEventId}
+                        onChange={e => setEnquiryEventId(e.target.value)}
+                        className="w-full bg-secondary border border-border text-foreground font-body text-sm rounded-md px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-ring"
+                      >
+                        <option value="">Not sure yet / other</option>
+                        {eventTypes.map(et => <option key={et.id} value={et.id}>{et.title}</option>)}
+                      </select>
+                    </div>
+                  )}
+
+                  {/* Preferred date + time range */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div>
+                      <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Preferred Date</label>
+                      <input
+                        type="date"
+                        value={enquiryDate}
+                        onChange={e => setEnquiryDate(e.target.value)}
+                        className="w-full bg-secondary border border-border rounded-md px-3 py-2.5 text-sm font-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">From</label>
+                      <input
+                        type="time"
+                        value={enquiryStartTime}
+                        onChange={e => setEnquiryStartTime(e.target.value)}
+                        className="w-full bg-secondary border border-border rounded-md px-3 py-2.5 text-sm font-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">To</label>
+                      <input
+                        type="time"
+                        value={enquiryEndTime}
+                        onChange={e => setEnquiryEndTime(e.target.value)}
+                        className="w-full bg-secondary border border-border rounded-md px-3 py-2.5 text-sm font-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Name + email */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">
+                        Your Name <span className="text-destructive">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={enquiryName}
+                        onChange={e => setEnquiryName(e.target.value)}
+                        placeholder="Jane Smith"
+                        className="w-full bg-secondary border border-border rounded-md px-3 py-2.5 text-sm font-body text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-ring"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">
+                        Email <span className="text-destructive">*</span>
+                      </label>
+                      <input
+                        type="email"
+                        value={enquiryEmail}
+                        onChange={e => setEnquiryEmail(e.target.value)}
+                        placeholder="jane@example.com"
+                        className="w-full bg-secondary border border-border rounded-md px-3 py-2.5 text-sm font-body text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-ring"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Phone (optional) */}
+                  <div>
+                    <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Phone (optional)</label>
+                    <input
+                      type="tel"
+                      value={enquiryPhone}
+                      onChange={e => setEnquiryPhone(e.target.value)}
+                      placeholder="+61 4xx xxx xxx"
+                      className="w-full bg-secondary border border-border rounded-md px-3 py-2.5 text-sm font-body text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-ring"
+                    />
+                  </div>
+
+                  {/* Message */}
+                  <div>
+                    <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">
+                      Message / Details <span className="text-destructive">*</span>
+                    </label>
+                    <textarea
+                      value={enquiryMessage}
+                      onChange={e => setEnquiryMessage(e.target.value)}
+                      placeholder="Tell us what you have in mind, any special requirements, or questions you have…"
+                      rows={4}
+                      className="w-full bg-secondary border border-border rounded-md px-3 py-2.5 text-sm font-body text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-ring resize-none"
+                    />
+                  </div>
+
+                  <Button
+                    onClick={handleSubmitEnquiry}
+                    disabled={enquirySubmitting}
+                    size="lg"
+                    className="w-full bg-primary text-primary-foreground hover:bg-primary/90 font-body tracking-wider uppercase text-xs py-6"
+                  >
+                    {enquirySubmitting ? "Sending…" : "Send Enquiry"}
+                  </Button>
+                </div>
+              </motion.div>
+            )}
+
+            {/* ─── Enquiry Confirmed ─── */}
+            {step === "enquiry-confirmed" && (
+              <motion.div key="enquiry-confirmed" initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="max-w-md mx-auto text-center">
+                <div className="glass-panel rounded-xl p-8">
+                  <CheckCircle2 className="w-12 h-12 text-green-400 mx-auto mb-4" />
+                  <h2 className="font-display text-2xl text-foreground mb-2">Enquiry Received!</h2>
+                  <p className="text-sm font-body text-muted-foreground mb-6">
+                    Thanks <strong className="text-foreground">{enquiryName}</strong>, we'll be in touch at{" "}
+                    <strong className="text-foreground">{enquiryEmail}</strong>.
+                  </p>
+                  {(enquiryDate || enquiryStartTime || enquiryEndTime) && (
+                    <div className="border border-border/50 rounded-xl p-4 mb-6 text-left space-y-2">
+                      {enquiryDate && (
+                        <div className="flex justify-between text-sm font-body">
+                          <span className="text-muted-foreground">Preferred date</span>
+                          <span className="text-foreground">
+                            {new Date(enquiryDate + "T12:00:00").toLocaleDateString("en-AU", { day: "numeric", month: "long", year: "numeric" })}
+                          </span>
+                        </div>
+                      )}
+                      {(enquiryStartTime || enquiryEndTime) && (
+                        <div className="flex justify-between text-sm font-body">
+                          <span className="text-muted-foreground">Preferred time</span>
+                          <span className="text-foreground">{[enquiryStartTime, enquiryEndTime].filter(Boolean).join(" – ")}</span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  <Button
+                    onClick={() => {
+                      setStep("event-select");
+                      setEnquiryName(""); setEnquiryEmail(""); setEnquiryPhone("");
+                      setEnquiryDate(""); setEnquiryStartTime(""); setEnquiryEndTime("");
+                      setEnquiryMessage(""); setEnquiryEventId("");
+                    }}
+                    variant="outline"
+                    className="w-full font-body text-xs tracking-wider uppercase border-border text-foreground"
+                  >
+                    Back to Home
+                  </Button>
+                </div>
+              </motion.div>
+            )}
 
           </AnimatePresence>
         </div>

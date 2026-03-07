@@ -191,6 +191,8 @@ export interface AppSettings {
   proofingEnabled: boolean;
   invoiceFrom?: InvoiceParty;
   invoiceNotes?: string;
+  enquiryEnabled?: boolean;
+  enquiryLabel?: string;
 }
 
 export interface ProofingRound {
@@ -286,4 +288,26 @@ export interface Invoice {
   discount?: number;        // discount amount in dollars
   paymentMethods?: ("stripe" | "bank")[];  // which payment methods are available for this invoice
   stripeSessionId?: string; // Stripe checkout session ID once created
+}
+
+// ─── Enquiries ────────────────────────────────────────────────────────────────
+
+export type EnquiryStatus = "pending" | "accepted" | "declined";
+
+export interface Enquiry {
+  id: string;
+  name: string;
+  email: string;
+  phone?: string;
+  eventTypeId?: string;
+  eventTypeTitle?: string;
+  preferredDate?: string;       // YYYY-MM-DD
+  preferredStartTime?: string;  // "HH:MM"
+  preferredEndTime?: string;    // "HH:MM"
+  message: string;
+  status: EnquiryStatus;
+  createdAt: string;
+  respondedAt?: string;
+  adminNote?: string;
+  bookingId?: string;           // set when accepted → booking created
 }
