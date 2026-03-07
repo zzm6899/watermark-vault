@@ -3691,6 +3691,28 @@ function InvoicesView() {
     getStripeStatus().then(s => setStripeAvailable(s.configured));
   }, []);
 
+  // Auto-detect overdue invoices on mount: mark any "sent" invoice whose due date
+  // has passed as "overdue" so the admin doesn't have to do it manually.
+  React.useEffect(() => {
+    // Use UTC date string for consistent comparison regardless of local timezone
+    const now = new Date();
+    const today = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}-${String(now.getUTCDate()).padStart(2, "0")}`;
+    const current = getInvoices();
+    const overdueIds = new Set<string>();
+    const updated = current.map(inv => {
+      if (inv.status === "sent" && inv.dueDate && inv.dueDate < today) {
+        overdueIds.add(inv.id);
+        return { ...inv, status: "overdue" as InvoiceStatus };
+      }
+      return inv;
+    });
+    if (overdueIds.size > 0) {
+      updated.forEach(inv => { if (overdueIds.has(inv.id)) updateInvoice(inv); });
+      setInvoices(getInvoices());
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const reload = () => setInvoices(getInvoices());
 
   // ── helpers ──────────────────────────────────────────────

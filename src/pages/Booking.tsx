@@ -23,6 +23,11 @@ function sendBookingEmail(payload: Parameters<typeof sendBookingConfirmationEmai
 
 type Step = "event-select" | "datetime" | "questions" | "payment" | "confirmed";
 
+/** Basic email format check — covers the vast majority of real email addresses. */
+function isValidEmail(email: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+}
+
 function formatDuration(mins: number) {
   if (mins >= 60) {
     const h = Math.floor(mins / 60);
@@ -289,7 +294,7 @@ export default function Booking() {
 
   const handleJoinWaitlist = async () => {
     if (!selectedEvent || !selectedDate) return;
-    if (!waitlistName.trim() || !waitlistEmail.includes("@")) {
+    if (!waitlistName.trim() || !isValidEmail(waitlistEmail)) {
       toast.error("Please enter your name and a valid email.");
       return;
     }
@@ -319,7 +324,7 @@ export default function Booking() {
     const emailQuestion = selectedEvent.questions.find(q => q.label.toLowerCase().includes("email"));
     if (emailQuestion) {
       const emailValue = answers[emailQuestion.id] || "";
-      if (!emailValue.includes("@") || !emailValue.includes(".")) {
+      if (!isValidEmail(emailValue)) {
         toast.error("Please enter a valid email address");
         return;
       }
