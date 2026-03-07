@@ -372,6 +372,17 @@ export interface TenantSettings {
   smtpPassword?: string;
   smtpSecure?: boolean;
   smtpFrom?: string;
+  // ── Watermark ─────────────────────────────────────────────
+  /** Watermark text when no image is set. */
+  watermarkText?: string;
+  /** Base64 data URL of watermark image (overrides text when set). */
+  watermarkImage?: string;
+  /** Watermark position. Defaults to "tiled". */
+  watermarkPosition?: WatermarkPosition;
+  /** Opacity 0–100. Defaults to 20. */
+  watermarkOpacity?: number;
+  /** Size percentage 10–100. Defaults to 40. */
+  watermarkSize?: number;
 }
 
 

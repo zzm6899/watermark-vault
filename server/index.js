@@ -239,9 +239,27 @@ app.delete("/api/upload/:filename", (req, res) => {
 });
 
 // ── Watermarking helpers ──────────────────────────────
-function getWatermarkSettings() {
+function getWatermarkSettings(tenantSlug) {
   try {
     const db = readDb();
+    // If a tenant slug is provided, prefer their watermark settings (stored in t_{slug}_wv_tenant_settings)
+    if (tenantSlug) {
+      const raw = db[`t_${tenantSlug}_wv_tenant_settings`];
+      const ts = raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : {};
+      // Only use tenant watermark if at least one watermark field is explicitly configured
+      if (ts.watermarkText || ts.watermarkImage || ts.watermarkPosition) {
+        const globalSettings = (() => {
+          try { const s = db["wv_settings"]; return typeof s === "string" ? JSON.parse(s) : (s || {}); } catch { return {}; }
+        })();
+        return {
+          text: ts.watermarkText || globalSettings.watermarkText || "WATERMARK VAULT",
+          opacity: Math.min(1, Math.max(0, (ts.watermarkOpacity ?? globalSettings.watermarkOpacity ?? 20) / 100)),
+          position: ts.watermarkPosition || globalSettings.watermarkPosition || "tiled",
+          imageBase64: ts.watermarkImage || null,
+          size: ts.watermarkSize ?? globalSettings.watermarkSize ?? 40,
+        };
+      }
+    }
     const settings = db["wv_settings"];
     const parsed = typeof settings === "string" ? JSON.parse(settings) : settings;
     return {
@@ -448,8 +466,9 @@ async function getWatermarkedBuffer(safeName, filepath) {
 const THUMB_WIDTH = 700;
 const MEDIUM_WIDTH = 1400;
 
-function getCacheFilename(baseName, sizeLabel, watermarked) {
-  return `${baseName}_${sizeLabel}_${watermarked ? "wm" : "clean"}.jpg`;
+function getCacheFilename(baseName, sizeLabel, watermarked, tenantSlug) {
+  const tenantPart = tenantSlug ? `_t_${tenantSlug}` : "";
+  return `${baseName}_${sizeLabel}${tenantPart}_${watermarked ? "wm" : "clean"}.jpg`;
 }
 
 // Rate-limit the image endpoint: generous limit per IP to guard against DoS
@@ -470,6 +489,10 @@ app.get("/uploads/:filename", imageServeLimiter, async (req, res) => {
 
   const sizeParam = req.query.size; // 'thumb' | 'medium' | undefined
   const disableWm = req.query.wm === "0";
+  // Optional tenant slug — when provided, use that tenant's watermark settings
+  const tenantSlug = (req.query.tenant && typeof req.query.tenant === "string" && /^[a-z0-9][a-z0-9-]{0,28}[a-z0-9]$|^[a-z0-9]{1,2}$/.test(req.query.tenant))
+    ? req.query.tenant
+    : null;
 
   // Resize target widths
   const targetWidth = sizeParam === "thumb" ? THUMB_WIDTH : sizeParam === "medium" ? MEDIUM_WIDTH : null;
@@ -492,7 +515,8 @@ app.get("/uploads/:filename", imageServeLimiter, async (req, res) => {
   fs.mkdirSync(cacheDir, { recursive: true });
   const baseName = path.basename(safeName, path.extname(safeName));
   const sizeLabel = sizeParam || "full";
-  const cacheFile = path.join(cacheDir, getCacheFilename(baseName, sizeLabel, shouldWatermark));
+  // Include tenantSlug in cache filename so each tenant gets their own cached variant
+  const cacheFile = path.join(cacheDir, getCacheFilename(baseName, sizeLabel, shouldWatermark, tenantSlug));
 
   try {
     if (fs.existsSync(cacheFile)) {
@@ -532,7 +556,7 @@ app.get("/uploads/:filename", imageServeLimiter, async (req, res) => {
     // Build watermark overlay (if needed) using the post-resize canvas size
     const composites = [];
     if (shouldWatermark) {
-      const wm = getWatermarkSettings();
+      const wm = getWatermarkSettings(tenantSlug);
       const overlay = await buildWatermarkOverlay(renderW, renderH, wm);
       composites.push(overlay);
     }
@@ -1070,9 +1094,9 @@ app.get("/api/tenant/:slug/public", tenantPublicLimiter, (req, res) => {
   const tenant = tenants.find(t => t.slug === slug && t.active !== false);
   if (!tenant) return res.status(404).json({ error: "Tenant not found" });
   const db = readDb();
-  // Try tenant-specific event types; fall back to main admin's event types
+  // Try tenant-specific event types only — do not fall back to main admin's event types
   const tenantKey = `t_${slug}_wv_event_types`;
-  const raw = db[tenantKey] ?? db["wv_event_types"];
+  const raw = db[tenantKey] ?? null;
   const allEventTypes = raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : [];
   const eventTypes = Array.isArray(allEventTypes)
     ? allEventTypes.filter(e => e.active !== false)
@@ -1094,6 +1118,26 @@ app.put("/api/tenant/:slug/store/:key", tenantLimiter, (req, res) => {
   db[fullKey] = req.body.value;
   writeDb(db);
   res.json({ ok: true });
+});
+
+// Clear only the tenant-specific watermark cache entries for a given slug
+app.post("/api/tenant/:slug/cache/clear", tenantLimiter, (req, res) => {
+  const slug = req.params.slug;
+  const tenants = readTenants();
+  if (!tenants.find(t => t.slug === slug)) return res.status(404).json({ error: "Tenant not found" });
+  const cacheDir = path.join(UPLOADS_DIR, "_cache");
+  let cleared = 0;
+  if (fs.existsSync(cacheDir)) {
+    try {
+      for (const f of fs.readdirSync(cacheDir)) {
+        // Only delete files that contain the tenant's slug tag in their cache filename
+        if (f.includes(`_t_${slug}_`)) {
+          try { fs.unlinkSync(path.join(cacheDir, f)); cleared++; } catch {}
+        }
+      }
+    } catch {}
+  }
+  res.json({ ok: true, cleared });
 });
 
 // Create a booking on behalf of a tenant
@@ -1268,7 +1312,7 @@ app.put("/api/tenant/:slug/albums/:albumId", tenantLimiter, (req, res) => {
   res.json({ ok: true });
 });
 
-// Update a booking that belongs to a tenant (e.g. mark as completed from the mobile app)
+// Update a booking that belongs to a tenant (status-only for mobile app; full update for tenant admin)
 app.put("/api/tenant/:slug/bookings/:bookingId", tenantLimiter, (req, res) => {
   const { slug, bookingId } = req.params;
   const tenants = readTenants();
@@ -1279,16 +1323,64 @@ app.put("/api/tenant/:slug/bookings/:bookingId", tenantLimiter, (req, res) => {
   const allBookings = allBookingsRaw ? (typeof allBookingsRaw === "string" ? JSON.parse(allBookingsRaw) : (Array.isArray(allBookingsRaw) ? allBookingsRaw : [])) : [];
   const idx = allBookings.findIndex(b => b.id === bookingId && b.tenantSlug === slug);
   if (idx < 0) return res.status(404).json({ ok: false, error: "Booking not found" });
-  // Only allow safe status fields to be updated from the mobile app
-  const allowed = ["status"];
-  const updates = {};
-  for (const key of allowed) {
-    if (req.body[key] !== undefined) updates[key] = req.body[key];
-  }
-  allBookings[idx] = { ...allBookings[idx], ...updates };
+  // Allow full updates from tenant admin; always keep id and tenantSlug immutable
+  const { id: _id, tenantSlug: _ts, ...updates } = req.body || {};
+  allBookings[idx] = { ...allBookings[idx], ...updates, id: bookingId, tenantSlug: slug };
   db["wv_bookings"] = JSON.stringify(allBookings);
   writeDb(db);
   res.json({ ok: true });
+});
+
+// Delete a booking that belongs to a tenant (tenant admin)
+app.delete("/api/tenant/:slug/bookings/:bookingId", tenantLimiter, (req, res) => {
+  const { slug, bookingId } = req.params;
+  const tenants = readTenants();
+  const tenant = tenants.find(t => t.slug === slug && t.active !== false);
+  if (!tenant) return res.status(404).json({ ok: false, error: "Tenant not found" });
+  const db = readDb();
+  const allBookingsRaw = db["wv_bookings"];
+  const allBookings = allBookingsRaw ? (typeof allBookingsRaw === "string" ? JSON.parse(allBookingsRaw) : (Array.isArray(allBookingsRaw) ? allBookingsRaw : [])) : [];
+  const filtered = allBookings.filter(b => !(b.id === bookingId && b.tenantSlug === slug));
+  if (filtered.length === allBookings.length) return res.status(404).json({ ok: false, error: "Booking not found" });
+  db["wv_bookings"] = JSON.stringify(filtered);
+  writeDb(db);
+  res.json({ ok: true });
+});
+
+// Delete a tenant album (tenant admin)
+app.delete("/api/tenant/:slug/albums/:albumId", tenantLimiter, (req, res) => {
+  const { slug, albumId } = req.params;
+  const db = readDb();
+  const key = `t_${slug}_wv_albums`;
+  const raw = db[key];
+  const albums = raw ? (typeof raw === "string" ? JSON.parse(raw) : (Array.isArray(raw) ? raw : [])) : [];
+  const filtered = albums.filter(a => a.id !== albumId);
+  if (filtered.length === albums.length) return res.status(404).json({ ok: false, error: "Album not found" });
+  db[key] = JSON.stringify(filtered);
+  writeDb(db);
+  res.json({ ok: true });
+});
+
+// Get license key info for a tenant (tenant admin — shows their own key details)
+app.get("/api/tenant/:slug/license-info", tenantLimiter, (req, res) => {
+  const slug = req.params.slug;
+  const tenants = readTenants();
+  const tenant = tenants.find(t => t.slug === slug && t.active !== false);
+  if (!tenant) return res.status(404).json({ error: "Tenant not found" });
+  if (!tenant.licenseKey) return res.json({ key: null });
+  const keys = readLicenseKeys();
+  const licKey = keys.find(k => k.key === tenant.licenseKey);
+  if (!licKey) return res.json({ key: null });
+  // Return non-sensitive fields only
+  res.json({
+    key: licKey.key,
+    issuedTo: licKey.issuedTo,
+    isTrial: licKey.isTrial || false,
+    trialMaxEvents: licKey.trialMaxEvents,
+    trialMaxBookings: licKey.trialMaxBookings,
+    expiresAt: licKey.expiresAt,
+    usedAt: licKey.usedAt,
+  });
 });
 
 // ── Tenant Settings (per-tenant integration overrides) ─────────────────────
@@ -1666,7 +1758,7 @@ app.post("/api/tenant-setup/:token/complete", tenantSetupLimiter, (req, res) => 
   if (!token || typeof token !== "string") {
     return res.status(400).json({ error: "Invalid token" });
   }
-  const { slug, displayName, email, bio, timezone } = req.body || {};
+  const { slug, displayName, email, bio, timezone, passwordHash } = req.body || {};
 
   // Validate inputs
   if (!slug || typeof slug !== "string" || !SLUG_RE.test(slug)) {
@@ -1674,6 +1766,9 @@ app.post("/api/tenant-setup/:token/complete", tenantSetupLimiter, (req, res) => 
   }
   if (!displayName || typeof displayName !== "string" || !displayName.trim()) {
     return res.status(400).json({ error: "Display name is required" });
+  }
+  if (!passwordHash || typeof passwordHash !== "string") {
+    return res.status(400).json({ error: "A password is required" });
   }
 
   // Verify the setup token
@@ -1700,6 +1795,7 @@ app.post("/api/tenant-setup/:token/complete", tenantSetupLimiter, (req, res) => 
     bio: (bio || "").trim() || undefined,
     timezone: timezone || "Australia/Sydney",
     licenseKey: licKey.key,
+    passwordHash,
     active: true,
     createdAt: new Date().toISOString(),
   };

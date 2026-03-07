@@ -1,12 +1,13 @@
 import { useState, useEffect } from "react";
 import { useParams } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { Camera, Key, Globe, CheckCircle2, ArrowRight, Loader2 } from "lucide-react";
+import { Camera, Key, Globe, CheckCircle2, ArrowRight, Loader2, LogIn } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
 import { getTenantSetupInfo, completeTenantSetup } from "@/lib/api";
+import { hashPassword } from "@/lib/storage";
 import type { LicenseKey } from "@/lib/types";
 
 type Step = "loading" | "error" | "form" | "done";
@@ -37,10 +38,14 @@ export default function TenantSetup() {
   const [slugEdited, setSlugEdited] = useState(false);
   const [email, setEmail] = useState("");
   const [bio, setBio] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
   // Done state
   const [bookingUrl, setBookingUrl] = useState("");
+  const [adminUrl, setAdminUrl] = useState("");
+  const [createdSlug, setCreatedSlug] = useState("");
 
   // Load setup info on mount
   useEffect(() => {
@@ -87,12 +92,26 @@ export default function TenantSetup() {
       toast.error("A valid email address is required");
       return;
     }
+    if (!password) {
+      toast.error("A password is required to log in to your account");
+      return;
+    }
+    if (password.length < 8) {
+      toast.error("Password must be at least 8 characters");
+      return;
+    }
+    if (password !== confirmPassword) {
+      toast.error("Passwords do not match");
+      return;
+    }
     setSubmitting(true);
+    const passwordHash = await hashPassword(password);
     const result = await completeTenantSetup(token!, {
       slug,
       displayName: displayName.trim(),
       email: email.trim(),
       bio: bio.trim() || undefined,
+      passwordHash,
     });
     setSubmitting(false);
     if (!result.ok) {
@@ -101,6 +120,8 @@ export default function TenantSetup() {
     }
     const url = `${window.location.origin}/book/${slug}`;
     setBookingUrl(url);
+    setAdminUrl(`${window.location.origin}/tenant-admin/${slug}`);
+    setCreatedSlug(slug);
     setStep("done");
   };
 
@@ -240,6 +261,34 @@ export default function TenantSetup() {
                   rows={3}
                 />
               </div>
+
+              <div className="border-t border-border/50 pt-4 space-y-3">
+                <p className="text-xs font-body text-muted-foreground font-medium">Set your login password</p>
+                <div>
+                  <label className="text-xs font-body text-muted-foreground mb-1 block">Password *</label>
+                  <Input
+                    type="password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="At least 8 characters"
+                    className="bg-background border-border text-foreground font-body text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-body text-muted-foreground mb-1 block">Confirm Password *</label>
+                  <Input
+                    type="password"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    placeholder="Re-enter your password"
+                    className="bg-background border-border text-foreground font-body text-sm"
+                    onKeyDown={(e) => e.key === "Enter" && handleSubmit()}
+                  />
+                </div>
+                <p className="text-[10px] font-body text-muted-foreground">
+                  You'll use your Account ID (<span className="text-primary font-mono">{slug || "your-slug"}</span>) and this password to log in.
+                </p>
+              </div>
             </div>
 
             <Button
@@ -280,16 +329,39 @@ export default function TenantSetup() {
               </p>
             </div>
 
-            <div className="p-3 rounded-lg bg-secondary/50 border border-border/50 text-left space-y-1">
-              <p className="text-xs font-body text-muted-foreground">Your public booking page:</p>
-              <a
-                href={bookingUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-sm font-body text-primary break-all hover:underline"
-              >
-                {bookingUrl}
-              </a>
+            <div className="p-3 rounded-lg bg-secondary/50 border border-border/50 text-left space-y-2">
+              <div>
+                <p className="text-xs font-body text-muted-foreground">Your public booking page:</p>
+                <a
+                  href={bookingUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-sm font-body text-primary break-all hover:underline"
+                >
+                  {bookingUrl}
+                </a>
+              </div>
+              <div>
+                <p className="text-xs font-body text-muted-foreground">Your admin dashboard:</p>
+                <a
+                  href={adminUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-sm font-body text-primary break-all hover:underline"
+                >
+                  {adminUrl}
+                </a>
+              </div>
+            </div>
+
+            <div className="p-3 rounded-lg bg-primary/5 border border-primary/20 text-left space-y-1">
+              <p className="text-xs font-body text-foreground font-medium">Your login details:</p>
+              <p className="text-xs font-body text-muted-foreground">
+                Account ID: <span className="text-primary font-mono">{createdSlug}</span>
+              </p>
+              <p className="text-xs font-body text-muted-foreground">
+                Password: the one you just set
+              </p>
             </div>
 
             <div className="flex gap-2">
@@ -299,24 +371,20 @@ export default function TenantSetup() {
                 className="flex-1 font-body text-xs"
                 onClick={() => {
                   navigator.clipboard.writeText(bookingUrl)
-                    .then(() => toast.success("URL copied!"))
+                    .then(() => toast.success("Booking URL copied!"))
                     .catch(() => toast.error("Copy failed"));
                 }}
               >
-                Copy URL
+                Copy Booking URL
               </Button>
               <Button
                 size="sm"
-                className="flex-1 bg-primary text-primary-foreground font-body text-xs"
-                onClick={() => window.open(bookingUrl, "_blank")}
+                className="flex-1 bg-primary text-primary-foreground font-body text-xs gap-1"
+                onClick={() => window.location.href = `/login`}
               >
-                Visit Your Page
+                <LogIn className="w-3.5 h-3.5" /> Sign In
               </Button>
             </div>
-
-            <p className="text-[11px] font-body text-muted-foreground">
-              Contact your platform administrator to configure payments, email notifications, and other settings for your account.
-            </p>
           </motion.div>
         )}
       </AnimatePresence>
