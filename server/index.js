@@ -110,8 +110,10 @@ function getStorageUsage() {
     totalBytes += dbSize;
     const files = fs.readdirSync(UPLOADS_DIR);
     for (const f of files) {
+      if (f.startsWith("_")) continue; // skip _cache directory and other internal entries
       try {
         const stat = fs.statSync(path.join(UPLOADS_DIR, f));
+        if (stat.isDirectory()) continue; // skip subdirectories
         totalBytes += stat.size;
         photoFiles.push({ name: f, size: stat.size, modified: stat.mtime });
       } catch {}

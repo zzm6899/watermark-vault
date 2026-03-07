@@ -1433,14 +1433,20 @@ function TenantAlbumEditor({ slug, album, onSave, onCancel }: {
 
   const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
-    if (!files || files.length === 0 || !liveAlbum) return;
-    if (!isServerMode()) { toast.error("Server required for photo uploads"); return; }
+    if (!files || files.length === 0) return;
+    if (!liveAlbum) { toast.error("Save the album first before uploading photos"); return; }
     setUploading(true);
     setUploadProgress(0);
     const fileArr = Array.from(files);
     const results = await uploadPhotosToServer(fileArr, (done, total) => {
       setUploadProgress(Math.round((done / total) * 100));
     });
+    if (results.length === 0) {
+      setUploading(false);
+      toast.error("Upload failed — check server connection");
+      if (e.target) e.target.value = "";
+      return;
+    }
     const newPhotos: Photo[] = results.map(r => ({
       id: r.id, src: r.url, thumbnail: r.url + "?size=thumb",
       title: r.originalName.replace(/\.[^.]+$/, ""), width: 800, height: 600,
@@ -3466,7 +3472,6 @@ function TenantStorage({ slug }: { slug: string }) {
   }, [slug]);
 
   const loadStorageStats = useCallback(() => {
-    if (!isServerMode()) return;
     setStorageStatsLoading(true);
     getTenantStorageStats(slug)
       .then(d => { if (d?.ok) setStorageStats({ totalBytes: d.totalBytes, fileCount: d.fileCount, albumCount: d.albumCount }); })
