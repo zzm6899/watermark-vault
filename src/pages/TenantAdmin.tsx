@@ -1026,10 +1026,10 @@ function TenantEventEditor({ eventType, onSave, onCancel }: { eventType: EventTy
               <label className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Payment Methods</label>
               <div className="flex gap-4">
                 <label className="flex items-center gap-2 text-xs font-body text-muted-foreground cursor-pointer">
-                  <Switch checked={depositMethods.includes("stripe")} onCheckedChange={v => setDepositMethods(v ? [...depositMethods, "stripe"] : depositMethods.filter(m => m !== "stripe"))} />Stripe
+                  <Switch checked={depositMethods.includes("stripe")} onCheckedChange={v => setDepositMethods(v ? (depositMethods.includes("stripe") ? depositMethods : [...depositMethods, "stripe"]) : depositMethods.filter(m => m !== "stripe"))} />Stripe
                 </label>
                 <label className="flex items-center gap-2 text-xs font-body text-muted-foreground cursor-pointer">
-                  <Switch checked={depositMethods.includes("bank")} onCheckedChange={v => setDepositMethods(v ? [...depositMethods, "bank"] : depositMethods.filter(m => m !== "bank"))} />Bank Transfer
+                  <Switch checked={depositMethods.includes("bank")} onCheckedChange={v => setDepositMethods(v ? (depositMethods.includes("bank") ? depositMethods : [...depositMethods, "bank"]) : depositMethods.filter(m => m !== "bank"))} />Bank Transfer
                 </label>
               </div>
             </div>
@@ -3196,7 +3196,7 @@ function TenantSettingsView({ slug }: { slug: string }) {
                   <p className="text-[10px] font-body text-muted-foreground/70 mt-0.5">How long clients have to submit picks after a round is started. Can be overridden per album.</p>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
-                  <input type="number" min={1} max={720} value={settings.defaultProofingExpiryHours ?? 48} onChange={e => set({ defaultProofingExpiryHours: Math.max(1, parseInt(e.target.value) || 48) })} className="w-20 bg-background border border-border rounded-md px-2 py-1.5 text-sm font-body text-foreground text-center focus:outline-none focus:ring-2 focus:ring-ring" />
+                  <input type="number" min={1} max={720} value={settings.defaultProofingExpiryHours ?? 48} onChange={e => set({ defaultProofingExpiryHours: Math.min(720, Math.max(1, parseInt(e.target.value) || 48)) })} className="w-20 bg-background border border-border rounded-md px-2 py-1.5 text-sm font-body text-foreground text-center focus:outline-none focus:ring-2 focus:ring-ring" />
                   <span className="text-xs font-body text-muted-foreground">hours</span>
                 </div>
               </div>
