@@ -15,6 +15,7 @@ import MobileCapture from "./pages/MobileCapture";
 import InvoiceView from "./pages/InvoiceView";
 import TenantBookingPage from "./pages/TenantBookingPage";
 import TenantSetup from "./pages/TenantSetup";
+import LoginPage from "./pages/LoginPage";
 import { isSetupComplete, isLoggedIn } from "./lib/storage";
 import { syncFromServer } from "./lib/api";
 
@@ -59,6 +60,7 @@ const App = () => {
             <Route path="/book/:tenantSlug" element={<TenantBookingPage />} />
             <Route path="/gallery/:albumId" element={<AlbumDetail />} />
             <Route path="/booking/modify/:bookingId" element={<BookingModify />} />
+            <Route path="/login" element={<LoginPage />} />
             <Route path="/capture" element={<MobileCapture />} />
             <Route path="/admin" element={<AdminGuard />} />
             <Route path="/admin/:tab" element={<AdminGuard />} />
