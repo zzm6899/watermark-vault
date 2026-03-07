@@ -28,7 +28,7 @@ import {
   getEnquiries, updateEnquiry, deleteEnquiry,
 } from "@/lib/storage";
 import { compressImage, formatBytes, getLocalStorageUsage, generateThumbnail } from "@/lib/image-utils";
-import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar, getServerStorageStats, syncFromServer, sendEmail, bulkDeleteFiles, syncBookingsToSheet, getBookingEmailLog, sendBookingReminder, sendCustomEmail, getWaitlistEntries, deleteWaitlistEntry, notifyWaitlistOnCancel, notifyDiscord, getCacheStats, warmCache, createInvoiceCheckout, sendInvoiceEmail, getStripeStatus } from "@/lib/api";
+import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar, getServerStorageStats, syncFromServer, sendEmail, bulkDeleteFiles, syncBookingsToSheet, getBookingEmailLog, sendBookingReminder, sendCustomEmail, getWaitlistEntries, deleteWaitlistEntry, notifyWaitlistOnCancel, notifyDiscord, getCacheStats, warmCache, createInvoiceCheckout, sendInvoiceEmail, getStripeStatus, sendEnquiryAcceptedEmail, sendEnquiryDeclinedEmail } from "@/lib/api";
 import type { CacheBreakdown } from "@/lib/api";
 import RichTextEditor, { RichTextDisplay } from "@/components/RichTextEditor";
 import Login from "@/pages/Login";
@@ -3666,6 +3666,16 @@ function EnquiriesView() {
     updateEnquiry(updated);
     reload();
     toast.success(`Enquiry accepted — booking created for ${enq.name}. Check the Bookings tab.`);
+    sendEnquiryAcceptedEmail({
+      to: enq.email,
+      clientName: enq.name,
+      eventTitle: enq.eventTypeTitle || matchedEvent?.title,
+      preferredDate: enq.preferredDate,
+      preferredStartTime: enq.preferredStartTime,
+      preferredEndTime: enq.preferredEndTime,
+      bookingId: booking.id,
+      modifyToken,
+    }).catch(() => {});
   };
 
   const handleDecline = (enq: Enquiry) => {
@@ -3674,16 +3684,22 @@ function EnquiriesView() {
   };
 
   const confirmDecline = (enq: Enquiry) => {
+    const note = adminNoteInput.trim() || undefined;
     const updated: Enquiry = {
       ...enq,
       status: "declined",
       respondedAt: new Date().toISOString(),
-      adminNote: adminNoteInput.trim() || undefined,
+      adminNote: note,
     };
     updateEnquiry(updated);
     setDecliningId(null);
     reload();
     toast.success("Enquiry declined");
+    sendEnquiryDeclinedEmail({
+      to: enq.email,
+      clientName: enq.name,
+      adminNote: note,
+    }).catch(() => {});
   };
 
   const handleDelete = (id: string) => {
@@ -5212,16 +5228,29 @@ function SettingsView() {
   };
 
   const handleSave = async () => {
+    const saved = getSettings() as AppSettings & { watermarkVersion?: number };
+    const watermarkChanged =
+      saved.watermarkText !== settings.watermarkText ||
+      saved.watermarkImage !== settings.watermarkImage ||
+      saved.watermarkPosition !== settings.watermarkPosition ||
+      saved.watermarkOpacity !== settings.watermarkOpacity ||
+      saved.watermarkSize !== settings.watermarkSize;
+
     const nextSettings = {
       ...settings,
-      watermarkVersion: ((settings as any).watermarkVersion || 0) + 1,
-      watermarkUpdatedAt: new Date().toISOString(),
+      ...(watermarkChanged
+        ? { watermarkVersion: ((saved as any).watermarkVersion || 0) + 1, watermarkUpdatedAt: new Date().toISOString() }
+        : {}),
     } as AppSettings & { watermarkVersion: number; watermarkUpdatedAt: string };
 
     setSettings(nextSettings as AppSettings);
     setSettingsState(nextSettings as AppSettings);
 
     if (isServerMode()) {
+      if (!watermarkChanged) {
+        toast.success("Settings saved.");
+        return;
+      }
       // Server mode: just clear the server image cache so fresh watermarked images are served
       setRebuildProgress({ running: true, done: 0, total: 1, stage: "Clearing server image cache…" });
       writeWatermarkRebuildStatus({ running: true, mode: "save", done: 0, total: 1, stage: "Clearing server image cache…" });
@@ -5236,6 +5265,11 @@ function SettingsView() {
         writeWatermarkRebuildStatus({ running: false, mode: "save", stage: "Cache clear failed." });
       }
       setRebuildProgress({ running: false, done: 1, total: 1, stage: "" });
+      return;
+    }
+
+    if (!watermarkChanged) {
+      toast.success("Settings saved.");
       return;
     }
 

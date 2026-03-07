@@ -435,6 +435,66 @@ export async function sendCustomEmail(to: string, subject: string, html: string,
   } catch { return { ok: false, error: "Network error" }; }
 }
 
+/** Send an auto-reply to a client when their enquiry is received */
+export async function sendEnquiryReceivedEmail(params: {
+  to: string;
+  clientName: string;
+  eventTitle?: string;
+  preferredDate?: string;
+  preferredStartTime?: string;
+  preferredEndTime?: string;
+  message: string;
+}): Promise<{ ok: boolean; error?: string }> {
+  if (!(await checkServer())) return { ok: false, error: "Server unavailable" };
+  try {
+    const res = await fetch("/api/email/enquiry-received", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(params),
+    });
+    return await res.json();
+  } catch { return { ok: false, error: "Network error" }; }
+}
+
+/** Notify client that their enquiry has been accepted and a booking created */
+export async function sendEnquiryAcceptedEmail(params: {
+  to: string;
+  clientName: string;
+  eventTitle?: string;
+  preferredDate?: string;
+  preferredStartTime?: string;
+  preferredEndTime?: string;
+  bookingId: string;
+  modifyToken?: string;
+}): Promise<{ ok: boolean; error?: string }> {
+  if (!(await checkServer())) return { ok: false, error: "Server unavailable" };
+  try {
+    const res = await fetch("/api/email/enquiry-accepted", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(params),
+    });
+    return await res.json();
+  } catch { return { ok: false, error: "Network error" }; }
+}
+
+/** Notify client that their enquiry has been declined */
+export async function sendEnquiryDeclinedEmail(params: {
+  to: string;
+  clientName: string;
+  adminNote?: string;
+}): Promise<{ ok: boolean; error?: string }> {
+  if (!(await checkServer())) return { ok: false, error: "Server unavailable" };
+  try {
+    const res = await fetch("/api/email/enquiry-declined", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(params),
+    });
+    return await res.json();
+  } catch { return { ok: false, error: "Network error" }; }
+}
+
 /** Get busy time blocks from Google Calendar for a date (YYYY-MM-DD).
  *  Booking page uses this to grey out already-occupied slots. */
 export async function getGoogleBusyTimes(date: string): Promise<{ start: string; end: string }[]> {

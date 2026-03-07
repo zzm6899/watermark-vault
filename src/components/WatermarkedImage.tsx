@@ -21,13 +21,13 @@ interface WatermarkedImageProps {
   renderWatermarkOverlay?: boolean;
 }
 
-const positionClasses: Record<WatermarkPosition, string> = {
-  center: "inset-0 flex items-center justify-center",
-  "top-left": "top-4 left-4",
-  "top-right": "top-4 right-4",
-  "bottom-left": "bottom-4 left-4",
-  "bottom-right": "bottom-4 right-4",
-  tiled: "inset-0",
+const positionStyle: Record<WatermarkPosition, React.CSSProperties> = {
+  center:         { top: 0, right: 0, bottom: 0, left: 0, display: "flex", alignItems: "center", justifyContent: "center" },
+  "top-left":     { top: "1rem", left: "1rem" },
+  "top-right":    { top: "1rem", right: "1rem" },
+  "bottom-left":  { bottom: "1rem", left: "1rem" },
+  "bottom-right": { bottom: "1rem", right: "1rem" },
+  tiled:          { top: 0, right: 0, bottom: 0, left: 0 },
 };
 
 export default function WatermarkedImage({
@@ -78,7 +78,7 @@ export default function WatermarkedImage({
       }
 
       return (
-        <div className={`absolute pointer-events-none select-none ${positionClasses[watermarkPosition]}`}>
+        <div className="absolute pointer-events-none select-none" style={positionStyle[watermarkPosition]}>
           <div className={watermarkPosition === "center" ? "rotate-[-30deg]" : ""}>
             <img
               src={watermarkImage}
@@ -114,7 +114,7 @@ export default function WatermarkedImage({
     }
 
     return (
-      <div className={`absolute pointer-events-none select-none ${positionClasses[watermarkPosition]}`}>
+      <div className="absolute pointer-events-none select-none" style={positionStyle[watermarkPosition]}>
         <div className={watermarkPosition === "center" ? "rotate-[-30deg]" : ""}>
           <p
             className={`font-display text-foreground tracking-widest whitespace-nowrap ${

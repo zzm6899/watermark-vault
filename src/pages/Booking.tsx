@@ -13,7 +13,7 @@ import { Textarea } from "@/components/ui/textarea";
 import Footer from "@/components/Footer";
 import { toast } from "sonner";
 import { getEventTypes, getProfile, addBooking, getBookings, getSettings, isSlotBooked, updateBooking, addEnquiry } from "@/lib/storage";
-import { syncBookingToCalendar, createBookingCheckout, getStripeStatus, sendBookingConfirmationEmail, getGoogleBusyTimes, joinWaitlist, notifyDiscord } from "@/lib/api";
+import { syncBookingToCalendar, createBookingCheckout, getStripeStatus, sendBookingConfirmationEmail, getGoogleBusyTimes, joinWaitlist, notifyDiscord, sendEnquiryReceivedEmail } from "@/lib/api";
 import type { EventType, QuestionField, Enquiry } from "@/lib/types";
 import { RichTextDisplay } from "@/components/RichTextEditor";
 
@@ -513,6 +513,15 @@ export default function Booking() {
     };
     addEnquiry(enquiry);
     notifyDiscord({ event: "new-enquiry", enquiry }).catch(() => {});
+    sendEnquiryReceivedEmail({
+      to: enquiry.email,
+      clientName: enquiry.name,
+      eventTitle: enquiry.eventTypeTitle,
+      preferredDate: enquiry.preferredDate,
+      preferredStartTime: enquiry.preferredStartTime,
+      preferredEndTime: enquiry.preferredEndTime,
+      message: enquiry.message,
+    }).catch(() => {});
     setEnquirySubmitting(false);
     setStep("enquiry-confirmed");
   };

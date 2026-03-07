@@ -324,6 +324,61 @@ function registerRoutes(app, store) {
       res.status(500).json({ ok: false, error: err.message });
     }
   });
+
+  // ── Enquiry email notifications ──────────────────────────────
+
+  // Auto-reply to client when enquiry is submitted
+  app.post("/api/email/enquiry-received", async (req, res) => {
+    const t = getTransporter();
+    if (!t) return res.status(503).json({ ok: false, error: "SMTP not configured" });
+    const { to, clientName, eventTitle, preferredDate, preferredStartTime, preferredEndTime, message } = req.body;
+    if (!to || !clientName) return res.status(400).json({ ok: false, error: "Missing required fields" });
+    const html = buildEnquiryReceivedHtml({ clientName, eventTitle, preferredDate, preferredStartTime, preferredEndTime, message: message || "" });
+    try {
+      const info = await t.sendMail({ from: getFromAddress(), to, subject: "We've received your enquiry!", html });
+      console.log(`📧 Enquiry received auto-reply sent to ${to}: ${info.messageId}`);
+      res.json({ ok: true, messageId: info.messageId });
+    } catch (err) {
+      console.error("📧 Enquiry received email error:", err.message);
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
+  // Notify client when enquiry is accepted and booking created
+  app.post("/api/email/enquiry-accepted", async (req, res) => {
+    const t = getTransporter();
+    if (!t) return res.status(503).json({ ok: false, error: "SMTP not configured" });
+    const { to, clientName, eventTitle, preferredDate, preferredStartTime, preferredEndTime, bookingId, modifyToken } = req.body;
+    if (!to || !clientName) return res.status(400).json({ ok: false, error: "Missing required fields" });
+    const appBaseUrl = req.body.appBaseUrl || `${req.protocol}://${req.get("host")}`;
+    const modifyUrl = modifyToken && appBaseUrl ? `${appBaseUrl}/booking/modify/${modifyToken}` : null;
+    const html = buildEnquiryAcceptedHtml({ clientName, eventTitle, preferredDate, preferredStartTime, preferredEndTime, bookingId, modifyUrl });
+    try {
+      const info = await t.sendMail({ from: getFromAddress(), to, subject: "Your enquiry has been accepted!", html });
+      console.log(`📧 Enquiry accepted email sent to ${to}: ${info.messageId}`);
+      res.json({ ok: true, messageId: info.messageId });
+    } catch (err) {
+      console.error("📧 Enquiry accepted email error:", err.message);
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
+  // Notify client when enquiry is declined
+  app.post("/api/email/enquiry-declined", async (req, res) => {
+    const t = getTransporter();
+    if (!t) return res.status(503).json({ ok: false, error: "SMTP not configured" });
+    const { to, clientName, adminNote } = req.body;
+    if (!to || !clientName) return res.status(400).json({ ok: false, error: "Missing required fields" });
+    const html = buildEnquiryDeclinedHtml({ clientName, adminNote: adminNote || "" });
+    try {
+      const info = await t.sendMail({ from: getFromAddress(), to, subject: "Update on your photography enquiry", html });
+      console.log(`📧 Enquiry declined email sent to ${to}: ${info.messageId}`);
+      res.json({ ok: true, messageId: info.messageId });
+    } catch (err) {
+      console.error("📧 Enquiry declined email error:", err.message);
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
 }
 
 // ── Reminder Email HTML ───────────────────────────────────
@@ -376,6 +431,107 @@ function buildReminderEmailHtml({ clientName, eventTitle, date, time, duration,
     </div>
     <div style="padding:20px 32px;border-top:1px solid #1f1f1f;text-align:center;">
       <p style="color:#4b5563;font-size:12px;margin:0;">Questions? Simply reply to this email.<br>Ref: <span style="color:#6b7280;">${bookingId}</span></p>
+    </div>
+  </div>
+</body></html>`;
+}
+
+// ── Enquiry Email HTML builders ───────────────────────────────
+
+function buildEnquiryReceivedHtml({ clientName, eventTitle, preferredDate, preferredStartTime, preferredEndTime, message }) {
+  const detailRows = [
+    eventTitle ? `<tr><td style="padding:6px 0;color:#9ca3af;font-size:14px;border-top:1px solid #1f1f1f;">Event type</td><td style="padding:6px 0;color:#e5e7eb;font-size:14px;text-align:right;font-weight:600;border-top:1px solid #1f1f1f;">${eventTitle}</td></tr>` : "",
+    preferredDate ? `<tr><td style="padding:6px 0;color:#9ca3af;font-size:14px;">Preferred date</td><td style="padding:6px 0;color:#e5e7eb;font-size:14px;text-align:right;">${formatDateNice(preferredDate)}</td></tr>` : "",
+    (preferredStartTime || preferredEndTime) ? `<tr><td style="padding:6px 0;color:#9ca3af;font-size:14px;">Preferred time</td><td style="padding:6px 0;color:#8b5cf6;font-size:14px;text-align:right;font-weight:600;">${[preferredStartTime, preferredEndTime].filter(Boolean).map(formatTime12).join(" – ")}</td></tr>` : "",
+  ].filter(Boolean).join("");
+
+  return `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#0a0a0a;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;">
+  <div style="max-width:560px;margin:40px auto;background:#111111;border-radius:16px;overflow:hidden;border:1px solid #1f1f1f;">
+    <div style="background:linear-gradient(135deg,#1a1a2e 0%,#16213e 100%);padding:32px 32px 24px;text-align:center;border-bottom:1px solid #1f1f1f;">
+      <div style="width:52px;height:52px;background:rgba(139,92,246,0.2);border-radius:50%;display:inline-flex;align-items:center;justify-content:center;margin-bottom:16px;font-size:24px;">📬</div>
+      <h1 style="color:#e5e7eb;font-size:22px;font-weight:700;margin:0 0 6px;">Enquiry Received!</h1>
+      <p style="color:#6b7280;font-size:14px;margin:0;">Hi ${clientName}, we've received your enquiry and will get back to you shortly.</p>
+    </div>
+    <div style="padding:28px 32px;">
+      ${detailRows ? `<table style="width:100%;border-collapse:collapse;margin-bottom:20px;"><tbody>${detailRows}</tbody></table>` : ""}
+      <div style="background:#1a1a2e;border:1px solid #2d2d4e;border-radius:8px;padding:14px;margin-bottom:20px;">
+        <p style="color:#9ca3af;font-size:12px;margin:0 0 6px;text-transform:uppercase;letter-spacing:0.05em;">Your message</p>
+        <p style="color:#e5e7eb;font-size:13px;margin:0;white-space:pre-line;">${message}</p>
+      </div>
+      <div style="background:#1a2e1a;border:1px solid #166534;border-radius:8px;padding:14px;">
+        <p style="color:#86efac;font-size:13px;margin:0;line-height:1.5;">
+          <strong>✅ What happens next?</strong><br>
+          We'll review your enquiry and reach out to confirm availability and next steps.
+        </p>
+      </div>
+    </div>
+    <div style="padding:20px 32px;border-top:1px solid #1f1f1f;text-align:center;">
+      <p style="color:#4b5563;font-size:12px;margin:0;">Questions? Simply reply to this email.</p>
+    </div>
+  </div>
+</body></html>`;
+}
+
+function buildEnquiryAcceptedHtml({ clientName, eventTitle, preferredDate, preferredStartTime, preferredEndTime, bookingId, modifyUrl }) {
+  const detailRows = [
+    eventTitle ? `<tr><td style="padding:6px 0;color:#9ca3af;font-size:14px;border-top:1px solid #1f1f1f;">Event type</td><td style="padding:6px 0;color:#e5e7eb;font-size:14px;text-align:right;font-weight:600;border-top:1px solid #1f1f1f;">${eventTitle}</td></tr>` : "",
+    preferredDate ? `<tr><td style="padding:6px 0;color:#9ca3af;font-size:14px;">Date</td><td style="padding:6px 0;color:#e5e7eb;font-size:14px;text-align:right;">${formatDateNice(preferredDate)}</td></tr>` : "",
+    (preferredStartTime || preferredEndTime) ? `<tr><td style="padding:6px 0;color:#9ca3af;font-size:14px;">Time</td><td style="padding:6px 0;color:#8b5cf6;font-size:14px;text-align:right;font-weight:600;">${[preferredStartTime, preferredEndTime].filter(Boolean).map(formatTime12).join(" – ")}</td></tr>` : "",
+  ].filter(Boolean).join("");
+
+  return `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#0a0a0a;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;">
+  <div style="max-width:560px;margin:40px auto;background:#111111;border-radius:16px;overflow:hidden;border:1px solid #1f1f1f;">
+    <div style="background:linear-gradient(135deg,#1a1a2e 0%,#16213e 100%);padding:32px 32px 24px;text-align:center;border-bottom:1px solid #1f1f1f;">
+      <div style="width:52px;height:52px;background:rgba(34,197,94,0.15);border-radius:50%;display:inline-flex;align-items:center;justify-content:center;margin-bottom:16px;font-size:24px;">✅</div>
+      <h1 style="color:#e5e7eb;font-size:22px;font-weight:700;margin:0 0 6px;">Enquiry Accepted!</h1>
+      <p style="color:#6b7280;font-size:14px;margin:0;">Hi ${clientName}, great news — we'd love to work with you!</p>
+    </div>
+    <div style="padding:28px 32px;">
+      ${detailRows ? `<table style="width:100%;border-collapse:collapse;margin-bottom:20px;"><tbody>${detailRows}</tbody></table>` : ""}
+      <div style="background:#1a2e1a;border:1px solid #166534;border-radius:8px;padding:14px;margin-bottom:20px;">
+        <p style="color:#86efac;font-size:13px;margin:0;line-height:1.5;">
+          <strong>🎉 Your booking has been created!</strong><br>
+          We'll be in touch shortly to confirm all the details and arrange payment.
+        </p>
+      </div>
+      ${modifyUrl ? `<a href="${modifyUrl}" style="display:block;background:#8b5cf6;color:#ffffff;text-decoration:none;text-align:center;padding:14px 20px;border-radius:10px;font-size:14px;font-weight:600;">View Your Booking →</a>` : ""}
+    </div>
+    <div style="padding:20px 32px;border-top:1px solid #1f1f1f;text-align:center;">
+      <p style="color:#4b5563;font-size:12px;margin:0;">Questions? Simply reply to this email.${bookingId ? `<br>Ref: <span style="color:#6b7280;">${bookingId}</span>` : ""}</p>
+    </div>
+  </div>
+</body></html>`;
+}
+
+function buildEnquiryDeclinedHtml({ clientName, adminNote }) {
+  return `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#0a0a0a;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;">
+  <div style="max-width:560px;margin:40px auto;background:#111111;border-radius:16px;overflow:hidden;border:1px solid #1f1f1f;">
+    <div style="background:linear-gradient(135deg,#1a1a2e 0%,#16213e 100%);padding:32px 32px 24px;text-align:center;border-bottom:1px solid #1f1f1f;">
+      <div style="width:52px;height:52px;background:rgba(107,114,128,0.15);border-radius:50%;display:inline-flex;align-items:center;justify-content:center;margin-bottom:16px;font-size:24px;">📋</div>
+      <h1 style="color:#e5e7eb;font-size:22px;font-weight:700;margin:0 0 6px;">Enquiry Update</h1>
+      <p style="color:#6b7280;font-size:14px;margin:0;">Hi ${clientName}, thank you for reaching out.</p>
+    </div>
+    <div style="padding:28px 32px;">
+      <p style="color:#9ca3af;font-size:14px;line-height:1.6;margin:0 0 16px;">
+        Unfortunately we're unable to accommodate your enquiry at this time.
+      </p>
+      ${adminNote ? `
+      <div style="background:#1f1f1f;border:1px solid #374151;border-radius:8px;padding:14px;margin-bottom:20px;">
+        <p style="color:#9ca3af;font-size:12px;margin:0 0 6px;text-transform:uppercase;letter-spacing:0.05em;">Note from us</p>
+        <p style="color:#e5e7eb;font-size:13px;margin:0;white-space:pre-line;">${adminNote}</p>
+      </div>` : ""}
+      <p style="color:#9ca3af;font-size:13px;line-height:1.6;margin:0;">
+        We hope to work with you in the future. Feel free to reach out again for different dates or requirements.
+      </p>
+    </div>
+    <div style="padding:20px 32px;border-top:1px solid #1f1f1f;text-align:center;">
+      <p style="color:#4b5563;font-size:12px;margin:0;">Questions? Simply reply to this email.</p>
     </div>
   </div>
 </body></html>`;
