@@ -1,6 +1,6 @@
 import type {
   EventType, Booking, Album, Photo, ProfileSettings,
-  AppSettings, AdminCredentials, BankTransferSettings, WaitlistEntry, EmailTemplate,
+  AppSettings, AdminCredentials, BankTransferSettings, WaitlistEntry, EmailTemplate, Invoice,
 } from "./types";
 import { persistToServer } from "./api";
 
@@ -290,4 +290,36 @@ export function removeWaitlistEntry(id: string) {
 
 export function clearWaitlistForEventDate(eventTypeId: string, date: string) {
   setWaitlist(getWaitlist().filter(e => !(e.eventTypeId === eventTypeId && e.date === date)));
+}
+
+// ── Invoices ────────────────────────────────────────
+export function getInvoices(): Invoice[] {
+  return get<Invoice[]>("wv_invoices", []);
+}
+
+export function setInvoices(invoices: Invoice[]) {
+  set("wv_invoices", invoices);
+}
+
+export function addInvoice(invoice: Invoice) {
+  const list = getInvoices();
+  list.push(invoice);
+  setInvoices(list);
+}
+
+export function updateInvoice(invoice: Invoice) {
+  setInvoices(getInvoices().map(i => (i.id === invoice.id ? invoice : i)));
+}
+
+export function deleteInvoice(id: string) {
+  setInvoices(getInvoices().filter(i => i.id !== id));
+}
+
+export function getNextInvoiceNumber(): string {
+  const invoices = getInvoices();
+  const nums = invoices
+    .map(inv => parseInt(inv.number.replace(/\D/g, ""), 10))
+    .filter(n => !isNaN(n));
+  const next = nums.length > 0 ? Math.max(...nums) + 1 : 1;
+  return `INV-${String(next).padStart(4, "0")}`;
 }

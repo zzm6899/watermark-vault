@@ -43,7 +43,7 @@ import sampleWedding from "@/assets/sample-wedding.jpg";
 import sampleEvent from "@/assets/sample-event.jpg";
 import sampleFood from "@/assets/sample-food.jpg";
 
-type Tab = "dashboard" | "bookings" | "events" | "albums" | "photos" | "finance" | "profile" | "settings" | "storage";
+type Tab = "dashboard" | "bookings" | "events" | "albums" | "photos" | "finance" | "invoices" | "profile" | "settings" | "storage";
 
 const TAB_ROUTE_MAP: Record<string, Tab> = {
   dashboard: "dashboard",
