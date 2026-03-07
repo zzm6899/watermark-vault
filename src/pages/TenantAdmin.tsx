@@ -4,7 +4,8 @@ import { motion } from "framer-motion";
 import {
   LayoutDashboard, Calendar, Clock, Image, Receipt,
   Users, Settings, Key, LogOut, Camera, Plus, Edit, Trash2,
-  Save, X, ChevronDown, ChevronUp, Globe, Upload, Droplets, Search, Copy,
+  Save, X, ChevronDown, ChevronUp, Globe, Upload, Search, Copy,
+  DollarSign, MessageSquare, HardDrive, User,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -26,7 +27,7 @@ import type {
   Contact, TenantSettings, AvailabilitySlot, QuestionField, WatermarkPosition,
 } from "@/lib/types";
 
-type Tab = "dashboard" | "bookings" | "events" | "gallery" | "invoices" | "contacts" | "settings" | "watermark" | "license";
+type Tab = "dashboard" | "bookings" | "events" | "albums" | "photos" | "finance" | "invoices" | "contacts" | "enquiries" | "profile" | "settings" | "storage" | "license";
 
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
@@ -71,11 +72,15 @@ export default function TenantAdmin() {
     { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
     { id: "bookings", label: "Bookings", icon: Calendar },
     { id: "events", label: "Events", icon: Clock },
-    { id: "gallery", label: "Gallery", icon: Image },
+    { id: "albums", label: "Albums", icon: Image },
+    { id: "photos", label: "Photos", icon: Camera },
+    { id: "finance", label: "Finance", icon: DollarSign },
     { id: "invoices", label: "Invoices", icon: Receipt },
     { id: "contacts", label: "Contacts", icon: Users },
+    { id: "enquiries", label: "Enquiries", icon: MessageSquare },
+    { id: "profile", label: "Profile", icon: User },
     { id: "settings", label: "Settings", icon: Settings },
-    { id: "watermark", label: "Watermark", icon: Droplets },
+    { id: "storage", label: "Storage", icon: HardDrive },
     { id: "license", label: "License", icon: Key },
   ];
 
@@ -152,11 +157,15 @@ export default function TenantAdmin() {
           {activeTab === "dashboard" && <TenantDashboard slug={slug!} session={session} />}
           {activeTab === "bookings" && <TenantBookings slug={slug!} />}
           {activeTab === "events" && <TenantEvents slug={slug!} />}
-          {activeTab === "gallery" && <TenantGallery slug={slug!} />}
+          {activeTab === "albums" && <TenantAlbums slug={slug!} />}
+          {activeTab === "photos" && <TenantPhotos slug={slug!} />}
+          {activeTab === "finance" && <TenantFinance slug={slug!} />}
           {activeTab === "invoices" && <TenantInvoices slug={slug!} session={session} />}
           {activeTab === "contacts" && <TenantContacts slug={slug!} />}
-          {activeTab === "settings" && <TenantSettingsView slug={slug!} session={session} />}
-          {activeTab === "watermark" && <TenantWatermarkView slug={slug!} />}
+          {activeTab === "enquiries" && <TenantEnquiries slug={slug!} />}
+          {activeTab === "profile" && <TenantProfileView slug={slug!} session={session} />}
+          {activeTab === "settings" && <TenantSettingsView slug={slug!} />}
+          {activeTab === "storage" && <TenantStorage slug={slug!} />}
           {activeTab === "license" && <TenantLicense slug={slug!} />}
         </main>
       </div>
@@ -648,7 +657,7 @@ function TenantEventEditor({ eventType, onSave, onCancel }: { eventType: EventTy
 }
 
 // ─── Gallery ─────────────────────────────────────────────────────────────────
-function TenantGallery({ slug }: { slug: string }) {
+function TenantAlbums({ slug }: { slug: string }) {
   const [albums, setAlbums] = useState<Album[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedAlbum, setSelectedAlbum] = useState<Album | null>(null);
@@ -715,7 +724,7 @@ function TenantGallery({ slug }: { slug: string }) {
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
       <div className="flex items-center justify-between mb-6">
-        <h2 className="font-display text-2xl text-foreground">Gallery</h2>
+        <h2 className="font-display text-2xl text-foreground">Albums</h2>
         <span className="text-sm font-body text-muted-foreground">{albums.length} albums</span>
       </div>
       {albums.length === 0 ? (
@@ -747,6 +756,235 @@ function TenantGallery({ slug }: { slug: string }) {
               </div>
             );
           })}
+        </div>
+      )}
+    </motion.div>
+  );
+}
+
+// ─── Photos ──────────────────────────────────────────────────────────────────
+function TenantPhotos({ slug }: { slug: string }) {
+  const [albums, setAlbums] = useState<Album[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetchTenantMobileData(slug).then(d => {
+      setAlbums(d.albums || []);
+      setLoading(false);
+    });
+  }, [slug]);
+
+  const photoUrl = (src: string) => tenantPhotoSrc(src, slug);
+
+  const allPhotos = albums.flatMap(a =>
+    (a.photos || []).map(p => ({ ...p, albumTitle: a.title, albumId: a.id }))
+  );
+
+  if (loading) return <div className="py-16 text-center text-muted-foreground font-body text-sm animate-pulse">Loading…</div>;
+
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+      <div className="flex items-center justify-between mb-6">
+        <h2 className="font-display text-2xl text-foreground">Photos</h2>
+        <span className="text-sm font-body text-muted-foreground">{allPhotos.length} total</span>
+      </div>
+      {allPhotos.length === 0 ? (
+        <div className="text-center py-16 text-muted-foreground">
+          <Camera className="w-10 h-10 mx-auto mb-3 opacity-30" />
+          <p className="font-body text-sm">No photos yet</p>
+          <p className="font-body text-xs text-muted-foreground/60 mt-1">Photos appear here once captured for bookings.</p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2">
+          {allPhotos.map(photo => (
+            <div key={photo.id} className="group relative aspect-square rounded-lg overflow-hidden bg-secondary">
+              <img
+                src={photoUrl(photo.thumbnail || (photo.src.startsWith("/uploads/") ? `${photo.src}?size=thumb` : photo.src))}
+                alt={photo.title}
+                className="w-full h-full object-cover"
+                loading="lazy"
+              />
+              <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent p-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                <p className="text-[10px] font-body text-white truncate">{photo.albumTitle}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </motion.div>
+  );
+}
+
+// ─── Finance ─────────────────────────────────────────────────────────────────
+function TenantFinance({ slug }: { slug: string }) {
+  const [bookings, setBookings] = useState<Booking[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetchTenantMobileData(slug).then(d => {
+      setBookings(d.bookings || []);
+      setLoading(false);
+    });
+  }, [slug]);
+
+  if (loading) return <div className="py-16 text-center text-muted-foreground font-body text-sm animate-pulse">Loading…</div>;
+
+  const paid = bookings.filter(b => b.paymentStatus === "paid");
+  const deposit = bookings.filter(b => b.paymentStatus === "deposit");
+  const unpaid = bookings.filter(b => !b.paymentStatus || b.paymentStatus === "unpaid");
+
+  const totalPaid = paid.reduce((s, b) => s + (b.paymentAmount || 0), 0);
+  const totalDeposit = deposit.reduce((s, b) => s + (b.depositAmount || b.paymentAmount || 0), 0);
+
+  const curr = (n: number) => `$${n.toFixed(2)}`;
+
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+      <h2 className="font-display text-2xl text-foreground mb-6">Finance</h2>
+
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mb-8">
+        <div className="glass-panel rounded-xl p-4">
+          <p className="text-xs font-body tracking-wider uppercase text-muted-foreground">Paid in Full</p>
+          <p className="font-display text-2xl text-green-400 mt-1">{curr(totalPaid)}</p>
+          <p className="text-[10px] font-body text-muted-foreground">{paid.length} bookings</p>
+        </div>
+        <div className="glass-panel rounded-xl p-4">
+          <p className="text-xs font-body tracking-wider uppercase text-muted-foreground">Deposits Received</p>
+          <p className="font-display text-2xl text-yellow-400 mt-1">{curr(totalDeposit)}</p>
+          <p className="text-[10px] font-body text-muted-foreground">{deposit.length} bookings</p>
+        </div>
+        <div className="glass-panel rounded-xl p-4">
+          <p className="text-xs font-body tracking-wider uppercase text-muted-foreground">Unpaid</p>
+          <p className="font-display text-2xl text-muted-foreground mt-1">{unpaid.length}</p>
+          <p className="text-[10px] font-body text-muted-foreground">bookings</p>
+        </div>
+      </div>
+
+      <div className="glass-panel rounded-xl p-6">
+        <h3 className="font-display text-base text-foreground mb-4">Recent Payments</h3>
+        {bookings.length === 0 ? (
+          <p className="text-sm font-body text-muted-foreground">No bookings yet.</p>
+        ) : (
+          <div className="space-y-2 max-h-[500px] overflow-y-auto">
+            {[...bookings]
+              .filter(b => b.paymentStatus === "paid" || b.paymentStatus === "deposit")
+              .sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""))
+              .map(bk => (
+                <div key={bk.id} className="flex items-center gap-3 p-3 rounded-lg bg-secondary/40 border border-border/40">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-body text-foreground">{bk.clientName}</p>
+                    <p className="text-xs font-body text-muted-foreground">{bk.date} · {bk.type}</p>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <p className="text-sm font-body text-foreground">{curr(bk.paymentAmount || 0)}</p>
+                    <span className={`text-[10px] font-body px-1.5 py-0.5 rounded-full ${
+                      bk.paymentStatus === "paid" ? "bg-green-500/10 text-green-400" : "bg-yellow-500/10 text-yellow-400"
+                    }`}>{bk.paymentStatus}</span>
+                  </div>
+                </div>
+              ))}
+          </div>
+        )}
+      </div>
+    </motion.div>
+  );
+}
+
+// ─── Enquiries ───────────────────────────────────────────────────────────────
+function TenantEnquiries({ slug }: { slug: string }) {
+  const [enquiries, setEnquiries] = useState<Array<{
+    id: string; name: string; email: string; phone?: string;
+    eventTypeTitle?: string; preferredDate?: string; message: string;
+    status: "pending" | "accepted" | "declined"; createdAt: string;
+  }>>([]);
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    const data = await getTenantStoreKey<Array<{
+      id: string; name: string; email: string; phone?: string;
+      eventTypeTitle?: string; preferredDate?: string; message: string;
+      status: "pending" | "accepted" | "declined"; createdAt: string;
+    }>>(slug, "wv_enquiries");
+    setEnquiries(
+      (data || []).slice().sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""))
+    );
+    setLoading(false);
+  }, [slug]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const updateStatus = async (id: string, status: "accepted" | "declined") => {
+    const updated = enquiries.map(e => e.id === id ? { ...e, status } : e);
+    await saveTenantStoreKey(slug, "wv_enquiries", updated);
+    setEnquiries(updated.slice().sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || "")));
+    toast.success(status === "accepted" ? "Enquiry accepted" : "Enquiry declined");
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!confirm("Delete this enquiry?")) return;
+    const updated = enquiries.filter(e => e.id !== id);
+    await saveTenantStoreKey(slug, "wv_enquiries", updated);
+    setEnquiries(updated);
+    toast.success("Enquiry deleted");
+  };
+
+  if (loading) return <div className="py-16 text-center text-muted-foreground font-body text-sm animate-pulse">Loading…</div>;
+
+  const pending = enquiries.filter(e => e.status === "pending");
+
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+      <div className="flex items-center gap-3 mb-6">
+        <h2 className="font-display text-2xl text-foreground">Enquiries</h2>
+        {pending.length > 0 && (
+          <span className="bg-yellow-500/15 text-yellow-400 text-xs font-body px-2 py-0.5 rounded-full">
+            {pending.length} pending
+          </span>
+        )}
+      </div>
+      {enquiries.length === 0 ? (
+        <div className="text-center py-16 text-muted-foreground">
+          <MessageSquare className="w-10 h-10 mx-auto mb-3 opacity-30" />
+          <p className="font-body text-sm">No enquiries yet</p>
+          <p className="font-body text-xs text-muted-foreground/60 mt-1">Enquiries from your booking page will appear here.</p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {enquiries.map(enq => (
+            <div key={enq.id} className="glass-panel rounded-xl p-4 space-y-2">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-body text-foreground font-medium">{enq.name}</span>
+                    <span className={`text-[10px] font-body px-1.5 py-0.5 rounded-full ${
+                      enq.status === "pending" ? "bg-yellow-500/10 text-yellow-400"
+                      : enq.status === "accepted" ? "bg-green-500/10 text-green-400"
+                      : "bg-red-500/10 text-red-400"
+                    }`}>{enq.status}</span>
+                  </div>
+                  <p className="text-xs font-body text-muted-foreground">{enq.email}{enq.phone ? ` · ${enq.phone}` : ""}</p>
+                  {enq.preferredDate && <p className="text-xs font-body text-muted-foreground">Date: {enq.preferredDate}</p>}
+                  {enq.eventTypeTitle && <p className="text-xs font-body text-muted-foreground">Event: {enq.eventTypeTitle}</p>}
+                </div>
+                <button onClick={() => handleDelete(enq.id)} className="text-muted-foreground hover:text-destructive transition-colors shrink-0">
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+              <p className="text-sm font-body text-foreground bg-secondary/50 rounded-lg p-3">{enq.message}</p>
+              {enq.status === "pending" && (
+                <div className="flex gap-2">
+                  <Button size="sm" onClick={() => updateStatus(enq.id, "accepted")}
+                    className="bg-green-600 hover:bg-green-700 text-white font-body text-xs gap-1">
+                    Accept
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => updateStatus(enq.id, "declined")}
+                    className="font-body text-xs gap-1 border-border text-muted-foreground hover:text-foreground">
+                    Decline
+                  </Button>
+                </div>
+              )}
+            </div>
+          ))}
         </div>
       )}
     </motion.div>
@@ -1048,18 +1286,12 @@ function TenantContacts({ slug }: { slug: string }) {
   );
 }
 
-// ─── Settings ────────────────────────────────────────────────────────────────
-function TenantSettingsView({ slug, session }: { slug: string; session: { displayName: string; email: string } }) {
-  const [settings, setSettings] = useState<TenantSettings>({});
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [activeSection, setActiveSection] = useState<"profile" | "payments" | "notifications" | "password">("profile");
-
-  // Profile fields
+// ─── Profile ─────────────────────────────────────────────────────────────────
+function TenantProfileView({ slug, session }: { slug: string; session: { displayName: string; email: string } }) {
   const [displayName, setDisplayName] = useState(session.displayName);
   const [email, setEmail] = useState(session.email);
   const [bio, setBio] = useState("");
-  const [savingProfile, setSavingProfile] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   // Password change
   const [currentPassword, setCurrentPassword] = useState("");
@@ -1068,29 +1300,17 @@ function TenantSettingsView({ slug, session }: { slug: string; session: { displa
   const [savingPassword, setSavingPassword] = useState(false);
 
   useEffect(() => {
-    getTenantSettings(slug).then(s => { setSettings(s); setLoading(false); });
-    // Load tenant profile info
     fetch(`/api/tenant/${encodeURIComponent(slug)}/public`)
       .then(r => r.json())
-      .then(d => { if (d.tenant) { setBio(d.tenant.bio || ""); } })
+      .then(d => { if (d.tenant) setBio(d.tenant.bio || ""); })
       .catch(() => {});
   }, [slug]);
 
-  const set = (patch: Partial<TenantSettings>) => setSettings(s => ({ ...s, ...patch }));
-
-  const handleSaveSettings = async () => {
-    setSaving(true);
-    const { ok, error } = await saveTenantSettings(slug, settings);
-    setSaving(false);
-    if (!ok) { toast.error(error || "Failed to save"); return; }
-    toast.success("Settings saved");
-  };
-
-  const handleSaveProfile = async () => {
+  const handleSave = async () => {
     if (!displayName.trim()) { toast.error("Display name is required"); return; }
-    setSavingProfile(true);
+    setSaving(true);
     const { ok, error } = await updateTenant(slug, { displayName: displayName.trim(), email: email.trim(), bio: bio.trim() || undefined });
-    setSavingProfile(false);
+    setSaving(false);
     if (!ok) { toast.error(error || "Failed to save profile"); return; }
     toast.success("Profile updated");
   };
@@ -1103,7 +1323,6 @@ function TenantSettingsView({ slug, session }: { slug: string; session: { displa
     setSavingPassword(true);
     try {
       const currentHash = await hashPassword(currentPassword);
-      // Verify current password by attempting login
       const checkRes = await fetch(`/api/tenant/${encodeURIComponent(slug)}/login`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ passwordHash: currentHash }),
@@ -1119,29 +1338,12 @@ function TenantSettingsView({ slug, session }: { slug: string; session: { displa
     }
   };
 
-  if (loading) return <div className="py-16 text-center text-muted-foreground font-body text-sm animate-pulse">Loading…</div>;
-
-  const sectionTabs = [
-    { id: "profile" as const, label: "Profile" },
-    { id: "payments" as const, label: "Payments" },
-    { id: "notifications" as const, label: "Notifications" },
-    { id: "password" as const, label: "Password" },
-  ];
-
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-      <h2 className="font-display text-2xl text-foreground mb-6">Settings</h2>
-
-      <div className="flex gap-1 mb-6 bg-secondary rounded-xl p-1 max-w-fit overflow-x-auto">
-        {sectionTabs.map(t => (
-          <button key={t.id} onClick={() => setActiveSection(t.id)}
-            className={`px-4 py-2 rounded-lg text-xs font-body tracking-wider uppercase whitespace-nowrap transition-all ${activeSection === t.id ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
-          >{t.label}</button>
-        ))}
-      </div>
-
-      {activeSection === "profile" && (
-        <div className="max-w-md space-y-4">
+      <h2 className="font-display text-2xl text-foreground mb-6">Profile</h2>
+      <div className="space-y-8 max-w-md">
+        {/* Profile info */}
+        <div className="space-y-4">
           <div>
             <label className="text-xs font-body text-muted-foreground mb-1 block">Display Name</label>
             <Input value={displayName} onChange={e => setDisplayName(e.target.value)} className="bg-secondary border-border text-foreground font-body" />
@@ -1158,11 +1360,97 @@ function TenantSettingsView({ slug, session }: { slug: string; session: { displa
             <p className="text-xs font-body text-muted-foreground">Booking page URL:</p>
             <a href={`/book/${slug}`} target="_blank" rel="noopener noreferrer" className="text-sm font-body text-primary hover:underline">{window.location.origin}/book/{slug}</a>
           </div>
-          <Button onClick={handleSaveProfile} disabled={savingProfile} className="bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2 w-full">
-            <Save className="w-4 h-4" /> {savingProfile ? "Saving…" : "Save Profile"}
+          <Button onClick={handleSave} disabled={saving} className="bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2 w-full">
+            <Save className="w-4 h-4" /> {saving ? "Saving…" : "Save Profile"}
           </Button>
         </div>
-      )}
+
+        {/* Password change */}
+        <div className="space-y-4 pt-4 border-t border-border/30">
+          <h3 className="font-display text-base text-foreground">Change Password</h3>
+          <div>
+            <label className="text-xs font-body text-muted-foreground mb-1 block">Current Password</label>
+            <Input type="password" value={currentPassword} onChange={e => setCurrentPassword(e.target.value)} className="bg-secondary border-border text-foreground font-body" />
+          </div>
+          <div>
+            <label className="text-xs font-body text-muted-foreground mb-1 block">New Password</label>
+            <Input type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)} className="bg-secondary border-border text-foreground font-body" />
+          </div>
+          <div>
+            <label className="text-xs font-body text-muted-foreground mb-1 block">Confirm New Password</label>
+            <Input type="password" value={confirmNewPassword} onChange={e => setConfirmNewPassword(e.target.value)} className="bg-secondary border-border text-foreground font-body" onKeyDown={e => e.key === "Enter" && handleChangePassword()} />
+          </div>
+          <Button onClick={handleChangePassword} disabled={savingPassword} className="bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2 w-full">
+            <Save className="w-4 h-4" /> {savingPassword ? "Updating…" : "Update Password"}
+          </Button>
+        </div>
+      </div>
+    </motion.div>
+  );
+}
+
+// ─── Settings ────────────────────────────────────────────────────────────────
+function TenantSettingsView({ slug }: { slug: string }) {
+  const [settings, setSettings] = useState<TenantSettings>({});
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [activeSection, setActiveSection] = useState<"payments" | "notifications" | "watermark">("payments");
+  const [wmUploading, setWmUploading] = useState(false);
+
+  useEffect(() => {
+    getTenantSettings(slug).then(s => { setSettings(s); setLoading(false); });
+  }, [slug]);
+
+  const set = (patch: Partial<TenantSettings>) => setSettings(s => ({ ...s, ...patch }));
+
+  const handleSaveSettings = async () => {
+    setSaving(true);
+    const { ok, error } = await saveTenantSettings(slug, settings);
+    setSaving(false);
+    if (!ok) { toast.error(error || "Failed to save"); return; }
+    toast.success("Settings saved");
+  };
+
+  const handleWatermarkImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setWmUploading(true);
+    const reader = new FileReader();
+    reader.onload = ev => {
+      set({ watermarkImage: ev.target?.result as string });
+      setWmUploading(false);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  if (loading) return <div className="py-16 text-center text-muted-foreground font-body text-sm animate-pulse">Loading…</div>;
+
+  const sectionTabs = [
+    { id: "payments" as const, label: "Payments" },
+    { id: "notifications" as const, label: "Notifications" },
+    { id: "watermark" as const, label: "Watermark" },
+  ];
+
+  const WATERMARK_POSITIONS: { value: WatermarkPosition; label: string }[] = [
+    { value: "center", label: "Center" },
+    { value: "top-left", label: "Top Left" },
+    { value: "top-right", label: "Top Right" },
+    { value: "bottom-left", label: "Bottom Left" },
+    { value: "bottom-right", label: "Bottom Right" },
+    { value: "tiled", label: "Tiled" },
+  ];
+
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+      <h2 className="font-display text-2xl text-foreground mb-6">Settings</h2>
+
+      <div className="flex gap-1 mb-6 bg-secondary rounded-xl p-1 max-w-fit overflow-x-auto">
+        {sectionTabs.map(t => (
+          <button key={t.id} onClick={() => setActiveSection(t.id)}
+            className={`px-4 py-2 rounded-lg text-xs font-body tracking-wider uppercase whitespace-nowrap transition-all ${activeSection === t.id ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+          >{t.label}</button>
+        ))}
+      </div>
 
       {activeSection === "payments" && (
         <div className="space-y-5 max-w-lg">
@@ -1245,22 +1533,64 @@ function TenantSettingsView({ slug, session }: { slug: string; session: { displa
         </div>
       )}
 
-      {activeSection === "password" && (
-        <div className="max-w-md space-y-4">
-          <div>
-            <label className="text-xs font-body text-muted-foreground mb-1 block">Current Password</label>
-            <Input type="password" value={currentPassword} onChange={e => setCurrentPassword(e.target.value)} className="bg-secondary border-border text-foreground font-body" />
+      {activeSection === "watermark" && (
+        <div className="space-y-5 max-w-lg">
+          <div className="space-y-3 p-4 rounded-lg bg-secondary/40 border border-border/50">
+            <h3 className="text-xs font-body tracking-wider uppercase text-muted-foreground">Watermark Image</h3>
+            {settings.watermarkImage ? (
+              <div className="flex items-center gap-3">
+                <img src={settings.watermarkImage} alt="Watermark" className="h-12 object-contain rounded bg-secondary p-1" />
+                <Button size="sm" variant="ghost" onClick={() => set({ watermarkImage: undefined })} className="text-destructive hover:text-destructive hover:bg-destructive/10 font-body text-xs gap-1">
+                  <X className="w-3 h-3" /> Remove
+                </Button>
+              </div>
+            ) : (
+              <label className="cursor-pointer inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-secondary/80 border border-border/50 text-xs font-body text-muted-foreground hover:text-foreground transition-colors">
+                <Upload className="w-3.5 h-3.5" />
+                {wmUploading ? "Uploading…" : "Upload Image"}
+                <input type="file" accept="image/*" className="hidden" onChange={handleWatermarkImageUpload} />
+              </label>
+            )}
           </div>
-          <div>
-            <label className="text-xs font-body text-muted-foreground mb-1 block">New Password</label>
-            <Input type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)} className="bg-secondary border-border text-foreground font-body" />
+
+          <div className="space-y-3 p-4 rounded-lg bg-secondary/40 border border-border/50">
+            <h3 className="text-xs font-body tracking-wider uppercase text-muted-foreground">Watermark Text</h3>
+            <Input value={settings.watermarkText || ""} onChange={e => set({ watermarkText: e.target.value })} placeholder="© Your Studio Name" className="bg-background border-border text-foreground font-body text-sm" />
+            <p className="text-[10px] font-body text-muted-foreground">Used as fallback when no image is set.</p>
           </div>
-          <div>
-            <label className="text-xs font-body text-muted-foreground mb-1 block">Confirm New Password</label>
-            <Input type="password" value={confirmNewPassword} onChange={e => setConfirmNewPassword(e.target.value)} className="bg-secondary border-border text-foreground font-body" onKeyDown={e => e.key === "Enter" && handleChangePassword()} />
+
+          <div className="space-y-3 p-4 rounded-lg bg-secondary/40 border border-border/50">
+            <h3 className="text-xs font-body tracking-wider uppercase text-muted-foreground">Position</h3>
+            <div className="grid grid-cols-3 gap-2">
+              {WATERMARK_POSITIONS.map(pos => (
+                <button key={pos.value} onClick={() => set({ watermarkPosition: pos.value })}
+                  className={`px-3 py-2 rounded-lg text-xs font-body border transition-all ${settings.watermarkPosition === pos.value || (!settings.watermarkPosition && pos.value === "tiled") ? "bg-primary/10 border-primary text-primary" : "border-border text-muted-foreground hover:text-foreground hover:border-foreground/40"}`}>
+                  {pos.label}
+                </button>
+              ))}
+            </div>
           </div>
-          <Button onClick={handleChangePassword} disabled={savingPassword} className="bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2 w-full">
-            <Save className="w-4 h-4" /> {savingPassword ? "Updating…" : "Update Password"}
+
+          <div className="space-y-3 p-4 rounded-lg bg-secondary/40 border border-border/50">
+            <div className="flex items-center justify-between">
+              <h3 className="text-xs font-body tracking-wider uppercase text-muted-foreground">Opacity</h3>
+              <span className="text-xs font-body text-foreground">{settings.watermarkOpacity ?? 20}%</span>
+            </div>
+            <Slider value={[settings.watermarkOpacity ?? 20]} min={5} max={80} step={5}
+              onValueChange={([v]) => set({ watermarkOpacity: v })} className="w-full" />
+          </div>
+
+          <div className="space-y-3 p-4 rounded-lg bg-secondary/40 border border-border/50">
+            <div className="flex items-center justify-between">
+              <h3 className="text-xs font-body tracking-wider uppercase text-muted-foreground">Size</h3>
+              <span className="text-xs font-body text-foreground">{settings.watermarkSize ?? 40}%</span>
+            </div>
+            <Slider value={[settings.watermarkSize ?? 40]} min={10} max={100} step={5}
+              onValueChange={([v]) => set({ watermarkSize: v })} className="w-full" />
+          </div>
+
+          <Button onClick={handleSaveSettings} disabled={saving} className="bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2 w-full">
+            <Save className="w-4 h-4" /> {saving ? "Saving…" : "Save Watermark Settings"}
           </Button>
         </div>
       )}
@@ -1268,243 +1598,78 @@ function TenantSettingsView({ slug, session }: { slug: string; session: { displa
   );
 }
 
-// ─── Watermark ────────────────────────────────────────────────────────────────
-const WATERMARK_POSITIONS: { value: WatermarkPosition; label: string }[] = [
-  { value: "center", label: "Center" },
-  { value: "top-left", label: "Top Left" },
-  { value: "top-right", label: "Top Right" },
-  { value: "bottom-left", label: "Bottom Left" },
-  { value: "bottom-right", label: "Bottom Right" },
-  { value: "tiled", label: "Tiled" },
-];
-
-/** A small CSS-only watermark preview using a sample gradient background */
-function WatermarkPreview({ settings }: { settings: TenantSettings }) {
-  const wpos = settings.watermarkPosition ?? "tiled";
-  const opacity = (settings.watermarkOpacity ?? 20) / 100;
-  const sizePct = settings.watermarkSize ?? 40;
-  const text = settings.watermarkText || "YOUR WATERMARK";
-  const imgSrc = settings.watermarkImage || null;
-
-  const tileCount = 20;
-  const tiledImageH = Math.max(16, sizePct * 0.3);
-  const tiledTextPx = Math.max(9, sizePct * 0.25);
-  const fontSizeEm = `${(sizePct / 40).toFixed(2)}em`;
-
-  const positionStyle: Record<WatermarkPosition, React.CSSProperties> = {
-    center: { top: 0, right: 0, bottom: 0, left: 0, display: "flex", alignItems: "center", justifyContent: "center" },
-    "top-left": { top: "0.75rem", left: "0.75rem" },
-    "top-right": { top: "0.75rem", right: "0.75rem" },
-    "bottom-left": { bottom: "0.75rem", left: "0.75rem" },
-    "bottom-right": { bottom: "0.75rem", right: "0.75rem" },
-    tiled: { top: 0, right: 0, bottom: 0, left: 0 },
-  };
-
-  const renderWatermark = () => {
-    if (imgSrc) {
-      if (wpos === "tiled") {
-        return (
-          <div className="absolute inset-0 pointer-events-none select-none overflow-hidden">
-            <div className="absolute inset-0 flex flex-wrap items-start justify-start gap-x-16 gap-y-12 rotate-[-30deg] scale-150 origin-center" style={{ opacity }}>
-              {Array.from({ length: tileCount }).map((_, i) => (
-                <img key={i} src={imgSrc} alt="" style={{ height: `${tiledImageH}px`, width: "auto" }} />
-              ))}
-            </div>
-          </div>
-        );
-      }
-      return (
-        <div className="absolute pointer-events-none select-none" style={positionStyle[wpos]}>
-          <div className={wpos === "center" ? "rotate-[-30deg]" : ""}>
-            <img src={imgSrc} alt="" style={{ opacity, width: `${sizePct}%`, maxWidth: "100%", height: "auto" }} />
-          </div>
-        </div>
-      );
-    }
-
-    if (wpos === "tiled") {
-      return (
-        <div className="absolute inset-0 pointer-events-none select-none overflow-hidden">
-          <div className="absolute inset-0 flex flex-wrap items-start justify-start gap-x-16 gap-y-12 rotate-[-30deg] scale-150 origin-center" style={{ opacity }}>
-            {Array.from({ length: tileCount }).map((_, i) => (
-              <p key={i} className="font-display text-foreground tracking-widest whitespace-nowrap" style={{ fontSize: `${tiledTextPx}px` }}>{text}</p>
-            ))}
-          </div>
-        </div>
-      );
-    }
-    return (
-      <div className="absolute pointer-events-none select-none" style={positionStyle[wpos]}>
-        <div className={wpos === "center" ? "rotate-[-30deg]" : ""}>
-          <p className="font-display text-foreground tracking-widest whitespace-nowrap text-lg" style={{ opacity, fontSize: fontSizeEm }}>{text}</p>
-        </div>
-      </div>
-    );
-  };
-
-  return (
-    <div className="relative rounded-lg overflow-hidden bg-secondary" style={{ paddingBottom: "60%" }}>
-      {/* Placeholder "photo" gradient */}
-      <div className="absolute inset-0 bg-gradient-to-br from-secondary via-muted to-secondary" />
-      <div className="absolute inset-0 flex items-center justify-center">
-        <Camera className="w-16 h-16 text-muted-foreground/10" />
-      </div>
-      {renderWatermark()}
-    </div>
-  );
-}
-
-function TenantWatermarkView({ slug }: { slug: string }) {
-  const [settings, setSettings] = useState<TenantSettings>({});
+// ─── Storage ─────────────────────────────────────────────────────────────────
+function TenantStorage({ slug }: { slug: string }) {
+  const [albums, setAlbums] = useState<Album[]>([]);
+  const [cacheClearing, setCacheClearing] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [clearingCache, setClearingCache] = useState(false);
 
   useEffect(() => {
-    getTenantSettings(slug).then(s => { setSettings(s); setLoading(false); });
+    fetchTenantMobileData(slug).then(d => {
+      setAlbums(d.albums || []);
+      setLoading(false);
+    });
   }, [slug]);
 
-  const set = (patch: Partial<TenantSettings>) => setSettings(s => ({ ...s, ...patch }));
-
-  const handleWatermarkImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => set({ watermarkImage: reader.result as string });
-    reader.readAsDataURL(file);
-  };
-
-  const handleSave = async () => {
-    setSaving(true);
-    const { ok, error } = await saveTenantSettings(slug, settings);
-    setSaving(false);
-    if (!ok) { toast.error(error || "Failed to save"); return; }
-    // Clear the tenant-specific image cache so photos re-render with new watermark
-    setClearingCache(true);
-    const { ok: cacheOk, cleared } = await clearTenantImageCache(slug);
-    setClearingCache(false);
-    if (cacheOk) {
-      toast.success(`Watermark settings saved — ${cleared ?? 0} cached images cleared, gallery will show your new watermark.`);
-    } else {
-      toast.success("Watermark settings saved. Clear server cache manually if images look stale.");
-    }
+  const handleClearCache = async () => {
+    setCacheClearing(true);
+    const { ok, cleared, error } = await clearTenantImageCache(slug);
+    setCacheClearing(false);
+    if (!ok) { toast.error(error || "Failed to clear cache"); return; }
+    toast.success(`Cache cleared — ${cleared ?? 0} file(s) removed`);
   };
 
   if (loading) return <div className="py-16 text-center text-muted-foreground font-body text-sm animate-pulse">Loading…</div>;
 
-  const watermarkText = settings.watermarkText || "";
-  const watermarkPosition = settings.watermarkPosition ?? "tiled";
-  const watermarkOpacity = settings.watermarkOpacity ?? 20;
-  const watermarkSize = settings.watermarkSize ?? 40;
+  const totalPhotos = albums.reduce((s, a) => s + (a.photos?.length || 0), 0);
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-      <h2 className="font-display text-2xl text-foreground mb-2">Watermark</h2>
-      <p className="text-sm font-body text-muted-foreground mb-6">
-        Customise the watermark applied to your photos. These settings are specific to your account and override the platform defaults.
-      </p>
-
-      <div className="space-y-6 max-w-lg">
-        <div className="glass-panel rounded-xl p-6 space-y-5">
-          {/* Text */}
-          <div>
-            <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Watermark Text</label>
-            <Input
-              value={watermarkText}
-              onChange={e => set({ watermarkText: e.target.value })}
-              placeholder="e.g. YOUR NAME PHOTOGRAPHY"
-              className="bg-secondary border-border text-foreground font-body"
-            />
-            <p className="text-[10px] font-body text-muted-foreground mt-1">Used when no watermark image is set.</p>
+      <h2 className="font-display text-2xl text-foreground mb-6">Storage</h2>
+      <div className="space-y-4 max-w-lg">
+        <div className="grid grid-cols-2 gap-4">
+          <div className="glass-panel rounded-xl p-4">
+            <p className="text-xs font-body tracking-wider uppercase text-muted-foreground">Albums</p>
+            <p className="font-display text-2xl text-foreground mt-1">{albums.length}</p>
           </div>
+          <div className="glass-panel rounded-xl p-4">
+            <p className="text-xs font-body tracking-wider uppercase text-muted-foreground">Total Photos</p>
+            <p className="font-display text-2xl text-foreground mt-1">{totalPhotos}</p>
+          </div>
+        </div>
 
-          {/* Image upload */}
-          <div>
-            <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-3 block">
-              Watermark Image <span className="normal-case text-muted-foreground/60">(optional — overrides text)</span>
-            </label>
-            <div className="flex items-center gap-4">
-              <label className="cursor-pointer">
-                <div className="w-24 h-14 rounded-md bg-secondary border-2 border-dashed border-border flex items-center justify-center overflow-hidden hover:border-primary/50 transition-colors">
-                  {settings.watermarkImage
-                    ? <img src={settings.watermarkImage} alt="Watermark" className="w-full h-full object-contain p-1" />
-                    : <Upload className="w-4 h-4 text-muted-foreground/50" />
-                  }
+        <div className="glass-panel rounded-xl p-5 space-y-4">
+          <h3 className="font-display text-base text-foreground">Image Cache</h3>
+          <p className="text-xs font-body text-muted-foreground">
+            Watermarked and resized versions are cached on the server for faster delivery.
+            Clear the cache to regenerate images with updated watermark settings.
+          </p>
+          <Button
+            onClick={handleClearCache}
+            disabled={cacheClearing}
+            variant="outline"
+            className="font-body text-xs tracking-wider uppercase gap-2 border-border text-muted-foreground hover:text-foreground"
+          >
+            <HardDrive className="w-3.5 h-3.5" />
+            {cacheClearing ? "Clearing…" : "Clear Image Cache"}
+          </Button>
+        </div>
+
+        <div className="glass-panel rounded-xl p-5 space-y-3">
+          <h3 className="font-display text-base text-foreground">Albums</h3>
+          {albums.length === 0 ? (
+            <p className="text-sm font-body text-muted-foreground">No albums yet.</p>
+          ) : (
+            <div className="space-y-2 max-h-80 overflow-y-auto">
+              {albums.map(a => (
+                <div key={a.id} className="flex items-center justify-between p-2.5 rounded-lg bg-secondary/50">
+                  <span className="text-sm font-body text-foreground truncate">{a.title}</span>
+                  <span className="text-xs font-body text-muted-foreground shrink-0 ml-3">{a.photos?.length || 0} photos</span>
                 </div>
-                <input type="file" accept="image/*" onChange={handleWatermarkImageUpload} className="hidden" />
-              </label>
-              {settings.watermarkImage && (
-                <button onClick={() => set({ watermarkImage: "" })} className="text-xs font-body text-destructive hover:underline">
-                  Remove image
-                </button>
-              )}
-            </div>
-            <p className="text-[10px] font-body text-muted-foreground mt-1">PNG with transparency recommended.</p>
-          </div>
-
-          {/* Position */}
-          <div>
-            <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-3 block">Position</label>
-            <div className="grid grid-cols-3 gap-2">
-              {WATERMARK_POSITIONS.map(opt => (
-                <button key={opt.value} onClick={() => set({ watermarkPosition: opt.value })}
-                  className={`text-xs font-body py-2.5 px-3 rounded-lg border transition-all ${
-                    watermarkPosition === opt.value
-                      ? "bg-primary text-primary-foreground border-primary"
-                      : "border-border text-muted-foreground hover:border-primary/50"
-                  }`}
-                >{opt.label}</button>
               ))}
             </div>
-          </div>
-
-          {/* Opacity */}
-          <div>
-            <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-3 block">
-              Opacity ({watermarkOpacity}%)
-            </label>
-            <Slider
-              value={[watermarkOpacity]}
-              onValueChange={v => set({ watermarkOpacity: v[0] })}
-              min={5} max={80} step={1}
-              className="mb-4"
-            />
-          </div>
-
-          {/* Size */}
-          <div>
-            <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-3 block">
-              Size ({watermarkSize}%)
-            </label>
-            <Slider
-              value={[watermarkSize]}
-              onValueChange={v => set({ watermarkSize: v[0] })}
-              min={10} max={100} step={1}
-              className="mb-4"
-            />
-          </div>
-
-          {/* Live preview */}
-          <div>
-            <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-3 block">Live Preview</label>
-            <WatermarkPreview settings={settings} />
-          </div>
+          )}
         </div>
-
-        <div className="p-3 rounded-lg bg-secondary/50 border border-border/50">
-          <p className="text-xs font-body text-muted-foreground">
-            <span className="text-foreground font-medium">How it works:</span> When your gallery photos are served, the server applies your watermark on-the-fly using these settings. Saving also clears your cached image variants so changes take effect immediately.
-          </p>
-        </div>
-
-        <Button
-          onClick={handleSave}
-          disabled={saving || clearingCache}
-          className="bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2 w-full"
-        >
-          <Save className="w-4 h-4" />
-          {saving ? "Saving…" : clearingCache ? "Clearing cache…" : "Save Watermark Settings"}
-        </Button>
       </div>
     </motion.div>
   );
