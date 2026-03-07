@@ -47,8 +47,8 @@ function readDb() {
     _dbCacheTime = now;
     return _dbCache;
   } catch (err) {
-    // Log the error so administrators are aware of database read issues
-    console.error("readDb error:", err.message);
+    // Log the full error so administrators are aware of database read issues
+    console.error("readDb error:", err);
     return _dbCache || {};
   }
 }
@@ -454,8 +454,8 @@ app.get("/uploads/:filename", async (req, res) => {
       const stat = fs.statSync(cacheFile);
       const lastModified = stat.mtime.toUTCString();
 
-      // Honour conditional GET — avoid re-sending unchanged bytes (RFC 7232: 304 only when strictly not modified since)
-      if (req.headers["if-modified-since"] && new Date(req.headers["if-modified-since"]) > stat.mtime) {
+      // Honour conditional GET — avoid re-sending unchanged bytes (RFC 7232: 304 if not modified since)
+      if (req.headers["if-modified-since"] && new Date(req.headers["if-modified-since"]) >= stat.mtime) {
         return res.status(304).end();
       }
 

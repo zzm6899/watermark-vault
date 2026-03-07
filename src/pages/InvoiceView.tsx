@@ -8,6 +8,25 @@ import { toast } from "sonner";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+function CopyButton({ value, fieldKey, copiedField, onCopy }: {
+  value: string;
+  fieldKey: string;
+  copiedField: string | null;
+  onCopy: (value: string, field: string) => void;
+}) {
+  return (
+    <button
+      onClick={() => onCopy(value, fieldKey)}
+      className="text-muted-foreground/50 hover:text-muted-foreground transition-colors shrink-0"
+      title={`Copy ${fieldKey}`}
+    >
+      {copiedField === fieldKey
+        ? <CheckCircle2 className="w-3.5 h-3.5 text-green-400" />
+        : <Copy className="w-3.5 h-3.5" />}
+    </button>
+  );
+}
+
 function calcSubtotal(items: Invoice["items"]) {
   return items.reduce((sum, it) => sum + it.quantity * it.unitPrice, 0);
 }
@@ -316,7 +335,6 @@ function BankTransferPanel({ invoice }: { invoice: Invoice }) {
   const [copiedField, setCopiedField] = useState<string | null>(null);
 
   useEffect(() => {
-    // Fetch settings to get bank details
     fetch("/api/store/wv_settings")
       .then(r => r.json())
       .then(raw => {
@@ -355,13 +373,7 @@ function BankTransferPanel({ invoice }: { invoice: Invoice }) {
             <p className="text-[10px] uppercase tracking-wider text-muted-foreground">BSB</p>
             <div className="flex items-center gap-1.5">
               <p className="text-foreground">{bank.bsb}</p>
-              <button
-                onClick={() => copyToClipboard(bank.bsb!, "bsb")}
-                className="text-muted-foreground/50 hover:text-muted-foreground transition-colors shrink-0"
-                title="Copy BSB"
-              >
-                {copiedField === "bsb" ? <CheckCircle2 className="w-3.5 h-3.5 text-green-400" /> : <Copy className="w-3.5 h-3.5" />}
-              </button>
+              <CopyButton value={bank.bsb} fieldKey="bsb" copiedField={copiedField} onCopy={copyToClipboard} />
             </div>
           </div>
         )}
@@ -370,13 +382,7 @@ function BankTransferPanel({ invoice }: { invoice: Invoice }) {
             <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Account Number</p>
             <div className="flex items-center gap-1.5">
               <p className="text-foreground">{bank.accountNumber}</p>
-              <button
-                onClick={() => copyToClipboard(bank.accountNumber!, "accountNumber")}
-                className="text-muted-foreground/50 hover:text-muted-foreground transition-colors shrink-0"
-                title="Copy account number"
-              >
-                {copiedField === "accountNumber" ? <CheckCircle2 className="w-3.5 h-3.5 text-green-400" /> : <Copy className="w-3.5 h-3.5" />}
-              </button>
+              <CopyButton value={bank.accountNumber} fieldKey="accountNumber" copiedField={copiedField} onCopy={copyToClipboard} />
             </div>
           </div>
         )}
@@ -385,13 +391,7 @@ function BankTransferPanel({ invoice }: { invoice: Invoice }) {
             <p className="text-[10px] uppercase tracking-wider text-muted-foreground">PayID ({bank.payIdType})</p>
             <div className="flex items-center gap-1.5">
               <p className="text-foreground">{bank.payId}</p>
-              <button
-                onClick={() => copyToClipboard(bank.payId!, "payId")}
-                className="text-muted-foreground/50 hover:text-muted-foreground transition-colors shrink-0"
-                title="Copy PayID"
-              >
-                {copiedField === "payId" ? <CheckCircle2 className="w-3.5 h-3.5 text-green-400" /> : <Copy className="w-3.5 h-3.5" />}
-              </button>
+              <CopyButton value={bank.payId} fieldKey="payId" copiedField={copiedField} onCopy={copyToClipboard} />
             </div>
           </div>
         )}
@@ -399,26 +399,14 @@ function BankTransferPanel({ invoice }: { invoice: Invoice }) {
           <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Amount</p>
           <div className="flex items-center gap-1.5">
             <p className="text-foreground font-medium">${grandTotal.toFixed(2)}</p>
-            <button
-              onClick={() => copyToClipboard(grandTotal.toFixed(2), "amount")}
-              className="text-muted-foreground/50 hover:text-muted-foreground transition-colors shrink-0"
-              title="Copy amount"
-            >
-              {copiedField === "amount" ? <CheckCircle2 className="w-3.5 h-3.5 text-green-400" /> : <Copy className="w-3.5 h-3.5" />}
-            </button>
+            <CopyButton value={grandTotal.toFixed(2)} fieldKey="amount" copiedField={copiedField} onCopy={copyToClipboard} />
           </div>
         </div>
         <div>
           <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Reference</p>
           <div className="flex items-center gap-1.5">
             <p className="text-foreground">{invoice.number}</p>
-            <button
-              onClick={() => copyToClipboard(invoice.number, "reference")}
-              className="text-muted-foreground/50 hover:text-muted-foreground transition-colors shrink-0"
-              title="Copy reference"
-            >
-              {copiedField === "reference" ? <CheckCircle2 className="w-3.5 h-3.5 text-green-400" /> : <Copy className="w-3.5 h-3.5" />}
-            </button>
+            <CopyButton value={invoice.number} fieldKey="reference" copiedField={copiedField} onCopy={copyToClipboard} />
           </div>
         </div>
       </div>
