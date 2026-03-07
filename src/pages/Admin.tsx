@@ -8,7 +8,7 @@ import {
   MapPin, Lock, Bell, Download, Unlock, Eye, Grid, List, LayoutGrid, HardDrive, CheckSquare, XSquare, Search, RefreshCw, Mail,
   MessageSquare,
   Star, CheckCircle2, Sparkles, ChevronLeft, ChevronRight, Flag, FileText, Receipt, Printer, AlertCircle, BookOpen,
-  ArrowUpDown, MoreHorizontal, TrendingUp, TrendingDown, Key,
+  ArrowUpDown, MoreHorizontal, TrendingUp, TrendingDown, Key, Globe,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -26,9 +26,10 @@ import {
   getInvoices, addInvoice, updateInvoice, deleteInvoice, getNextInvoiceNumber,
   getContacts, addContact, updateContact, deleteContact,
   getEnquiries, updateEnquiry, deleteEnquiry,
+  isSuperAdmin, setSuperAdmin, getAdminCredentials,
 } from "@/lib/storage";
 import { compressImage, formatBytes, getLocalStorageUsage, generateThumbnail } from "@/lib/image-utils";
-import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar, getServerStorageStats, syncFromServer, sendEmail, bulkDeleteFiles, syncBookingsToSheet, getBookingEmailLog, sendBookingReminder, sendCustomEmail, getWaitlistEntries, deleteWaitlistEntry, notifyWaitlistOnCancel, notifyDiscord, getCacheStats, warmCache, createInvoiceCheckout, sendInvoiceEmail, getStripeStatus, sendEnquiryAcceptedEmail, sendEnquiryDeclinedEmail, getLicenseKeys, generateLicenseKey, revokeLicenseKey } from "@/lib/api";
+import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar, getServerStorageStats, syncFromServer, sendEmail, bulkDeleteFiles, syncBookingsToSheet, getBookingEmailLog, sendBookingReminder, sendCustomEmail, getWaitlistEntries, deleteWaitlistEntry, notifyWaitlistOnCancel, notifyDiscord, getCacheStats, warmCache, createInvoiceCheckout, sendInvoiceEmail, getStripeStatus, sendEnquiryAcceptedEmail, sendEnquiryDeclinedEmail, getLicenseKeys, generateLicenseKey, revokeLicenseKey, getTenants, createTenant, updateTenant, deleteTenant, getSuperAdminInfo, getSuperStats, getAllBookings, getLicensePlans, createLicensePlan, updateLicensePlan, deleteLicensePlan, getLicensePurchases, activateBankPurchase, getLicensePlanCheckout } from "@/lib/api";
 import type { CacheBreakdown } from "@/lib/api";
 import RichTextEditor, { RichTextDisplay } from "@/components/RichTextEditor";
 import Login from "@/pages/Login";
@@ -37,7 +38,7 @@ import type {
   ProfileSettings, AppSettings, Booking, WatermarkPosition,
   Album, Photo, PaymentStatus, AlbumDisplaySize, AlbumDownloadRecord, DownloadHistoryEntry,
   EmailTemplate, WaitlistEntry, Invoice, InvoiceItem, InvoiceParty, InvoiceStatus, Contact,
-  Enquiry, EnquiryStatus, LicenseKey,
+  Enquiry, EnquiryStatus, LicenseKey, Tenant, LicensePlan, LicensePurchase,
 } from "@/lib/types";
 import WatermarkedImage from "@/components/WatermarkedImage";
 import ProgressiveImg from "@/components/ProgressiveImg";
@@ -49,7 +50,7 @@ import sampleWedding from "@/assets/sample-wedding.jpg";
 import sampleEvent from "@/assets/sample-event.jpg";
 import sampleFood from "@/assets/sample-food.jpg";
 
-type Tab = "dashboard" | "bookings" | "events" | "albums" | "photos" | "finance" | "invoices" | "contacts" | "enquiries" | "profile" | "settings" | "storage";
+type Tab = "dashboard" | "bookings" | "events" | "albums" | "photos" | "finance" | "invoices" | "contacts" | "enquiries" | "profile" | "settings" | "storage" | "platform";
 
 const TAB_ROUTE_MAP: Record<string, Tab> = {
   dashboard: "dashboard",
@@ -64,6 +65,7 @@ const TAB_ROUTE_MAP: Record<string, Tab> = {
   profile: "profile",
   settings: "settings",
   storage: "storage",
+  platform: "platform",
 };
 
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
@@ -446,6 +448,20 @@ export default function Admin() {
   const [activeTab, setActiveTabState] = useState<Tab>(resolvedTab);
   const [authed, setAuthed] = useState(() => isLoggedIn());
   const [prefillBookingId, setPrefillBookingId] = useState<string | null>(null);
+  const [superAdminFlag, setSuperAdminFlag] = useState(() => isSuperAdmin());
+
+  // Detect if the logged-in user is the super admin (configured via SUPER_ADMIN_USERNAME env var)
+  useEffect(() => {
+    if (!isLoggedIn()) return;
+    getSuperAdminInfo().then(({ superAdminUsername }) => {
+      if (!superAdminUsername) return;
+      const creds = getAdminCredentials();
+      if (creds?.username && creds.username === superAdminUsername) {
+        setSuperAdmin(true);
+        setSuperAdminFlag(true);
+      }
+    });
+  }, []);
 
   useEffect(() => {
     if (!isSetupComplete()) navigate("/setup", { replace: true });
@@ -485,6 +501,7 @@ export default function Admin() {
     { id: "profile" as Tab, label: "Profile", icon: Camera },
     { id: "settings" as Tab, label: "Settings", icon: Settings },
     { id: "storage" as Tab, label: "Storage", icon: HardDrive },
+    ...(superAdminFlag ? [{ id: "platform" as Tab, label: "Platform", icon: Globe }] : []),
   ];
 
   return (
@@ -585,6 +602,7 @@ export default function Admin() {
           {activeTab === "profile" && <ProfileView />}
           {activeTab === "settings" && <SettingsView />}
           {activeTab === "storage" && <StorageView />}
+          {activeTab === "platform" && superAdminFlag && <PlatformView />}
         </main>
       </div>
     </div>
@@ -5796,6 +5814,350 @@ function LicenseKeysPanel() {
         </div>
       )}
     </div>
+  );
+}
+
+// ─── Platform View (Super Admin Only) ────────────────
+function PlatformView() {
+  const [stats, setStats] = useState<{
+    tenantCount: number; totalBookings: number; mainBookings: number;
+    tenants: (Tenant & { bookingCount: number; pendingBookings: number })[];
+  } | null>(null);
+  const [allBookings, setAllBookings] = useState<Booking[]>([]);
+  const [plans, setPlans] = useState<LicensePlan[]>([]);
+  const [purchases, setPurchases] = useState<LicensePurchase[]>([]);
+  const [loadingStats, setLoadingStats] = useState(true);
+  const [activeSection, setActiveSection] = useState<"overview" | "bookings" | "plans" | "purchases">("overview");
+
+  // Plan form state
+  const [newPlanName, setNewPlanName] = useState("");
+  const [newPlanType, setNewPlanType] = useState<"one-time" | "monthly" | "yearly">("one-time");
+  const [newPlanPrice, setNewPlanPrice] = useState("");
+  const [newPlanDuration, setNewPlanDuration] = useState("365");
+  const [newPlanDesc, setNewPlanDesc] = useState("");
+  const [savingPlan, setSavingPlan] = useState(false);
+
+  // Checkout form
+  const [checkoutPlanId, setCheckoutPlanId] = useState("");
+  const [checkoutEmail, setCheckoutEmail] = useState("");
+  const [checkoutName, setCheckoutName] = useState("");
+  const [generatingCheckout, setGeneratingCheckout] = useState(false);
+
+  useEffect(() => {
+    Promise.all([
+      getSuperStats(), getAllBookings(), getLicensePlans(), getLicensePurchases(),
+    ]).then(([s, bks, p, pur]) => {
+      setStats(s);
+      setAllBookings(bks);
+      setPlans(p);
+      setPurchases(pur);
+      setLoadingStats(false);
+    });
+  }, []);
+
+  const handleCreatePlan = async () => {
+    const price = parseFloat(newPlanPrice);
+    if (!newPlanName.trim() || isNaN(price) || price <= 0) {
+      toast.error("Name and a valid price are required");
+      return;
+    }
+    setSavingPlan(true);
+    const { plan, error } = await createLicensePlan({
+      name: newPlanName.trim(),
+      type: newPlanType,
+      price,
+      currency: "AUD",
+      durationDays: newPlanType === "one-time" ? parseInt(newPlanDuration) || 365 : undefined,
+      description: newPlanDesc.trim() || undefined,
+    });
+    setSavingPlan(false);
+    if (error || !plan) { toast.error(error || "Failed"); return; }
+    setPlans(prev => [...prev, plan]);
+    setNewPlanName(""); setNewPlanPrice(""); setNewPlanDesc("");
+    toast.success("Plan created");
+  };
+
+  const handleDeletePlan = async (id: string) => {
+    if (!confirm("Delete this plan?")) return;
+    const { ok } = await deleteLicensePlan(id);
+    if (ok) setPlans(prev => prev.filter(p => p.id !== id));
+    else toast.error("Failed to delete");
+  };
+
+  const handleGenerateCheckout = async () => {
+    if (!checkoutPlanId || !checkoutEmail.trim()) { toast.error("Select a plan and enter buyer email"); return; }
+    setGeneratingCheckout(true);
+    const { url, error } = await getLicensePlanCheckout(checkoutPlanId, checkoutEmail.trim(), checkoutName.trim() || undefined);
+    setGeneratingCheckout(false);
+    if (error || !url) { toast.error(error || "Failed to create checkout"); return; }
+    window.open(url, "_blank");
+    toast.success("Checkout opened — share with the buyer if needed");
+  };
+
+  const handleActivatePurchase = async (purchaseId: string) => {
+    const { ok, key, error } = await activateBankPurchase(purchaseId);
+    if (!ok) { toast.error(error || "Failed"); return; }
+    toast.success(`Key activated: ${key}`);
+    const updatedPurchases = await getLicensePurchases();
+    setPurchases(updatedPurchases);
+  };
+
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text).then(() => toast.success("Copied!")).catch(() => toast.error("Copy failed"));
+  };
+
+  if (loadingStats) {
+    return <div className="py-20 text-center"><div className="animate-pulse text-muted-foreground font-body text-sm">Loading platform data…</div></div>;
+  }
+
+  const sections = [
+    { id: "overview", label: "Overview" },
+    { id: "bookings", label: "All Bookings" },
+    { id: "plans", label: "License Plans" },
+    { id: "purchases", label: "Purchases" },
+  ] as const;
+
+  return (
+    <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
+      <div className="flex items-center gap-3">
+        <Globe className="w-5 h-5 text-primary" />
+        <h2 className="font-display text-xl text-foreground">Platform Admin</h2>
+        <span className="text-[10px] font-body bg-primary/10 text-primary px-2 py-0.5 rounded-full">Super Admin</span>
+      </div>
+
+      {/* Section navigation */}
+      <div className="flex gap-1 p-1 bg-secondary rounded-xl w-fit">
+        {sections.map(s => (
+          <button key={s.id} onClick={() => setActiveSection(s.id as typeof activeSection)}
+            className={`px-3 py-1.5 rounded-lg text-xs font-body transition-all ${activeSection === s.id ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+          >
+            {s.label}
+          </button>
+        ))}
+      </div>
+
+      {/* ── Overview ── */}
+      {activeSection === "overview" && (
+        <div className="space-y-6">
+          {/* Stats */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+            {[
+              { label: "Tenants", value: stats?.tenantCount ?? 0, sub: "active" },
+              { label: "Total Bookings", value: stats?.totalBookings ?? 0, sub: "all tenants" },
+              { label: "Main Bookings", value: stats?.mainBookings ?? 0, sub: "direct" },
+              { label: "License Plans", value: plans.length, sub: `${purchases.length} sold` },
+            ].map(s => (
+              <div key={s.label} className="glass-panel rounded-xl p-4">
+                <p className="text-xs font-body tracking-wider uppercase text-muted-foreground">{s.label}</p>
+                <p className="font-display text-2xl text-foreground mt-1">{s.value}</p>
+                <p className="text-[10px] font-body text-muted-foreground">{s.sub}</p>
+              </div>
+            ))}
+          </div>
+
+          {/* Tenant list */}
+          <div className="glass-panel rounded-xl p-6">
+            <h3 className="font-display text-base text-foreground mb-4">Tenants</h3>
+            {!stats?.tenants.length ? (
+              <p className="text-sm font-body text-muted-foreground">No tenants yet. Create them in Admin → Settings → Tenants.</p>
+            ) : (
+              <div className="space-y-2">
+                {stats.tenants.map(t => (
+                  <div key={t.slug} className="flex items-center gap-3 p-3 rounded-lg bg-secondary/50 border border-border/40">
+                    <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center shrink-0">
+                      <Camera className="w-3.5 h-3.5 text-primary" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-body text-foreground">{t.displayName}</span>
+                        <span className="text-[10px] font-mono text-muted-foreground">/{t.slug}</span>
+                        {!t.active && <span className="text-[10px] font-body bg-muted text-muted-foreground px-1.5 py-0.5 rounded-full">Inactive</span>}
+                      </div>
+                      <p className="text-xs font-body text-muted-foreground">{t.email}</p>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <p className="text-xs font-body text-foreground">{t.bookingCount} bookings</p>
+                      {t.pendingBookings > 0 && <p className="text-[10px] font-body text-orange-400">{t.pendingBookings} pending</p>}
+                    </div>
+                    <button
+                      onClick={() => copyToClipboard(`${window.location.origin}/book/${t.slug}`)}
+                      className="text-muted-foreground hover:text-primary transition-colors" title="Copy booking URL"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── All Bookings ── */}
+      {activeSection === "bookings" && (
+        <div className="glass-panel rounded-xl p-6 space-y-4">
+          <h3 className="font-display text-base text-foreground">All Bookings <span className="text-sm font-body text-muted-foreground font-normal">({allBookings.length} total)</span></h3>
+          <div className="space-y-2 max-h-[600px] overflow-y-auto">
+            {allBookings.length === 0 && <p className="text-sm font-body text-muted-foreground">No bookings yet.</p>}
+            {[...allBookings].sort((a, b) => b.createdAt?.localeCompare(a.createdAt ?? "") ?? 0).map(bk => (
+              <div key={bk.id} className="flex flex-wrap gap-2 items-center p-3 rounded-lg bg-secondary/40 border border-border/40 text-xs font-body">
+                <div className="flex-1 min-w-0">
+                  <span className="text-foreground font-medium">{bk.clientName}</span>
+                  <span className="text-muted-foreground ml-2">{bk.date} @ {bk.time}</span>
+                  {bk.type && <span className="text-muted-foreground ml-2">· {bk.type}</span>}
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  {bk.tenantSlug ? (
+                    <span className="bg-primary/10 text-primary px-1.5 py-0.5 rounded-full text-[10px]">/{bk.tenantSlug}</span>
+                  ) : (
+                    <span className="bg-secondary text-muted-foreground px-1.5 py-0.5 rounded-full text-[10px]">main</span>
+                  )}
+                  <span className={`px-1.5 py-0.5 rounded-full text-[10px] ${
+                    bk.status === "confirmed" ? "bg-green-500/10 text-green-500"
+                      : bk.status === "cancelled" ? "bg-destructive/10 text-destructive"
+                      : "bg-orange-500/10 text-orange-500"
+                  }`}>{bk.status || "pending"}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── License Plans ── */}
+      {activeSection === "plans" && (
+        <div className="space-y-6">
+          {/* Create plan */}
+          <div className="glass-panel rounded-xl p-6 space-y-4">
+            <h3 className="font-display text-base text-foreground">Create a Plan</h3>
+            <div className="grid sm:grid-cols-2 gap-4">
+              <div>
+                <label className="text-xs font-body text-muted-foreground mb-1 block">Plan Name *</label>
+                <Input value={newPlanName} onChange={e => setNewPlanName(e.target.value)} placeholder="e.g. Starter, Pro" className="bg-secondary border-border text-foreground font-body" />
+              </div>
+              <div>
+                <label className="text-xs font-body text-muted-foreground mb-1 block">Type *</label>
+                <select value={newPlanType} onChange={e => setNewPlanType(e.target.value as any)} className="w-full bg-secondary border border-border text-foreground font-body text-sm rounded-md px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-ring">
+                  <option value="one-time">One-time (fixed period)</option>
+                  <option value="monthly">Monthly subscription</option>
+                  <option value="yearly">Yearly subscription</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-xs font-body text-muted-foreground mb-1 block">Price (AUD) *</label>
+                <Input type="number" value={newPlanPrice} onChange={e => setNewPlanPrice(e.target.value)} placeholder="29.00" className="bg-secondary border-border text-foreground font-body" />
+              </div>
+              {newPlanType === "one-time" && (
+                <div>
+                  <label className="text-xs font-body text-muted-foreground mb-1 block">Duration (days)</label>
+                  <Input type="number" value={newPlanDuration} onChange={e => setNewPlanDuration(e.target.value)} placeholder="365" className="bg-secondary border-border text-foreground font-body" />
+                </div>
+              )}
+              <div className="sm:col-span-2">
+                <label className="text-xs font-body text-muted-foreground mb-1 block">Description (optional)</label>
+                <Input value={newPlanDesc} onChange={e => setNewPlanDesc(e.target.value)} placeholder="What's included in this plan…" className="bg-secondary border-border text-foreground font-body" />
+              </div>
+            </div>
+            <Button onClick={handleCreatePlan} disabled={savingPlan} className="bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2" size="sm">
+              <Plus className="w-3 h-3" /> {savingPlan ? "Creating…" : "Create Plan"}
+            </Button>
+          </div>
+
+          {/* Plan list */}
+          <div className="glass-panel rounded-xl p-6">
+            <h3 className="font-display text-base text-foreground mb-4">Your Plans</h3>
+            {plans.length === 0 ? (
+              <p className="text-sm font-body text-muted-foreground">No plans yet. Create one above to sell license keys.</p>
+            ) : (
+              <div className="space-y-3">
+                {plans.map(p => (
+                  <div key={p.id} className="flex items-center gap-3 p-4 rounded-lg bg-secondary/50 border border-border/40">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-body text-foreground font-medium">{p.name}</span>
+                        <span className="text-[10px] font-body bg-primary/10 text-primary px-1.5 py-0.5 rounded-full">{p.type}</span>
+                        {!p.active && <span className="text-[10px] font-body bg-muted text-muted-foreground px-1.5 py-0.5 rounded-full">Inactive</span>}
+                      </div>
+                      <p className="text-xs font-body text-muted-foreground mt-0.5">
+                        ${p.price} {p.currency}{p.type === "one-time" ? ` · ${p.durationDays} days` : ""}
+                        {p.description && ` · ${p.description}`}
+                      </p>
+                    </div>
+                    <Button variant="ghost" size="sm" onClick={() => handleDeletePlan(p.id)} className="text-destructive hover:text-destructive hover:bg-destructive/10 font-body text-xs gap-1">
+                      <Trash2 className="w-3 h-3" />
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Generate Stripe checkout */}
+          {plans.filter(p => p.active !== false).length > 0 && (
+            <div className="glass-panel rounded-xl p-6 space-y-4">
+              <h3 className="font-display text-base text-foreground">Generate Checkout Link</h3>
+              <p className="text-xs font-body text-muted-foreground">Create a Stripe checkout link to send to a buyer. After payment, a license key is automatically generated.</p>
+              <div className="grid sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="text-xs font-body text-muted-foreground mb-1 block">Plan *</label>
+                  <select value={checkoutPlanId} onChange={e => setCheckoutPlanId(e.target.value)} className="w-full bg-secondary border border-border text-foreground font-body text-sm rounded-md px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-ring">
+                    <option value="">Select plan…</option>
+                    {plans.filter(p => p.active !== false).map(p => <option key={p.id} value={p.id}>{p.name} — ${p.price}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs font-body text-muted-foreground mb-1 block">Buyer Email *</label>
+                  <Input value={checkoutEmail} onChange={e => setCheckoutEmail(e.target.value)} placeholder="buyer@example.com" className="bg-secondary border-border text-foreground font-body" />
+                </div>
+                <div>
+                  <label className="text-xs font-body text-muted-foreground mb-1 block">Buyer Name</label>
+                  <Input value={checkoutName} onChange={e => setCheckoutName(e.target.value)} placeholder="Jane Smith" className="bg-secondary border-border text-foreground font-body" />
+                </div>
+              </div>
+              <Button onClick={handleGenerateCheckout} disabled={generatingCheckout} className="bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2" size="sm">
+                <CreditCard className="w-3 h-3" /> {generatingCheckout ? "Opening…" : "Open Stripe Checkout"}
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Purchases ── */}
+      {activeSection === "purchases" && (
+        <div className="glass-panel rounded-xl p-6 space-y-4">
+          <h3 className="font-display text-base text-foreground">License Purchases <span className="text-sm font-body text-muted-foreground font-normal">({purchases.length})</span></h3>
+          {purchases.length === 0 ? (
+            <p className="text-sm font-body text-muted-foreground">No purchases yet.</p>
+          ) : (
+            <div className="space-y-2">
+              {[...purchases].sort((a, b) => b.createdAt?.localeCompare(a.createdAt ?? "") ?? 0).map(pur => (
+                <div key={pur.id} className="flex flex-col sm:flex-row sm:items-center gap-2 p-3 rounded-lg bg-secondary/40 border border-border/40">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-body text-foreground">{pur.buyerEmail}</span>
+                      <span className={`text-[10px] font-body px-1.5 py-0.5 rounded-full ${pur.status === "active" ? "bg-green-500/10 text-green-500" : "bg-orange-500/10 text-orange-500"}`}>{pur.status}</span>
+                      <span className="text-[10px] font-body text-muted-foreground">{pur.method}</span>
+                    </div>
+                    <p className="text-xs font-body text-muted-foreground">{pur.planName} · ${pur.amount} {pur.currency} · {pur.createdAt?.slice(0, 10)}</p>
+                    {pur.licenseKey && (
+                      <div className="flex items-center gap-1.5 mt-0.5">
+                        <span className="font-mono text-[11px] text-foreground">{pur.licenseKey}</span>
+                        <button onClick={() => copyToClipboard(pur.licenseKey!)} className="text-muted-foreground hover:text-foreground"><Copy className="w-3 h-3" /></button>
+                      </div>
+                    )}
+                  </div>
+                  {pur.status === "pending" && !pur.licenseKey && (
+                    <Button size="sm" onClick={() => handleActivatePurchase(pur.id)} className="bg-primary text-primary-foreground font-body text-xs gap-1 shrink-0">
+                      <CheckCircle2 className="w-3 h-3" /> Activate
+                    </Button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </motion.div>
   );
 }
 

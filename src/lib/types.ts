@@ -318,8 +318,43 @@ export interface Tenant {
   bio?: string;          // short bio for booking page
   timezone?: string;     // IANA timezone, e.g. "Australia/Sydney"
   licenseKey?: string;   // optional link to a license key
+  passwordHash?: string; // SHA-256 hash of tenant's password (for mobile login)
   active: boolean;
   createdAt: string;     // ISO timestamp
+}
+
+// ─── License Plans ────────────────────────────────────────────────────────────
+
+export type LicensePlanType = "monthly" | "yearly" | "one-time";
+
+export interface LicensePlan {
+  id: string;
+  name: string;               // e.g. "Starter", "Pro"
+  type: LicensePlanType;
+  price: number;              // in the plan's currency, e.g. 29.00
+  currency: string;           // e.g. "AUD"
+  durationDays?: number;      // for "one-time" plans, e.g. 365
+  description?: string;
+  features: string[];
+  active: boolean;
+  createdAt: string;
+}
+
+export interface LicensePurchase {
+  id: string;
+  planId: string;
+  planName: string;
+  buyerEmail: string;
+  buyerName: string;
+  amount: number;
+  currency: string;
+  method: "stripe" | "bank";
+  status: "pending" | "active" | "expired" | "cancelled";
+  licenseKey?: string;        // generated after payment is confirmed
+  stripeSessionId?: string;
+  createdAt: string;
+  activatedAt?: string;
+  expiresAt?: string;
 }
 
 // ─── Enquiries ────────────────────────────────────────────────────────────────

@@ -34,6 +34,29 @@ const MAX_ZIP_FILES = 1000; // Reasonable upper bound per request to prevent res
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 if (!fs.existsSync(DB_FILE)) fs.writeFileSync(DB_FILE, JSON.stringify({}));
 
+// ── Super Admin Bootstrap ──────────────────────────────────────────────────
+// If SUPER_ADMIN_USERNAME + SUPER_ADMIN_PASSWORD are set in the environment
+// (e.g. via docker-compose.yml / TrueNAS app YAML), pre-seed the admin account
+// so the Setup wizard is skipped on first run.
+const crypto = require("crypto");
+function sha256(str) {
+  return crypto.createHash("sha256").update(str, "utf8").digest("hex");
+}
+function seedSuperAdminIfNeeded() {
+  const username = (process.env.SUPER_ADMIN_USERNAME || "").trim();
+  const password = (process.env.SUPER_ADMIN_PASSWORD || "").trim();
+  if (!username || !password) return;
+  const db = readDbDirect(); // read directly to avoid cache bootstrap ordering issues
+  if (db["wv_admin"] && db["wv_setup_complete"]) return; // already bootstrapped
+  db["wv_admin"] = JSON.stringify({ username, passwordHash: sha256(password) });
+  db["wv_setup_complete"] = "true";
+  writeDb(db);
+  console.log(`✅ Super admin '${username}' bootstrapped from SUPER_ADMIN_USERNAME env var`);
+}
+function readDbDirect() {
+  try { return JSON.parse(fs.readFileSync(DB_FILE, "utf-8")); } catch { return {}; }
+}
+
 // ── In-memory DB cache (avoids disk reads on every request) ──
 let _dbCache = null;
 let _dbCacheTime = 0;
@@ -58,6 +81,9 @@ function writeDb(data) {
   _dbCache = data;
   _dbCacheTime = Date.now();
 }
+
+// Bootstrap super admin from env vars (runs after writeDb is available)
+seedSuperAdminIfNeeded();
 
 app.use(cors());
 // Skip JSON body parsing for the Stripe webhook route — it requires the raw Buffer for
@@ -1114,6 +1140,305 @@ app.post("/api/tenant/:slug/booking", tenantBookingLimiter, (req, res) => {
   } catch {}
 
   res.json({ ok: true, booking });
+});
+
+// ── Super Admin Info ──────────────────────────────────
+// Returns the username that is considered the super admin (set via env var).
+// The client uses this to unlock the Platform tab for cross-tenant visibility.
+app.get("/api/super-admin/info", (_req, res) => {
+  res.json({ superAdminUsername: process.env.SUPER_ADMIN_USERNAME || null });
+});
+
+// ── Super Admin: Cross-Tenant Data ───────────────────
+const superLimiter = rateLimit({ windowMs: 60_000, max: 60, standardHeaders: true, legacyHeaders: false, message: { error: "Too many requests" } });
+
+// Aggregate stats: tenant count, total bookings, etc.
+app.get("/api/super/stats", superLimiter, (_req, res) => {
+  const db = readDb();
+  const tenants = readTenants();
+  const mainRaw = db["wv_bookings"];
+  const allBookings = mainRaw ? (typeof mainRaw === "string" ? JSON.parse(mainRaw) : (Array.isArray(mainRaw) ? mainRaw : [])) : [];
+  const mainBookings = allBookings.filter(b => !b.tenantSlug);
+  const tenantStats = tenants.map(t => {
+    const tenantBookings = allBookings.filter(b => b.tenantSlug === t.slug);
+    const tenantEtRaw = db[`t_${t.slug}_wv_event_types`];
+    const tenantEventTypes = tenantEtRaw ? (typeof tenantEtRaw === "string" ? JSON.parse(tenantEtRaw) : tenantEtRaw) : null;
+    return {
+      ...t,
+      bookingCount: tenantBookings.length,
+      pendingBookings: tenantBookings.filter(b => b.status === "pending").length,
+      hasCustomEventTypes: !!tenantEventTypes,
+    };
+  });
+  res.json({
+    tenantCount: tenants.length,
+    totalBookings: allBookings.length,
+    mainBookings: mainBookings.length,
+    tenants: tenantStats,
+  });
+});
+
+// All bookings across all tenants
+app.get("/api/super/all-bookings", superLimiter, (_req, res) => {
+  const db = readDb();
+  const raw = db["wv_bookings"];
+  const bookings = raw ? (typeof raw === "string" ? JSON.parse(raw) : (Array.isArray(raw) ? raw : [])) : [];
+  res.json(bookings);
+});
+
+// ── Tenant Login (for mobile app) ─────────────────────
+app.post("/api/tenant/:slug/login", tenantLimiter, (req, res) => {
+  const tenants = readTenants();
+  const tenant = tenants.find(t => t.slug === req.params.slug && t.active !== false);
+  if (!tenant) return res.status(404).json({ ok: false, error: "Tenant not found" });
+  if (!tenant.passwordHash) return res.status(400).json({ ok: false, error: "No password set for this tenant — ask the admin to set one" });
+  const { passwordHash } = req.body || {};
+  if (!passwordHash || typeof passwordHash !== "string") {
+    return res.status(400).json({ ok: false, error: "passwordHash is required" });
+  }
+  if (tenant.passwordHash !== passwordHash) {
+    return res.status(401).json({ ok: false, error: "Invalid credentials" });
+  }
+  res.json({ ok: true, tenant: { slug: tenant.slug, displayName: tenant.displayName, email: tenant.email, timezone: tenant.timezone } });
+});
+
+// ── Tenant Mobile Data (bookings + albums for mobile app) ─────────────────
+app.get("/api/tenant/:slug/mobile-data", tenantPublicLimiter, (req, res) => {
+  const slug = req.params.slug;
+  const tenants = readTenants();
+  const tenant = tenants.find(t => t.slug === slug && t.active !== false);
+  if (!tenant) return res.status(404).json({ error: "Tenant not found" });
+  const db = readDb();
+  const allBookingsRaw = db["wv_bookings"];
+  const allBookings = allBookingsRaw ? (typeof allBookingsRaw === "string" ? JSON.parse(allBookingsRaw) : (Array.isArray(allBookingsRaw) ? allBookingsRaw : [])) : [];
+  const tenantBookings = allBookings.filter(b => b.tenantSlug === slug);
+  const albumsRaw = db[`t_${slug}_wv_albums`];
+  const albums = albumsRaw ? (typeof albumsRaw === "string" ? JSON.parse(albumsRaw) : (Array.isArray(albumsRaw) ? albumsRaw : [])) : [];
+  res.json({ tenant, bookings: tenantBookings, albums });
+});
+
+// Create or update a tenant album (used by mobile app in tenant mode)
+app.put("/api/tenant/:slug/albums/:albumId", tenantLimiter, (req, res) => {
+  const { slug, albumId } = req.params;
+  const db = readDb();
+  const key = `t_${slug}_wv_albums`;
+  const raw = db[key];
+  const albums = raw ? (typeof raw === "string" ? JSON.parse(raw) : (Array.isArray(raw) ? raw : [])) : [];
+  const idx = albums.findIndex(a => a.id === albumId);
+  if (idx >= 0) {
+    albums[idx] = { ...albums[idx], ...req.body, id: albumId };
+  } else {
+    albums.push({ ...req.body, id: albumId });
+  }
+  db[key] = JSON.stringify(albums);
+  writeDb(db);
+  res.json({ ok: true });
+});
+
+// ── License Plans ──────────────────────────────────────
+const planLimiter = rateLimit({ windowMs: 60_000, max: 30, standardHeaders: true, legacyHeaders: false, message: { error: "Too many requests" } });
+
+function readLicensePlans() {
+  const db = readDb();
+  const raw = db["wv_license_plans"];
+  return raw ? (typeof raw === "string" ? JSON.parse(raw) : (Array.isArray(raw) ? raw : [])) : [];
+}
+function writeLicensePlans(plans) {
+  const db = readDb();
+  db["wv_license_plans"] = JSON.stringify(plans);
+  writeDb(db);
+}
+
+// List active plans (public — used on purchase/pricing page)
+app.get("/api/license-plans", planLimiter, (_req, res) => {
+  res.json(readLicensePlans().filter(p => p.active !== false));
+});
+
+// List ALL plans including inactive (admin only)
+app.get("/api/license-plans/all", planLimiter, (_req, res) => {
+  res.json(readLicensePlans());
+});
+
+// List all purchases
+app.get("/api/license-plans/purchases", planLimiter, (_req, res) => {
+  const db = readDb();
+  const raw = db["wv_license_purchases"];
+  const purchases = raw ? (typeof raw === "string" ? JSON.parse(raw) : (Array.isArray(raw) ? raw : [])) : [];
+  res.json(purchases);
+});
+
+// Create a plan
+app.post("/api/license-plans", planLimiter, (req, res) => {
+  const { name, type, price, currency, durationDays, description, features } = req.body || {};
+  if (!name || typeof name !== "string" || !name.trim()) {
+    return res.status(400).json({ error: "name is required" });
+  }
+  if (!["monthly", "yearly", "one-time"].includes(type)) {
+    return res.status(400).json({ error: "type must be monthly, yearly, or one-time" });
+  }
+  if (typeof price !== "number" || price <= 0) {
+    return res.status(400).json({ error: "price must be a positive number" });
+  }
+  const plan = {
+    id: `plan-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    name: name.trim(),
+    type,
+    price,
+    currency: currency || "AUD",
+    durationDays: type === "one-time" ? (Number(durationDays) || 365) : undefined,
+    description: description?.trim() || undefined,
+    features: Array.isArray(features) ? features.filter(f => f && typeof f === "string") : [],
+    active: true,
+    createdAt: new Date().toISOString(),
+  };
+  const plans = readLicensePlans();
+  plans.push(plan);
+  writeLicensePlans(plans);
+  res.json(plan);
+});
+
+// Update a plan
+app.put("/api/license-plans/:id", planLimiter, (req, res) => {
+  const plans = readLicensePlans();
+  const idx = plans.findIndex(p => p.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: "Plan not found" });
+  const { id: _ignoreId, createdAt: _ignoredAt, ...updates } = req.body || {};
+  plans[idx] = { ...plans[idx], ...updates, id: req.params.id };
+  writeLicensePlans(plans);
+  res.json(plans[idx]);
+});
+
+// Delete a plan
+app.delete("/api/license-plans/:id", planLimiter, (req, res) => {
+  const plans = readLicensePlans();
+  const filtered = plans.filter(p => p.id !== req.params.id);
+  if (filtered.length === plans.length) return res.status(404).json({ error: "Plan not found" });
+  writeLicensePlans(filtered);
+  res.json({ ok: true });
+});
+
+// Create Stripe checkout for a license plan purchase
+app.post("/api/license-plans/:planId/checkout", planLimiter, async (req, res) => {
+  const plans = readLicensePlans();
+  const plan = plans.find(p => p.id === req.params.planId && p.active !== false);
+  if (!plan) return res.status(404).json({ error: "Plan not found" });
+
+  const { buyerEmail, buyerName, successUrl, cancelUrl } = req.body || {};
+  if (!buyerEmail || typeof buyerEmail !== "string" || !buyerEmail.trim()) {
+    return res.status(400).json({ error: "buyerEmail is required" });
+  }
+
+  const stripeKey = process.env.STRIPE_SECRET_KEY;
+  if (!stripeKey) return res.status(400).json({ error: "Stripe not configured — add STRIPE_SECRET_KEY to your docker-compose.yml" });
+
+  try {
+    const Stripe = require("stripe");
+    const stripe = Stripe(stripeKey);
+    const origin = req.headers.origin || `http://localhost:${PORT}`;
+    const currency = (plan.currency || "AUD").toLowerCase();
+
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ["card"],
+      customer_email: buyerEmail.trim(),
+      line_items: [{
+        price_data: {
+          currency,
+          product_data: {
+            name: plan.name,
+            description: plan.description || `${plan.type === "one-time" ? `${plan.durationDays || 365}-day` : plan.type} license for Watermark Vault`,
+          },
+          unit_amount: Math.round(plan.price * 100),
+          ...(plan.type === "monthly" ? { recurring: { interval: "month" } } : {}),
+          ...(plan.type === "yearly" ? { recurring: { interval: "year" } } : {}),
+        },
+        quantity: 1,
+      }],
+      mode: (plan.type === "monthly" || plan.type === "yearly") ? "subscription" : "payment",
+      success_url: successUrl || `${origin}?plan_success=1`,
+      cancel_url: cancelUrl || `${origin}?plan_cancelled=1`,
+      metadata: {
+        type: "license-plan",
+        planId: plan.id,
+        planName: plan.name,
+        buyerEmail: buyerEmail.trim(),
+        buyerName: buyerName || "",
+        durationDays: String(plan.durationDays || 365),
+      },
+    });
+    res.json({ url: session.url, sessionId: session.id });
+  } catch (err) {
+    console.error("License plan checkout error:", err.message);
+    res.status(500).json({ error: err.message || "Stripe error" });
+  }
+});
+
+// Bank transfer: create a pending purchase (admin activates after manual payment)
+app.post("/api/license-plans/:planId/bank-purchase", planLimiter, (req, res) => {
+  const plans = readLicensePlans();
+  const plan = plans.find(p => p.id === req.params.planId && p.active !== false);
+  if (!plan) return res.status(404).json({ error: "Plan not found" });
+  const { buyerEmail, buyerName } = req.body || {};
+  if (!buyerEmail || typeof buyerEmail !== "string" || !buyerEmail.trim()) {
+    return res.status(400).json({ error: "buyerEmail is required" });
+  }
+  const purchase = {
+    id: `purchase-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    planId: plan.id,
+    planName: plan.name,
+    buyerEmail: buyerEmail.trim(),
+    buyerName: buyerName || "",
+    amount: plan.price,
+    currency: plan.currency || "AUD",
+    method: "bank",
+    status: "pending",
+    createdAt: new Date().toISOString(),
+  };
+  const db = readDb();
+  const raw = db["wv_license_purchases"];
+  const purchases = raw ? (typeof raw === "string" ? JSON.parse(raw) : (Array.isArray(raw) ? raw : [])) : [];
+  purchases.push(purchase);
+  db["wv_license_purchases"] = JSON.stringify(purchases);
+  writeDb(db);
+  res.json({ ok: true, purchase });
+});
+
+// Admin: activate a pending bank purchase (generates license key)
+app.post("/api/license-plans/purchases/:purchaseId/activate", planLimiter, (req, res) => {
+  const db = readDb();
+  const raw = db["wv_license_purchases"];
+  const purchases = raw ? (typeof raw === "string" ? JSON.parse(raw) : (Array.isArray(raw) ? raw : [])) : [];
+  const idx = purchases.findIndex(p => p.id === req.params.purchaseId);
+  if (idx === -1) return res.status(404).json({ error: "Purchase not found" });
+  if (purchases[idx].licenseKey) return res.json({ ok: true, key: purchases[idx].licenseKey });
+
+  const newKey = generateKeyString();
+  const plans = readLicensePlans();
+  const plan = plans.find(p => p.id === purchases[idx].planId);
+  const expiresAt = plan?.durationDays
+    ? new Date(Date.now() + plan.durationDays * 86400 * 1000).toISOString()
+    : undefined;
+
+  purchases[idx] = {
+    ...purchases[idx],
+    status: "active",
+    licenseKey: newKey,
+    activatedAt: new Date().toISOString(),
+    expiresAt,
+  };
+  db["wv_license_purchases"] = JSON.stringify(purchases);
+
+  // Also add to license_keys.json so Setup wizard validates it
+  const keys = readLicenseKeys();
+  keys.push({
+    key: newKey,
+    issuedTo: purchases[idx].buyerEmail,
+    createdAt: new Date().toISOString(),
+    ...(expiresAt ? { expiresAt } : {}),
+    notes: `${purchases[idx].planName} — bank transfer`,
+  });
+  writeLicenseKeys(keys);
+  writeDb(db);
+  res.json({ ok: true, key: newKey });
 });
 
 // ── License Keys ──────────────────────────────────────

@@ -765,3 +765,257 @@ export async function revokeLicenseKey(
     return { ok: false, error: "Network error" };
   }
 }
+
+// ── Tenants ────────────────────────────────────────────────────
+
+/** Fetch all tenants. */
+export async function getTenants(): Promise<import("./types").Tenant[]> {
+  try {
+    const res = await fetch("/api/tenants");
+    if (!res.ok) return [];
+    return await res.json();
+  } catch { return []; }
+}
+
+/** Create a tenant. */
+export async function createTenant(data: {
+  slug: string; displayName: string; email: string;
+  bio?: string; timezone?: string; licenseKey?: string; passwordHash?: string;
+}): Promise<{ tenant?: import("./types").Tenant; error?: string }> {
+  try {
+    const res = await fetch("/api/tenants", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+    const json = await res.json();
+    if (!res.ok) return { error: json.error || "Failed to create tenant" };
+    return { tenant: json };
+  } catch { return { error: "Network error" }; }
+}
+
+/** Update a tenant. */
+export async function updateTenant(slug: string, data: Partial<import("./types").Tenant>): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch(`/api/tenants/${encodeURIComponent(slug)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+    const json = await res.json();
+    return { ok: res.ok, error: json.error };
+  } catch { return { ok: false, error: "Network error" }; }
+}
+
+/** Delete a tenant. */
+export async function deleteTenant(slug: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch(`/api/tenants/${encodeURIComponent(slug)}`, { method: "DELETE" });
+    const json = await res.json();
+    return { ok: !!json.ok, error: json.error };
+  } catch { return { ok: false, error: "Network error" }; }
+}
+
+/** Fetch a tenant's public data (event types + profile) for the booking page. */
+export async function getTenantPublicData(slug: string): Promise<{
+  tenant: import("./types").Tenant;
+  eventTypes: import("./types").EventType[];
+} | null> {
+  try {
+    const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/public`);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch { return null; }
+}
+
+/** Create a booking for a tenant's public page. */
+export async function createTenantBooking(slug: string, booking: {
+  clientName: string; clientEmail: string; date: string; time: string;
+  eventTypeId?: string; type?: string; duration?: number; notes?: string;
+  answers?: Record<string, string>;
+}): Promise<{ ok: boolean; booking?: import("./types").Booking; error?: string }> {
+  try {
+    const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/booking`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(booking),
+    });
+    const json = await res.json();
+    if (!res.ok) return { ok: false, error: json.error };
+    return { ok: true, booking: json.booking };
+  } catch { return { ok: false, error: "Network error" }; }
+}
+
+/** Set tenant-specific event types (stored separately from main admin's event types). */
+export async function setTenantEventTypes(slug: string, eventTypes: import("./types").EventType[]): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/store/wv_event_types`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ value: eventTypes }),
+    });
+    const json = await res.json();
+    return { ok: !!json.ok, error: json.error };
+  } catch { return { ok: false, error: "Network error" }; }
+}
+
+// ── Super Admin ────────────────────────────────────────────────
+
+/** Get the super admin username configured via env vars. */
+export async function getSuperAdminInfo(): Promise<{ superAdminUsername: string | null }> {
+  try {
+    const res = await fetch("/api/super-admin/info");
+    if (!res.ok) return { superAdminUsername: null };
+    return await res.json();
+  } catch { return { superAdminUsername: null }; }
+}
+
+/** Get aggregate cross-tenant stats (super admin only). */
+export async function getSuperStats(): Promise<{
+  tenantCount: number; totalBookings: number; mainBookings: number;
+  tenants: (import("./types").Tenant & { bookingCount: number; pendingBookings: number })[];
+} | null> {
+  try {
+    const res = await fetch("/api/super/stats");
+    if (!res.ok) return null;
+    return await res.json();
+  } catch { return null; }
+}
+
+/** Get all bookings across all tenants (super admin only). */
+export async function getAllBookings(): Promise<import("./types").Booking[]> {
+  try {
+    const res = await fetch("/api/super/all-bookings");
+    if (!res.ok) return [];
+    return await res.json();
+  } catch { return []; }
+}
+
+// ── Tenant Mobile Auth ─────────────────────────────────────────
+
+/** Log in as a tenant (for mobile app). Returns the tenant profile on success. */
+export async function tenantLogin(slug: string, passwordHash: string): Promise<{
+  ok: boolean;
+  tenant?: { slug: string; displayName: string; email: string; timezone?: string };
+  error?: string;
+}> {
+  try {
+    const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ passwordHash }),
+    });
+    const json = await res.json();
+    return { ok: !!json.ok, tenant: json.tenant, error: json.error };
+  } catch { return { ok: false, error: "Network error" }; }
+}
+
+/** Fetch bookings + albums for a tenant (mobile app use). */
+export async function fetchTenantMobileData(slug: string): Promise<{
+  tenant: import("./types").Tenant;
+  bookings: import("./types").Booking[];
+  albums: import("./types").Album[];
+} | null> {
+  try {
+    const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/mobile-data`);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch { return null; }
+}
+
+/** Save (create or update) a tenant album from the mobile app. */
+export async function saveTenantAlbum(slug: string, album: import("./types").Album): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/albums/${encodeURIComponent(album.id)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(album),
+    });
+    const json = await res.json();
+    return { ok: !!json.ok, error: json.error };
+  } catch { return { ok: false, error: "Network error" }; }
+}
+
+// ── License Plans ──────────────────────────────────────────────
+
+/** Fetch all active license plans. */
+export async function getLicensePlans(): Promise<import("./types").LicensePlan[]> {
+  try {
+    const res = await fetch("/api/license-plans/all");
+    if (!res.ok) return [];
+    return await res.json();
+  } catch { return []; }
+}
+
+/** Create a license plan. */
+export async function createLicensePlan(data: {
+  name: string; type: import("./types").LicensePlanType; price: number;
+  currency?: string; durationDays?: number; description?: string; features?: string[];
+}): Promise<{ plan?: import("./types").LicensePlan; error?: string }> {
+  try {
+    const res = await fetch("/api/license-plans", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+    const json = await res.json();
+    if (!res.ok) return { error: json.error || "Failed to create plan" };
+    return { plan: json };
+  } catch { return { error: "Network error" }; }
+}
+
+/** Update a license plan. */
+export async function updateLicensePlan(id: string, data: Partial<import("./types").LicensePlan>): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch(`/api/license-plans/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+    const json = await res.json();
+    return { ok: res.ok, error: json.error };
+  } catch { return { ok: false, error: "Network error" }; }
+}
+
+/** Delete a license plan. */
+export async function deleteLicensePlan(id: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch(`/api/license-plans/${encodeURIComponent(id)}`, { method: "DELETE" });
+    const json = await res.json();
+    return { ok: !!json.ok, error: json.error };
+  } catch { return { ok: false, error: "Network error" }; }
+}
+
+/** Create a Stripe checkout session for a license plan purchase. */
+export async function getLicensePlanCheckout(planId: string, buyerEmail: string, buyerName?: string): Promise<{ url?: string; error?: string }> {
+  try {
+    const res = await fetch(`/api/license-plans/${encodeURIComponent(planId)}/checkout`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ buyerEmail, buyerName }),
+    });
+    const json = await res.json();
+    if (!res.ok) return { error: json.error || "Checkout failed" };
+    return { url: json.url };
+  } catch { return { error: "Network error" }; }
+}
+
+/** Get all license plan purchases (admin only). */
+export async function getLicensePurchases(): Promise<import("./types").LicensePurchase[]> {
+  try {
+    const res = await fetch("/api/license-plans/purchases");
+    if (!res.ok) return [];
+    return await res.json();
+  } catch { return []; }
+}
+
+/** Activate a pending bank-transfer license purchase (admin: confirm payment received). */
+export async function activateBankPurchase(purchaseId: string): Promise<{ ok: boolean; key?: string; error?: string }> {
+  try {
+    const res = await fetch(`/api/license-plans/purchases/${encodeURIComponent(purchaseId)}/activate`, {
+      method: "POST",
+    });
+    const json = await res.json();
+    return { ok: !!json.ok, key: json.key, error: json.error };
+  } catch { return { ok: false, error: "Network error" }; }
+}

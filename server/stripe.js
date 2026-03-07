@@ -243,6 +243,57 @@ function registerRoutes(app, { writeDb } = {}) {
             }
           }
         }
+
+        // ── License Plan Purchase ─────────────────────────────
+        if (metadata.type === "license-plan" && metadata.planId) {
+          try {
+            const crypto = require("crypto");
+            const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+            const seg = () => Array.from({ length: 4 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
+            const newKey = `WV-${seg()}-${seg()}-${seg()}-${seg()}`;
+            const KEYS_FILE = path.join(process.env.DATA_DIR || "/data", "license_keys.json");
+            let keys = [];
+            try { keys = JSON.parse(fs.readFileSync(KEYS_FILE, "utf-8")); } catch {}
+            const durationDays = metadata.durationDays ? parseInt(metadata.durationDays) : undefined;
+            const expiresAt = durationDays
+              ? new Date(Date.now() + durationDays * 86400 * 1000).toISOString()
+              : undefined;
+            keys.push({
+              key: newKey,
+              issuedTo: metadata.buyerEmail || session.customer_email || "Customer",
+              createdAt: new Date().toISOString(),
+              ...(expiresAt ? { expiresAt } : {}),
+              notes: `${metadata.planName || ""} — Stripe`,
+            });
+            fs.writeFileSync(KEYS_FILE, JSON.stringify(keys, null, 2));
+
+            // Store purchase record
+            const purchasesRaw = db["wv_license_purchases"];
+            const purchases = purchasesRaw
+              ? (typeof purchasesRaw === "string" ? JSON.parse(purchasesRaw) : (Array.isArray(purchasesRaw) ? purchasesRaw : []))
+              : [];
+            purchases.push({
+              id: `purchase-${Date.now()}`,
+              planId: metadata.planId,
+              planName: metadata.planName || "",
+              buyerEmail: metadata.buyerEmail || session.customer_email || "",
+              buyerName: metadata.buyerName || "",
+              amount: (session.amount_total || 0) / 100,
+              currency: (session.currency || "aud").toUpperCase(),
+              method: "stripe",
+              status: "active",
+              licenseKey: newKey,
+              stripeSessionId: session.id,
+              createdAt: new Date().toISOString(),
+              ...(expiresAt ? { expiresAt } : {}),
+            });
+            db["wv_license_purchases"] = JSON.stringify(purchases);
+            saveDb(db);
+            console.log(`🔑 License key ${newKey} generated for ${metadata.buyerEmail} (plan: ${metadata.planName})`);
+          } catch (keyErr) {
+            console.error("Failed to generate license key after payment:", keyErr);
+          }
+        }
       } catch (dbErr) {
         console.error("Failed to update DB after payment:", dbErr);
       }
