@@ -3584,6 +3584,10 @@ function InvoicesView() {
   const [view, setView] = React.useState<"list" | "form">("list");
   const [editing, setEditing] = React.useState<Invoice | null>(null);
   const [filterStatus, setFilterStatus] = React.useState<InvoiceStatus | "all">("all");
+  const [searchQuery, setSearchQuery] = React.useState("");
+  const [filterFrom, setFilterFrom] = React.useState("");
+  const [filterTo, setFilterTo] = React.useState("");
+  const [sortDir, setSortDir] = React.useState<"desc" | "asc">("desc");
   const [expandedEmailLog, setExpandedEmailLog] = React.useState<string | null>(null);
   const [stripeAvailable, setStripeAvailable] = React.useState(false);
   const [sendingEmail, setSendingEmail] = React.useState(false);
@@ -3724,11 +3728,33 @@ function InvoicesView() {
     window.open(url, "_blank");
   };
 
-  const filteredInvoices = filterStatus === "all" ? invoices : invoices.filter(i => i.status === filterStatus);
-  const sortedInvoices = [...filteredInvoices].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  const filteredInvoices = React.useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return invoices.filter(i => {
+      if (filterStatus !== "all" && i.status !== filterStatus) return false;
+      if (q && !(
+        i.number.toLowerCase().includes(q) ||
+        i.to.name.toLowerCase().includes(q) ||
+        i.to.email.toLowerCase().includes(q) ||
+        (i.from.name || "").toLowerCase().includes(q)
+      )) return false;
+      if (filterFrom && i.createdAt.slice(0, 10) < filterFrom) return false;
+      if (filterTo   && i.createdAt.slice(0, 10) > filterTo)   return false;
+      return true;
+    });
+  }, [invoices, filterStatus, searchQuery, filterFrom, filterTo]);
+
+  const sortedInvoices = React.useMemo(() =>
+    [...filteredInvoices].sort((a, b) => {
+      const diff = new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+      return sortDir === "desc" ? diff : -diff;
+    }),
+    [filteredInvoices, sortDir],
+  );
 
   // ── LIST VIEW ──────────────────────────────────────────────
   if (view === "list") {
+    const hasActiveFilter = searchQuery.trim() || filterFrom || filterTo || filterStatus !== "all";
     return (
       <div className="space-y-6">
         <div className="flex items-center justify-between">
@@ -3741,27 +3767,90 @@ function InvoicesView() {
           </Button>
         </div>
 
-        {/* Status filter */}
-        <div className="flex gap-2 flex-wrap">
-          {(["all", "draft", "sent", "paid", "overdue", "cancelled"] as const).map(s => (
+        {/* Search + Date range + Sort */}
+        <div className="glass-panel rounded-xl p-3 space-y-3">
+          <div className="flex flex-col sm:flex-row gap-2">
+            {/* Search */}
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground/50 pointer-events-none" />
+              <Input
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                placeholder="Search by number, client name, or email…"
+                className="pl-8 bg-secondary border-border text-foreground font-body text-sm h-9"
+              />
+              {searchQuery && (
+                <button onClick={() => setSearchQuery("")} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground/50 hover:text-foreground">
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+            {/* Date from */}
+            <div className="flex items-center gap-1.5 shrink-0">
+              <label className="text-[10px] font-body uppercase tracking-wider text-muted-foreground whitespace-nowrap">From</label>
+              <input type="date" value={filterFrom} onChange={e => setFilterFrom(e.target.value)}
+                className="bg-secondary border border-border text-foreground font-body text-xs rounded-lg px-2 h-9 focus:outline-none focus:ring-1 focus:ring-primary/50" />
+            </div>
+            {/* Date to */}
+            <div className="flex items-center gap-1.5 shrink-0">
+              <label className="text-[10px] font-body uppercase tracking-wider text-muted-foreground whitespace-nowrap">To</label>
+              <input type="date" value={filterTo} onChange={e => setFilterTo(e.target.value)}
+                className="bg-secondary border border-border text-foreground font-body text-xs rounded-lg px-2 h-9 focus:outline-none focus:ring-1 focus:ring-primary/50" />
+            </div>
+            {/* Sort toggle */}
             <button
-              key={s}
-              onClick={() => setFilterStatus(s)}
-              className={`px-3 py-1.5 rounded-full text-xs font-body transition-colors ${filterStatus === s ? "bg-primary/20 text-primary border border-primary/30" : "bg-secondary/50 text-muted-foreground border border-border hover:text-foreground"}`}
+              onClick={() => setSortDir(d => d === "desc" ? "asc" : "desc")}
+              className="shrink-0 h-9 px-3 rounded-lg bg-secondary border border-border text-xs font-body text-muted-foreground hover:text-foreground flex items-center gap-1.5 transition-colors"
+              title="Toggle sort order"
             >
-              {s === "all" ? `All (${invoices.length})` : `${INV_STATUS_META[s].label} (${invoices.filter(i => i.status === s).length})`}
+              <ArrowUpDown className="w-3.5 h-3.5" />
+              {sortDir === "desc" ? "Newest first" : "Oldest first"}
             </button>
-          ))}
+          </div>
+
+          {/* Status pills */}
+          <div className="flex gap-2 flex-wrap">
+            {(["all", "draft", "sent", "paid", "overdue", "cancelled"] as const).map(s => (
+              <button
+                key={s}
+                onClick={() => setFilterStatus(s)}
+                className={`px-3 py-1.5 rounded-full text-xs font-body transition-colors ${filterStatus === s ? "bg-primary/20 text-primary border border-primary/30" : "bg-secondary/50 text-muted-foreground border border-border hover:text-foreground"}`}
+              >
+                {s === "all" ? `All (${invoices.length})` : `${INV_STATUS_META[s].label} (${invoices.filter(i => i.status === s).length})`}
+              </button>
+            ))}
+            {hasActiveFilter && (
+              <button
+                onClick={() => { setSearchQuery(""); setFilterFrom(""); setFilterTo(""); setFilterStatus("all"); }}
+                className="px-3 py-1.5 rounded-full text-xs font-body text-destructive border border-destructive/30 bg-destructive/5 hover:bg-destructive/10 transition-colors"
+              >
+                Clear filters
+              </button>
+            )}
+          </div>
         </div>
+
+        {/* Results count when filtering */}
+        {hasActiveFilter && (
+          <p className="text-xs font-body text-muted-foreground -mt-3">
+            Showing {sortedInvoices.length} of {invoices.length} invoice{invoices.length !== 1 ? "s" : ""}
+          </p>
+        )}
 
         {sortedInvoices.length === 0 ? (
           <div className="glass-panel rounded-xl p-12 text-center">
             <Receipt className="w-8 h-8 text-muted-foreground/30 mx-auto mb-3" />
-            <p className="text-sm font-body text-muted-foreground">No invoices yet</p>
-            <p className="text-xs font-body text-muted-foreground/60 mt-1">Create your first invoice to get started</p>
-            <Button onClick={openCreate} className="mt-4 gap-2 font-body text-sm" variant="outline">
-              <Plus className="w-4 h-4" /> Create Invoice
-            </Button>
+            <p className="text-sm font-body text-muted-foreground">{invoices.length === 0 ? "No invoices yet" : "No invoices match your filters"}</p>
+            {invoices.length === 0 ? (
+              <>
+                <p className="text-xs font-body text-muted-foreground/60 mt-1">Create your first invoice to get started</p>
+                <Button onClick={openCreate} className="mt-4 gap-2 font-body text-sm" variant="outline">
+                  <Plus className="w-4 h-4" /> Create Invoice
+                </Button>
+              </>
+            ) : (
+              <button onClick={() => { setSearchQuery(""); setFilterFrom(""); setFilterTo(""); setFilterStatus("all"); }} className="mt-2 text-xs font-body text-primary hover:underline">Clear filters</button>
+            )}
           </div>
         ) : (
           <div className="glass-panel rounded-xl overflow-hidden">
