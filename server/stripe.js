@@ -1,4 +1,5 @@
 const stripe = require("stripe");
+const rateLimit = require("express-rate-limit");
 
 let stripeClient = null;
 
@@ -11,6 +12,7 @@ function getStripe() {
 }
 
 function registerRoutes(app) {
+  const checkoutLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHeaders: true, legacyHeaders: false, message: { error: "Too many checkout requests — please wait" } });
   // ── Status ─────────────────────────────────────────
   app.get("/api/stripe/status", (_req, res) => {
     const configured = !!process.env.STRIPE_SECRET_KEY;
@@ -18,7 +20,7 @@ function registerRoutes(app) {
   });
 
   // ── Create Checkout Session (booking deposit) ──────
-  app.post("/api/stripe/checkout/booking", async (req, res) => {
+  app.post("/api/stripe/checkout/booking", checkoutLimiter, async (req, res) => {
     const s = getStripe();
     if (!s) return res.status(400).json({ error: "Stripe not configured" });
     const { bookingId, clientName, clientEmail, amount, eventTitle, successUrl, cancelUrl } = req.body;
@@ -50,7 +52,7 @@ function registerRoutes(app) {
     }
   });
 
-  app.post("/api/stripe/checkout/album", async (req, res) => {
+  app.post("/api/stripe/checkout/album", checkoutLimiter, async (req, res) => {
     const s = getStripe();
     if (!s) return res.status(400).json({ error: "Stripe not configured" });
     const { albumId, albumTitle, photoCount, amount, clientEmail, successUrl, cancelUrl, photoIds, isFullAlbum, sessionKey } = req.body;
@@ -91,7 +93,7 @@ function registerRoutes(app) {
   });
 
   // ── Create Checkout Session (invoice) ─────────────
-  app.post("/api/stripe/checkout/invoice", async (req, res) => {
+  app.post("/api/stripe/checkout/invoice", checkoutLimiter, async (req, res) => {
     const s = getStripe();
     if (!s) return res.status(400).json({ error: "Stripe not configured" });
     const { invoiceId, invoiceNumber, clientName, clientEmail, amount, description, successUrl, cancelUrl } = req.body;
@@ -124,7 +126,10 @@ function registerRoutes(app) {
   });
 
   // ── Webhook ────────────────────────────────────────
-  app.post("/api/stripe/webhook", express.raw({ type: "application/json" }), async (req, res) => {
+  // Generous rate limit for Stripe webhooks — protects file-system writes while allowing
+  // burst retries from Stripe (which retries up to 3× in quick succession on failure).
+  const webhookLimiter = rateLimit({ windowMs: 10_000, max: 30, standardHeaders: true, legacyHeaders: false, message: { error: "Too many requests" } });
+  app.post("/api/stripe/webhook", webhookLimiter, express.raw({ type: "application/json" }), async (req, res) => {
     const s = getStripe();
     if (!s) return res.status(400).json({ error: "Stripe not configured" });
     const sig = req.headers["stripe-signature"];

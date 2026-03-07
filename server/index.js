@@ -893,9 +893,11 @@ registerStripeRoutes(app);
 registerGoogleSheetsRoutes(app);
 
 // ── Invoice share endpoint (public — no auth required) ────────
-app.get("/api/invoice/share/:token", (req, res) => {
+const invoiceShareLimiter = rateLimit({ windowMs: 60_000, max: 60, standardHeaders: true, legacyHeaders: false, message: { error: "Too many requests" } });
+app.get("/api/invoice/share/:token", invoiceShareLimiter, (req, res) => {
   const db = readDb();
-  const invoices = db["wv_invoices"] || [];
+  const raw = db["wv_invoices"];
+  const invoices = raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : [];
   const invoice = invoices.find(inv => inv.shareToken === req.params.token);
   if (!invoice) return res.status(404).json({ error: "Invoice not found" });
   res.json(invoice);

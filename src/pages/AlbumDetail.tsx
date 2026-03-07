@@ -27,6 +27,8 @@ import { Label } from "@/components/ui/label";
 import type { Album, AlbumDownloadRecord, DownloadQuality, DownloadHistoryEntry, Photo } from "@/lib/types";
 
 const TARGET_LIGHTBOX_BYTES = 600 * 1024; // ~600KB
+// Scroll wheel zoom sensitivity — smaller = slower zoom per scroll tick
+const ZOOM_WHEEL_SENSITIVITY = 0.002;
 
 /** Type for Stripe checkout params — defined at file level to avoid re-creation on every render. */
 type StripeCheckoutParams = Parameters<typeof createAlbumCheckout>[0];
@@ -1501,7 +1503,7 @@ export default function AlbumDetail() {
             onWheel={(e) => {
               e.preventDefault();
               setLbZoom(z => {
-                const next = Math.min(4, Math.max(1, +(z - e.deltaY * 0.002).toFixed(2)));
+                const next = Math.min(4, Math.max(1, +(z - e.deltaY * ZOOM_WHEEL_SENSITIVITY).toFixed(2)));
                 if (next === 1) setLbPan({ x: 0, y: 0 });
                 return next;
               });

@@ -324,9 +324,7 @@ function BankTransferPanel({ invoice }: { invoice: Invoice }) {
       .catch(() => {});
   }, []);
 
-  const { total } = { total: (invoice.items || []).reduce((s, it) => s + it.quantity * it.unitPrice, 0) - (invoice.discount ?? 0) };
-  const taxAmt = total * ((invoice.tax ?? 0) / 100);
-  const grandTotal = total + taxAmt;
+  const { total: grandTotal } = calcTotals(invoice);
 
   if (!bank) return null;
 

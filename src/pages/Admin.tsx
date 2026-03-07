@@ -3680,8 +3680,9 @@ function InvoicesView() {
     setSendingEmail(true);
     const url = shareUrl(inv);
     const html = buildInvoiceEmailHtml(inv, url, false);
-    const subject = `Invoice ${inv.number} from ${inv.from.name || "Us"}`;
-    const { ok, error } = await sendInvoiceEmail(inv.to.email, subject, html);
+    const subject = `Invoice ${inv.number} from ${inv.from.name || "your photographer"}`;
+    const text = `Hi ${inv.to.name},\n\nPlease find your invoice ${inv.number} for $${calcInvTotal(inv).toFixed(2)}.\n\nView and pay online: ${url}\n\nDue: ${inv.dueDate || "on receipt"}\n\n${inv.notes || ""}`.trim();
+    const { ok, error } = await sendInvoiceEmail(inv.to.email, subject, html, text);
     if (!ok) { toast.error(error || "Failed to send email"); setSendingEmail(false); return; }
     const logEntry = { sentAt: new Date().toISOString(), type: "invoice" as const, to: inv.to.email, subject };
     const updated: Invoice = { ...inv, status: inv.status === "draft" ? "sent" : inv.status, sentAt: inv.sentAt || new Date().toISOString(), emailLog: [...(inv.emailLog || []), logEntry] };
@@ -3698,7 +3699,8 @@ function InvoicesView() {
     const url = shareUrl(inv);
     const html = buildInvoiceEmailHtml(inv, url, true);
     const subject = `Payment Reminder — ${inv.number}`;
-    const { ok, error } = await sendInvoiceEmail(inv.to.email, subject, html);
+    const reminderText = `Hi ${inv.to.name},\n\nThis is a reminder that invoice ${inv.number} for $${calcInvTotal(inv).toFixed(2)} is due ${inv.dueDate ? `on ${inv.dueDate}` : "now"}.\n\nView and pay: ${url}`.trim();
+    const { ok, error } = await sendInvoiceEmail(inv.to.email, subject, html, reminderText);
     if (!ok) { toast.error(error || "Failed to send reminder"); setSendingEmail(false); return; }
     const logEntry = { sentAt: new Date().toISOString(), type: "reminder" as const, to: inv.to.email, subject };
     const updated: Invoice = { ...inv, emailLog: [...(inv.emailLog || []), logEntry] };
@@ -4182,14 +4184,9 @@ function FinanceView() {
   const stripeTotal = payments.filter(p => p.method === "stripe" && p.status === "completed").reduce((s, p) => s + p.amount, 0);
   const bankTotal = payments.filter(p => p.method === "bank-transfer" && p.status === "completed").reduce((s, p) => s + p.amount, 0);
 
-  // Invoice stats
-  const calcInvoiceTotal = (inv: Invoice) => {
-    const sub = (inv.items || []).reduce((s, it) => s + it.quantity * it.unitPrice, 0);
-    const disc = inv.discount ?? 0;
-    return (sub - disc) * (1 + (inv.tax ?? 0) / 100);
-  };
-  const invoicePaid = invoicesState.filter(i => i.status === "paid").reduce((s, i) => s + calcInvoiceTotal(i), 0);
-  const invoicePending = invoicesState.filter(i => i.status === "sent" || i.status === "overdue").reduce((s, i) => s + calcInvoiceTotal(i), 0);
+  // Invoice stats — reuse the module-level calcInvTotal helper
+  const invoicePaid = invoicesState.filter(i => i.status === "paid").reduce((s, i) => s + calcInvTotal(i), 0);
+  const invoicePending = invoicesState.filter(i => i.status === "sent" || i.status === "overdue").reduce((s, i) => s + calcInvTotal(i), 0);
 
   const handleDelete = (p: PaymentRecord) => {
     if (!confirm(`Delete this payment record? This will revoke the client's access to the purchased photos.`)) return;

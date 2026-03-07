@@ -618,6 +618,7 @@ export async function sendInvoiceEmail(
   to: string,
   subject: string,
   html: string,
+  text?: string,
 ): Promise<{ ok: boolean; error?: string }> {
-  return sendEmail(to, subject, html);
+  return sendEmail(to, subject, html, text);
 }
