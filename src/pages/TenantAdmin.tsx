@@ -24,6 +24,9 @@ import {
   clearTenantImageCache, tenantPhotoSrc, saveTenantAlbum,
   uploadPhotosToServer, isServerMode, notifyTenantDiscord,
   getSuperAdminWebhooks,
+  getTenantGoogleCalendarStatus, startTenantGoogleCalendarAuth,
+  disconnectTenantGoogleCalendar, getTenantGoogleCalendars,
+  saveTenantCalendarSettings,
 } from "@/lib/api";
 import type {
   Booking, Album, EventType, Invoice, InvoiceItem, InvoiceParty,
@@ -1516,15 +1519,47 @@ function TenantProfileView({ slug, session }: { slug: string; session: { display
 
 // ─── Settings ────────────────────────────────────────────────────────────────
 function TenantSettingsView({ slug }: { slug: string }) {
+  const navigate = useNavigate();
   const [settings, setSettings] = useState<TenantSettings>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [activeSection, setActiveSection] = useState<"payments" | "notifications" | "watermark">("payments");
+  const [activeSection, setActiveSection] = useState<"payments" | "notifications" | "watermark" | "integrations">("payments");
   const [wmUploading, setWmUploading] = useState(false);
+
+  // Google Calendar state
+  const [gcalStatus, setGcalStatus] = useState<{ configured: boolean; connected: boolean; email: string | null; calendarId: string } | null>(null);
+  const [gcalCalendars, setGcalCalendars] = useState<{ id: string; summary: string; primary?: boolean }[]>([]);
+  const [gcalCalendarId, setGcalCalendarId] = useState("primary");
+  const [gcalSaving, setGcalSaving] = useState(false);
 
   useEffect(() => {
     getTenantSettings(slug).then(s => { setSettings(s); setLoading(false); });
   }, [slug]);
+
+  // Load Google Calendar status when integrations tab opens
+  useEffect(() => {
+    if (activeSection !== "integrations") return;
+    getTenantGoogleCalendarStatus(slug).then(s => {
+      setGcalStatus(s);
+      setGcalCalendarId(s.calendarId || "primary");
+      if (s.connected) getTenantGoogleCalendars(slug).then(setGcalCalendars);
+    });
+  }, [activeSection, slug]);
+
+  // Handle redirect back from Google OAuth
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const gcal = params.get("gcal");
+    if (gcal === "connected") {
+      toast.success("Google Calendar connected successfully!");
+      setActiveSection("integrations");
+      navigate(`/tenant-admin/${slug}`, { replace: true });
+    } else if (gcal === "error") {
+      toast.error("Google Calendar connection failed. Check your credentials.");
+      setActiveSection("integrations");
+      navigate(`/tenant-admin/${slug}`, { replace: true });
+    }
+  }, [slug, navigate]);
 
   const set = (patch: Partial<TenantSettings>) => setSettings(s => ({ ...s, ...patch }));
 
@@ -1548,12 +1583,41 @@ function TenantSettingsView({ slug }: { slug: string }) {
     reader.readAsDataURL(file);
   };
 
+  const handleGcalConnect = async () => {
+    // First save the credentials if they've been changed
+    if (settings.googleApiCredentials) {
+      await saveTenantSettings(slug, settings);
+    }
+    const url = await startTenantGoogleCalendarAuth(slug);
+    if (url) {
+      window.location.href = url;
+    } else {
+      toast.error("Google credentials not configured. Paste your Google API credentials JSON first, then save.");
+    }
+  };
+
+  const handleGcalDisconnect = async () => {
+    if (!confirm("Disconnect Google Calendar?")) return;
+    await disconnectTenantGoogleCalendar(slug);
+    setGcalStatus(s => s ? { ...s, connected: false, email: null } : s);
+    setGcalCalendars([]);
+    toast.success("Google Calendar disconnected");
+  };
+
+  const handleGcalSaveSettings = async () => {
+    setGcalSaving(true);
+    await saveTenantCalendarSettings(slug, { calendarId: gcalCalendarId });
+    setGcalSaving(false);
+    toast.success("Calendar settings saved");
+  };
+
   if (loading) return <div className="py-16 text-center text-muted-foreground font-body text-sm animate-pulse">Loading…</div>;
 
   const sectionTabs = [
     { id: "payments" as const, label: "Payments" },
     { id: "notifications" as const, label: "Notifications" },
     { id: "watermark" as const, label: "Watermark" },
+    { id: "integrations" as const, label: "Integrations" },
   ];
 
   const WATERMARK_POSITIONS: { value: WatermarkPosition; label: string }[] = [
@@ -1719,6 +1783,85 @@ function TenantSettingsView({ slug }: { slug: string }) {
           </Button>
         </div>
       )}
+
+      {activeSection === "integrations" && (
+        <div className="space-y-5 max-w-lg">
+          {/* Google Calendar */}
+          <div className="space-y-4 p-4 rounded-lg bg-secondary/40 border border-border/50">
+            <div className="flex items-center gap-2">
+              <Calendar className="w-4 h-4 text-primary" />
+              <span className="text-xs font-body tracking-wider uppercase text-muted-foreground">Google Calendar</span>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-xs font-body text-muted-foreground block">
+                Google API Credentials JSON
+              </label>
+              <Textarea
+                value={settings.googleApiCredentials || ""}
+                onChange={e => set({ googleApiCredentials: e.target.value })}
+                placeholder={`{"web":{"client_id":"...","client_secret":"...","redirect_uris":["https://your-domain.com/api/tenant/${slug}/integrations/googlecalendar/callback"]}}`}
+                rows={5}
+                className="bg-background border-border text-foreground font-body text-xs font-mono resize-none"
+              />
+              <p className="text-[10px] font-body text-muted-foreground">
+                Paste the JSON from your Google Cloud Console OAuth2 client (Web application type).
+                Set the redirect URI to:{" "}
+                <code className="bg-secondary px-1 rounded text-[10px] break-all">
+                  {window.location.origin}/api/tenant/{slug}/integrations/googlecalendar/callback
+                </code>
+              </p>
+            </div>
+
+            <Button onClick={handleSaveSettings} disabled={saving} variant="outline" size="sm" className="font-body text-xs gap-1.5 border-border">
+              <Save className="w-3.5 h-3.5" /> {saving ? "Saving…" : "Save Credentials"}
+            </Button>
+
+            {gcalStatus === null ? (
+              <p className="text-xs font-body text-muted-foreground animate-pulse">Checking status…</p>
+            ) : gcalStatus.configured && !gcalStatus.connected ? (
+              <div className="pt-1">
+                <Button onClick={handleGcalConnect} size="sm" className="gap-2 bg-primary text-primary-foreground font-body text-xs">
+                  <Calendar className="w-3.5 h-3.5" /> Connect Google Calendar
+                </Button>
+              </div>
+            ) : gcalStatus.connected ? (
+              <div className="space-y-3 pt-1">
+                <div className="flex items-center justify-between p-3 rounded-lg bg-green-500/5 border border-green-500/20">
+                  <div>
+                    <p className="text-sm font-body text-foreground font-medium">✓ Connected</p>
+                    {gcalStatus.email && <p className="text-xs font-body text-muted-foreground">{gcalStatus.email}</p>}
+                  </div>
+                  <Button onClick={handleGcalDisconnect} variant="ghost" size="sm" className="text-xs font-body text-destructive hover:bg-destructive/10">
+                    Disconnect
+                  </Button>
+                </div>
+
+                {gcalCalendars.length > 0 && (
+                  <div>
+                    <label className="text-xs font-body text-muted-foreground mb-1.5 block">Target Calendar</label>
+                    <select
+                      value={gcalCalendarId}
+                      onChange={e => setGcalCalendarId(e.target.value)}
+                      className="w-full bg-background border border-border text-foreground font-body text-sm rounded-md px-3 py-2"
+                    >
+                      {gcalCalendars.map(c => (
+                        <option key={c.id} value={c.id}>{c.summary}{c.primary ? " (Primary)" : ""}</option>
+                      ))}
+                    </select>
+                    <Button onClick={handleGcalSaveSettings} disabled={gcalSaving} variant="outline" size="sm" className="mt-2 font-body text-xs gap-1.5 border-border">
+                      <Save className="w-3.5 h-3.5" /> {gcalSaving ? "Saving…" : "Save Calendar"}
+                    </Button>
+                  </div>
+                )}
+                <p className="text-[10px] font-body text-muted-foreground/60">New bookings will automatically sync to your Google Calendar when created.</p>
+              </div>
+            ) : !gcalStatus.configured && (
+              <p className="text-xs font-body text-muted-foreground/70 pt-1">Save your Google API credentials above to connect.</p>
+            )}
+          </div>
+        </div>
+      )}
     </motion.div>
   );
 }
@@ -1728,13 +1871,26 @@ function TenantStorage({ slug }: { slug: string }) {
   const [albums, setAlbums] = useState<Album[]>([]);
   const [cacheClearing, setCacheClearing] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [cacheStats, setCacheStats] = useState<{ count: number; sizeBytes: number } | null>(null);
+  const [statsLoading, setStatsLoading] = useState(false);
 
-  useEffect(() => {
-    fetchTenantMobileData(slug).then(d => {
-      setAlbums(d.albums || []);
-      setLoading(false);
-    });
+  const loadData = useCallback(async () => {
+    const d = await fetchTenantMobileData(slug);
+    setAlbums(d.albums || []);
+    setLoading(false);
   }, [slug]);
+
+  const loadCacheStats = useCallback(() => {
+    setStatsLoading(true);
+    fetch(`/api/tenant/${encodeURIComponent(slug)}/cache/stats`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d?.ok) setCacheStats({ count: d.count ?? 0, sizeBytes: d.sizeBytes ?? 0 }); })
+      .catch(() => {})
+      .finally(() => setStatsLoading(false));
+  }, [slug]);
+
+  useEffect(() => { loadData(); }, [loadData]);
+  useEffect(() => { loadCacheStats(); }, [loadCacheStats]);
 
   const handleClearCache = async () => {
     setCacheClearing(true);
@@ -1742,56 +1898,109 @@ function TenantStorage({ slug }: { slug: string }) {
     setCacheClearing(false);
     if (!ok) { toast.error(error || "Failed to clear cache"); return; }
     toast.success(`Cache cleared — ${cleared ?? 0} file(s) removed`);
+    setCacheStats(null);
+    loadCacheStats();
   };
 
   if (loading) return <div className="py-16 text-center text-muted-foreground font-body text-sm animate-pulse">Loading…</div>;
 
   const totalPhotos = albums.reduce((s, a) => s + (a.photos?.length || 0), 0);
+  const totalStarred = albums.reduce((s, a) => s + (a.photos?.filter(p => p.isStarred)?.length || 0), 0);
+
+  function fmtBytes(b: number) {
+    if (b < 1024) return `${b} B`;
+    if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
+    return `${(b / (1024 * 1024)).toFixed(1)} MB`;
+  }
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
       <h2 className="font-display text-2xl text-foreground mb-6">Storage</h2>
       <div className="space-y-4 max-w-lg">
-        <div className="grid grid-cols-2 gap-4">
+        {/* Stats grid */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <div className="glass-panel rounded-xl p-4">
             <p className="text-xs font-body tracking-wider uppercase text-muted-foreground">Albums</p>
             <p className="font-display text-2xl text-foreground mt-1">{albums.length}</p>
           </div>
           <div className="glass-panel rounded-xl p-4">
-            <p className="text-xs font-body tracking-wider uppercase text-muted-foreground">Total Photos</p>
+            <p className="text-xs font-body tracking-wider uppercase text-muted-foreground">Photos</p>
             <p className="font-display text-2xl text-foreground mt-1">{totalPhotos}</p>
+          </div>
+          <div className="glass-panel rounded-xl p-4">
+            <p className="text-xs font-body tracking-wider uppercase text-muted-foreground">Starred</p>
+            <p className="font-display text-2xl text-foreground mt-1">{totalStarred}</p>
+          </div>
+          <div className="glass-panel rounded-xl p-4">
+            <p className="text-xs font-body tracking-wider uppercase text-muted-foreground">Cache Files</p>
+            <p className="font-display text-2xl text-foreground mt-1">
+              {statsLoading ? <span className="text-base animate-pulse">…</span> : (cacheStats?.count ?? "—")}
+            </p>
           </div>
         </div>
 
+        {/* Image Cache panel */}
         <div className="glass-panel rounded-xl p-5 space-y-4">
-          <h3 className="font-display text-base text-foreground">Image Cache</h3>
+          <h3 className="font-display text-base text-foreground flex items-center gap-2">
+            <HardDrive className="w-4 h-4 text-primary" /> Image Cache
+          </h3>
           <p className="text-xs font-body text-muted-foreground">
             Watermarked and resized versions are cached on the server for faster delivery.
             Clear the cache to regenerate images with updated watermark settings.
           </p>
+          {cacheStats && (
+            <div className="grid grid-cols-2 gap-3">
+              <div className="p-3 rounded-lg bg-secondary/60">
+                <p className="text-xs font-body text-muted-foreground">Cached files</p>
+                <p className="font-display text-lg text-foreground">{cacheStats.count}</p>
+                <p className="text-[10px] font-body text-muted-foreground/60">thumbnails &amp; medium</p>
+              </div>
+              <div className="p-3 rounded-lg bg-secondary/60">
+                <p className="text-xs font-body text-muted-foreground">Cache size</p>
+                <p className="font-display text-lg text-foreground">{fmtBytes(cacheStats.sizeBytes)}</p>
+                <p className="text-[10px] font-body text-muted-foreground/60">on-disk</p>
+              </div>
+            </div>
+          )}
           <Button
             onClick={handleClearCache}
             disabled={cacheClearing}
             variant="outline"
             className="font-body text-xs tracking-wider uppercase gap-2 border-border text-muted-foreground hover:text-foreground"
           >
-            <HardDrive className="w-3.5 h-3.5" />
+            <RefreshCw className={`w-3.5 h-3.5 ${cacheClearing ? "animate-spin" : ""}`} />
             {cacheClearing ? "Clearing…" : "Clear Image Cache"}
           </Button>
+          <p className="text-[10px] font-body text-muted-foreground/60">
+            Cache uses your tenant watermark settings. Clearing regenerates with latest settings.
+          </p>
         </div>
 
+        {/* Per-album breakdown */}
         <div className="glass-panel rounded-xl p-5 space-y-3">
-          <h3 className="font-display text-base text-foreground">Albums</h3>
+          <h3 className="font-display text-base text-foreground">Album Breakdown</h3>
           {albums.length === 0 ? (
             <p className="text-sm font-body text-muted-foreground">No albums yet.</p>
           ) : (
             <div className="space-y-2 max-h-80 overflow-y-auto">
-              {albums.map(a => (
-                <div key={a.id} className="flex items-center justify-between p-2.5 rounded-lg bg-secondary/50">
-                  <span className="text-sm font-body text-foreground truncate">{a.title}</span>
-                  <span className="text-xs font-body text-muted-foreground shrink-0 ml-3">{a.photos?.length || 0} photos</span>
-                </div>
-              ))}
+              {albums.map(a => {
+                const count = a.photos?.length || 0;
+                const starred = a.photos?.filter(p => p.isStarred)?.length || 0;
+                const pct = totalPhotos > 0 ? Math.round((count / totalPhotos) * 100) : 0;
+                return (
+                  <div key={a.id} className="space-y-1">
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm font-body text-foreground truncate flex-1 mr-2">{a.title}</span>
+                      <span className="text-xs font-body text-muted-foreground shrink-0">{count} photos{starred > 0 ? ` · ★ ${starred}` : ""}</span>
+                    </div>
+                    {totalPhotos > 0 && (
+                      <div className="h-1 bg-secondary rounded-full overflow-hidden">
+                        <div className="h-full bg-primary/50 rounded-full transition-all" style={{ width: `${pct}%` }} />
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>

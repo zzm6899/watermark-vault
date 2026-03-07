@@ -874,9 +874,36 @@ app.post("/api/discord/notify", async (req, res) => {
   }
 });
 
-/** Get all tenant webhook configurations — super admin only (no auth check, protected by obscurity + env check). */
-app.get("/api/super-admin/webhooks", (_req, res) => {
+/** Get all tenant webhook configurations — super admin only.
+ *  Requires the caller to pass the super-admin password hash as a Bearer token
+ *  (matching how the rest of the app handles admin auth via hashed credentials). */
+app.get("/api/super-admin/webhooks", (req, res) => {
   if (!process.env.SUPER_ADMIN_USERNAME) return res.status(403).json({ ok: false, error: "Super admin not configured" });
+
+  // Verify caller provides the super admin credentials via Basic auth header
+  // Frontend sends: Authorization: Basic base64(username:passwordHash)
+  const authHeader = req.headers.authorization || "";
+  if (!authHeader.startsWith("Basic ")) return res.status(401).json({ ok: false, error: "Authentication required" });
+  try {
+    const decoded = Buffer.from(authHeader.slice(6), "base64").toString("utf-8");
+    const [user, ...rest] = decoded.split(":");
+    const hash = rest.join(":");
+    const db = readDb();
+    const adminRaw = db["wv_admin"];
+    const adminCreds = adminRaw ? (typeof adminRaw === "string" ? JSON.parse(adminRaw) : adminRaw) : null;
+    const isAdmin = adminCreds?.username === user && adminCreds?.passwordHash === hash;
+    const isSuperAdminUser = user === process.env.SUPER_ADMIN_USERNAME;
+    if (!isAdmin || !isSuperAdminUser) return res.status(403).json({ ok: false, error: "Forbidden" });
+  } catch {
+    return res.status(401).json({ ok: false, error: "Invalid authorization" });
+  }
+
+  function maskWebhookUrl(url) {
+    if (!url) return null;
+    // Mask the token part of Discord webhook URLs: /webhooks/{id}/{token} → /webhooks/{id}/***
+    return url.replace(/(\/api\/webhooks\/[^/]+\/)([^/?]+)/, "$1***");
+  }
+
   const db = readDb();
   const tenants = readTenants();
   const webhooks = tenants.map(t => {
@@ -885,7 +912,7 @@ app.get("/api/super-admin/webhooks", (_req, res) => {
     return {
       tenantSlug: t.slug,
       displayName: t.displayName,
-      discordWebhookUrl: settings.discordWebhookUrl || null,
+      discordWebhookUrl: maskWebhookUrl(settings.discordWebhookUrl || null),
       discordNotifyBookings: settings.discordNotifyBookings !== false,
       discordNotifyDownloads: settings.discordNotifyDownloads !== false,
       discordNotifyProofing: settings.discordNotifyProofing !== false,
@@ -898,7 +925,7 @@ app.get("/api/super-admin/webhooks", (_req, res) => {
   webhooks.unshift({
     tenantSlug: "__admin__",
     displayName: "Admin (Global)",
-    discordWebhookUrl: globalSettings.discordWebhookUrl || null,
+    discordWebhookUrl: maskWebhookUrl(globalSettings.discordWebhookUrl || null),
     discordNotifyBookings: globalSettings.discordNotifyBookings !== false,
     discordNotifyDownloads: globalSettings.discordNotifyDownloads !== false,
     discordNotifyProofing: globalSettings.discordNotifyProofing !== false,
@@ -1045,6 +1072,192 @@ registerTenantStripeRoutes(app, { readDb, readTenants: () => {
 }});
 registerGoogleSheetsRoutes(app);
 
+// ── Per-tenant Google Calendar integration ────────────────────────────────
+// Allows each tenant to configure their own Google OAuth2 credentials and
+// connect their own Google Calendar account independently.
+(function registerTenantGoogleCalendarRoutes() {
+  const { google } = require("googleapis");
+
+  function getTenantGcalCredentials(slug) {
+    const db = readDb();
+    const rawSettings = db[`t_${slug}_wv_tenant_settings`];
+    const settings = rawSettings ? (typeof rawSettings === "string" ? JSON.parse(rawSettings) : rawSettings) : {};
+    const raw = settings.googleApiCredentials;
+    if (!raw) return null;
+    try { return JSON.parse(raw); } catch { return null; }
+  }
+
+  function getTenantOAuth2Client(slug) {
+    const creds = getTenantGcalCredentials(slug);
+    if (!creds?.web) return null;
+    const { client_id, client_secret, redirect_uris } = creds.web;
+    const redirectUri = (redirect_uris || []).find(u => u.includes("googlecalendar")) || redirect_uris?.[0];
+    return new google.auth.OAuth2(client_id, client_secret, redirectUri);
+  }
+
+  function loadTenantTokens(slug) {
+    const db = readDb();
+    const raw = db[`t_${slug}_wv_gcal_tokens`];
+    if (!raw) return null;
+    return typeof raw === "string" ? JSON.parse(raw) : raw;
+  }
+
+  function saveTenantTokens(slug, tokens) {
+    const db = readDb();
+    db[`t_${slug}_wv_gcal_tokens`] = tokens;
+    writeDb(db);
+  }
+
+  function clearTenantTokens(slug) {
+    const db = readDb();
+    delete db[`t_${slug}_wv_gcal_tokens`];
+    writeDb(db);
+  }
+
+  function loadTenantCalSettings(slug) {
+    const db = readDb();
+    const raw = db[`t_${slug}_wv_gcal_settings`];
+    if (!raw) return {};
+    return typeof raw === "string" ? JSON.parse(raw) : raw;
+  }
+
+  function saveTenantCalSettings(slug, patch) {
+    const db = readDb();
+    const existing = loadTenantCalSettings(slug);
+    db[`t_${slug}_wv_gcal_settings`] = { ...existing, ...patch };
+    writeDb(db);
+  }
+
+  function getAuthenticatedTenantClient(slug) {
+    const client = getTenantOAuth2Client(slug);
+    if (!client) return null;
+    const tokens = loadTenantTokens(slug);
+    if (!tokens?.access_token) return null;
+    client.setCredentials(tokens);
+    client.on("tokens", t => saveTenantTokens(slug, { ...tokens, ...t }));
+    return client;
+  }
+
+  // Status
+  app.get("/api/tenant/:slug/integrations/googlecalendar/status", tenantLimiter, (req, res) => {
+    const { slug } = req.params;
+    const tokens   = loadTenantTokens(slug);
+    const settings = loadTenantCalSettings(slug);
+    const creds    = getTenantGcalCredentials(slug);
+    res.json({
+      configured: !!creds?.web,
+      connected:  !!tokens?.access_token,
+      email:      tokens?.email || null,
+      autoSync:   settings.autoSync  ?? false,
+      calendarId: settings.calendarId || "primary",
+    });
+  });
+
+  // Start OAuth — redirects browser to Google consent screen
+  app.get("/api/tenant/:slug/integrations/googlecalendar/auth", tenantLimiter, (req, res) => {
+    const { slug } = req.params;
+    const client = getTenantOAuth2Client(slug);
+    if (!client) return res.status(400).json({ error: "Google credentials not configured for this account" });
+    const url = client.generateAuthUrl({
+      access_type: "offline",
+      prompt: "consent",
+      scope: [
+        "https://www.googleapis.com/auth/calendar",
+        "https://www.googleapis.com/auth/userinfo.email",
+      ],
+      state: slug, // pass slug through so callback knows which tenant to save tokens for
+    });
+    res.json({ url });
+  });
+
+  // OAuth callback — saves tokens and redirects back to tenant admin
+  app.get("/api/tenant/:slug/integrations/googlecalendar/callback", tenantLimiter, async (req, res) => {
+    const { slug } = req.params;
+    const { code } = req.query;
+    if (!code) return res.status(400).send("Missing code");
+    const client = getTenantOAuth2Client(slug);
+    if (!client) return res.status(400).send("Google credentials not configured");
+    try {
+      const { tokens } = await client.getToken(code);
+      client.setCredentials(tokens);
+      const oauth2 = google.oauth2({ version: "v2", auth: client });
+      tokens.email = (await oauth2.userinfo.get()).data.email;
+      saveTenantTokens(slug, tokens);
+      res.redirect(`/tenant-admin/${slug}?gcal=connected`);
+    } catch (err) {
+      console.error("Tenant Google OAuth error:", err);
+      res.redirect(`/tenant-admin/${slug}?gcal=error`);
+    }
+  });
+
+  // Disconnect
+  app.post("/api/tenant/:slug/integrations/googlecalendar/disconnect", tenantLimiter, (req, res) => {
+    clearTenantTokens(req.params.slug);
+    res.json({ ok: true });
+  });
+
+  // List calendars
+  app.get("/api/tenant/:slug/integrations/googlecalendar/calendars", tenantLimiter, async (req, res) => {
+    const auth = getAuthenticatedTenantClient(req.params.slug);
+    if (!auth) return res.status(401).json({ error: "Not connected" });
+    try {
+      const { data } = await google.calendar({ version: "v3", auth }).calendarList.list();
+      res.json({ calendars: data.items || [] });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  // Save calendar settings (autoSync, calendarId)
+  app.post("/api/tenant/:slug/integrations/googlecalendar/settings", tenantLimiter, (req, res) => {
+    saveTenantCalSettings(req.params.slug, req.body);
+    res.json({ ok: true });
+  });
+
+  // Sync a single booking
+  app.post("/api/tenant/:slug/integrations/googlecalendar/event", tenantLimiter, async (req, res) => {
+    const { slug } = req.params;
+    const auth = getAuthenticatedTenantClient(slug);
+    if (!auth) return res.status(401).json({ error: "Not connected" });
+    const { booking, calendarId } = req.body;
+    if (!booking) return res.status(400).json({ error: "Missing booking" });
+    const calId = calendarId || loadTenantCalSettings(slug).calendarId || "primary";
+    // Reuse the event builder from the main google-calendar module
+    const { getAuthenticatedClient, loadCalSettings } = require("./google-calendar");
+    const TZ = process.env.TZ || "Australia/Sydney";
+    function buildEvent(b) {
+      const startLocal = `${b.date}T${b.time}:00`;
+      const [h, m] = b.time.split(":").map(Number);
+      const totalMins = h * 60 + m + (b.duration || 60);
+      const endH = String(Math.floor(totalMins / 60) % 24).padStart(2, "0");
+      const endM = String(totalMins % 60).padStart(2, "0");
+      let endDate2 = b.date;
+      if (Math.floor(totalMins / 60) >= 24) {
+        const d = new Date(`${b.date}T00:00:00Z`);
+        d.setUTCDate(d.getUTCDate() + Math.floor(Math.floor(totalMins / 60) / 24));
+        endDate2 = d.toISOString().slice(0, 10);
+      }
+      return {
+        summary: `📸 ${b.type || "Session"} — ${b.clientName}`,
+        description: [`Client: ${b.clientName}`, b.clientEmail ? `Email: ${b.clientEmail}` : "", `Duration: ${b.duration || 60}min`, b.notes ? `Notes: ${b.notes}` : "", `\nRef: ${b.id}`].filter(Boolean).join("\n"),
+        start: { dateTime: `${b.date}T${b.time}:00`, timeZone: TZ },
+        end:   { dateTime: `${endDate2}T${endH}:${endM}:00`, timeZone: TZ },
+        extendedProperties: { private: { watermarkVaultBookingId: b.id } },
+      };
+    }
+    try {
+      const cal = google.calendar({ version: "v3", auth });
+      if (booking.gcalEventId) {
+        const { data } = await cal.events.update({ calendarId: calId, eventId: booking.gcalEventId, requestBody: buildEvent(booking) });
+        return res.json({ ok: true, eventId: data.id, updated: true });
+      }
+      const { data } = await cal.events.insert({ calendarId: calId, requestBody: buildEvent(booking) });
+      res.json({ ok: true, eventId: data.id, htmlLink: data.htmlLink });
+    } catch (err) {
+      console.error("Tenant calendar event error:", err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+})();
+
 // ── Invoice share endpoint (public — no auth required) ────────
 const invoiceShareLimiter = rateLimit({ windowMs: 60_000, max: 60, standardHeaders: true, legacyHeaders: false, message: { error: "Too many requests" } });
 app.get("/api/invoice/share/:token", invoiceShareLimiter, (req, res) => {
@@ -1172,18 +1385,43 @@ app.post("/api/tenant/:slug/cache/clear", tenantLimiter, (req, res) => {
   const tenants = readTenants();
   if (!tenants.find(t => t.slug === slug)) return res.status(404).json({ error: "Tenant not found" });
   const cacheDir = path.join(UPLOADS_DIR, "_cache");
+  // Cache filenames are `${baseName}_${sizeLabel}_t_${slug}_wm.jpg` — use underscore-bounded match
+  // to prevent slug "foo" from matching slug "foobar"'s files.
+  const slugPattern = new RegExp(`_t_${slug.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}_`);
   let cleared = 0;
   if (fs.existsSync(cacheDir)) {
     try {
       for (const f of fs.readdirSync(cacheDir)) {
-        // Only delete files that contain the tenant's slug tag in their cache filename
-        if (f.includes(`_t_${slug}_`)) {
+        if (slugPattern.test(f)) {
           try { fs.unlinkSync(path.join(cacheDir, f)); cleared++; } catch {}
         }
       }
     } catch {}
   }
   res.json({ ok: true, cleared });
+});
+
+// Return cache stats for a tenant (file count + total size)
+app.get("/api/tenant/:slug/cache/stats", tenantLimiter, (req, res) => {
+  const slug = req.params.slug;
+  const cacheDir = path.join(UPLOADS_DIR, "_cache");
+  const slugPattern = new RegExp(`_t_${slug.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}_`);
+  let count = 0;
+  let sizeBytes = 0;
+  if (fs.existsSync(cacheDir)) {
+    try {
+      for (const f of fs.readdirSync(cacheDir)) {
+        if (slugPattern.test(f)) {
+          try {
+            const stat = fs.statSync(path.join(cacheDir, f));
+            count++;
+            sizeBytes += stat.size;
+          } catch {}
+        }
+      }
+    } catch {}
+  }
+  res.json({ ok: true, count, sizeBytes });
 });
 
 // Create a booking on behalf of a tenant

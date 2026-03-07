@@ -5,7 +5,7 @@ import {
   Trash2, Edit, Users, Clock, CreditCard, Building2,
   Camera, Save, X, LogOut, ChevronDown, ChevronUp,
   Image, DollarSign, Link2, Merge, Send, Copy, ExternalLink,
-  MapPin, Lock, Bell, Download, Unlock, Eye, Grid, List, LayoutGrid, HardDrive, CheckSquare, XSquare, Search, RefreshCw, Mail,
+  MapPin, Lock, Bell, Download, Unlock, Eye, Grid, List, LayoutGrid, HardDrive, CheckSquare, XSquare, Search, RefreshCw, RefreshCcw, Mail,
   MessageSquare,
   Star, CheckCircle2, Sparkles, ChevronLeft, ChevronRight, Flag, FileText, Receipt, Printer, AlertCircle, BookOpen,
   ArrowUpDown, MoreHorizontal, TrendingUp, TrendingDown, Key, Globe,
@@ -29,7 +29,7 @@ import {
   isSuperAdmin, setSuperAdmin, getAdminCredentials, hashPassword,
 } from "@/lib/storage";
 import { compressImage, formatBytes, getLocalStorageUsage, generateThumbnail } from "@/lib/image-utils";
-import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar, getServerStorageStats, syncFromServer, sendEmail, bulkDeleteFiles, syncBookingsToSheet, getBookingEmailLog, sendBookingReminder, sendCustomEmail, getWaitlistEntries, deleteWaitlistEntry, notifyWaitlistOnCancel, notifyDiscord, getCacheStats, warmCache, createInvoiceCheckout, sendInvoiceEmail, getStripeStatus, sendEnquiryAcceptedEmail, sendEnquiryDeclinedEmail, getLicenseKeys, generateLicenseKey, revokeLicenseKey, getTenants, createTenant, updateTenant, deleteTenant, getSuperAdminInfo, getSuperStats, getAllBookings, getLicensePlans, createLicensePlan, updateLicensePlan, deleteLicensePlan, getLicensePurchases, activateBankPurchase, getLicensePlanCheckout, getTenantSettings, saveTenantSettings } from "@/lib/api";
+import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar, getServerStorageStats, syncFromServer, sendEmail, bulkDeleteFiles, syncBookingsToSheet, getBookingEmailLog, sendBookingReminder, sendCustomEmail, getWaitlistEntries, deleteWaitlistEntry, notifyWaitlistOnCancel, notifyDiscord, getCacheStats, warmCache, createInvoiceCheckout, sendInvoiceEmail, getStripeStatus, sendEnquiryAcceptedEmail, sendEnquiryDeclinedEmail, getLicenseKeys, generateLicenseKey, revokeLicenseKey, getTenants, createTenant, updateTenant, deleteTenant, getSuperAdminInfo, getSuperStats, getAllBookings, getLicensePlans, createLicensePlan, updateLicensePlan, deleteLicensePlan, getLicensePurchases, activateBankPurchase, getLicensePlanCheckout, getTenantSettings, saveTenantSettings, getSuperAdminWebhooks } from "@/lib/api";
 import type { CacheBreakdown } from "@/lib/api";
 import RichTextEditor, { RichTextDisplay } from "@/components/RichTextEditor";
 import Login from "@/pages/Login";
@@ -6176,7 +6176,7 @@ function PlatformView() {
   const [plans, setPlans] = useState<LicensePlan[]>([]);
   const [purchases, setPurchases] = useState<LicensePurchase[]>([]);
   const [loadingStats, setLoadingStats] = useState(true);
-  const [activeSection, setActiveSection] = useState<"overview" | "bookings" | "tenants" | "keys" | "plans" | "purchases">("overview");
+  const [activeSection, setActiveSection] = useState<"overview" | "bookings" | "tenants" | "keys" | "plans" | "purchases" | "webhooks">("overview");
   const [selectedTenantForSettings, setSelectedTenantForSettings] = useState<Tenant | null>(null);
 
   // Tenant create form
@@ -6204,6 +6204,23 @@ function PlatformView() {
   const [checkoutEmail, setCheckoutEmail] = useState("");
   const [checkoutName, setCheckoutName] = useState("");
   const [generatingCheckout, setGeneratingCheckout] = useState(false);
+
+  // Webhooks section
+  const [webhooks, setWebhooks] = useState<{
+    tenantSlug: string; displayName: string; discordWebhookUrl: string | null;
+    discordNotifyBookings: boolean; discordNotifyDownloads: boolean;
+    discordNotifyProofing: boolean; discordNotifyInvoices: boolean;
+  }[] | null>(null);
+  const [webhooksLoading, setWebhooksLoading] = useState(false);
+
+  useEffect(() => {
+    if (activeSection !== "webhooks" || webhooks !== null) return;
+    setWebhooksLoading(true);
+    getSuperAdminWebhooks().then(res => {
+      setWebhooks(res.webhooks || []);
+      setWebhooksLoading(false);
+    });
+  }, [activeSection, webhooks]);
 
   const loadAll = useCallback(() => {
     Promise.all([
@@ -6327,6 +6344,7 @@ function PlatformView() {
     { id: "plans", label: "License Plans" },
     { id: "purchases", label: "Purchases" },
     { id: "bookings", label: "All Bookings" },
+    { id: "webhooks", label: "Webhooks" },
   ] as const;
 
   return (
@@ -6692,6 +6710,65 @@ function PlatformView() {
                   )}
                 </div>
               ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Webhooks ── */}
+      {activeSection === "webhooks" && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <h3 className="font-display text-base text-foreground">Discord Webhooks</h3>
+            <button onClick={() => { setWebhooks(null); }} className="text-xs font-body text-muted-foreground hover:text-foreground flex items-center gap-1">
+              <RefreshCcw className="w-3 h-3" /> Refresh
+            </button>
+          </div>
+          <p className="text-xs font-body text-muted-foreground">All Discord webhook configurations across every tenant and the global admin account.</p>
+          {webhooksLoading ? (
+            <div className="py-8 text-center text-muted-foreground font-body text-sm animate-pulse">Loading webhooks…</div>
+          ) : webhooks && webhooks.length > 0 ? (
+            <div className="space-y-3">
+              {webhooks.map(wh => (
+                <div key={wh.tenantSlug} className="glass-panel rounded-xl p-4 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className={`w-2 h-2 rounded-full ${wh.discordWebhookUrl ? "bg-green-500" : "bg-muted-foreground/30"}`} />
+                      <span className="font-body text-sm text-foreground font-medium">{wh.displayName}</span>
+                      {wh.tenantSlug === "__admin__" && (
+                        <span className="text-[9px] font-body bg-primary/10 text-primary px-1.5 py-0.5 rounded-full">Global</span>
+                      )}
+                      {wh.tenantSlug !== "__admin__" && (
+                        <span className="text-[9px] font-mono text-muted-foreground">/{wh.tenantSlug}</span>
+                      )}
+                    </div>
+                    <span className={`text-[10px] font-body px-2 py-0.5 rounded-full ${wh.discordWebhookUrl ? "bg-green-500/10 text-green-400" : "bg-secondary text-muted-foreground"}`}>
+                      {wh.discordWebhookUrl ? "Configured" : "Not set"}
+                    </span>
+                  </div>
+                  {wh.discordWebhookUrl && (
+                    <>
+                      <p className="text-xs font-mono text-muted-foreground truncate pl-4">{wh.discordWebhookUrl.replace(/\/[^/]+\/[^/]+$/, "/***")}</p>
+                      <div className="flex flex-wrap gap-2 pl-4">
+                        {[
+                          { key: "discordNotifyBookings", label: "Bookings" },
+                          { key: "discordNotifyDownloads", label: "Downloads" },
+                          { key: "discordNotifyProofing", label: "Proofing" },
+                          { key: "discordNotifyInvoices", label: "Invoices" },
+                        ].map(({ key, label }) => (
+                          <span key={key} className={`text-[10px] font-body px-2 py-0.5 rounded-full border ${(wh as Record<string, unknown>)[key] ? "border-primary/30 text-primary bg-primary/5" : "border-border text-muted-foreground/50 line-through"}`}>
+                            {label}
+                          </span>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-center py-8 text-muted-foreground">
+              <p className="font-body text-sm">No webhook configurations found.</p>
             </div>
           )}
         </div>

@@ -383,6 +383,16 @@ export interface TenantSettings {
   watermarkOpacity?: number;
   /** Size percentage 10–100. Defaults to 40. */
   watermarkSize?: number;
+  // ── Google Calendar ───────────────────────────────────────
+  /**
+   * Google OAuth2 credentials JSON pasted from Google Cloud Console.
+   * Shape: { web: { client_id, client_secret, redirect_uris } }
+   */
+  googleApiCredentials?: string;
+  /** Target calendar ID for syncing bookings (defaults to "primary"). */
+  googleCalendarId?: string;
+  /** Auto-sync new bookings to Google Calendar. */
+  googleCalendarAutoSync?: boolean;
 }
 
 

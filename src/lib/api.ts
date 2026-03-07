@@ -539,6 +539,65 @@ export async function saveCalendarSettings(settings: { autoSync?: boolean; calen
   } catch { return { ok: false }; }
 }
 
+// ── Per-tenant Google Calendar ─────────────────────────────────
+
+export async function getTenantGoogleCalendarStatus(slug: string): Promise<{
+  configured: boolean; connected: boolean; email: string | null; autoSync: boolean; calendarId: string;
+}> {
+  try {
+    const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/integrations/googlecalendar/status`);
+    if (!res.ok) return { configured: false, connected: false, email: null, autoSync: false, calendarId: "primary" };
+    return await res.json();
+  } catch { return { configured: false, connected: false, email: null, autoSync: false, calendarId: "primary" }; }
+}
+
+export async function startTenantGoogleCalendarAuth(slug: string): Promise<string | null> {
+  try {
+    const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/integrations/googlecalendar/auth`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.url || null;
+  } catch { return null; }
+}
+
+export async function disconnectTenantGoogleCalendar(slug: string): Promise<boolean> {
+  try {
+    const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/integrations/googlecalendar/disconnect`, { method: "POST" });
+    return res.ok;
+  } catch { return false; }
+}
+
+export async function getTenantGoogleCalendars(slug: string): Promise<{ id: string; summary: string; primary?: boolean }[]> {
+  try {
+    const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/integrations/googlecalendar/calendars`);
+    if (!res.ok) return [];
+    const data = await res.json();
+    return data.calendars || [];
+  } catch { return []; }
+}
+
+export async function saveTenantCalendarSettings(slug: string, settings: { autoSync?: boolean; calendarId?: string }): Promise<{ ok: boolean }> {
+  try {
+    const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/integrations/googlecalendar/settings`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(settings),
+    });
+    return await res.json();
+  } catch { return { ok: false }; }
+}
+
+export async function syncTenantBookingToCalendar(slug: string, booking: unknown, calendarId = "primary"): Promise<{ ok: boolean; eventId?: string }> {
+  try {
+    const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/integrations/googlecalendar/event`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ booking, calendarId }),
+    });
+    return await res.json();
+  } catch { return { ok: false }; }
+}
+
 // ── Bulk file delete (orphan cleanup) ──────────────────
 
 const BULK_DELETE_CHUNK_SIZE = 500;
@@ -663,7 +722,15 @@ export async function getSuperAdminWebhooks(): Promise<{
   error?: string;
 }> {
   try {
-    const res = await fetch("/api/super-admin/webhooks");
+    // Send admin credentials via Basic auth so the server can verify the caller is super admin
+    const { getAdminCredentials } = await import("./storage");
+    const creds = getAdminCredentials();
+    const authHeader = creds
+      ? "Basic " + btoa(`${creds.username}:${creds.passwordHash}`)
+      : "";
+    const res = await fetch("/api/super-admin/webhooks", {
+      headers: authHeader ? { Authorization: authHeader } : {},
+    });
     if (!res.ok) return { ok: false, error: "Failed to fetch webhooks" };
     return await res.json();
   } catch {
