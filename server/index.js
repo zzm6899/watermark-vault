@@ -417,7 +417,17 @@ function getCacheFilename(baseName, sizeLabel, watermarked) {
   return `${baseName}_${sizeLabel}_${watermarked ? "wm" : "clean"}.jpg`;
 }
 
-app.get("/uploads/:filename", async (req, res) => {
+// Rate-limit the image endpoint: generous limit per IP to guard against DoS
+// while allowing normal gallery browsing (600 requests / 60 s ≈ 10 images/s)
+const imageServeLimiter = rateLimit({
+  windowMs: 60_000,
+  max: 600,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many image requests — please slow down" },
+});
+
+app.get("/uploads/:filename", imageServeLimiter, async (req, res) => {
   const safeName = path.basename(req.params.filename);
   const filepath = path.join(UPLOADS_DIR, safeName);
 
