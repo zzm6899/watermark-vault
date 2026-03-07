@@ -252,6 +252,7 @@ const defaultSettings: AppSettings = {
   discordNotifyProofing: true,
   discordNotifyInvoices: true,
   proofingEnabled: false,
+  defaultProofingExpiryHours: 48,
   invoiceFrom: { name: "", email: "", address: "", abn: "" },
   invoiceNotes: "",
   enquiryEnabled: false,

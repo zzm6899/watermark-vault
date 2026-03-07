@@ -2901,13 +2901,19 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
 
         const startProofing = async () => {
           const note = (document.getElementById("proofing-admin-note") as HTMLInputElement)?.value || "";
+          const expiryInput = document.getElementById("proofing-expiry-hours") as HTMLInputElement;
+          const expiryHours = expiryInput && expiryInput.value !== ""
+            ? Math.max(1, parseInt(expiryInput.value, 10) || 48)
+            : (liveAlbum!.proofingExpiryHours ?? settings.defaultProofingExpiryHours ?? 48);
+          const proofingExpiresAt = new Date(Date.now() + expiryHours * 3600 * 1000).toISOString();
           const clientToken = liveAlbum!.clientToken || `ct-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
           const newRound = { roundNumber: rounds.length + 1, sentAt: new Date().toISOString(), selectedPhotoIds: [], adminNote: note || undefined };
-          const updated = { ...liveAlbum!, proofingEnabled: true, proofingStage: "proofing" as const, proofingRounds: [...rounds, newRound], clientToken };
+          const updated = { ...liveAlbum!, proofingEnabled: true, proofingStage: "proofing" as const, proofingRounds: [...rounds, newRound], clientToken, proofingExpiresAt };
           updateLiveAlbum(updated);
           if (clientEmail) {
             const galleryUrl = `${window.location.origin}/gallery/${liveAlbum!.slug}?token=${clientToken}`;
-            fetch("/api/email/send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ to: clientEmail, subject: `📸 Your proofing gallery is ready — ${liveAlbum!.title}`, html: `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;"><h2 style="margin:0 0 16px;font-size:20px;">Your photos are ready to review!</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${liveAlbum!.clientName || "there"},</p><p style="color:#9ca3af;margin:0 0 12px;">Your proofing gallery for <strong style="color:#e5e7eb;">${liveAlbum!.title}</strong> is ready. Browse and star the ones you love, then hit Submit Picks.</p>${note ? `<p style="color:#9ca3af;margin:0 0 20px;padding:12px;background:#1f1f1f;border-radius:8px;"><em>"${note}"</em></p>` : ""}<a href="${galleryUrl}" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">View Your Gallery →</a></div>` }) }).catch(() => {});
+            const expiryDateStr = new Date(proofingExpiresAt).toLocaleString("en-AU", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+            fetch("/api/email/send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ to: clientEmail, subject: `📸 Your proofing gallery is ready — ${liveAlbum!.title}`, html: `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;"><h2 style="margin:0 0 16px;font-size:20px;">Your photos are ready to review!</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${liveAlbum!.clientName || "there"},</p><p style="color:#9ca3af;margin:0 0 12px;">Your proofing gallery for <strong style="color:#e5e7eb;">${liveAlbum!.title}</strong> is ready. Browse and star the ones you love, then hit Submit Picks.</p><p style="color:#ef4444;margin:0 0 12px;padding:10px 14px;background:#1f1f1f;border-radius:8px;font-size:13px;">⏰ <strong>Proofing window closes: ${expiryDateStr}</strong></p>${note ? `<p style="color:#9ca3af;margin:0 0 20px;padding:12px;background:#1f1f1f;border-radius:8px;"><em>"${note}"</em></p>` : ""}<a href="${galleryUrl}" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">View Your Gallery →</a></div>` }) }).catch(() => {});
           }
           toast.success("Proofing round started" + (clientEmail ? " — invite sent to client" : " (no client email on file)"));
           onUpdate?.(updated);
@@ -2977,6 +2983,18 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
             {stage === "not-started" && (
               <div className="space-y-2">
                 <textarea id="proofing-admin-note" placeholder="Optional message to client (e.g. 'Please pick your top 30')" rows={2} className="w-full bg-secondary border border-border rounded px-3 py-2 text-xs font-body text-foreground placeholder:text-muted-foreground/50 resize-none" />
+                <div className="flex items-center gap-2">
+                  <label className="text-[11px] font-body text-muted-foreground shrink-0">Window open for</label>
+                  <input
+                    id="proofing-expiry-hours"
+                    type="number"
+                    min={1}
+                    max={720}
+                    defaultValue={liveAlbum!.proofingExpiryHours ?? settings.defaultProofingExpiryHours ?? 48}
+                    className="w-20 bg-secondary border border-border rounded px-2 py-1 text-xs font-body text-foreground text-center focus:outline-none focus:ring-1 focus:ring-ring"
+                  />
+                  <label className="text-[11px] font-body text-muted-foreground">hours</label>
+                </div>
                 <button onClick={startProofing} className="flex items-center gap-2 w-full justify-center bg-yellow-500/15 hover:bg-yellow-500/25 text-yellow-400 border border-yellow-500/30 rounded-lg px-4 py-2 text-xs font-body tracking-wider uppercase transition-colors">
                   <Star className="w-3.5 h-3.5" /> Start Proofing Round {rounds.length + 1}
                 </button>
@@ -2985,10 +3003,25 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
 
             {/* AWAITING PICKS */}
             {stage === "proofing" && (
-              <p className="text-xs font-body text-muted-foreground">
-                Waiting for {liveAlbum!.clientName || "client"} to star photos and submit picks.
-                {latest?.adminNote && <span className="block mt-1 text-muted-foreground/70">Your note: "{latest.adminNote}"</span>}
-              </p>
+              <div className="space-y-1.5">
+                <p className="text-xs font-body text-muted-foreground">
+                  Waiting for {liveAlbum!.clientName || "client"} to star photos and submit picks.
+                  {latest?.adminNote && <span className="block mt-1 text-muted-foreground/70">Your note: "{latest.adminNote}"</span>}
+                </p>
+                {liveAlbum!.proofingExpiresAt && (() => {
+                  const expiresAt = new Date(liveAlbum!.proofingExpiresAt as string);
+                  const isExpiredNow = new Date() > expiresAt;
+                  return isExpiredNow ? (
+                    <p className="text-[11px] font-body text-destructive flex items-center gap-1">
+                      <Clock className="w-3 h-3" /> Proofing window closed — client can no longer submit picks
+                    </p>
+                  ) : (
+                    <p className="text-[11px] font-body text-yellow-400/80 flex items-center gap-1">
+                      <Clock className="w-3 h-3" /> Closes {expiresAt.toLocaleString("en-AU", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
+                    </p>
+                  );
+                })()}
+              </div>
             )}
 
             {/* PICKS SUBMITTED — paid vs free decision */}
@@ -5564,6 +5597,27 @@ function SettingsView() {
               onCheckedChange={(v) => setSettingsState({ ...settings, proofingEnabled: v })}
             />
           </div>
+          {settings.proofingEnabled && (
+            <div className="flex items-center gap-3 pt-1 border-t border-border/50">
+              <div className="flex-1">
+                <p className="text-sm font-body text-foreground font-medium">Default Proofing Window</p>
+                <p className="text-[10px] font-body text-muted-foreground/70 mt-0.5">
+                  How long clients have to submit picks after a round is started. Can be overridden per album.
+                </p>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <input
+                  type="number"
+                  min={1}
+                  max={720}
+                  value={settings.defaultProofingExpiryHours ?? 48}
+                  onChange={(e) => setSettingsState({ ...settings, defaultProofingExpiryHours: Math.max(1, parseInt(e.target.value) || 48) })}
+                  className="w-20 bg-secondary border border-border rounded-md px-2 py-1.5 text-sm font-body text-foreground text-center focus:outline-none focus:ring-2 focus:ring-ring"
+                />
+                <span className="text-xs font-body text-muted-foreground">hours</span>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Payment Methods */}

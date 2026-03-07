@@ -249,7 +249,8 @@ function registerRoutes(app, { writeDb } = {}) {
           try {
             const crypto = require("crypto");
             const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-            const seg = () => Array.from({ length: 4 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
+            // Use crypto.randomInt for unbiased cryptographically secure selection
+            const seg = () => Array.from({ length: 4 }, () => chars[crypto.randomInt(chars.length)]).join("");
             const newKey = `WV-${seg()}-${seg()}-${seg()}-${seg()}`;
             const KEYS_FILE = path.join(process.env.DATA_DIR || "/data", "license_keys.json");
             let keys = [];

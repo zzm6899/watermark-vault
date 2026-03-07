@@ -146,6 +146,10 @@ export interface Album {
   proofingStage?: string;
   proofingRounds?: ProofingRound[];
   clientToken?: string;
+  /** ISO timestamp of when the proofing window closes. Set automatically when startProofing runs. */
+  proofingExpiresAt?: string;
+  /** Per-album override for how long the proofing window stays open (hours). Falls back to settings.defaultProofingExpiryHours. */
+  proofingExpiryHours?: number;
   expiresAt?: string;         // YYYY-MM-DD — gallery access blocked after this date
   downloadExpiresAt?: string;
   watermarkDisabled?: boolean;
@@ -190,6 +194,8 @@ export interface AppSettings {
   discordNotifyInvoices: boolean;
   watermarkSize: number;
   proofingEnabled: boolean;
+  /** Default number of hours a proofing window stays open after being started. Default: 48. */
+  defaultProofingExpiryHours?: number;
   invoiceFrom?: InvoiceParty;
   invoiceNotes?: string;
   enquiryEnabled?: boolean;

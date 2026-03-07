@@ -46,6 +46,9 @@ function seedSuperAdminIfNeeded() {
   const username = (process.env.SUPER_ADMIN_USERNAME || "").trim();
   const password = (process.env.SUPER_ADMIN_PASSWORD || "").trim();
   if (!username || !password) return;
+  if (password === "changeme") {
+    console.warn("⚠️  SUPER_ADMIN_PASSWORD is set to the default 'changeme' — change it immediately in your docker-compose.yml!");
+  }
   const db = readDbDirect(); // read directly to avoid cache bootstrap ordering issues
   if (db["wv_admin"] && db["wv_setup_complete"]) return; // already bootstrapped
   db["wv_admin"] = JSON.stringify({ username, passwordHash: sha256(password) });
@@ -1008,7 +1011,7 @@ app.get("/api/tenants", tenantLimiter, (_req, res) => {
 app.post("/api/tenants", tenantLimiter, (req, res) => {
   const { slug, displayName, email, bio, timezone, licenseKey } = req.body || {};
   if (!slug || typeof slug !== "string" || !SLUG_RE.test(slug)) {
-    return res.status(400).json({ error: "Invalid slug — use lowercase letters, numbers, and hyphens (2-30 chars)" });
+    return res.status(400).json({ error: "Invalid slug — use lowercase letters, numbers, and hyphens (1-30 chars)" });
   }
   if (!displayName || typeof displayName !== "string" || !displayName.trim()) {
     return res.status(400).json({ error: "displayName is required" });
@@ -1459,7 +1462,8 @@ function writeLicenseKeys(keys) {
 
 function generateKeyString() {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  const segment = () => Array.from({ length: 4 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
+  // Use crypto.randomInt for unbiased cryptographically secure selection
+  const segment = () => Array.from({ length: 4 }, () => chars[crypto.randomInt(chars.length)]).join("");
   return `WV-${segment()}-${segment()}-${segment()}-${segment()}`;
 }
 

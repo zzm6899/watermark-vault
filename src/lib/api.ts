@@ -1019,3 +1019,17 @@ export async function activateBankPurchase(purchaseId: string): Promise<{ ok: bo
     return { ok: !!json.ok, key: json.key, error: json.error };
   } catch { return { ok: false, error: "Network error" }; }
 }
+
+/** Create a pending bank-transfer license purchase (buyer pays manually; admin activates). */
+export async function createBankLicensePurchase(planId: string, buyerEmail: string, buyerName?: string): Promise<{ ok: boolean; purchase?: import("./types").LicensePurchase; error?: string }> {
+  try {
+    const res = await fetch(`/api/license-plans/${encodeURIComponent(planId)}/bank-purchase`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ buyerEmail, buyerName }),
+    });
+    const json = await res.json();
+    if (!res.ok) return { ok: false, error: json.error || "Failed to create bank purchase" };
+    return { ok: true, purchase: json.purchase };
+  } catch { return { ok: false, error: "Network error" }; }
+}
