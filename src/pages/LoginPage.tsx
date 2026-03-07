@@ -1,15 +1,27 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Camera, LogIn, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
-import { getAdminCredentials, hashPassword, login, setMobileTenantSession } from "@/lib/storage";
+import { getAdminCredentials, hashPassword, login, setMobileTenantSession, getMobileTenantSession, isLoggedIn } from "@/lib/storage";
 import { syncFromServer, tenantLogin } from "@/lib/api";
 import { useNavigate } from "react-router-dom";
 
 export default function LoginPage() {
   const navigate = useNavigate();
   const [mode, setMode] = useState<"tenant" | "admin">("tenant");
+
+  // If already authenticated, redirect immediately
+  useEffect(() => {
+    const tenantSession = getMobileTenantSession();
+    if (tenantSession) {
+      navigate(`/tenant-admin/${tenantSession.slug}`, { replace: true });
+      return;
+    }
+    if (isLoggedIn()) {
+      navigate("/admin", { replace: true });
+    }
+  }, [navigate]);
 
   // Admin fields
   const [username, setUsername] = useState("");
