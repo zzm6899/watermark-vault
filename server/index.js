@@ -1547,6 +1547,7 @@ app.post("/api/license-keys/generate", licenseKeyLimiter, (req, res) => {
     key: generateKeyString(),
     issuedTo: issuedTo.trim(),
     createdAt: new Date().toISOString(),
+    setupToken: crypto.randomBytes(32).toString("hex"),
     ...(expiresAt ? { expiresAt } : {}),
     ...(notes ? { notes: notes.trim() } : {}),
     ...(isTrial ? {
@@ -1608,6 +1609,85 @@ app.delete("/api/license-keys/:key", licenseKeyLimiter, (req, res) => {
   if (filtered.length === keys.length) return res.status(404).json({ ok: false, error: "Key not found" });
   writeLicenseKeys(filtered);
   res.json({ ok: true });
+});
+
+// ── Tenant Setup (via setup token) ───────────────────
+const tenantSetupLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHeaders: true, legacyHeaders: false, message: { error: "Too many requests" } });
+
+// Look up license key info by setup token (no auth required — token is the credential)
+app.get("/api/tenant-setup/:token", tenantSetupLimiter, (req, res) => {
+  const { token } = req.params;
+  if (!token || typeof token !== "string") {
+    return res.status(400).json({ error: "Invalid token" });
+  }
+  const keys = readLicenseKeys();
+  const found = keys.find(k => k.setupToken === token);
+  if (!found) return res.status(404).json({ error: "Setup link not found or already used" });
+  if (found.usedAt) return res.status(410).json({ error: "This setup link has already been used" });
+  if (found.expiresAt && new Date(found.expiresAt) < new Date()) {
+    return res.status(410).json({ error: "This setup link has expired" });
+  }
+  res.json({
+    key: found.key,
+    issuedTo: found.issuedTo,
+    isTrial: found.isTrial || false,
+    trialMaxEvents: found.trialMaxEvents,
+    trialMaxBookings: found.trialMaxBookings,
+    expiresAt: found.expiresAt,
+  });
+});
+
+// Complete tenant setup: create tenant + activate license key
+app.post("/api/tenant-setup/:token/complete", tenantSetupLimiter, (req, res) => {
+  const { token } = req.params;
+  if (!token || typeof token !== "string") {
+    return res.status(400).json({ error: "Invalid token" });
+  }
+  const { slug, displayName, email, bio, timezone } = req.body || {};
+
+  // Validate inputs
+  if (!slug || typeof slug !== "string" || !SLUG_RE.test(slug)) {
+    return res.status(400).json({ error: "Invalid slug — use lowercase letters, numbers, and hyphens (1-30 chars)" });
+  }
+  if (!displayName || typeof displayName !== "string" || !displayName.trim()) {
+    return res.status(400).json({ error: "Display name is required" });
+  }
+
+  // Verify the setup token
+  const keys = readLicenseKeys();
+  const keyIdx = keys.findIndex(k => k.setupToken === token);
+  if (keyIdx === -1) return res.status(404).json({ error: "Setup link not found or already used" });
+  const licKey = keys[keyIdx];
+  if (licKey.usedAt) return res.status(410).json({ error: "This setup link has already been used" });
+  if (licKey.expiresAt && new Date(licKey.expiresAt) < new Date()) {
+    return res.status(410).json({ error: "This setup link has expired" });
+  }
+
+  // Check slug uniqueness
+  const tenants = readTenants();
+  if (tenants.find(t => t.slug === slug)) {
+    return res.status(409).json({ error: "That URL slug is already taken — please choose another" });
+  }
+
+  // Create the tenant
+  const tenant = {
+    slug,
+    displayName: displayName.trim(),
+    email: (email || "").trim(),
+    bio: (bio || "").trim() || undefined,
+    timezone: timezone || "Australia/Sydney",
+    licenseKey: licKey.key,
+    active: true,
+    createdAt: new Date().toISOString(),
+  };
+  tenants.push(tenant);
+  writeTenants(tenants);
+
+  // Activate the license key (mark as used)
+  keys[keyIdx] = { ...licKey, usedAt: new Date().toISOString(), usedBy: slug };
+  writeLicenseKeys(keys);
+
+  res.json({ ok: true, tenant });
 });
 
 // ── Serve React app ───────────────────────────────────

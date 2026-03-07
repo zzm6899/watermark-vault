@@ -14,6 +14,7 @@ import NotFound from "./pages/NotFound";
 import MobileCapture from "./pages/MobileCapture";
 import InvoiceView from "./pages/InvoiceView";
 import TenantBookingPage from "./pages/TenantBookingPage";
+import TenantSetup from "./pages/TenantSetup";
 import { isSetupComplete, isLoggedIn } from "./lib/storage";
 import { syncFromServer } from "./lib/api";
 
@@ -63,6 +64,7 @@ const App = () => {
             <Route path="/admin/:tab" element={<AdminGuard />} />
             <Route path="/admin/storage" element={<AdminGuard />} />
             <Route path="/invoice/:token" element={<InvoiceView />} />
+            <Route path="/tenant-setup/:token" element={<TenantSetup />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </BrowserRouter>
