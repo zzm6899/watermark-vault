@@ -7,7 +7,7 @@ import {
   Save, X, ChevronDown, ChevronUp, Globe, Upload, Search, Copy,
   DollarSign, MessageSquare, HardDrive, User, RefreshCw, Webhook, Star,
   ExternalLink, Mail, Send, Unlock, CreditCard, CheckCircle2, Download,
-  XSquare, CheckSquare,
+  XSquare, CheckSquare, Bell,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -29,13 +29,18 @@ import {
   getServerStorageStats, bulkDeleteFiles, deletePhotoFromServer,
   getTenantGoogleCalendarStatus, startTenantGoogleCalendarAuth,
   disconnectTenantGoogleCalendar, getTenantGoogleCalendars,
-  saveTenantCalendarSettings,
+  saveTenantCalendarSettings, getTenantStorageStats, upsertTenantBookingAdmin,
 } from "@/lib/api";
 import ProgressiveImg from "@/components/ProgressiveImg";
 import type {
   Booking, Album, Photo, AlbumDisplaySize, EventType, Invoice, InvoiceItem, InvoiceParty,
-  Contact, TenantSettings, AvailabilitySlot, QuestionField, WatermarkPosition,
+  Contact, TenantSettings, AvailabilitySlot, QuestionField, WatermarkPosition, SpecificDateSlot,
 } from "@/lib/types";
+import sampleLandscape from "@/assets/sample-landscape.jpg";
+import samplePortrait from "@/assets/sample-portrait.jpg";
+import sampleWedding from "@/assets/sample-wedding.jpg";
+import sampleEvent from "@/assets/sample-event.jpg";
+import sampleFood from "@/assets/sample-food.jpg";
 
 type Tab = "dashboard" | "bookings" | "events" | "albums" | "photos" | "finance" | "invoices" | "contacts" | "enquiries" | "profile" | "settings" | "storage" | "license";
 type AlbumSortKey = "date" | "name" | "photos" | "client";
@@ -395,6 +400,127 @@ function TenantDashboard({ slug, session }: { slug: string; session: { displayNa
 }
 
 // ─── Bookings ────────────────────────────────────────────────────────────────
+function TenantBookingEditor({ slug, booking, onSave, onCancel }: {
+  slug: string;
+  booking: Booking | null;
+  onSave: (bk: Booking) => void;
+  onCancel: () => void;
+}) {
+  const isNew = !booking;
+  const [clientName, setClientName] = useState(booking?.clientName || "");
+  const [clientEmail, setClientEmail] = useState(booking?.clientEmail || "");
+  const [date, setDate] = useState(booking?.date || "");
+  const [time, setTime] = useState(booking?.time || "");
+  const [duration, setDuration] = useState(String(booking?.duration || 60));
+  const [type, setType] = useState(booking?.type || "");
+  const [notes, setNotes] = useState(booking?.notes || "");
+  const [status, setStatus] = useState<Booking["status"]>(booking?.status || "pending");
+  const [paymentStatus, setPaymentStatus] = useState(booking?.paymentStatus || "unpaid");
+  const [paymentAmount, setPaymentAmount] = useState(String(booking?.paymentAmount || ""));
+  const [instagramHandle, setInstagramHandle] = useState(booking?.instagramHandle || "");
+
+  const handleSave = () => {
+    if (!clientName.trim()) { toast.error("Client name is required"); return; }
+    if (!date) { toast.error("Date is required"); return; }
+    const bk: Booking = {
+      id: booking?.id || generateId("bk"),
+      clientName: clientName.trim(),
+      clientEmail: clientEmail.trim(),
+      date,
+      time,
+      duration: parseInt(duration) || 60,
+      type: type.trim(),
+      notes: notes.trim(),
+      status,
+      paymentStatus: paymentStatus as Booking["paymentStatus"],
+      paymentAmount: paymentAmount ? parseFloat(paymentAmount) : undefined,
+      instagramHandle: instagramHandle.trim() || undefined,
+      createdAt: booking?.createdAt || new Date().toISOString(),
+      tenantSlug: slug,
+      answers: booking?.answers,
+      answerLabels: booking?.answerLabels,
+      albumId: booking?.albumId,
+      gcalEventId: booking?.gcalEventId,
+      eventTypeId: booking?.eventTypeId || "",
+      modifyToken: booking?.modifyToken,
+    };
+    onSave(bk);
+  };
+
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="glass-panel rounded-xl p-6 space-y-5">
+      <div className="flex items-center justify-between">
+        <h3 className="font-display text-lg text-foreground">{isNew ? "New Booking" : "Edit Booking"}</h3>
+        <Button variant="ghost" size="icon" onClick={onCancel} className="h-8 w-8 text-muted-foreground hover:text-foreground"><X className="w-4 h-4" /></Button>
+      </div>
+      <div className="grid md:grid-cols-2 gap-4">
+        <div>
+          <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Client Name *</label>
+          <Input value={clientName} onChange={e => setClientName(e.target.value)} className="bg-secondary border-border text-foreground font-body" autoFocus />
+        </div>
+        <div>
+          <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Email</label>
+          <Input type="email" value={clientEmail} onChange={e => setClientEmail(e.target.value)} className="bg-secondary border-border text-foreground font-body" />
+        </div>
+        <div>
+          <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Date *</label>
+          <Input type="date" value={date} onChange={e => setDate(e.target.value)} className="bg-secondary border-border text-foreground font-body" />
+        </div>
+        <div>
+          <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Time</label>
+          <Input type="time" value={time} onChange={e => setTime(e.target.value)} className="bg-secondary border-border text-foreground font-body" />
+        </div>
+        <div>
+          <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Duration (min)</label>
+          <Input type="number" value={duration} onChange={e => setDuration(e.target.value)} className="bg-secondary border-border text-foreground font-body" />
+        </div>
+        <div>
+          <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Type / Event</label>
+          <Input value={type} onChange={e => setType(e.target.value)} placeholder="e.g. Portrait Session" className="bg-secondary border-border text-foreground font-body" />
+        </div>
+        <div>
+          <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Instagram</label>
+          <Input value={instagramHandle} onChange={e => setInstagramHandle(e.target.value)} placeholder="username" className="bg-secondary border-border text-foreground font-body" />
+        </div>
+        <div>
+          <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Amount ($)</label>
+          <Input type="number" value={paymentAmount} onChange={e => setPaymentAmount(e.target.value)} placeholder="0.00" className="bg-secondary border-border text-foreground font-body" />
+        </div>
+      </div>
+      <div>
+        <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Notes</label>
+        <Textarea value={notes} onChange={e => setNotes(e.target.value)} rows={3} className="bg-secondary border-border text-foreground font-body resize-none" />
+      </div>
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Status</label>
+          <select value={status} onChange={e => setStatus(e.target.value as Booking["status"])} className="w-full bg-secondary border border-border text-foreground font-body text-sm rounded-md px-3 py-2">
+            <option value="pending">Pending</option>
+            <option value="confirmed">Confirmed</option>
+            <option value="completed">Completed</option>
+            <option value="cancelled">Cancelled</option>
+          </select>
+        </div>
+        <div>
+          <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Payment</label>
+          <select value={paymentStatus} onChange={e => setPaymentStatus(e.target.value)} className="w-full bg-secondary border border-border text-foreground font-body text-sm rounded-md px-3 py-2">
+            <option value="unpaid">Unpaid</option>
+            <option value="paid">Paid</option>
+            <option value="cash">Cash</option>
+            <option value="deposit-paid">Deposit Paid</option>
+          </select>
+        </div>
+      </div>
+      <div className="flex gap-3 pt-2 border-t border-border/50">
+        <Button variant="outline" onClick={onCancel} className="font-body text-xs border-border text-foreground">Cancel</Button>
+        <Button onClick={handleSave} className="bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2">
+          <Save className="w-4 h-4" /> {isNew ? "Create Booking" : "Save Changes"}
+        </Button>
+      </div>
+    </motion.div>
+  );
+}
+
 function TenantBookings({ slug }: { slug: string }) {
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [loading, setLoading] = useState(true);
@@ -403,6 +529,8 @@ function TenantBookings({ slug }: { slug: string }) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [sortKey, setSortKey] = useState<BookingSortKey>("date");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const [showCreate, setShowCreate] = useState(false);
+  const [editingBooking, setEditingBooking] = useState<Booking | null>(null);
 
   const load = useCallback(() => {
     fetchTenantMobileData(slug).then(d => { setBookings(d.bookings || []); setLoading(false); });
@@ -481,6 +609,26 @@ function TenantBookings({ slug }: { slug: string }) {
 
   if (loading) return <div className="py-16 text-center text-muted-foreground font-body text-sm animate-pulse">Loading…</div>;
 
+  if (showCreate || editingBooking) {
+    return (
+      <TenantBookingEditor
+        slug={slug}
+        booking={editingBooking}
+        onSave={async (bk) => {
+          const { ok, error } = editingBooking
+            ? await updateTenantBookingFull(slug, bk.id, bk)
+            : await upsertTenantBookingAdmin(slug, bk);
+          if (!ok) { toast.error(error || "Failed to save"); return; }
+          toast.success(editingBooking ? "Booking updated" : "Booking created");
+          setEditingBooking(null);
+          setShowCreate(false);
+          load();
+        }}
+        onCancel={() => { setEditingBooking(null); setShowCreate(false); }}
+      />
+    );
+  }
+
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
       <div className="flex items-center justify-between mb-6">
@@ -488,11 +636,16 @@ function TenantBookings({ slug }: { slug: string }) {
           <h2 className="font-display text-2xl text-foreground">Bookings</h2>
           <span className="text-sm font-body text-muted-foreground">{bookings.length} total</span>
         </div>
-        {bookings.length > 0 && (
-          <Button size="sm" variant="outline" onClick={handleExportCsv} className="font-body text-xs gap-1.5 border-border">
-            <Download className="w-3.5 h-3.5" /> Export CSV
+        <div className="flex items-center gap-2">
+          <Button size="sm" onClick={() => setShowCreate(true)} className="gap-2 bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase">
+            <Plus className="w-4 h-4" /> New
           </Button>
-        )}
+          {bookings.length > 0 && (
+            <Button size="sm" variant="outline" onClick={handleExportCsv} className="font-body text-xs gap-1.5 border-border">
+              <Download className="w-3.5 h-3.5" /> Export CSV
+            </Button>
+          )}
+        </div>
       </div>
 
       <div className="flex flex-col sm:flex-row gap-3 mb-3">
@@ -555,8 +708,23 @@ function TenantBookings({ slug }: { slug: string }) {
                     {bk.instagramHandle && <div><span className="text-muted-foreground">Instagram: </span><span className="text-foreground">{bk.instagramHandle}</span></div>}
                     {bk.notes && <div className="col-span-2"><span className="text-muted-foreground">Notes: </span><span className="text-foreground">{bk.notes}</span></div>}
                     {bk.paymentStatus && <div><span className="text-muted-foreground">Payment: </span><span className="text-foreground">{bk.paymentStatus}</span></div>}
+                    {bk.paymentAmount && <div><span className="text-muted-foreground">Amount: </span><span className="text-foreground">${bk.paymentAmount}</span></div>}
                     {bk.createdAt && <div><span className="text-muted-foreground">Booked: </span><span className="text-foreground">{new Date(bk.createdAt).toLocaleDateString("en-AU")}</span></div>}
+                    {bk.albumId && <div><span className="text-muted-foreground">Album: </span><a href={`/gallery/${bk.albumId}`} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">{bk.albumId}</a></div>}
                   </div>
+
+                  {/* Custom question answers */}
+                  {bk.answers && Object.keys(bk.answers).length > 0 && (
+                    <div className="space-y-1.5">
+                      <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground">Booking Answers</p>
+                      {Object.entries(bk.answers).map(([key, val]) => (
+                        <div key={key} className="text-xs font-body">
+                          <span className="text-muted-foreground">{(bk.answerLabels?.[key] || key)}: </span>
+                          <span className="text-foreground">{String(val)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
 
                   <div className="flex flex-wrap gap-2">
                     <span className="text-xs font-body text-muted-foreground self-center">Status:</span>
@@ -576,22 +744,26 @@ function TenantBookings({ slug }: { slug: string }) {
                     ))}
                   </div>
 
-                  {bk.clientEmail && (
-                    <button
-                      onClick={() => {
-                        const subject = `Your session is confirmed — ${bk.clientName}`;
-                        const link = `mailto:${bk.clientEmail}?subject=${encodeURIComponent(subject)}`;
-                        window.open(link);
-                      }}
-                      className="flex items-center gap-1.5 text-xs font-body text-primary hover:text-primary/80 transition-colors"
-                    >
-                      <Mail className="w-3.5 h-3.5" /> Email client
+                  <div className="flex flex-wrap gap-3 items-center">
+                    {bk.clientEmail && (
+                      <button
+                        onClick={() => {
+                          const subject = `Your session is confirmed — ${bk.clientName}`;
+                          const link = `mailto:${bk.clientEmail}?subject=${encodeURIComponent(subject)}`;
+                          window.open(link);
+                        }}
+                        className="flex items-center gap-1.5 text-xs font-body text-primary hover:text-primary/80 transition-colors"
+                      >
+                        <Mail className="w-3.5 h-3.5" /> Email client
+                      </button>
+                    )}
+                    <button onClick={() => { setEditingBooking(bk); setExpandedId(null); }} className="flex items-center gap-1.5 text-xs font-body text-muted-foreground hover:text-foreground transition-colors">
+                      <Edit className="w-3.5 h-3.5" /> Edit
                     </button>
-                  )}
-
-                  <button onClick={() => handleDelete(bk)} className="flex items-center gap-1.5 text-xs font-body text-destructive hover:text-destructive/80 transition-colors">
-                    <Trash2 className="w-3.5 h-3.5" /> Delete booking
-                  </button>
+                    <button onClick={() => handleDelete(bk)} className="flex items-center gap-1.5 text-xs font-body text-destructive hover:text-destructive/80 transition-colors">
+                      <Trash2 className="w-3.5 h-3.5" /> Delete booking
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
@@ -704,7 +876,7 @@ function TenantEvents({ slug }: { slug: string }) {
   );
 }
 
-// ─── Event Type Editor (simplified) ──────────────────────────────────────────
+// ─── Event Type Editor (full-featured) ───────────────────────────────────────
 function TenantEventEditor({ eventType, onSave, onCancel }: { eventType: EventType | null; onSave: (et: EventType) => void; onCancel: () => void }) {
   const isNew = !eventType;
   const [title, setTitle] = useState(eventType?.title || "");
@@ -712,12 +884,22 @@ function TenantEventEditor({ eventType, onSave, onCancel }: { eventType: EventTy
   const [location, setLocation] = useState(eventType?.location || "");
   const [durations, setDurations] = useState<number[]>(eventType?.durations || [60]);
   const [price, setPrice] = useState(eventType?.price || 0);
+  const [prices, setPrices] = useState<Record<number, number>>(eventType?.prices || {});
   const [requiresConfirmation, setRequiresConfirmation] = useState(eventType?.requiresConfirmation || false);
+  const [depositEnabled, setDepositEnabled] = useState(eventType?.depositEnabled || false);
+  const [depositAmount, setDepositAmount] = useState(eventType?.depositAmount || 0);
+  const [depositType, setDepositType] = useState<"fixed" | "percentage">(eventType?.depositType || "fixed");
+  const [depositMethods, setDepositMethods] = useState<("stripe" | "bank")[]>(eventType?.depositMethods || ["stripe", "bank"]);
   const [recurring, setRecurring] = useState<AvailabilitySlot[]>(eventType?.availability?.recurring || []);
+  const [specificDates, setSpecificDates] = useState<SpecificDateSlot[]>(eventType?.availability?.specificDates || []);
   const [blockedDates, setBlockedDates] = useState<string[]>(eventType?.availability?.blockedDates || []);
   const [durationInput, setDurationInput] = useState("");
   const [blockedInput, setBlockedInput] = useState("");
-  const [showAvail, setShowAvail] = useState(false);
+  const [specificDateInput, setSpecificDateInput] = useState("");
+  const [specificStartInput, setSpecificStartInput] = useState("09:00");
+  const [specificEndInput, setSpecificEndInput] = useState("17:00");
+  const [expandAvailability, setExpandAvailability] = useState(false);
+  const [expandQuestions, setExpandQuestions] = useState(false);
   const [questions, setQuestions] = useState<QuestionField[]>(eventType?.questions || [
     { id: "q1", label: "Name", type: "text", required: true, placeholder: "Your full name" },
     { id: "q2", label: "Email", type: "text", required: true, placeholder: "you@example.com" },
@@ -746,10 +928,15 @@ function TenantEventEditor({ eventType, onSave, onCancel }: { eventType: EventTy
       durations,
       color: "primary",
       price,
+      prices: Object.keys(prices).length > 0 ? prices : undefined,
       active: eventType?.active ?? true,
       requiresConfirmation,
+      depositEnabled,
+      depositAmount: depositEnabled ? depositAmount : undefined,
+      depositType: depositEnabled ? depositType : undefined,
+      depositMethods: depositEnabled ? depositMethods : undefined,
       questions,
-      availability: { recurring, specificDates: eventType?.availability?.specificDates || [], blockedDates },
+      availability: { recurring, specificDates, blockedDates },
       location: location.trim(),
     });
   };
@@ -767,8 +954,22 @@ function TenantEventEditor({ eventType, onSave, onCancel }: { eventType: EventTy
           <Input value={title} onChange={e => setTitle(e.target.value)} className="bg-secondary border-border text-foreground font-body" autoFocus />
         </div>
         <div>
-          <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Base Price ($)</label>
-          <Input type="number" value={price} onChange={e => setPrice(Number(e.target.value))} className="bg-secondary border-border text-foreground font-body" />
+          <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Price ($)</label>
+          <div className="space-y-2">
+            <Input type="number" value={price} onChange={e => setPrice(Number(e.target.value))} className="bg-secondary border-border text-foreground font-body" placeholder="Default / fallback price" />
+            {durations.length > 1 && (
+              <div className="space-y-1.5 pt-1">
+                <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground">Per-Duration Prices (override)</p>
+                {durations.map(d => (
+                  <div key={d} className="flex items-center gap-2">
+                    <span className="text-xs font-body text-muted-foreground w-10 flex-shrink-0">{formatDuration(d)}</span>
+                    <Input type="number" placeholder={String(price || 0)} value={prices[d] ?? ""} onChange={e => { const v = e.target.value === "" ? undefined : Number(e.target.value); setPrices(prev => { const n = { ...prev }; if (v === undefined) delete n[d]; else n[d] = v; return n; }); }} className="bg-secondary border-border text-foreground font-body h-8 text-sm" />
+                    {prices[d] !== undefined && <span className="text-[10px] text-primary">custom</span>}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       </div>
       <div>
@@ -800,13 +1001,49 @@ function TenantEventEditor({ eventType, onSave, onCancel }: { eventType: EventTy
         <Switch checked={requiresConfirmation} onCheckedChange={setRequiresConfirmation} />
       </div>
 
+      {/* Deposit */}
+      <div className="space-y-3 p-4 rounded-lg bg-secondary/30 border border-border/50">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-body text-muted-foreground font-medium">Require Deposit</span>
+          <Switch checked={depositEnabled} onCheckedChange={setDepositEnabled} />
+        </div>
+        {depositEnabled && (
+          <div className="space-y-3 pt-2">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-1 block">Amount</label>
+                <Input type="number" value={depositAmount} onChange={e => setDepositAmount(Number(e.target.value))} className="bg-secondary border-border text-foreground font-body text-sm" />
+              </div>
+              <div>
+                <label className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-1 block">Type</label>
+                <select value={depositType} onChange={e => setDepositType(e.target.value as "fixed" | "percentage")} className="w-full bg-secondary border border-border text-foreground font-body text-xs rounded-md px-2 py-2">
+                  <option value="fixed">Fixed ($)</option>
+                  <option value="percentage">Percentage (%)</option>
+                </select>
+              </div>
+            </div>
+            <div>
+              <label className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Payment Methods</label>
+              <div className="flex gap-4">
+                <label className="flex items-center gap-2 text-xs font-body text-muted-foreground cursor-pointer">
+                  <Switch checked={depositMethods.includes("stripe")} onCheckedChange={v => setDepositMethods(v ? (depositMethods.includes("stripe") ? depositMethods : [...depositMethods, "stripe"]) : depositMethods.filter(m => m !== "stripe"))} />Stripe
+                </label>
+                <label className="flex items-center gap-2 text-xs font-body text-muted-foreground cursor-pointer">
+                  <Switch checked={depositMethods.includes("bank")} onCheckedChange={v => setDepositMethods(v ? (depositMethods.includes("bank") ? depositMethods : [...depositMethods, "bank"]) : depositMethods.filter(m => m !== "bank"))} />Bank Transfer
+                </label>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
       {/* Availability */}
       <div>
-        <button onClick={() => setShowAvail(!showAvail)} className="flex items-center gap-2 text-xs font-body tracking-wider uppercase text-muted-foreground mb-3 hover:text-foreground transition-colors">
-          {showAvail ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-          Availability ({recurring.length} days, {blockedDates.length} blocked)
+        <button onClick={() => setExpandAvailability(!expandAvailability)} className="flex items-center gap-2 text-xs font-body tracking-wider uppercase text-muted-foreground mb-3 hover:text-foreground transition-colors">
+          {expandAvailability ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+          Availability ({recurring.length} days + {specificDates.length} specific + {blockedDates.length} blocked)
         </button>
-        {showAvail && (
+        {expandAvailability && (
           <div className="space-y-4 pl-2 border-l-2 border-border/50 ml-1">
             <div className="space-y-2">
               <p className="text-xs font-body text-muted-foreground font-medium">Weekly Schedule</p>
@@ -816,16 +1053,32 @@ function TenantEventEditor({ eventType, onSave, onCancel }: { eventType: EventTy
                   <div key={i} className="flex items-center gap-3">
                     <Switch checked={!!slot} onCheckedChange={() => toggleDay(i)} />
                     <span className="text-sm font-body text-foreground w-24">{dayName}</span>
-                    {slot && (
+                    {slot ? (
                       <div className="flex items-center gap-2">
                         <Input type="time" value={slot.startTime} onChange={e => setRecurring(recurring.map(s => s.day === i ? { ...s, startTime: e.target.value } : s))} className="bg-secondary border-border text-foreground font-body w-28 text-xs" />
                         <span className="text-xs text-muted-foreground">—</span>
                         <Input type="time" value={slot.endTime} onChange={e => setRecurring(recurring.map(s => s.day === i ? { ...s, endTime: e.target.value } : s))} className="bg-secondary border-border text-foreground font-body w-28 text-xs" />
                       </div>
-                    )}
+                    ) : <span className="text-xs font-body text-muted-foreground/50">Unavailable</span>}
                   </div>
                 );
               })}
+            </div>
+            <div className="space-y-2">
+              <p className="text-xs font-body text-muted-foreground font-medium">Specific Date Availability</p>
+              {specificDates.map((sd, idx) => (
+                <div key={idx} className="flex items-center gap-2 text-xs font-body">
+                  <span className="text-foreground">{sd.date}</span>
+                  <span className="text-primary">{sd.startTime} — {sd.endTime}</span>
+                  <button onClick={() => setSpecificDates(specificDates.filter((_, i) => i !== idx))} className="text-muted-foreground hover:text-destructive"><Trash2 className="w-3 h-3" /></button>
+                </div>
+              ))}
+              <div className="flex gap-2 items-end flex-wrap">
+                <Input type="date" value={specificDateInput} onChange={e => setSpecificDateInput(e.target.value)} className="bg-secondary border-border text-foreground font-body text-xs w-36" />
+                <Input type="time" value={specificStartInput} onChange={e => setSpecificStartInput(e.target.value)} className="bg-secondary border-border text-foreground font-body text-xs w-28" />
+                <Input type="time" value={specificEndInput} onChange={e => setSpecificEndInput(e.target.value)} className="bg-secondary border-border text-foreground font-body text-xs w-28" />
+                <Button variant="outline" size="sm" onClick={() => { if (!specificDateInput) return; setSpecificDates([...specificDates, { date: specificDateInput, startTime: specificStartInput, endTime: specificEndInput }]); setSpecificDateInput(""); }} className="font-body text-xs border-border text-foreground">Add</Button>
+              </div>
             </div>
             <div className="space-y-2">
               <p className="text-xs font-body text-muted-foreground font-medium">Blocked Dates</p>
@@ -846,31 +1099,43 @@ function TenantEventEditor({ eventType, onSave, onCancel }: { eventType: EventTy
       </div>
 
       {/* Questions */}
-      <div className="space-y-3">
-        <p className="text-xs font-body tracking-wider uppercase text-muted-foreground">Booking Questions</p>
-        {questions.map((q, idx) => (
-          <div key={q.id} className="p-3 rounded-lg bg-secondary/50 border border-border/50 space-y-2">
-            <div className="flex items-center gap-2">
-              <Input value={q.label} onChange={e => setQuestions(questions.map((qq, i) => i === idx ? { ...qq, label: e.target.value } : qq))} placeholder="Question label" className="bg-secondary border-border text-foreground font-body text-sm flex-1" />
-              <select value={q.type} onChange={e => setQuestions(questions.map((qq, i) => i === idx ? { ...qq, type: e.target.value as QuestionField["type"] } : qq))} className="bg-secondary border border-border text-foreground font-body text-xs rounded-md px-2 py-2">
-                <option value="text">Text</option>
-                <option value="textarea">Long Text</option>
-                <option value="select">Select</option>
-                <option value="boolean">Yes/No</option>
-              </select>
-              <button onClick={() => setQuestions(questions.filter((_, i) => i !== idx))} className="p-1.5 text-muted-foreground hover:text-destructive"><X className="w-3.5 h-3.5" /></button>
-            </div>
-            <div className="flex items-center gap-3">
-              <label className="flex items-center gap-2 text-xs font-body text-muted-foreground cursor-pointer">
-                <Switch checked={q.required} onCheckedChange={v => setQuestions(questions.map((qq, i) => i === idx ? { ...qq, required: v } : qq))} />Required
-              </label>
-              <Input value={q.placeholder || ""} onChange={e => setQuestions(questions.map((qq, i) => i === idx ? { ...qq, placeholder: e.target.value } : qq))} placeholder="Placeholder text" className="bg-secondary border-border text-foreground font-body text-xs flex-1" />
-            </div>
+      <div>
+        <button onClick={() => setExpandQuestions(!expandQuestions)} className="flex items-center gap-2 text-xs font-body tracking-wider uppercase text-muted-foreground mb-3 hover:text-foreground transition-colors">
+          {expandQuestions ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+          Questions ({questions.length})
+        </button>
+        {expandQuestions && (
+          <div className="space-y-3 pl-2 border-l-2 border-border/50 ml-1">
+            {questions.map((q, idx) => (
+              <div key={q.id} className="p-3 rounded-lg bg-secondary/50 border border-border/50 space-y-2">
+                <div className="flex items-center gap-2">
+                  <Input value={q.label} onChange={e => setQuestions(questions.map((qq, i) => i === idx ? { ...qq, label: e.target.value } : qq))} placeholder="Question label" className="bg-secondary border-border text-foreground font-body text-sm flex-1" />
+                  <select value={q.type} onChange={e => setQuestions(questions.map((qq, i) => i === idx ? { ...qq, type: e.target.value as QuestionField["type"] } : qq))} className="bg-secondary border border-border text-foreground font-body text-xs rounded-md px-2 py-2">
+                    <option value="text">Text</option>
+                    <option value="textarea">Long Text</option>
+                    <option value="select">Select</option>
+                    <option value="boolean">Yes/No</option>
+                    <option value="image-upload">Image Upload</option>
+                    <option value="instagram">Instagram Handle</option>
+                  </select>
+                  <button onClick={() => setQuestions(questions.filter((_, i) => i !== idx))} className="p-1.5 text-muted-foreground hover:text-destructive"><X className="w-3.5 h-3.5" /></button>
+                </div>
+                <div className="flex items-center gap-3">
+                  <label className="flex items-center gap-2 text-xs font-body text-muted-foreground cursor-pointer">
+                    <Switch checked={q.required} onCheckedChange={v => setQuestions(questions.map((qq, i) => i === idx ? { ...qq, required: v } : qq))} />Required
+                  </label>
+                  <Input value={q.placeholder || ""} onChange={e => setQuestions(questions.map((qq, i) => i === idx ? { ...qq, placeholder: e.target.value } : qq))} placeholder="Placeholder text" className="bg-secondary border-border text-foreground font-body text-xs flex-1" />
+                </div>
+                {q.type === "select" && (
+                  <Input value={q.options?.join(", ") || ""} onChange={e => setQuestions(questions.map((qq, i) => i === idx ? { ...qq, options: e.target.value.split(",").map(s => s.trim()).filter(Boolean) } : qq))} placeholder="Options (comma separated)" className="bg-secondary border-border text-foreground font-body text-xs" />
+                )}
+              </div>
+            ))}
+            <Button variant="outline" size="sm" onClick={() => setQuestions([...questions, { id: `q${Date.now()}`, label: "", type: "text", required: false, placeholder: "" }])} className="font-body text-xs border-border text-foreground gap-1">
+              <Plus className="w-3.5 h-3.5" /> Add Question
+            </Button>
           </div>
-        ))}
-        <Button variant="outline" size="sm" onClick={() => setQuestions([...questions, { id: `q${Date.now()}`, label: "", type: "text", required: false, placeholder: "" }])} className="font-body text-xs border-border text-foreground gap-1">
-          <Plus className="w-3.5 h-3.5" /> Add Question
-        </Button>
+        )}
       </div>
 
       <div className="flex gap-3 pt-2 border-t border-border/50">
@@ -1667,11 +1932,11 @@ function TenantPhotos({ slug }: { slug: string }) {
       const serverFileNames = new Set(stats.allFileNames);
       let repairedAlbums = 0;
 
-      // Repair albums with broken photo references
+      // Repair albums with broken photo references (files missing from server)
       const updatedAlbums: Album[] = [];
       for (const alb of albums) {
         const brokenPhotos = (alb.photos || []).filter(p => {
-          const fn = p.src.split("/").pop();
+          const fn = p.src.split("/").pop()?.split("?")[0];
           return fn && !serverFileNames.has(fn) && p.src.startsWith("/uploads/");
         });
         if (brokenPhotos.length > 0) {
@@ -1686,33 +1951,10 @@ function TenantPhotos({ slug }: { slug: string }) {
       }
       if (repairedAlbums > 0) setAlbums(updatedAlbums);
 
-      // Collect all known filenames
-      const knownFilenames = new Set<string>();
-      for (const p of libraryPhotos) {
-        const fn = p.src.split("/").pop();
-        if (fn) knownFilenames.add(fn);
-      }
-      for (const alb of updatedAlbums) {
-        for (const p of alb.photos || []) {
-          const fn = p.src.split("/").pop();
-          if (fn) knownFilenames.add(fn);
-        }
-      }
-
-      // Delete orphaned files
-      const orphaned = stats.allFileNames.filter(f => !knownFilenames.has(f));
       const messages: string[] = [];
       if (repairedAlbums > 0) messages.push(`Repaired ${repairedAlbums} album(s) with missing file references`);
-      if (orphaned.length > 0) {
-        try {
-          await bulkDeleteFiles(orphaned);
-          messages.push(`Deleted ${orphaned.length} untracked file(s) from disk`);
-        } catch {
-          messages.push(`Found ${orphaned.length} untracked file(s) but failed to delete them`);
-        }
-      }
-
-      if (messages.length === 0) toast.info("All storage files are tracked — nothing to fix");
+      // Note: we intentionally do NOT delete server files here, as they may belong to other tenants
+      if (messages.length === 0) toast.info("All album references are valid — nothing to fix");
       else toast.success(messages.join(" · "));
     } catch { toast.error("Failed to sync from storage"); }
     setSyncing(false);
@@ -2674,12 +2916,50 @@ function TenantProfileView({ slug, session }: { slug: string; session: { display
 }
 
 // ─── Settings ────────────────────────────────────────────────────────────────
+// ─── Watermark Preview ────────────────────────────────────────────────────────
+const TENANT_SAMPLE_IMAGES = [
+  { src: sampleLandscape, label: "Landscape" },
+  { src: samplePortrait, label: "Portrait" },
+  { src: sampleWedding, label: "Wedding" },
+  { src: sampleEvent, label: "Event" },
+  { src: sampleFood, label: "Food" },
+];
+function TenantWatermarkPreview({ settings }: { settings: TenantSettings }) {
+  const [selectedSample, setSelectedSample] = useState(0);
+  const currentSrc = TENANT_SAMPLE_IMAGES[selectedSample].src;
+  return (
+    <div className="space-y-3">
+      <div className="flex gap-2 flex-wrap">
+        {TENANT_SAMPLE_IMAGES.map((img, i) => (
+          <button key={i} onClick={() => setSelectedSample(i)}
+            className={`text-[10px] font-body px-2.5 py-1 rounded-full transition-all ${selectedSample === i ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground hover:text-foreground"}`}>
+            {img.label}
+          </button>
+        ))}
+      </div>
+      <div className="rounded-lg overflow-hidden bg-secondary">
+        <WatermarkedImage
+          src={currentSrc}
+          title="Preview"
+          renderWatermarkOverlay={true}
+          watermarkPosition={settings.watermarkPosition ?? "tiled"}
+          watermarkText={settings.watermarkText ?? "© Your Studio"}
+          watermarkImage={settings.watermarkImage}
+          watermarkOpacity={settings.watermarkOpacity ?? 20}
+          watermarkSize={settings.watermarkSize ?? 40}
+          index={0}
+        />
+      </div>
+    </div>
+  );
+}
+
 function TenantSettingsView({ slug }: { slug: string }) {
   const navigate = useNavigate();
   const [settings, setSettings] = useState<TenantSettings>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [activeSection, setActiveSection] = useState<"payments" | "notifications" | "watermark" | "integrations">("payments");
+  const [activeSection, setActiveSection] = useState<"general" | "payments" | "notifications" | "watermark" | "integrations">("general");
   const [wmUploading, setWmUploading] = useState(false);
 
   // Google Calendar state
@@ -2770,6 +3050,7 @@ function TenantSettingsView({ slug }: { slug: string }) {
   if (loading) return <div className="py-16 text-center text-muted-foreground font-body text-sm animate-pulse">Loading…</div>;
 
   const sectionTabs = [
+    { id: "general" as const, label: "General" },
     { id: "payments" as const, label: "Payments" },
     { id: "notifications" as const, label: "Notifications" },
     { id: "watermark" as const, label: "Watermark" },
@@ -2796,6 +3077,137 @@ function TenantSettingsView({ slug }: { slug: string }) {
           >{t.label}</button>
         ))}
       </div>
+
+      {activeSection === "general" && (
+        <div className="space-y-5 max-w-lg">
+          {/* Default Album Settings */}
+          <div className="glass-panel rounded-xl p-5 space-y-4">
+            <h3 className="font-display text-base text-foreground flex items-center gap-2">
+              <Image className="w-4 h-4 text-primary" /> Default Album Settings
+            </h3>
+            <div className="space-y-3">
+              <div>
+                <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Free Downloads</label>
+                <Input type="number" value={settings.defaultFreeDownloads ?? 5} onChange={e => set({ defaultFreeDownloads: Number(e.target.value) })} className="bg-background border-border text-foreground font-body w-32" />
+              </div>
+              <div>
+                <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Price per Photo ($)</label>
+                <Input type="number" value={settings.defaultPricePerPhoto ?? 0} onChange={e => set({ defaultPricePerPhoto: Number(e.target.value) })} className="bg-background border-border text-foreground font-body w-32" />
+              </div>
+              <div>
+                <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Full Album Price ($)</label>
+                <Input type="number" value={settings.defaultPriceFullAlbum ?? 0} onChange={e => set({ defaultPriceFullAlbum: Number(e.target.value) })} className="bg-background border-border text-foreground font-body w-32" />
+              </div>
+            </div>
+          </div>
+
+          {/* Invoice Defaults */}
+          <div className="glass-panel rounded-xl p-5 space-y-4">
+            <h3 className="font-display text-base text-foreground flex items-center gap-2">
+              <Receipt className="w-4 h-4 text-primary" /> Invoice Defaults
+            </h3>
+            <p className="text-[10px] font-body text-muted-foreground/60">Pre-filled in the "From" section when creating invoices.</p>
+            {(() => {
+              const from = settings.invoiceFrom || { name: "", email: "", address: "", abn: "" };
+              const setFrom = (patch: Partial<InvoiceParty>) => set({ invoiceFrom: { ...from, ...patch } });
+              return (
+                <div className="space-y-3">
+                  <div>
+                    <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Business Name</label>
+                    <Input value={from.name} onChange={e => setFrom({ name: e.target.value })} placeholder="Your business name" className="bg-background border-border text-foreground font-body" />
+                  </div>
+                  <div>
+                    <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">ABN</label>
+                    <Input value={from.abn || ""} onChange={e => setFrom({ abn: e.target.value })} placeholder="12 345 678 901" className="bg-background border-border text-foreground font-body" />
+                  </div>
+                  <div>
+                    <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Email</label>
+                    <Input type="email" value={from.email} onChange={e => setFrom({ email: e.target.value })} className="bg-background border-border text-foreground font-body" />
+                  </div>
+                  <div>
+                    <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Address</label>
+                    <Textarea value={from.address} onChange={e => setFrom({ address: e.target.value })} placeholder="Street address" className="bg-background border-border text-foreground font-body min-h-[60px]" />
+                  </div>
+                  <div>
+                    <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Default Invoice Notes</label>
+                    <Textarea value={settings.invoiceNotes || ""} onChange={e => set({ invoiceNotes: e.target.value })} placeholder="e.g. Payment due within 30 days. Thank you for your business." className="bg-background border-border text-foreground font-body min-h-[60px]" />
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+
+          {/* Booking Settings */}
+          <div className="glass-panel rounded-xl p-5 space-y-4">
+            <h3 className="font-display text-base text-foreground flex items-center gap-2">
+              <Calendar className="w-4 h-4 text-primary" /> Booking Settings
+            </h3>
+            <div>
+              <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Booking Timer (minutes)</label>
+              <Input type="number" value={settings.bookingTimerMinutes ?? 15} onChange={e => set({ bookingTimerMinutes: Number(e.target.value) })} className="bg-background border-border text-foreground font-body w-32" />
+              <p className="text-[10px] font-body text-muted-foreground/50 mt-1">How long a client has to complete their booking after selecting a time</p>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-body text-muted-foreground">Show Instagram Handle Field</span>
+              <Switch checked={!!settings.instagramFieldEnabled} onCheckedChange={v => set({ instagramFieldEnabled: v })} />
+            </div>
+            <div className="border-t border-border/30 pt-3 space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs font-body text-foreground font-medium">Enable Client Enquiries</p>
+                  <p className="text-[10px] font-body text-muted-foreground/60 mt-0.5">Show an enquiry form on the booking page for custom requests</p>
+                </div>
+                <Switch checked={!!settings.enquiryEnabled} onCheckedChange={v => set({ enquiryEnabled: v })} />
+              </div>
+              {settings.enquiryEnabled && (
+                <div>
+                  <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Enquiry Button Label</label>
+                  <Input value={settings.enquiryLabel ?? "Make an Enquiry"} onChange={e => set({ enquiryLabel: e.target.value })} placeholder="Make an Enquiry" className="bg-background border-border text-foreground font-body" />
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Notification Email Template */}
+          <div className="glass-panel rounded-xl p-5 space-y-4">
+            <h3 className="font-display text-base text-foreground flex items-center gap-2">
+              <Mail className="w-4 h-4 text-primary" /> Notification Email Template
+            </h3>
+            <Textarea value={settings.notificationEmailTemplate || ""} onChange={e => set({ notificationEmailTemplate: e.target.value })} className="bg-background border-border text-foreground font-body min-h-[80px]" placeholder="Hey {name}, your photos are ready! {link}" />
+            <p className="text-[10px] font-body text-muted-foreground/50">Variables: {"{name}"}, {"{link}"}, {"{instagram}"}. Requires SMTP backend to send.</p>
+          </div>
+
+          {/* Client Proofing */}
+          <div className="glass-panel rounded-xl p-5 space-y-4">
+            <h3 className="font-display text-base text-foreground flex items-center gap-2">
+              <Star className="w-4 h-4 text-primary" /> Client Proofing
+            </h3>
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-body text-foreground font-medium">Enable Client Proofing</p>
+                <p className="text-[10px] font-body text-muted-foreground/70 mt-0.5">Allow clients to star and submit photo picks before editing</p>
+              </div>
+              <Switch checked={!!settings.proofingEnabled} onCheckedChange={v => set({ proofingEnabled: v })} />
+            </div>
+            {settings.proofingEnabled && (
+              <div className="flex items-center gap-3 pt-1 border-t border-border/50">
+                <div className="flex-1">
+                  <p className="text-sm font-body text-foreground font-medium">Default Proofing Window</p>
+                  <p className="text-[10px] font-body text-muted-foreground/70 mt-0.5">How long clients have to submit picks after a round is started. Can be overridden per album.</p>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <input type="number" min={1} max={720} value={settings.defaultProofingExpiryHours ?? 48} onChange={e => set({ defaultProofingExpiryHours: Math.min(720, Math.max(1, parseInt(e.target.value) || 48)) })} className="w-20 bg-background border border-border rounded-md px-2 py-1.5 text-sm font-body text-foreground text-center focus:outline-none focus:ring-2 focus:ring-ring" />
+                  <span className="text-xs font-body text-muted-foreground">hours</span>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <Button onClick={handleSaveSettings} disabled={saving} className="bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2 w-full">
+            <Save className="w-4 h-4" /> {saving ? "Saving…" : "Save General Settings"}
+          </Button>
+        </div>
+      )}
 
       {activeSection === "payments" && (
         <div className="space-y-5 max-w-lg">
@@ -2934,6 +3346,12 @@ function TenantSettingsView({ slug }: { slug: string }) {
               onValueChange={([v]) => set({ watermarkSize: v })} className="w-full" />
           </div>
 
+          {/* Live Preview */}
+          <div className="space-y-3 p-4 rounded-lg bg-secondary/40 border border-border/50">
+            <h3 className="text-xs font-body tracking-wider uppercase text-muted-foreground">Preview</h3>
+            <TenantWatermarkPreview settings={settings} />
+          </div>
+
           <Button onClick={handleSaveSettings} disabled={saving} className="bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2 w-full">
             <Save className="w-4 h-4" /> {saving ? "Saving…" : "Save Watermark Settings"}
           </Button>
@@ -3029,6 +3447,8 @@ function TenantStorage({ slug }: { slug: string }) {
   const [loading, setLoading] = useState(true);
   const [cacheStats, setCacheStats] = useState<{ count: number; sizeBytes: number } | null>(null);
   const [statsLoading, setStatsLoading] = useState(false);
+  const [storageStats, setStorageStats] = useState<{ totalBytes: number; fileCount: number; albumCount: number } | null>(null);
+  const [storageStatsLoading, setStorageStatsLoading] = useState(false);
 
   const loadData = useCallback(async () => {
     const d = await fetchTenantMobileData(slug);
@@ -3045,8 +3465,18 @@ function TenantStorage({ slug }: { slug: string }) {
       .finally(() => setStatsLoading(false));
   }, [slug]);
 
+  const loadStorageStats = useCallback(() => {
+    if (!isServerMode()) return;
+    setStorageStatsLoading(true);
+    getTenantStorageStats(slug)
+      .then(d => { if (d?.ok) setStorageStats({ totalBytes: d.totalBytes, fileCount: d.fileCount, albumCount: d.albumCount }); })
+      .catch(() => {})
+      .finally(() => setStorageStatsLoading(false));
+  }, [slug]);
+
   useEffect(() => { loadData(); }, [loadData]);
   useEffect(() => { loadCacheStats(); }, [loadCacheStats]);
+  useEffect(() => { loadStorageStats(); }, [loadStorageStats]);
 
   const handleClearCache = async () => {
     setCacheClearing(true);
@@ -3088,9 +3518,9 @@ function TenantStorage({ slug }: { slug: string }) {
             <p className="font-display text-2xl text-foreground mt-1">{totalStarred}</p>
           </div>
           <div className="glass-panel rounded-xl p-4">
-            <p className="text-xs font-body tracking-wider uppercase text-muted-foreground">Cache Files</p>
-            <p className="font-display text-2xl text-foreground mt-1">
-              {statsLoading ? <span className="text-base animate-pulse">…</span> : (cacheStats?.count ?? "—")}
+            <p className="text-xs font-body tracking-wider uppercase text-muted-foreground">Storage Used</p>
+            <p className="font-display text-lg text-foreground mt-1">
+              {storageStatsLoading ? <span className="text-base animate-pulse">…</span> : storageStats ? fmtBytes(storageStats.totalBytes) : "—"}
             </p>
           </div>
         </div>

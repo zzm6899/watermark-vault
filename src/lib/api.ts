@@ -1311,3 +1311,34 @@ export function tenantPhotoSrc(src: string, slug: string): string {
   if (src.includes(`tenant=${slug}`)) return src;
   return `${src}${sep}tenant=${encodeURIComponent(slug)}`;
 }
+
+/** Fetch an album by slug/id from any store (main or tenant). Returns the album and tenantSlug (null if main). */
+export async function fetchPublicAlbum(albumSlug: string): Promise<{ album: import("./types").Album; tenantSlug: string | null } | null> {
+  try {
+    const res = await fetch(`/api/public-album/${encodeURIComponent(albumSlug)}`);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch { return null; }
+}
+
+/** Get storage stats for a tenant's files (total bytes and file count). */
+export async function getTenantStorageStats(slug: string): Promise<{ ok: boolean; totalBytes: number; fileCount: number; albumCount: number } | null> {
+  try {
+    const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/storage-stats`);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch { return null; }
+}
+
+/** Admin-create or update a tenant booking, bypassing public booking flow. */
+export async function upsertTenantBookingAdmin(slug: string, booking: import("./types").Booking): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/bookings/${encodeURIComponent(booking.id)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(booking),
+    });
+    const json = await res.json();
+    return { ok: !!json.ok, error: json.error };
+  } catch { return { ok: false, error: "Network error" }; }
+}
