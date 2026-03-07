@@ -307,6 +307,12 @@ export interface LicenseKey {
   usedAt?: string;         // ISO timestamp, set when activated
   usedBy?: string;         // username of the admin who activated it
   notes?: string;
+  /** If true this is a free-trial key with usage limits */
+  isTrial?: boolean;
+  /** Max number of event-type slots allowed under a trial key (default 1) */
+  trialMaxEvents?: number;
+  /** Max number of bookings allowed under a trial key (default 10) */
+  trialMaxBookings?: number;
 }
 
 // ─── Tenants ──────────────────────────────────────────────────────────────────
@@ -329,7 +335,44 @@ export interface Tenant {
   createdAt: string;     // ISO timestamp
 }
 
-// ─── License Plans ────────────────────────────────────────────────────────────
+// ─── Tenant Settings ─────────────────────────────────────────────────────────
+
+/**
+ * Per-tenant overrides for integrations. When set these take precedence over
+ * the global environment-variable / AppSettings values for that tenant's data.
+ */
+export interface TenantSettings {
+  // ── Stripe ────────────────────────────────────────────────
+  stripeEnabled?: boolean;
+  stripePublishableKey?: string;
+  stripeSecretKey?: string;
+  stripeWebhookSecret?: string;
+  /** ISO 4217 currency code for Stripe checkout, e.g. "aud", "usd", "gbp". Defaults to "aud". */
+  stripeCurrency?: string;
+  // ── Bank Transfer ─────────────────────────────────────────
+  bankTransferEnabled?: boolean;
+  bankAccountName?: string;
+  bankBsb?: string;
+  bankAccountNumber?: string;
+  bankPayId?: string;
+  bankPayIdType?: "email" | "phone" | "abn";
+  bankInstructions?: string;
+  // ── Discord ───────────────────────────────────────────────
+  discordWebhookUrl?: string;
+  discordNotifyBookings?: boolean;
+  discordNotifyDownloads?: boolean;
+  discordNotifyProofing?: boolean;
+  discordNotifyInvoices?: boolean;
+  // ── SMTP ──────────────────────────────────────────────────
+  smtpHost?: string;
+  smtpPort?: number;
+  smtpUser?: string;
+  smtpPassword?: string;
+  smtpSecure?: boolean;
+  smtpFrom?: string;
+}
+
+
 
 export type LicensePlanType = "monthly" | "yearly" | "one-time";
 

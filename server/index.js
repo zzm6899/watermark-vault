@@ -8,7 +8,7 @@ const archiver = require("archiver");
 const rateLimit = require("express-rate-limit");
 const { registerRoutes: registerGoogleCalendarRoutes } = require("./google-calendar");
 const { registerRoutes: registerEmailRoutes } = require("./email");
-const { registerRoutes: registerStripeRoutes } = require("./stripe");
+const { registerRoutes: registerStripeRoutes, registerTenantStripeRoutes } = require("./stripe");
 const { registerRoutes: registerGoogleSheetsRoutes } = require("./google-sheets");
 const {
   sendDiscordEmbed,
@@ -93,6 +93,7 @@ app.use(cors());
 // signature verification.  The route itself applies express.raw() instead.
 app.use((req, res, next) => {
   if (req.path === "/api/stripe/webhook") return next();
+  if (req.path.startsWith("/api/tenant/") && req.path.endsWith("/stripe/webhook")) return next();
   express.json({ limit: "50mb" })(req, res, next);
 });
 
@@ -966,6 +967,12 @@ app.post("/api/cache/warm", cacheWarmLimiter, async (req, res) => {
 registerGoogleCalendarRoutes(app);
 registerEmailRoutes(app);
 registerStripeRoutes(app, { writeDb });
+registerTenantStripeRoutes(app, { readDb, readTenants: () => {
+  try {
+    if (!fs.existsSync(path.join(DATA_DIR, "tenants.json"))) return [];
+    return JSON.parse(fs.readFileSync(path.join(DATA_DIR, "tenants.json"), "utf-8"));
+  } catch { return []; }
+}});
 registerGoogleSheetsRoutes(app);
 
 // ── Invoice share endpoint (public — no auth required) ────────
@@ -1110,6 +1117,22 @@ app.post("/api/tenant/:slug/booking", tenantBookingLimiter, (req, res) => {
     return res.status(400).json({ error: "time (HH:MM) is required" });
   }
 
+  // ── Trial license key enforcement ──────────────────────────────────────
+  if (tenant.licenseKey) {
+    const allKeys = readLicenseKeys();
+    const licKey = allKeys.find(k => k.key === tenant.licenseKey);
+    if (licKey && licKey.isTrial) {
+      const db = readDb();
+      const rawBks = db["wv_bookings"];
+      const existingBookings = rawBks ? (typeof rawBks === "string" ? JSON.parse(rawBks) : (Array.isArray(rawBks) ? rawBks : [])) : [];
+      const tenantBookingCount = existingBookings.filter(b => b.tenantSlug === slug).length;
+      const maxBookings = licKey.trialMaxBookings ?? 10;
+      if (tenantBookingCount >= maxBookings) {
+        return res.status(403).json({ error: `Free trial limit reached (${maxBookings} bookings). Contact your platform administrator to upgrade your plan.` });
+      }
+    }
+  }
+
   const booking = {
     id: `bk-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
     clientName: clientName.trim(),
@@ -1133,12 +1156,19 @@ app.post("/api/tenant/:slug/booking", tenantBookingLimiter, (req, res) => {
   db["wv_bookings"] = JSON.stringify(bookings);
   writeDb(db);
 
-  // Fire Discord notification if configured (non-fatal)
+  // Fire Discord notification — use tenant-specific webhook if configured, else fall back to global
   try {
-    const settings = db["wv_settings"];
-    const settingsParsed = typeof settings === "string" ? JSON.parse(settings) : (settings || {});
-    if (settingsParsed?.discordWebhookUrl && settingsParsed?.discordNotifyBookings !== false) {
-      notifyNewBooking(settingsParsed.discordWebhookUrl, { ...booking, type: `${booking.type} (${tenant.displayName})` }).catch(() => {});
+    const tenantSettingsRaw = db[`t_${slug}_wv_tenant_settings`];
+    const tenantSettings = tenantSettingsRaw ? (typeof tenantSettingsRaw === "string" ? JSON.parse(tenantSettingsRaw) : tenantSettingsRaw) : {};
+    const settingsRaw = db["wv_settings"];
+    const globalSettings = typeof settingsRaw === "string" ? JSON.parse(settingsRaw) : (settingsRaw || {});
+    // Prefer tenant-specific settings when a tenant webhook is configured
+    const useTenantSettings = !!tenantSettings?.discordWebhookUrl;
+    const activeSettings = useTenantSettings ? tenantSettings : globalSettings;
+    const webhookUrl = activeSettings?.discordWebhookUrl;
+    const notifyBookings = activeSettings?.discordNotifyBookings !== false;
+    if (webhookUrl && notifyBookings) {
+      notifyNewBooking(webhookUrl, { ...booking, type: `${booking.type} (${tenant.displayName})` }).catch(() => {});
     }
   } catch {}
 
@@ -1238,7 +1268,36 @@ app.put("/api/tenant/:slug/albums/:albumId", tenantLimiter, (req, res) => {
   res.json({ ok: true });
 });
 
-// ── License Plans ──────────────────────────────────────
+// ── Tenant Settings (per-tenant integration overrides) ─────────────────────
+
+// Get tenant settings (Discord, SMTP, Stripe, bank — per-tenant overrides)
+app.get("/api/tenant/:slug/settings", tenantLimiter, (req, res) => {
+  const slug = req.params.slug;
+  const tenants = readTenants();
+  if (!tenants.find(t => t.slug === slug)) return res.status(404).json({ error: "Tenant not found" });
+  const db = readDb();
+  const raw = db[`t_${slug}_wv_tenant_settings`];
+  const settings = raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : {};
+  res.json(settings);
+});
+
+// Save tenant settings
+app.put("/api/tenant/:slug/settings", tenantLimiter, (req, res) => {
+  const slug = req.params.slug;
+  const tenants = readTenants();
+  if (!tenants.find(t => t.slug === slug)) return res.status(404).json({ error: "Tenant not found" });
+  const db = readDb();
+  const existing = (() => {
+    const raw = db[`t_${slug}_wv_tenant_settings`];
+    return raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : {};
+  })();
+  const updated = { ...existing, ...req.body };
+  db[`t_${slug}_wv_tenant_settings`] = JSON.stringify(updated);
+  writeDb(db);
+  res.json({ ok: true, settings: updated });
+});
+
+
 const planLimiter = rateLimit({ windowMs: 60_000, max: 30, standardHeaders: true, legacyHeaders: false, message: { error: "Too many requests" } });
 
 function readLicensePlans() {
@@ -1476,7 +1535,7 @@ app.get("/api/license-keys", licenseKeyLimiter, (_req, res) => {
 
 // Generate a new key
 app.post("/api/license-keys/generate", licenseKeyLimiter, (req, res) => {
-  const { issuedTo, expiresAt, notes } = req.body || {};
+  const { issuedTo, expiresAt, notes, isTrial, trialMaxEvents, trialMaxBookings } = req.body || {};
   if (!issuedTo || typeof issuedTo !== "string" || !issuedTo.trim()) {
     return res.status(400).json({ error: "issuedTo is required" });
   }
@@ -1490,6 +1549,11 @@ app.post("/api/license-keys/generate", licenseKeyLimiter, (req, res) => {
     createdAt: new Date().toISOString(),
     ...(expiresAt ? { expiresAt } : {}),
     ...(notes ? { notes: notes.trim() } : {}),
+    ...(isTrial ? {
+      isTrial: true,
+      trialMaxEvents: typeof trialMaxEvents === "number" && trialMaxEvents > 0 ? trialMaxEvents : 1,
+      trialMaxBookings: typeof trialMaxBookings === "number" && trialMaxBookings > 0 ? trialMaxBookings : 10,
+    } : {}),
   };
   keys.push(newKey);
   writeLicenseKeys(keys);
@@ -1509,7 +1573,13 @@ app.post("/api/license-keys/validate", licenseKeyLimiter, (req, res) => {
   if (found.expiresAt && new Date(found.expiresAt) < new Date()) {
     return res.json({ valid: false, error: "License key has expired" });
   }
-  res.json({ valid: true, issuedTo: found.issuedTo });
+  res.json({
+    valid: true,
+    issuedTo: found.issuedTo,
+    isTrial: found.isTrial || false,
+    trialMaxEvents: found.trialMaxEvents,
+    trialMaxBookings: found.trialMaxBookings,
+  });
 });
 
 // Activate a key (mark as used after setup)

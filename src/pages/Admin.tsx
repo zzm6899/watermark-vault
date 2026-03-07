@@ -29,7 +29,7 @@ import {
   isSuperAdmin, setSuperAdmin, getAdminCredentials,
 } from "@/lib/storage";
 import { compressImage, formatBytes, getLocalStorageUsage, generateThumbnail } from "@/lib/image-utils";
-import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar, getServerStorageStats, syncFromServer, sendEmail, bulkDeleteFiles, syncBookingsToSheet, getBookingEmailLog, sendBookingReminder, sendCustomEmail, getWaitlistEntries, deleteWaitlistEntry, notifyWaitlistOnCancel, notifyDiscord, getCacheStats, warmCache, createInvoiceCheckout, sendInvoiceEmail, getStripeStatus, sendEnquiryAcceptedEmail, sendEnquiryDeclinedEmail, getLicenseKeys, generateLicenseKey, revokeLicenseKey, getTenants, createTenant, updateTenant, deleteTenant, getSuperAdminInfo, getSuperStats, getAllBookings, getLicensePlans, createLicensePlan, updateLicensePlan, deleteLicensePlan, getLicensePurchases, activateBankPurchase, getLicensePlanCheckout } from "@/lib/api";
+import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar, getServerStorageStats, syncFromServer, sendEmail, bulkDeleteFiles, syncBookingsToSheet, getBookingEmailLog, sendBookingReminder, sendCustomEmail, getWaitlistEntries, deleteWaitlistEntry, notifyWaitlistOnCancel, notifyDiscord, getCacheStats, warmCache, createInvoiceCheckout, sendInvoiceEmail, getStripeStatus, sendEnquiryAcceptedEmail, sendEnquiryDeclinedEmail, getLicenseKeys, generateLicenseKey, revokeLicenseKey, getTenants, createTenant, updateTenant, deleteTenant, getSuperAdminInfo, getSuperStats, getAllBookings, getLicensePlans, createLicensePlan, updateLicensePlan, deleteLicensePlan, getLicensePurchases, activateBankPurchase, getLicensePlanCheckout, getTenantSettings, saveTenantSettings } from "@/lib/api";
 import type { CacheBreakdown } from "@/lib/api";
 import RichTextEditor, { RichTextDisplay } from "@/components/RichTextEditor";
 import Login from "@/pages/Login";
@@ -38,7 +38,7 @@ import type {
   ProfileSettings, AppSettings, Booking, WatermarkPosition,
   Album, Photo, PaymentStatus, AlbumDisplaySize, AlbumDownloadRecord, DownloadHistoryEntry,
   EmailTemplate, WaitlistEntry, Invoice, InvoiceItem, InvoiceParty, InvoiceStatus, Contact,
-  Enquiry, EnquiryStatus, LicenseKey, Tenant, LicensePlan, LicensePurchase,
+  Enquiry, EnquiryStatus, LicenseKey, Tenant, LicensePlan, LicensePurchase, TenantSettings,
 } from "@/lib/types";
 import WatermarkedImage from "@/components/WatermarkedImage";
 import ProgressiveImg from "@/components/ProgressiveImg";
@@ -5712,12 +5712,19 @@ function SettingsView() {
 }
 
 // ─── License Keys Panel ───────────────────────────────
+// Default trial limits — used in both the UI and server-side enforcement
+const TRIAL_DEFAULT_MAX_EVENTS = 1;
+const TRIAL_DEFAULT_MAX_BOOKINGS = 10;
+
 function LicenseKeysPanel() {
   const [keys, setKeys] = useState<LicenseKey[]>([]);
   const [loading, setLoading] = useState(false);
   const [newIssuedTo, setNewIssuedTo] = useState("");
   const [newExpiresAt, setNewExpiresAt] = useState("");
   const [newNotes, setNewNotes] = useState("");
+  const [newIsTrial, setNewIsTrial] = useState(false);
+  const [newTrialMaxEvents, setNewTrialMaxEvents] = useState(String(TRIAL_DEFAULT_MAX_EVENTS));
+  const [newTrialMaxBookings, setNewTrialMaxBookings] = useState(String(TRIAL_DEFAULT_MAX_BOOKINGS));
   const [generating, setGenerating] = useState(false);
   const [expanded, setExpanded] = useState(false);
 
@@ -5738,7 +5745,16 @@ function LicenseKeysPanel() {
       return;
     }
     setGenerating(true);
-    const { key, error } = await generateLicenseKey(newIssuedTo.trim(), newExpiresAt || undefined, newNotes || undefined);
+    const { key, error } = await generateLicenseKey(
+      newIssuedTo.trim(),
+      newExpiresAt || undefined,
+      newNotes || undefined,
+      newIsTrial ? {
+        isTrial: true,
+        trialMaxEvents: parseInt(newTrialMaxEvents) || 1,
+        trialMaxBookings: parseInt(newTrialMaxBookings) || 10,
+      } : undefined,
+    );
     setGenerating(false);
     if (error || !key) {
       toast.error(error || "Failed to generate key");
@@ -5748,6 +5764,9 @@ function LicenseKeysPanel() {
     setNewIssuedTo("");
     setNewExpiresAt("");
     setNewNotes("");
+    setNewIsTrial(false);
+    setNewTrialMaxEvents(String(TRIAL_DEFAULT_MAX_EVENTS));
+    setNewTrialMaxBookings(String(TRIAL_DEFAULT_MAX_BOOKINGS));
     setKeys((prev) => [...prev, key]);
   };
 
@@ -5817,6 +5836,49 @@ function LicenseKeysPanel() {
                 />
               </div>
             </div>
+
+            {/* Free Trial Toggle */}
+            <div className="flex items-center gap-3 pt-1">
+              <Switch
+                checked={newIsTrial}
+                onCheckedChange={setNewIsTrial}
+                id="trial-toggle"
+              />
+              <label htmlFor="trial-toggle" className="text-xs font-body text-foreground cursor-pointer">
+                Free Trial Key
+              </label>
+              {newIsTrial && (
+                <span className="text-[10px] font-body bg-amber-500/10 text-amber-500 px-1.5 py-0.5 rounded-full">Limited Usage</span>
+              )}
+            </div>
+
+            {newIsTrial && (
+              <div className="grid grid-cols-2 gap-3 p-3 rounded-lg bg-amber-500/5 border border-amber-500/20">
+                <div>
+                  <label className="text-xs font-body text-muted-foreground mb-1 block">Max Event Types</label>
+                  <Input
+                    type="number"
+                    min={1}
+                    value={newTrialMaxEvents}
+                    onChange={(e) => setNewTrialMaxEvents(e.target.value)}
+                    className="bg-background border-border text-foreground font-body text-sm"
+                  />
+                  <p className="text-[10px] font-body text-muted-foreground mt-0.5">Event type slots for this trial</p>
+                </div>
+                <div>
+                  <label className="text-xs font-body text-muted-foreground mb-1 block">Max Bookings</label>
+                  <Input
+                    type="number"
+                    min={1}
+                    value={newTrialMaxBookings}
+                    onChange={(e) => setNewTrialMaxBookings(e.target.value)}
+                    className="bg-background border-border text-foreground font-body text-sm"
+                  />
+                  <p className="text-[10px] font-body text-muted-foreground mt-0.5">Total bookings allowed</p>
+                </div>
+              </div>
+            )}
+
             <Button
               onClick={handleGenerate}
               disabled={generating}
@@ -5836,7 +5898,7 @@ function LicenseKeysPanel() {
             {keys.map((k) => (
               <div key={k.key} className="flex flex-col sm:flex-row sm:items-center gap-2 p-3 rounded-lg bg-secondary/30 border border-border/40">
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <span className="font-mono text-xs text-foreground tracking-widest">{k.key}</span>
                     <button onClick={() => copyKey(k.key)} className="text-muted-foreground hover:text-foreground">
                       <Copy className="w-3 h-3" />
@@ -5845,6 +5907,11 @@ function LicenseKeysPanel() {
                       <span className="text-[10px] font-body bg-green-500/10 text-green-500 px-1.5 py-0.5 rounded-full">Used</span>
                     ) : (
                       <span className="text-[10px] font-body bg-primary/10 text-primary px-1.5 py-0.5 rounded-full">Active</span>
+                    )}
+                    {k.isTrial && (
+                      <span className="text-[10px] font-body bg-amber-500/10 text-amber-500 px-1.5 py-0.5 rounded-full">
+                        Free Trial · {k.trialMaxEvents ?? 1} event{(k.trialMaxEvents ?? 1) !== 1 ? "s" : ""} · {k.trialMaxBookings ?? 10} bookings
+                      </span>
                     )}
                   </div>
                   <div className="text-[11px] font-body text-muted-foreground mt-0.5 flex flex-wrap gap-2">
@@ -5871,6 +5938,220 @@ function LicenseKeysPanel() {
   );
 }
 
+// ─── Tenant Settings Panel ────────────────────────────
+function TenantSettingsPanel({ tenant, onClose }: { tenant: Tenant; onClose: () => void }) {
+  const [settings, setSettings] = useState<TenantSettings>({});
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    getTenantSettings(tenant.slug).then((s) => {
+      setSettings(s);
+      setLoading(false);
+    });
+  }, [tenant.slug]);
+
+  const handleSave = async () => {
+    setSaving(true);
+    const { ok, error } = await saveTenantSettings(tenant.slug, settings);
+    setSaving(false);
+    if (!ok) { toast.error(error || "Failed to save"); return; }
+    toast.success(`Settings saved for ${tenant.displayName}`);
+    onClose();
+  };
+
+  const set = (patch: Partial<TenantSettings>) => setSettings((s) => ({ ...s, ...patch }));
+
+  if (loading) return <div className="py-8 text-center text-xs font-body text-muted-foreground animate-pulse">Loading…</div>;
+
+  return (
+    <div className="space-y-5">
+      <div className="flex items-center justify-between">
+        <h3 className="font-display text-sm text-foreground">
+          Settings for <span className="text-primary">{tenant.displayName}</span>
+          <span className="text-muted-foreground font-mono ml-1 text-[11px]">/{tenant.slug}</span>
+        </h3>
+        <button onClick={onClose} className="text-muted-foreground hover:text-foreground text-xs font-body">✕ Close</button>
+      </div>
+
+      {/* ── Stripe ─────────────────────────────────── */}
+      <div className="space-y-3 p-4 rounded-lg bg-secondary/40 border border-border/50">
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-body tracking-wider uppercase text-muted-foreground">Stripe</span>
+          {(() => {
+            const stripeConfigured = !!(settings.stripePublishableKey || settings.stripeSecretKey);
+            const stripeActive = settings.stripeEnabled !== false && stripeConfigured;
+            return (
+              <>
+                <Switch checked={stripeActive} onCheckedChange={(v) => set({ stripeEnabled: v })} />
+                <span className="text-xs font-body text-muted-foreground">{stripeActive ? "Enabled" : "Disabled"}</span>
+              </>
+            );
+          })()}
+        </div>
+        <p className="text-[10px] font-body text-muted-foreground -mt-1">Tenant's own Stripe account — payments go directly to them.</p>
+        <div>
+          <label className="text-xs font-body text-muted-foreground mb-1 block">Publishable Key</label>
+          <Input
+            value={settings.stripePublishableKey || ""}
+            onChange={(e) => set({ stripePublishableKey: e.target.value, stripeEnabled: true })}
+            placeholder="pk_live_..."
+            className="bg-background border-border text-foreground font-body text-xs font-mono"
+          />
+        </div>
+        <div>
+          <label className="text-xs font-body text-muted-foreground mb-1 block">Secret Key</label>
+          <Input
+            type="password"
+            value={settings.stripeSecretKey || ""}
+            onChange={(e) => set({ stripeSecretKey: e.target.value, stripeEnabled: true })}
+            placeholder="sk_live_..."
+            className="bg-background border-border text-foreground font-body text-xs font-mono"
+          />
+        </div>
+        <div>
+          <label className="text-xs font-body text-muted-foreground mb-1 block">Webhook Secret</label>
+          <Input
+            type="password"
+            value={settings.stripeWebhookSecret || ""}
+            onChange={(e) => set({ stripeWebhookSecret: e.target.value })}
+            placeholder="whsec_..."
+            className="bg-background border-border text-foreground font-body text-xs font-mono"
+          />
+          <p className="text-[10px] font-body text-muted-foreground mt-1">
+            Set webhook URL to: <code className="bg-secondary px-1 rounded text-[10px]">/api/tenant/{tenant.slug}/stripe/webhook</code>
+          </p>
+        </div>
+        <div>
+          <label className="text-xs font-body text-muted-foreground mb-1 block">Currency</label>
+          <Input
+            value={settings.stripeCurrency || ""}
+            onChange={(e) => set({ stripeCurrency: e.target.value.toLowerCase() })}
+            placeholder="aud"
+            maxLength={3}
+            className="bg-background border-border text-foreground font-body text-xs font-mono w-24"
+          />
+          <p className="text-[10px] font-body text-muted-foreground mt-0.5">ISO 4217 code, e.g. aud, usd, gbp. Defaults to aud.</p>
+        </div>
+      </div>
+
+      {/* ── Bank Transfer ──────────────────────────── */}
+      <div className="space-y-3 p-4 rounded-lg bg-secondary/40 border border-border/50">
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-body tracking-wider uppercase text-muted-foreground">Bank Transfer</span>
+          <Switch
+            checked={!!settings.bankTransferEnabled}
+            onCheckedChange={(v) => set({ bankTransferEnabled: v })}
+          />
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="text-xs font-body text-muted-foreground mb-1 block">Account Name</label>
+            <Input value={settings.bankAccountName || ""} onChange={(e) => set({ bankAccountName: e.target.value })}
+              placeholder="Jane Smith Photography" className="bg-background border-border text-foreground font-body text-xs" />
+          </div>
+          <div>
+            <label className="text-xs font-body text-muted-foreground mb-1 block">BSB</label>
+            <Input value={settings.bankBsb || ""} onChange={(e) => set({ bankBsb: e.target.value })}
+              placeholder="000-000" className="bg-background border-border text-foreground font-body text-xs" />
+          </div>
+          <div>
+            <label className="text-xs font-body text-muted-foreground mb-1 block">Account Number</label>
+            <Input value={settings.bankAccountNumber || ""} onChange={(e) => set({ bankAccountNumber: e.target.value })}
+              placeholder="00000000" className="bg-background border-border text-foreground font-body text-xs" />
+          </div>
+          <div>
+            <label className="text-xs font-body text-muted-foreground mb-1 block">PayID</label>
+            <Input value={settings.bankPayId || ""} onChange={(e) => set({ bankPayId: e.target.value })}
+              placeholder="jane@example.com" className="bg-background border-border text-foreground font-body text-xs" />
+          </div>
+        </div>
+        <div>
+          <label className="text-xs font-body text-muted-foreground mb-1 block">Payment Instructions</label>
+          <Input value={settings.bankInstructions || ""} onChange={(e) => set({ bankInstructions: e.target.value })}
+            placeholder="Use your name as reference" className="bg-background border-border text-foreground font-body text-xs" />
+        </div>
+      </div>
+
+      {/* ── Discord ────────────────────────────────── */}
+      <div className="space-y-3 p-4 rounded-lg bg-secondary/40 border border-border/50">
+        <span className="text-xs font-body tracking-wider uppercase text-muted-foreground">Discord</span>
+        <div>
+          <label className="text-xs font-body text-muted-foreground mb-1 block">Webhook URL</label>
+          <Input
+            value={settings.discordWebhookUrl || ""}
+            onChange={(e) => set({ discordWebhookUrl: e.target.value })}
+            placeholder="https://discord.com/api/webhooks/..."
+            className="bg-background border-border text-foreground font-body text-xs"
+          />
+          <p className="text-[10px] font-body text-muted-foreground mt-1">Notifications for this tenant's bookings will go to this webhook.</p>
+        </div>
+        <div className="flex flex-wrap gap-4">
+          {([
+            { key: "discordNotifyBookings", label: "Bookings" },
+            { key: "discordNotifyDownloads", label: "Downloads" },
+            { key: "discordNotifyProofing", label: "Proofing" },
+          ] as { key: keyof TenantSettings; label: string }[]).map(({ key, label }) => (
+            <div key={key} className="flex items-center gap-2">
+              <Switch
+                checked={settings[key] !== false}
+                onCheckedChange={(v) => set({ [key]: v })}
+              />
+              <label className="text-xs font-body text-foreground">{label}</label>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* ── SMTP ──────────────────────────────────── */}
+      <div className="space-y-3 p-4 rounded-lg bg-secondary/40 border border-border/50">
+        <span className="text-xs font-body tracking-wider uppercase text-muted-foreground">Email SMTP</span>
+        <p className="text-[10px] font-body text-muted-foreground -mt-1">Booking confirmation emails will be sent from this tenant's own email server.</p>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="text-xs font-body text-muted-foreground mb-1 block">SMTP Host</label>
+            <Input value={settings.smtpHost || ""} onChange={(e) => set({ smtpHost: e.target.value })}
+              placeholder="smtp.gmail.com" className="bg-background border-border text-foreground font-body text-xs" />
+          </div>
+          <div>
+            <label className="text-xs font-body text-muted-foreground mb-1 block">Port</label>
+            <Input type="number" value={settings.smtpPort || ""} onChange={(e) => set({ smtpPort: parseInt(e.target.value) || undefined })}
+              placeholder="587" className="bg-background border-border text-foreground font-body text-xs" />
+          </div>
+          <div>
+            <label className="text-xs font-body text-muted-foreground mb-1 block">Username</label>
+            <Input value={settings.smtpUser || ""} onChange={(e) => set({ smtpUser: e.target.value })}
+              placeholder="jane@example.com" className="bg-background border-border text-foreground font-body text-xs" />
+          </div>
+          <div>
+            <label className="text-xs font-body text-muted-foreground mb-1 block">Password / App Password</label>
+            <Input type="password" value={settings.smtpPassword || ""} onChange={(e) => set({ smtpPassword: e.target.value })}
+              placeholder="••••••••" className="bg-background border-border text-foreground font-body text-xs" />
+          </div>
+          <div>
+            <label className="text-xs font-body text-muted-foreground mb-1 block">From Address</label>
+            <Input value={settings.smtpFrom || ""} onChange={(e) => set({ smtpFrom: e.target.value })}
+              placeholder="Jane Smith <jane@example.com>" className="bg-background border-border text-foreground font-body text-xs" />
+          </div>
+          <div className="flex items-center gap-2 pt-5">
+            <Switch checked={!!settings.smtpSecure} onCheckedChange={(v) => set({ smtpSecure: v })} />
+            <label className="text-xs font-body text-foreground">Use TLS (port 465)</label>
+          </div>
+        </div>
+      </div>
+
+      <Button
+        onClick={handleSave}
+        disabled={saving}
+        className="bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2 w-full"
+        size="sm"
+      >
+        {saving ? "Saving…" : "Save Tenant Settings"}
+      </Button>
+    </div>
+  );
+}
+
 // ─── Platform View (Super Admin Only) ────────────────
 function PlatformView() {
   const [stats, setStats] = useState<{
@@ -5882,6 +6163,7 @@ function PlatformView() {
   const [purchases, setPurchases] = useState<LicensePurchase[]>([]);
   const [loadingStats, setLoadingStats] = useState(true);
   const [activeSection, setActiveSection] = useState<"overview" | "bookings" | "plans" | "purchases">("overview");
+  const [selectedTenantForSettings, setSelectedTenantForSettings] = useState<Tenant | null>(null);
 
   // Plan form state
   const [newPlanName, setNewPlanName] = useState("");
@@ -6017,28 +6299,42 @@ function PlatformView() {
             ) : (
               <div className="space-y-2">
                 {stats.tenants.map(t => (
-                  <div key={t.slug} className="flex items-center gap-3 p-3 rounded-lg bg-secondary/50 border border-border/40">
-                    <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center shrink-0">
-                      <Camera className="w-3.5 h-3.5 text-primary" />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-body text-foreground">{t.displayName}</span>
-                        <span className="text-[10px] font-mono text-muted-foreground">/{t.slug}</span>
-                        {!t.active && <span className="text-[10px] font-body bg-muted text-muted-foreground px-1.5 py-0.5 rounded-full">Inactive</span>}
+                  <div key={t.slug} className="space-y-0">
+                    <div className="flex items-center gap-3 p-3 rounded-lg bg-secondary/50 border border-border/40">
+                      <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center shrink-0">
+                        <Camera className="w-3.5 h-3.5 text-primary" />
                       </div>
-                      <p className="text-xs font-body text-muted-foreground">{t.email}</p>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-body text-foreground">{t.displayName}</span>
+                          <span className="text-[10px] font-mono text-muted-foreground">/{t.slug}</span>
+                          {!t.active && <span className="text-[10px] font-body bg-muted text-muted-foreground px-1.5 py-0.5 rounded-full">Inactive</span>}
+                        </div>
+                        <p className="text-xs font-body text-muted-foreground">{t.email}</p>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <p className="text-xs font-body text-foreground">{t.bookingCount} bookings</p>
+                        {t.pendingBookings > 0 && <p className="text-[10px] font-body text-orange-400">{t.pendingBookings} pending</p>}
+                      </div>
+                      <button
+                        onClick={() => copyToClipboard(`${window.location.origin}/book/${t.slug}`)}
+                        className="text-muted-foreground hover:text-primary transition-colors" title="Copy booking URL"
+                      >
+                        <Copy className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        onClick={() => setSelectedTenantForSettings(selectedTenantForSettings?.slug === t.slug ? null : t)}
+                        className={`text-xs font-body px-2 py-1 rounded-md border transition-colors ${selectedTenantForSettings?.slug === t.slug ? "bg-primary text-primary-foreground border-primary" : "border-border text-muted-foreground hover:text-foreground hover:border-foreground"}`}
+                        title="Configure tenant settings"
+                      >
+                        ⚙ Settings
+                      </button>
                     </div>
-                    <div className="text-right shrink-0">
-                      <p className="text-xs font-body text-foreground">{t.bookingCount} bookings</p>
-                      {t.pendingBookings > 0 && <p className="text-[10px] font-body text-orange-400">{t.pendingBookings} pending</p>}
-                    </div>
-                    <button
-                      onClick={() => copyToClipboard(`${window.location.origin}/book/${t.slug}`)}
-                      className="text-muted-foreground hover:text-primary transition-colors" title="Copy booking URL"
-                    >
-                      <Copy className="w-3.5 h-3.5" />
-                    </button>
+                    {selectedTenantForSettings?.slug === t.slug && (
+                      <div className="mt-1 p-4 rounded-lg bg-secondary/30 border border-primary/20">
+                        <TenantSettingsPanel tenant={t} onClose={() => setSelectedTenantForSettings(null)} />
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>

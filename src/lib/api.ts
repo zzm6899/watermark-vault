@@ -701,12 +701,13 @@ export async function generateLicenseKey(
   issuedTo: string,
   expiresAt?: string,
   notes?: string,
+  trialOptions?: { isTrial: boolean; trialMaxEvents?: number; trialMaxBookings?: number },
 ): Promise<{ key?: import("./types").LicenseKey; error?: string }> {
   try {
     const res = await fetch("/api/license-keys/generate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ issuedTo, expiresAt, notes }),
+      body: JSON.stringify({ issuedTo, expiresAt, notes, ...trialOptions }),
     });
     const data = await res.json();
     if (!res.ok) return { error: data.error || "Failed to generate key" };
@@ -1032,4 +1033,40 @@ export async function createBankLicensePurchase(planId: string, buyerEmail: stri
     if (!res.ok) return { ok: false, error: json.error || "Failed to create bank purchase" };
     return { ok: true, purchase: json.purchase };
   } catch { return { ok: false, error: "Network error" }; }
+}
+
+// ── Tenant Settings ────────────────────────────────────────────
+
+/** Fetch per-tenant integration settings (Stripe, SMTP, Discord, bank). */
+export async function getTenantSettings(slug: string): Promise<import("./types").TenantSettings> {
+  try {
+    const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/settings`);
+    if (!res.ok) return {};
+    return await res.json();
+  } catch { return {}; }
+}
+
+/** Save per-tenant integration settings. */
+export async function saveTenantSettings(
+  slug: string,
+  settings: import("./types").TenantSettings,
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/settings`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(settings),
+    });
+    const json = await res.json();
+    return { ok: !!json.ok, error: json.error };
+  } catch { return { ok: false, error: "Network error" }; }
+}
+
+/** Get the Stripe publishable key and configured status for a tenant. */
+export async function getTenantStripeStatus(slug: string): Promise<{ configured: boolean; publishableKey?: string }> {
+  try {
+    const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/stripe/status`);
+    if (!res.ok) return { configured: false };
+    return await res.json();
+  } catch { return { configured: false }; }
 }
