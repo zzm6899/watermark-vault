@@ -1095,7 +1095,7 @@ export async function getTenantSetupInfo(token: string): Promise<{
 /** Complete tenant setup: create tenant and activate license key. */
 export async function completeTenantSetup(
   token: string,
-  data: { slug: string; displayName: string; email: string; bio?: string; timezone?: string },
+  data: { slug: string; displayName: string; email: string; bio?: string; timezone?: string; passwordHash?: string },
 ): Promise<{ ok: boolean; tenant?: import("./types").Tenant; error?: string }> {
   try {
     const res = await fetch(`/api/tenant-setup/${encodeURIComponent(token)}/complete`, {
@@ -1106,5 +1106,77 @@ export async function completeTenantSetup(
     const json = await res.json();
     if (!res.ok) return { ok: false, error: json.error || "Failed to complete setup" };
     return { ok: true, tenant: json.tenant };
+  } catch { return { ok: false, error: "Network error" }; }
+}
+
+/** Delete a tenant booking (tenant admin). */
+export async function deleteTenantBooking(slug: string, bookingId: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/bookings/${encodeURIComponent(bookingId)}`, { method: "DELETE" });
+    const json = await res.json();
+    return { ok: !!json.ok, error: json.error };
+  } catch { return { ok: false, error: "Network error" }; }
+}
+
+/** Full update of a tenant booking (tenant admin). */
+export async function updateTenantBookingFull(slug: string, bookingId: string, data: Partial<import("./types").Booking>): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/bookings/${encodeURIComponent(bookingId)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+    const json = await res.json();
+    return { ok: !!json.ok, error: json.error };
+  } catch { return { ok: false, error: "Network error" }; }
+}
+
+/** Delete a tenant album (tenant admin). */
+export async function deleteTenantAlbum(slug: string, albumId: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/albums/${encodeURIComponent(albumId)}`, { method: "DELETE" });
+    const json = await res.json();
+    return { ok: !!json.ok, error: json.error };
+  } catch { return { ok: false, error: "Network error" }; }
+}
+
+/** Get tenant license key info (tenant admin). */
+export async function getTenantLicenseInfo(slug: string): Promise<{
+  key: string | null;
+  issuedTo?: string;
+  isTrial?: boolean;
+  trialMaxEvents?: number;
+  trialMaxBookings?: number;
+  expiresAt?: string;
+  usedAt?: string;
+}> {
+  try {
+    const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/license-info`);
+    if (!res.ok) return { key: null };
+    return res.json();
+  } catch { return { key: null }; }
+}
+
+/** Read any generic tenant store key (tenant admin). */
+export async function getTenantStoreKey<T>(slug: string, key: string): Promise<T | null> {
+  try {
+    const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/store/${encodeURIComponent(key)}`);
+    if (!res.ok) return null;
+    const json = await res.json();
+    if (json.value === null) return null;
+    return typeof json.value === "string" ? JSON.parse(json.value) : json.value;
+  } catch { return null; }
+}
+
+/** Write any generic tenant store key (tenant admin). */
+export async function saveTenantStoreKey(slug: string, key: string, value: unknown): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/store/${encodeURIComponent(key)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ value }),
+    });
+    const json = await res.json();
+    return { ok: !!json.ok, error: json.error };
   } catch { return { ok: false, error: "Network error" }; }
 }
