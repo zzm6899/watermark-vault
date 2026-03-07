@@ -5677,9 +5677,6 @@ function SettingsView() {
         {/* Google Calendar */}
         <GoogleCalendarSection />
 
-        {/* License Keys */}
-        <LicenseKeysPanel />
-
         {/* Watermark rebuild / cache clear progress */}
         {rebuildProgress && (
           <div className="p-3 rounded-lg bg-secondary/50 border border-border">
@@ -6179,8 +6176,20 @@ function PlatformView() {
   const [plans, setPlans] = useState<LicensePlan[]>([]);
   const [purchases, setPurchases] = useState<LicensePurchase[]>([]);
   const [loadingStats, setLoadingStats] = useState(true);
-  const [activeSection, setActiveSection] = useState<"overview" | "bookings" | "plans" | "purchases">("overview");
+  const [activeSection, setActiveSection] = useState<"overview" | "bookings" | "tenants" | "keys" | "plans" | "purchases">("overview");
   const [selectedTenantForSettings, setSelectedTenantForSettings] = useState<Tenant | null>(null);
+
+  // Tenant create form
+  const [newTenantSlug, setNewTenantSlug] = useState("");
+  const [newTenantName, setNewTenantName] = useState("");
+  const [newTenantEmail, setNewTenantEmail] = useState("");
+  const [newTenantLicenseKey, setNewTenantLicenseKey] = useState("");
+  const [creatingTenant, setCreatingTenant] = useState(false);
+
+  // Tenant password reset
+  const [resettingSlug, setResettingSlug] = useState<string | null>(null);
+  const [newTempPassword, setNewTempPassword] = useState("");
+  const [settingPassword, setSettingPassword] = useState(false);
 
   // Plan form state
   const [newPlanName, setNewPlanName] = useState("");
@@ -6196,7 +6205,7 @@ function PlatformView() {
   const [checkoutName, setCheckoutName] = useState("");
   const [generatingCheckout, setGeneratingCheckout] = useState(false);
 
-  useEffect(() => {
+  const loadAll = React.useCallback(() => {
     Promise.all([
       getSuperStats(), getAllBookings(), getLicensePlans(), getLicensePurchases(),
     ]).then(([s, bks, p, pur]) => {
@@ -6207,6 +6216,10 @@ function PlatformView() {
       setLoadingStats(false);
     });
   }, []);
+
+  useEffect(() => {
+    loadAll();
+  }, [loadAll]);
 
   const handleCreatePlan = async () => {
     const price = parseFloat(newPlanPrice);
@@ -6255,6 +6268,51 @@ function PlatformView() {
     setPurchases(updatedPurchases);
   };
 
+  const handleCreateTenant = async () => {
+    if (!newTenantSlug.trim() || !newTenantName.trim()) {
+      toast.error("Slug and display name are required");
+      return;
+    }
+    setCreatingTenant(true);
+    const { tenant, error } = await createTenant({
+      slug: newTenantSlug.trim().toLowerCase(),
+      displayName: newTenantName.trim(),
+      email: newTenantEmail.trim() || "",
+      licenseKey: newTenantLicenseKey.trim() || undefined,
+    });
+    setCreatingTenant(false);
+    if (error || !tenant) { toast.error(error || "Failed to create tenant"); return; }
+    toast.success(`Tenant /${tenant.slug} created`);
+    setNewTenantSlug(""); setNewTenantName(""); setNewTenantEmail(""); setNewTenantLicenseKey("");
+    loadAll();
+  };
+
+  const handleDeleteTenant = async (slug: string, displayName: string) => {
+    if (!confirm(`Delete tenant "${displayName}" (/${slug})? This cannot be undone.`)) return;
+    const { ok, error } = await deleteTenant(slug);
+    if (!ok) { toast.error(error || "Failed to delete tenant"); return; }
+    toast.success("Tenant deleted");
+    loadAll();
+  };
+
+  const handleSetTenantPassword = async (slug: string) => {
+    if (!newTempPassword.trim() || newTempPassword.length < 8) {
+      toast.error("Password must be at least 8 characters");
+      return;
+    }
+    setSettingPassword(true);
+    try {
+      const hashBuf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(newTempPassword.trim()));
+      const hashHex = Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, "0")).join("");
+      const { ok, error } = await updateTenant(slug, { passwordHash: hashHex });
+      if (!ok) { toast.error(error || "Failed to update password"); return; }
+      toast.success(`Password updated for /${slug}`);
+      setResettingSlug(null);
+      setNewTempPassword("");
+    } catch { toast.error("Failed to update password"); }
+    finally { setSettingPassword(false); }
+  };
+
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text).then(() => toast.success("Copied!")).catch(() => toast.error("Copy failed"));
   };
@@ -6265,9 +6323,11 @@ function PlatformView() {
 
   const sections = [
     { id: "overview", label: "Overview" },
-    { id: "bookings", label: "All Bookings" },
+    { id: "tenants", label: "Tenants" },
+    { id: "keys", label: "License Keys" },
     { id: "plans", label: "License Plans" },
     { id: "purchases", label: "Purchases" },
+    { id: "bookings", label: "All Bookings" },
   ] as const;
 
   return (
@@ -6295,12 +6355,12 @@ function PlatformView() {
           {/* Stats */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
             {[
-              { label: "Tenants", value: stats?.tenantCount ?? 0, sub: "active" },
-              { label: "Total Bookings", value: stats?.totalBookings ?? 0, sub: "all tenants" },
-              { label: "Main Bookings", value: stats?.mainBookings ?? 0, sub: "direct" },
-              { label: "License Plans", value: plans.length, sub: `${purchases.length} sold` },
+              { label: "Tenants", value: stats?.tenantCount ?? 0, sub: "active", onClick: () => setActiveSection("tenants") },
+              { label: "Total Bookings", value: stats?.totalBookings ?? 0, sub: "all tenants", onClick: () => setActiveSection("bookings") },
+              { label: "Main Bookings", value: stats?.mainBookings ?? 0, sub: "direct", onClick: undefined },
+              { label: "License Plans", value: plans.length, sub: `${purchases.length} sold`, onClick: () => setActiveSection("plans") },
             ].map(s => (
-              <div key={s.label} className="glass-panel rounded-xl p-4">
+              <div key={s.label} className={`glass-panel rounded-xl p-4 ${s.onClick ? "cursor-pointer hover:ring-1 hover:ring-primary/30 transition-all" : ""}`} onClick={s.onClick}>
                 <p className="text-xs font-body tracking-wider uppercase text-muted-foreground">{s.label}</p>
                 <p className="font-display text-2xl text-foreground mt-1">{s.value}</p>
                 <p className="text-[10px] font-body text-muted-foreground">{s.sub}</p>
@@ -6308,11 +6368,70 @@ function PlatformView() {
             ))}
           </div>
 
+          {/* Quick Tenant List */}
+          <div className="glass-panel rounded-xl p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-display text-base text-foreground">Tenants</h3>
+              <button onClick={() => setActiveSection("tenants")} className="text-xs font-body text-primary hover:underline">Manage →</button>
+            </div>
+            {!stats?.tenants.length ? (
+              <p className="text-sm font-body text-muted-foreground">No tenants yet. <button onClick={() => setActiveSection("tenants")} className="text-primary hover:underline">Create one</button></p>
+            ) : (
+              <div className="space-y-2">
+                {stats.tenants.slice(0, 5).map(t => (
+                  <div key={t.slug} className="flex items-center gap-3 p-2.5 rounded-lg bg-secondary/50">
+                    <Camera className="w-3.5 h-3.5 text-primary shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <span className="text-sm font-body text-foreground">{t.displayName}</span>
+                      <span className="text-[10px] font-mono text-muted-foreground ml-2">/{t.slug}</span>
+                    </div>
+                    <span className="text-xs font-body text-muted-foreground shrink-0">{t.bookingCount} bookings</span>
+                  </div>
+                ))}
+                {stats.tenants.length > 5 && (
+                  <p className="text-xs font-body text-muted-foreground text-center pt-1">+{stats.tenants.length - 5} more — <button onClick={() => setActiveSection("tenants")} className="text-primary hover:underline">view all</button></p>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Tenants ── */}
+      {activeSection === "tenants" && (
+        <div className="space-y-6">
+          {/* Create tenant */}
+          <div className="glass-panel rounded-xl p-6 space-y-4">
+            <h3 className="font-display text-base text-foreground">Create New Tenant</h3>
+            <div className="grid sm:grid-cols-2 gap-4">
+              <div>
+                <label className="text-xs font-body text-muted-foreground mb-1 block">Slug * (URL identifier)</label>
+                <Input value={newTenantSlug} onChange={e => setNewTenantSlug(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""))} placeholder="jane-photography" className="bg-secondary border-border text-foreground font-body font-mono" />
+                <p className="text-[10px] font-body text-muted-foreground mt-0.5">Booking URL: /book/{newTenantSlug || "slug"}</p>
+              </div>
+              <div>
+                <label className="text-xs font-body text-muted-foreground mb-1 block">Display Name *</label>
+                <Input value={newTenantName} onChange={e => setNewTenantName(e.target.value)} placeholder="Jane Smith Photography" className="bg-secondary border-border text-foreground font-body" />
+              </div>
+              <div>
+                <label className="text-xs font-body text-muted-foreground mb-1 block">Email</label>
+                <Input type="email" value={newTenantEmail} onChange={e => setNewTenantEmail(e.target.value)} placeholder="jane@example.com" className="bg-secondary border-border text-foreground font-body" />
+              </div>
+              <div>
+                <label className="text-xs font-body text-muted-foreground mb-1 block">License Key (optional)</label>
+                <Input value={newTenantLicenseKey} onChange={e => setNewTenantLicenseKey(e.target.value)} placeholder="WV-XXXX-XXXX-XXXX-XXXX" className="bg-secondary border-border text-foreground font-body font-mono text-xs" />
+              </div>
+            </div>
+            <Button onClick={handleCreateTenant} disabled={creatingTenant} className="bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2" size="sm">
+              <Plus className="w-3 h-3" /> {creatingTenant ? "Creating…" : "Create Tenant"}
+            </Button>
+          </div>
+
           {/* Tenant list */}
           <div className="glass-panel rounded-xl p-6">
-            <h3 className="font-display text-base text-foreground mb-4">Tenants</h3>
+            <h3 className="font-display text-base text-foreground mb-4">All Tenants ({stats?.tenants.length ?? 0})</h3>
             {!stats?.tenants.length ? (
-              <p className="text-sm font-body text-muted-foreground">No tenants yet. Create them in Admin → Settings → Tenants.</p>
+              <p className="text-sm font-body text-muted-foreground">No tenants yet. Create one above.</p>
             ) : (
               <div className="space-y-2">
                 {stats.tenants.map(t => (
@@ -6340,13 +6459,54 @@ function PlatformView() {
                         <Copy className="w-3.5 h-3.5" />
                       </button>
                       <button
+                        onClick={() => {
+                          setResettingSlug(resettingSlug === t.slug ? null : t.slug);
+                          setNewTempPassword("");
+                          setSelectedTenantForSettings(null);
+                        }}
+                        className={`text-xs font-body px-2 py-1 rounded-md border transition-colors ${resettingSlug === t.slug ? "bg-yellow-500/10 text-yellow-400 border-yellow-500/30" : "border-border text-muted-foreground hover:text-foreground hover:border-foreground"}`}
+                        title="Reset password"
+                      >
+                        🔑 Password
+                      </button>
+                      <button
                         onClick={() => setSelectedTenantForSettings(selectedTenantForSettings?.slug === t.slug ? null : t)}
                         className={`text-xs font-body px-2 py-1 rounded-md border transition-colors ${selectedTenantForSettings?.slug === t.slug ? "bg-primary text-primary-foreground border-primary" : "border-border text-muted-foreground hover:text-foreground hover:border-foreground"}`}
                         title="Configure tenant settings"
                       >
                         ⚙ Settings
                       </button>
+                      <button
+                        onClick={() => handleDeleteTenant(t.slug, t.displayName)}
+                        className="text-muted-foreground hover:text-destructive transition-colors" title="Delete tenant"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
                     </div>
+                    {resettingSlug === t.slug && (
+                      <div className="mt-1 p-4 rounded-lg bg-yellow-500/5 border border-yellow-500/20">
+                        <p className="text-xs font-body text-yellow-400 mb-2 font-medium">Set a new password for /{t.slug}</p>
+                        <div className="flex gap-2 items-end">
+                          <div className="flex-1">
+                            <Input
+                              type="text"
+                              value={newTempPassword}
+                              onChange={e => setNewTempPassword(e.target.value)}
+                              placeholder="New password (min 8 chars)"
+                              className="bg-background border-border text-foreground font-body text-sm font-mono"
+                            />
+                          </div>
+                          <Button size="sm" onClick={() => handleSetTenantPassword(t.slug)} disabled={settingPassword}
+                            className="bg-yellow-600 hover:bg-yellow-700 text-white font-body text-xs gap-1 shrink-0">
+                            {settingPassword ? "Saving…" : "Set Password"}
+                          </Button>
+                          <Button size="sm" variant="ghost" onClick={() => { setResettingSlug(null); setNewTempPassword(""); }}
+                            className="font-body text-xs text-muted-foreground">
+                            Cancel
+                          </Button>
+                        </div>
+                      </div>
+                    )}
                     {selectedTenantForSettings?.slug === t.slug && (
                       <div className="mt-1 p-4 rounded-lg bg-secondary/30 border border-primary/20">
                         <TenantSettingsPanel tenant={t} onClose={() => setSelectedTenantForSettings(null)} />
@@ -6360,7 +6520,14 @@ function PlatformView() {
         </div>
       )}
 
-      {/* ── All Bookings ── */}
+      {/* ── License Keys ── */}
+      {activeSection === "keys" && (
+        <div className="space-y-4">
+          <LicenseKeysPanel />
+        </div>
+      )}
+
+
       {activeSection === "bookings" && (
         <div className="glass-panel rounded-xl p-6 space-y-4">
           <h3 className="font-display text-base text-foreground">All Bookings <span className="text-sm font-body text-muted-foreground font-normal">({allBookings.length} total)</span></h3>

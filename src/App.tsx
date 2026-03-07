@@ -68,6 +68,7 @@ const App = () => {
             <Route path="/admin/storage" element={<AdminGuard />} />
             <Route path="/invoice/:token" element={<InvoiceView />} />
             <Route path="/tenant-setup/:token" element={<TenantSetup />} />
+            <Route path="/tenant-admin/:slug" element={<TenantAdmin />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </BrowserRouter>
