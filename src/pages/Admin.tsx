@@ -26,7 +26,7 @@ import {
   getInvoices, addInvoice, updateInvoice, deleteInvoice, getNextInvoiceNumber,
   getContacts, addContact, updateContact, deleteContact,
   getEnquiries, updateEnquiry, deleteEnquiry,
-  isSuperAdmin, setSuperAdmin, getAdminCredentials,
+  isSuperAdmin, setSuperAdmin, getAdminCredentials, hashPassword,
 } from "@/lib/storage";
 import { compressImage, formatBytes, getLocalStorageUsage, generateThumbnail } from "@/lib/image-utils";
 import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar, getServerStorageStats, syncFromServer, sendEmail, bulkDeleteFiles, syncBookingsToSheet, getBookingEmailLog, sendBookingReminder, sendCustomEmail, getWaitlistEntries, deleteWaitlistEntry, notifyWaitlistOnCancel, notifyDiscord, getCacheStats, warmCache, createInvoiceCheckout, sendInvoiceEmail, getStripeStatus, sendEnquiryAcceptedEmail, sendEnquiryDeclinedEmail, getLicenseKeys, generateLicenseKey, revokeLicenseKey, getTenants, createTenant, updateTenant, deleteTenant, getSuperAdminInfo, getSuperStats, getAllBookings, getLicensePlans, createLicensePlan, updateLicensePlan, deleteLicensePlan, getLicensePurchases, activateBankPurchase, getLicensePlanCheckout, getTenantSettings, saveTenantSettings } from "@/lib/api";
@@ -6205,7 +6205,7 @@ function PlatformView() {
   const [checkoutName, setCheckoutName] = useState("");
   const [generatingCheckout, setGeneratingCheckout] = useState(false);
 
-  const loadAll = React.useCallback(() => {
+  const loadAll = useCallback(() => {
     Promise.all([
       getSuperStats(), getAllBookings(), getLicensePlans(), getLicensePurchases(),
     ]).then(([s, bks, p, pur]) => {
@@ -6302,8 +6302,7 @@ function PlatformView() {
     }
     setSettingPassword(true);
     try {
-      const hashBuf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(newTempPassword.trim()));
-      const hashHex = Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, "0")).join("");
+      const hashHex = await hashPassword(newTempPassword.trim());
       const { ok, error } = await updateTenant(slug, { passwordHash: hashHex });
       if (!ok) { toast.error(error || "Failed to update password"); return; }
       toast.success(`Password updated for /${slug}`);
@@ -6357,10 +6356,16 @@ function PlatformView() {
             {[
               { label: "Tenants", value: stats?.tenantCount ?? 0, sub: "active", onClick: () => setActiveSection("tenants") },
               { label: "Total Bookings", value: stats?.totalBookings ?? 0, sub: "all tenants", onClick: () => setActiveSection("bookings") },
-              { label: "Main Bookings", value: stats?.mainBookings ?? 0, sub: "direct", onClick: undefined },
+              { label: "Main Bookings", value: stats?.mainBookings ?? 0, sub: "direct", onClick: undefined as (() => void) | undefined },
               { label: "License Plans", value: plans.length, sub: `${purchases.length} sold`, onClick: () => setActiveSection("plans") },
-            ].map(s => (
-              <div key={s.label} className={`glass-panel rounded-xl p-4 ${s.onClick ? "cursor-pointer hover:ring-1 hover:ring-primary/30 transition-all" : ""}`} onClick={s.onClick}>
+            ].map(s => s.onClick ? (
+              <button key={s.label} onClick={s.onClick} className="glass-panel rounded-xl p-4 text-left hover:ring-1 hover:ring-primary/30 transition-all w-full">
+                <p className="text-xs font-body tracking-wider uppercase text-muted-foreground">{s.label}</p>
+                <p className="font-display text-2xl text-foreground mt-1">{s.value}</p>
+                <p className="text-[10px] font-body text-muted-foreground">{s.sub}</p>
+              </button>
+            ) : (
+              <div key={s.label} className="glass-panel rounded-xl p-4">
                 <p className="text-xs font-body tracking-wider uppercase text-muted-foreground">{s.label}</p>
                 <p className="font-display text-2xl text-foreground mt-1">{s.value}</p>
                 <p className="text-[10px] font-body text-muted-foreground">{s.sub}</p>

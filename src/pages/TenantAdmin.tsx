@@ -1291,7 +1291,7 @@ function TenantProfileView({ slug, session }: { slug: string; session: { display
   const [displayName, setDisplayName] = useState(session.displayName);
   const [email, setEmail] = useState(session.email);
   const [bio, setBio] = useState("");
-  const [saving, setSaving] = useState(false);
+  const [savingProfile, setSavingProfile] = useState(false);
 
   // Password change
   const [currentPassword, setCurrentPassword] = useState("");
@@ -1308,9 +1308,9 @@ function TenantProfileView({ slug, session }: { slug: string; session: { display
 
   const handleSave = async () => {
     if (!displayName.trim()) { toast.error("Display name is required"); return; }
-    setSaving(true);
+    setSavingProfile(true);
     const { ok, error } = await updateTenant(slug, { displayName: displayName.trim(), email: email.trim(), bio: bio.trim() || undefined });
-    setSaving(false);
+    setSavingProfile(false);
     if (!ok) { toast.error(error || "Failed to save profile"); return; }
     toast.success("Profile updated");
   };
@@ -1360,8 +1360,8 @@ function TenantProfileView({ slug, session }: { slug: string; session: { display
             <p className="text-xs font-body text-muted-foreground">Booking page URL:</p>
             <a href={`/book/${slug}`} target="_blank" rel="noopener noreferrer" className="text-sm font-body text-primary hover:underline">{window.location.origin}/book/{slug}</a>
           </div>
-          <Button onClick={handleSave} disabled={saving} className="bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2 w-full">
-            <Save className="w-4 h-4" /> {saving ? "Saving…" : "Save Profile"}
+          <Button onClick={handleSave} disabled={savingProfile} className="bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2 w-full">
+            <Save className="w-4 h-4" /> {savingProfile ? "Saving…" : "Save Profile"}
           </Button>
         </div>
 
