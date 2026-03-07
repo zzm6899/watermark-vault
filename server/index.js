@@ -1268,6 +1268,29 @@ app.put("/api/tenant/:slug/albums/:albumId", tenantLimiter, (req, res) => {
   res.json({ ok: true });
 });
 
+// Update a booking that belongs to a tenant (e.g. mark as completed from the mobile app)
+app.put("/api/tenant/:slug/bookings/:bookingId", tenantLimiter, (req, res) => {
+  const { slug, bookingId } = req.params;
+  const tenants = readTenants();
+  const tenant = tenants.find(t => t.slug === slug && t.active !== false);
+  if (!tenant) return res.status(404).json({ ok: false, error: "Tenant not found" });
+  const db = readDb();
+  const allBookingsRaw = db["wv_bookings"];
+  const allBookings = allBookingsRaw ? (typeof allBookingsRaw === "string" ? JSON.parse(allBookingsRaw) : (Array.isArray(allBookingsRaw) ? allBookingsRaw : [])) : [];
+  const idx = allBookings.findIndex(b => b.id === bookingId && b.tenantSlug === slug);
+  if (idx < 0) return res.status(404).json({ ok: false, error: "Booking not found" });
+  // Only allow safe status fields to be updated from the mobile app
+  const allowed = ["status"];
+  const updates = {};
+  for (const key of allowed) {
+    if (req.body[key] !== undefined) updates[key] = req.body[key];
+  }
+  allBookings[idx] = { ...allBookings[idx], ...updates };
+  db["wv_bookings"] = JSON.stringify(allBookings);
+  writeDb(db);
+  res.json({ ok: true });
+});
+
 // ── Tenant Settings (per-tenant integration overrides) ─────────────────────
 
 // Get tenant settings (Discord, SMTP, Stripe, bank — per-tenant overrides)

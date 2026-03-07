@@ -5,7 +5,7 @@ const config: CapacitorConfig = {
   appName: "Zuploader",
   webDir: "dist",
   server: {
-    url: "https://book.zacmclients.photos/admin",
+    url: "https://book.zacmclients.photos/login",
     cleartext: true,
   },
 };

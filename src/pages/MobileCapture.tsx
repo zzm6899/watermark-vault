@@ -6,8 +6,8 @@ import { Progress } from "@/components/ui/progress";
 import { Switch } from "@/components/ui/switch";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
-import { getBookings, getAlbums, getSettings, updateAlbum, addAlbum, updateBooking } from "@/lib/storage";
-import { uploadPhotosToServer, isServerMode, recheckServer, sendEmail } from "@/lib/api";
+import { getBookings, getAlbums, getSettings, updateAlbum, addAlbum, updateBooking, getMobileTenantSession, setMobileTenantSession } from "@/lib/storage";
+import { uploadPhotosToServer, isServerMode, recheckServer, sendEmail, fetchTenantMobileData, saveTenantAlbum } from "@/lib/api";
 import { generateThumbnail } from "@/lib/image-utils";
 import CameraUsb from "@/plugins/camera-usb";
 import type { CameraFile } from "@/plugins/camera-usb";
@@ -19,7 +19,7 @@ import {
   Usb, AlertCircle, Download, Mail, FileImage, Search,
   Clock, ChevronDown, ChevronUp, CheckCircle2, Users,
   Star, CalendarDays, ChevronLeft, ChevronRight,
-  AlertTriangle, RotateCcw, Settings2,
+  AlertTriangle, RotateCcw, Settings2, LogOut,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
@@ -211,6 +211,9 @@ function MobileCaptureInner() {
   const navigate = useNavigate();
   const isNative = Capacitor.isNativePlatform();
 
+  // Tenant session — set when a tenant logs in via /login
+  const [tenantSession] = useState(() => getMobileTenantSession());
+
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [albums, setAlbums] = useState<Album[]>([]);
   const [selectedBooking, setSelectedBooking] = useState<Booking | null>(null);
@@ -258,6 +261,15 @@ function MobileCaptureInner() {
   const emailSentRef = useRef(false);
   const sessionUploadedRef = useRef(false);
 
+  /** Persist an album — uses tenant API in tenant mode, localStorage otherwise. */
+  const saveAlbum = useCallback(async (album: Album) => {
+    if (tenantSession) {
+      await saveTenantAlbum(tenantSession.slug, album);
+    } else {
+      updateAlbum(album);
+    }
+  }, [tenantSession]);
+
   const sendClientNotification = useCallback(async (type: "album-created" | "photos-uploaded", photoCount?: number) => {
     if (!notifyClient || !serverOnline || !selectedBooking?.clientEmail) return;
     const clientName = selectedBooking.clientName || "Client";
@@ -275,10 +287,22 @@ function MobileCaptureInner() {
   }, [notifyClient, serverOnline, selectedBooking]);
 
   useEffect(() => {
-    setBookings(getBookings().filter(b => b.status !== "cancelled"));
-    setAlbums(getAlbums());
+    if (tenantSession) {
+      // Tenant mode — load bookings and albums from the server API
+      fetchTenantMobileData(tenantSession.slug).then(data => {
+        if (data) {
+          setBookings((data.bookings || []).filter((b: Booking) => b.status !== "cancelled"));
+          setAlbums(data.albums || []);
+        } else {
+          toast.error("Could not load your sessions. Check your connection.");
+        }
+      });
+    } else {
+      setBookings(getBookings().filter(b => b.status !== "cancelled"));
+      setAlbums(getAlbums());
+    }
     recheckServer().then(ok => setServerOnline(ok));
-  }, []);
+  }, [tenantSession]);
 
   // Reset zoom whenever the lightbox navigates to a different photo
   useEffect(() => { setLightboxZoom(1); }, [lightboxIndex]);
@@ -406,7 +430,7 @@ function MobileCaptureInner() {
   }, [isNative, watching]); // intentionally no targetAlbum dep — use ref instead
 
   const getOrCreateAlbum = useCallback((booking: Booking): Album => {
-    const existing = getAlbums().find(a => a.bookingId === booking.id);
+    const existing = albums.find(a => a.bookingId === booking.id);
     if (existing) return existing;
     const settings = getSettings();
     const newAlbum: Album = {
@@ -417,14 +441,18 @@ function MobileCaptureInner() {
       priceFullAlbum: settings.defaultPriceFullAlbum, isPublic: false, enabled: false, photos: [],
       clientName: booking.clientName, clientEmail: booking.clientEmail, bookingId: booking.id,
     };
-    addAlbum(newAlbum);
+    if (tenantSession) {
+      saveTenantAlbum(tenantSession.slug, newAlbum).catch(() => toast.error("Failed to save album"));
+    } else {
+      addAlbum(newAlbum);
+    }
     setAlbums(prev => [...prev, newAlbum]);
     return newAlbum;
-  }, []);
+  }, [albums, tenantSession]);
 
   const selectBooking = (booking: Booking) => {
     setSelectedBooking(booking);
-    const existing = getAlbums().find(a => a.bookingId === booking.id);
+    const existing = albums.find(a => a.bookingId === booking.id);
     const album = getOrCreateAlbum(booking);
     setTargetAlbum(album);
     setUploadedCount(0);
@@ -432,7 +460,7 @@ function MobileCaptureInner() {
     sessionUploadedRef.current = false;
     // Seed with "name:0" — album photos lack size data; name match alone blocks re-import from same session
     importedNamesRef.current = new Set(
-      (getAlbums().find(a => a.bookingId === booking.id)?.photos ?? []).map(p => p.title ? `${p.title}:0` : "").filter(Boolean)
+      (albums.find(a => a.bookingId === booking.id)?.photos ?? []).map(p => p.title ? `${p.title}:0` : "").filter(Boolean)
     );
     if (!existing) { sendClientNotification("album-created"); emailSentRef.current = true; }
     if (isNative) checkCamera();
@@ -491,9 +519,9 @@ function MobileCaptureInner() {
         setImportProgress(100);
       }
       if (newPhotos.length > 0) {
-        const fresh = getAlbums().find(a => a.id === album.id) || album;
+        const fresh = albums.find(a => a.id === album.id) || album;
         const updated: Album = { ...fresh, photos: [...fresh.photos, ...newPhotos], photoCount: fresh.photos.length + newPhotos.length, coverImage: fresh.coverImage || newPhotos[0]?.src || "" };
-        updateAlbum(updated); setTargetAlbum(updated);
+        await saveAlbum(updated); setTargetAlbum(updated); setAlbums(prev => prev.map(a => a.id === updated.id ? updated : a));
         // Sync album record to server so admin panel / recent uploads reflects new photos
         if (isOnline) {
           try {
@@ -564,9 +592,9 @@ function MobileCaptureInner() {
         const newPhotos: Photo[] = results.map(r => ({
           id: r.id, src: r.url, thumbnail: r.url + "?size=thumb", title: r.originalName, width: 0, height: 0, proofing: true,
         }));
-        const fresh = getAlbums().find(a => a.id === targetAlbum.id) || targetAlbum;
+        const fresh = albums.find(a => a.id === targetAlbum.id) || targetAlbum;
         const updated: Album = { ...fresh, photos: [...fresh.photos, ...newPhotos], photoCount: fresh.photos.length + newPhotos.length, coverImage: fresh.coverImage || newPhotos[0]?.src || "" };
-        updateAlbum(updated); setTargetAlbum(updated);
+        await saveAlbum(updated); setTargetAlbum(updated); setAlbums(prev => prev.map(a => a.id === updated.id ? updated : a));
         setUploadedCount(p => p + newPhotos.length);
         sessionUploadedRef.current = true;
         toast.success(`${newPhotos.length} photos uploaded`);
@@ -585,8 +613,9 @@ function MobileCaptureInner() {
       ...targetAlbum,
       photos: targetAlbum.photos.map(p => p.id === photoId ? { ...p, starred: !(p as any).starred } : p),
     };
-    updateAlbum(updated);
+    saveAlbum(updated).catch(() => {});
     setTargetAlbum(updated);
+    setAlbums(prev => prev.map(a => a.id === updated.id ? updated : a));
   };
 
   // Flush offline queue when server comes back
@@ -603,9 +632,9 @@ function MobileCaptureInner() {
       const newPhotos: Photo[] = results.map(r => ({
         id: r.id, src: r.url, thumbnail: r.url + "?size=thumb", title: r.originalName, width: 0, height: 0, proofing: true,
       }));
-      const fresh = getAlbums().find(a => a.id === targetAlbum.id) || targetAlbum;
+      const fresh = albums.find(a => a.id === targetAlbum.id) || targetAlbum;
       const upd: Album = { ...fresh, photos: [...fresh.photos, ...newPhotos], photoCount: fresh.photos.length + newPhotos.length, coverImage: fresh.coverImage || newPhotos[0]?.src || "" };
-      updateAlbum(upd); setTargetAlbum(upd);
+      await saveAlbum(upd); setTargetAlbum(upd); setAlbums(prev => prev.map(a => a.id === upd.id ? upd : a));
       setUploadedCount(p => p + newPhotos.length);
       sessionUploadedRef.current = true;
       toast.success(`${results.length} queued photo${results.length !== 1 ? "s" : ""} uploaded`);
@@ -709,10 +738,12 @@ function MobileCaptureInner() {
           <div className="p-4 space-y-3">
             {/* Top row — compact so system time doesn't overlap pills */}
             <div className="flex items-center gap-2">
-              <button onClick={() => navigate("/admin")} className="p-1.5 rounded-lg hover:bg-secondary transition-colors text-muted-foreground hover:text-foreground flex-shrink-0">
+              <button onClick={() => navigate(tenantSession ? "/login" : "/admin")} className="p-1.5 rounded-lg hover:bg-secondary transition-colors text-muted-foreground hover:text-foreground flex-shrink-0">
                 <ArrowLeft className="w-4 h-4" />
               </button>
-              <span className="font-display text-sm text-foreground flex-1 min-w-0 truncate">Capture</span>
+              <span className="font-display text-sm text-foreground flex-1 min-w-0 truncate">
+                {tenantSession ? tenantSession.displayName : "Capture"}
+              </span>
               <div className="flex items-center gap-1.5 flex-shrink-0">
                 {isNative && (
                   <span className={`inline-flex items-center gap-0.5 text-[10px] font-body px-2 py-0.5 rounded-full border ${cameraConnected ? "border-primary/50 text-primary bg-primary/10" : "border-border text-muted-foreground/60"}`}>
@@ -724,6 +755,15 @@ function MobileCaptureInner() {
                   {serverOnline ? <Wifi className="w-2.5 h-2.5" /> : <WifiOff className="w-2.5 h-2.5" />}
                   {serverOnline ? "Online" : "Offline"}
                 </span>
+                {tenantSession && (
+                  <button
+                    onClick={() => { setMobileTenantSession(null); navigate("/login", { replace: true }); }}
+                    className="p-1.5 rounded-lg hover:bg-secondary transition-colors text-muted-foreground hover:text-foreground"
+                    title="Sign out"
+                  >
+                    <LogOut className="w-3.5 h-3.5" />
+                  </button>
+                )}
               </div>
             </div>
 
@@ -1302,14 +1342,23 @@ function MobileCaptureInner() {
           )}
           <button
             onClick={async () => {
-              updateBooking({ ...selectedBooking, status: "completed" });
+              if (tenantSession) {
+                // Tenant mode — update booking status via server API
+                fetch(`/api/tenant/${encodeURIComponent(tenantSession.slug)}/bookings/${encodeURIComponent(selectedBooking.id)}`, {
+                  method: "PUT",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ status: "completed" }),
+                }).catch(() => toast.error("Failed to update booking status"));
+              } else {
+                updateBooking({ ...selectedBooking, status: "completed" });
+              }
               setBookings(prev => prev.map(b => b.id === selectedBooking.id ? { ...b, status: "completed" } : b));
               setSelectedBooking(prev => prev ? { ...prev, status: "completed" } : prev);
               if (enableProofing && targetAlbum && getSettings().proofingEnabled) {
                 const clientToken = targetAlbum.clientToken || `ct-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
                 const newRound = { roundNumber: (targetAlbum.proofingRounds?.length || 0) + 1, sentAt: new Date().toISOString(), selectedPhotoIds: [] };
                 const updatedAlbum = { ...targetAlbum, proofingEnabled: true, proofingStage: "proofing" as const, proofingRounds: [...(targetAlbum.proofingRounds || []), newRound], clientToken };
-                updateAlbum(updatedAlbum);
+                await saveAlbum(updatedAlbum);
                 setTargetAlbum(updatedAlbum);
                 if (selectedBooking.clientEmail && serverOnline) {
                   const galleryUrl = `${window.location.origin}/gallery/${targetAlbum.slug}?token=${clientToken}`;
@@ -1347,7 +1396,7 @@ function MobileCaptureInner() {
           album={targetAlbum}
           onClose={() => setShowAlbumEdit(false)}
           onSave={(updated) => {
-            updateAlbum(updated);
+            saveAlbum(updated);
             setTargetAlbum(updated);
             setAlbums(prev => prev.map(a => a.id === updated.id ? updated : a));
             setShowAlbumEdit(false);
