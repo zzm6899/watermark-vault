@@ -1,11 +1,11 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import {
   LayoutDashboard, Calendar, Clock, Image, Receipt,
   Users, Settings, Key, LogOut, Camera, Plus, Edit, Trash2,
   Save, X, ChevronDown, ChevronUp, Globe, Upload, Search, Copy,
-  DollarSign, MessageSquare, HardDrive, User,
+  DollarSign, MessageSquare, HardDrive, User, RefreshCw, Webhook,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,12 +15,15 @@ import { Slider } from "@/components/ui/slider";
 import WatermarkedImage from "@/components/WatermarkedImage";
 import { toast } from "sonner";
 import { getMobileTenantSession, setMobileTenantSession, hashPassword } from "@/lib/storage";
+import { generateThumbnail } from "@/lib/image-utils";
 import {
   fetchTenantMobileData, getTenantSettings, saveTenantSettings,
   deleteTenantBooking, updateTenantBookingFull,
   getTenantLicenseInfo, deleteTenantAlbum,
   getTenantStoreKey, saveTenantStoreKey, updateTenant,
-  clearTenantImageCache, tenantPhotoSrc,
+  clearTenantImageCache, tenantPhotoSrc, saveTenantAlbum,
+  uploadPhotosToServer, isServerMode, notifyTenantDiscord,
+  getSuperAdminWebhooks,
 } from "@/lib/api";
 import type {
   Booking, Album, EventType, Invoice, InvoiceItem, InvoiceParty,
@@ -661,6 +664,15 @@ function TenantAlbums({ slug }: { slug: string }) {
   const [albums, setAlbums] = useState<Album[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedAlbum, setSelectedAlbum] = useState<Album | null>(null);
+  const [showCreateForm, setShowCreateForm] = useState(false);
+  const [newTitle, setNewTitle] = useState("");
+  const [newClient, setNewClient] = useState("");
+  const [newDate, setNewDate] = useState(() => new Date().toISOString().split("T")[0]);
+  const [newSlug, setNewSlug] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const uploadInputRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
     const data = await fetchTenantMobileData(slug);
@@ -679,6 +691,71 @@ function TenantAlbums({ slug }: { slug: string }) {
     load();
   };
 
+  const handleCreateAlbum = async () => {
+    if (!newTitle.trim()) { toast.error("Album title is required"); return; }
+    setSaving(true);
+    const id = generateId("album");
+    const albumSlug = newSlug.trim() || newTitle.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    const album: Album = {
+      id,
+      slug: albumSlug,
+      title: newTitle.trim(),
+      clientName: newClient.trim(),
+      date: newDate,
+      photos: [],
+      isPublic: false,
+      freeDownloads: 0,
+      pricePerPhoto: 0,
+      priceFullAlbum: 0,
+      createdAt: new Date().toISOString(),
+    };
+    const { ok, error } = await saveTenantAlbum(slug, album);
+    setSaving(false);
+    if (!ok) { toast.error(error || "Failed to create album"); return; }
+    toast.success("Album created");
+    setNewTitle(""); setNewClient(""); setNewSlug("");
+    setNewDate(new Date().toISOString().split("T")[0]);
+    setShowCreateForm(false);
+    await load();
+    const fresh = (await fetchTenantMobileData(slug)).albums?.find((a: Album) => a.id === id);
+    if (fresh) setSelectedAlbum(fresh);
+  };
+
+  const handleUploadPhotos = async (files: FileList | null) => {
+    if (!files || files.length === 0 || !selectedAlbum) return;
+    if (!isServerMode()) { toast.error("Server required for photo uploads"); return; }
+    setUploading(true);
+    setUploadProgress(0);
+    const fileArr = Array.from(files);
+    const uploaded = await uploadPhotosToServer(fileArr, (done, total) => {
+      setUploadProgress(Math.round((done / total) * 100));
+    });
+    if (uploaded.length === 0) { setUploading(false); toast.error("Upload failed"); return; }
+    const newPhotos: Photo[] = await Promise.all(uploaded.map(async (u) => {
+      let thumbnail = "";
+      try { thumbnail = await generateThumbnail(u.url, 300, 0.65); } catch { thumbnail = u.url; }
+      return {
+        id: generateId("photo"),
+        src: u.url,
+        thumbnail,
+        title: u.originalName,
+        isStarred: false,
+        isPublic: true,
+      } as Photo;
+    }));
+    const updatedAlbum: Album = {
+      ...selectedAlbum,
+      photos: [...(selectedAlbum.photos || []), ...newPhotos],
+    };
+    const { ok, error } = await saveTenantAlbum(slug, updatedAlbum);
+    setUploading(false);
+    if (!ok) { toast.error(error || "Failed to save photos"); return; }
+    setSelectedAlbum(updatedAlbum);
+    setAlbums(prev => prev.map(a => a.id === updatedAlbum.id ? updatedAlbum : a));
+    toast.success(`${newPhotos.length} photo${newPhotos.length !== 1 ? "s" : ""} uploaded`);
+    notifyTenantDiscord(slug, { event: "photos-uploaded", album: updatedAlbum, photoCount: newPhotos.length });
+  };
+
   /** Append ?tenant=slug so server uses this tenant's watermark settings */
   const photoUrl = (src: string) => tenantPhotoSrc(src, slug);
 
@@ -691,12 +768,24 @@ function TenantAlbums({ slug }: { slug: string }) {
           <button onClick={() => setSelectedAlbum(null)} className="flex items-center gap-2 text-sm font-body text-muted-foreground hover:text-foreground transition-colors">
             ← Back to Albums
           </button>
-          <button onClick={() => handleDelete(selectedAlbum.id)} className="flex items-center gap-1.5 text-xs font-body text-destructive hover:text-destructive/80">
-            <Trash2 className="w-3.5 h-3.5" /> Delete Album
-          </button>
+          <div className="flex items-center gap-2">
+            <Button size="sm" variant="outline" className="font-body text-xs gap-1.5 border-border" onClick={() => uploadInputRef.current?.click()} disabled={uploading}>
+              <Upload className="w-3.5 h-3.5" />
+              {uploading ? `Uploading ${uploadProgress}%…` : "Upload Photos"}
+            </Button>
+            <button onClick={() => handleDelete(selectedAlbum.id)} className="flex items-center gap-1.5 text-xs font-body text-destructive hover:text-destructive/80">
+              <Trash2 className="w-3.5 h-3.5" /> Delete Album
+            </button>
+          </div>
         </div>
+        <input ref={uploadInputRef} type="file" accept="image/*" multiple className="hidden" onChange={e => handleUploadPhotos(e.target.files)} />
         <h2 className="font-display text-2xl text-foreground mb-2">{selectedAlbum.title}</h2>
         <p className="text-sm font-body text-muted-foreground mb-6">{selectedAlbum.photos?.length || 0} photos · {selectedAlbum.date}</p>
+        {uploading && (
+          <div className="mb-4 h-1.5 bg-secondary rounded-full overflow-hidden">
+            <div className="h-full bg-primary transition-all duration-300 rounded-full" style={{ width: `${uploadProgress}%` }} />
+          </div>
+        )}
         {selectedAlbum.photos?.length > 0 ? (
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
             {selectedAlbum.photos.map(photo => (
@@ -714,7 +803,7 @@ function TenantAlbums({ slug }: { slug: string }) {
           <div className="text-center py-16 text-muted-foreground">
             <Camera className="w-10 h-10 mx-auto mb-3 opacity-30" />
             <p className="font-body text-sm">No photos in this album yet</p>
-            <p className="font-body text-xs text-muted-foreground/60 mt-1">Use the Capture feature to add photos.</p>
+            <p className="font-body text-xs text-muted-foreground/60 mt-1">Click "Upload Photos" to add images, or use the Capture feature.</p>
           </div>
         )}
       </motion.div>
@@ -725,13 +814,48 @@ function TenantAlbums({ slug }: { slug: string }) {
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
       <div className="flex items-center justify-between mb-6">
         <h2 className="font-display text-2xl text-foreground">Albums</h2>
-        <span className="text-sm font-body text-muted-foreground">{albums.length} albums</span>
+        <Button size="sm" className="font-body text-xs gap-1.5 bg-primary text-primary-foreground" onClick={() => setShowCreateForm(v => !v)}>
+          <Plus className="w-3.5 h-3.5" /> New Album
+        </Button>
       </div>
+
+      {showCreateForm && (
+        <div className="glass-panel rounded-xl p-5 mb-6 space-y-4">
+          <h3 className="font-display text-base text-foreground">Create New Album</h3>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs font-body text-muted-foreground mb-1 block">Album Title *</label>
+              <Input value={newTitle} onChange={e => setNewTitle(e.target.value)} placeholder="Wedding · Smith Family" className="bg-background border-border text-foreground font-body text-sm" />
+            </div>
+            <div>
+              <label className="text-xs font-body text-muted-foreground mb-1 block">Client Name</label>
+              <Input value={newClient} onChange={e => setNewClient(e.target.value)} placeholder="Jane Smith" className="bg-background border-border text-foreground font-body text-sm" />
+            </div>
+            <div>
+              <label className="text-xs font-body text-muted-foreground mb-1 block">Date</label>
+              <Input type="date" value={newDate} onChange={e => setNewDate(e.target.value)} className="bg-background border-border text-foreground font-body text-sm" />
+            </div>
+            <div>
+              <label className="text-xs font-body text-muted-foreground mb-1 block">Slug (optional)</label>
+              <Input value={newSlug} onChange={e => setNewSlug(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""))} placeholder="auto-generated" className="bg-background border-border text-foreground font-body text-sm font-mono" />
+            </div>
+          </div>
+          <div className="flex items-center gap-2 pt-1">
+            <Button size="sm" onClick={handleCreateAlbum} disabled={saving} className="font-body text-xs gap-1.5">
+              <Save className="w-3.5 h-3.5" /> {saving ? "Creating…" : "Create Album"}
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => setShowCreateForm(false)} className="font-body text-xs border-border">
+              <X className="w-3.5 h-3.5" />
+            </Button>
+          </div>
+        </div>
+      )}
+
       {albums.length === 0 ? (
         <div className="text-center py-16 text-muted-foreground">
           <Image className="w-10 h-10 mx-auto mb-3 opacity-30" />
           <p className="font-body text-sm">No albums yet</p>
-          <p className="font-body text-xs text-muted-foreground/60 mt-1">Albums are created automatically when you capture photos for a booking.</p>
+          <p className="font-body text-xs text-muted-foreground/60 mt-1">Create one manually or capture photos for a booking.</p>
         </div>
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
@@ -761,6 +885,7 @@ function TenantAlbums({ slug }: { slug: string }) {
     </motion.div>
   );
 }
+
 
 // ─── Photos ──────────────────────────────────────────────────────────────────
 function TenantPhotos({ slug }: { slug: string }) {

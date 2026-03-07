@@ -6,7 +6,7 @@ import { Progress } from "@/components/ui/progress";
 import { Switch } from "@/components/ui/switch";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
-import { getBookings, getAlbums, getSettings, updateAlbum, addAlbum, updateBooking, getMobileTenantSession, setMobileTenantSession } from "@/lib/storage";
+import { getBookings, getAlbums, getSettings, updateAlbum, addAlbum, updateBooking, getMobileTenantSession, setMobileTenantSession, isLoggedIn } from "@/lib/storage";
 import { uploadPhotosToServer, isServerMode, recheckServer, sendEmail, fetchTenantMobileData, saveTenantAlbum } from "@/lib/api";
 import { generateThumbnail } from "@/lib/image-utils";
 import CameraUsb from "@/plugins/camera-usb";
@@ -213,6 +213,13 @@ function MobileCaptureInner() {
 
   // Tenant session — set when a tenant logs in via /login
   const [tenantSession] = useState(() => getMobileTenantSession());
+
+  // Auth guard — redirect to /login if neither admin nor tenant is logged in
+  useEffect(() => {
+    if (!tenantSession && !isLoggedIn()) {
+      navigate("/login", { replace: true });
+    }
+  }, [tenantSession, navigate]);
 
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [albums, setAlbums] = useState<Album[]>([]);
@@ -738,7 +745,7 @@ function MobileCaptureInner() {
           <div className="p-4 space-y-3">
             {/* Top row — compact so system time doesn't overlap pills */}
             <div className="flex items-center gap-2">
-              <button onClick={() => navigate(tenantSession ? "/login" : "/admin")} className="p-1.5 rounded-lg hover:bg-secondary transition-colors text-muted-foreground hover:text-foreground flex-shrink-0">
+              <button onClick={() => navigate(tenantSession ? `/tenant-admin/${tenantSession.slug}` : "/admin")} className="p-1.5 rounded-lg hover:bg-secondary transition-colors text-muted-foreground hover:text-foreground flex-shrink-0">
                 <ArrowLeft className="w-4 h-4" />
               </button>
               <span className="font-display text-sm text-foreground flex-1 min-w-0 truncate">

@@ -637,6 +637,40 @@ export async function notifyDiscord(payload: Record<string, unknown>): Promise<v
   } catch { /* non-critical, swallow errors */ }
 }
 
+/** Send a Discord notification scoped to a specific tenant's webhook settings. */
+export async function notifyTenantDiscord(slug: string, payload: Record<string, unknown>): Promise<void> {
+  try {
+    await fetch("/api/discord/notify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...payload, tenantSlug: slug }),
+    });
+  } catch { /* non-critical, swallow errors */ }
+}
+
+/** Fetch all tenant webhook configurations (super admin only). */
+export async function getSuperAdminWebhooks(): Promise<{
+  ok: boolean;
+  webhooks?: {
+    tenantSlug: string;
+    displayName: string;
+    discordWebhookUrl: string | null;
+    discordNotifyBookings: boolean;
+    discordNotifyDownloads: boolean;
+    discordNotifyProofing: boolean;
+    discordNotifyInvoices: boolean;
+  }[];
+  error?: string;
+}> {
+  try {
+    const res = await fetch("/api/super-admin/webhooks");
+    if (!res.ok) return { ok: false, error: "Failed to fetch webhooks" };
+    return await res.json();
+  } catch {
+    return { ok: false, error: "Network error" };
+  }
+}
+
 // ── Invoices ───────────────────────────────────────────────────
 
 /** Fetch a public invoice by its share token (server-only). */

@@ -813,8 +813,21 @@ app.post("/api/discord/test", async (req, res) => {
 /** Generic Discord notification endpoint — used by frontend for custom events. */
 app.post("/api/discord/notify", async (req, res) => {
   const db = readDb();
-  const settings = db["wv_settings"];
-  const parsed = typeof settings === "string" ? JSON.parse(settings) : (settings || {});
+
+  // Support tenant-scoped notifications: if tenantSlug is provided, use that tenant's
+  // Discord webhook settings instead of the global admin settings.
+  const tenantSlug = req.body?.tenantSlug;
+  let parsed;
+  if (tenantSlug) {
+    const tenantSettingsRaw = db[`t_${tenantSlug}_wv_tenant_settings`];
+    parsed = tenantSettingsRaw
+      ? (typeof tenantSettingsRaw === "string" ? JSON.parse(tenantSettingsRaw) : tenantSettingsRaw)
+      : {};
+  } else {
+    const settings = db["wv_settings"];
+    parsed = typeof settings === "string" ? JSON.parse(settings) : (settings || {});
+  }
+
   const webhookUrl = parsed?.discordWebhookUrl;
   if (!webhookUrl) return res.json({ ok: true, skipped: true });
 
@@ -859,6 +872,39 @@ app.post("/api/discord/notify", async (req, res) => {
     console.error("Discord notify error:", err.message);
     res.status(500).json({ ok: false, error: err.message });
   }
+});
+
+/** Get all tenant webhook configurations — super admin only (no auth check, protected by obscurity + env check). */
+app.get("/api/super-admin/webhooks", (_req, res) => {
+  if (!process.env.SUPER_ADMIN_USERNAME) return res.status(403).json({ ok: false, error: "Super admin not configured" });
+  const db = readDb();
+  const tenants = readTenants();
+  const webhooks = tenants.map(t => {
+    const rawSettings = db[`t_${t.slug}_wv_tenant_settings`];
+    const settings = rawSettings ? (typeof rawSettings === "string" ? JSON.parse(rawSettings) : rawSettings) : {};
+    return {
+      tenantSlug: t.slug,
+      displayName: t.displayName,
+      discordWebhookUrl: settings.discordWebhookUrl || null,
+      discordNotifyBookings: settings.discordNotifyBookings !== false,
+      discordNotifyDownloads: settings.discordNotifyDownloads !== false,
+      discordNotifyProofing: settings.discordNotifyProofing !== false,
+      discordNotifyInvoices: settings.discordNotifyInvoices !== false,
+    };
+  });
+  // Also include global admin webhook
+  const globalRaw = db["wv_settings"];
+  const globalSettings = globalRaw ? (typeof globalRaw === "string" ? JSON.parse(globalRaw) : globalRaw) : {};
+  webhooks.unshift({
+    tenantSlug: "__admin__",
+    displayName: "Admin (Global)",
+    discordWebhookUrl: globalSettings.discordWebhookUrl || null,
+    discordNotifyBookings: globalSettings.discordNotifyBookings !== false,
+    discordNotifyDownloads: globalSettings.discordNotifyDownloads !== false,
+    discordNotifyProofing: globalSettings.discordNotifyProofing !== false,
+    discordNotifyInvoices: globalSettings.discordNotifyInvoices !== false,
+  });
+  res.json({ ok: true, webhooks });
 });
 
 // ── Proofing submission endpoint ──────────────────────
