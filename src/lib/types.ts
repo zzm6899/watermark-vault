@@ -393,6 +393,22 @@ export interface TenantSettings {
   googleCalendarId?: string;
   /** Auto-sync new bookings to Google Calendar. */
   googleCalendarAutoSync?: boolean;
+  // ── Default Album Settings ────────────────────────────────
+  defaultFreeDownloads?: number;
+  defaultPricePerPhoto?: number;
+  defaultPriceFullAlbum?: number;
+  // ── Invoice Defaults ─────────────────────────────────────
+  invoiceFrom?: InvoiceParty;
+  invoiceNotes?: string;
+  // ── Booking Settings ─────────────────────────────────────
+  bookingTimerMinutes?: number;
+  instagramFieldEnabled?: boolean;
+  notificationEmailTemplate?: string;
+  enquiryEnabled?: boolean;
+  enquiryLabel?: string;
+  // ── Client Proofing ───────────────────────────────────────
+  proofingEnabled?: boolean;
+  defaultProofingExpiryHours?: number;
 }
 
 

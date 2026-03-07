@@ -374,15 +374,35 @@ async function buildWatermarkOverlay(imgWidth, imgHeight, wm) {
 }
 
 // ── Check if a photo is paid/free for a session ───────
+/** Find an album by ID across main and all tenant album stores. */
+function findAlbumById(db, albumId) {
+  // Check main store first
+  const mainRaw = db["wv_albums"];
+  const main = mainRaw ? (typeof mainRaw === "string" ? JSON.parse(mainRaw) : mainRaw) : [];
+  if (Array.isArray(main)) {
+    const found = main.find(a => a.id === albumId);
+    if (found) return { album: found, tenantSlug: null };
+  }
+  // Check tenant stores
+  for (const key of Object.keys(db)) {
+    if (!key.startsWith("t_") || !key.endsWith("_wv_albums")) continue;
+    const tSlug = key.slice(2, key.length - "_wv_albums".length);
+    const raw = db[key];
+    const parsed = raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : [];
+    if (Array.isArray(parsed)) {
+      const found = parsed.find(a => a.id === albumId);
+      if (found) return { album: found, tenantSlug: tSlug };
+    }
+  }
+  return null;
+}
+
 function isPhotoAccessible(filename, sessionKey, albumId) {
   try {
     const db = readDb();
-    const albums = db["wv_albums"];
-    const parsed = typeof albums === "string" ? JSON.parse(albums) : albums;
-    if (!Array.isArray(parsed)) return false;
-
-    const album = parsed.find(a => a.id === albumId);
-    if (!album) return false;
+    const found = findAlbumById(db, albumId);
+    if (!found) return false;
+    const album = found.album;
 
     // If purchasing is disabled, all photos are free
     if (album.purchasingDisabled) return true;
@@ -2114,6 +2134,69 @@ app.post("/api/tenant-setup/:token/complete", tenantSetupLimiter, (req, res) => 
   writeLicenseKeys(keys);
 
   res.json({ ok: true, tenant });
+});
+
+// ── Public album lookup (cross-store, used by gallery) ─────────────────────
+app.get("/api/public-album/:albumSlug", (req, res) => {
+  const { albumSlug } = req.params;
+  const db = readDb();
+
+  // Helper: find by slug or id in an array
+  const findIn = (arr) => Array.isArray(arr) ? arr.find(a => a.slug === albumSlug || a.id === albumSlug) : null;
+
+  // Check main albums first
+  const mainRaw = db["wv_albums"];
+  const main = mainRaw ? (typeof mainRaw === "string" ? JSON.parse(mainRaw) : mainRaw) : [];
+  const mainAlbum = findIn(main);
+  if (mainAlbum) return res.json({ album: mainAlbum, tenantSlug: null });
+
+  // Check all tenant album stores
+  for (const key of Object.keys(db)) {
+    if (!key.startsWith("t_") || !key.endsWith("_wv_albums")) continue;
+    const tSlug = key.slice(2, key.length - "_wv_albums".length);
+    const raw = db[key];
+    const parsed = raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : [];
+    const found = findIn(parsed);
+    if (found) return res.json({ album: found, tenantSlug: tSlug });
+  }
+
+  return res.status(404).json({ error: "Album not found" });
+});
+
+// ── Tenant storage size (files referenced by this tenant) ──────────────────
+app.get("/api/tenant/:slug/storage-stats", tenantLimiter, (req, res) => {
+  const { slug } = req.params;
+  const db = readDb();
+  const albumsRaw = db[`t_${slug}_wv_albums`];
+  const albums = albumsRaw ? (typeof albumsRaw === "string" ? JSON.parse(albumsRaw) : albumsRaw) : [];
+  const libRaw = db[`t_${slug}_wv_photo_library`];
+  const library = libRaw ? (typeof libRaw === "string" ? JSON.parse(libRaw) : libRaw) : [];
+
+  const knownFiles = new Set();
+  const addSrc = (src) => {
+    if (src && src.startsWith("/uploads/")) {
+      const fn = src.split("/").pop()?.split("?")[0];
+      if (fn && !fn.startsWith("_cache")) knownFiles.add(fn);
+    }
+  };
+
+  if (Array.isArray(library)) library.forEach(p => { addSrc(p.src); addSrc(p.thumbnail); });
+  if (Array.isArray(albums)) albums.forEach(a => {
+    addSrc(a.coverImage);
+    (a.photos || []).forEach(p => { addSrc(p.src); addSrc(p.thumbnail); });
+  });
+
+  let totalBytes = 0;
+  let fileCount = 0;
+  for (const fn of knownFiles) {
+    try {
+      const stat = fs.statSync(path.join(UPLOADS_DIR, fn));
+      totalBytes += stat.size;
+      fileCount++;
+    } catch {}
+  }
+
+  res.json({ ok: true, totalBytes, fileCount, albumCount: Array.isArray(albums) ? albums.length : 0 });
 });
 
 // ── Serve React app ───────────────────────────────────

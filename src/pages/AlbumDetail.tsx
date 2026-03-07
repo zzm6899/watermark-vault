@@ -9,7 +9,7 @@ import PurchasePanel from "@/components/PurchasePanel";
 import { getAlbumBySlug, getSettings, updateAlbum } from "@/lib/storage";
 import { useBackfillThumbnails } from "@/hooks/use-backfill-thumbnails";
 import { Badge } from "@/components/ui/badge";
-import { createAlbumCheckout, getStripeStatus, isServerMode } from "@/lib/api";
+import { createAlbumCheckout, getStripeStatus, isServerMode, fetchPublicAlbum, tenantPhotoSrc } from "@/lib/api";
 import { toast } from "sonner";
 import { resizeToTargetSize } from "@/lib/image-utils";
 import {
@@ -150,6 +150,8 @@ function getGalleryPhotoSrc(photo: Photo, disableWatermark: boolean): string {
 export default function AlbumDetail() {
   const { albumId } = useParams();
   const [album, setAlbumState] = useState(() => albumId ? getAlbumBySlug(albumId) : undefined);
+  const [tenantSlug, setTenantSlug] = useState<string | null>(null);
+  const [albumLoading, setAlbumLoading] = useState(() => !!(albumId && !getAlbumBySlug(albumId) && isServerMode()));
   const settings = getSettings();
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [showBankTransfer, setShowBankTransfer] = useState(false);
@@ -212,6 +214,37 @@ export default function AlbumDetail() {
   useEffect(() => {
     getStripeStatus().then(s => setStripeAvailable(s.configured));
   }, []);
+
+  // If album not found locally, try fetching it from server (handles tenant albums)
+  useEffect(() => {
+    if (album || !albumId || !isServerMode()) return;
+    setAlbumLoading(true);
+    fetchPublicAlbum(albumId).then(result => {
+      if (result?.album) {
+        const tSlug = result.tenantSlug;
+        setTenantSlug(tSlug);
+        if (tSlug) {
+          // Add ?tenant=slug to all photo URLs so the server applies the right watermark
+          const withTenant = (src: string) => tenantPhotoSrc(src, tSlug);
+          const patchedAlbum = {
+            ...result.album,
+            photos: (result.album.photos || []).map((p: any) => ({
+              ...p,
+              src: withTenant(p.src),
+              thumbnail: p.thumbnail ? withTenant(p.thumbnail) : p.thumbnail,
+              thumbnailWatermarked: p.thumbnailWatermarked ? withTenant(p.thumbnailWatermarked) : p.thumbnailWatermarked,
+              mediumWatermarked: p.mediumWatermarked ? withTenant(p.mediumWatermarked) : p.mediumWatermarked,
+            })),
+            coverImage: result.album.coverImage ? withTenant(result.album.coverImage) : result.album.coverImage,
+          };
+          setAlbumState(patchedAlbum);
+        } else {
+          setAlbumState(result.album);
+        }
+      }
+      setAlbumLoading(false);
+    });
+  }, [albumId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const watermarkPosition = settings.watermarkPosition;
   const bankTransfer = settings.bankTransfer;
@@ -295,6 +328,15 @@ export default function AlbumDetail() {
   }, [lightboxPhotoId]);
 
   if (!album || album.enabled === false) {
+    if (albumLoading) {
+      return (
+        <div className="min-h-screen bg-background flex items-center justify-center">
+          <div className="text-center">
+            <p className="font-display text-xl text-foreground animate-pulse">Loading gallery…</p>
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="text-center">
