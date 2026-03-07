@@ -8,7 +8,7 @@ import {
   MapPin, Lock, Bell, Download, Unlock, Eye, Grid, List, LayoutGrid, HardDrive, CheckSquare, XSquare, Search, RefreshCw, Mail,
   MessageSquare,
   Star, CheckCircle2, Sparkles, ChevronLeft, ChevronRight, Flag, FileText, Receipt, Printer, AlertCircle, BookOpen,
-  ArrowUpDown, MoreHorizontal, TrendingUp, TrendingDown,
+  ArrowUpDown, MoreHorizontal, TrendingUp, TrendingDown, Key,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -28,7 +28,7 @@ import {
   getEnquiries, updateEnquiry, deleteEnquiry,
 } from "@/lib/storage";
 import { compressImage, formatBytes, getLocalStorageUsage, generateThumbnail } from "@/lib/image-utils";
-import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar, getServerStorageStats, syncFromServer, sendEmail, bulkDeleteFiles, syncBookingsToSheet, getBookingEmailLog, sendBookingReminder, sendCustomEmail, getWaitlistEntries, deleteWaitlistEntry, notifyWaitlistOnCancel, notifyDiscord, getCacheStats, warmCache, createInvoiceCheckout, sendInvoiceEmail, getStripeStatus, sendEnquiryAcceptedEmail, sendEnquiryDeclinedEmail } from "@/lib/api";
+import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar, getServerStorageStats, syncFromServer, sendEmail, bulkDeleteFiles, syncBookingsToSheet, getBookingEmailLog, sendBookingReminder, sendCustomEmail, getWaitlistEntries, deleteWaitlistEntry, notifyWaitlistOnCancel, notifyDiscord, getCacheStats, warmCache, createInvoiceCheckout, sendInvoiceEmail, getStripeStatus, sendEnquiryAcceptedEmail, sendEnquiryDeclinedEmail, getLicenseKeys, generateLicenseKey, revokeLicenseKey } from "@/lib/api";
 import type { CacheBreakdown } from "@/lib/api";
 import RichTextEditor, { RichTextDisplay } from "@/components/RichTextEditor";
 import Login from "@/pages/Login";
@@ -37,7 +37,7 @@ import type {
   ProfileSettings, AppSettings, Booking, WatermarkPosition,
   Album, Photo, PaymentStatus, AlbumDisplaySize, AlbumDownloadRecord, DownloadHistoryEntry,
   EmailTemplate, WaitlistEntry, Invoice, InvoiceItem, InvoiceParty, InvoiceStatus, Contact,
-  Enquiry, EnquiryStatus,
+  Enquiry, EnquiryStatus, LicenseKey,
 } from "@/lib/types";
 import WatermarkedImage from "@/components/WatermarkedImage";
 import ProgressiveImg from "@/components/ProgressiveImg";
@@ -5605,6 +5605,9 @@ function SettingsView() {
         {/* Google Calendar */}
         <GoogleCalendarSection />
 
+        {/* License Keys */}
+        <LicenseKeysPanel />
+
         {/* Watermark rebuild / cache clear progress */}
         {rebuildProgress && (
           <div className="p-3 rounded-lg bg-secondary/50 border border-border">
@@ -5633,6 +5636,166 @@ function SettingsView() {
         </Button>
       </div>
     </motion.div>
+  );
+}
+
+// ─── License Keys Panel ───────────────────────────────
+function LicenseKeysPanel() {
+  const [keys, setKeys] = useState<LicenseKey[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [newIssuedTo, setNewIssuedTo] = useState("");
+  const [newExpiresAt, setNewExpiresAt] = useState("");
+  const [newNotes, setNewNotes] = useState("");
+  const [generating, setGenerating] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+
+  const loadKeys = async () => {
+    setLoading(true);
+    const result = await getLicenseKeys();
+    setKeys(result);
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    if (expanded) loadKeys();
+  }, [expanded]);
+
+  const handleGenerate = async () => {
+    if (!newIssuedTo.trim()) {
+      toast.error("Issued To is required");
+      return;
+    }
+    setGenerating(true);
+    const { key, error } = await generateLicenseKey(newIssuedTo.trim(), newExpiresAt || undefined, newNotes || undefined);
+    setGenerating(false);
+    if (error || !key) {
+      toast.error(error || "Failed to generate key");
+      return;
+    }
+    toast.success(`Key generated: ${key.key}`);
+    setNewIssuedTo("");
+    setNewExpiresAt("");
+    setNewNotes("");
+    setKeys((prev) => [...prev, key]);
+  };
+
+  const handleRevoke = async (k: LicenseKey) => {
+    if (!confirm(`Revoke key ${k.key} issued to ${k.issuedTo}?`)) return;
+    const { ok, error } = await revokeLicenseKey(k.key);
+    if (!ok) {
+      toast.error(error || "Failed to revoke key");
+      return;
+    }
+    toast.success("Key revoked");
+    setKeys((prev) => prev.filter((x) => x.key !== k.key));
+  };
+
+  const copyKey = (key: string) => {
+    navigator.clipboard.writeText(key).then(() => toast.success("Copied!")).catch(() => toast.error("Copy failed"));
+  };
+
+  return (
+    <div className="glass-panel rounded-xl p-6 space-y-4">
+      <button
+        className="w-full flex items-center justify-between"
+        onClick={() => setExpanded((v) => !v)}
+      >
+        <h3 className="font-display text-base text-foreground flex items-center gap-2">
+          <Key className="w-4 h-4 text-primary" /> License Keys
+        </h3>
+        {expanded ? <ChevronUp className="w-4 h-4 text-muted-foreground" /> : <ChevronDown className="w-4 h-4 text-muted-foreground" />}
+      </button>
+
+      {expanded && (
+        <div className="space-y-5">
+          <p className="text-xs font-body text-muted-foreground">
+            Generate license keys to share with other photographers who want to deploy their own Watermark Vault instance.
+            When keys exist, new deployments must enter a valid key during setup.
+          </p>
+
+          {/* Generate new key */}
+          <div className="space-y-3 p-4 rounded-lg bg-secondary/50 border border-border/50">
+            <h4 className="text-xs font-body tracking-wider uppercase text-muted-foreground">Generate New Key</h4>
+            <div>
+              <label className="text-xs font-body text-muted-foreground mb-1 block">Issued To *</label>
+              <Input
+                value={newIssuedTo}
+                onChange={(e) => setNewIssuedTo(e.target.value)}
+                placeholder="e.g. Jane Smith or jane@example.com"
+                className="bg-background border-border text-foreground font-body text-sm"
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs font-body text-muted-foreground mb-1 block">Expires (optional)</label>
+                <Input
+                  type="date"
+                  value={newExpiresAt}
+                  onChange={(e) => setNewExpiresAt(e.target.value)}
+                  className="bg-background border-border text-foreground font-body text-sm"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-body text-muted-foreground mb-1 block">Notes (optional)</label>
+                <Input
+                  value={newNotes}
+                  onChange={(e) => setNewNotes(e.target.value)}
+                  placeholder="e.g. Wedding photographer"
+                  className="bg-background border-border text-foreground font-body text-sm"
+                />
+              </div>
+            </div>
+            <Button
+              onClick={handleGenerate}
+              disabled={generating}
+              className="bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2"
+              size="sm"
+            >
+              <Key className="w-3 h-3" /> {generating ? "Generating…" : "Generate Key"}
+            </Button>
+          </div>
+
+          {/* Key list */}
+          <div className="space-y-2">
+            {loading && <p className="text-xs font-body text-muted-foreground">Loading…</p>}
+            {!loading && keys.length === 0 && (
+              <p className="text-xs font-body text-muted-foreground">No license keys yet. Generate one above.</p>
+            )}
+            {keys.map((k) => (
+              <div key={k.key} className="flex flex-col sm:flex-row sm:items-center gap-2 p-3 rounded-lg bg-secondary/30 border border-border/40">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-xs text-foreground tracking-widest">{k.key}</span>
+                    <button onClick={() => copyKey(k.key)} className="text-muted-foreground hover:text-foreground">
+                      <Copy className="w-3 h-3" />
+                    </button>
+                    {k.usedAt ? (
+                      <span className="text-[10px] font-body bg-green-500/10 text-green-500 px-1.5 py-0.5 rounded-full">Used</span>
+                    ) : (
+                      <span className="text-[10px] font-body bg-primary/10 text-primary px-1.5 py-0.5 rounded-full">Active</span>
+                    )}
+                  </div>
+                  <div className="text-[11px] font-body text-muted-foreground mt-0.5 flex flex-wrap gap-2">
+                    <span>Issued to: {k.issuedTo}</span>
+                    {k.expiresAt && <span>· Expires: {k.expiresAt.slice(0, 10)}</span>}
+                    {k.usedAt && k.usedBy && <span>· Used by: {k.usedBy} on {k.usedAt.slice(0, 10)}</span>}
+                    {k.notes && <span>· {k.notes}</span>}
+                  </div>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => handleRevoke(k)}
+                  className="shrink-0 text-destructive hover:text-destructive hover:bg-destructive/10 font-body text-xs gap-1"
+                >
+                  <Trash2 className="w-3 h-3" /> Revoke
+                </Button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 

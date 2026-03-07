@@ -290,6 +290,18 @@ export interface Invoice {
   stripeSessionId?: string; // Stripe checkout session ID once created
 }
 
+// ─── License Keys ─────────────────────────────────────────────────────────────
+
+export interface LicenseKey {
+  key: string;             // e.g. "WV-XXXX-XXXX-XXXX-XXXX"
+  issuedTo: string;        // name or email of the recipient
+  createdAt: string;       // ISO timestamp
+  expiresAt?: string;      // ISO timestamp, undefined = never expires
+  usedAt?: string;         // ISO timestamp, set when activated
+  usedBy?: string;         // username of the admin who activated it
+  notes?: string;
+}
+
 // ─── Enquiries ────────────────────────────────────────────────────────────────
 
 export type EnquiryStatus = "pending" | "accepted" | "declined";

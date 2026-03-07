@@ -682,3 +682,86 @@ export async function sendInvoiceEmail(
 ): Promise<{ ok: boolean; error?: string }> {
   return sendEmail(to, subject, html, text);
 }
+
+// ── License Keys ───────────────────────────────────────────────
+
+/** Fetch all license keys (admin only). */
+export async function getLicenseKeys(): Promise<import("./types").LicenseKey[]> {
+  try {
+    const res = await fetch("/api/license-keys");
+    if (!res.ok) return [];
+    return await res.json();
+  } catch {
+    return [];
+  }
+}
+
+/** Generate a new license key. */
+export async function generateLicenseKey(
+  issuedTo: string,
+  expiresAt?: string,
+  notes?: string,
+): Promise<{ key?: import("./types").LicenseKey; error?: string }> {
+  try {
+    const res = await fetch("/api/license-keys/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ issuedTo, expiresAt, notes }),
+    });
+    const data = await res.json();
+    if (!res.ok) return { error: data.error || "Failed to generate key" };
+    return { key: data };
+  } catch {
+    return { error: "Network error" };
+  }
+}
+
+/** Validate a license key during setup. Returns true if the key is valid and unused. */
+export async function validateLicenseKey(
+  key: string,
+): Promise<{ valid: boolean; error?: string }> {
+  try {
+    const res = await fetch("/api/license-keys/validate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key }),
+    });
+    const data = await res.json();
+    return { valid: !!data.valid, error: data.error };
+  } catch {
+    return { valid: false, error: "Network error" };
+  }
+}
+
+/** Mark a license key as used after successful setup. */
+export async function activateLicenseKey(
+  key: string,
+  usedBy: string,
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch("/api/license-keys/activate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key, usedBy }),
+    });
+    const data = await res.json();
+    return { ok: !!data.ok, error: data.error };
+  } catch {
+    return { ok: false, error: "Network error" };
+  }
+}
+
+/** Revoke (delete) a license key. */
+export async function revokeLicenseKey(
+  key: string,
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch(`/api/license-keys/${encodeURIComponent(key)}`, {
+      method: "DELETE",
+    });
+    const data = await res.json();
+    return { ok: !!data.ok, error: data.error };
+  } catch {
+    return { ok: false, error: "Network error" };
+  }
+}

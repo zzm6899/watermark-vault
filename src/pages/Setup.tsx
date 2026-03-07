@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Camera, ArrowRight, ArrowLeft, Plus, Trash2, Upload, CheckCircle2 } from "lucide-react";
+import { Camera, ArrowRight, ArrowLeft, Plus, Trash2, Upload, CheckCircle2, Key } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -10,6 +10,7 @@ import {
   completeSetup, setAdminCredentials, setProfile, addEventType,
   setSettings, getSettings, hashPassword, login,
 } from "@/lib/storage";
+import { validateLicenseKey, activateLicenseKey, getLicenseKeys } from "@/lib/api";
 import type {
   EventType, QuestionField, AvailabilitySlot, AppSettings, BankTransferSettings,
 } from "@/lib/types";
@@ -25,10 +26,23 @@ function generateId() {
 export default function Setup({ onComplete }: { onComplete: () => void }) {
   const [step, setStep] = useState<SetupStep>("welcome");
 
+  // License key
+  const [licenseKey, setLicenseKey] = useState("");
+  const [licenseKeyRequired, setLicenseKeyRequired] = useState(false);
+  const [licenseKeyChecking, setLicenseKeyChecking] = useState(false);
+
   // Welcome
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+
+  // On mount — check if any license keys exist on the server;
+  // if so, a valid key is required to proceed with setup.
+  useEffect(() => {
+    getLicenseKeys().then((keys) => {
+      setLicenseKeyRequired(keys.length > 0);
+    });
+  }, []);
 
   // Profile
   const [name, setName] = useState("Zac M Photos");
@@ -85,6 +99,20 @@ export default function Setup({ onComplete }: { onComplete: () => void }) {
       toast.error("Password must be at least 6 characters");
       return;
     }
+    // Validate license key if one has been issued
+    if (licenseKeyRequired) {
+      if (!licenseKey.trim()) {
+        toast.error("A license key is required to set up this instance");
+        return;
+      }
+      setLicenseKeyChecking(true);
+      const { valid, error } = await validateLicenseKey(licenseKey.trim());
+      setLicenseKeyChecking(false);
+      if (!valid) {
+        toast.error(error || "Invalid license key");
+        return;
+      }
+    }
     try {
       const hash = await hashPassword(password);
       setAdminCredentials({ username: username.trim(), passwordHash: hash });
@@ -137,7 +165,7 @@ export default function Setup({ onComplete }: { onComplete: () => void }) {
     setStep("payments");
   };
 
-  const handlePaymentsFinish = () => {
+  const handlePaymentsFinish = async () => {
     const settings: AppSettings = {
       ...getSettings(),
       bankTransfer: { ...bankSettings, enabled: bankEnabled },
@@ -145,6 +173,10 @@ export default function Setup({ onComplete }: { onComplete: () => void }) {
     setSettings(settings);
     completeSetup();
     login();
+    // Mark the license key as used if one was entered
+    if (licenseKeyRequired && licenseKey.trim()) {
+      activateLicenseKey(licenseKey.trim(), username.trim()).catch(() => {});
+    }
     setStep("done");
   };
 
@@ -214,8 +246,22 @@ export default function Setup({ onComplete }: { onComplete: () => void }) {
                   <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Confirm Password</label>
                   <Input type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} placeholder="••••••" className="bg-secondary border-border text-foreground font-body" />
                 </div>
-                <Button onClick={handleWelcomeNext} className="w-full bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2">
-                  Continue <ArrowRight className="w-4 h-4" />
+                {licenseKeyRequired && (
+                  <div>
+                    <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block flex items-center gap-1.5">
+                      <Key className="w-3 h-3" /> License Key *
+                    </label>
+                    <Input
+                      value={licenseKey}
+                      onChange={(e) => setLicenseKey(e.target.value.toUpperCase())}
+                      placeholder="WV-XXXX-XXXX-XXXX-XXXX"
+                      className="bg-secondary border-border text-foreground font-body font-mono tracking-widest"
+                    />
+                    <p className="text-xs font-body text-muted-foreground mt-1">Enter the license key provided to you.</p>
+                  </div>
+                )}
+                <Button onClick={handleWelcomeNext} disabled={licenseKeyChecking} className="w-full bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2">
+                  {licenseKeyChecking ? "Validating…" : <><span>Continue</span> <ArrowRight className="w-4 h-4" /></>}
                 </Button>
               </div>
             </motion.div>

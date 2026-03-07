@@ -950,6 +950,101 @@ app.get("/api/invoice/share/:token", invoiceShareLimiter, (req, res) => {
   res.json(invoice);
 });
 
+// ── License Keys ──────────────────────────────────────
+const LICENSE_KEYS_FILE = path.join(DATA_DIR, "license_keys.json");
+
+function readLicenseKeys() {
+  try {
+    if (!fs.existsSync(LICENSE_KEYS_FILE)) return [];
+    return JSON.parse(fs.readFileSync(LICENSE_KEYS_FILE, "utf-8"));
+  } catch {
+    return [];
+  }
+}
+
+function writeLicenseKeys(keys) {
+  fs.writeFileSync(LICENSE_KEYS_FILE, JSON.stringify(keys, null, 2));
+}
+
+function generateKeyString() {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const segment = () => Array.from({ length: 4 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
+  return `WV-${segment()}-${segment()}-${segment()}-${segment()}`;
+}
+
+const licenseKeyLimiter = rateLimit({ windowMs: 60_000, max: 30, standardHeaders: true, legacyHeaders: false, message: { error: "Too many requests" } });
+
+// List all keys
+app.get("/api/license-keys", licenseKeyLimiter, (_req, res) => {
+  res.json(readLicenseKeys());
+});
+
+// Generate a new key
+app.post("/api/license-keys/generate", licenseKeyLimiter, (req, res) => {
+  const { issuedTo, expiresAt, notes } = req.body || {};
+  if (!issuedTo || typeof issuedTo !== "string" || !issuedTo.trim()) {
+    return res.status(400).json({ error: "issuedTo is required" });
+  }
+  if (expiresAt && isNaN(Date.parse(expiresAt))) {
+    return res.status(400).json({ error: "Invalid expiresAt date" });
+  }
+  const keys = readLicenseKeys();
+  const newKey = {
+    key: generateKeyString(),
+    issuedTo: issuedTo.trim(),
+    createdAt: new Date().toISOString(),
+    ...(expiresAt ? { expiresAt } : {}),
+    ...(notes ? { notes: notes.trim() } : {}),
+  };
+  keys.push(newKey);
+  writeLicenseKeys(keys);
+  res.json(newKey);
+});
+
+// Validate a key (returns valid: true/false without marking it used)
+app.post("/api/license-keys/validate", licenseKeyLimiter, (req, res) => {
+  const { key } = req.body || {};
+  if (!key || typeof key !== "string") {
+    return res.status(400).json({ valid: false, error: "key is required" });
+  }
+  const keys = readLicenseKeys();
+  const found = keys.find(k => k.key === key.trim().toUpperCase());
+  if (!found) return res.json({ valid: false, error: "License key not found" });
+  if (found.usedAt) return res.json({ valid: false, error: "License key already used" });
+  if (found.expiresAt && new Date(found.expiresAt) < new Date()) {
+    return res.json({ valid: false, error: "License key has expired" });
+  }
+  res.json({ valid: true, issuedTo: found.issuedTo });
+});
+
+// Activate a key (mark as used after setup)
+app.post("/api/license-keys/activate", licenseKeyLimiter, (req, res) => {
+  const { key, usedBy } = req.body || {};
+  if (!key || typeof key !== "string") {
+    return res.status(400).json({ ok: false, error: "key is required" });
+  }
+  const keys = readLicenseKeys();
+  const idx = keys.findIndex(k => k.key === key.trim().toUpperCase());
+  if (idx === -1) return res.status(404).json({ ok: false, error: "License key not found" });
+  if (keys[idx].usedAt) return res.status(400).json({ ok: false, error: "License key already used" });
+  if (keys[idx].expiresAt && new Date(keys[idx].expiresAt) < new Date()) {
+    return res.status(400).json({ ok: false, error: "License key has expired" });
+  }
+  keys[idx] = { ...keys[idx], usedAt: new Date().toISOString(), ...(usedBy ? { usedBy } : {}) };
+  writeLicenseKeys(keys);
+  res.json({ ok: true });
+});
+
+// Revoke a key
+app.delete("/api/license-keys/:key", licenseKeyLimiter, (req, res) => {
+  const keys = readLicenseKeys();
+  const keyStr = decodeURIComponent(req.params.key).trim().toUpperCase();
+  const filtered = keys.filter(k => k.key !== keyStr);
+  if (filtered.length === keys.length) return res.status(404).json({ ok: false, error: "Key not found" });
+  writeLicenseKeys(filtered);
+  res.json({ ok: true });
+});
+
 // ── Serve React app ───────────────────────────────────
 const distPath = path.join(__dirname, "../dist");
 app.use(express.static(distPath));
