@@ -2641,7 +2641,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
           const result = await compressImage(file);
           const id = `ph-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`;
           const thumb = await generateThumbnail(result.src).catch(() => undefined);
-          setPhotos(prev => [...prev, { id, src: result.src, thumbnail: thumb, title: file.name.replace(/\.[^.]+$/, ""), width: result.width, height: result.height }]);
+          setPhotos(prev => [...prev, { id, src: result.src, thumbnail: thumb, title: file.name.replace(/\.[^.]+$/, ""), width: result.width, height: result.height, uploadedAt: new Date().toISOString() }]);
           if (!coverImage) setCoverImage(result.src);
           setUploadStats(prev => prev ? { ...prev, done: prev.done + 1, savedBytes: prev.savedBytes + (result.originalSize - result.compressedSize) } : null);
         } catch {

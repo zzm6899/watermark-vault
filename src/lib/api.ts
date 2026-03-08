@@ -613,6 +613,7 @@ export async function bulkDeleteFiles(filenames: string[]): Promise<{ ok: boolea
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ filenames: chunk }),
       });
+      if (!res.ok) throw new Error(`Server error: ${res.status}`);
       const data = await res.json();
       if (data.deleted) totalDeleted += data.deleted;
     }

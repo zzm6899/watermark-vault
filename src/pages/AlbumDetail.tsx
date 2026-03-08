@@ -449,7 +449,7 @@ export default function AlbumDetail() {
           <p className="text-sm font-body text-muted-foreground">
             This gallery was available until{" "}
             <span className="text-foreground font-medium">
-              {new Date(album.expiresAt + "T12:00:00").toLocaleDateString("en-AU", { day: "numeric", month: "long", year: "numeric" })}
+              {new Date(album.expiresAt + "T23:59:59").toLocaleDateString("en-AU", { day: "numeric", month: "long", year: "numeric" })}
             </span>
             {" "}and is no longer accessible.
           </p>
@@ -882,14 +882,14 @@ export default function AlbumDetail() {
 
 
   const _expiryDaysLeft = album?.downloadExpiresAt
-    ? Math.ceil((new Date(album.downloadExpiresAt + "T12:00:00").getTime() - Date.now()) / 86400000)
+    ? Math.ceil((new Date(album.downloadExpiresAt + "T23:59:59").getTime() - Date.now()) / 86400000)
     : null;
   const _expiryBanner = (canDownload && album?.downloadExpiresAt && _expiryDaysLeft !== null && _expiryDaysLeft <= 14) ? (
     <div className="glass-panel rounded-xl p-4 border border-yellow-500/20 bg-yellow-500/5 flex items-center gap-3">
       <Clock className="w-4 h-4 text-yellow-400 shrink-0" />
       <p className="text-xs font-body text-muted-foreground">
         <span className="text-yellow-400 font-medium">Download expires in {_expiryDaysLeft} day{_expiryDaysLeft !== 1 ? "s" : ""}</span>
-        {" "}— {new Date(album.downloadExpiresAt + "T12:00:00").toLocaleDateString("en-AU", { day: "numeric", month: "long" })}
+        {" "}— {new Date(album.downloadExpiresAt + "T23:59:59").toLocaleDateString("en-AU", { day: "numeric", month: "long" })}
       </p>
     </div>
   ) : null;
@@ -902,7 +902,7 @@ export default function AlbumDetail() {
       <Clock className="w-4 h-4 text-orange-400 shrink-0" />
       <p className="text-xs font-body text-muted-foreground">
         <span className="text-orange-400 font-medium">Gallery access expires in {_galleryExpiryDaysLeft} day{_galleryExpiryDaysLeft !== 1 ? "s" : ""}</span>
-        {" "}— {new Date(album.expiresAt + "T12:00:00").toLocaleDateString("en-AU", { day: "numeric", month: "long", year: "numeric" })}
+        {" "}— {new Date(album.expiresAt + "T23:59:59").toLocaleDateString("en-AU", { day: "numeric", month: "long", year: "numeric" })}
       </p>
     </div>
   ) : null;
