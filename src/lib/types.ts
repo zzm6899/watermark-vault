@@ -409,6 +409,14 @@ export interface TenantSettings {
   // ── Client Proofing ───────────────────────────────────────
   proofingEnabled?: boolean;
   defaultProofingExpiryHours?: number;
+  // ── Secret-field set-indicators (returned by API instead of actual values) ──
+  // The server never returns secret field values; it returns these booleans instead
+  // so the UI can show a "Configured ✓" status without exposing the actual secret.
+  stripeSecretKeySet?: boolean;
+  stripeWebhookSecretSet?: boolean;
+  smtpPasswordSet?: boolean;
+  googleApiCredentialsSet?: boolean;
+  discordWebhookUrlSet?: boolean;
 }
 
 
