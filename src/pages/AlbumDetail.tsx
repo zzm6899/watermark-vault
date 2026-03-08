@@ -151,7 +151,7 @@ export default function AlbumDetail() {
   const { albumId } = useParams();
   const [album, setAlbumState] = useState(() => albumId ? getAlbumBySlug(albumId) : undefined);
   const [tenantSlug, setTenantSlug] = useState<string | null>(null);
-  const [albumLoading, setAlbumLoading] = useState(() => !!(albumId && !getAlbumBySlug(albumId) && isServerMode()));
+  const [albumLoading, setAlbumLoading] = useState(() => !!(albumId && !getAlbumBySlug(albumId)));
   const settings = getSettings();
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [showBankTransfer, setShowBankTransfer] = useState(false);
@@ -217,7 +217,7 @@ export default function AlbumDetail() {
 
   // If album not found locally, try fetching it from server (handles tenant albums)
   useEffect(() => {
-    if (album || !albumId || !isServerMode()) return;
+    if (album || !albumId) return;
     setAlbumLoading(true);
     fetchPublicAlbum(albumId).then(result => {
       if (result?.album) {
