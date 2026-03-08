@@ -183,7 +183,7 @@ export default function TenantBookingPage() {
     <div className="min-h-screen bg-background flex flex-col" style={{ paddingTop: "env(safe-area-inset-top)", paddingBottom: "env(safe-area-inset-bottom)" }}>
       {/* Header */}
       <header className="border-b border-border/50 py-4 px-6 flex items-center gap-4">
-        <Button variant="ghost" size="sm" onClick={() => navigate("/")} className="font-body text-xs text-muted-foreground gap-1.5 p-0 h-auto hover:text-foreground">
+        <Button variant="ghost" size="sm" onClick={() => window.history.state?.idx > 0 ? navigate(-1) : navigate("/")} className="font-body text-xs text-muted-foreground gap-1.5 p-0 h-auto hover:text-foreground">
           <ArrowLeft className="w-3.5 h-3.5" /> Back
         </Button>
         <div className="flex items-center gap-3 ml-2">
