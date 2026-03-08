@@ -329,6 +329,37 @@ export default function AlbumDetail() {
     return () => window.removeEventListener("keydown", handler);
   }, [lightboxPhotoId]);
 
+  /** Save the buyer's email, then resume any pending Stripe checkout.
+   *  Defined here (before any conditional returns) to satisfy the Rules of Hooks. */
+  const handleSaveEmail = useCallback(async () => {
+    if (!purchaserEmail.includes("@")) { toast.error("Please enter a valid email"); return; }
+    setSavingEmail(true);
+    try {
+      const emailKey = `email-${purchaserEmail.toLowerCase().trim()}`;
+      await fetch("/api/album/register-purchaser", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ albumId: album?.id, sessionKey: emailKey, email: purchaserEmail }),
+      });
+      try { localStorage.setItem(`wv_email_${albumId}`, purchaserEmail); } catch {}
+      setRegisteredEmail(purchaserEmail);
+      toast.success("Email saved — your purchases are now linked to " + purchaserEmail);
+      setShowEmailReg(false);
+      setPurchaserEmail("");
+      // If the user was mid-Stripe-checkout, resume it now with the email session key
+      if (pendingStripeParams) {
+        const params = { ...pendingStripeParams, sessionKey: emailKey };
+        setPendingStripeParams(null);
+        setProcessingStripe(true);
+        const result = await createAlbumCheckout(params);
+        setProcessingStripe(false);
+        if (result.url) window.location.href = result.url;
+        else toast.error(result.error || "Failed to create checkout session");
+      }
+    } catch { toast.error("Failed to save email"); }
+    setSavingEmail(false);
+  }, [purchaserEmail, album?.id, albumId, pendingStripeParams]);
+
   if (!album || album.enabled === false) {
     if (albumLoading) {
       return (
@@ -747,36 +778,6 @@ export default function AlbumDetail() {
     if (result.url) window.location.href = result.url;
     else toast.error(result.error || "Failed to create checkout session");
   };
-
-  /** Save the buyer's email, then resume any pending Stripe checkout. */
-  const handleSaveEmail = useCallback(async () => {
-    if (!purchaserEmail.includes("@")) { toast.error("Please enter a valid email"); return; }
-    setSavingEmail(true);
-    try {
-      const emailKey = `email-${purchaserEmail.toLowerCase().trim()}`;
-      await fetch("/api/album/register-purchaser", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ albumId: album.id, sessionKey: emailKey, email: purchaserEmail }),
-      });
-      try { localStorage.setItem(`wv_email_${albumId}`, purchaserEmail); } catch {}
-      setRegisteredEmail(purchaserEmail);
-      toast.success("Email saved — your purchases are now linked to " + purchaserEmail);
-      setShowEmailReg(false);
-      setPurchaserEmail("");
-      // If the user was mid-Stripe-checkout, resume it now with the email session key
-      if (pendingStripeParams) {
-        const params = { ...pendingStripeParams, sessionKey: emailKey };
-        setPendingStripeParams(null);
-        setProcessingStripe(true);
-        const result = await createAlbumCheckout(params);
-        setProcessingStripe(false);
-        if (result.url) window.location.href = result.url;
-        else toast.error(result.error || "Failed to create checkout session");
-      }
-    } catch { toast.error("Failed to save email"); }
-    setSavingEmail(false);
-  }, [purchaserEmail, album.id, albumId, pendingStripeParams]);
 
   const submitBankTransferRequest = () => {
     const selected = album.photos.filter(p => selectedIds.has(p.id) && !paidPhotoIdSet.has(p.id));
