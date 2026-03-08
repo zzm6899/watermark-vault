@@ -4,26 +4,29 @@ import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { getProfile } from "@/lib/storage";
 
-const navItems = [
-  { label: "Book a Session", path: "/" },
-];
-
-export default function Header() {
+export default function Header({ tenantSlug, tenantName }: { tenantSlug?: string | null; tenantName?: string | null }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const location = useLocation();
   const profile = getProfile();
 
+  const displayName = tenantName || profile.name;
+  const bookingPath = tenantSlug ? `/book/${tenantSlug}` : "/";
+
+  const navItems = [
+    { label: "Book a Session", path: bookingPath },
+  ];
+
   return (
     <header className="fixed top-0 left-0 right-0 z-50 glass-panel">
       <div className="container mx-auto flex items-center justify-between h-16 px-4">
-        <Link to="/" className="flex items-center gap-2.5 group">
-          {profile.avatar ? (
+        <Link to={bookingPath} className="flex items-center gap-2.5 group">
+          {!tenantSlug && profile.avatar ? (
             <img src={profile.avatar} alt="Logo" className="w-6 h-6 rounded-full object-cover" />
           ) : (
             <Camera className="w-5 h-5 text-primary transition-transform group-hover:rotate-12" />
           )}
           <span className="font-display text-lg tracking-wide text-foreground">
-            {profile.name}
+            {displayName}
           </span>
         </Link>
 
@@ -39,12 +42,14 @@ export default function Header() {
               {item.label}
             </Link>
           ))}
-          <Link
-            to="/admin"
-            className="text-xs font-body tracking-widest uppercase text-muted-foreground/50 hover:text-primary transition-colors"
-          >
-            Admin
-          </Link>
+          {!tenantSlug && (
+            <Link
+              to="/admin"
+              className="text-xs font-body tracking-widest uppercase text-muted-foreground/50 hover:text-primary transition-colors"
+            >
+              Admin
+            </Link>
+          )}
         </nav>
 
         <button onClick={() => setMobileOpen(!mobileOpen)} className="md:hidden text-foreground">
@@ -61,9 +66,11 @@ export default function Header() {
                   {item.label}
                 </Link>
               ))}
-              <Link to="/admin" onClick={() => setMobileOpen(false)} className="text-xs font-body tracking-widest uppercase text-muted-foreground/50 hover:text-primary transition-colors">
-                Admin
-              </Link>
+              {!tenantSlug && (
+                <Link to="/admin" onClick={() => setMobileOpen(false)} className="text-xs font-body tracking-widest uppercase text-muted-foreground/50 hover:text-primary transition-colors">
+                  Admin
+                </Link>
+              )}
             </nav>
           </motion.div>
         )}

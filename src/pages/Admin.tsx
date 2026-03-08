@@ -483,6 +483,7 @@ export default function Admin() {
   // Needed for tab badges and nav-level UI
   const settings = getSettings();
   const albums = getAlbums();
+  const profile = getProfile();
   const handleCreateAlbumForBooking = (bookingId: string) => {
     setPrefillBookingId(bookingId);
     setActiveTab("albums");
@@ -510,7 +511,7 @@ export default function Admin() {
         <aside className="w-56 fixed left-0 top-0 bottom-0 border-r border-border bg-card/50 p-4 hidden lg:flex flex-col" style={{ paddingTop: "calc(env(safe-area-inset-top, 0px) + 1rem)" }}>
           <div className="flex items-center gap-2.5 px-3 mb-6 pt-2">
             <Camera className="w-5 h-5 text-primary" />
-            <span className="font-display text-base text-foreground">Zacmphotos</span>
+            <span className="font-display text-base text-foreground truncate">{profile.name || "Admin"}</span>
           </div>
           <p className="text-[10px] font-body tracking-[0.3em] uppercase text-muted-foreground mb-4 px-3">Admin Panel</p>
           <nav className="space-y-1 flex-1">

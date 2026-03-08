@@ -9,7 +9,7 @@ import PurchasePanel from "@/components/PurchasePanel";
 import { getAlbumBySlug, getSettings, updateAlbum } from "@/lib/storage";
 import { useBackfillThumbnails } from "@/hooks/use-backfill-thumbnails";
 import { Badge } from "@/components/ui/badge";
-import { createAlbumCheckout, getStripeStatus, isServerMode, fetchPublicAlbum, tenantPhotoSrc } from "@/lib/api";
+import { createAlbumCheckout, createTenantAlbumCheckout, getStripeStatus, getTenantStripeStatus, getTenantSettings, isServerMode, fetchPublicAlbum, tenantPhotoSrc } from "@/lib/api";
 import { toast } from "sonner";
 import { resizeToTargetSize } from "@/lib/image-utils";
 import {
@@ -151,6 +151,8 @@ export default function AlbumDetail() {
   const { albumId } = useParams();
   const [album, setAlbumState] = useState(() => albumId ? getAlbumBySlug(albumId) : undefined);
   const [tenantSlug, setTenantSlug] = useState<string | null>(null);
+  const [tenantDisplayName, setTenantDisplayName] = useState<string | null>(null);
+  const [tenantBankTransfer, setTenantBankTransfer] = useState<typeof settings.bankTransfer | null>(null);
   const [albumLoading, setAlbumLoading] = useState(() => !!(albumId && !getAlbumBySlug(albumId)));
   const settings = getSettings();
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -210,16 +212,20 @@ export default function AlbumDetail() {
   const [proofingSubmitting, setProofingSubmitting] = useState(false);
   const [proofingSubmitted, setProofingSubmitted] = useState(false);
 
-  // Check Stripe availability from server (Docker env var)
+  // Check Stripe availability from server — uses tenant Stripe (with fallback) when a tenant album
   useEffect(() => {
-    getStripeStatus().then(s => setStripeAvailable(s.configured));
-  }, []);
+    if (tenantSlug) {
+      getTenantStripeStatus(tenantSlug).then(s => setStripeAvailable(s.configured));
+    } else {
+      getStripeStatus().then(s => setStripeAvailable(s.configured));
+    }
+  }, [tenantSlug]);
 
   // If album not found locally, try fetching it from server (handles tenant albums)
   useEffect(() => {
     if (album || !albumId) return;
     setAlbumLoading(true);
-    fetchPublicAlbum(albumId).then(result => {
+    fetchPublicAlbum(albumId).then(async result => {
       if (result?.album) {
         const tSlug = result.tenantSlug;
         setTenantSlug(tSlug);
@@ -238,6 +244,29 @@ export default function AlbumDetail() {
             })),
             coverImage: result.album.coverImage ? withTenant(result.album.coverImage) : result.album.coverImage,
           };
+          // Fetch tenant display info and settings for header + bank transfer
+          try {
+            const [publicInfo, tenantSettings] = await Promise.all([
+              fetch(`/api/tenant/${encodeURIComponent(tSlug)}/public`).then(r => r.ok ? r.json() : null),
+              getTenantSettings(tSlug),
+            ]);
+            if (publicInfo?.tenant?.displayName) {
+              setTenantDisplayName(publicInfo.tenant.displayName);
+            }
+            if (tenantSettings) {
+              setTenantBankTransfer({
+                enabled: !!tenantSettings.bankTransferEnabled,
+                accountName: tenantSettings.bankAccountName || "",
+                bsb: tenantSettings.bankBsb || "",
+                accountNumber: tenantSettings.bankAccountNumber || "",
+                payId: tenantSettings.bankPayId || "",
+                payIdType: tenantSettings.bankPayIdType || "email",
+                instructions: tenantSettings.bankInstructions || "",
+              });
+            }
+          } catch {
+            // Tenant info fetch failure is non-critical
+          }
         }
         setAlbumState(loadedAlbum);
         // Reset access grant based on the server-loaded album's access code and URL token
@@ -249,7 +278,8 @@ export default function AlbumDetail() {
   }, [albumId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const watermarkPosition = settings.watermarkPosition;
-  const bankTransfer = settings.bankTransfer;
+  // Use tenant bank settings for tenant galleries, fall back to superuser settings
+  const bankTransfer = tenantBankTransfer ?? settings.bankTransfer;
 
   const refreshAlbum = useCallback(() => {
     if (albumId) {
@@ -351,7 +381,9 @@ export default function AlbumDetail() {
         const params = { ...pendingStripeParams, sessionKey: emailKey };
         setPendingStripeParams(null);
         setProcessingStripe(true);
-        const result = await createAlbumCheckout(params);
+        const result = tenantSlug
+          ? await createTenantAlbumCheckout(tenantSlug, params)
+          : await createAlbumCheckout(params);
         setProcessingStripe(false);
         if (result.url) window.location.href = result.url;
         else toast.error(result.error || "Failed to create checkout session");
@@ -505,7 +537,8 @@ export default function AlbumDetail() {
    *  Watermarked photos → plain /uploads/ URL so the server applies the watermark. */
   const getDownloadSrc = (photo: { src: string; id: string }) => {
     if (isServerMode() && photo.src.startsWith("/uploads/")) {
-      const filename = photo.src.split("/").pop() || "";
+      // Strip query params (e.g. ?tenant=slug) to get the bare filename
+      const filename = photo.src.split("?")[0].split("/").pop() || "";
       if (isCleanDownload(photo.id)) {
         return `/api/photo/${encodeURIComponent(filename)}/original?sessionKey=${encodeURIComponent(sessionKey)}&albumId=${encodeURIComponent(album.id)}`;
       }
@@ -563,7 +596,8 @@ export default function AlbumDetail() {
 
     // Pass per-file clean/watermarked flag so the server renders each correctly
     const files = serverPhotos.map(p => ({
-      filename: p.src.split("/").pop() || "",
+      // Strip query params (e.g. ?tenant=slug) to get the bare filename
+      filename: p.src.split("?")[0].split("/").pop() || "",
       clean: isCleanDownload(p.id),
     }));
     try {
@@ -773,7 +807,9 @@ export default function AlbumDetail() {
       return;
     }
     setProcessingStripe(true);
-    const result = await createAlbumCheckout({ ...params, sessionKey });
+    const result = tenantSlug
+      ? await createTenantAlbumCheckout(tenantSlug, { ...params, sessionKey })
+      : await createAlbumCheckout({ ...params, sessionKey });
     setProcessingStripe(false);
     if (result.url) window.location.href = result.url;
     else toast.error(result.error || "Failed to create checkout session");
@@ -843,7 +879,7 @@ export default function AlbumDetail() {
 
   return (
     <div className="min-h-screen bg-background">
-      <Header />
+      <Header tenantSlug={tenantSlug} tenantName={tenantDisplayName} />
 
       <section className="pt-28 pb-32">
         <div className="container mx-auto px-4">

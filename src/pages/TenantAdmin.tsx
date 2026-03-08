@@ -1488,7 +1488,7 @@ function TenantAlbumEditor({ slug, album, onSave, onCancel }: {
       displaySize,
       mergedFrom: album?.mergedFrom,
       usedFreeDownloads: album?.usedFreeDownloads,
-      downloadRequests: album?.downloadRequests,
+      downloadRequests: liveAlbum?.downloadRequests ?? album?.downloadRequests,
       proofingStage: liveAlbum?.proofingStage,
       proofingRounds: liveAlbum?.proofingRounds,
       clientToken: liveAlbum?.clientToken,
@@ -1775,6 +1775,47 @@ function TenantAlbumEditor({ slug, album, onSave, onCancel }: {
           </div>
         );
       })()}
+
+      {/* Bank Transfer / Download Requests */}
+      {liveAlbum?.downloadRequests && liveAlbum.downloadRequests.length > 0 && (
+        <div>
+          <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-3 block">
+            Download Requests ({liveAlbum.downloadRequests.filter(r => r.status === "pending").length} pending)
+          </label>
+          <div className="space-y-2 max-h-48 overflow-y-auto">
+            {liveAlbum.downloadRequests.map((req, idx) => (
+              <div key={idx} className={`p-3 rounded-lg border ${req.status === "pending" ? "bg-yellow-500/5 border-yellow-500/20" : req.status === "approved" ? "bg-green-500/5 border-green-500/20" : "bg-secondary/50 border-border/50"}`}>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-xs font-body text-foreground">{req.photoIds.length} photos · {req.method}</p>
+                    <p className="text-[10px] font-body text-muted-foreground">{new Date(req.requestedAt).toLocaleString()}</p>
+                    {req.clientNote && <p className="text-[10px] font-body text-muted-foreground mt-1">Note: {req.clientNote}</p>}
+                  </div>
+                  {req.status === "pending" && (
+                    <Button size="sm" variant="outline" onClick={async () => {
+                      const updated = { ...liveAlbum };
+                      updated.downloadRequests = updated.downloadRequests!.map((r, i) => i === idx ? { ...r, status: "approved" as const, approvedAt: new Date().toISOString() } : r);
+                      if (req.photoIds?.length) {
+                        const ex = updated.paidPhotoIds || [];
+                        updated.paidPhotoIds = [...new Set([...ex, ...req.photoIds])];
+                      }
+                      await updateLiveAlbum(updated);
+                      toast.success("Download request approved");
+                    }} className="gap-1 text-xs font-body border-green-500/30 text-green-400 hover:bg-green-500/10">
+                      <Unlock className="w-3 h-3" /> Approve
+                    </Button>
+                  )}
+                  {req.status !== "pending" && (
+                    <span className={`text-[10px] font-body px-2 py-0.5 rounded-full ${req.status === "approved" ? "bg-green-500/10 text-green-400" : "bg-secondary text-muted-foreground"}`}>
+                      {req.status}
+                    </span>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Photo Upload */}
       <div>

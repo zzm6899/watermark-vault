@@ -83,6 +83,7 @@ function registerRoutes(app, { writeDb } = {}) {
           albumId,
           type: "album-purchase",
           isFullAlbum: isFullAlbum ? "true" : "false",
+          // Stripe metadata values are capped at 500 chars; leave room for the key name overhead
           photoIds: hasSpecificPhotos ? photoIds.join(",").slice(0, 490) : "",
           sessionKey: sessionKey || "",
         },
@@ -305,7 +306,9 @@ function registerRoutes(app, { writeDb } = {}) {
 }
 
 /**
- * Create a Stripe client from per-tenant settings, or null if not configured.
+ * Create a Stripe client from per-tenant settings, falling back to the
+ * superuser's environment-variable keys when the tenant has none configured.
+ * Returns { client, publishableKey, currency, usingFallback }.
  * @param {object} tenantSettings - TenantSettings object
  */
 function getTenantStripe(tenantSettings) {
@@ -315,13 +318,41 @@ function getTenantStripe(tenantSettings) {
 }
 
 /**
+ * Resolve the effective Stripe client + metadata for a tenant.
+ * Falls back to the superuser's Stripe keys when the tenant hasn't
+ * configured their own.
+ */
+function resolveTenantStripe(tenantSettings) {
+  const tenantKey = tenantSettings?.stripeSecretKey;
+  if (tenantKey && tenantSettings?.stripeEnabled !== false) {
+    return {
+      client: stripe(tenantKey),
+      publishableKey: tenantSettings.stripePublishableKey || null,
+      currency: (tenantSettings.stripeCurrency || "aud").toLowerCase(),
+      usingFallback: false,
+    };
+  }
+  // Fall back to superuser Stripe
+  const fallbackKey = process.env.STRIPE_SECRET_KEY;
+  if (fallbackKey) {
+    return {
+      client: stripe(fallbackKey),
+      publishableKey: process.env.STRIPE_PUBLISHABLE_KEY || null,
+      currency: "aud",
+      usingFallback: true,
+    };
+  }
+  return null;
+}
+
+/**
  * Register per-tenant Stripe routes.
  * Tenants can take deposits/payments using their own Stripe keys.
  */
 function registerTenantStripeRoutes(app, { readDb, readTenants }) {
   const tenantCheckoutLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHeaders: true, legacyHeaders: false, message: { error: "Too many requests" } });
 
-  // Status — check if a tenant has Stripe configured
+  // Status — check if a tenant has Stripe configured (or falls back to superuser)
   app.get("/api/tenant/:slug/stripe/status", tenantCheckoutLimiter, (req, res) => {
     const { slug } = req.params;
     const tenants = readTenants();
@@ -329,13 +360,15 @@ function registerTenantStripeRoutes(app, { readDb, readTenants }) {
     const db = readDb();
     const raw = db[`t_${slug}_wv_tenant_settings`];
     const ts = raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : {};
+    const resolved = resolveTenantStripe(ts);
     res.json({
-      configured: !!(ts.stripeSecretKey && ts.stripeEnabled !== false),
-      publishableKey: ts.stripePublishableKey || null,
+      configured: !!resolved,
+      publishableKey: resolved?.publishableKey || null,
+      usingFallback: resolved?.usingFallback || false,
     });
   });
 
-  // Checkout — booking deposit using tenant Stripe keys
+  // Checkout — booking deposit using tenant Stripe keys (falls back to superuser)
   app.post("/api/tenant/:slug/stripe/checkout/booking", tenantCheckoutLimiter, async (req, res) => {
     const { slug } = req.params;
     const tenants = readTenants();
@@ -343,18 +376,17 @@ function registerTenantStripeRoutes(app, { readDb, readTenants }) {
     const db = readDb();
     const raw = db[`t_${slug}_wv_tenant_settings`];
     const ts = raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : {};
-    const s = getTenantStripe(ts);
-    if (!s) return res.status(400).json({ error: "Stripe not configured for this tenant" });
+    const resolved = resolveTenantStripe(ts);
+    if (!resolved) return res.status(400).json({ error: "Stripe not configured for this tenant" });
     const { bookingId, clientName, clientEmail, amount, eventTitle, successUrl, cancelUrl } = req.body;
     if (!amount || amount <= 0) return res.status(400).json({ error: "Invalid amount" });
-    const currency = (ts.stripeCurrency || "aud").toLowerCase();
     try {
-      const session = await s.checkout.sessions.create({
+      const session = await resolved.client.checkout.sessions.create({
         payment_method_types: ["card"],
         customer_email: clientEmail || undefined,
         line_items: [{
           price_data: {
-            currency,
+            currency: resolved.currency,
             product_data: {
               name: `Deposit — ${eventTitle || "Booking"}`,
               description: `Booking for ${clientName || "Client"}`,
@@ -375,6 +407,55 @@ function registerTenantStripeRoutes(app, { readDb, readTenants }) {
     }
   });
 
+  // Checkout — album purchase using tenant Stripe keys (falls back to superuser)
+  app.post("/api/tenant/:slug/stripe/checkout/album", tenantCheckoutLimiter, async (req, res) => {
+    const { slug } = req.params;
+    const tenants = readTenants();
+    if (!tenants.find(t => t.slug === slug)) return res.status(404).json({ error: "Tenant not found" });
+    const db = readDb();
+    const raw = db[`t_${slug}_wv_tenant_settings`];
+    const ts = raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : {};
+    const resolved = resolveTenantStripe(ts);
+    if (!resolved) return res.status(400).json({ error: "Stripe not configured for this tenant" });
+    const { albumId, albumTitle, photoCount, amount, clientEmail, successUrl, cancelUrl, photoIds, isFullAlbum, sessionKey } = req.body;
+    const hasSpecificPhotos = Array.isArray(photoIds) && photoIds.length > 0;
+    const productName = isFullAlbum ? (albumTitle || "Full Photo Album") : hasSpecificPhotos ? `${photoCount || photoIds.length} Photo(s) — ${albumTitle || "Gallery"}` : (albumTitle || "Photo Album");
+    if (!amount || amount <= 0) return res.status(400).json({ error: "Invalid amount" });
+    try {
+      const session = await resolved.client.checkout.sessions.create({
+        payment_method_types: ["card"],
+        customer_email: clientEmail || undefined,
+        line_items: [{
+          price_data: {
+            currency: resolved.currency,
+            product_data: {
+              name: productName,
+              description: `${photoCount || 0} photos`,
+            },
+            unit_amount: Math.round(amount * 100),
+          },
+          quantity: 1,
+        }],
+        mode: "payment",
+        success_url: successUrl || `${req.headers.origin || ""}/gallery/${albumId}?success=1`,
+        cancel_url: cancelUrl || `${req.headers.origin || ""}/gallery/${albumId}?cancelled=1`,
+        metadata: {
+          albumId,
+          tenantSlug: slug,
+          type: "tenant-album-purchase",
+          isFullAlbum: isFullAlbum ? "true" : "false",
+          // Stripe metadata values are capped at 500 chars; leave room for the key name overhead
+          photoIds: hasSpecificPhotos ? photoIds.join(",").slice(0, 490) : "",
+          sessionKey: sessionKey || "",
+        },
+      });
+      res.json({ url: session.url, sessionId: session.id });
+    } catch (err) {
+      console.error("Tenant album Stripe checkout error:", err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // Webhook — per-tenant Stripe webhook handler
   app.post("/api/tenant/:slug/stripe/webhook", tenantCheckoutLimiter, express.raw({ type: "application/json" }), async (req, res) => {
     const { slug } = req.params;
@@ -383,14 +464,15 @@ function registerTenantStripeRoutes(app, { readDb, readTenants }) {
     const db = readDb();
     const raw = db[`t_${slug}_wv_tenant_settings`];
     const ts = raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : {};
-    const s = getTenantStripe(ts);
-    if (!s) return res.status(400).json({ error: "Stripe not configured for this tenant" });
+    const resolved = resolveTenantStripe(ts);
+    if (!resolved) return res.status(400).json({ error: "Stripe not configured for this tenant" });
     const sig = req.headers["stripe-signature"];
-    const webhookSecret = ts.stripeWebhookSecret;
+    // Use tenant webhook secret; fall back to superuser secret when using fallback Stripe
+    const webhookSecret = ts.stripeWebhookSecret || (resolved.usingFallback ? process.env.STRIPE_WEBHOOK_SECRET : null);
     let event;
     try {
       if (webhookSecret && sig) {
-        event = s.webhooks.constructEvent(req.body, sig, webhookSecret);
+        event = resolved.client.webhooks.constructEvent(req.body, sig, webhookSecret);
       } else {
         event = JSON.parse(req.body.toString());
       }
@@ -401,12 +483,13 @@ function registerTenantStripeRoutes(app, { readDb, readTenants }) {
     if (event.type === "checkout.session.completed") {
       const session = event.data.object;
       const metadata = session.metadata || {};
-      if (metadata.type === "tenant-booking-deposit" && metadata.bookingId) {
-        try {
-          const fs = require("fs");
-          const path = require("path");
-          const DB_FILE = path.join(process.env.DATA_DIR || "/data", "db.json");
-          const dbData = JSON.parse(fs.readFileSync(DB_FILE, "utf-8"));
+      try {
+        const fs = require("fs");
+        const path = require("path");
+        const DB_FILE = path.join(process.env.DATA_DIR || "/data", "db.json");
+        const dbData = JSON.parse(fs.readFileSync(DB_FILE, "utf-8"));
+
+        if (metadata.type === "tenant-booking-deposit" && metadata.bookingId) {
           const bookingsRaw = dbData["wv_bookings"];
           const bookings = bookingsRaw ? (typeof bookingsRaw === "string" ? JSON.parse(bookingsRaw) : bookingsRaw) : [];
           const idx = bookings.findIndex(b => b.id === metadata.bookingId);
@@ -418,9 +501,36 @@ function registerTenantStripeRoutes(app, { readDb, readTenants }) {
             fs.writeFileSync(DB_FILE, JSON.stringify(dbData, null, 2));
             console.log(`📝 Tenant booking ${metadata.bookingId} deposit marked as paid`);
           }
-        } catch (dbErr) {
-          console.error("Failed to update DB after tenant payment:", dbErr);
         }
+
+        if (metadata.type === "tenant-album-purchase" && metadata.albumId) {
+          const albumsKey = `t_${slug}_wv_albums`;
+          const albumsRaw = dbData[albumsKey];
+          const albums = albumsRaw ? (typeof albumsRaw === "string" ? JSON.parse(albumsRaw) : albumsRaw) : [];
+          const albumIdx = albums.findIndex(a => a.id === metadata.albumId);
+          if (albumIdx >= 0) {
+            const album = albums[albumIdx];
+            const sKey = metadata.sessionKey || `stripe-${session.id}`;
+            const sessionPurchases = album.sessionPurchases || {};
+            if (metadata.isFullAlbum === "true" || !metadata.photoIds) {
+              sessionPurchases[sKey] = { fullAlbum: true, photoIds: [], paidAt: new Date().toISOString(), stripeSessionId: session.id };
+              album.stripePaidAt = new Date().toISOString();
+            } else {
+              const newIds = metadata.photoIds ? metadata.photoIds.split(",").filter(Boolean) : [];
+              const existing = sessionPurchases[sKey]?.photoIds || [];
+              sessionPurchases[sKey] = { fullAlbum: false, photoIds: [...new Set([...existing, ...newIds])], paidAt: new Date().toISOString(), stripeSessionId: session.id };
+            }
+            album.sessionPurchases = sessionPurchases;
+            albums[albumIdx] = album;
+            dbData[albumsKey] = JSON.stringify(albums);
+            fs.writeFileSync(DB_FILE, JSON.stringify(dbData, null, 2));
+            console.log(`📝 Tenant album ${metadata.albumId} purchase processed for session ${metadata.sessionKey || session.id}`);
+          } else {
+            console.warn(`Tenant album ${metadata.albumId} not found in ${albumsKey}`);
+          }
+        }
+      } catch (dbErr) {
+        console.error("Failed to update DB after tenant payment:", dbErr);
       }
     }
     res.json({ received: true });
