@@ -284,7 +284,10 @@ export default function AlbumDetail() {
   const refreshAlbum = useCallback(() => {
     if (albumId) {
       const fresh = getAlbumBySlug(albumId);
-      setAlbumState(fresh);
+      // Only update state from localStorage for main (non-tenant) albums.
+      // Tenant albums are not stored in the main wv_albums key, so fresh will be
+      // undefined — don't overwrite the in-memory album with undefined.
+      if (fresh !== undefined) setAlbumState(fresh);
     }
   }, [albumId]);
 
@@ -300,21 +303,45 @@ export default function AlbumDetail() {
     }
     const timer = setTimeout(async () => {
       try {
-        const res = await fetch("/api/store/wv_albums");
-        if (res.ok) {
-          const { value } = await res.json();
-          if (value != null) {
-            localStorage.setItem("wv_albums", typeof value === "string" ? value : JSON.stringify(value));
+        if (tenantSlug) {
+          // For tenant albums, fetch the tenant-specific album store so the
+          // webhook-written sessionPurchases are picked up by the stop-polling check.
+          const res = await fetch(`/api/store/t_${encodeURIComponent(tenantSlug)}_wv_albums`);
+          if (res.ok) {
+            const { value } = await res.json();
+            if (value != null) {
+              const albums: Album[] = typeof value === "string" ? JSON.parse(value) : value;
+              const serverAlbum = albums.find((a) => (album?.id !== undefined && a.id === album.id) || a.slug === albumId);
+              if (serverAlbum) {
+                // Merge purchase state from server into current React state (keeps
+                // already-transformed tenant photo URLs intact). If prev is falsy
+                // the album isn't loaded yet, so leave it as-is.
+                setAlbumState(prev => prev ? {
+                  ...prev,
+                  allUnlocked: serverAlbum.allUnlocked,
+                  paidPhotoIds: serverAlbum.paidPhotoIds,
+                  sessionPurchases: serverAlbum.sessionPurchases,
+                } : prev);
+              }
+            }
           }
+        } else {
+          const res = await fetch("/api/store/wv_albums");
+          if (res.ok) {
+            const { value } = await res.json();
+            if (value != null) {
+              localStorage.setItem("wv_albums", typeof value === "string" ? value : JSON.stringify(value));
+            }
+          }
+          refreshAlbum();
         }
       } catch (err) {
         console.error("Failed to fetch album data from server:", err);
       }
-      refreshAlbum();
       setPollingCount(n => n + 1);
     }, 2000);
     return () => clearTimeout(timer);
-  }, [stripeSuccess, pollingCount, refreshAlbum]);
+  }, [stripeSuccess, pollingCount, refreshAlbum, tenantSlug, album?.id, albumId]);
 
   // Stop polling once paid data lands
   useEffect(() => {
@@ -706,6 +733,7 @@ export default function AlbumDetail() {
     };
     updated.downloadHistory = [...(updated.downloadHistory || []), historyEntry];
     updateAlbum(updated);
+    setAlbumState(updated);
     refreshAlbum();
     setSelectedIds(new Set());
     setShowDownloadOptions(false);
@@ -740,6 +768,7 @@ export default function AlbumDetail() {
     };
     updated.downloadHistory = [...(updated.downloadHistory || []), historyEntry];
     updateAlbum(updated);
+    setAlbumState(updated);
     refreshAlbum();
     setSelectedIds(new Set());
     setShowDownloadOptions(false);
@@ -827,6 +856,7 @@ export default function AlbumDetail() {
     const updated = { ...album };
     updated.downloadRequests = [...(updated.downloadRequests || []), record];
     updateAlbum(updated);
+    setAlbumState(updated);
     refreshAlbum();
     setShowBankTransferRequest(false);
     setShowBankTransfer(true);
