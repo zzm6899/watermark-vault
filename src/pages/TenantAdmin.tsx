@@ -1825,6 +1825,11 @@ function TenantAlbumEditor({ slug, album, onSave, onCancel }: {
           <p className="text-xs font-body text-muted-foreground">Click to upload photos</p>
           <input ref={uploadRef} type="file" accept="image/*" multiple className="absolute inset-0 opacity-0 cursor-pointer" onChange={handlePhotoUpload} />
         </div>
+        {/* Camera capture shortcut — shown on touch/mobile devices only */}
+        <label className="mb-3 flex items-center justify-center gap-2 p-2.5 rounded-lg border border-border/50 text-xs font-body text-muted-foreground cursor-pointer hover:bg-secondary/50 transition-colors sm:hidden">
+          <Camera className="w-4 h-4" /> Take a photo
+          <input type="file" accept="image/*" capture="environment" className="sr-only" onChange={handlePhotoUpload} />
+        </label>
         {uploading && (
           <div className="mb-3 h-1.5 bg-secondary rounded-full overflow-hidden">
             <div className="h-full bg-primary rounded-full transition-all" style={{ width: `${uploadProgress}%` }} />
@@ -1869,6 +1874,8 @@ function TenantPhotos({ slug }: { slug: string }) {
   const [syncing, setSyncing] = useState(false);
   const [showAddToAlbum, setShowAddToAlbum] = useState(false);
   const [uploadStats, setUploadStats] = useState<{ total: number; done: number; errors: number; savedBytes: number } | null>(null);
+  const [visibleCount, setVisibleCount] = useState(60);
+  const libSentinelRef = useRef<HTMLDivElement>(null);
 
   const photoUrl = (src: string) => tenantPhotoSrc(src, slug);
 
@@ -1884,6 +1891,21 @@ function TenantPhotos({ slug }: { slug: string }) {
   }, [slug]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Batch rendering: load more photos as user scrolls
+  useEffect(() => {
+    const sentinel = libSentinelRef.current;
+    if (!sentinel) return;
+    const observer = new IntersectionObserver(
+      (entries) => { if (entries[0].isIntersecting) setVisibleCount(c => c + 60); },
+      { rootMargin: "400px" }
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, []);
+
+  // Reset visible count when filter changes
+  useEffect(() => { setVisibleCount(60); }, [viewSource, starredOnly, searchQuery]);
 
   // ── Persist library ────────────────────────────────────────────────────────
   const saveLibrary = async (photos: Photo[]) => {
@@ -2318,6 +2340,11 @@ function TenantPhotos({ slug }: { slug: string }) {
           </p>
           <input type="file" accept="image/*" multiple className="absolute inset-0 opacity-0 cursor-pointer" onChange={handleUpload} />
         </div>
+        {/* Camera capture shortcut — shown on touch/mobile devices only */}
+        <label className="mt-3 flex items-center justify-center gap-2 p-2.5 rounded-lg border border-border/50 text-xs font-body text-muted-foreground cursor-pointer hover:bg-secondary/50 transition-colors sm:hidden">
+          <Camera className="w-4 h-4" /> Take a photo
+          <input type="file" accept="image/*" capture="environment" className="sr-only" onChange={handleUpload} />
+        </label>
         {uploadStats && (
           <div className="mt-3 p-3 rounded-lg bg-secondary/50 border border-border">
             <div className="flex items-center justify-between text-xs font-body text-muted-foreground">
@@ -2332,8 +2359,6 @@ function TenantPhotos({ slug }: { slug: string }) {
           </div>
         )}
       </div>
-
-      {/* ── Photo grid ── */}
       {displayPhotos.length === 0 ? (
         <div className="glass-panel rounded-xl p-12 text-center">
           <Image className="w-10 h-10 text-muted-foreground/30 mx-auto mb-3" />
@@ -2351,8 +2376,9 @@ function TenantPhotos({ slug }: { slug: string }) {
           )}
         </div>
       ) : (
+        <>
         <div className="grid grid-cols-3 sm:grid-cols-5 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-1.5">
-          {displayPhotos.map(p => (
+          {displayPhotos.slice(0, visibleCount).map(p => (
             <div
               key={`${p.id}::${p.source}`}
               className={`relative group aspect-square rounded-md overflow-hidden bg-secondary cursor-pointer border-2 transition-all ${selectedIds.has(p.id) ? "border-primary ring-2 ring-primary/20" : "border-transparent hover:border-border"}`}
@@ -2382,6 +2408,12 @@ function TenantPhotos({ slug }: { slug: string }) {
             </div>
           ))}
         </div>
+        {visibleCount < displayPhotos.length && (
+          <div ref={libSentinelRef} className="flex justify-center py-6">
+            <div className="w-5 h-5 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+          </div>
+        )}
+        </>
       )}
     </motion.div>
   );

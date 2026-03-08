@@ -133,7 +133,7 @@ export default function WatermarkedImage({
     <motion.div
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ delay: index * 0.05, duration: 0.4 }}
+      transition={{ delay: Math.min(index * 0.05, 0.5), duration: 0.4 }}
       className="break-inside-avoid mb-4 group relative cursor-pointer rounded-lg overflow-hidden"
       onClick={onSelect}
     >
