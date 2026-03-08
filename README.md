@@ -6,6 +6,45 @@ Watermark Vault is an all-in-one platform built for photographers who want full 
 
 ---
 
+## 📷 Screenshots
+
+<table>
+  <tr>
+    <td align="center"><strong>Dashboard</strong></td>
+    <td align="center"><strong>Bookings</strong></td>
+  </tr>
+  <tr>
+    <td><img src="screenshots/dashboard.png" alt="Admin Dashboard" width="480"/></td>
+    <td><img src="screenshots/bookings.png" alt="Bookings" width="480"/></td>
+  </tr>
+  <tr>
+    <td align="center"><strong>Event Types</strong></td>
+    <td align="center"><strong>Albums</strong></td>
+  </tr>
+  <tr>
+    <td><img src="screenshots/events.png" alt="Event Types" width="480"/></td>
+    <td><img src="screenshots/albums.png" alt="Albums" width="480"/></td>
+  </tr>
+  <tr>
+    <td align="center"><strong>Invoices</strong></td>
+    <td align="center"><strong>Finance</strong></td>
+  </tr>
+  <tr>
+    <td><img src="screenshots/invoices.png" alt="Invoices" width="480"/></td>
+    <td><img src="screenshots/finance.png" alt="Finance" width="480"/></td>
+  </tr>
+  <tr>
+    <td align="center"><strong>Public Booking Page</strong></td>
+    <td align="center"><strong>Settings</strong></td>
+  </tr>
+  <tr>
+    <td><img src="screenshots/booking-page.png" alt="Public Booking Page" width="480"/></td>
+    <td><img src="screenshots/settings.png" alt="Settings" width="480"/></td>
+  </tr>
+</table>
+
+---
+
 ## ✨ App Pitch
 
 Running a photography business means juggling bookings, galleries, invoices, client communication, and payments across a dozen different apps. Watermark Vault brings everything together in a single, beautiful, self-hosted platform that you own completely.
