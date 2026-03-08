@@ -618,7 +618,8 @@ app.get("/uploads/:filename", imageServeLimiter, async (req, res) => {
 
 // ── Serve original photo (paid, requires valid session) ──
 app.get("/api/photo/:filename/original", async (req, res) => {
-  const safeName = path.basename(req.params.filename);
+  // Strip any query-string that may have been incorporated into the filename (e.g. "photo.jpg?tenant=slug")
+  const safeName = path.basename(req.params.filename.split("?")[0]);
   const filepath = path.join(UPLOADS_DIR, safeName);
   if (!fs.existsSync(filepath)) return res.status(404).send("Not found");
 
@@ -755,7 +756,8 @@ app.post("/api/download/zip", downloadZipLimiter, async (req, res) => {
   // Collect accessible files
   const accessibleFiles = [];
   for (const { filename, clean } of fileList) {
-    const safeName = path.basename(filename);
+    // Strip any query-string that may be appended (e.g. "photo.jpg?tenant=slug")
+    const safeName = path.basename(filename.split("?")[0]);
     const filepath = path.join(UPLOADS_DIR, safeName);
     if (!fs.existsSync(filepath)) continue;
     if (!isPhotoAccessible(safeName, sessionKey, albumId)) continue;

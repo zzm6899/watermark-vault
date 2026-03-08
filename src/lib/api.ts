@@ -1172,6 +1172,20 @@ export async function getTenantStripeStatus(slug: string): Promise<{ configured:
   } catch { return { configured: false }; }
 }
 
+/** Create a Stripe checkout session for a tenant album purchase. */
+export async function createTenantAlbumCheckout(slug: string, params: {
+  albumId: string; albumTitle: string; photoCount: number; amount: number; clientEmail?: string;
+  photoIds?: string[];
+  isFullAlbum?: boolean;
+  sessionKey?: string;
+}): Promise<{ url?: string; error?: string }> {
+  try {
+    const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/stripe/checkout/album`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(params),
+    });
+    return await res.json();
+  } catch { return { error: "Network error" }; }
+}
 
 // ── Tenant Setup (via setup token) ─────────────────────────────────────────
 

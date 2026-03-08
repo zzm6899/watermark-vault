@@ -3,10 +3,12 @@ import { Camera, LogIn } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
-import { getAdminCredentials, hashPassword, login } from "@/lib/storage";
-import { syncFromServer } from "@/lib/api";
+import { getAdminCredentials, hashPassword, login, setMobileTenantSession } from "@/lib/storage";
+import { syncFromServer, tenantLogin } from "@/lib/api";
+import { useNavigate } from "react-router-dom";
 
 export default function Login({ onLogin }: { onLogin: () => void }) {
+  const navigate = useNavigate();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -18,18 +20,32 @@ export default function Login({ onLogin }: { onLogin: () => void }) {
       // after a container restart where localStorage is empty
       await syncFromServer();
 
-      const creds = getAdminCredentials();
-      if (!creds) {
-        toast.error("No admin account set up. Please run setup first.");
-        return;
-      }
       const hash = await hashPassword(password);
-      if (creds.username !== username || creds.passwordHash !== hash) {
-        toast.error("Invalid username or password");
+      const normalizedUsername = username.trim().toLowerCase();
+
+      // Try admin credentials first
+      const creds = getAdminCredentials();
+      if (creds && creds.username === normalizedUsername && creds.passwordHash === hash) {
+        login();
+        onLogin();
         return;
       }
-      login();
-      onLogin();
+
+      // Try tenant credentials (username = tenant slug)
+      const result = await tenantLogin(normalizedUsername, hash);
+      if (result.ok && result.tenant) {
+        setMobileTenantSession({
+          slug: result.tenant.slug,
+          displayName: result.tenant.displayName,
+          email: result.tenant.email,
+          timezone: result.tenant.timezone,
+          loggedAt: new Date().toISOString(),
+        });
+        navigate(`/tenant-admin/${result.tenant.slug}`, { replace: true });
+        return;
+      }
+
+      toast.error("Invalid username or password");
     } finally {
       setLoading(false);
     }
