@@ -6394,10 +6394,10 @@ function PlatformView() {
       </div>
 
       {/* Section navigation */}
-      <div className="flex gap-1 p-1 bg-secondary rounded-xl w-fit">
+      <div className="flex gap-1 p-1 bg-secondary rounded-xl overflow-x-auto scrollbar-hide max-w-full">
         {sections.map(s => (
           <button key={s.id} onClick={() => setActiveSection(s.id as typeof activeSection)}
-            className={`px-3 py-1.5 rounded-lg text-xs font-body transition-all ${activeSection === s.id ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+            className={`px-3 py-1.5 rounded-lg text-xs font-body transition-all whitespace-nowrap flex-shrink-0 ${activeSection === s.id ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
           >
             {s.label}
           </button>

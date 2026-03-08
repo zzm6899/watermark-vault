@@ -2240,25 +2240,25 @@ function TenantPhotos({ slug }: { slug: string }) {
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
       {/* ── Toolbar ── */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
-        <h2 className="font-display text-2xl text-foreground">Photo Library</h2>
-        <div className="flex gap-2 items-center flex-wrap">
-          <Button size="sm" variant="outline" onClick={handleClearDuplicates} className="gap-2 font-body text-xs border-border text-foreground">
+        <h2 className="font-display text-2xl text-foreground shrink-0">Photo Library</h2>
+        <div className="flex gap-2 items-center overflow-x-auto scrollbar-hide pb-1">
+          <Button size="sm" variant="outline" onClick={handleClearDuplicates} className="gap-2 font-body text-xs border-border text-foreground flex-shrink-0">
             <XSquare className="w-4 h-4" /> Clear Dupes
           </Button>
-          <Button size="sm" variant="outline" onClick={handleSyncStorage} disabled={syncing} className="gap-2 font-body text-xs border-border text-foreground">
+          <Button size="sm" variant="outline" onClick={handleSyncStorage} disabled={syncing} className="gap-2 font-body text-xs border-border text-foreground flex-shrink-0">
             <RefreshCw className={`w-4 h-4 ${syncing ? "animate-spin" : ""}`} /> {syncing ? "Syncing…" : "Sync Storage"}
           </Button>
           {selectedIds.size > 0 && (
             <>
               <Button size="sm" variant="outline" onClick={handleMassDelete}
-                className="gap-2 font-body text-xs border-destructive/30 text-destructive hover:bg-destructive/10">
+                className="gap-2 font-body text-xs border-destructive/30 text-destructive hover:bg-destructive/10 flex-shrink-0">
                 <Trash2 className="w-4 h-4" /> Delete ({selectedIds.size})
               </Button>
               <Button size="sm" variant="ghost" onClick={() => setSelectedIds(new Set())}
-                className="gap-1 font-body text-xs text-muted-foreground">
+                className="gap-1 font-body text-xs text-muted-foreground flex-shrink-0">
                 <XSquare className="w-4 h-4" /> Clear
               </Button>
-              <div className="relative">
+              <div className="relative flex-shrink-0">
                 <Button size="sm" variant="outline" onClick={() => setShowAddToAlbum(v => !v)}
                   className="gap-2 font-body text-xs border-border text-foreground">
                   <Plus className="w-4 h-4" /> Add to Album ({selectedIds.size})
@@ -2275,7 +2275,7 @@ function TenantPhotos({ slug }: { slug: string }) {
                 )}
               </div>
               <Button size="sm" onClick={handleCreateAlbumFromSelection}
-                className="gap-2 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs tracking-wider uppercase">
+                className="gap-2 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs tracking-wider uppercase flex-shrink-0">
                 <Plus className="w-4 h-4" /> Create Album ({selectedIds.size})
               </Button>
             </>
@@ -2285,7 +2285,7 @@ function TenantPhotos({ slug }: { slug: string }) {
               if (selectedIds.size === displayPhotos.length && displayPhotos.length > 0) setSelectedIds(new Set());
               else setSelectedIds(new Set(displayPhotos.map(p => p.id)));
             }}
-            className="gap-1 font-body text-xs text-muted-foreground">
+            className="gap-1 font-body text-xs text-muted-foreground flex-shrink-0">
             <CheckSquare className="w-4 h-4" />
             {selectedIds.size === displayPhotos.length && displayPhotos.length > 0 ? "Deselect All" : "Select All"}
           </Button>
@@ -3153,10 +3153,10 @@ function TenantSettingsView({ slug }: { slug: string }) {
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
       <h2 className="font-display text-2xl text-foreground mb-6">Settings</h2>
 
-      <div className="flex gap-1 mb-6 bg-secondary rounded-xl p-1 max-w-fit overflow-x-auto">
+      <div className="flex gap-1 mb-6 bg-secondary rounded-xl p-1 max-w-full overflow-x-auto scrollbar-hide">
         {sectionTabs.map(t => (
           <button key={t.id} onClick={() => setActiveSection(t.id)}
-            className={`px-4 py-2 rounded-lg text-xs font-body tracking-wider uppercase whitespace-nowrap transition-all ${activeSection === t.id ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+            className={`px-4 py-2 rounded-lg text-xs font-body tracking-wider uppercase whitespace-nowrap flex-shrink-0 transition-all ${activeSection === t.id ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
           >{t.label}</button>
         ))}
       </div>
