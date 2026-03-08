@@ -32,6 +32,7 @@ import {
   saveTenantCalendarSettings, getTenantStorageStats, upsertTenantBookingAdmin,
 } from "@/lib/api";
 import ProgressiveImg from "@/components/ProgressiveImg";
+import RichTextEditor from "@/components/RichTextEditor";
 import type {
   Booking, Album, Photo, AlbumDisplaySize, EventType, Invoice, InvoiceItem, InvoiceParty,
   Contact, TenantSettings, AvailabilitySlot, QuestionField, WatermarkPosition, SpecificDateSlot,
@@ -1863,6 +1864,9 @@ function TenantAlbumEditor({ slug, album, onSave, onCancel }: {
 
 
 // ─── Photos ──────────────────────────────────────────────────────────────────
+const TENANT_LIBRARY_INITIAL_BATCH = 60;
+const TENANT_LIBRARY_BATCH_SIZE = 60;
+
 function TenantPhotos({ slug }: { slug: string }) {
   const [albums, setAlbums] = useState<Album[]>([]);
   const [libraryPhotos, setLibraryPhotos] = useState<Photo[]>([]);
@@ -1874,7 +1878,7 @@ function TenantPhotos({ slug }: { slug: string }) {
   const [syncing, setSyncing] = useState(false);
   const [showAddToAlbum, setShowAddToAlbum] = useState(false);
   const [uploadStats, setUploadStats] = useState<{ total: number; done: number; errors: number; savedBytes: number } | null>(null);
-  const [visibleCount, setVisibleCount] = useState(60);
+  const [visibleCount, setVisibleCount] = useState(TENANT_LIBRARY_INITIAL_BATCH);
   const libSentinelRef = useRef<HTMLDivElement>(null);
 
   const photoUrl = (src: string) => tenantPhotoSrc(src, slug);
@@ -1897,7 +1901,7 @@ function TenantPhotos({ slug }: { slug: string }) {
     const sentinel = libSentinelRef.current;
     if (!sentinel) return;
     const observer = new IntersectionObserver(
-      (entries) => { if (entries[0].isIntersecting) setVisibleCount(c => c + 60); },
+      (entries) => { if (entries[0].isIntersecting) setVisibleCount(c => c + TENANT_LIBRARY_BATCH_SIZE); },
       { rootMargin: "400px" }
     );
     observer.observe(sentinel);
@@ -1905,7 +1909,7 @@ function TenantPhotos({ slug }: { slug: string }) {
   }, []);
 
   // Reset visible count when filter changes
-  useEffect(() => { setVisibleCount(60); }, [viewSource, starredOnly, searchQuery]);
+  useEffect(() => { setVisibleCount(TENANT_LIBRARY_INITIAL_BATCH); }, [viewSource, starredOnly, searchQuery]);
 
   // ── Persist library ────────────────────────────────────────────────────────
   const saveLibrary = async (photos: Photo[]) => {
@@ -2959,7 +2963,7 @@ function TenantProfileView({ slug, session }: { slug: string; session: { display
           </div>
           <div>
             <label className="text-xs font-body text-muted-foreground mb-1 block">Bio</label>
-            <Textarea value={bio} onChange={e => setBio(e.target.value)} rows={4} className="bg-secondary border-border text-foreground font-body resize-none" placeholder="Short bio shown on your booking page" />
+            <RichTextEditor value={bio} onChange={setBio} minHeight="120px" placeholder="Short bio shown on your booking page — supports bold, italic, headings" />
           </div>
           <div className="p-3 rounded-lg bg-secondary/50 border border-border/50">
             <p className="text-xs font-body text-muted-foreground">Booking page URL:</p>

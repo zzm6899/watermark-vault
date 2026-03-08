@@ -3188,6 +3188,9 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
 }
 
 // ─── Photo Library ───────────────────────────────────
+const LIBRARY_INITIAL_BATCH = 60;
+const LIBRARY_BATCH_SIZE = 60;
+
 function PhotosView() {
   const [libraryPhotos, setLibraryPhotosState] = useState<Photo[]>(getPhotoLibrary());
   const [albums, setAlbumsState] = useState<Album[]>(getAlbums());
@@ -3198,7 +3201,7 @@ function PhotosView() {
   const [starredOnly, setStarredOnly] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [syncing, setSyncing] = useState(false);
-  const [visibleCount, setVisibleCount] = useState(60);
+  const [visibleCount, setVisibleCount] = useState(LIBRARY_INITIAL_BATCH);
   const libSentinelRef = useRef<HTMLDivElement>(null);
 
   // Backfill missing thumbnails for library photos
@@ -3215,7 +3218,7 @@ function PhotosView() {
     const sentinel = libSentinelRef.current;
     if (!sentinel) return;
     const observer = new IntersectionObserver(
-      (entries) => { if (entries[0].isIntersecting) setVisibleCount(c => c + 60); },
+      (entries) => { if (entries[0].isIntersecting) setVisibleCount(c => c + LIBRARY_BATCH_SIZE); },
       { rootMargin: "400px" }
     );
     observer.observe(sentinel);
@@ -3223,7 +3226,7 @@ function PhotosView() {
   }, []);
 
   // Reset visible count when filter changes
-  useEffect(() => { setVisibleCount(60); }, [viewSource, starredOnly, searchQuery]);
+  useEffect(() => { setVisibleCount(LIBRARY_INITIAL_BATCH); }, [viewSource, starredOnly, searchQuery]);
 
   // Reconcile: find files on server storage that aren't tracked in any album or library
   // Also repair albums that have broken photo references

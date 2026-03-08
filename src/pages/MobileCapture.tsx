@@ -49,16 +49,21 @@ function formatDuration(mins: number) {
   if (mins >= 60) { const h = Math.floor(mins / 60); const m = mins % 60; return m > 0 ? `${h}h ${m}m` : `${h}h`; }
   return `${mins}m`;
 }
-/** Returns the best thumbnail URL for a photo: prefers stored thumbnail, then ?size=thumb for server photos. */
-function getThumbSrc(photo: Photo): string {
-  if (photo.thumbnail) return photo.thumbnail;
-  if (photo.src.startsWith("/uploads/")) return photo.src + "?size=thumb";
-  return photo.src;
+/** Returns the best thumbnail URL for a photo, optionally scoped to a tenant watermark. */
+function getThumbSrc(photo: Photo, tenantSlug?: string | null): string {
+  const base = photo.thumbnail || (photo.src.startsWith("/uploads/") ? photo.src + "?size=thumb" : photo.src);
+  if (tenantSlug && base.startsWith("/uploads/")) {
+    return base + (base.includes("?") ? "&" : "?") + `tenant=${encodeURIComponent(tenantSlug)}`;
+  }
+  return base;
 }
-/** Returns a medium-resolution URL suitable for the lightbox. */
-function getMediumSrc(photo: Photo): string {
-  if (photo.src.startsWith("/uploads/")) return photo.src + "?size=medium";
-  return photo.src;
+/** Returns a medium-resolution URL suitable for the lightbox, optionally scoped to a tenant watermark. */
+function getMediumSrc(photo: Photo, tenantSlug?: string | null): string {
+  const base = photo.src.startsWith("/uploads/") ? photo.src + "?size=medium" : photo.src;
+  if (tenantSlug && base.startsWith("/uploads/")) {
+    return base + (base.includes("?") ? "&" : "?") + `tenant=${encodeURIComponent(tenantSlug)}`;
+  }
+  return base;
 }
 type SessionStatus = "next-up" | "in-progress" | "upcoming" | "done" | "past";
 function getSessionStatus(bk: Booking, albums: Album[]): SessionStatus {
@@ -118,13 +123,14 @@ class CameraErrorBoundary extends React.Component<
 }
 
 // ── Lightbox image component — shows thumbnail immediately, upgrades to medium ──
-function CaptureLightboxImage({ photo, cache, onCacheUpdate }: {
+function CaptureLightboxImage({ photo, cache, onCacheUpdate, tenantSlug }: {
   photo: Photo;
   cache: Record<string, string>;
   onCacheUpdate: (id: string, url: string) => void;
+  tenantSlug?: string | null;
 }) {
-  const thumbSrc = getThumbSrc(photo);
-  const mediumSrc = getMediumSrc(photo);
+  const thumbSrc = getThumbSrc(photo, tenantSlug);
+  const mediumSrc = getMediumSrc(photo, tenantSlug);
   const [src, setSrc] = useState(cache[photo.id] || thumbSrc);
   const [loaded, setLoaded] = useState(!!cache[photo.id]);
 
@@ -1105,7 +1111,7 @@ function MobileCaptureInner() {
                     onClick={() => setLightboxIndex(idx)}
                     className="absolute inset-0 w-full h-full active:scale-95 transition-transform"
                   >
-                    <img src={photo.thumbnail || photo.src} alt={photo.title} className="w-full h-full object-cover" />
+                    <img src={getThumbSrc(photo, tenantSession?.slug)} alt={photo.title} className="w-full h-full object-cover" />
                   </button>
                   {photo.proofing && (
                     <span className="absolute top-1 left-1 text-[8px] font-body tracking-wider uppercase px-1 py-0.5 rounded bg-primary/90 text-primary-foreground leading-tight pointer-events-none">P</span>
@@ -1174,7 +1180,7 @@ function MobileCaptureInner() {
                         className="absolute inset-0 w-full h-full active:scale-[0.98] transition-transform"
                       >
                         <img
-                          src={getThumbSrc(photo)}
+                          src={getThumbSrc(photo, tenantSession?.slug)}
                           alt={photo.title}
                           className="w-full h-full object-cover"
                           loading="lazy"
@@ -1293,6 +1299,7 @@ function MobileCaptureInner() {
                     photo={photo}
                     cache={lightboxSrcCache}
                     onCacheUpdate={updateLightboxCache}
+                    tenantSlug={tenantSession?.slug}
                   />
                 </div>
               </motion.div>

@@ -12,6 +12,18 @@ import { toast } from "sonner";
 import { getTenantPublicData, createTenantBooking } from "@/lib/api";
 import type { EventType, Tenant } from "@/lib/types";
 import Footer from "@/components/Footer";
+import { RichTextDisplay } from "@/components/RichTextEditor";
+
+/** Strip HTML tags to plain text for short teasers */
+function stripHtml(html: string): string {
+  try {
+    const tmp = document.createElement("div");
+    tmp.innerHTML = html;
+    return tmp.textContent || tmp.innerText || "";
+  } catch {
+    return html.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+  }
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function toDateStr(d: Date): string {
@@ -180,7 +192,7 @@ export default function TenantBookingPage() {
           </div>
           <div>
             <p className="font-display text-sm text-foreground leading-tight">{tenant.displayName}</p>
-            {tenant.bio && <p className="text-xs font-body text-muted-foreground leading-tight truncate max-w-xs">{tenant.bio}</p>}
+            {tenant.bio && <p className="text-xs font-body text-muted-foreground leading-tight truncate max-w-xs">{stripHtml(tenant.bio)}</p>}
           </div>
         </div>
       </header>
@@ -195,6 +207,13 @@ export default function TenantBookingPage() {
                 <h1 className="font-display text-2xl text-foreground mb-1">Book a session</h1>
                 <p className="text-sm font-body text-muted-foreground">Choose a session type to get started.</p>
               </div>
+              {/* Photographer bio — shown if set */}
+              {tenant.bio && (
+                <div className="glass-panel rounded-xl p-5">
+                  <p className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-2">About {tenant.displayName}</p>
+                  <RichTextDisplay html={tenant.bio} />
+                </div>
+              )}
               {eventTypes.length === 0 ? (
                 <div className="glass-panel rounded-xl p-10 text-center">
                   <CalendarIcon className="w-10 h-10 text-muted-foreground/30 mx-auto mb-4" />
