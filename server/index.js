@@ -966,12 +966,18 @@ app.post("/api/proofing/submit", async (req, res) => {
   }
   try {
     const db = readDb();
-    const albums = db["wv_albums"];
-    const parsed = typeof albums === "string" ? JSON.parse(albums) : (Array.isArray(albums) ? albums : []);
-    const idx = parsed.findIndex(a => a.id === albumId);
-    if (idx === -1) return res.status(404).json({ ok: false, error: "Album not found" });
+    // Search across main and all tenant album stores
+    const found = findAlbumById(db, albumId);
+    if (!found) return res.status(404).json({ ok: false, error: "Album not found" });
 
-    const album = parsed[idx];
+    const { album, tenantSlug } = found;
+    const storeKey = tenantSlug ? `t_${tenantSlug}_wv_albums` : "wv_albums";
+    const raw = db[storeKey];
+    const parsed = raw ? (typeof raw === "string" ? JSON.parse(raw) : (Array.isArray(raw) ? raw : [])) : [];
+    const idx = parsed.findIndex(a => a.id === albumId);
+    // Defensive check: findAlbumById already confirmed existence, but the parsed array
+    // could be inconsistent if db was concurrently modified or corrupted.
+    if (idx === -1) return res.status(500).json({ ok: false, error: "Album index inconsistency — please retry" });
 
     // Mark starred photos and record the round
     const updatedPhotos = (album.photos || []).map(p => ({
@@ -993,14 +999,24 @@ app.post("/api/proofing/submit", async (req, res) => {
 
     const updatedAlbum = { ...album, photos: updatedPhotos, proofingStage: "selections-submitted", proofingRounds: updatedRounds };
     parsed[idx] = updatedAlbum;
-    db["wv_albums"] = JSON.stringify(parsed);
+    db[storeKey] = JSON.stringify(parsed);
     writeDb(db);
 
-    // Fire discord notification if configured
-    const settings = db["wv_settings"];
-    const settingsParsed = typeof settings === "string" ? JSON.parse(settings) : (settings || {});
-    if (settingsParsed?.discordWebhookUrl && settingsParsed?.discordNotifyProofing !== false) {
-      notifyProofingSubmission(settingsParsed.discordWebhookUrl, updatedAlbum, selectedPhotoIds.length, clientNote).catch(() => {});
+    // Fire discord notification — use tenant webhook if available, else main
+    let discordUrl, discordNotify;
+    if (tenantSlug) {
+      const tsRaw = db[`t_${tenantSlug}_wv_tenant_settings`];
+      const ts = tsRaw ? (typeof tsRaw === "string" ? JSON.parse(tsRaw) : tsRaw) : {};
+      discordUrl = ts?.discordWebhookUrl;
+      discordNotify = ts?.discordNotifyProofing !== false;
+    } else {
+      const settings = db["wv_settings"];
+      const settingsParsed = typeof settings === "string" ? JSON.parse(settings) : (settings || {});
+      discordUrl = settingsParsed?.discordWebhookUrl;
+      discordNotify = settingsParsed?.discordNotifyProofing !== false;
+    }
+    if (discordUrl && discordNotify) {
+      notifyProofingSubmission(discordUrl, updatedAlbum, selectedPhotoIds.length, clientNote).catch(() => {});
     }
 
     res.json({ ok: true, album: updatedAlbum });

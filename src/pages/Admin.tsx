@@ -3144,6 +3144,11 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
           <p className="text-[10px] font-body text-muted-foreground/50 mt-1">Multiple files supported</p>
           <input type="file" accept="image/*" multiple className="absolute inset-0 opacity-0 cursor-pointer" onChange={handlePhotoUpload} />
         </div>
+        {/* Camera capture shortcut — shown on touch/mobile devices only */}
+        <label className="mb-3 flex items-center justify-center gap-2 p-2.5 rounded-lg border border-border/50 text-xs font-body text-muted-foreground cursor-pointer hover:bg-secondary/50 transition-colors sm:hidden">
+          <Camera className="w-4 h-4" /> Take a photo
+          <input type="file" accept="image/*" capture="environment" className="sr-only" onChange={handlePhotoUpload} />
+        </label>
         {uploadStats && (
           <div className="mb-3 p-3 rounded-lg bg-secondary/50 border border-border">
             <div className="flex items-center justify-between text-xs font-body text-muted-foreground">
@@ -3183,6 +3188,9 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
 }
 
 // ─── Photo Library ───────────────────────────────────
+const LIBRARY_INITIAL_BATCH = 60;
+const LIBRARY_BATCH_SIZE = 60;
+
 function PhotosView() {
   const [libraryPhotos, setLibraryPhotosState] = useState<Photo[]>(getPhotoLibrary());
   const [albums, setAlbumsState] = useState<Album[]>(getAlbums());
@@ -3193,6 +3201,8 @@ function PhotosView() {
   const [starredOnly, setStarredOnly] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [syncing, setSyncing] = useState(false);
+  const [visibleCount, setVisibleCount] = useState(LIBRARY_INITIAL_BATCH);
+  const libSentinelRef = useRef<HTMLDivElement>(null);
 
   // Backfill missing thumbnails for library photos
   useBackfillThumbnails(libraryPhotos, useCallback((photoId, thumb) => {
@@ -3202,6 +3212,21 @@ function PhotosView() {
       return updated;
     });
   }, []));
+
+  // Batch rendering: load more photos as user scrolls
+  useEffect(() => {
+    const sentinel = libSentinelRef.current;
+    if (!sentinel) return;
+    const observer = new IntersectionObserver(
+      (entries) => { if (entries[0].isIntersecting) setVisibleCount(c => c + LIBRARY_BATCH_SIZE); },
+      { rootMargin: "400px" }
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, []);
+
+  // Reset visible count when filter changes
+  useEffect(() => { setVisibleCount(LIBRARY_INITIAL_BATCH); }, [viewSource, starredOnly, searchQuery]);
 
   // Reconcile: find files on server storage that aren't tracked in any album or library
   // Also repair albums that have broken photo references
@@ -3619,6 +3644,11 @@ function PhotosView() {
           </p>
           <input type="file" accept="image/*" multiple className="absolute inset-0 opacity-0 cursor-pointer" onChange={handleUpload} />
         </div>
+        {/* Camera capture shortcut — shown on touch/mobile devices only */}
+        <label className="mt-3 flex items-center justify-center gap-2 p-2.5 rounded-lg border border-border/50 text-xs font-body text-muted-foreground cursor-pointer hover:bg-secondary/50 transition-colors sm:hidden">
+          <Camera className="w-4 h-4" /> Take a photo
+          <input type="file" accept="image/*" capture="environment" className="sr-only" onChange={handleUpload} />
+        </label>
         {uploadStats && (
           <div className="mt-3 p-3 rounded-lg bg-secondary/50 border border-border">
             <div className="flex items-center justify-between text-xs font-body text-muted-foreground">
@@ -3640,8 +3670,9 @@ function PhotosView() {
           <p className="text-sm font-body text-muted-foreground">No photos found.</p>
         </div>
       ) : (
+        <>
         <div className="grid grid-cols-3 sm:grid-cols-5 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-1.5">
-          {displayPhotos.map(p => (
+          {displayPhotos.slice(0, visibleCount).map(p => (
             <div key={p.id + p.source} className={`relative group aspect-square rounded-md overflow-hidden bg-secondary cursor-pointer border-2 transition-all ${selectedIds.has(p.id) ? "border-primary ring-2 ring-primary/20" : "border-transparent hover:border-border"}`}
               onClick={() => toggleSelect(p.id)}>
               <ProgressiveImg thumbSrc={p.thumbnail} fullSrc={p.src} alt={p.title} className="w-full h-full object-cover" loading="lazy" />
@@ -3662,6 +3693,12 @@ function PhotosView() {
             </div>
           ))}
         </div>
+        {visibleCount < displayPhotos.length && (
+          <div ref={libSentinelRef} className="flex justify-center py-6">
+            <div className="w-5 h-5 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+          </div>
+        )}
+        </>
       )}
     </motion.div>
   );
