@@ -223,10 +223,11 @@ export default function AlbumDetail() {
       if (result?.album) {
         const tSlug = result.tenantSlug;
         setTenantSlug(tSlug);
+        let loadedAlbum = result.album;
         if (tSlug) {
           // Add ?tenant=slug to all photo URLs so the server applies the right watermark
           const withTenant = (src: string) => tenantPhotoSrc(src, tSlug);
-          const patchedAlbum = {
+          loadedAlbum = {
             ...result.album,
             photos: (result.album.photos || []).map((p: any) => ({
               ...p,
@@ -237,10 +238,11 @@ export default function AlbumDetail() {
             })),
             coverImage: result.album.coverImage ? withTenant(result.album.coverImage) : result.album.coverImage,
           };
-          setAlbumState(patchedAlbum);
-        } else {
-          setAlbumState(result.album);
         }
+        setAlbumState(loadedAlbum);
+        // Reset access grant based on the server-loaded album's access code and URL token
+        const tokenGrantsAccess = !!(urlToken && loadedAlbum.clientToken && urlToken === loadedAlbum.clientToken);
+        setAccessGranted(!loadedAlbum.accessCode || tokenGrantsAccess);
       }
       setAlbumLoading(false);
     });
@@ -426,9 +428,10 @@ export default function AlbumDetail() {
     return sortOrder === "asc" ? _timeCmp : -_timeCmp;
   });
 
-  useEffect(() => {
-    displayedPhotosRef.current = displayedPhotos as Photo[];
-  }, [displayedPhotos]);
+  // Keep ref in sync with the current displayed photos without a useEffect (direct assignment
+  // is safe here and avoids a conditional-hook violation: this code is reached only when
+  // album is defined and the early-return guards above have not fired).
+  displayedPhotosRef.current = displayedPhotos as Photo[];
   // Lightbox photo lookup — must be after displayedPhotos
   const lbPhoto = lightboxPhotoId ? displayedPhotos.find((p: any) => p.id === lightboxPhotoId) ?? null : null;
   const lbIdx = lbPhoto ? displayedPhotos.findIndex((p: any) => p.id === lightboxPhotoId) : -1;
