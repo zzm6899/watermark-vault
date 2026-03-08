@@ -60,8 +60,9 @@ function isValidEmail(email: string) {
 type Step = "event-select" | "datetime" | "contact" | "confirmed";
 
 // ── Main Component ────────────────────────────────────────────────────────────
-export default function TenantBookingPage() {
-  const { tenantSlug } = useParams<{ tenantSlug: string }>();
+export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: string }) {
+  const { tenantSlug: paramSlug } = useParams<{ tenantSlug: string }>();
+  const tenantSlug = overrideSlug || paramSlug;
   const navigate = useNavigate();
 
   const [loading, setLoading] = useState(true);

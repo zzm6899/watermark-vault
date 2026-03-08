@@ -6192,6 +6192,11 @@ function PlatformView() {
   const [newTempPassword, setNewTempPassword] = useState("");
   const [settingPassword, setSettingPassword] = useState(false);
 
+  // Tenant custom domain editing
+  const [editingDomainSlug, setEditingDomainSlug] = useState<string | null>(null);
+  const [customDomainInput, setCustomDomainInput] = useState("");
+  const [savingDomain, setSavingDomain] = useState(false);
+
   // Plan form state
   const [newPlanName, setNewPlanName] = useState("");
   const [newPlanType, setNewPlanType] = useState<"one-time" | "monthly" | "yearly">("one-time");
@@ -6328,6 +6333,18 @@ function PlatformView() {
       setNewTempPassword("");
     } catch { toast.error("Failed to update password"); }
     finally { setSettingPassword(false); }
+  };
+
+  const handleSaveCustomDomain = async (slug: string) => {
+    setSavingDomain(true);
+    const domain = customDomainInput.trim().toLowerCase().replace(/^https?:\/\//, "");
+    const { ok, error } = await updateTenant(slug, { customDomain: domain || undefined });
+    setSavingDomain(false);
+    if (!ok) { toast.error(error || "Failed to save custom domain"); return; }
+    toast.success(domain ? `Custom domain saved for /${slug}` : `Custom domain removed for /${slug}`);
+    setEditingDomainSlug(null);
+    setCustomDomainInput("");
+    loadAll();
   };
 
   const copyToClipboard = (text: string) => {
@@ -6471,6 +6488,9 @@ function PlatformView() {
                           {!t.active && <span className="text-[10px] font-body bg-muted text-muted-foreground px-1.5 py-0.5 rounded-full">Inactive</span>}
                         </div>
                         <p className="text-xs font-body text-muted-foreground">{t.email}</p>
+                        {t.customDomain && (
+                          <p className="text-[10px] font-mono text-blue-400 mt-0.5">🌐 {t.customDomain}</p>
+                        )}
                       </div>
                       <div className="text-right shrink-0">
                         <p className="text-xs font-body text-foreground">{t.bookingCount} bookings</p>
@@ -6487,11 +6507,25 @@ function PlatformView() {
                           setResettingSlug(resettingSlug === t.slug ? null : t.slug);
                           setNewTempPassword("");
                           setSelectedTenantForSettings(null);
+                          setEditingDomainSlug(null);
                         }}
                         className={`text-xs font-body px-2 py-1 rounded-md border transition-colors ${resettingSlug === t.slug ? "bg-yellow-500/10 text-yellow-400 border-yellow-500/30" : "border-border text-muted-foreground hover:text-foreground hover:border-foreground"}`}
                         title="Reset password"
                       >
                         🔑 Password
+                      </button>
+                      <button
+                        onClick={() => {
+                          const opening = editingDomainSlug !== t.slug;
+                          setEditingDomainSlug(opening ? t.slug : null);
+                          setCustomDomainInput(opening ? (t.customDomain || "") : "");
+                          setResettingSlug(null);
+                          setSelectedTenantForSettings(null);
+                        }}
+                        className={`text-xs font-body px-2 py-1 rounded-md border transition-colors ${editingDomainSlug === t.slug ? "bg-blue-500/10 text-blue-400 border-blue-500/30" : "border-border text-muted-foreground hover:text-foreground hover:border-foreground"}`}
+                        title="Custom domain"
+                      >
+                        🌐 Domain
                       </button>
                       <button
                         onClick={() => setSelectedTenantForSettings(selectedTenantForSettings?.slug === t.slug ? null : t)}
@@ -6534,6 +6568,41 @@ function PlatformView() {
                     {selectedTenantForSettings?.slug === t.slug && (
                       <div className="mt-1 p-4 rounded-lg bg-secondary/30 border border-primary/20">
                         <TenantSettingsPanel tenant={t} onClose={() => setSelectedTenantForSettings(null)} />
+                      </div>
+                    )}
+                    {editingDomainSlug === t.slug && (
+                      <div className="mt-1 p-4 rounded-lg bg-blue-500/5 border border-blue-500/20 space-y-3">
+                        <p className="text-xs font-body text-blue-400 font-medium">Custom domain for /{t.slug}</p>
+                        <p className="text-[11px] font-body text-muted-foreground">
+                          Enter the hostname your tenant will use (e.g. <code className="bg-secondary px-1 rounded">book.myphotobusiness.com</code>).
+                          Point that domain's DNS to this server, then configure your reverse proxy (Caddy or nginx) to forward it here.
+                        </p>
+                        <div className="flex gap-2 items-end">
+                          <div className="flex-1">
+                            <Input
+                              type="text"
+                              value={customDomainInput}
+                              onChange={e => setCustomDomainInput(e.target.value.toLowerCase().replace(/^https?:\/\//, ""))}
+                              placeholder="book.myphotobusiness.com"
+                              className="bg-background border-border text-foreground font-body text-sm font-mono"
+                            />
+                          </div>
+                          <Button size="sm" onClick={() => handleSaveCustomDomain(t.slug)} disabled={savingDomain}
+                            className="bg-blue-600 hover:bg-blue-700 text-white font-body text-xs gap-1 shrink-0">
+                            {savingDomain ? "Saving…" : "Save"}
+                          </Button>
+                          <Button size="sm" variant="ghost" onClick={() => { setEditingDomainSlug(null); setCustomDomainInput(""); }}
+                            className="font-body text-xs text-muted-foreground">
+                            Cancel
+                          </Button>
+                        </div>
+                        {t.customDomain && (
+                          <p className="text-[11px] font-body text-muted-foreground">
+                            Current: <code className="bg-secondary px-1 rounded text-blue-400">{t.customDomain}</code>
+                            {" — "}
+                            <button onClick={() => { setCustomDomainInput(""); handleSaveCustomDomain(t.slug); }} className="text-destructive hover:underline">Remove</button>
+                          </p>
+                        )}
                       </div>
                     )}
                   </div>

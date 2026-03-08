@@ -335,6 +335,7 @@ export interface Tenant {
   passwordHash?: string; // SHA-256 hash of tenant's password (for mobile login)
   active: boolean;
   createdAt: string;     // ISO timestamp
+  customDomain?: string; // optional custom domain, e.g. "book.myphotobusiness.com"
 }
 
 // ─── Tenant Settings ─────────────────────────────────────────────────────────

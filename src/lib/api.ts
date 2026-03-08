@@ -919,6 +919,15 @@ export async function deleteTenant(slug: string): Promise<{ ok: boolean; error?:
   } catch { return { ok: false, error: "Network error" }; }
 }
 
+/** Resolve a hostname to a tenant slug (used for custom-domain support). */
+export async function getTenantByDomain(domain: string): Promise<{ slug: string; displayName: string } | null> {
+  try {
+    const res = await fetch(`/api/tenant/by-domain?domain=${encodeURIComponent(domain)}`);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch { return null; }
+}
+
 /** Fetch a tenant's public data (event types + profile) for the booking page. */
 export async function getTenantPublicData(slug: string): Promise<{
   tenant: import("./types").Tenant;

@@ -1355,6 +1355,29 @@ app.put("/api/tenants/:slug", tenantLimiter, (req, res) => {
   const idx = tenants.findIndex(t => t.slug === req.params.slug);
   if (idx === -1) return res.status(404).json({ error: "Tenant not found" });
   const { slug: _ignoreSlug, createdAt: _ignoreCreatedAt, ...updates } = req.body || {};
+  // Validate and normalise customDomain when provided
+  if (updates.customDomain !== undefined) {
+    if (updates.customDomain === "" || updates.customDomain === null) {
+      // Allow explicit removal
+      updates.customDomain = undefined;
+    } else {
+      // Strip accidental protocol prefix, normalise to lowercase
+      const normalizedDomain = String(updates.customDomain).replace(/^https?:\/\//i, "").toLowerCase().trim();
+      // Basic DNS hostname validation: labels separated by dots, no consecutive dots, no leading/trailing dots
+      const DOMAIN_RE = /^(?!-)[a-z0-9-]{1,63}(?<!-)(\.[a-z0-9-]{1,63}(?<!-))+$/;
+      if (!DOMAIN_RE.test(normalizedDomain)) {
+        return res.status(400).json({ error: "Invalid custom domain format" });
+      }
+      // Ensure the domain is not already claimed by another tenant
+      const conflict = tenants.find(
+        t => t.slug !== req.params.slug && t.customDomain && t.customDomain.toLowerCase() === normalizedDomain
+      );
+      if (conflict) {
+        return res.status(409).json({ error: "Custom domain is already in use by another tenant" });
+      }
+      updates.customDomain = normalizedDomain;
+    }
+  }
   tenants[idx] = { ...tenants[idx], ...updates, slug: req.params.slug };
   writeTenants(tenants);
   res.json(tenants[idx]);
@@ -1368,6 +1391,34 @@ app.delete("/api/tenants/:slug", tenantLimiter, (req, res) => {
   if (filtered.length === tenants.length) return res.status(404).json({ error: "Tenant not found" });
   writeTenants(filtered);
   res.json({ ok: true });
+});
+
+// Resolve a hostname to a tenant slug — used by the frontend for custom-domain support
+app.get("/api/tenant/by-domain", tenantPublicLimiter, (req, res) => {
+  const domain = req.query.domain;
+  if (!domain || typeof domain !== "string") {
+    return res.status(400).json({ error: "domain query parameter is required" });
+  }
+  const normalized = domain.toLowerCase().trim();
+  const tenants = readTenants();
+  const tenant = tenants.find(
+    t => t.active !== false && t.customDomain && t.customDomain.toLowerCase() === normalized
+  );
+  if (!tenant) return res.status(404).json({ error: "No tenant found for this domain" });
+  res.json({ slug: tenant.slug, displayName: tenant.displayName });
+});
+
+// Caddy on-demand TLS verification — returns 200 if the domain belongs to an active tenant, 404 otherwise
+// Used as the `ask` URL in Caddy's on_demand_tls block to prevent issuing certs for arbitrary domains.
+app.get("/api/caddy/verify-domain", tenantPublicLimiter, (req, res) => {
+  const domain = req.query.domain;
+  if (!domain || typeof domain !== "string") return res.status(400).end();
+  const normalized = domain.toLowerCase().trim();
+  const tenants = readTenants();
+  const found = tenants.some(
+    t => t.active !== false && t.customDomain && t.customDomain.toLowerCase() === normalized
+  );
+  res.status(found ? 200 : 404).end();
 });
 
 // Public tenant data for booking page — returns event types + profile
