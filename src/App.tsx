@@ -58,10 +58,14 @@ const PageFallback = (
 );
 
 const App = () => {
-  const [ready, setReady] = useState(false);
+  const [ready, setReady] = useState(isPublicRoute());
   const [customDomainSlug, setCustomDomainSlug] = useState<string | null>(null);
 
   useEffect(() => {
+    // Public booking/gallery pages can render immediately without waiting for the
+    // server sync (they fetch their own data directly via API calls).
+    if (isPublicRoute()) return;
+
     const hostname = window.location.hostname;
     // Skip domain resolution for localhost / loopback / private IP access
     const isLocalAccess =
@@ -81,13 +85,6 @@ const App = () => {
       );
     }
     Promise.allSettled(tasks).finally(() => setReady(true));
-  // Public booking/gallery pages can render immediately without waiting for the
-  // server sync (they fetch their own data directly via API calls).
-  const [ready, setReady] = useState(isPublicRoute());
-
-  useEffect(() => {
-    if (isPublicRoute()) return; // Skip sync for routes that don't need it
-    syncFromServer().finally(() => setReady(true));
   }, []);
 
   if (!ready) {
@@ -101,33 +98,29 @@ const App = () => {
         <Sonner />
         <CustomDomainContext.Provider value={customDomainSlug}>
           <BrowserRouter>
-            <Routes>
-              {/* When the app is served from a tenant's custom domain, show their booking page at root */}
-              <Route
-                path="/"
-                element={customDomainSlug ? <TenantBookingPage overrideSlug={customDomainSlug} /> : <Booking />}
-              />
-        <BrowserRouter>
-          <Suspense fallback={PageFallback}>
-            <Routes>
-              <Route path="/" element={<Booking />} />
-              <Route path="/book/:tenantSlug" element={<TenantBookingPage />} />
-              <Route path="/gallery/:albumId" element={<AlbumDetail />} />
-              <Route path="/booking/modify/:bookingId" element={<BookingModify />} />
-              <Route path="/login" element={<LoginPage />} />
-              <Route path="/capture" element={<MobileCapture />} />
-              <Route path="/admin" element={<AdminGuard />} />
-              <Route path="/admin/:tab" element={<AdminGuard />} />
-              <Route path="/admin/storage" element={<AdminGuard />} />
-              <Route path="/invoice/:token" element={<InvoiceView />} />
-              <Route path="/tenant-setup/:token" element={<TenantSetup />} />
-              <Route path="/tenant-admin/:slug" element={<TenantAdmin />} />
-              <Route path="*" element={<NotFound />} />
-            </Routes>
+            <Suspense fallback={PageFallback}>
+              <Routes>
+                {/* When the app is served from a tenant's custom domain, show their booking page at root */}
+                <Route
+                  path="/"
+                  element={customDomainSlug ? <TenantBookingPage overrideSlug={customDomainSlug} /> : <Booking />}
+                />
+                <Route path="/book/:tenantSlug" element={<TenantBookingPage />} />
+                <Route path="/gallery/:albumId" element={<AlbumDetail />} />
+                <Route path="/booking/modify/:bookingId" element={<BookingModify />} />
+                <Route path="/login" element={<LoginPage />} />
+                <Route path="/capture" element={<MobileCapture />} />
+                <Route path="/admin" element={<AdminGuard />} />
+                <Route path="/admin/:tab" element={<AdminGuard />} />
+                <Route path="/admin/storage" element={<AdminGuard />} />
+                <Route path="/invoice/:token" element={<InvoiceView />} />
+                <Route path="/tenant-setup/:token" element={<TenantSetup />} />
+                <Route path="/tenant-admin/:slug" element={<TenantAdmin />} />
+                <Route path="*" element={<NotFound />} />
+              </Routes>
+            </Suspense>
           </BrowserRouter>
         </CustomDomainContext.Provider>
-          </Suspense>
-        </BrowserRouter>
       </TooltipProvider>
     </QueryClientProvider>
   );
