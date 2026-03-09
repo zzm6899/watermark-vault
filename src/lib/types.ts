@@ -320,7 +320,7 @@ export interface LicenseKey {
 // ─── Tenants ──────────────────────────────────────────────────────────────────
 
 /**
- * A tenant is a photographer/user who shares a single Watermark Vault deployment.
+ * A tenant is a photographer/user who shares a single PhotoFlow deployment.
  * Each tenant gets a public booking page at /book/:slug and their data is
  * namespaced (tenant bookings are tagged with tenantSlug in wv_bookings;
  * tenant-specific event types are stored in t_{slug}_wv_event_types).

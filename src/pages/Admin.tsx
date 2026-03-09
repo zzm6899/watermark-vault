@@ -4010,7 +4010,7 @@ function buildInvoiceEmailHtml(inv: Invoice, shareUrl: string, isReminder = fals
     </table>
     ${inv.notes ? `<p style="padding:12px;background:#1a1a1a;border-radius:8px;color:#aaa;margin-bottom:24px">${inv.notes}</p>` : ""}
     ${shareUrl ? `<a href="${shareUrl}" style="display:inline-block;padding:12px 24px;background:#7c3aed;color:white;border-radius:8px;text-decoration:none;font-weight:bold">View Invoice &amp; Pay Online</a>` : ""}
-    <p style="color:#555;font-size:12px;margin-top:32px">Invoice ${inv.number} · Due ${inv.dueDate || "on receipt"} · Watermark Vault</p>
+    <p style="color:#555;font-size:12px;margin-top:32px">Invoice ${inv.number} · Due ${inv.dueDate || "on receipt"} · PhotoFlow</p>
   </div></body></html>`;
 }
 

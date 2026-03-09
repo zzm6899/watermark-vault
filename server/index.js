@@ -817,14 +817,14 @@ app.post("/api/discord/test", async (req, res) => {
   try {
     await sendDiscordEmbed(webhookUrl, {
       embeds: [{
-        title: "✅ Watermark Vault — Connection Test",
+        title: "✅ PhotoFlow — Connection Test",
         color: 0x7c3aed,
         description: "Your Discord webhook is connected and working correctly.",
         fields: [
           { name: "Status", value: "✅ Connected", inline: true },
-          { name: "Service", value: "Watermark Vault", inline: true },
+          { name: "Service", value: "PhotoFlow", inline: true },
         ],
-        footer: { text: "Watermark Vault · Discord Integration" },
+        footer: { text: "PhotoFlow · Discord Integration" },
         timestamp: new Date().toISOString(),
       }],
     });
@@ -1920,7 +1920,7 @@ app.post("/api/license-plans/:planId/checkout", planLimiter, async (req, res) =>
           currency,
           product_data: {
             name: plan.name,
-            description: plan.description || `${plan.type === "one-time" ? `${plan.durationDays || 365}-day` : plan.type} license for Watermark Vault`,
+            description: plan.description || `${plan.type === "one-time" ? `${plan.durationDays || 365}-day` : plan.type} license for PhotoFlow`,
           },
           unit_amount: Math.round(plan.price * 100),
           ...(plan.type === "monthly" ? { recurring: { interval: "month" } } : {}),
@@ -2291,7 +2291,7 @@ app.get("*", (_req, res) => {
 });
 
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`🔒 Watermark Vault running on port ${PORT}`);
+  console.log(`🚀 PhotoFlow running on port ${PORT}`);
   console.log(`📁 Data directory: ${DATA_DIR}`);
   console.log(`🖼️  Uploads directory: ${UPLOADS_DIR}`);
 });

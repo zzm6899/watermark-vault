@@ -1,5 +1,5 @@
 /**
- * API client for the Watermark Vault backend server.
+ * API client for the PhotoFlow backend server.
  * When running in Docker with the Node.js backend, data persists to disk.
  * When running without backend (e.g. Lovable preview), falls back silently to localStorage-only.
  */
