@@ -1,12 +1,12 @@
 /**
- * Google Sheets integration for Watermark Vault.
+ * Google Sheets integration for PhotoFlow.
  * Exports bookings to a live-updating Google Sheet using the same Google OAuth credentials.
  * Includes all questionnaire answers as dynamic columns.
  */
 const { google } = require("googleapis");
 const { getAuthenticatedClient, loadCalSettings, saveCalSettings } = require("./google-calendar");
 
-const SHEET_TITLE = "Watermark Vault Bookings";
+const SHEET_TITLE = "PhotoFlow Bookings";
 
 const STATIC_HEADERS = [
   "ID", "Date", "Time", "Duration (min)", "Client Name", "Email",

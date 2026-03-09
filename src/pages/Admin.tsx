@@ -3144,6 +3144,11 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
           <p className="text-[10px] font-body text-muted-foreground/50 mt-1">Multiple files supported</p>
           <input type="file" accept="image/*" multiple className="absolute inset-0 opacity-0 cursor-pointer" onChange={handlePhotoUpload} />
         </div>
+        {/* Camera capture shortcut — shown on touch/mobile devices only */}
+        <label className="mb-3 flex items-center justify-center gap-2 p-2.5 rounded-lg border border-border/50 text-xs font-body text-muted-foreground cursor-pointer hover:bg-secondary/50 transition-colors sm:hidden">
+          <Camera className="w-4 h-4" /> Take a photo
+          <input type="file" accept="image/*" capture="environment" className="sr-only" onChange={handlePhotoUpload} />
+        </label>
         {uploadStats && (
           <div className="mb-3 p-3 rounded-lg bg-secondary/50 border border-border">
             <div className="flex items-center justify-between text-xs font-body text-muted-foreground">
@@ -3183,6 +3188,9 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
 }
 
 // ─── Photo Library ───────────────────────────────────
+const LIBRARY_INITIAL_BATCH = 60;
+const LIBRARY_BATCH_SIZE = 60;
+
 function PhotosView() {
   const [libraryPhotos, setLibraryPhotosState] = useState<Photo[]>(getPhotoLibrary());
   const [albums, setAlbumsState] = useState<Album[]>(getAlbums());
@@ -3193,6 +3201,8 @@ function PhotosView() {
   const [starredOnly, setStarredOnly] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [syncing, setSyncing] = useState(false);
+  const [visibleCount, setVisibleCount] = useState(LIBRARY_INITIAL_BATCH);
+  const libSentinelRef = useRef<HTMLDivElement>(null);
 
   // Backfill missing thumbnails for library photos
   useBackfillThumbnails(libraryPhotos, useCallback((photoId, thumb) => {
@@ -3202,6 +3212,21 @@ function PhotosView() {
       return updated;
     });
   }, []));
+
+  // Batch rendering: load more photos as user scrolls
+  useEffect(() => {
+    const sentinel = libSentinelRef.current;
+    if (!sentinel) return;
+    const observer = new IntersectionObserver(
+      (entries) => { if (entries[0].isIntersecting) setVisibleCount(c => c + LIBRARY_BATCH_SIZE); },
+      { rootMargin: "400px" }
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, []);
+
+  // Reset visible count when filter changes
+  useEffect(() => { setVisibleCount(LIBRARY_INITIAL_BATCH); }, [viewSource, starredOnly, searchQuery]);
 
   // Reconcile: find files on server storage that aren't tracked in any album or library
   // Also repair albums that have broken photo references
@@ -3619,6 +3644,11 @@ function PhotosView() {
           </p>
           <input type="file" accept="image/*" multiple className="absolute inset-0 opacity-0 cursor-pointer" onChange={handleUpload} />
         </div>
+        {/* Camera capture shortcut — shown on touch/mobile devices only */}
+        <label className="mt-3 flex items-center justify-center gap-2 p-2.5 rounded-lg border border-border/50 text-xs font-body text-muted-foreground cursor-pointer hover:bg-secondary/50 transition-colors sm:hidden">
+          <Camera className="w-4 h-4" /> Take a photo
+          <input type="file" accept="image/*" capture="environment" className="sr-only" onChange={handleUpload} />
+        </label>
         {uploadStats && (
           <div className="mt-3 p-3 rounded-lg bg-secondary/50 border border-border">
             <div className="flex items-center justify-between text-xs font-body text-muted-foreground">
@@ -3640,8 +3670,9 @@ function PhotosView() {
           <p className="text-sm font-body text-muted-foreground">No photos found.</p>
         </div>
       ) : (
+        <>
         <div className="grid grid-cols-3 sm:grid-cols-5 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-1.5">
-          {displayPhotos.map(p => (
+          {displayPhotos.slice(0, visibleCount).map(p => (
             <div key={p.id + p.source} className={`relative group aspect-square rounded-md overflow-hidden bg-secondary cursor-pointer border-2 transition-all ${selectedIds.has(p.id) ? "border-primary ring-2 ring-primary/20" : "border-transparent hover:border-border"}`}
               onClick={() => toggleSelect(p.id)}>
               <ProgressiveImg thumbSrc={p.thumbnail} fullSrc={p.src} alt={p.title} className="w-full h-full object-cover" loading="lazy" />
@@ -3662,6 +3693,12 @@ function PhotosView() {
             </div>
           ))}
         </div>
+        {visibleCount < displayPhotos.length && (
+          <div ref={libSentinelRef} className="flex justify-center py-6">
+            <div className="w-5 h-5 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+          </div>
+        )}
+        </>
       )}
     </motion.div>
   );
@@ -3973,7 +4010,7 @@ function buildInvoiceEmailHtml(inv: Invoice, shareUrl: string, isReminder = fals
     </table>
     ${inv.notes ? `<p style="padding:12px;background:#1a1a1a;border-radius:8px;color:#aaa;margin-bottom:24px">${inv.notes}</p>` : ""}
     ${shareUrl ? `<a href="${shareUrl}" style="display:inline-block;padding:12px 24px;background:#7c3aed;color:white;border-radius:8px;text-decoration:none;font-weight:bold">View Invoice &amp; Pay Online</a>` : ""}
-    <p style="color:#555;font-size:12px;margin-top:32px">Invoice ${inv.number} · Due ${inv.dueDate || "on receipt"} · Watermark Vault</p>
+    <p style="color:#555;font-size:12px;margin-top:32px">Invoice ${inv.number} · Due ${inv.dueDate || "on receipt"} · PhotoFlow</p>
   </div></body></html>`;
 }
 
@@ -5994,7 +6031,7 @@ function TenantSettingsPanel({ tenant, onClose }: { tenant: Tenant; onClose: () 
         <div className="flex items-center gap-2">
           <span className="text-xs font-body tracking-wider uppercase text-muted-foreground">Stripe</span>
           {(() => {
-            const stripeConfigured = !!(settings.stripePublishableKey || settings.stripeSecretKey);
+            const stripeConfigured = !!(settings.stripePublishableKey || settings.stripeSecretKey || settings.stripeSecretKeySet);
             const stripeActive = settings.stripeEnabled !== false && stripeConfigured;
             return (
               <>
@@ -6015,24 +6052,44 @@ function TenantSettingsPanel({ tenant, onClose }: { tenant: Tenant; onClose: () 
           />
         </div>
         <div>
-          <label className="text-xs font-body text-muted-foreground mb-1 block">Secret Key</label>
-          <Input
-            type="password"
-            value={settings.stripeSecretKey || ""}
-            onChange={(e) => set({ stripeSecretKey: e.target.value, stripeEnabled: true })}
-            placeholder="sk_live_..."
-            className="bg-background border-border text-foreground font-body text-xs font-mono"
-          />
+          <div className="flex items-center justify-between mb-1">
+            <label className="text-xs font-body text-muted-foreground">Secret Key</label>
+            {settings.stripeSecretKeySet && !settings.stripeSecretKey && (
+              <span className="text-[10px] font-body text-green-400">✓ Configured</span>
+            )}
+          </div>
+          <div className="flex gap-2">
+            <Input
+              type="password"
+              value={settings.stripeSecretKey || ""}
+              onChange={(e) => set({ stripeSecretKey: e.target.value, stripeEnabled: true })}
+              placeholder={settings.stripeSecretKeySet ? "Enter new key to replace" : "sk_live_..."}
+              className="bg-background border-border text-foreground font-body text-xs font-mono flex-1"
+            />
+            {settings.stripeSecretKeySet && !settings.stripeSecretKey && (
+              <button onClick={() => set({ stripeSecretKey: "" })} className="text-[10px] font-body text-destructive hover:text-destructive/80 px-2 shrink-0">Clear</button>
+            )}
+          </div>
         </div>
         <div>
-          <label className="text-xs font-body text-muted-foreground mb-1 block">Webhook Secret</label>
-          <Input
-            type="password"
-            value={settings.stripeWebhookSecret || ""}
-            onChange={(e) => set({ stripeWebhookSecret: e.target.value })}
-            placeholder="whsec_..."
-            className="bg-background border-border text-foreground font-body text-xs font-mono"
-          />
+          <div className="flex items-center justify-between mb-1">
+            <label className="text-xs font-body text-muted-foreground">Webhook Secret</label>
+            {settings.stripeWebhookSecretSet && !settings.stripeWebhookSecret && (
+              <span className="text-[10px] font-body text-green-400">✓ Configured</span>
+            )}
+          </div>
+          <div className="flex gap-2">
+            <Input
+              type="password"
+              value={settings.stripeWebhookSecret || ""}
+              onChange={(e) => set({ stripeWebhookSecret: e.target.value })}
+              placeholder={settings.stripeWebhookSecretSet ? "Enter new secret to replace" : "whsec_..."}
+              className="bg-background border-border text-foreground font-body text-xs font-mono flex-1"
+            />
+            {settings.stripeWebhookSecretSet && !settings.stripeWebhookSecret && (
+              <button onClick={() => set({ stripeWebhookSecret: "" })} className="text-[10px] font-body text-destructive hover:text-destructive/80 px-2 shrink-0">Clear</button>
+            )}
+          </div>
           <p className="text-[10px] font-body text-muted-foreground mt-1">
             Set webhook URL to: <code className="bg-secondary px-1 rounded text-[10px]">/api/tenant/{tenant.slug}/stripe/webhook</code>
           </p>
@@ -6092,13 +6149,23 @@ function TenantSettingsPanel({ tenant, onClose }: { tenant: Tenant; onClose: () 
       <div className="space-y-3 p-4 rounded-lg bg-secondary/40 border border-border/50">
         <span className="text-xs font-body tracking-wider uppercase text-muted-foreground">Discord</span>
         <div>
-          <label className="text-xs font-body text-muted-foreground mb-1 block">Webhook URL</label>
-          <Input
-            value={settings.discordWebhookUrl || ""}
-            onChange={(e) => set({ discordWebhookUrl: e.target.value })}
-            placeholder="https://discord.com/api/webhooks/..."
-            className="bg-background border-border text-foreground font-body text-xs"
-          />
+          <div className="flex items-center justify-between mb-1">
+            <label className="text-xs font-body text-muted-foreground">Webhook URL</label>
+            {settings.discordWebhookUrlSet && !settings.discordWebhookUrl && (
+              <span className="text-[10px] font-body text-green-400">✓ Configured</span>
+            )}
+          </div>
+          <div className="flex gap-2">
+            <Input
+              value={settings.discordWebhookUrl || ""}
+              onChange={(e) => set({ discordWebhookUrl: e.target.value })}
+              placeholder={settings.discordWebhookUrlSet ? "Enter new URL to replace" : "https://discord.com/api/webhooks/..."}
+              className="bg-background border-border text-foreground font-body text-xs flex-1"
+            />
+            {settings.discordWebhookUrlSet && !settings.discordWebhookUrl && (
+              <button onClick={() => set({ discordWebhookUrl: "" })} className="text-[10px] font-body text-destructive hover:text-destructive/80 px-2 shrink-0">Clear</button>
+            )}
+          </div>
           <p className="text-[10px] font-body text-muted-foreground mt-1">Notifications for this tenant's bookings will go to this webhook.</p>
         </div>
         <div className="flex flex-wrap gap-4">
@@ -6139,9 +6206,19 @@ function TenantSettingsPanel({ tenant, onClose }: { tenant: Tenant; onClose: () 
               placeholder="jane@example.com" className="bg-background border-border text-foreground font-body text-xs" />
           </div>
           <div>
-            <label className="text-xs font-body text-muted-foreground mb-1 block">Password / App Password</label>
-            <Input type="password" value={settings.smtpPassword || ""} onChange={(e) => set({ smtpPassword: e.target.value })}
-              placeholder="••••••••" className="bg-background border-border text-foreground font-body text-xs" />
+            <div className="flex items-center justify-between mb-1">
+              <label className="text-xs font-body text-muted-foreground">Password / App Password</label>
+              {settings.smtpPasswordSet && !settings.smtpPassword && (
+                <span className="text-[10px] font-body text-green-400">✓ Configured</span>
+              )}
+            </div>
+            <div className="flex gap-2">
+              <Input type="password" value={settings.smtpPassword || ""} onChange={(e) => set({ smtpPassword: e.target.value })}
+                placeholder={settings.smtpPasswordSet ? "Enter new password to replace" : "••••••••"} className="bg-background border-border text-foreground font-body text-xs flex-1" />
+              {settings.smtpPasswordSet && !settings.smtpPassword && (
+                <button onClick={() => set({ smtpPassword: "" })} className="text-[10px] font-body text-destructive hover:text-destructive/80 px-2 shrink-0">Clear</button>
+              )}
+            </div>
           </div>
           <div>
             <label className="text-xs font-body text-muted-foreground mb-1 block">From Address</label>
@@ -6374,10 +6451,10 @@ function PlatformView() {
       </div>
 
       {/* Section navigation */}
-      <div className="flex gap-1 p-1 bg-secondary rounded-xl w-fit">
+      <div className="flex gap-1 p-1 bg-secondary rounded-xl overflow-x-auto scrollbar-hide max-w-full">
         {sections.map(s => (
           <button key={s.id} onClick={() => setActiveSection(s.id as typeof activeSection)}
-            className={`px-3 py-1.5 rounded-lg text-xs font-body transition-all ${activeSection === s.id ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+            className={`px-3 py-1.5 rounded-lg text-xs font-body transition-all whitespace-nowrap flex-shrink-0 ${activeSection === s.id ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
           >
             {s.label}
           </button>

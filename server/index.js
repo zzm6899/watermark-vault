@@ -817,14 +817,14 @@ app.post("/api/discord/test", async (req, res) => {
   try {
     await sendDiscordEmbed(webhookUrl, {
       embeds: [{
-        title: "✅ Watermark Vault — Connection Test",
+        title: "✅ PhotoFlow — Connection Test",
         color: 0x7c3aed,
         description: "Your Discord webhook is connected and working correctly.",
         fields: [
           { name: "Status", value: "✅ Connected", inline: true },
-          { name: "Service", value: "Watermark Vault", inline: true },
+          { name: "Service", value: "PhotoFlow", inline: true },
         ],
-        footer: { text: "Watermark Vault · Discord Integration" },
+        footer: { text: "PhotoFlow · Discord Integration" },
         timestamp: new Date().toISOString(),
       }],
     });
@@ -966,12 +966,18 @@ app.post("/api/proofing/submit", async (req, res) => {
   }
   try {
     const db = readDb();
-    const albums = db["wv_albums"];
-    const parsed = typeof albums === "string" ? JSON.parse(albums) : (Array.isArray(albums) ? albums : []);
-    const idx = parsed.findIndex(a => a.id === albumId);
-    if (idx === -1) return res.status(404).json({ ok: false, error: "Album not found" });
+    // Search across main and all tenant album stores
+    const found = findAlbumById(db, albumId);
+    if (!found) return res.status(404).json({ ok: false, error: "Album not found" });
 
-    const album = parsed[idx];
+    const { album, tenantSlug } = found;
+    const storeKey = tenantSlug ? `t_${tenantSlug}_wv_albums` : "wv_albums";
+    const raw = db[storeKey];
+    const parsed = raw ? (typeof raw === "string" ? JSON.parse(raw) : (Array.isArray(raw) ? raw : [])) : [];
+    const idx = parsed.findIndex(a => a.id === albumId);
+    // Defensive check: findAlbumById already confirmed existence, but the parsed array
+    // could be inconsistent if db was concurrently modified or corrupted.
+    if (idx === -1) return res.status(500).json({ ok: false, error: "Album index inconsistency — please retry" });
 
     // Mark starred photos and record the round
     const updatedPhotos = (album.photos || []).map(p => ({
@@ -993,14 +999,24 @@ app.post("/api/proofing/submit", async (req, res) => {
 
     const updatedAlbum = { ...album, photos: updatedPhotos, proofingStage: "selections-submitted", proofingRounds: updatedRounds };
     parsed[idx] = updatedAlbum;
-    db["wv_albums"] = JSON.stringify(parsed);
+    db[storeKey] = JSON.stringify(parsed);
     writeDb(db);
 
-    // Fire discord notification if configured
-    const settings = db["wv_settings"];
-    const settingsParsed = typeof settings === "string" ? JSON.parse(settings) : (settings || {});
-    if (settingsParsed?.discordWebhookUrl && settingsParsed?.discordNotifyProofing !== false) {
-      notifyProofingSubmission(settingsParsed.discordWebhookUrl, updatedAlbum, selectedPhotoIds.length, clientNote).catch(() => {});
+    // Fire discord notification — use tenant webhook if available, else main
+    let discordUrl, discordNotify;
+    if (tenantSlug) {
+      const tsRaw = db[`t_${tenantSlug}_wv_tenant_settings`];
+      const ts = tsRaw ? (typeof tsRaw === "string" ? JSON.parse(tsRaw) : tsRaw) : {};
+      discordUrl = ts?.discordWebhookUrl;
+      discordNotify = ts?.discordNotifyProofing !== false;
+    } else {
+      const settings = db["wv_settings"];
+      const settingsParsed = typeof settings === "string" ? JSON.parse(settings) : (settings || {});
+      discordUrl = settingsParsed?.discordWebhookUrl;
+      discordNotify = settingsParsed?.discordNotifyProofing !== false;
+    }
+    if (discordUrl && discordNotify) {
+      notifyProofingSubmission(discordUrl, updatedAlbum, selectedPhotoIds.length, clientNote).catch(() => {});
     }
 
     res.json({ ok: true, album: updatedAlbum });
@@ -1435,6 +1451,8 @@ app.get("/api/tenant/:slug/public", tenantPublicLimiter, (req, res) => {
   const eventTypes = Array.isArray(allEventTypes)
     ? allEventTypes.filter(e => e.active !== false)
     : [];
+  // Allow browsers and CDNs to cache for 60 s; revalidate after that.
+  res.setHeader("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
   res.json({ tenant, eventTypes });
 });
 
@@ -1744,7 +1762,28 @@ app.get("/api/tenant/:slug/license-info", tenantLimiter, (req, res) => {
 
 // ── Tenant Settings (per-tenant integration overrides) ─────────────────────
 
+// Secret fields that must never be returned to the frontend.
+// Instead of the actual value, the masked response includes a boolean `<field>Set`
+// so the UI can show a "Configured ✓" indicator without exposing the secret.
+const TENANT_SECRET_FIELDS = [
+  "stripeSecretKey",
+  "stripeWebhookSecret",
+  "smtpPassword",
+  "googleApiCredentials",
+  "discordWebhookUrl",
+];
+
+function maskTenantSettings(settings) {
+  const masked = { ...settings };
+  for (const field of TENANT_SECRET_FIELDS) {
+    masked[`${field}Set`] = !!(masked[field]);
+    delete masked[field];
+  }
+  return masked;
+}
+
 // Get tenant settings (Discord, SMTP, Stripe, bank — per-tenant overrides)
+// Secret fields are never returned; boolean <field>Set indicators are sent instead.
 app.get("/api/tenant/:slug/settings", tenantLimiter, (req, res) => {
   const slug = req.params.slug;
   const tenants = readTenants();
@@ -1752,7 +1791,7 @@ app.get("/api/tenant/:slug/settings", tenantLimiter, (req, res) => {
   const db = readDb();
   const raw = db[`t_${slug}_wv_tenant_settings`];
   const settings = raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : {};
-  res.json(settings);
+  res.json(maskTenantSettings(settings));
 });
 
 // Send email via tenant's own SMTP settings
@@ -1779,6 +1818,11 @@ app.post("/api/tenant/:slug/email/send", tenantLimiter, async (req, res) => {
 });
 
 // Save tenant settings
+// - Secret fields present with a non-empty value → update the stored secret.
+// - Secret fields present but empty string → explicitly clear the stored secret.
+// - Secret fields absent from the payload → preserve the existing stored value.
+// - <field>Set boolean indicators from the frontend are ignored (computed server-side).
+// The response never includes secret values; masked booleans are returned instead.
 app.put("/api/tenant/:slug/settings", tenantLimiter, (req, res) => {
   const slug = req.params.slug;
   const tenants = readTenants();
@@ -1788,10 +1832,33 @@ app.put("/api/tenant/:slug/settings", tenantLimiter, (req, res) => {
     const raw = db[`t_${slug}_wv_tenant_settings`];
     return raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : {};
   })();
-  const updated = { ...existing, ...req.body };
+
+  const incoming = { ...req.body };
+
+  // Strip server-computed *Set indicators so they cannot override real data
+  for (const field of TENANT_SECRET_FIELDS) {
+    delete incoming[`${field}Set`];
+  }
+
+  const updated = { ...existing };
+  for (const [key, value] of Object.entries(incoming)) {
+    if (TENANT_SECRET_FIELDS.includes(key)) {
+      if (value === "") {
+        // Explicit empty string → clear the secret
+        delete updated[key];
+      } else if (value !== undefined && value !== null) {
+        // Real non-empty value → update the secret
+        updated[key] = value;
+      }
+      // undefined / null (shouldn't occur after spread but be safe) → keep existing
+    } else {
+      updated[key] = value;
+    }
+  }
+
   db[`t_${slug}_wv_tenant_settings`] = JSON.stringify(updated);
   writeDb(db);
-  res.json({ ok: true, settings: updated });
+  res.json({ ok: true, settings: maskTenantSettings(updated) });
 });
 
 
@@ -1904,7 +1971,7 @@ app.post("/api/license-plans/:planId/checkout", planLimiter, async (req, res) =>
           currency,
           product_data: {
             name: plan.name,
-            description: plan.description || `${plan.type === "one-time" ? `${plan.durationDays || 365}-day` : plan.type} license for Watermark Vault`,
+            description: plan.description || `${plan.type === "one-time" ? `${plan.durationDays || 365}-day` : plan.type} license for PhotoFlow`,
           },
           unit_amount: Math.round(plan.price * 100),
           ...(plan.type === "monthly" ? { recurring: { interval: "month" } } : {}),
@@ -2256,13 +2323,26 @@ app.get("/api/tenant/:slug/storage-stats", tenantLimiter, (req, res) => {
 
 // ── Serve React app ───────────────────────────────────
 const distPath = path.join(__dirname, "../dist");
-app.use(express.static(distPath));
+// Hashed assets (JS/CSS chunks) are immutable — cache aggressively.
+// index.html must always be re-fetched so the browser picks up new chunk names.
+app.use(
+  express.static(distPath, {
+    setHeaders(res, filePath) {
+      if (filePath.endsWith("index.html")) {
+        res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+      } else if (/\.(js|css|woff2?|ttf|eot|svg|png|jpg|jpeg|gif|ico|webp)$/.test(filePath)) {
+        res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+      }
+    },
+  })
+);
 app.get("*", (_req, res) => {
+  res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
   res.sendFile(path.join(distPath, "index.html"));
 });
 
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`🔒 Watermark Vault running on port ${PORT}`);
+  console.log(`🚀 PhotoFlow running on port ${PORT}`);
   console.log(`📁 Data directory: ${DATA_DIR}`);
   console.log(`🖼️  Uploads directory: ${UPLOADS_DIR}`);
 });

@@ -320,7 +320,7 @@ export interface LicenseKey {
 // ─── Tenants ──────────────────────────────────────────────────────────────────
 
 /**
- * A tenant is a photographer/user who shares a single Watermark Vault deployment.
+ * A tenant is a photographer/user who shares a single PhotoFlow deployment.
  * Each tenant gets a public booking page at /book/:slug and their data is
  * namespaced (tenant bookings are tagged with tenantSlug in wv_bookings;
  * tenant-specific event types are stored in t_{slug}_wv_event_types).
@@ -410,6 +410,14 @@ export interface TenantSettings {
   // ── Client Proofing ───────────────────────────────────────
   proofingEnabled?: boolean;
   defaultProofingExpiryHours?: number;
+  // ── Secret-field set-indicators (returned by API instead of actual values) ──
+  // The server never returns secret field values; it returns these booleans instead
+  // so the UI can show a "Configured ✓" status without exposing the actual secret.
+  stripeSecretKeySet?: boolean;
+  stripeWebhookSecretSet?: boolean;
+  smtpPasswordSet?: boolean;
+  googleApiCredentialsSet?: boolean;
+  discordWebhookUrlSet?: boolean;
 }
 
 

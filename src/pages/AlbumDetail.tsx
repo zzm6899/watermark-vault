@@ -29,6 +29,9 @@ import type { Album, AlbumDownloadRecord, DownloadQuality, DownloadHistoryEntry,
 const TARGET_LIGHTBOX_BYTES = 600 * 1024; // ~600KB
 // Scroll wheel zoom sensitivity — smaller = slower zoom per scroll tick
 const ZOOM_WHEEL_SENSITIVITY = 0.002;
+// Gallery lazy-render batch sizes
+const GALLERY_INITIAL_BATCH = 36;
+const GALLERY_BATCH_SIZE = 24;
 
 /** Type for Stripe checkout params — defined at file level to avoid re-creation on every render. */
 type StripeCheckoutParams = Parameters<typeof createAlbumCheckout>[0];
@@ -181,6 +184,8 @@ export default function AlbumDetail() {
   const [lightboxPhotoId, setLightboxPhotoId] = useState<string | null>(null);
   const displayedPhotosRef = useRef<Photo[]>([]);
   const touchStartX = useRef<number | null>(null);
+  const gallerySentinelRef = useRef<HTMLDivElement>(null);
+  const [galleryVisibleCount, setGalleryVisibleCount] = useState(GALLERY_INITIAL_BATCH);
   const [showStarredOnly, setShowStarredOnly] = useState(false);
   const [sortOrder, setSortOrder] = useState<"default" | "asc" | "desc">("default");
   // Local display size — defaults to admin-set album size (or "medium" fallback)
@@ -368,6 +373,27 @@ export default function AlbumDetail() {
       return updated;
     });
   }, []));
+
+  // Gallery batch rendering — load more photos as user scrolls toward the sentinel
+  useEffect(() => {
+    const sentinel = gallerySentinelRef.current;
+    if (!sentinel) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting) {
+          setGalleryVisibleCount(c => c + GALLERY_BATCH_SIZE);
+        }
+      },
+      { rootMargin: "400px" }
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, []);
+
+  // Reset visible count when the photo list changes (filter / sort)
+  useEffect(() => {
+    setGalleryVisibleCount(GALLERY_INITIAL_BATCH);
+  }, [showStarredOnly, sortOrder]);
 
   // Keyboard navigation for lightbox
   useEffect(() => {
@@ -1213,8 +1239,9 @@ export default function AlbumDetail() {
               <p className="text-sm font-body text-muted-foreground">No starred photos yet.</p>
             </div>
           ) : (
+            <>
             <div className={gridClass}>
-              {displayedPhotos.map((photo, i) => (
+              {displayedPhotos.slice(0, galleryVisibleCount).map((photo, i) => (
                 <div key={photo.id} className="relative group">
                   <WatermarkedImage
                 src={getGalleryPhotoSrc(photo,
@@ -1236,22 +1263,22 @@ export default function AlbumDetail() {
                   watermarkOpacity={settings.watermarkOpacity}
                   watermarkSize={settings.watermarkSize ?? 40}
                 />
-                  {/* Expand button */}
+                  {/* Expand button — always visible on touch devices, hover-only on pointer devices */}
                   {!isProofing && (
                     <button
                       onClick={e => { e.stopPropagation(); setLightboxPhotoId(photo.id); }}
-                      className="absolute top-2 left-2 w-7 h-7 rounded-full bg-black/50 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity z-10"
+                      className="absolute top-2 left-2 w-7 h-7 rounded-full bg-black/50 text-white flex items-center justify-center [@media(hover:none)]:opacity-100 opacity-0 group-hover:opacity-100 transition-opacity z-10"
                     >
                       <Maximize2 className="w-3 h-3" />
                     </button>
                   )}
-                                    {isProofing && (
+                  {isProofing && (
                     <button
                       onClick={() => toggleStar(photo.id)}
                       className={`absolute top-2 right-2 w-8 h-8 rounded-full flex items-center justify-center transition-all shadow-lg ${
                         starredIds.has(photo.id)
                           ? "bg-yellow-400 text-yellow-900 scale-110"
-                          : "bg-black/50 text-white/70 opacity-0 group-hover:opacity-100"
+                          : "bg-black/50 text-white/70 [@media(hover:none)]:opacity-100 opacity-0 group-hover:opacity-100"
                       }`}
                     >
                       <Star className={`w-4 h-4 ${starredIds.has(photo.id) ? "fill-yellow-900" : ""}`} />
@@ -1260,6 +1287,13 @@ export default function AlbumDetail() {
                 </div>
               ))}
             </div>
+            {/* Sentinel for batch loading more photos */}
+            {galleryVisibleCount < displayedPhotos.length && (
+              <div ref={gallerySentinelRef} className="flex justify-center py-8">
+                <div className="w-6 h-6 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+              </div>
+            )}
+            </>
           )}
         </div>
       </section>

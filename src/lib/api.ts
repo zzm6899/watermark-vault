@@ -1,5 +1,5 @@
 /**
- * API client for the Watermark Vault backend server.
+ * API client for the PhotoFlow backend server.
  * When running in Docker with the Node.js backend, data persists to disk.
  * When running without backend (e.g. Lovable preview), falls back silently to localStorage-only.
  */
@@ -1163,10 +1163,24 @@ export async function saveTenantSettings(
   settings: import("./types").TenantSettings,
 ): Promise<{ ok: boolean; error?: string }> {
   try {
+    // Strip server-computed *Set indicator fields before sending.
+    // These are read-only booleans returned by the API to indicate whether a
+    // secret is configured; they must not be written back as data.
+    const payload = { ...settings } as Record<string, unknown>;
+    const SET_INDICATORS = [
+      "stripeSecretKeySet",
+      "stripeWebhookSecretSet",
+      "smtpPasswordSet",
+      "googleApiCredentialsSet",
+      "discordWebhookUrlSet",
+    ] as const;
+    for (const key of SET_INDICATORS) {
+      delete payload[key];
+    }
     const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/settings`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(settings),
+      body: JSON.stringify(payload),
     });
     const json = await res.json();
     return { ok: !!json.ok, error: json.error };

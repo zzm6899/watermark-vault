@@ -1,6 +1,5 @@
 import { useState, useEffect, useMemo } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { motion, AnimatePresence } from "framer-motion";
 import {
   ArrowLeft, Camera, Clock, DollarSign, CheckCircle2,
   ChevronLeft, ChevronRight, Globe, MapPin, Calendar as CalendarIcon,
@@ -12,6 +11,18 @@ import { toast } from "sonner";
 import { getTenantPublicData, createTenantBooking } from "@/lib/api";
 import type { EventType, Tenant } from "@/lib/types";
 import Footer from "@/components/Footer";
+import { RichTextDisplay } from "@/components/RichTextEditor";
+
+/** Strip HTML tags to plain text for short teasers */
+function stripHtml(html: string): string {
+  try {
+    const tmp = document.createElement("div");
+    tmp.innerHTML = html;
+    return tmp.textContent || tmp.innerText || "";
+  } catch {
+    return html.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+  }
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function toDateStr(d: Date): string {
@@ -166,13 +177,10 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
     );
   }
 
-  const slideIn = { initial: { opacity: 0, y: 16 }, animate: { opacity: 1, y: 0 }, exit: { opacity: 0, y: -16 } };
-
-  return (
-    <div className="min-h-screen bg-background flex flex-col" style={{ paddingTop: "env(safe-area-inset-top)", paddingBottom: "env(safe-area-inset-bottom)" }}>
+  return (    <div className="min-h-screen bg-background flex flex-col" style={{ paddingTop: "env(safe-area-inset-top)", paddingBottom: "env(safe-area-inset-bottom)" }}>
       {/* Header */}
       <header className="border-b border-border/50 py-4 px-6 flex items-center gap-4">
-        <Button variant="ghost" size="sm" onClick={() => navigate("/")} className="font-body text-xs text-muted-foreground gap-1.5 p-0 h-auto hover:text-foreground">
+        <Button variant="ghost" size="sm" onClick={() => window.history.state?.idx > 0 ? navigate(-1) : navigate("/")} className="font-body text-xs text-muted-foreground gap-1.5 p-0 h-auto hover:text-foreground">
           <ArrowLeft className="w-3.5 h-3.5" /> Back
         </Button>
         <div className="flex items-center gap-3 ml-2">
@@ -181,21 +189,27 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
           </div>
           <div>
             <p className="font-display text-sm text-foreground leading-tight">{tenant.displayName}</p>
-            {tenant.bio && <p className="text-xs font-body text-muted-foreground leading-tight truncate max-w-xs">{tenant.bio}</p>}
+            {tenant.bio && <p className="text-xs font-body text-muted-foreground leading-tight truncate max-w-xs">{stripHtml(tenant.bio)}</p>}
           </div>
         </div>
       </header>
 
       <div className="flex-1 max-w-4xl w-full mx-auto p-4 sm:p-6 lg:p-8">
-        <AnimatePresence mode="wait">
 
           {/* ── Step 1: Event Selection ── */}
           {step === "event-select" && (
-            <motion.div key="event-select" {...slideIn} className="space-y-6">
+            <div key="event-select" className="space-y-6 animate-in fade-in-0 slide-in-from-bottom-4 duration-200">
               <div>
                 <h1 className="font-display text-2xl text-foreground mb-1">Book a session</h1>
                 <p className="text-sm font-body text-muted-foreground">Choose a session type to get started.</p>
               </div>
+              {/* Photographer bio — shown if set */}
+              {tenant.bio && (
+                <div className="glass-panel rounded-xl p-5">
+                  <p className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-2">About {tenant.displayName}</p>
+                  <RichTextDisplay html={tenant.bio} />
+                </div>
+              )}
               {eventTypes.length === 0 ? (
                 <div className="glass-panel rounded-xl p-10 text-center">
                   <CalendarIcon className="w-10 h-10 text-muted-foreground/30 mx-auto mb-4" />
@@ -235,12 +249,12 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
                   ))}
                 </div>
               )}
-            </motion.div>
+            </div>
           )}
 
           {/* ── Step 2: Date & Time ── */}
           {step === "datetime" && selectedEvent && (
-            <motion.div key="datetime" {...slideIn} className="space-y-6">
+            <div key="datetime" className="space-y-6 animate-in fade-in-0 slide-in-from-bottom-4 duration-200">
               <button onClick={() => setStep("event-select")} className="flex items-center gap-2 text-xs font-body tracking-wider uppercase text-muted-foreground hover:text-primary transition-colors">
                 <ArrowLeft className="w-3.5 h-3.5" /> Back
               </button>
@@ -382,12 +396,12 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
                   </Button>
                 </div>
               )}
-            </motion.div>
+            </div>
           )}
 
           {/* ── Step 3: Contact Info ── */}
           {step === "contact" && selectedEvent && selectedDate && selectedTime && (
-            <motion.div key="contact" {...slideIn} className="space-y-6">
+            <div key="contact" className="space-y-6 animate-in fade-in-0 slide-in-from-bottom-4 duration-200">
               <button onClick={() => setStep("datetime")} className="flex items-center gap-2 text-xs font-body tracking-wider uppercase text-muted-foreground hover:text-primary transition-colors">
                 <ArrowLeft className="w-3.5 h-3.5" /> Back
               </button>
@@ -443,12 +457,12 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
                   <p className="text-xs font-body text-muted-foreground text-center">This session requires confirmation — you'll hear back within 24 hours.</p>
                 )}
               </div>
-            </motion.div>
+            </div>
           )}
 
           {/* ── Step 4: Confirmed ── */}
           {step === "confirmed" && (
-            <motion.div key="confirmed" {...slideIn} className="text-center py-12 space-y-6">
+            <div key="confirmed" className="text-center py-12 space-y-6 animate-in fade-in-0 slide-in-from-bottom-4 duration-200">
               <div className="w-16 h-16 rounded-full bg-primary/20 flex items-center justify-center mx-auto">
                 <CheckCircle2 className="w-8 h-8 text-primary" />
               </div>
@@ -479,10 +493,9 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
               <Button variant="outline" onClick={() => { setStep("event-select"); setSelectedEvent(null); setSelectedDate(null); setSelectedTime(null); }} className="font-body text-xs gap-2">
                 Book another session
               </Button>
-            </motion.div>
+            </div>
           )}
 
-        </AnimatePresence>
       </div>
       <Footer />
     </div>

@@ -1,8 +1,8 @@
-# 📸 Watermark Vault
+# 📸 PhotoFlow
 
 > **Your complete photography business, in one self-hosted app.**
 
-Watermark Vault is an all-in-one platform built for photographers who want full control over their bookings, galleries, client proofing, and payments — without paying monthly SaaS fees. Deploy it on your own server, keep 100% of your revenue.
+PhotoFlow is an all-in-one platform built for photographers who want full control over their bookings, galleries, client proofing, and payments — without paying monthly SaaS fees. Deploy it on your own server, keep 100% of your revenue.
 
 ---
 
@@ -47,7 +47,7 @@ Watermark Vault is an all-in-one platform built for photographers who want full 
 
 ## ✨ App Pitch
 
-Running a photography business means juggling bookings, galleries, invoices, client communication, and payments across a dozen different apps. Watermark Vault brings everything together in a single, beautiful, self-hosted platform that you own completely.
+Running a photography business means juggling bookings, galleries, invoices, client communication, and payments across a dozen different apps. PhotoFlow brings everything together in a single, beautiful, self-hosted platform that you own completely.
 
 - **No per-seat fees** — deploy once, use forever
 - **No third-party gallery hosting** — your photos, your server
@@ -180,7 +180,7 @@ A comprehensive admin panel with everything you need to run your business.
 - Server image cache management
 
 ### 🔑 License Key System
-Issue license keys to let other photographers deploy their own Watermark Vault instance.
+Issue license keys to let other photographers deploy their own PhotoFlow instance.
 
 - Generate keys with optional expiry dates and notes
 - Keys are required for new deployments once any key exists
@@ -266,7 +266,7 @@ node server/index.js
 
 ## 🔑 License Keys
 
-If you want to share Watermark Vault with other photographers:
+If you want to share PhotoFlow with other photographers:
 
 1. Log in to your admin panel → **Settings** → scroll down to **License Keys**
 2. Click to expand the License Keys panel

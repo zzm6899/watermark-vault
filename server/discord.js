@@ -1,5 +1,5 @@
 /**
- * Discord webhook notifications for Watermark Vault.
+ * Discord webhook notifications for PhotoFlow.
  * Rich embeds for all key events.
  */
 
@@ -12,7 +12,7 @@ async function sendDiscordEmbed(webhookUrl, payload) {
     const res = await fetch(webhookUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username: "Watermark Vault", avatar_url: AVATAR_URL, ...payload }),
+      body: JSON.stringify({ username: "PhotoFlow", avatar_url: AVATAR_URL, ...payload }),
     });
     if (!res.ok) {
       const text = await res.text();
@@ -76,7 +76,7 @@ async function notifyNewBooking(webhookUrl, booking) {
       title: "📸 New Booking",
       color: 0x7c3aed,
       fields: bookingBaseFields(booking),
-      footer: { text: `Booking ID: ${booking.id} · Watermark Vault` },
+      footer: { text: `Booking ID: ${booking.id} · PhotoFlow` },
       timestamp: new Date().toISOString(),
     }],
     ...(components.length ? { components } : {}),
@@ -98,7 +98,7 @@ async function notifyPayment(webhookUrl, booking, paymentStatus) {
         { name: "📷 Type", value: booking.type || "—", inline: true },
         { name: "📧 Email", value: booking.clientEmail || "—", inline: true },
       ],
-      footer: { text: `Booking ID: ${booking.id} · Watermark Vault` },
+      footer: { text: `Booking ID: ${booking.id} · PhotoFlow` },
       timestamp: new Date().toISOString(),
     }],
   });
@@ -125,7 +125,7 @@ async function notifyBookingUpdate(webhookUrl, booking, oldStatus, newStatus) {
       title: `${statusEmoji(newStatus)} Booking ${newStatus.charAt(0).toUpperCase() + newStatus.slice(1)}`,
       color: statusColor(newStatus),
       fields,
-      footer: { text: `Booking ID: ${booking.id} · Watermark Vault` },
+      footer: { text: `Booking ID: ${booking.id} · PhotoFlow` },
       timestamp: new Date().toISOString(),
     }],
     ...(components.length ? { components } : {}),
@@ -149,7 +149,7 @@ async function notifyAlbumPurchase(webhookUrl, album, purchaseType, amount, emai
         { name: "🛍 Type", value: purchaseType === "full" ? "Full Album" : "Individual Photos", inline: true },
         ...(email ? [{ name: "📧 Email", value: email, inline: true }] : []),
       ],
-      footer: { text: `Album ID: ${album.id} · Watermark Vault` },
+      footer: { text: `Album ID: ${album.id} · PhotoFlow` },
       timestamp: new Date().toISOString(),
     }],
     ...(components.length ? { components } : {}),
@@ -174,7 +174,7 @@ async function notifyProofingSubmission(webhookUrl, album, photoCount, clientNot
       title: "🌟 Proofing Picks Submitted",
       color: 0xf59e0b,
       fields,
-      footer: { text: `Album ID: ${album.id} · Watermark Vault` },
+      footer: { text: `Album ID: ${album.id} · PhotoFlow` },
       timestamp: new Date().toISOString(),
     }],
     ...(components.length ? { components } : {}),
@@ -194,7 +194,7 @@ async function notifyWaitlistNotified(webhookUrl, cancelledBooking, notifiedName
         { name: "📷 Type", value: cancelledBooking.type || "—", inline: true },
         { name: "📬 Notified", value: notifiedNames.join(", "), inline: false },
       ],
-      footer: { text: "Watermark Vault · Waitlist" },
+      footer: { text: "PhotoFlow · Waitlist" },
       timestamp: new Date().toISOString(),
     }],
   });
@@ -245,7 +245,7 @@ async function notifyInvoice(webhookUrl, invoice, eventType) {
       title: titles[eventType] || `🧾 Invoice ${eventType}`,
       color: colors[eventType] || 0x7c3aed,
       fields,
-      footer: { text: `Invoice ${invoice.number || invoice.id} · Watermark Vault` },
+      footer: { text: `Invoice ${invoice.number || invoice.id} · PhotoFlow` },
       timestamp: new Date().toISOString(),
     }],
     ...(components.length ? { components } : {}),

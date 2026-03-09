@@ -32,6 +32,7 @@ import {
   saveTenantCalendarSettings, getTenantStorageStats, upsertTenantBookingAdmin,
 } from "@/lib/api";
 import ProgressiveImg from "@/components/ProgressiveImg";
+import RichTextEditor from "@/components/RichTextEditor";
 import type {
   Booking, Album, Photo, AlbumDisplaySize, EventType, Invoice, InvoiceItem, InvoiceParty,
   Contact, TenantSettings, AvailabilitySlot, QuestionField, WatermarkPosition, SpecificDateSlot,
@@ -1825,6 +1826,11 @@ function TenantAlbumEditor({ slug, album, onSave, onCancel }: {
           <p className="text-xs font-body text-muted-foreground">Click to upload photos</p>
           <input ref={uploadRef} type="file" accept="image/*" multiple className="absolute inset-0 opacity-0 cursor-pointer" onChange={handlePhotoUpload} />
         </div>
+        {/* Camera capture shortcut — shown on touch/mobile devices only */}
+        <label className="mb-3 flex items-center justify-center gap-2 p-2.5 rounded-lg border border-border/50 text-xs font-body text-muted-foreground cursor-pointer hover:bg-secondary/50 transition-colors sm:hidden">
+          <Camera className="w-4 h-4" /> Take a photo
+          <input type="file" accept="image/*" capture="environment" className="sr-only" onChange={handlePhotoUpload} />
+        </label>
         {uploading && (
           <div className="mb-3 h-1.5 bg-secondary rounded-full overflow-hidden">
             <div className="h-full bg-primary rounded-full transition-all" style={{ width: `${uploadProgress}%` }} />
@@ -1858,6 +1864,9 @@ function TenantAlbumEditor({ slug, album, onSave, onCancel }: {
 
 
 // ─── Photos ──────────────────────────────────────────────────────────────────
+const TENANT_LIBRARY_INITIAL_BATCH = 60;
+const TENANT_LIBRARY_BATCH_SIZE = 60;
+
 function TenantPhotos({ slug }: { slug: string }) {
   const [albums, setAlbums] = useState<Album[]>([]);
   const [libraryPhotos, setLibraryPhotos] = useState<Photo[]>([]);
@@ -1869,6 +1878,8 @@ function TenantPhotos({ slug }: { slug: string }) {
   const [syncing, setSyncing] = useState(false);
   const [showAddToAlbum, setShowAddToAlbum] = useState(false);
   const [uploadStats, setUploadStats] = useState<{ total: number; done: number; errors: number; savedBytes: number } | null>(null);
+  const [visibleCount, setVisibleCount] = useState(TENANT_LIBRARY_INITIAL_BATCH);
+  const libSentinelRef = useRef<HTMLDivElement>(null);
 
   const photoUrl = (src: string) => tenantPhotoSrc(src, slug);
 
@@ -1884,6 +1895,21 @@ function TenantPhotos({ slug }: { slug: string }) {
   }, [slug]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Batch rendering: load more photos as user scrolls
+  useEffect(() => {
+    const sentinel = libSentinelRef.current;
+    if (!sentinel) return;
+    const observer = new IntersectionObserver(
+      (entries) => { if (entries[0].isIntersecting) setVisibleCount(c => c + TENANT_LIBRARY_BATCH_SIZE); },
+      { rootMargin: "400px" }
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, []);
+
+  // Reset visible count when filter changes
+  useEffect(() => { setVisibleCount(TENANT_LIBRARY_INITIAL_BATCH); }, [viewSource, starredOnly, searchQuery]);
 
   // ── Persist library ────────────────────────────────────────────────────────
   const saveLibrary = async (photos: Photo[]) => {
@@ -2214,25 +2240,25 @@ function TenantPhotos({ slug }: { slug: string }) {
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
       {/* ── Toolbar ── */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
-        <h2 className="font-display text-2xl text-foreground">Photo Library</h2>
-        <div className="flex gap-2 items-center flex-wrap">
-          <Button size="sm" variant="outline" onClick={handleClearDuplicates} className="gap-2 font-body text-xs border-border text-foreground">
+        <h2 className="font-display text-2xl text-foreground shrink-0">Photo Library</h2>
+        <div className="flex gap-2 items-center overflow-x-auto scrollbar-hide pb-1">
+          <Button size="sm" variant="outline" onClick={handleClearDuplicates} className="gap-2 font-body text-xs border-border text-foreground flex-shrink-0">
             <XSquare className="w-4 h-4" /> Clear Dupes
           </Button>
-          <Button size="sm" variant="outline" onClick={handleSyncStorage} disabled={syncing} className="gap-2 font-body text-xs border-border text-foreground">
+          <Button size="sm" variant="outline" onClick={handleSyncStorage} disabled={syncing} className="gap-2 font-body text-xs border-border text-foreground flex-shrink-0">
             <RefreshCw className={`w-4 h-4 ${syncing ? "animate-spin" : ""}`} /> {syncing ? "Syncing…" : "Sync Storage"}
           </Button>
           {selectedIds.size > 0 && (
             <>
               <Button size="sm" variant="outline" onClick={handleMassDelete}
-                className="gap-2 font-body text-xs border-destructive/30 text-destructive hover:bg-destructive/10">
+                className="gap-2 font-body text-xs border-destructive/30 text-destructive hover:bg-destructive/10 flex-shrink-0">
                 <Trash2 className="w-4 h-4" /> Delete ({selectedIds.size})
               </Button>
               <Button size="sm" variant="ghost" onClick={() => setSelectedIds(new Set())}
-                className="gap-1 font-body text-xs text-muted-foreground">
+                className="gap-1 font-body text-xs text-muted-foreground flex-shrink-0">
                 <XSquare className="w-4 h-4" /> Clear
               </Button>
-              <div className="relative">
+              <div className="relative flex-shrink-0">
                 <Button size="sm" variant="outline" onClick={() => setShowAddToAlbum(v => !v)}
                   className="gap-2 font-body text-xs border-border text-foreground">
                   <Plus className="w-4 h-4" /> Add to Album ({selectedIds.size})
@@ -2249,7 +2275,7 @@ function TenantPhotos({ slug }: { slug: string }) {
                 )}
               </div>
               <Button size="sm" onClick={handleCreateAlbumFromSelection}
-                className="gap-2 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs tracking-wider uppercase">
+                className="gap-2 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs tracking-wider uppercase flex-shrink-0">
                 <Plus className="w-4 h-4" /> Create Album ({selectedIds.size})
               </Button>
             </>
@@ -2259,7 +2285,7 @@ function TenantPhotos({ slug }: { slug: string }) {
               if (selectedIds.size === displayPhotos.length && displayPhotos.length > 0) setSelectedIds(new Set());
               else setSelectedIds(new Set(displayPhotos.map(p => p.id)));
             }}
-            className="gap-1 font-body text-xs text-muted-foreground">
+            className="gap-1 font-body text-xs text-muted-foreground flex-shrink-0">
             <CheckSquare className="w-4 h-4" />
             {selectedIds.size === displayPhotos.length && displayPhotos.length > 0 ? "Deselect All" : "Select All"}
           </Button>
@@ -2318,6 +2344,11 @@ function TenantPhotos({ slug }: { slug: string }) {
           </p>
           <input type="file" accept="image/*" multiple className="absolute inset-0 opacity-0 cursor-pointer" onChange={handleUpload} />
         </div>
+        {/* Camera capture shortcut — shown on touch/mobile devices only */}
+        <label className="mt-3 flex items-center justify-center gap-2 p-2.5 rounded-lg border border-border/50 text-xs font-body text-muted-foreground cursor-pointer hover:bg-secondary/50 transition-colors sm:hidden">
+          <Camera className="w-4 h-4" /> Take a photo
+          <input type="file" accept="image/*" capture="environment" className="sr-only" onChange={handleUpload} />
+        </label>
         {uploadStats && (
           <div className="mt-3 p-3 rounded-lg bg-secondary/50 border border-border">
             <div className="flex items-center justify-between text-xs font-body text-muted-foreground">
@@ -2332,8 +2363,6 @@ function TenantPhotos({ slug }: { slug: string }) {
           </div>
         )}
       </div>
-
-      {/* ── Photo grid ── */}
       {displayPhotos.length === 0 ? (
         <div className="glass-panel rounded-xl p-12 text-center">
           <Image className="w-10 h-10 text-muted-foreground/30 mx-auto mb-3" />
@@ -2351,8 +2380,9 @@ function TenantPhotos({ slug }: { slug: string }) {
           )}
         </div>
       ) : (
+        <>
         <div className="grid grid-cols-3 sm:grid-cols-5 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-1.5">
-          {displayPhotos.map(p => (
+          {displayPhotos.slice(0, visibleCount).map(p => (
             <div
               key={`${p.id}::${p.source}`}
               className={`relative group aspect-square rounded-md overflow-hidden bg-secondary cursor-pointer border-2 transition-all ${selectedIds.has(p.id) ? "border-primary ring-2 ring-primary/20" : "border-transparent hover:border-border"}`}
@@ -2382,6 +2412,12 @@ function TenantPhotos({ slug }: { slug: string }) {
             </div>
           ))}
         </div>
+        {visibleCount < displayPhotos.length && (
+          <div ref={libSentinelRef} className="flex justify-center py-6">
+            <div className="w-5 h-5 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+          </div>
+        )}
+        </>
       )}
     </motion.div>
   );
@@ -2928,7 +2964,7 @@ function TenantProfileView({ slug, session }: { slug: string; session: { display
           </div>
           <div>
             <label className="text-xs font-body text-muted-foreground mb-1 block">Bio</label>
-            <Textarea value={bio} onChange={e => setBio(e.target.value)} rows={4} className="bg-secondary border-border text-foreground font-body resize-none" placeholder="Short bio shown on your booking page" />
+            <RichTextEditor value={bio} onChange={setBio} minHeight="120px" placeholder="Short bio shown on your booking page — supports bold, italic, headings" />
           </div>
           <div className="p-3 rounded-lg bg-secondary/50 border border-border/50">
             <p className="text-xs font-body text-muted-foreground">Booking page URL:</p>
@@ -3080,7 +3116,7 @@ function TenantSettingsView({ slug }: { slug: string }) {
   };
 
   const handleGcalConnect = async () => {
-    // First save the credentials if they've been changed
+    // First save the credentials if they've been changed (new value entered)
     if (settings.googleApiCredentials) {
       await saveTenantSettings(slug, settings);
     }
@@ -3130,10 +3166,10 @@ function TenantSettingsView({ slug }: { slug: string }) {
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
       <h2 className="font-display text-2xl text-foreground mb-6">Settings</h2>
 
-      <div className="flex gap-1 mb-6 bg-secondary rounded-xl p-1 max-w-fit overflow-x-auto">
+      <div className="flex gap-1 mb-6 bg-secondary rounded-xl p-1 max-w-full overflow-x-auto scrollbar-hide">
         {sectionTabs.map(t => (
           <button key={t.id} onClick={() => setActiveSection(t.id)}
-            className={`px-4 py-2 rounded-lg text-xs font-body tracking-wider uppercase whitespace-nowrap transition-all ${activeSection === t.id ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+            className={`px-4 py-2 rounded-lg text-xs font-body tracking-wider uppercase whitespace-nowrap flex-shrink-0 transition-all ${activeSection === t.id ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
           >{t.label}</button>
         ))}
       </div>
@@ -3275,15 +3311,38 @@ function TenantSettingsView({ slug }: { slug: string }) {
           <div className="space-y-3 p-4 rounded-lg bg-secondary/40 border border-border/50">
             <div className="flex items-center gap-2">
               <span className="text-xs font-body tracking-wider uppercase text-muted-foreground">Stripe</span>
-              <Switch checked={settings.stripeEnabled !== false && !!(settings.stripePublishableKey || settings.stripeSecretKey)} onCheckedChange={v => set({ stripeEnabled: v })} />
-              <span className="text-xs font-body text-muted-foreground">{settings.stripeEnabled !== false && (settings.stripePublishableKey || settings.stripeSecretKey) ? "Enabled" : "Disabled"}</span>
+              <Switch checked={settings.stripeEnabled !== false && !!(settings.stripePublishableKey || settings.stripeSecretKey || settings.stripeSecretKeySet)} onCheckedChange={v => set({ stripeEnabled: v })} />
+              <span className="text-xs font-body text-muted-foreground">{settings.stripeEnabled !== false && (settings.stripePublishableKey || settings.stripeSecretKey || settings.stripeSecretKeySet) ? "Enabled" : "Disabled"}</span>
             </div>
             <div><label className="text-xs font-body text-muted-foreground mb-1 block">Publishable Key</label>
               <Input value={settings.stripePublishableKey || ""} onChange={e => set({ stripePublishableKey: e.target.value, stripeEnabled: true })} placeholder="pk_live_..." className="bg-background border-border text-foreground font-body text-xs font-mono" /></div>
-            <div><label className="text-xs font-body text-muted-foreground mb-1 block">Secret Key</label>
-              <Input type="password" value={settings.stripeSecretKey || ""} onChange={e => set({ stripeSecretKey: e.target.value, stripeEnabled: true })} placeholder="sk_live_..." className="bg-background border-border text-foreground font-body text-xs font-mono" /></div>
-            <div><label className="text-xs font-body text-muted-foreground mb-1 block">Webhook Secret</label>
-              <Input type="password" value={settings.stripeWebhookSecret || ""} onChange={e => set({ stripeWebhookSecret: e.target.value })} placeholder="whsec_..." className="bg-background border-border text-foreground font-body text-xs font-mono" />
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-xs font-body text-muted-foreground">Secret Key</label>
+                {settings.stripeSecretKeySet && !settings.stripeSecretKey && (
+                  <span className="text-[10px] font-body text-green-400">✓ Configured</span>
+                )}
+              </div>
+              <div className="flex gap-2">
+                <Input type="password" value={settings.stripeSecretKey || ""} onChange={e => set({ stripeSecretKey: e.target.value, stripeEnabled: true })} placeholder={settings.stripeSecretKeySet ? "Enter new key to replace" : "sk_live_..."} className="bg-background border-border text-foreground font-body text-xs font-mono flex-1" />
+                {settings.stripeSecretKeySet && !settings.stripeSecretKey && (
+                  <button onClick={() => set({ stripeSecretKey: "" })} className="text-[10px] font-body text-destructive hover:text-destructive/80 px-2 shrink-0">Clear</button>
+                )}
+              </div>
+            </div>
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-xs font-body text-muted-foreground">Webhook Secret</label>
+                {settings.stripeWebhookSecretSet && !settings.stripeWebhookSecret && (
+                  <span className="text-[10px] font-body text-green-400">✓ Configured</span>
+                )}
+              </div>
+              <div className="flex gap-2">
+                <Input type="password" value={settings.stripeWebhookSecret || ""} onChange={e => set({ stripeWebhookSecret: e.target.value })} placeholder={settings.stripeWebhookSecretSet ? "Enter new secret to replace" : "whsec_..."} className="bg-background border-border text-foreground font-body text-xs font-mono flex-1" />
+                {settings.stripeWebhookSecretSet && !settings.stripeWebhookSecret && (
+                  <button onClick={() => set({ stripeWebhookSecret: "" })} className="text-[10px] font-body text-destructive hover:text-destructive/80 px-2 shrink-0">Clear</button>
+                )}
+              </div>
               <p className="text-[10px] font-body text-muted-foreground mt-1">Webhook URL: <code className="bg-secondary px-1 rounded text-[10px]">/api/tenant/{slug}/stripe/webhook</code></p>
             </div>
             <div><label className="text-xs font-body text-muted-foreground mb-1 block">Currency</label>
@@ -3316,8 +3375,19 @@ function TenantSettingsView({ slug }: { slug: string }) {
           {/* Discord */}
           <div className="space-y-3 p-4 rounded-lg bg-secondary/40 border border-border/50">
             <span className="text-xs font-body tracking-wider uppercase text-muted-foreground">Discord</span>
-            <div><label className="text-xs font-body text-muted-foreground mb-1 block">Webhook URL</label>
-              <Input value={settings.discordWebhookUrl || ""} onChange={e => set({ discordWebhookUrl: e.target.value })} placeholder="https://discord.com/api/webhooks/..." className="bg-background border-border text-foreground font-body text-xs" />
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-xs font-body text-muted-foreground">Webhook URL</label>
+                {settings.discordWebhookUrlSet && !settings.discordWebhookUrl && (
+                  <span className="text-[10px] font-body text-green-400">✓ Configured</span>
+                )}
+              </div>
+              <div className="flex gap-2">
+                <Input value={settings.discordWebhookUrl || ""} onChange={e => set({ discordWebhookUrl: e.target.value })} placeholder={settings.discordWebhookUrlSet ? "Enter new URL to replace" : "https://discord.com/api/webhooks/..."} className="bg-background border-border text-foreground font-body text-xs flex-1" />
+                {settings.discordWebhookUrlSet && !settings.discordWebhookUrl && (
+                  <button onClick={() => set({ discordWebhookUrl: "" })} className="text-[10px] font-body text-destructive hover:text-destructive/80 px-2 shrink-0">Clear</button>
+                )}
+              </div>
               <p className="text-[10px] font-body text-muted-foreground mt-1">Your booking notifications will be sent to this webhook.</p>
             </div>
             <div className="flex flex-wrap gap-4">
@@ -3338,7 +3408,20 @@ function TenantSettingsView({ slug }: { slug: string }) {
               <div><label className="text-xs font-body text-muted-foreground mb-1 block">SMTP Host</label><Input value={settings.smtpHost || ""} onChange={e => set({ smtpHost: e.target.value })} placeholder="smtp.gmail.com" className="bg-background border-border text-foreground font-body text-xs" /></div>
               <div><label className="text-xs font-body text-muted-foreground mb-1 block">Port</label><Input type="number" value={settings.smtpPort || ""} onChange={e => set({ smtpPort: parseInt(e.target.value) || undefined })} placeholder="587" className="bg-background border-border text-foreground font-body text-xs" /></div>
               <div><label className="text-xs font-body text-muted-foreground mb-1 block">Username</label><Input value={settings.smtpUser || ""} onChange={e => set({ smtpUser: e.target.value })} placeholder="you@example.com" className="bg-background border-border text-foreground font-body text-xs" /></div>
-              <div><label className="text-xs font-body text-muted-foreground mb-1 block">Password</label><Input type="password" value={settings.smtpPassword || ""} onChange={e => set({ smtpPassword: e.target.value })} placeholder="••••••••" className="bg-background border-border text-foreground font-body text-xs" /></div>
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-xs font-body text-muted-foreground">Password</label>
+                  {settings.smtpPasswordSet && !settings.smtpPassword && (
+                    <span className="text-[10px] font-body text-green-400">✓ Configured</span>
+                  )}
+                </div>
+                <div className="flex gap-2">
+                  <Input type="password" value={settings.smtpPassword || ""} onChange={e => set({ smtpPassword: e.target.value })} placeholder={settings.smtpPasswordSet ? "Enter new password to replace" : "••••••••"} className="bg-background border-border text-foreground font-body text-xs flex-1" />
+                  {settings.smtpPasswordSet && !settings.smtpPassword && (
+                    <button onClick={() => set({ smtpPassword: "" })} className="text-[10px] font-body text-destructive hover:text-destructive/80 px-2 shrink-0">Clear</button>
+                  )}
+                </div>
+              </div>
               <div><label className="text-xs font-body text-muted-foreground mb-1 block">From Address</label><Input value={settings.smtpFrom || ""} onChange={e => set({ smtpFrom: e.target.value })} placeholder="Jane <jane@example.com>" className="bg-background border-border text-foreground font-body text-xs" /></div>
               <div className="flex items-center gap-2 pt-5"><Switch checked={!!settings.smtpSecure} onCheckedChange={v => set({ smtpSecure: v })} /><label className="text-xs font-body text-foreground">Use TLS (port 465)</label></div>
             </div>
@@ -3428,13 +3511,18 @@ function TenantSettingsView({ slug }: { slug: string }) {
             </div>
 
             <div className="space-y-2">
-              <label className="text-xs font-body text-muted-foreground block">
-                Google API Credentials JSON
-              </label>
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-body text-muted-foreground block">
+                  Google API Credentials JSON
+                </label>
+                {settings.googleApiCredentialsSet && !settings.googleApiCredentials && (
+                  <span className="text-[10px] font-body text-green-400">✓ Configured</span>
+                )}
+              </div>
               <Textarea
                 value={settings.googleApiCredentials || ""}
                 onChange={e => set({ googleApiCredentials: e.target.value })}
-                placeholder={`{"web":{"client_id":"...","client_secret":"...","redirect_uris":["https://your-domain.com/api/tenant/${slug}/integrations/googlecalendar/callback"]}}`}
+                placeholder={settings.googleApiCredentialsSet ? "Paste new credentials JSON to replace" : `{"web":{"client_id":"...","client_secret":"...","redirect_uris":["https://your-domain.com/api/tenant/${slug}/integrations/googlecalendar/callback"]}}`}
                 rows={5}
                 className="bg-background border-border text-foreground font-body text-xs font-mono resize-none"
               />
