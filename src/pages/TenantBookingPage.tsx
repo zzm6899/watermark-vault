@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from "react";
 import { useParams, useNavigate } from "react-router-dom";
+import { usePageTitle } from "@/hooks/use-page-title";
 import {
   ArrowLeft, Camera, Clock, DollarSign, CheckCircle2,
   ChevronLeft, ChevronRight, Globe, MapPin, Calendar as CalendarIcon,
@@ -104,6 +105,15 @@ export default function TenantBookingPage() {
       setLoading(false);
     });
   }, [tenantSlug]);
+
+  const tenantName = tenant?.displayName || "";
+  const stepTitles: Record<Step, string> = {
+    "event-select": tenantName ? `Book with ${tenantName}` : "Book a Session",
+    "datetime": selectedEvent ? `${selectedEvent.title} — ${tenantName || "Booking"}` : `Choose a Date — ${tenantName || "Booking"}`,
+    "contact": `Your Details — ${tenantName || "Booking"}`,
+    "confirmed": `Booking Confirmed — ${tenantName || "Booking"}`,
+  };
+  usePageTitle(stepTitles[step]);
 
   const year = currentMonth.getFullYear();
   const month = currentMonth.getMonth();

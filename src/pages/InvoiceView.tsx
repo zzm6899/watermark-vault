@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
+import { usePageTitle } from "@/hooks/use-page-title";
 import { getInvoiceByToken, createInvoiceCheckout, getStripeStatus } from "@/lib/api";
 import type { Invoice } from "@/lib/types";
 import { Loader2, CheckCircle2, Clock, AlertCircle, XCircle, CreditCard, Building2, Printer, ExternalLink, Copy } from "lucide-react";
@@ -62,6 +63,8 @@ export default function InvoiceView() {
   const [payingStripe, setPayingStripe] = useState(false);
   // Poll for paid status after Stripe redirect
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  usePageTitle(invoice ? `Invoice ${invoice.number}` : loading ? "Invoice — Loading…" : "Invoice");
 
   useEffect(() => {
     if (!token) { setError("Invalid link"); setLoading(false); return; }
