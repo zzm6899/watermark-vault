@@ -1638,7 +1638,7 @@ app.put("/api/tenant/:slug/albums/:albumId", tenantLimiter, (req, res) => {
   res.json({ ok: true });
 });
 
-// Update a booking that belongs to a tenant (status-only for mobile app; full update for tenant admin)
+// Upsert a booking that belongs to a tenant (create if new, update if existing; used by tenant admin)
 app.put("/api/tenant/:slug/bookings/:bookingId", tenantLimiter, (req, res) => {
   const { slug, bookingId } = req.params;
   const tenants = readTenants();
@@ -1648,10 +1648,15 @@ app.put("/api/tenant/:slug/bookings/:bookingId", tenantLimiter, (req, res) => {
   const allBookingsRaw = db["wv_bookings"];
   const allBookings = allBookingsRaw ? (typeof allBookingsRaw === "string" ? JSON.parse(allBookingsRaw) : (Array.isArray(allBookingsRaw) ? allBookingsRaw : [])) : [];
   const idx = allBookings.findIndex(b => b.id === bookingId && b.tenantSlug === slug);
-  if (idx < 0) return res.status(404).json({ ok: false, error: "Booking not found" });
   // Allow full updates from tenant admin; always keep id and tenantSlug immutable
   const { id: _id, tenantSlug: _ts, ...updates } = req.body || {};
-  allBookings[idx] = { ...allBookings[idx], ...updates, id: bookingId, tenantSlug: slug };
+  if (idx < 0) {
+    // New booking — insert it
+    allBookings.push({ ...updates, id: bookingId, tenantSlug: slug });
+  } else {
+    // Existing booking — update it
+    allBookings[idx] = { ...allBookings[idx], ...updates, id: bookingId, tenantSlug: slug };
+  }
   db["wv_bookings"] = JSON.stringify(allBookings);
   writeDb(db);
   res.json({ ok: true });

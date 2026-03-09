@@ -1094,6 +1094,128 @@ type BookingSortKey = "date" | "name" | "type" | "instagram" | "status" | "payme
 type AlbumSortKey = "date" | "name" | "photos" | "client";
 type SortDir = "asc" | "desc";
 
+const DEFAULT_BOOKING_DURATION = 60;
+
+function BookingEditor({ booking, onSave, onCancel }: {
+  booking: Booking | null;
+  onSave: (bk: Booking) => void;
+  onCancel: () => void;
+}) {
+  const isNew = !booking;
+  const bookingId = useRef(booking?.id || generateId("bk")).current;
+  const [clientName, setClientName] = useState(booking?.clientName || "");
+  const [clientEmail, setClientEmail] = useState(booking?.clientEmail || "");
+  const [date, setDate] = useState(booking?.date || "");
+  const [time, setTime] = useState(booking?.time || "");
+  const [duration, setDuration] = useState(String(booking?.duration || DEFAULT_BOOKING_DURATION));
+  const [type, setType] = useState(booking?.type || "");
+  const [notes, setNotes] = useState(booking?.notes || "");
+  const [status, setStatus] = useState<Booking["status"]>(booking?.status || "pending");
+  const [paymentStatus, setPaymentStatus] = useState(booking?.paymentStatus || "unpaid");
+  const [paymentAmount, setPaymentAmount] = useState(String(booking?.paymentAmount || ""));
+  const [instagramHandle, setInstagramHandle] = useState(booking?.instagramHandle || "");
+
+  const handleSave = () => {
+    if (!clientName.trim()) { toast.error("Client name is required"); return; }
+    if (!date) { toast.error("Date is required"); return; }
+    const bk: Booking = {
+      id: bookingId,
+      clientName: clientName.trim(),
+      clientEmail: clientEmail.trim(),
+      date,
+      time,
+      duration: parseInt(duration) || DEFAULT_BOOKING_DURATION,
+      type: type.trim(),
+      notes: notes.trim(),
+      status,
+      paymentStatus: paymentStatus as Booking["paymentStatus"],
+      paymentAmount: paymentAmount ? parseFloat(paymentAmount) : undefined,
+      instagramHandle: instagramHandle.trim() || undefined,
+      createdAt: booking?.createdAt || new Date().toISOString(),
+      answers: booking?.answers,
+      answerLabels: booking?.answerLabels,
+      albumId: booking?.albumId,
+      gcalEventId: booking?.gcalEventId,
+      eventTypeId: booking?.eventTypeId || "",
+      modifyToken: booking?.modifyToken,
+    };
+    onSave(bk);
+  };
+
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="glass-panel rounded-xl p-6 space-y-5 mb-6">
+      <div className="flex items-center justify-between">
+        <h3 className="font-display text-lg text-foreground">{isNew ? "New Booking" : "Edit Booking"}</h3>
+        <Button variant="ghost" size="icon" onClick={onCancel} className="h-8 w-8 text-muted-foreground hover:text-foreground"><X className="w-4 h-4" /></Button>
+      </div>
+      <div className="grid md:grid-cols-2 gap-4">
+        <div>
+          <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Client Name *</label>
+          <Input value={clientName} onChange={e => setClientName(e.target.value)} className="bg-secondary border-border text-foreground font-body" autoFocus />
+        </div>
+        <div>
+          <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Email</label>
+          <Input type="email" value={clientEmail} onChange={e => setClientEmail(e.target.value)} className="bg-secondary border-border text-foreground font-body" />
+        </div>
+        <div>
+          <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Date *</label>
+          <Input type="date" value={date} onChange={e => setDate(e.target.value)} className="bg-secondary border-border text-foreground font-body" />
+        </div>
+        <div>
+          <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Time</label>
+          <Input type="time" value={time} onChange={e => setTime(e.target.value)} className="bg-secondary border-border text-foreground font-body" />
+        </div>
+        <div>
+          <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Duration (min)</label>
+          <Input type="number" value={duration} onChange={e => setDuration(e.target.value)} className="bg-secondary border-border text-foreground font-body" />
+        </div>
+        <div>
+          <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Type / Event</label>
+          <Input value={type} onChange={e => setType(e.target.value)} placeholder="e.g. Portrait Session" className="bg-secondary border-border text-foreground font-body" />
+        </div>
+        <div>
+          <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Instagram</label>
+          <Input value={instagramHandle} onChange={e => setInstagramHandle(e.target.value)} placeholder="username" className="bg-secondary border-border text-foreground font-body" />
+        </div>
+        <div>
+          <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Amount ($)</label>
+          <Input type="number" value={paymentAmount} onChange={e => setPaymentAmount(e.target.value)} placeholder="0.00" className="bg-secondary border-border text-foreground font-body" />
+        </div>
+      </div>
+      <div>
+        <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Notes</label>
+        <Textarea value={notes} onChange={e => setNotes(e.target.value)} rows={3} className="bg-secondary border-border text-foreground font-body resize-none" />
+      </div>
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Status</label>
+          <select value={status} onChange={e => setStatus(e.target.value as Booking["status"])} className="w-full bg-secondary border border-border text-foreground font-body text-sm rounded-md px-3 py-2">
+            <option value="pending">Pending</option>
+            <option value="confirmed">Confirmed</option>
+            <option value="completed">Completed</option>
+            <option value="cancelled">Cancelled</option>
+          </select>
+        </div>
+        <div>
+          <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Payment</label>
+          <select value={paymentStatus} onChange={e => setPaymentStatus(e.target.value)} className="w-full bg-secondary border border-border text-foreground font-body text-sm rounded-md px-3 py-2">
+            <option value="unpaid">Unpaid</option>
+            <option value="paid">Paid</option>
+            <option value="cash">Cash</option>
+            <option value="deposit-paid">Deposit Paid</option>
+          </select>
+        </div>
+      </div>
+      <div className="flex gap-3 pt-2 border-t border-border/50">
+        <Button variant="outline" onClick={onCancel} className="font-body text-xs border-border text-foreground">Cancel</Button>
+        <Button onClick={handleSave} className="bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2">
+          <Save className="w-4 h-4" /> {isNew ? "Create Booking" : "Save Changes"}
+        </Button>
+      </div>
+    </motion.div>
+  );
+}
+
 function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) => void }) {
   const [bookings, setBookingsState] = useState<Booking[]>(getBookings());
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -1113,6 +1235,22 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
     await deleteWaitlistEntry(id);
     setWaitlist(prev => prev.filter(e => e.id !== id));
     toast.success("Removed from waitlist");
+  };
+
+  const [showCreateBooking, setShowCreateBooking] = useState(false);
+  const [editingBooking, setEditingBooking] = useState<Booking | null>(null);
+
+  const handleSaveBooking = (bk: Booking) => {
+    if (editingBooking) {
+      updateBooking(bk);
+      toast.success("Booking updated");
+    } else {
+      addBooking(bk);
+      toast.success("Booking created");
+    }
+    setBookingsState(getBookings());
+    setShowCreateBooking(false);
+    setEditingBooking(null);
   };
 
   const [sortDir, setSortDir] = useState<SortDir>("desc");
@@ -1308,6 +1446,10 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
         <h2 className="font-display text-2xl text-foreground">Bookings</h2>
         <div className="flex items-center gap-2 flex-wrap">
+          <Button size="sm" onClick={() => { setShowCreateBooking(true); setEditingBooking(null); }}
+            className="gap-1.5 bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase">
+            <Plus className="w-3.5 h-3.5" /> New
+          </Button>
           {bookings.length > 0 && (
             <>
               <Button size="sm" variant={selectMode ? "default" : "outline"}
@@ -1340,6 +1482,15 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
           )}
         </div>
       </div>
+
+      {/* Inline booking create/edit form */}
+      {(showCreateBooking || editingBooking) && (
+        <BookingEditor
+          booking={editingBooking}
+          onSave={handleSaveBooking}
+          onCancel={() => { setShowCreateBooking(false); setEditingBooking(null); }}
+        />
+      )}
 
       {/* Bulk Email Panel */}
       {bulkEmailOpen && selectedBookingIds.size > 0 && (
