@@ -6031,7 +6031,7 @@ function TenantSettingsPanel({ tenant, onClose }: { tenant: Tenant; onClose: () 
         <div className="flex items-center gap-2">
           <span className="text-xs font-body tracking-wider uppercase text-muted-foreground">Stripe</span>
           {(() => {
-            const stripeConfigured = !!(settings.stripePublishableKey || settings.stripeSecretKey);
+            const stripeConfigured = !!(settings.stripePublishableKey || settings.stripeSecretKey || settings.stripeSecretKeySet);
             const stripeActive = settings.stripeEnabled !== false && stripeConfigured;
             return (
               <>
@@ -6052,24 +6052,44 @@ function TenantSettingsPanel({ tenant, onClose }: { tenant: Tenant; onClose: () 
           />
         </div>
         <div>
-          <label className="text-xs font-body text-muted-foreground mb-1 block">Secret Key</label>
-          <Input
-            type="password"
-            value={settings.stripeSecretKey || ""}
-            onChange={(e) => set({ stripeSecretKey: e.target.value, stripeEnabled: true })}
-            placeholder="sk_live_..."
-            className="bg-background border-border text-foreground font-body text-xs font-mono"
-          />
+          <div className="flex items-center justify-between mb-1">
+            <label className="text-xs font-body text-muted-foreground">Secret Key</label>
+            {settings.stripeSecretKeySet && !settings.stripeSecretKey && (
+              <span className="text-[10px] font-body text-green-400">✓ Configured</span>
+            )}
+          </div>
+          <div className="flex gap-2">
+            <Input
+              type="password"
+              value={settings.stripeSecretKey || ""}
+              onChange={(e) => set({ stripeSecretKey: e.target.value, stripeEnabled: true })}
+              placeholder={settings.stripeSecretKeySet ? "Enter new key to replace" : "sk_live_..."}
+              className="bg-background border-border text-foreground font-body text-xs font-mono flex-1"
+            />
+            {settings.stripeSecretKeySet && !settings.stripeSecretKey && (
+              <button onClick={() => set({ stripeSecretKey: "" })} className="text-[10px] font-body text-destructive hover:text-destructive/80 px-2 shrink-0">Clear</button>
+            )}
+          </div>
         </div>
         <div>
-          <label className="text-xs font-body text-muted-foreground mb-1 block">Webhook Secret</label>
-          <Input
-            type="password"
-            value={settings.stripeWebhookSecret || ""}
-            onChange={(e) => set({ stripeWebhookSecret: e.target.value })}
-            placeholder="whsec_..."
-            className="bg-background border-border text-foreground font-body text-xs font-mono"
-          />
+          <div className="flex items-center justify-between mb-1">
+            <label className="text-xs font-body text-muted-foreground">Webhook Secret</label>
+            {settings.stripeWebhookSecretSet && !settings.stripeWebhookSecret && (
+              <span className="text-[10px] font-body text-green-400">✓ Configured</span>
+            )}
+          </div>
+          <div className="flex gap-2">
+            <Input
+              type="password"
+              value={settings.stripeWebhookSecret || ""}
+              onChange={(e) => set({ stripeWebhookSecret: e.target.value })}
+              placeholder={settings.stripeWebhookSecretSet ? "Enter new secret to replace" : "whsec_..."}
+              className="bg-background border-border text-foreground font-body text-xs font-mono flex-1"
+            />
+            {settings.stripeWebhookSecretSet && !settings.stripeWebhookSecret && (
+              <button onClick={() => set({ stripeWebhookSecret: "" })} className="text-[10px] font-body text-destructive hover:text-destructive/80 px-2 shrink-0">Clear</button>
+            )}
+          </div>
           <p className="text-[10px] font-body text-muted-foreground mt-1">
             Set webhook URL to: <code className="bg-secondary px-1 rounded text-[10px]">/api/tenant/{tenant.slug}/stripe/webhook</code>
           </p>
@@ -6129,13 +6149,23 @@ function TenantSettingsPanel({ tenant, onClose }: { tenant: Tenant; onClose: () 
       <div className="space-y-3 p-4 rounded-lg bg-secondary/40 border border-border/50">
         <span className="text-xs font-body tracking-wider uppercase text-muted-foreground">Discord</span>
         <div>
-          <label className="text-xs font-body text-muted-foreground mb-1 block">Webhook URL</label>
-          <Input
-            value={settings.discordWebhookUrl || ""}
-            onChange={(e) => set({ discordWebhookUrl: e.target.value })}
-            placeholder="https://discord.com/api/webhooks/..."
-            className="bg-background border-border text-foreground font-body text-xs"
-          />
+          <div className="flex items-center justify-between mb-1">
+            <label className="text-xs font-body text-muted-foreground">Webhook URL</label>
+            {settings.discordWebhookUrlSet && !settings.discordWebhookUrl && (
+              <span className="text-[10px] font-body text-green-400">✓ Configured</span>
+            )}
+          </div>
+          <div className="flex gap-2">
+            <Input
+              value={settings.discordWebhookUrl || ""}
+              onChange={(e) => set({ discordWebhookUrl: e.target.value })}
+              placeholder={settings.discordWebhookUrlSet ? "Enter new URL to replace" : "https://discord.com/api/webhooks/..."}
+              className="bg-background border-border text-foreground font-body text-xs flex-1"
+            />
+            {settings.discordWebhookUrlSet && !settings.discordWebhookUrl && (
+              <button onClick={() => set({ discordWebhookUrl: "" })} className="text-[10px] font-body text-destructive hover:text-destructive/80 px-2 shrink-0">Clear</button>
+            )}
+          </div>
           <p className="text-[10px] font-body text-muted-foreground mt-1">Notifications for this tenant's bookings will go to this webhook.</p>
         </div>
         <div className="flex flex-wrap gap-4">
@@ -6176,9 +6206,19 @@ function TenantSettingsPanel({ tenant, onClose }: { tenant: Tenant; onClose: () 
               placeholder="jane@example.com" className="bg-background border-border text-foreground font-body text-xs" />
           </div>
           <div>
-            <label className="text-xs font-body text-muted-foreground mb-1 block">Password / App Password</label>
-            <Input type="password" value={settings.smtpPassword || ""} onChange={(e) => set({ smtpPassword: e.target.value })}
-              placeholder="••••••••" className="bg-background border-border text-foreground font-body text-xs" />
+            <div className="flex items-center justify-between mb-1">
+              <label className="text-xs font-body text-muted-foreground">Password / App Password</label>
+              {settings.smtpPasswordSet && !settings.smtpPassword && (
+                <span className="text-[10px] font-body text-green-400">✓ Configured</span>
+              )}
+            </div>
+            <div className="flex gap-2">
+              <Input type="password" value={settings.smtpPassword || ""} onChange={(e) => set({ smtpPassword: e.target.value })}
+                placeholder={settings.smtpPasswordSet ? "Enter new password to replace" : "••••••••"} className="bg-background border-border text-foreground font-body text-xs flex-1" />
+              {settings.smtpPasswordSet && !settings.smtpPassword && (
+                <button onClick={() => set({ smtpPassword: "" })} className="text-[10px] font-body text-destructive hover:text-destructive/80 px-2 shrink-0">Clear</button>
+              )}
+            </div>
           </div>
           <div>
             <label className="text-xs font-body text-muted-foreground mb-1 block">From Address</label>

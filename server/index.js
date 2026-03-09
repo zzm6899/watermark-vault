@@ -1709,7 +1709,28 @@ app.get("/api/tenant/:slug/license-info", tenantLimiter, (req, res) => {
 
 // ── Tenant Settings (per-tenant integration overrides) ─────────────────────
 
+// Secret fields that must never be returned to the frontend.
+// Instead of the actual value, the masked response includes a boolean `<field>Set`
+// so the UI can show a "Configured ✓" indicator without exposing the secret.
+const TENANT_SECRET_FIELDS = [
+  "stripeSecretKey",
+  "stripeWebhookSecret",
+  "smtpPassword",
+  "googleApiCredentials",
+  "discordWebhookUrl",
+];
+
+function maskTenantSettings(settings) {
+  const masked = { ...settings };
+  for (const field of TENANT_SECRET_FIELDS) {
+    masked[`${field}Set`] = !!(masked[field]);
+    delete masked[field];
+  }
+  return masked;
+}
+
 // Get tenant settings (Discord, SMTP, Stripe, bank — per-tenant overrides)
+// Secret fields are never returned; boolean <field>Set indicators are sent instead.
 app.get("/api/tenant/:slug/settings", tenantLimiter, (req, res) => {
   const slug = req.params.slug;
   const tenants = readTenants();
@@ -1717,7 +1738,7 @@ app.get("/api/tenant/:slug/settings", tenantLimiter, (req, res) => {
   const db = readDb();
   const raw = db[`t_${slug}_wv_tenant_settings`];
   const settings = raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : {};
-  res.json(settings);
+  res.json(maskTenantSettings(settings));
 });
 
 // Send email via tenant's own SMTP settings
@@ -1744,6 +1765,11 @@ app.post("/api/tenant/:slug/email/send", tenantLimiter, async (req, res) => {
 });
 
 // Save tenant settings
+// - Secret fields present with a non-empty value → update the stored secret.
+// - Secret fields present but empty string → explicitly clear the stored secret.
+// - Secret fields absent from the payload → preserve the existing stored value.
+// - <field>Set boolean indicators from the frontend are ignored (computed server-side).
+// The response never includes secret values; masked booleans are returned instead.
 app.put("/api/tenant/:slug/settings", tenantLimiter, (req, res) => {
   const slug = req.params.slug;
   const tenants = readTenants();
@@ -1753,10 +1779,33 @@ app.put("/api/tenant/:slug/settings", tenantLimiter, (req, res) => {
     const raw = db[`t_${slug}_wv_tenant_settings`];
     return raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : {};
   })();
-  const updated = { ...existing, ...req.body };
+
+  const incoming = { ...req.body };
+
+  // Strip server-computed *Set indicators so they cannot override real data
+  for (const field of TENANT_SECRET_FIELDS) {
+    delete incoming[`${field}Set`];
+  }
+
+  const updated = { ...existing };
+  for (const [key, value] of Object.entries(incoming)) {
+    if (TENANT_SECRET_FIELDS.includes(key)) {
+      if (value === "") {
+        // Explicit empty string → clear the secret
+        delete updated[key];
+      } else if (value !== undefined && value !== null) {
+        // Real non-empty value → update the secret
+        updated[key] = value;
+      }
+      // undefined / null (shouldn't occur after spread but be safe) → keep existing
+    } else {
+      updated[key] = value;
+    }
+  }
+
   db[`t_${slug}_wv_tenant_settings`] = JSON.stringify(updated);
   writeDb(db);
-  res.json({ ok: true, settings: updated });
+  res.json({ ok: true, settings: maskTenantSettings(updated) });
 });
 
 
