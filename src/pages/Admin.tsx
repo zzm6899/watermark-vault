@@ -484,7 +484,7 @@ export default function Admin() {
     if (!isSetupComplete()) navigate("/setup", { replace: true });
   }, [navigate]);
 
-  usePageTitle(`${getProfile().name || "Admin"} — ${ADMIN_TAB_LABELS[activeTab]}`);
+  usePageTitle(authed ? `${getProfile().name || "Admin"} — ${ADMIN_TAB_LABELS[activeTab]}` : "Admin Login");
 
   if (!isSetupComplete()) return null;
   if (!authed) return <Login onLogin={() => setAuthed(true)} />;

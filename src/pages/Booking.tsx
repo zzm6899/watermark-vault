@@ -253,9 +253,9 @@ export default function Booking() {
     getStripeStatus().then(s => setStripeAvailable(s.configured));
   }, []);
 
-  const profileName = profile.name || "Photographer";
+  const profileName = profile.name || "Book a Session";
   const bookingStepTitles: Record<Step, string> = {
-    "event-select": `Book with ${profileName}`,
+    "event-select": profile.name ? `Book with ${profileName}` : "Book a Session",
     "datetime": selectedEvent ? `${selectedEvent.title} — ${profileName}` : `Choose a Date — ${profileName}`,
     "questions": `Your Details — ${profileName}`,
     "payment": `Payment — ${profileName}`,

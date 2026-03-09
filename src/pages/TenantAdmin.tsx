@@ -100,7 +100,7 @@ export default function TenantAdmin() {
     }
   }, [session, slug, navigate]);
 
-  usePageTitle(`${session?.displayName || "Admin"} — ${TENANT_TAB_LABELS[activeTab]}`);
+  usePageTitle(session ? `${session.displayName} — ${TENANT_TAB_LABELS[activeTab]}` : "Login");
 
   if (!session || session.slug !== slug) return null;
 
