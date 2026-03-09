@@ -1,5 +1,6 @@
 import { useState, useMemo, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
+import { usePageTitle } from "@/hooks/use-page-title";
 import { motion } from "framer-motion";
 import {
   Clock, ChevronLeft, ChevronRight, ArrowLeft,
@@ -77,6 +78,12 @@ export default function BookingModify() {
   const [currentMonth, setCurrentMonth] = useState(() => new Date(new Date().getFullYear(), new Date().getMonth()));
 
   useState(() => { getStripeStatus().then(s => setStripeAvailable(s.configured)); });
+
+  usePageTitle(
+    eventType && booking
+      ? `${eventType.title} — ${formatDateNice(booking.date)}`
+      : "Manage Booking"
+  );
 
   const year = currentMonth.getFullYear();
   const month = currentMonth.getMonth();

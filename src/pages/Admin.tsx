@@ -1,4 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef } from "react";
+import { usePageTitle } from "@/hooks/use-page-title";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   LayoutDashboard, Calendar, Settings, Plus, Upload,
@@ -66,6 +67,22 @@ const TAB_ROUTE_MAP: Record<string, Tab> = {
   settings: "settings",
   storage: "storage",
   platform: "platform",
+};
+
+const ADMIN_TAB_LABELS: Record<Tab, string> = {
+  dashboard: "Dashboard",
+  bookings: "Bookings",
+  events: "Events",
+  albums: "Albums",
+  photos: "Photos",
+  finance: "Finance",
+  invoices: "Invoices",
+  contacts: "Contacts",
+  enquiries: "Enquiries",
+  profile: "Profile",
+  settings: "Settings",
+  storage: "Storage",
+  platform: "Platform",
 };
 
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
@@ -466,6 +483,8 @@ export default function Admin() {
   useEffect(() => {
     if (!isSetupComplete()) navigate("/setup", { replace: true });
   }, [navigate]);
+
+  usePageTitle(authed ? `${getProfile().name || "Admin"} — ${ADMIN_TAB_LABELS[activeTab]}` : "Admin Login");
 
   if (!isSetupComplete()) return null;
   if (!authed) return <Login onLogin={() => setAuthed(true)} />;

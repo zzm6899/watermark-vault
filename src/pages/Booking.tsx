@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { usePageTitle } from "@/hooks/use-page-title";
 import {
   Clock, ChevronLeft, ChevronRight, ArrowLeft, Globe,
   CalendarDays, Upload, CheckCircle2, AlertCircle, Camera,
@@ -251,6 +252,18 @@ export default function Booking() {
   useEffect(() => {
     getStripeStatus().then(s => setStripeAvailable(s.configured));
   }, []);
+
+  const profileName = profile.name || "Book a Session";
+  const bookingStepTitles: Record<Step, string> = {
+    "event-select": profile.name ? `Book with ${profileName}` : "Book a Session",
+    "datetime": selectedEvent ? `${selectedEvent.title} — ${profileName}` : `Choose a Date — ${profileName}`,
+    "questions": `Your Details — ${profileName}`,
+    "payment": `Payment — ${profileName}`,
+    "confirmed": `Booking Confirmed — ${profileName}`,
+    "enquiry": `Send Enquiry — ${profileName}`,
+    "enquiry-confirmed": `Enquiry Sent — ${profileName}`,
+  };
+  usePageTitle(bookingStepTitles[step]);
 
   const year = currentMonth.getFullYear();
   const month = currentMonth.getMonth();

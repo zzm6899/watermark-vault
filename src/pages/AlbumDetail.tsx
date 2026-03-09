@@ -1,5 +1,6 @@
 import { useParams, useSearchParams } from "react-router-dom";
 import { useState, useCallback, useEffect, useRef } from "react";
+import { usePageTitle } from "@/hooks/use-page-title";
 import { motion, AnimatePresence } from "framer-motion";
 import { Info, Building2, Copy, Check as CheckIcon, Lock, Download, Grid, List, LayoutGrid, CreditCard, X, ChevronLeft, ChevronRight, Star, Camera, CheckCircle2, Clock, Sparkles, Maximize2, ArrowUpDown, SlidersHorizontal, ZoomIn, ZoomOut } from "lucide-react";
 import Header from "@/components/Header";
@@ -225,6 +226,16 @@ export default function AlbumDetail() {
       getStripeStatus().then(s => setStripeAvailable(s.configured));
     }
   }, [tenantSlug]);
+
+  usePageTitle(
+    albumLoading
+      ? "Gallery — Loading…"
+      : album
+        ? tenantDisplayName
+          ? `${album.title} — ${tenantDisplayName}`
+          : `${album.title} — Gallery`
+        : "Gallery"
+  );
 
   // If album not found locally, try fetching it from server (handles tenant albums)
   useEffect(() => {

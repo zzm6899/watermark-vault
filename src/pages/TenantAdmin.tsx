@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
+import { usePageTitle } from "@/hooks/use-page-title";
 import { motion } from "framer-motion";
 import {
   LayoutDashboard, Calendar, Clock, Image, Receipt,
@@ -69,6 +70,22 @@ function calcInvTotal(inv: Invoice): number {
 function emptyParty(): InvoiceParty { return { name: "", email: "", address: "", abn: "" }; }
 function emptyItem(): InvoiceItem { return { id: generateId("item"), description: "", quantity: 1, unitPrice: 0 }; }
 
+const TENANT_TAB_LABELS: Record<Tab, string> = {
+  dashboard: "Dashboard",
+  bookings: "Bookings",
+  events: "Events",
+  albums: "Albums",
+  photos: "Photos",
+  finance: "Finance",
+  invoices: "Invoices",
+  contacts: "Contacts",
+  enquiries: "Enquiries",
+  profile: "Profile",
+  settings: "Settings",
+  storage: "Storage",
+  license: "License",
+};
+
 // ─── Root TenantAdmin Component ──────────────────────────────────────────────
 export default function TenantAdmin() {
   const { slug } = useParams<{ slug: string }>();
@@ -82,6 +99,8 @@ export default function TenantAdmin() {
       navigate("/login", { replace: true });
     }
   }, [session, slug, navigate]);
+
+  usePageTitle(session ? `${session.displayName} — ${TENANT_TAB_LABELS[activeTab]}` : "Login");
 
   if (!session || session.slug !== slug) return null;
 

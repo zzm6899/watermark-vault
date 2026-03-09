@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { usePageTitle } from "@/hooks/use-page-title";
 import { Camera, LogIn, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,6 +11,8 @@ import { useNavigate } from "react-router-dom";
 export default function LoginPage() {
   const navigate = useNavigate();
   const [mode, setMode] = useState<"tenant" | "admin">("tenant");
+
+  usePageTitle("Login");
 
   // If already authenticated, redirect immediately
   useEffect(() => {
