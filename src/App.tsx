@@ -5,7 +5,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { useState, useCallback, useEffect, lazy, Suspense } from "react";
 import { isSetupComplete, isLoggedIn } from "./lib/storage";
-import { syncFromServer } from "./lib/api";
+import { syncFromServer, getTenantByDomain } from "./lib/api";
+import { CustomDomainContext } from "./lib/custom-domain-context";
 
 // Eagerly load the public-facing booking page so it renders with zero extra round-trips.
 import TenantBookingPage from "./pages/TenantBookingPage";
@@ -57,6 +58,29 @@ const PageFallback = (
 );
 
 const App = () => {
+  const [ready, setReady] = useState(false);
+  const [customDomainSlug, setCustomDomainSlug] = useState<string | null>(null);
+
+  useEffect(() => {
+    const hostname = window.location.hostname;
+    // Skip domain resolution for localhost / loopback / private IP access
+    const isLocalAccess =
+      hostname === "localhost" ||
+      hostname === "::1" ||
+      hostname.startsWith("127.") ||
+      hostname.startsWith("10.") ||
+      hostname.startsWith("192.168.") ||
+      /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(hostname);
+
+    const tasks: Promise<unknown>[] = [syncFromServer()];
+    if (!isLocalAccess) {
+      tasks.push(
+        getTenantByDomain(hostname).then((result) => {
+          if (result?.slug) setCustomDomainSlug(result.slug);
+        })
+      );
+    }
+    Promise.allSettled(tasks).finally(() => setReady(true));
   // Public booking/gallery pages can render immediately without waiting for the
   // server sync (they fetch their own data directly via API calls).
   const [ready, setReady] = useState(isPublicRoute());
@@ -75,6 +99,14 @@ const App = () => {
       <TooltipProvider>
         <Toaster />
         <Sonner />
+        <CustomDomainContext.Provider value={customDomainSlug}>
+          <BrowserRouter>
+            <Routes>
+              {/* When the app is served from a tenant's custom domain, show their booking page at root */}
+              <Route
+                path="/"
+                element={customDomainSlug ? <TenantBookingPage overrideSlug={customDomainSlug} /> : <Booking />}
+              />
         <BrowserRouter>
           <Suspense fallback={PageFallback}>
             <Routes>
@@ -92,6 +124,8 @@ const App = () => {
               <Route path="/tenant-admin/:slug" element={<TenantAdmin />} />
               <Route path="*" element={<NotFound />} />
             </Routes>
+          </BrowserRouter>
+        </CustomDomainContext.Provider>
           </Suspense>
         </BrowserRouter>
       </TooltipProvider>

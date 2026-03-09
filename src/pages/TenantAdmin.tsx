@@ -2921,6 +2921,7 @@ function TenantProfileView({ slug, session }: { slug: string; session: { display
   const [displayName, setDisplayName] = useState(session.displayName);
   const [email, setEmail] = useState(session.email);
   const [bio, setBio] = useState("");
+  const [customDomain, setCustomDomain] = useState<string | undefined>(undefined);
   const [savingProfile, setSavingProfile] = useState(false);
 
   // Password change
@@ -2932,7 +2933,7 @@ function TenantProfileView({ slug, session }: { slug: string; session: { display
   useEffect(() => {
     fetch(`/api/tenant/${encodeURIComponent(slug)}/public`)
       .then(r => r.json())
-      .then(d => { if (d.tenant) setBio(d.tenant.bio || ""); })
+      .then(d => { if (d.tenant) { setBio(d.tenant.bio || ""); setCustomDomain(d.tenant.customDomain); } })
       .catch(() => {});
   }, [slug]);
 
@@ -2989,6 +2990,18 @@ function TenantProfileView({ slug, session }: { slug: string; session: { display
           <div className="p-3 rounded-lg bg-secondary/50 border border-border/50">
             <p className="text-xs font-body text-muted-foreground">Booking page URL:</p>
             <a href={`/book/${slug}`} target="_blank" rel="noopener noreferrer" className="text-sm font-body text-primary hover:underline">{window.location.origin}/book/{slug}</a>
+            {customDomain && (
+              <div className="mt-2 pt-2 border-t border-border/30">
+                <p className="text-xs font-body text-muted-foreground">Custom domain:</p>
+                <a href={`https://${customDomain}`} target="_blank" rel="noopener noreferrer" className="text-sm font-body text-blue-400 hover:underline font-mono">
+                  {customDomain}
+                </a>
+                <p className="text-[10px] font-body text-muted-foreground mt-1">
+                  Point your domain's DNS A/CNAME record to this server and configure your reverse proxy to forward requests here.
+                  See the <code className="bg-secondary px-1 rounded">Caddyfile</code> in the project for an example.
+                </p>
+              </div>
+            )}
           </div>
           <Button onClick={handleSave} disabled={savingProfile} className="bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2 w-full">
             <Save className="w-4 h-4" /> {savingProfile ? "Saving…" : "Save Profile"}

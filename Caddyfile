@@ -1,0 +1,81 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Watermark Vault – Caddyfile
+#
+# The Watermark Vault container runs a single Node/Express server that serves
+# BOTH the React frontend (static files) AND all /api/* routes on one port
+# (default 5066, set via the PORT env var in docker-compose.yml).
+#
+# Caddy sits in front of it as a TLS-terminating reverse proxy. All traffic
+# — including API calls — is forwarded to that single port.
+#
+# How to use
+# ─────────────────────────────────────────────────────────────────────────────
+#   1. Replace the example domains/IPs with your own.
+#   2. Place this Caddyfile wherever Caddy looks for its config
+#      (e.g. /etc/caddy/Caddyfile on the host, or mount it into a Caddy
+#      container alongside your watermark-vault container).
+#   3. Point each domain's DNS A record to the server running Caddy.
+#   4. Caddy automatically provisions and renews TLS certs via Let's Encrypt.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+# ── Your main app domain ──────────────────────────────────────────────────────
+# Replace with your own domain and the IP:port of the watermark-vault container.
+# If Caddy runs on the same host as Docker, use the container's IP (from
+# `docker inspect watermark-vault`) or the gateway address.
+
+book.zacmclients.photos {
+    reverse_proxy 172.20.20.251:5066
+}
+
+
+# ── Tenant custom domains ─────────────────────────────────────────────────────
+# For each tenant that uses a custom domain, add a block exactly like the one
+# above — same container address, same port.
+#
+# Steps:
+#   1. In the Watermark Vault admin UI go to:
+#          Platform → Tenants → [tenant row] → 🌐 Domain
+#      and enter the hostname (e.g. book.janesphotography.com).
+#   2. Ask the tenant to add a DNS A record pointing that hostname to this
+#      server's public IP.
+#   3. Add a block here (copy the pattern below) and reload Caddy:
+#          sudo systemctl reload caddy
+#      Caddy will automatically obtain a TLS certificate for the new domain.
+
+# book.janesphotography.com {
+#     reverse_proxy 172.20.20.251:5066
+# }
+
+# photos.acmestudios.com {
+#     reverse_proxy 172.20.20.251:5066
+# }
+
+
+# ── Option B: on-demand TLS (never edit this file again) ─────────────────────
+# With on-demand TLS, Caddy automatically provisions certificates for any
+# domain that resolves to this server — you never need to restart Caddy when
+# adding a new tenant domain.
+#
+# The `ask` URL calls the Watermark Vault API to check that the incoming domain
+# is actually a registered tenant, preventing certificate issuance for
+# arbitrary/malicious domains.
+#
+# To use this approach instead of the named-domain blocks above:
+#   1. Remove (or comment out) the named domain blocks.
+#   2. Uncomment the two blocks below.
+#   3. Reload Caddy.
+
+# {
+#     on_demand_tls {
+#         ask http://172.20.20.251:5066/api/caddy/verify-domain
+#     }
+# }
+
+# :443 {
+#     tls {
+#         on_demand
+#     }
+#     reverse_proxy 172.20.20.251:5066
+# }
