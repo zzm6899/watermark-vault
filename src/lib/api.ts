@@ -93,10 +93,15 @@ export function deleteFromServer(key: string): void {
 /** Upload photo files to the server. Returns URLs, or empty array if server unavailable. */
 export async function uploadPhotosToServer(
   files: File[],
-  onProgress?: (done: number, total: number) => void
-): Promise<{ id: string; url: string; originalName: string; size: number }[]> {
+  onProgress?: (done: number, total: number) => void,
+  tenantSlug?: string,
+): Promise<{ id: string; url: string; originalName: string; size: number; ftpUploaded?: boolean }[]> {
   if (!(await checkServer())) return [];
-  const results: { id: string; url: string; originalName: string; size: number }[] = [];
+  const results: { id: string; url: string; originalName: string; size: number; ftpUploaded?: boolean }[] = [];
+
+  const uploadUrl = tenantSlug
+    ? `/api/upload?tenant=${encodeURIComponent(tenantSlug)}`
+    : "/api/upload";
 
   // Upload in batches of 10 for progress feedback
   const batchSize = 10;
@@ -105,7 +110,7 @@ export async function uploadPhotosToServer(
     const form = new FormData();
     batch.forEach((f) => form.append("photos", f));
     try {
-      const res = await fetch("/api/upload", { method: "POST", body: form });
+      const res = await fetch(uploadUrl, { method: "POST", body: form });
       if (res.ok) {
         const data = await res.json();
         results.push(...data.files);
@@ -1164,11 +1169,43 @@ export async function saveTenantSettings(
       "smtpPasswordSet",
       "googleApiCredentialsSet",
       "discordWebhookUrlSet",
+      "ftpPasswordSet",
     ] as const;
     for (const key of SET_INDICATORS) {
       delete payload[key];
     }
     const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/settings`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const json = await res.json();
+    return { ok: !!json.ok, error: json.error };
+  } catch { return { ok: false, error: "Network error" }; }
+}
+
+/** Fetch global FTP settings (password is masked — only ftpPasswordSet boolean is returned). */
+export async function getGlobalFtpSettings(): Promise<{ ftpEnabled?: boolean; ftpHost?: string; ftpPort?: number; ftpUser?: string; ftpRemotePath?: string; ftpPasswordSet?: boolean }> {
+  try {
+    const res = await fetch("/api/settings/ftp");
+    if (!res.ok) return {};
+    return await res.json();
+  } catch { return {}; }
+}
+
+/** Save global FTP settings. Send ftpPassword as empty string to clear it. */
+export async function saveGlobalFtpSettings(settings: {
+  ftpEnabled?: boolean;
+  ftpHost?: string;
+  ftpPort?: number;
+  ftpUser?: string;
+  ftpPassword?: string;
+  ftpRemotePath?: string;
+}): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const payload = { ...settings } as Record<string, unknown>;
+    delete payload["ftpPasswordSet"];
+    const res = await fetch("/api/settings/ftp", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),

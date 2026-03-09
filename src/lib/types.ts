@@ -91,6 +91,7 @@ export interface Photo {
   uploadedAt?: string;  // ISO timestamp — set on upload, used for time sort
   takenAt?: string;     // ISO timestamp from EXIF if available
   proofing?: boolean;
+  ftpUploaded?: boolean; // true when this photo was successfully sent to an FTP server
 }
 
 export type AlbumDisplaySize = "small" | "medium" | "large" | "list";
@@ -200,6 +201,12 @@ export interface AppSettings {
   invoiceNotes?: string;
   enquiryEnabled?: boolean;
   enquiryLabel?: string;
+  // ── FTP Upload ───────────────────────────────────────────
+  ftpEnabled?: boolean;
+  ftpHost?: string;
+  ftpPort?: number;
+  ftpUser?: string;
+  ftpRemotePath?: string;
 }
 
 export interface ProofingRound {
@@ -409,6 +416,13 @@ export interface TenantSettings {
   // ── Client Proofing ───────────────────────────────────────
   proofingEnabled?: boolean;
   defaultProofingExpiryHours?: number;
+  // ── FTP Upload ───────────────────────────────────────────
+  ftpEnabled?: boolean;
+  ftpHost?: string;
+  ftpPort?: number;
+  ftpUser?: string;
+  ftpPassword?: string;
+  ftpRemotePath?: string;
   // ── Secret-field set-indicators (returned by API instead of actual values) ──
   // The server never returns secret field values; it returns these booleans instead
   // so the UI can show a "Configured ✓" status without exposing the actual secret.
@@ -417,6 +431,7 @@ export interface TenantSettings {
   smtpPasswordSet?: boolean;
   googleApiCredentialsSet?: boolean;
   discordWebhookUrlSet?: boolean;
+  ftpPasswordSet?: boolean;
 }
 
 
