@@ -1400,6 +1400,8 @@ app.get("/api/tenant/:slug/public", tenantPublicLimiter, (req, res) => {
   const eventTypes = Array.isArray(allEventTypes)
     ? allEventTypes.filter(e => e.active !== false)
     : [];
+  // Allow browsers and CDNs to cache for 60 s; revalidate after that.
+  res.setHeader("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
   res.json({ tenant, eventTypes });
 });
 
@@ -2270,8 +2272,21 @@ app.get("/api/tenant/:slug/storage-stats", tenantLimiter, (req, res) => {
 
 // ── Serve React app ───────────────────────────────────
 const distPath = path.join(__dirname, "../dist");
-app.use(express.static(distPath));
+// Hashed assets (JS/CSS chunks) are immutable — cache aggressively.
+// index.html must always be re-fetched so the browser picks up new chunk names.
+app.use(
+  express.static(distPath, {
+    setHeaders(res, filePath) {
+      if (filePath.endsWith("index.html")) {
+        res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+      } else if (/\.(js|css|woff2?|ttf|eot|svg|png|jpg|jpeg|gif|ico|webp)$/.test(filePath)) {
+        res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+      }
+    },
+  })
+);
 app.get("*", (_req, res) => {
+  res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
   res.sendFile(path.join(distPath, "index.html"));
 });
 
