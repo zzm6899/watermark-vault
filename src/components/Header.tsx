@@ -3,14 +3,20 @@ import { Camera, Menu, X } from "lucide-react";
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { getProfile } from "@/lib/storage";
+import { useCustomDomainSlug } from "@/lib/custom-domain-context";
 
 export default function Header({ tenantSlug, tenantName }: { tenantSlug?: string | null; tenantName?: string | null }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const location = useLocation();
   const profile = getProfile();
+  const customDomainSlug = useCustomDomainSlug();
 
   const displayName = tenantName || profile.name;
-  const bookingPath = tenantSlug ? `/book/${tenantSlug}` : "/";
+  // On a custom domain, the tenant's canonical booking page is always "/".
+  // On the main platform domain, use the explicit /book/:slug path.
+  const bookingPath = tenantSlug
+    ? (customDomainSlug === tenantSlug ? "/" : `/book/${tenantSlug}`)
+    : "/";
 
   const navItems = [
     { label: "Book a Session", path: bookingPath },

@@ -19,6 +19,7 @@ import TenantAdmin from "./pages/TenantAdmin";
 import LoginPage from "./pages/LoginPage";
 import { isSetupComplete, isLoggedIn } from "./lib/storage";
 import { syncFromServer, getTenantByDomain } from "./lib/api";
+import { CustomDomainContext } from "./lib/custom-domain-context";
 
 const queryClient = new QueryClient();
 
@@ -74,27 +75,29 @@ const App = () => {
       <TooltipProvider>
         <Toaster />
         <Sonner />
-        <BrowserRouter>
-          <Routes>
-            {/* When the app is served from a tenant's custom domain, show their booking page at root */}
-            <Route
-              path="/"
-              element={customDomainSlug ? <TenantBookingPage overrideSlug={customDomainSlug} /> : <Booking />}
-            />
-            <Route path="/book/:tenantSlug" element={<TenantBookingPage />} />
-            <Route path="/gallery/:albumId" element={<AlbumDetail />} />
-            <Route path="/booking/modify/:bookingId" element={<BookingModify />} />
-            <Route path="/login" element={<LoginPage />} />
-            <Route path="/capture" element={<MobileCapture />} />
-            <Route path="/admin" element={<AdminGuard />} />
-            <Route path="/admin/:tab" element={<AdminGuard />} />
-            <Route path="/admin/storage" element={<AdminGuard />} />
-            <Route path="/invoice/:token" element={<InvoiceView />} />
-            <Route path="/tenant-setup/:token" element={<TenantSetup />} />
-            <Route path="/tenant-admin/:slug" element={<TenantAdmin />} />
-            <Route path="*" element={<NotFound />} />
-          </Routes>
-        </BrowserRouter>
+        <CustomDomainContext.Provider value={customDomainSlug}>
+          <BrowserRouter>
+            <Routes>
+              {/* When the app is served from a tenant's custom domain, show their booking page at root */}
+              <Route
+                path="/"
+                element={customDomainSlug ? <TenantBookingPage overrideSlug={customDomainSlug} /> : <Booking />}
+              />
+              <Route path="/book/:tenantSlug" element={<TenantBookingPage />} />
+              <Route path="/gallery/:albumId" element={<AlbumDetail />} />
+              <Route path="/booking/modify/:bookingId" element={<BookingModify />} />
+              <Route path="/login" element={<LoginPage />} />
+              <Route path="/capture" element={<MobileCapture />} />
+              <Route path="/admin" element={<AdminGuard />} />
+              <Route path="/admin/:tab" element={<AdminGuard />} />
+              <Route path="/admin/storage" element={<AdminGuard />} />
+              <Route path="/invoice/:token" element={<InvoiceView />} />
+              <Route path="/tenant-setup/:token" element={<TenantSetup />} />
+              <Route path="/tenant-admin/:slug" element={<TenantAdmin />} />
+              <Route path="*" element={<NotFound />} />
+            </Routes>
+          </BrowserRouter>
+        </CustomDomainContext.Provider>
       </TooltipProvider>
     </QueryClientProvider>
   );
