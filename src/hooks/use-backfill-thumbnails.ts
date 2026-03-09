@@ -54,5 +54,5 @@ export function useBackfillThumbnails(
     })();
 
     return () => { cancelled = true; };
-  }, [photos]);
+  }, [photos, onUpdate]);
 }

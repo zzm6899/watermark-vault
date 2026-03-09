@@ -77,7 +77,7 @@ export default function InvoiceView() {
         getStripeStatus().then(s => setStripeAvailable(s.configured));
       }
     });
-  }, [token]);
+  }, [token, justPaid]);
 
   // Auto-trigger print dialog when ?print=1
   useEffect(() => {

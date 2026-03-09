@@ -138,7 +138,7 @@ function writeWatermarkRebuildStatus(status: Partial<WatermarkRebuildStatus>) {
   try {
     localStorage.setItem(WATERMARK_REBUILD_STATUS_KEY, JSON.stringify(next));
     window.dispatchEvent(new CustomEvent("wm-rebuild-status"));
-  } catch {}
+  } catch { /* localStorage may be unavailable */ }
 }
 
 function stripWmParam(src: string): string {
@@ -757,12 +757,14 @@ function DashboardView() {
 
   const prevPeriod = () => {
     const d = new Date(calDate);
-    calView === "month" ? d.setMonth(d.getMonth() - 1) : d.setDate(d.getDate() - 7);
+    if (calView === "month") d.setMonth(d.getMonth() - 1);
+    else d.setDate(d.getDate() - 7);
     setCalDate(d);
   };
   const nextPeriod = () => {
     const d = new Date(calDate);
-    calView === "month" ? d.setMonth(d.getMonth() + 1) : d.setDate(d.getDate() + 7);
+    if (calView === "month") d.setMonth(d.getMonth() + 1);
+    else d.setDate(d.getDate() + 7);
     setCalDate(d);
   };
   const goToday = () => { setCalDate(new Date()); setCalSelectedDay(todayStr); };
@@ -4229,7 +4231,6 @@ function InvoicesView() {
       updated.forEach(inv => { if (overdueIds.has(inv.id)) updateInvoice(inv); });
       setInvoices(getInvoices());
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const reload = () => setInvoices(getInvoices());
@@ -7535,11 +7536,11 @@ function StorageView() {
       try {
         const s = await getServerStorageStats();
         setServerStats(s);
-      } catch {}
+      } catch { /* non-critical: stats unavailable */ }
       try {
         const cs = await getCacheStats();
         setCacheStats(cs);
-      } catch {}
+      } catch { /* non-critical: cache stats unavailable */ }
     }
   }, []);
 

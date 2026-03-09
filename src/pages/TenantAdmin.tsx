@@ -282,12 +282,14 @@ function TenantDashboard({ slug, session }: { slug: string; session: { displayNa
 
   const prevPeriod = () => {
     const d = new Date(calDate);
-    calView === "month" ? d.setMonth(d.getMonth() - 1) : d.setDate(d.getDate() - 7);
+    if (calView === "month") d.setMonth(d.getMonth() - 1);
+    else d.setDate(d.getDate() - 7);
     setCalDate(d);
   };
   const nextPeriod = () => {
     const d = new Date(calDate);
-    calView === "month" ? d.setMonth(d.getMonth() + 1) : d.setDate(d.getDate() + 7);
+    if (calView === "month") d.setMonth(d.getMonth() + 1);
+    else d.setDate(d.getDate() + 7);
     setCalDate(d);
   };
 
