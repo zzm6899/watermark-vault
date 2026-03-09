@@ -70,7 +70,7 @@ export function logout() {
   try {
     sessionStorage.removeItem("wv_super_admin");
     localStorage.removeItem("wv_mobile_tenant");
-  } catch {}
+  } catch { /* session storage may be unavailable */ }
 }
 
 // ── Super Admin Session ──────────────────────────────
@@ -83,7 +83,7 @@ export function setSuperAdmin(value: boolean) {
   try {
     if (value) sessionStorage.setItem("wv_super_admin", "1");
     else sessionStorage.removeItem("wv_super_admin");
-  } catch {}
+  } catch { /* session storage may be unavailable */ }
 }
 
 // ── Mobile Tenant Session ────────────────────────────
@@ -113,7 +113,7 @@ export function setMobileTenantSession(session: MobileTenantSession | null) {
   try {
     if (session) localStorage.setItem("wv_mobile_tenant", JSON.stringify(session));
     else localStorage.removeItem("wv_mobile_tenant");
-  } catch {}
+  } catch { /* localStorage may be unavailable */ }
 }
 
 // ── Profile ─────────────────────────────────────────

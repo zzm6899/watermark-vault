@@ -438,9 +438,9 @@ function MobileCaptureInner() {
     };
     setup();
     return () => {
-      try { listenerHandle?.remove?.(); } catch {}
+      try { listenerHandle?.remove?.(); } catch { /* cleanup errors are non-critical */ }
     };
-  }, [isNative, watching]); // intentionally no targetAlbum dep — use ref instead
+  }, [isNative, watching, drainImportQueue]); // drainImportQueue is stable (no deps)
 
   const getOrCreateAlbum = useCallback((booking: Booking): Album => {
     const existing = albums.find(a => a.bookingId === booking.id);

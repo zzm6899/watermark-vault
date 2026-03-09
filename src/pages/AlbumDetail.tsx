@@ -373,7 +373,7 @@ export default function AlbumDetail() {
       setPollingCount(0);
       if (!emailSkippedThisSession) setShowEmailReg(true);
     }
-  }, [album, stripeSuccess]);
+  }, [album, stripeSuccess, emailSkippedThisSession]);
 
   // Backfill missing thumbnails in background
   useBackfillThumbnails(album?.photos || [], useCallback((photoId, thumb) => {
@@ -435,7 +435,7 @@ export default function AlbumDetail() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ albumId: album?.id, sessionKey: emailKey, email: purchaserEmail }),
       });
-      try { localStorage.setItem(`wv_email_${albumId}`, purchaserEmail); } catch {}
+      try { localStorage.setItem(`wv_email_${albumId}`, purchaserEmail); } catch { /* localStorage may be unavailable */ }
       setRegisteredEmail(purchaserEmail);
       toast.success("Email saved — your purchases are now linked to " + purchaserEmail);
       setShowEmailReg(false);
@@ -454,7 +454,7 @@ export default function AlbumDetail() {
       }
     } catch { toast.error("Failed to save email"); }
     setSavingEmail(false);
-  }, [purchaserEmail, album?.id, albumId, pendingStripeParams]);
+  }, [purchaserEmail, album?.id, albumId, pendingStripeParams, tenantSlug]);
 
   if (!album || album.enabled === false) {
     if (albumLoading) {
@@ -1101,7 +1101,7 @@ export default function AlbumDetail() {
                             <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground group-hover/email:text-foreground transition-colors leading-tight">Linked ✓</p>
                           </div>
                           <button
-                            onClick={(e) => { e.stopPropagation(); try { localStorage.removeItem(`wv_email_${albumId}`); } catch {} setRegisteredEmail(""); }}
+                            onClick={(e) => { e.stopPropagation(); try { localStorage.removeItem(`wv_email_${albumId}`); } catch { /* localStorage may be unavailable */ } setRegisteredEmail(""); }}
                             className="text-[9px] font-body text-muted-foreground/30 hover:text-red-400 transition-colors mt-0.5 block w-full leading-none"
                             title="Unlink email"
                           >unlink</button>
