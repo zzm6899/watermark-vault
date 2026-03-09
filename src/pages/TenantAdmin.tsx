@@ -168,7 +168,7 @@ export default function TenantAdmin() {
             <button onClick={() => navigate("/capture")} className="flex items-center gap-1.5 text-xs font-body text-primary px-2.5 py-1.5 rounded-lg bg-primary/10 active:bg-primary/20">
               <Upload className="w-3.5 h-3.5" />
             </button>
-            <button onClick={handleLogout} className="flex items-center gap-1.5 text-xs font-body text-muted-foreground px-2.5 py-1.5 rounded-lg hover:bg-secondary">
+            <button onClick={handleLogout} aria-label="Log out" className="flex items-center gap-1.5 text-xs font-body text-muted-foreground px-2.5 py-1.5 rounded-lg hover:bg-secondary">
               <LogOut className="w-3.5 h-3.5" />
             </button>
           </div>
