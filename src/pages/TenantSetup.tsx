@@ -172,7 +172,7 @@ export default function TenantSetup() {
                 <Camera className="w-5 h-5 text-primary" />
               </div>
               <div>
-                <h1 className="font-display text-xl text-foreground">Welcome to Watermark Vault</h1>
+                <h1 className="font-display text-xl text-foreground">Welcome to PhotoFlow</h1>
                 <p className="font-body text-xs text-muted-foreground">Set up your photographer account</p>
               </div>
             </div>
@@ -325,7 +325,7 @@ export default function TenantSetup() {
             <div>
               <h1 className="font-display text-xl text-foreground">You're all set!</h1>
               <p className="font-body text-sm text-muted-foreground mt-1">
-                Your Watermark Vault account has been created successfully.
+                Your PhotoFlow account has been created successfully.
               </p>
             </div>
 

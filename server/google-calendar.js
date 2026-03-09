@@ -1,5 +1,5 @@
 /**
- * Google Calendar integration for Watermark Vault.
+ * Google Calendar integration for PhotoFlow.
  * Two-way sync: push bookings to Calendar, pull busy times to block slots.
  */
 const { google } = require("googleapis");

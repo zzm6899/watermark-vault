@@ -86,7 +86,7 @@ export default function LoginPage() {
         <div className="text-center mb-8">
           <Camera className="w-10 h-10 text-primary mx-auto mb-4" />
           <h1 className="font-display text-2xl text-foreground">Sign In</h1>
-          <p className="text-sm font-body text-muted-foreground mt-1">Access your Watermark Vault account.</p>
+          <p className="text-sm font-body text-muted-foreground mt-1">Access your PhotoFlow account.</p>
         </div>
 
         {/* Mode toggle */}
