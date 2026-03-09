@@ -29,7 +29,7 @@ import {
   isSuperAdmin, setSuperAdmin, getAdminCredentials, hashPassword,
 } from "@/lib/storage";
 import { compressImage, formatBytes, getLocalStorageUsage, generateThumbnail } from "@/lib/image-utils";
-import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar, getServerStorageStats, syncFromServer, sendEmail, bulkDeleteFiles, syncBookingsToSheet, getBookingEmailLog, sendBookingReminder, sendCustomEmail, getWaitlistEntries, deleteWaitlistEntry, notifyWaitlistOnCancel, notifyDiscord, getCacheStats, warmCache, createInvoiceCheckout, sendInvoiceEmail, getStripeStatus, sendEnquiryAcceptedEmail, sendEnquiryDeclinedEmail, getLicenseKeys, generateLicenseKey, revokeLicenseKey, getTenants, createTenant, updateTenant, deleteTenant, getSuperAdminInfo, getSuperStats, getAllBookings, getLicensePlans, createLicensePlan, updateLicensePlan, deleteLicensePlan, getLicensePurchases, activateBankPurchase, getLicensePlanCheckout, getTenantSettings, saveTenantSettings, getSuperAdminWebhooks } from "@/lib/api";
+import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar, getServerStorageStats, syncFromServer, sendEmail, bulkDeleteFiles, syncBookingsToSheet, getBookingEmailLog, sendBookingReminder, sendCustomEmail, getWaitlistEntries, deleteWaitlistEntry, notifyWaitlistOnCancel, notifyDiscord, getCacheStats, warmCache, createInvoiceCheckout, sendInvoiceEmail, getStripeStatus, sendEnquiryAcceptedEmail, sendEnquiryDeclinedEmail, getLicenseKeys, generateLicenseKey, revokeLicenseKey, getTenants, createTenant, updateTenant, deleteTenant, getSuperAdminInfo, getSuperStats, getAllBookings, getLicensePlans, createLicensePlan, updateLicensePlan, deleteLicensePlan, getLicensePurchases, activateBankPurchase, getLicensePlanCheckout, getTenantSettings, saveTenantSettings, getSuperAdminWebhooks, getGlobalFtpSettings, saveGlobalFtpSettings } from "@/lib/api";
 import type { CacheBreakdown } from "@/lib/api";
 import RichTextEditor, { RichTextDisplay } from "@/components/RichTextEditor";
 import Login from "@/pages/Login";
@@ -2624,6 +2624,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
       // Add all photos immediately — use server-side thumbnails (no heavy client-side canvas work)
       const newPhotos: Photo[] = results.map(r => ({
         id: r.id, src: r.url, thumbnail: r.url + "?size=thumb", title: r.originalName.replace(/\.[^.]+$/, ""), width: 800, height: 600, uploadedAt: new Date().toISOString(),
+        ...(r.ftpUploaded ? { ftpUploaded: true } : {}),
       }));
       const allPhotos = [...photos, ...newPhotos];
       setPhotos(allPhotos);
@@ -3396,6 +3397,7 @@ function PhotosView() {
       // Add all photos in a single batch update to avoid stale-closure overwrite
       const newPhotos: Photo[] = results.map(r => ({
         id: r.id, src: r.url, thumbnail: r.url + "?size=thumb", title: r.originalName.replace(/\.[^.]+$/, ""), width: 800, height: 600, uploadedAt: new Date().toISOString(),
+        ...(r.ftpUploaded ? { ftpUploaded: true } : {}),
       }));
       if (newPhotos.length > 0) {
         if (selectedAlbum) {
@@ -5303,6 +5305,30 @@ function SettingsView() {
   const [settings, setSettingsState] = useState<AppSettings>(getSettings());
   const [rebuildProgress, setRebuildProgress] = useState<{ running: boolean; done: number; total: number; stage: string } | null>(null);
 
+  // Global FTP settings (stored server-side; password is never returned to browser)
+  const [ftpSettings, setFtpSettings] = useState<{
+    ftpEnabled?: boolean; ftpHost?: string; ftpPort?: number; ftpUser?: string;
+    ftpPassword?: string; ftpRemotePath?: string; ftpPasswordSet?: boolean;
+  }>({});
+  const [ftpLoaded, setFtpLoaded] = useState(false);
+  const [savingFtp, setSavingFtp] = useState(false);
+
+  useEffect(() => {
+    if (!isServerMode()) return;
+    getGlobalFtpSettings().then(s => { setFtpSettings(s); setFtpLoaded(true); });
+  }, []);
+
+  const handleSaveFtp = async () => {
+    setSavingFtp(true);
+    const { ok, error } = await saveGlobalFtpSettings(ftpSettings);
+    setSavingFtp(false);
+    if (!ok) { toast.error(error || "Failed to save FTP settings"); return; }
+    // Refresh so ftpPasswordSet reflects the saved state
+    const updated = await getGlobalFtpSettings();
+    setFtpSettings(prev => ({ ...updated, ftpPassword: "" }));
+    toast.success("FTP settings saved");
+  };
+
   const watermarkOptions: { value: WatermarkPosition; label: string }[] = [
     { value: "center", label: "Center" }, { value: "top-left", label: "Top Left" }, { value: "top-right", label: "Top Right" },
     { value: "bottom-left", label: "Bottom Left" }, { value: "bottom-right", label: "Bottom Right" }, { value: "tiled", label: "Tiled" },
@@ -5619,6 +5645,70 @@ function SettingsView() {
             )}
           </div>
         </div>
+
+        {/* FTP Upload */}
+        {isServerMode() && ftpLoaded && (
+          <div className="glass-panel rounded-xl p-6 space-y-4">
+            <h3 className="font-display text-base text-foreground flex items-center gap-2">
+              <Upload className="w-4 h-4 text-primary" /> FTP Upload
+            </h3>
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-body text-foreground font-medium">Upload to FTP?</p>
+                <p className="text-[10px] font-body text-muted-foreground/70 mt-0.5">Automatically send uploaded photos to an FTP server. Tagged photos will show an FTP badge.</p>
+              </div>
+              <Switch
+                checked={!!ftpSettings.ftpEnabled}
+                onCheckedChange={(v) => setFtpSettings(s => ({ ...s, ftpEnabled: v }))}
+              />
+            </div>
+            {ftpSettings.ftpEnabled && (
+              <div className="space-y-3 pt-2 border-t border-border/50">
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">FTP Host / IP</label>
+                    <Input value={ftpSettings.ftpHost || ""} onChange={(e) => setFtpSettings(s => ({ ...s, ftpHost: e.target.value }))}
+                      placeholder="192.168.1.100" className="bg-secondary border-border text-foreground font-body" />
+                  </div>
+                  <div>
+                    <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Port</label>
+                    <Input type="number" value={ftpSettings.ftpPort || ""} onChange={(e) => setFtpSettings(s => ({ ...s, ftpPort: parseInt(e.target.value) || undefined }))}
+                      placeholder="21" className="bg-secondary border-border text-foreground font-body" />
+                  </div>
+                  <div>
+                    <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Username</label>
+                    <Input value={ftpSettings.ftpUser || ""} onChange={(e) => setFtpSettings(s => ({ ...s, ftpUser: e.target.value }))}
+                      placeholder="ftpuser" className="bg-secondary border-border text-foreground font-body" />
+                  </div>
+                  <div>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <label className="text-xs font-body tracking-wider uppercase text-muted-foreground">Password</label>
+                      {ftpSettings.ftpPasswordSet && !ftpSettings.ftpPassword && (
+                        <span className="text-[10px] font-body text-green-400">✓ Configured</span>
+                      )}
+                    </div>
+                    <div className="flex gap-2">
+                      <Input type="password" value={ftpSettings.ftpPassword || ""} onChange={(e) => setFtpSettings(s => ({ ...s, ftpPassword: e.target.value }))}
+                        placeholder={ftpSettings.ftpPasswordSet ? "Enter new password to replace" : "••••••••"}
+                        className="bg-secondary border-border text-foreground font-body flex-1" />
+                      {ftpSettings.ftpPasswordSet && !ftpSettings.ftpPassword && (
+                        <button onClick={() => setFtpSettings(s => ({ ...s, ftpPassword: "" }))} className="text-[10px] font-body text-destructive hover:text-destructive/80 px-2 shrink-0">Clear</button>
+                      )}
+                    </div>
+                  </div>
+                  <div className="col-span-2">
+                    <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Remote Path</label>
+                    <Input value={ftpSettings.ftpRemotePath || ""} onChange={(e) => setFtpSettings(s => ({ ...s, ftpRemotePath: e.target.value }))}
+                      placeholder="/photos" className="bg-secondary border-border text-foreground font-body" />
+                  </div>
+                </div>
+              </div>
+            )}
+            <Button onClick={handleSaveFtp} disabled={savingFtp} size="sm" className="bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2">
+              <Save className="w-3.5 h-3.5" /> {savingFtp ? "Saving…" : "Save FTP Settings"}
+            </Button>
+          </div>
+        )}
 
         {/* Client Proofing */}
         <div className="glass-panel rounded-xl p-6 space-y-4">
@@ -6230,6 +6320,55 @@ function TenantSettingsPanel({ tenant, onClose }: { tenant: Tenant; onClose: () 
             <label className="text-xs font-body text-foreground">Use TLS (port 465)</label>
           </div>
         </div>
+      </div>
+
+      {/* ── FTP Upload ────────────────────────────────── */}
+      <div className="space-y-3 p-4 rounded-lg bg-secondary/40 border border-border/50">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-body tracking-wider uppercase text-muted-foreground">FTP Upload</span>
+          <Switch checked={!!settings.ftpEnabled} onCheckedChange={(v) => set({ ftpEnabled: v })} />
+        </div>
+        <p className="text-[10px] font-body text-muted-foreground -mt-1">Automatically send uploaded photos to an FTP server. Tagged photos will show an FTP badge.</p>
+        {settings.ftpEnabled && (
+          <div className="grid grid-cols-2 gap-3 pt-1">
+            <div>
+              <label className="text-xs font-body text-muted-foreground mb-1 block">FTP Host / IP</label>
+              <Input value={settings.ftpHost || ""} onChange={(e) => set({ ftpHost: e.target.value })}
+                placeholder="192.168.1.100" className="bg-background border-border text-foreground font-body text-xs" />
+            </div>
+            <div>
+              <label className="text-xs font-body text-muted-foreground mb-1 block">Port</label>
+              <Input type="number" value={settings.ftpPort || ""} onChange={(e) => set({ ftpPort: parseInt(e.target.value) || undefined })}
+                placeholder="21" className="bg-background border-border text-foreground font-body text-xs" />
+            </div>
+            <div>
+              <label className="text-xs font-body text-muted-foreground mb-1 block">Username</label>
+              <Input value={settings.ftpUser || ""} onChange={(e) => set({ ftpUser: e.target.value })}
+                placeholder="ftpuser" className="bg-background border-border text-foreground font-body text-xs" />
+            </div>
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-xs font-body text-muted-foreground">Password</label>
+                {settings.ftpPasswordSet && !settings.ftpPassword && (
+                  <span className="text-[10px] font-body text-green-400">✓ Configured</span>
+                )}
+              </div>
+              <div className="flex gap-2">
+                <Input type="password" value={settings.ftpPassword || ""} onChange={(e) => set({ ftpPassword: e.target.value })}
+                  placeholder={settings.ftpPasswordSet ? "Enter new password to replace" : "••••••••"}
+                  className="bg-background border-border text-foreground font-body text-xs flex-1" />
+                {settings.ftpPasswordSet && !settings.ftpPassword && (
+                  <button onClick={() => set({ ftpPassword: "" })} className="text-[10px] font-body text-destructive hover:text-destructive/80 px-2 shrink-0">Clear</button>
+                )}
+              </div>
+            </div>
+            <div className="col-span-2">
+              <label className="text-xs font-body text-muted-foreground mb-1 block">Remote Path</label>
+              <Input value={settings.ftpRemotePath || ""} onChange={(e) => set({ ftpRemotePath: e.target.value })}
+                placeholder="/photos" className="bg-background border-border text-foreground font-body text-xs" />
+            </div>
+          </div>
+        )}
       </div>
 
       <Button

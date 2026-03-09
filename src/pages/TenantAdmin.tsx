@@ -1441,7 +1441,7 @@ function TenantAlbumEditor({ slug, album, onSave, onCancel }: {
     const fileArr = Array.from(files);
     const results = await uploadPhotosToServer(fileArr, (done, total) => {
       setUploadProgress(Math.round((done / total) * 100));
-    });
+    }, slug);
     if (results.length === 0) {
       setUploading(false);
       toast.error("Upload failed — check server connection");
@@ -1452,6 +1452,7 @@ function TenantAlbumEditor({ slug, album, onSave, onCancel }: {
       id: r.id, src: r.url, thumbnail: r.url + "?size=thumb",
       title: r.originalName.replace(/\.[^.]+$/, ""), width: 800, height: 600,
       uploadedAt: new Date().toISOString(),
+      ...(r.ftpUploaded ? { ftpUploaded: true } : {}),
     }));
     const updatedAlbum = { ...liveAlbum, photos: [...(liveAlbum.photos || []), ...newPhotos] };
     await updateLiveAlbum(updatedAlbum);
@@ -2175,11 +2176,12 @@ function TenantPhotos({ slug }: { slug: string }) {
     if (isServerMode()) {
       const results = await uploadPhotosToServer(fileArr, (done, total) => {
         setUploadStats(prev => prev ? { ...prev, done, total } : null);
-      });
+      }, slug);
       const newPhotos: Photo[] = results.map(r => ({
         id: r.id, src: r.url, thumbnail: r.url + "?size=thumb",
         title: r.originalName.replace(/\.[^.]+$/, ""), width: 0, height: 0,
         uploadedAt: new Date().toISOString(),
+        ...(r.ftpUploaded ? { ftpUploaded: true } : {}),
       }));
       if (newPhotos.length > 0) {
         if (selectedAlbum) {
@@ -3412,6 +3414,55 @@ function TenantSettingsView({ slug }: { slug: string }) {
               <div><label className="text-xs font-body text-muted-foreground mb-1 block">From Address</label><Input value={settings.smtpFrom || ""} onChange={e => set({ smtpFrom: e.target.value })} placeholder="Jane <jane@example.com>" className="bg-background border-border text-foreground font-body text-xs" /></div>
               <div className="flex items-center gap-2 pt-5"><Switch checked={!!settings.smtpSecure} onCheckedChange={v => set({ smtpSecure: v })} /><label className="text-xs font-body text-foreground">Use TLS (port 465)</label></div>
             </div>
+          </div>
+
+          {/* FTP Upload */}
+          <div className="space-y-3 p-4 rounded-lg bg-secondary/40 border border-border/50">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-body tracking-wider uppercase text-muted-foreground">FTP Upload</span>
+              <Switch checked={!!settings.ftpEnabled} onCheckedChange={v => set({ ftpEnabled: v })} />
+            </div>
+            <p className="text-[10px] font-body text-muted-foreground -mt-1">Automatically send uploaded photos to an FTP server. Tagged photos will show an FTP badge.</p>
+            {settings.ftpEnabled && (
+              <div className="grid grid-cols-2 gap-3 pt-1">
+                <div>
+                  <label className="text-xs font-body text-muted-foreground mb-1 block">FTP Host / IP</label>
+                  <Input value={settings.ftpHost || ""} onChange={e => set({ ftpHost: e.target.value })}
+                    placeholder="192.168.1.100" className="bg-background border-border text-foreground font-body text-xs" />
+                </div>
+                <div>
+                  <label className="text-xs font-body text-muted-foreground mb-1 block">Port</label>
+                  <Input type="number" value={settings.ftpPort || ""} onChange={e => set({ ftpPort: parseInt(e.target.value) || undefined })}
+                    placeholder="21" className="bg-background border-border text-foreground font-body text-xs" />
+                </div>
+                <div>
+                  <label className="text-xs font-body text-muted-foreground mb-1 block">Username</label>
+                  <Input value={settings.ftpUser || ""} onChange={e => set({ ftpUser: e.target.value })}
+                    placeholder="ftpuser" className="bg-background border-border text-foreground font-body text-xs" />
+                </div>
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-xs font-body text-muted-foreground">Password</label>
+                    {settings.ftpPasswordSet && !settings.ftpPassword && (
+                      <span className="text-[10px] font-body text-green-400">✓ Configured</span>
+                    )}
+                  </div>
+                  <div className="flex gap-2">
+                    <Input type="password" value={settings.ftpPassword || ""} onChange={e => set({ ftpPassword: e.target.value })}
+                      placeholder={settings.ftpPasswordSet ? "Enter new password to replace" : "••••••••"}
+                      className="bg-background border-border text-foreground font-body text-xs flex-1" />
+                    {settings.ftpPasswordSet && !settings.ftpPassword && (
+                      <button onClick={() => set({ ftpPassword: "" })} className="text-[10px] font-body text-destructive hover:text-destructive/80 px-2 shrink-0">Clear</button>
+                    )}
+                  </div>
+                </div>
+                <div className="col-span-2">
+                  <label className="text-xs font-body text-muted-foreground mb-1 block">Remote Path</label>
+                  <Input value={settings.ftpRemotePath || ""} onChange={e => set({ ftpRemotePath: e.target.value })}
+                    placeholder="/photos" className="bg-background border-border text-foreground font-body text-xs" />
+                </div>
+              </div>
+            )}
           </div>
 
           <Button onClick={handleSaveSettings} disabled={saving} className="bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2 w-full">

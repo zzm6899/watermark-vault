@@ -6,6 +6,7 @@ const fs = require("fs");
 const sharp = require("sharp");
 const archiver = require("archiver");
 const rateLimit = require("express-rate-limit");
+const { uploadFilesToFtp } = require("./ftp");
 const { registerRoutes: registerGoogleCalendarRoutes } = require("./google-calendar");
 const { registerRoutes: registerEmailRoutes } = require("./email");
 const { registerRoutes: registerStripeRoutes, registerTenantStripeRoutes } = require("./stripe");
@@ -169,6 +170,58 @@ app.delete("/api/store/:key", (req, res) => {
   res.json({ ok: true });
 });
 
+// ── Global FTP Settings ───────────────────────────────
+// The FTP password is stored server-side only and never returned to the browser.
+// The response includes a boolean `ftpPasswordSet` instead of the actual value.
+const GLOBAL_FTP_SECRET_FIELDS = ["ftpPassword"];
+
+function maskFtpSettings(settings) {
+  const masked = { ...settings };
+  for (const field of GLOBAL_FTP_SECRET_FIELDS) {
+    masked[`${field}Set`] = !!(masked[field]);
+    delete masked[field];
+  }
+  return masked;
+}
+
+app.get("/api/settings/ftp", (req, res) => {
+  const db = readDb();
+  const raw = db["wv_ftp_settings"];
+  const settings = raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : {};
+  res.json(maskFtpSettings(settings));
+});
+
+app.put("/api/settings/ftp", (req, res) => {
+  const db = readDb();
+  const existing = (() => {
+    const raw = db["wv_ftp_settings"];
+    return raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : {};
+  })();
+
+  const incoming = { ...req.body };
+  // Strip client-sent *Set indicators
+  for (const field of GLOBAL_FTP_SECRET_FIELDS) {
+    delete incoming[`${field}Set`];
+  }
+
+  const updated = { ...existing };
+  for (const [key, value] of Object.entries(incoming)) {
+    if (GLOBAL_FTP_SECRET_FIELDS.includes(key)) {
+      if (value === "") {
+        delete updated[key];
+      } else if (value !== undefined && value !== null) {
+        updated[key] = value;
+      }
+    } else {
+      updated[key] = value;
+    }
+  }
+
+  db["wv_ftp_settings"] = JSON.stringify(updated);
+  writeDb(db);
+  res.json({ ok: true, settings: maskFtpSettings(updated) });
+});
+
 // ── Photo Upload ──────────────────────────────────────
 const storage = multer.diskStorage({
   destination: UPLOADS_DIR,
@@ -187,13 +240,43 @@ const upload = multer({
   },
 });
 
-app.post("/api/upload", upload.array("photos", 100), (req, res) => {
-  const files = (req.files || []).map((f) => ({
+app.post("/api/upload", upload.array("photos", 100), async (req, res) => {
+  const uploadedFiles = (req.files || []).map((f) => ({
     id: path.basename(f.filename, path.extname(f.filename)),
     url: `/uploads/${f.filename}`,
     originalName: f.originalname,
     size: f.size,
+    localPath: f.path,
   }));
+
+  // ── FTP Upload (if enabled) ──────────────────────────────────────────────
+  // Determine FTP settings: use tenant-specific settings when ?tenant= is provided,
+  // otherwise fall back to global admin FTP settings stored in wv_ftp_settings.
+  let ftpSettings = null;
+  const tenantSlug = req.query.tenant;
+  const db = readDb();
+
+  if (tenantSlug) {
+    const raw = db[`t_${tenantSlug}_wv_tenant_settings`];
+    const ts = raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : {};
+    if (ts.ftpEnabled && ts.ftpHost) ftpSettings = ts;
+  } else {
+    const raw = db["wv_ftp_settings"];
+    const gs = raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : {};
+    if (gs.ftpEnabled && gs.ftpHost) ftpSettings = gs;
+  }
+
+  let ftpUploaded = false;
+  if (ftpSettings) {
+    const localPaths = uploadedFiles.map((f) => f.localPath);
+    const result = await uploadFilesToFtp(localPaths, ftpSettings);
+    ftpUploaded = result.ok;
+    if (!result.ok) {
+      console.warn(`[FTP] Upload failed: ${result.error || "unknown error"} (${result.failed}/${uploadedFiles.length} file(s) failed)`);
+    }
+  }
+
+  const files = uploadedFiles.map(({ localPath: _lp, ...rest }) => ({ ...rest, ftpUploaded }));
   res.json({ files });
 });
 
@@ -1720,6 +1803,7 @@ const TENANT_SECRET_FIELDS = [
   "smtpPassword",
   "googleApiCredentials",
   "discordWebhookUrl",
+  "ftpPassword",
 ];
 
 function maskTenantSettings(settings) {
