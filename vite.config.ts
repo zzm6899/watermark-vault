@@ -20,6 +20,13 @@ export default defineConfig(({ mode }) => ({
     dedupe: ["react", "react-dom"],
   },
   build: {
-    minify: false,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          "vendor-react": ["react", "react-dom", "react-router-dom"],
+          "vendor-charts": ["recharts"],
+        },
+      },
+    },
   },
 }));
