@@ -14,7 +14,7 @@ import type { CameraFile } from "@/plugins/camera-usb";
 import { Capacitor } from "@capacitor/core";
 import type { Booking, Album, Photo } from "@/lib/types";
 import {
-  Camera, ArrowLeft, FolderOpen,
+  Camera, ArrowLeft,
   Wifi, WifiOff, Zap, Image as ImageIcon, RefreshCw,
   Usb, AlertCircle, Download, Mail, FileImage, Search,
   Clock, ChevronDown, ChevronUp, CheckCircle2, Users,
@@ -1094,8 +1094,9 @@ function MobileCaptureInner() {
           disabled={uploading || importing}
           className="glass-panel rounded-xl p-4 flex flex-col items-center gap-2 hover:bg-secondary/30 transition-colors disabled:opacity-50 active:scale-[0.98]"
         >
-          <FolderOpen className="w-5 h-5 text-muted-foreground" />
-          <span className="text-xs font-body tracking-wider uppercase text-muted-foreground">Browse Files</span>
+          <ImageIcon className="w-5 h-5 text-muted-foreground" />
+          <span className="text-xs font-body tracking-wider uppercase text-muted-foreground">Pick Photos</span>
+          <span className="text-[10px] font-body text-muted-foreground/60">Select multiple</span>
         </button>
         <button
           onClick={() => watchInputRef.current?.click()}
@@ -1103,7 +1104,8 @@ function MobileCaptureInner() {
           className="glass-panel rounded-xl p-4 flex flex-col items-center gap-2 hover:bg-secondary/30 transition-colors disabled:opacity-50 active:scale-[0.98]"
         >
           <Camera className="w-5 h-5 text-muted-foreground" />
-          <span className="text-xs font-body tracking-wider uppercase text-muted-foreground">Phone Camera</span>
+          <span className="text-xs font-body tracking-wider uppercase text-muted-foreground">Take a Photo</span>
+          <span className="text-[10px] font-body text-muted-foreground/60">One at a time</span>
         </button>
       </div>
 
