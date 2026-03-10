@@ -31,13 +31,14 @@ import {
   getTenantGoogleCalendarStatus, startTenantGoogleCalendarAuth,
   disconnectTenantGoogleCalendar, getTenantGoogleCalendars,
   saveTenantCalendarSettings, getTenantStorageStats, upsertTenantBookingAdmin,
-  testTenantFtpConnection, ftpUploadAlbum, ftpMoveToStarred,
+  testTenantFtpConnection,
+  submitEventSlotRequest, getTenantEventSlotRequest, createEventSlotCheckout,testTenantFtpConnection, ftpUploadAlbum, ftpMoveToStarred
 } from "@/lib/api";
 import ProgressiveImg from "@/components/ProgressiveImg";
 import RichTextEditor from "@/components/RichTextEditor";
 import type {
   Booking, Album, Photo, AlbumDisplaySize, EventType, Invoice, InvoiceItem, InvoiceParty,
-  Contact, TenantSettings, AvailabilitySlot, QuestionField, WatermarkPosition, SpecificDateSlot,
+  Contact, TenantSettings, AvailabilitySlot, QuestionField, WatermarkPosition, SpecificDateSlot, EventSlotRequest,
 } from "@/lib/types";
 import sampleLandscape from "@/assets/sample-landscape.jpg";
 import samplePortrait from "@/assets/sample-portrait.jpg";
@@ -554,12 +555,16 @@ function TenantBookings({ slug }: { slug: string }) {
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [showCreate, setShowCreate] = useState(false);
   const [editingBooking, setEditingBooking] = useState<Booking | null>(null);
+  const [licInfo, setLicInfo] = useState<{ maxBookings?: number | null } | null>(null);
 
   const load = useCallback(() => {
     fetchTenantMobileData(slug).then(d => { setBookings(d.bookings || []); setLoading(false); });
   }, [slug]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    load();
+    getTenantLicenseInfo(slug).then(setLicInfo);
+  }, [load, slug]);
 
   const handleStatusChange = async (bk: Booking, status: Booking["status"]) => {
     const { ok, error } = await updateTenantBookingFull(slug, bk.id, { status });
@@ -632,6 +637,8 @@ function TenantBookings({ slug }: { slug: string }) {
 
   if (loading) return <div className="py-16 text-center text-muted-foreground font-body text-sm animate-pulse">Loading…</div>;
 
+  const trialLimitReached = !!(licInfo?.maxBookings != null && bookings.length >= licInfo.maxBookings);
+
   if (showCreate || editingBooking) {
     return (
       <TenantBookingEditor
@@ -660,7 +667,7 @@ function TenantBookings({ slug }: { slug: string }) {
           <span className="text-sm font-body text-muted-foreground">{bookings.length} total</span>
         </div>
         <div className="flex items-center gap-2">
-          <Button size="sm" onClick={() => setShowCreate(true)} className="gap-2 bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase">
+          <Button size="sm" onClick={() => setShowCreate(true)} disabled={trialLimitReached} title={trialLimitReached ? `Limit: ${licInfo?.maxBookings} bookings` : undefined} className="gap-2 bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase disabled:opacity-50 disabled:cursor-not-allowed">
             <Plus className="w-4 h-4" /> New
           </Button>
           {bookings.length > 0 && (
@@ -670,6 +677,12 @@ function TenantBookings({ slug }: { slug: string }) {
           )}
         </div>
       </div>
+
+      {trialLimitReached && (
+        <div className="mb-4 p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 text-xs font-body text-amber-500">
+          Booking limit reached ({licInfo?.maxBookings} bookings). Contact your platform administrator to upgrade your plan.
+        </div>
+      )}
 
       <div className="flex flex-col sm:flex-row gap-3 mb-3">
         <div className="relative flex-1 max-w-sm">
@@ -804,18 +817,56 @@ function TenantEvents({ slug }: { slug: string }) {
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<EventType | null>(null);
   const [showNew, setShowNew] = useState(false);
+  const [licInfo, setLicInfo] = useState<{
+    isTrial?: boolean; maxEvents?: number | null; extraEventPrice?: number | null;
+    extraEventSlots?: number; eventCount?: number;
+  } | null>(null);
+  const [pendingSlotRequest, setPendingSlotRequest] = useState<EventSlotRequest | null>(null);
+  const [slotRequestLoading, setSlotRequestLoading] = useState(false);
+  const [showSlotPayment, setShowSlotPayment] = useState(false);
+  const [checkoutLoading, setCheckoutLoading] = useState(false);
 
   const load = useCallback(async () => {
-    const data = await getTenantStoreKey<EventType[]>(slug, "wv_event_types");
-    setEts(Array.isArray(data) ? data : []);
-    setLoading(false);
+    try {
+      const [data, lic, pending] = await Promise.all([
+        getTenantStoreKey<EventType[]>(slug, "wv_event_types"),
+        getTenantLicenseInfo(slug),
+        getTenantEventSlotRequest(slug),
+      ]);
+      setEts(Array.isArray(data) ? data : []);
+      setLicInfo(lic);
+      setPendingSlotRequest(pending);
+    } catch {
+      toast.error("Failed to load event types");
+    } finally {
+      setLoading(false);
+    }
   }, [slug]);
 
   useEffect(() => { load(); }, [load]);
 
+  // Use the lifetime event counter from server (never decremented on deletion).
+  // Falls back to current array length before the server counter is initialized.
+  const effectiveEventCount = licInfo?.eventCount ?? eventTypes.length;
+  const maxEvents = licInfo?.maxEvents ?? null;
+  const extraSlots = licInfo?.extraEventSlots ?? 0;
+  const effectiveLimit = maxEvents != null ? maxEvents + extraSlots : null;
+  const limitReached = effectiveLimit != null && effectiveEventCount >= effectiveLimit;
+  const extraEventPrice = licInfo?.extraEventPrice ?? null;
+
   const save = async (ets: EventType[]) => {
-    const { ok, error } = await saveTenantStoreKey(slug, "wv_event_types", ets);
-    if (!ok) { toast.error(error || "Failed to save"); return false; }
+    const result = await saveTenantStoreKey(slug, "wv_event_types", ets);
+    if (!result.ok) {
+      if (result.limitReached && result.extraEventPrice != null) {
+        toast.error("Event type limit reached. Purchase an extra slot to add more.");
+        setShowSlotPayment(true);
+      } else {
+        toast.error(result.error || "Failed to save");
+      }
+      return false;
+    }
+    // Refresh license info to get updated event count
+    getTenantLicenseInfo(slug).then(setLicInfo);
     return true;
   };
 
@@ -843,16 +894,78 @@ function TenantEvents({ slug }: { slug: string }) {
     }
   };
 
+  const handleRequestSlot = async (paymentMethod: "stripe" | "bank") => {
+    setSlotRequestLoading(true);
+    const result = await submitEventSlotRequest(slug, paymentMethod);
+    if (!result.ok) { toast.error(result.error || "Failed to submit request"); setSlotRequestLoading(false); return; }
+    setPendingSlotRequest(result.request!);
+    toast.success("Request submitted! You'll be notified once it's approved.");
+    if (paymentMethod === "stripe") {
+      setCheckoutLoading(true);
+      const checkout = await createEventSlotCheckout(slug);
+      setCheckoutLoading(false);
+      if (checkout.url) {
+        window.location.href = checkout.url;
+      } else {
+        toast.error(checkout.error || "Stripe checkout failed. Contact your administrator.");
+      }
+    } else {
+      setShowSlotPayment(false);
+    }
+    setSlotRequestLoading(false);
+  };
+
   if (loading) return <div className="py-16 text-center text-muted-foreground font-body text-sm animate-pulse">Loading…</div>;
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
       <div className="flex items-center justify-between mb-6">
         <h2 className="font-display text-2xl text-foreground">Event Types</h2>
-        <Button size="sm" onClick={() => setShowNew(true)} className="gap-2 bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase">
+        <Button size="sm" onClick={() => setShowNew(true)} disabled={limitReached} title={limitReached ? `Limit reached: ${effectiveLimit} event type${effectiveLimit !== 1 ? "s" : ""}` : undefined} className="gap-2 bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase disabled:opacity-50 disabled:cursor-not-allowed">
           <Plus className="w-4 h-4" /> New
         </Button>
       </div>
+
+      {limitReached && !pendingSlotRequest && extraEventPrice != null && (
+        <div className="mb-4 p-4 rounded-lg bg-amber-500/10 border border-amber-500/20 space-y-3">
+          <p className="text-xs font-body text-amber-500 font-medium">Event type limit reached ({effectiveLimit})</p>
+          <p className="text-xs font-body text-muted-foreground">You can add an extra event type slot for <span className="text-foreground font-medium">{new Intl.NumberFormat("en-AU", { style: "currency", currency: "AUD" }).format(extraEventPrice)}</span>. Your platform administrator will approve the request.</p>
+          {showSlotPayment ? (
+            <div className="flex flex-col sm:flex-row gap-2">
+              <Button size="sm" onClick={() => handleRequestSlot("stripe")} disabled={slotRequestLoading || checkoutLoading} className="gap-2 bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase">
+                <CreditCard className="w-3.5 h-3.5" /> {checkoutLoading ? "Redirecting…" : "Pay by Card"}
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => handleRequestSlot("bank")} disabled={slotRequestLoading} className="gap-2 font-body text-xs tracking-wider uppercase border-border">
+                <DollarSign className="w-3.5 h-3.5" /> Pay by Bank Transfer
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => setShowSlotPayment(false)} className="font-body text-xs text-muted-foreground">
+                Cancel
+              </Button>
+            </div>
+          ) : (
+            <Button size="sm" onClick={() => setShowSlotPayment(true)} className="gap-2 bg-amber-500 hover:bg-amber-600 text-white font-body text-xs tracking-wider uppercase">
+              <Plus className="w-3.5 h-3.5" /> Get Extra Slot — {new Intl.NumberFormat("en-AU", { style: "currency", currency: "AUD" }).format(extraEventPrice)}
+            </Button>
+          )}
+        </div>
+      )}
+
+      {limitReached && !pendingSlotRequest && extraEventPrice == null && (
+        <div className="mb-4 p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 text-xs font-body text-amber-500">
+          Event type limit reached ({effectiveLimit}). Contact your platform administrator to upgrade your plan.
+        </div>
+      )}
+
+      {pendingSlotRequest && ["pending", "paid"].includes(pendingSlotRequest.status) && (
+        <div className="mb-4 p-3 rounded-lg bg-blue-500/10 border border-blue-500/20 text-xs font-body space-y-1">
+          <p className="text-blue-400 font-medium">Extra slot request pending approval</p>
+          {pendingSlotRequest.paymentMethod === "bank" ? (
+            <p className="text-muted-foreground">Please transfer <span className="text-foreground font-medium">${pendingSlotRequest.amount}</span> via bank transfer and notify your administrator. Your slot will be granted once confirmed.</p>
+          ) : (
+            <p className="text-muted-foreground">Payment {pendingSlotRequest.status === "paid" ? "received" : "submitted"}. Awaiting administrator approval.</p>
+          )}
+        </div>
+      )}
 
       {(showNew || editing) && (
         <TenantEventEditor
@@ -868,9 +981,11 @@ function TenantEvents({ slug }: { slug: string }) {
             <Clock className="w-10 h-10 mx-auto mb-3 opacity-30" />
             <p className="font-body text-sm">No event types yet</p>
             <p className="font-body text-xs text-muted-foreground/60 mt-1">Add event types so clients can book sessions with you.</p>
-            <Button onClick={() => setShowNew(true)} variant="outline" className="mt-4 gap-2 font-body text-sm">
-              <Plus className="w-4 h-4" /> Create First Event Type
-            </Button>
+            {!limitReached && (
+              <Button onClick={() => setShowNew(true)} variant="outline" className="mt-4 gap-2 font-body text-sm">
+                <Plus className="w-4 h-4" /> Create First Event Type
+              </Button>
+            )}
           </div>
         ) : eventTypes.map(et => (
           <div key={et.id} className={`glass-panel rounded-xl p-4 border transition-all ${et.active ? "border-border/50" : "border-border/20 opacity-60"}`}>
@@ -3964,18 +4079,19 @@ function TenantLicense({ slug }: { slug: string }) {
     key: string | null;
     issuedTo?: string;
     isTrial?: boolean;
-    trialMaxEvents?: number;
-    trialMaxBookings?: number;
+    maxEvents?: number | null;
+    maxBookings?: number | null;
+    extraEventPrice?: number | null;
+    extraEventSlots?: number;
+    eventCount?: number;
     expiresAt?: string;
     usedAt?: string;
   } | null>(null);
   const [bookingCount, setBookingCount] = useState(0);
-  const [eventCount, setEventCount] = useState(0);
 
   useEffect(() => {
     getTenantLicenseInfo(slug).then(setLicInfo);
     fetchTenantMobileData(slug).then(d => setBookingCount((d.bookings || []).length));
-    getTenantStoreKey<unknown[]>(slug, "wv_event_types").then(ets => setEventCount(Array.isArray(ets) ? ets.length : 0));
   }, [slug]);
 
   return (
@@ -4020,30 +4136,39 @@ function TenantLicense({ slug }: { slug: string }) {
               )}
             </div>
 
-            {licInfo.isTrial && (
-              <div className="space-y-3 p-3 rounded-lg bg-amber-500/5 border border-amber-500/20">
-                <p className="text-xs font-body text-amber-500 font-medium">Free Trial Limits</p>
+            {(licInfo.maxEvents != null || licInfo.maxBookings != null) && (
+              <div className="space-y-3 p-3 rounded-lg bg-secondary/50 border border-border/40">
+                <p className="text-xs font-body text-muted-foreground font-medium">Plan Limits</p>
                 <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <div className="flex justify-between text-xs font-body mb-1">
-                      <span className="text-muted-foreground">Bookings</span>
-                      <span className="text-foreground">{bookingCount} / {licInfo.trialMaxBookings ?? 10}</span>
+                  {licInfo.maxBookings != null && (
+                    <div>
+                      <div className="flex justify-between text-xs font-body mb-1">
+                        <span className="text-muted-foreground">Bookings</span>
+                        <span className="text-foreground">{bookingCount} / {licInfo.maxBookings}</span>
+                      </div>
+                      <div className="h-1.5 bg-secondary rounded-full overflow-hidden">
+                        <div className="h-full bg-primary rounded-full transition-all" style={{ width: `${Math.min(100, (bookingCount / licInfo.maxBookings) * 100)}%` }} />
+                      </div>
                     </div>
-                    <div className="h-1.5 bg-secondary rounded-full overflow-hidden">
-                      <div className="h-full bg-amber-500 rounded-full transition-all" style={{ width: `${Math.min(100, (bookingCount / (licInfo.trialMaxBookings ?? 10)) * 100)}%` }} />
+                  )}
+                  {licInfo.maxEvents != null && (
+                    <div>
+                      <div className="flex justify-between text-xs font-body mb-1">
+                        <span className="text-muted-foreground">Event Types</span>
+                        <span className="text-foreground">{licInfo.eventCount ?? 0} / {licInfo.maxEvents + (licInfo.extraEventSlots ?? 0)}</span>
+                      </div>
+                      <div className="h-1.5 bg-secondary rounded-full overflow-hidden">
+                        <div className="h-full bg-primary rounded-full transition-all" style={{ width: `${Math.min(100, ((licInfo.eventCount ?? 0) / (licInfo.maxEvents + (licInfo.extraEventSlots ?? 0))) * 100)}%` }} />
+                      </div>
+                      {(licInfo.extraEventSlots ?? 0) > 0 && (
+                        <p className="text-[10px] font-body text-primary mt-0.5">+{licInfo.extraEventSlots} purchased</p>
+                      )}
                     </div>
-                  </div>
-                  <div>
-                    <div className="flex justify-between text-xs font-body mb-1">
-                      <span className="text-muted-foreground">Event Types</span>
-                      <span className="text-foreground">{eventCount} / {licInfo.trialMaxEvents ?? 1}</span>
-                    </div>
-                    <div className="h-1.5 bg-secondary rounded-full overflow-hidden">
-                      <div className="h-full bg-amber-500 rounded-full transition-all" style={{ width: `${Math.min(100, (eventCount / (licInfo.trialMaxEvents ?? 1)) * 100)}%` }} />
-                    </div>
-                  </div>
+                  )}
                 </div>
-                <p className="text-[10px] font-body text-muted-foreground">Contact your platform administrator to upgrade to a full license.</p>
+                {licInfo.extraEventPrice != null && (
+                  <p className="text-[10px] font-body text-muted-foreground">Extra event slots available for {new Intl.NumberFormat("en-AU", { style: "currency", currency: "AUD" }).format(licInfo.extraEventPrice)} each (Stripe or bank transfer).</p>
+                )}
               </div>
             )}
 
