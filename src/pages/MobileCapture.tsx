@@ -506,26 +506,40 @@ function MobileCaptureInner() {
       setImportProgress(50);
       const newPhotos: Photo[] = [];
       if (isOnline) {
+        // Decode all base64 payloads to File objects up-front, then upload in parallel batches
+        setImportLabel(`Decoding ${imported.length} file${imported.length !== 1 ? "s" : ""}…`);
+        const decodedFiles: File[] = [];
+        const failedIdxs: number[] = [];
         for (let i = 0; i < imported.length; i++) {
           const f = imported[i];
+          if (!f.base64) { console.error("[import] No base64 for", f.localPath); failedIdxs.push(i); continue; }
           try {
-            if (!f.base64) { console.error("[import] No base64 for", f.localPath); continue; }
             const byteChars = atob(f.base64);
             const byteArr = new Uint8Array(byteChars.length);
             for (let b = 0; b < byteChars.length; b++) byteArr[b] = byteChars.charCodeAt(b);
             const blob = new Blob([byteArr], { type: f.mimeType || "image/jpeg" });
-            const file = new File([blob], f.localPath?.split("/").pop() || `photo_${i}.jpg`, { type: f.mimeType || "image/jpeg" });
-            setImportLabel(`${i + 1} / ${imported.length} — ${f.localPath?.split("/").pop() ?? "photo"}`);
-            const results = await uploadPhotosToServer([file], () => {});
+            decodedFiles.push(new File([blob], f.localPath?.split("/").pop() || `photo_${i}.jpg`, { type: f.mimeType || "image/jpeg" }));
+          } catch (e) {
+            console.error("Decode error:", e);
+            failedIdxs.push(i);
+            setFailedHandles(prev => [...prev, freshHandles[i]]);
+          }
+        }
+        failedIdxs.forEach(i => setFailedHandles(prev => [...prev, freshHandles[i]]));
+        if (decodedFiles.length > 0) {
+          setImportLabel(`Uploading ${decodedFiles.length} file${decodedFiles.length !== 1 ? "s" : ""}…`);
+          try {
+            const results = await uploadPhotosToServer(decodedFiles, (done, total) => {
+              setImportProgress(50 + Math.round((done / total) * 50));
+            });
             for (const r of results) {
               newPhotos.push({ id: r.id, src: r.url, thumbnail: r.url + "?size=thumb", title: r.originalName, width: 0, height: 0, proofing: true });
             }
           } catch (e) {
             console.error("Upload error:", e);
-            setFailedHandles(prev => [...prev, freshHandles[i]]);
           }
-          setImportProgress(50 + Math.round(((i + 1) / imported.length) * 50));
         }
+        setImportProgress(100);
       } else {
         for (const f of imported)
           newPhotos.push({ id: crypto.randomUUID(), src: f.uri, thumbnail: f.uri, title: f.localPath.split("/").pop() || "photo", width: 0, height: 0, proofing: true });

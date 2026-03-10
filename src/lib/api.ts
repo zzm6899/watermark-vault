@@ -90,36 +90,59 @@ export function deleteFromServer(key: string): void {
   }).catch(() => {});
 }
 
-/** Upload photo files to the server. Returns URLs, or empty array if server unavailable. */
+/** Upload photo files to the server. Returns URLs, or empty array if server unavailable.
+ *  Uploads are split into batches and sent concurrently to maximise throughput. */
 export async function uploadPhotosToServer(
   files: File[],
   onProgress?: (done: number, total: number) => void,
   tenantSlug?: string,
+  concurrency = 3,
 ): Promise<{ id: string; url: string; originalName: string; size: number; ftpUploaded?: boolean }[]> {
   if (!(await checkServer())) return [];
-  const results: { id: string; url: string; originalName: string; size: number; ftpUploaded?: boolean }[] = [];
 
   const uploadUrl = tenantSlug
     ? `/api/upload?tenant=${encodeURIComponent(tenantSlug)}`
     : "/api/upload";
 
-  // Upload in batches of 10 for progress feedback
-  const batchSize = 10;
+  // Smaller batches improve granular progress feedback and concurrent throughput
+  const batchSize = 5;
+  const batches: File[][] = [];
   for (let i = 0; i < files.length; i += batchSize) {
-    const batch = files.slice(i, i + batchSize);
-    const form = new FormData();
-    batch.forEach((f) => form.append("photos", f));
-    try {
-      const res = await fetch(uploadUrl, { method: "POST", body: form });
-      if (res.ok) {
-        const data = await res.json();
-        results.push(...data.files);
-      }
-    } catch {
-      // skip failed batch
-    }
-    onProgress?.(Math.min(i + batchSize, files.length), files.length);
+    batches.push(files.slice(i, i + batchSize));
   }
+
+  const results: { id: string; url: string; originalName: string; size: number; ftpUploaded?: boolean }[] = [];
+  let done = 0;
+  let batchIndex = 0;
+
+  // Worker that keeps consuming batches until they're all dispatched
+  const runWorker = async () => {
+    while (batchIndex < batches.length) {
+      const idx = batchIndex++;
+      const batch = batches[idx];
+      const form = new FormData();
+      batch.forEach((f) => form.append("photos", f));
+      try {
+        const res = await fetch(uploadUrl, { method: "POST", body: form });
+        if (res.ok) {
+          const data = await res.json();
+          results.push(...data.files);
+        }
+      } catch {
+        // skip failed batch
+      }
+      done += batch.length;
+      onProgress?.(Math.min(done, files.length), files.length);
+    }
+  };
+
+  // Run up to `concurrency` workers in parallel
+  const workers = Array.from(
+    { length: Math.min(concurrency, batches.length) },
+    () => runWorker(),
+  );
+  await Promise.all(workers);
+
   return results;
 }
 
