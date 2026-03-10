@@ -354,7 +354,7 @@ function resolveTenantStripe(tenantSettings) {
  * Register per-tenant Stripe routes.
  * Tenants can take deposits/payments using their own Stripe keys.
  */
-function registerTenantStripeRoutes(app, { readDb, readTenants }) {
+function registerTenantStripeRoutes(app, { readDb, writeDb, readTenants, readLicenseKeys, getLicKeyLimits, readEventSlotRequests, writeEventSlotRequests }) {
   const tenantCheckoutLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHeaders: true, legacyHeaders: false, message: { error: "Too many requests" } });
 
   // Status — check if a tenant has Stripe configured (or falls back to superuser)
@@ -461,6 +461,54 @@ function registerTenantStripeRoutes(app, { readDb, readTenants }) {
     }
   });
 
+  // Checkout — extra event slot purchase using tenant Stripe keys (falls back to superuser)
+  app.post("/api/tenant/:slug/stripe/checkout/event-slot", tenantCheckoutLimiter, async (req, res) => {
+    const { slug } = req.params;
+    const tenants = readTenants();
+    const tenant = tenants.find(t => t.slug === slug);
+    if (!tenant) return res.status(404).json({ error: "Tenant not found" });
+    if (!tenant.licenseKey) return res.status(400).json({ error: "No license key found" });
+    const allKeys = readLicenseKeys();
+    const licKey = allKeys.find(k => k.key === tenant.licenseKey);
+    if (!licKey) return res.status(400).json({ error: "License key not found" });
+    const limits = getLicKeyLimits(licKey);
+    if (limits.extraEventPrice == null) return res.status(400).json({ error: "Extra event slots are not available for this license" });
+    const db = readDb();
+    const raw = db[`t_${slug}_wv_tenant_settings`];
+    const ts = raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : {};
+    const resolved = resolveTenantStripe(ts);
+    if (!resolved) return res.status(400).json({ error: "Stripe not configured for this tenant" });
+    // Find the pending stripe request for this tenant
+    const requests = readEventSlotRequests();
+    const pendingRequest = requests.find(r => r.tenantSlug === slug && r.paymentMethod === "stripe" && r.status === "pending");
+    if (!pendingRequest) return res.status(404).json({ error: "No pending Stripe event slot request found. Submit a request first." });
+    try {
+      const session = await resolved.client.checkout.sessions.create({
+        payment_method_types: ["card"],
+        line_items: [{
+          price_data: {
+            currency: resolved.currency,
+            product_data: { name: "Extra Event Type Slot" },
+            unit_amount: Math.round(limits.extraEventPrice * 100),
+          },
+          quantity: 1,
+        }],
+        mode: "payment",
+        success_url: req.body.successUrl || `${req.headers.origin || ""}/tenant-admin?event_slot_success=1`,
+        cancel_url: req.body.cancelUrl || `${req.headers.origin || ""}/tenant-admin?event_slot_cancelled=1`,
+        metadata: { tenantSlug: slug, requestId: pendingRequest.id, type: "tenant-event-slot" },
+      });
+      // Attach session ID to the request
+      const idx = requests.findIndex(r => r.id === pendingRequest.id);
+      requests[idx] = { ...requests[idx], stripeSessionId: session.id };
+      writeEventSlotRequests(requests);
+      res.json({ url: session.url, sessionId: session.id });
+    } catch (err) {
+      console.error("Event slot Stripe checkout error:", err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // Webhook — per-tenant Stripe webhook handler
   app.post("/api/tenant/:slug/stripe/webhook", tenantCheckoutLimiter, express.raw({ type: "application/json" }), async (req, res) => {
     const { slug } = req.params;
@@ -536,6 +584,19 @@ function registerTenantStripeRoutes(app, { readDb, readTenants }) {
             console.log(`📝 Tenant album ${metadata.albumId} purchase processed for session ${metadata.sessionKey || session.id}`);
           } else {
             console.warn(`Tenant album ${metadata.albumId} not found in ${albumsKey}`);
+          }
+        }
+        if (metadata.type === "tenant-event-slot" && metadata.requestId) {
+          try {
+            const requests = readEventSlotRequests();
+            const idx = requests.findIndex(r => r.id === metadata.requestId);
+            if (idx >= 0 && requests[idx].status === "pending") {
+              requests[idx] = { ...requests[idx], status: "paid", paidAt: new Date().toISOString(), stripeSessionId: session.id };
+              writeEventSlotRequests(requests);
+              console.log(`📝 Event slot request ${metadata.requestId} marked as paid — awaiting super admin confirmation`);
+            }
+          } catch (slotErr) {
+            console.error("Failed to update event slot request after payment:", slotErr);
           }
         }
       } catch (dbErr) {

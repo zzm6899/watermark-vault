@@ -837,13 +837,13 @@ export async function generateLicenseKey(
   issuedTo: string,
   expiresAt?: string,
   notes?: string,
-  trialOptions?: { isTrial: boolean; trialMaxEvents?: number; trialMaxBookings?: number },
+  options?: { isTrial?: boolean; maxEvents?: number; maxBookings?: number; extraEventPrice?: number },
 ): Promise<{ key?: import("./types").LicenseKey; error?: string }> {
   try {
     const res = await fetch("/api/license-keys/generate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ issuedTo, expiresAt, notes, ...trialOptions }),
+      body: JSON.stringify({ issuedTo, expiresAt, notes, ...options }),
     });
     const data = await res.json();
     if (!res.ok) return { error: data.error || "Failed to generate key" };
@@ -1369,8 +1369,11 @@ export async function getTenantLicenseInfo(slug: string): Promise<{
   key: string | null;
   issuedTo?: string;
   isTrial?: boolean;
-  trialMaxEvents?: number;
-  trialMaxBookings?: number;
+  maxEvents?: number | null;
+  maxBookings?: number | null;
+  extraEventPrice?: number | null;
+  extraEventSlots?: number;
+  eventCount?: number;
   expiresAt?: string;
   usedAt?: string;
 }> {
@@ -1393,12 +1396,82 @@ export async function getTenantStoreKey<T>(slug: string, key: string): Promise<T
 }
 
 /** Write any generic tenant store key (tenant admin). */
-export async function saveTenantStoreKey(slug: string, key: string, value: unknown): Promise<{ ok: boolean; error?: string }> {
+export async function saveTenantStoreKey(slug: string, key: string, value: unknown): Promise<{ ok: boolean; error?: string; limitReached?: boolean; extraEventPrice?: number | null }> {
   try {
     const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/store/${encodeURIComponent(key)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ value }),
+    });
+    const json = await res.json();
+    return { ok: !!json.ok, error: json.error, limitReached: !!json.limitReached, extraEventPrice: json.extraEventPrice ?? null };
+  } catch { return { ok: false, error: "Network error" }; }
+}
+
+/** Submit a request for an extra event type slot (tenant). */
+export async function submitEventSlotRequest(slug: string, paymentMethod: "stripe" | "bank"): Promise<{ ok: boolean; request?: import("./types").EventSlotRequest; error?: string }> {
+  try {
+    const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/event-slot-request`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ paymentMethod }),
+    });
+    const json = await res.json();
+    return { ok: !!json.ok, request: json.request, error: json.error };
+  } catch { return { ok: false, error: "Network error" }; }
+}
+
+/** Get the tenant's current pending event slot request (if any). */
+export async function getTenantEventSlotRequest(slug: string): Promise<import("./types").EventSlotRequest | null> {
+  try {
+    const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/event-slot-request/pending`);
+    if (!res.ok) return null;
+    const json = await res.json();
+    return json.request || null;
+  } catch { return null; }
+}
+
+/** Create a Stripe checkout session for an event slot purchase (tenant). */
+export async function createEventSlotCheckout(slug: string, successUrl?: string, cancelUrl?: string): Promise<{ url?: string; sessionId?: string; error?: string }> {
+  try {
+    const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/stripe/checkout/event-slot`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ successUrl, cancelUrl }),
+    });
+    return await res.json();
+  } catch { return { error: "Network error" }; }
+}
+
+/** Get all event slot requests (super admin). */
+export async function getEventSlotRequests(): Promise<(import("./types").EventSlotRequest & { tenantDisplayName?: string })[]> {
+  try {
+    const res = await fetch("/api/super/event-slot-requests");
+    if (!res.ok) return [];
+    return res.json();
+  } catch { return []; }
+}
+
+/** Confirm an event slot request and grant the slot (super admin). */
+export async function confirmEventSlotRequest(id: string, confirmedBy?: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch(`/api/super/event-slot-requests/${encodeURIComponent(id)}/confirm`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirmedBy }),
+    });
+    const json = await res.json();
+    return { ok: !!json.ok, error: json.error };
+  } catch { return { ok: false, error: "Network error" }; }
+}
+
+/** Reject an event slot request (super admin). */
+export async function rejectEventSlotRequest(id: string, rejectedBy?: string, notes?: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch(`/api/super/event-slot-requests/${encodeURIComponent(id)}/reject`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rejectedBy, notes }),
     });
     const json = await res.json();
     return { ok: !!json.ok, error: json.error };

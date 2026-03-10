@@ -315,14 +315,42 @@ export interface LicenseKey {
   usedAt?: string;         // ISO timestamp, set when activated
   usedBy?: string;         // username of the admin who activated it
   notes?: string;
-  /** If true this is a free-trial key with usage limits */
+  /** If true this is a free-trial key (cosmetic label only — limits apply to any key type) */
   isTrial?: boolean;
-  /** Max number of event-type slots allowed under a trial key (default 1) */
+  /** Max total event-type slots for this key (applies to all key types). Supersedes trialMaxEvents. */
+  maxEvents?: number;
+  /** Max total bookings for this key (applies to all key types). Supersedes trialMaxBookings. */
+  maxBookings?: number;
+  /** Price (in the platform currency) to purchase one additional event type slot. */
+  extraEventPrice?: number;
+  /** @deprecated Use maxEvents instead */
   trialMaxEvents?: number;
-  /** Max number of bookings allowed under a trial key (default 10) */
+  /** @deprecated Use maxBookings instead */
   trialMaxBookings?: number;
   /** Secure random token used to generate a one-time tenant setup URL */
   setupToken?: string;
+}
+
+// ─── Event Slot Requests ──────────────────────────────────────────────────────
+
+export type EventSlotRequestStatus = "pending" | "paid" | "confirmed" | "rejected";
+export type EventSlotPaymentMethod = "stripe" | "bank";
+
+/** A tenant's request to purchase an extra event type slot beyond their plan limit. */
+export interface EventSlotRequest {
+  id: string;
+  tenantSlug: string;
+  requestedAt: string;           // ISO timestamp
+  paymentMethod: EventSlotPaymentMethod;
+  amount: number;                // price in platform currency
+  status: EventSlotRequestStatus;
+  stripeSessionId?: string;      // set when Stripe checkout is created
+  paidAt?: string;               // ISO timestamp — set when Stripe payment confirmed
+  confirmedAt?: string;          // ISO timestamp — set when super admin grants the slot
+  confirmedBy?: string;          // super admin username
+  rejectedAt?: string;           // ISO timestamp
+  rejectedBy?: string;           // super admin username
+  notes?: string;
 }
 
 // ─── Tenants ──────────────────────────────────────────────────────────────────

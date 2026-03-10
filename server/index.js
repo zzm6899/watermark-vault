@@ -1212,12 +1212,12 @@ app.post("/api/cache/warm", cacheWarmLimiter, async (req, res) => {
 registerGoogleCalendarRoutes(app);
 registerEmailRoutes(app);
 registerStripeRoutes(app, { writeDb });
-registerTenantStripeRoutes(app, { readDb, readTenants: () => {
+registerTenantStripeRoutes(app, { readDb, writeDb, readTenants: () => {
   try {
     if (!fs.existsSync(path.join(DATA_DIR, "tenants.json"))) return [];
     return JSON.parse(fs.readFileSync(path.join(DATA_DIR, "tenants.json"), "utf-8"));
   } catch { return []; }
-}});
+}, readLicenseKeys, getLicKeyLimits, readEventSlotRequests, writeEventSlotRequests});
 registerGoogleSheetsRoutes(app);
 
 const tenantLimiter = rateLimit({ windowMs: 60_000, max: 60, standardHeaders: true, legacyHeaders: false, message: { error: "Too many requests" } });
@@ -1560,16 +1560,19 @@ app.get("/api/tenant/:slug/public", tenantPublicLimiter, (req, res) => {
     ? allEventTypes.filter(e => e.active !== false)
     : [];
 
-  // Check if the tenant's trial booking limit has been reached
+  // Check if the tenant's booking limit has been reached
   let bookingLimitReached = false;
   if (tenant.licenseKey) {
     const allKeys = readLicenseKeys();
     const licKey = allKeys.find(k => k.key === tenant.licenseKey);
-    if (licKey && licKey.isTrial) {
-      const rawBks = db["wv_bookings"];
-      const existingBookings = rawBks ? (typeof rawBks === "string" ? JSON.parse(rawBks) : (Array.isArray(rawBks) ? rawBks : [])) : [];
-      const tenantBookingCount = existingBookings.filter(b => b.tenantSlug === slug).length;
-      bookingLimitReached = tenantBookingCount >= (licKey.trialMaxBookings ?? 10);
+    if (licKey) {
+      const limits = getLicKeyLimits(licKey);
+      if (limits.maxBookings !== null) {
+        const rawBks = db["wv_bookings"];
+        const existingBookings = rawBks ? (typeof rawBks === "string" ? JSON.parse(rawBks) : (Array.isArray(rawBks) ? rawBks : [])) : [];
+        const tenantBookingCount = existingBookings.filter(b => b.tenantSlug === slug).length;
+        bookingLimitReached = tenantBookingCount >= limits.maxBookings;
+      }
     }
   }
 
@@ -1588,25 +1591,47 @@ app.get("/api/tenant/:slug/store/:key", tenantLimiter, (req, res) => {
 // Set tenant-scoped store key
 app.put("/api/tenant/:slug/store/:key", tenantLimiter, (req, res) => {
   const slug = req.params.slug;
+  const db = readDb();
 
-  // ── Trial license key enforcement for event types ──────────────────────
+  // ── License key enforcement for event types ────────────────────────────
   if (req.params.key === "wv_event_types") {
     const tenants = readTenants();
     const tenant = tenants.find(t => t.slug === slug);
     if (tenant && tenant.licenseKey) {
       const allKeys = readLicenseKeys();
       const licKey = allKeys.find(k => k.key === tenant.licenseKey);
-      if (licKey && licKey.isTrial) {
-        const newEventTypes = Array.isArray(req.body.value) ? req.body.value : [];
-        const maxEvents = licKey.trialMaxEvents ?? 1;
-        if (newEventTypes.length > maxEvents) {
-          return res.status(403).json({ error: `Free trial limit reached (${maxEvents} event type${maxEvents !== 1 ? "s" : ""}). Contact your platform administrator to upgrade your plan.` });
+      if (licKey) {
+        const limits = getLicKeyLimits(licKey);
+        if (limits.maxEvents !== null) {
+          const newEventTypes = Array.isArray(req.body.value) ? req.body.value : [];
+          // Get current stored array to detect newly added events
+          const currentRaw = db[`t_${slug}_wv_event_types`];
+          const currentEventTypes = currentRaw ? (typeof currentRaw === "string" ? JSON.parse(currentRaw) : (Array.isArray(currentRaw) ? currentRaw : [])) : [];
+          const currentLength = currentEventTypes.length;
+          // Lifetime counter — never decremented when events are deleted.
+          // Bootstrap to currentLength the first time this tenant saves event types.
+          const counterKey = `t_${slug}_wv_event_counter`;
+          const counter = typeof db[counterKey] === "number" ? db[counterKey] : (db[counterKey] = currentLength);
+          if (newEventTypes.length > currentLength) {
+            const newlyAdded = newEventTypes.length - currentLength;
+            const newCounter = counter + newlyAdded;
+            const extraSlotsKey = `t_${slug}_wv_extra_event_slots`;
+            const extraSlots = typeof db[extraSlotsKey] === "number" ? db[extraSlotsKey] : 0;
+            const effectiveLimit = limits.maxEvents + extraSlots;
+            if (newCounter > effectiveLimit) {
+              const extraPrice = limits.extraEventPrice;
+              const msg = extraPrice != null
+                ? `Event type limit reached (${effectiveLimit}). You can purchase extra slots for $${extraPrice} each.`
+                : `Event type limit reached (${effectiveLimit}). Contact your platform administrator to upgrade your plan.`;
+              return res.status(403).json({ error: msg, limitReached: true, extraEventPrice: extraPrice });
+            }
+            db[counterKey] = newCounter;
+          }
         }
       }
     }
   }
 
-  const db = readDb();
   const fullKey = `t_${slug}_${req.params.key}`;
   db[fullKey] = req.body.value;
   writeDb(db);
@@ -1679,18 +1704,19 @@ app.post("/api/tenant/:slug/booking", tenantBookingLimiter, (req, res) => {
     return res.status(400).json({ error: "time (HH:MM) is required" });
   }
 
-  // ── Trial license key enforcement ──────────────────────────────────────
+  // ── License key booking limit enforcement ──────────────────────────────
   if (tenant.licenseKey) {
     const allKeys = readLicenseKeys();
     const licKey = allKeys.find(k => k.key === tenant.licenseKey);
-    if (licKey && licKey.isTrial) {
-      const db = readDb();
-      const rawBks = db["wv_bookings"];
-      const existingBookings = rawBks ? (typeof rawBks === "string" ? JSON.parse(rawBks) : (Array.isArray(rawBks) ? rawBks : [])) : [];
-      const tenantBookingCount = existingBookings.filter(b => b.tenantSlug === slug).length;
-      const maxBookings = licKey.trialMaxBookings ?? 10;
-      if (tenantBookingCount >= maxBookings) {
-        return res.status(403).json({ error: `Free trial limit reached (${maxBookings} bookings). Contact your platform administrator to upgrade your plan.` });
+    if (licKey) {
+      const limits = getLicKeyLimits(licKey);
+      if (limits.maxBookings !== null) {
+        const db = readDb();
+        const rawBks = db["wv_bookings"];
+        const existingBookings = rawBks ? (typeof rawBks === "string" ? JSON.parse(rawBks) : (Array.isArray(rawBks) ? rawBks : [])) : [];
+        const tenantBookingCount = existingBookings.filter(b => b.tenantSlug === slug).length;
+        if (tenantBookingCount >= limits.maxBookings) {
+          return res.status(403).json({ error: `Booking limit reached (${limits.maxBookings} bookings). Contact your platform administrator to upgrade your plan.` });
       }
     }
   }
@@ -1779,6 +1805,100 @@ app.get("/api/super/all-bookings", superLimiter, (_req, res) => {
   const raw = db["wv_bookings"];
   const bookings = raw ? (typeof raw === "string" ? JSON.parse(raw) : (Array.isArray(raw) ? raw : [])) : [];
   res.json(bookings);
+});
+
+// ── Super Admin: Event Slot Requests ──────────────────
+// List all event slot purchase requests
+app.get("/api/super/event-slot-requests", superLimiter, (_req, res) => {
+  const requests = readEventSlotRequests();
+  const tenants = readTenants();
+  const result = requests.map(r => {
+    const tenant = tenants.find(t => t.slug === r.tenantSlug);
+    return { ...r, tenantDisplayName: tenant?.displayName || r.tenantSlug };
+  });
+  res.json(result);
+});
+
+// Confirm an event slot request — grants the tenant one extra event slot
+app.post("/api/super/event-slot-requests/:id/confirm", superLimiter, (req, res) => {
+  const { id } = req.params;
+  const { confirmedBy } = req.body || {};
+  const requests = readEventSlotRequests();
+  const idx = requests.findIndex(r => r.id === id);
+  if (idx < 0) return res.status(404).json({ error: "Request not found" });
+  if (!["pending", "paid"].includes(requests[idx].status)) {
+    return res.status(400).json({ error: "Request is not in a confirmable state" });
+  }
+  requests[idx] = { ...requests[idx], status: "confirmed", confirmedAt: new Date().toISOString(), confirmedBy: confirmedBy || "admin" };
+  writeEventSlotRequests(requests);
+  // Grant the extra slot
+  const slug = requests[idx].tenantSlug;
+  const db = readDb();
+  const extraSlotsKey = `t_${slug}_wv_extra_event_slots`;
+  db[extraSlotsKey] = (typeof db[extraSlotsKey] === "number" ? db[extraSlotsKey] : 0) + 1;
+  writeDb(db);
+  res.json({ ok: true, request: requests[idx] });
+});
+
+// Reject an event slot request
+app.post("/api/super/event-slot-requests/:id/reject", superLimiter, (req, res) => {
+  const { id } = req.params;
+  const { rejectedBy, notes } = req.body || {};
+  const requests = readEventSlotRequests();
+  const idx = requests.findIndex(r => r.id === id);
+  if (idx < 0) return res.status(404).json({ error: "Request not found" });
+  if (!["pending", "paid"].includes(requests[idx].status)) {
+    return res.status(400).json({ error: "Request is not in a rejectable state" });
+  }
+  requests[idx] = {
+    ...requests[idx], status: "rejected",
+    rejectedAt: new Date().toISOString(), rejectedBy: rejectedBy || "admin",
+    ...(notes ? { notes } : {}),
+  };
+  writeEventSlotRequests(requests);
+  res.json({ ok: true, request: requests[idx] });
+});
+
+// ── Tenant Event Slot Requests ──────────────────────────
+// Submit a request for an extra event slot (bank or stripe payment)
+app.post("/api/tenant/:slug/event-slot-request", tenantLimiter, (req, res) => {
+  const slug = req.params.slug;
+  const tenants = readTenants();
+  const tenant = tenants.find(t => t.slug === slug && t.active !== false);
+  if (!tenant) return res.status(404).json({ error: "Tenant not found" });
+  const { paymentMethod } = req.body || {};
+  if (!paymentMethod || !["stripe", "bank"].includes(paymentMethod)) {
+    return res.status(400).json({ error: "paymentMethod must be 'stripe' or 'bank'" });
+  }
+  if (!tenant.licenseKey) return res.status(400).json({ error: "No license key found" });
+  const allKeys = readLicenseKeys();
+  const licKey = allKeys.find(k => k.key === tenant.licenseKey);
+  if (!licKey) return res.status(400).json({ error: "License key not found" });
+  const limits = getLicKeyLimits(licKey);
+  if (limits.extraEventPrice == null) return res.status(400).json({ error: "Extra event slots are not available for this license" });
+  // Reject if a pending/paid request already exists
+  const existingRequests = readEventSlotRequests();
+  const hasPending = existingRequests.some(r => r.tenantSlug === slug && ["pending", "paid"].includes(r.status));
+  if (hasPending) return res.status(409).json({ error: "You already have a pending event slot request" });
+  const request = {
+    id: `esr-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    tenantSlug: slug,
+    requestedAt: new Date().toISOString(),
+    paymentMethod,
+    amount: limits.extraEventPrice,
+    status: "pending",
+  };
+  existingRequests.push(request);
+  writeEventSlotRequests(existingRequests);
+  res.json({ ok: true, request });
+});
+
+// Get the active pending/paid event slot request for a tenant
+app.get("/api/tenant/:slug/event-slot-request/pending", tenantLimiter, (req, res) => {
+  const slug = req.params.slug;
+  const requests = readEventSlotRequests();
+  const pending = requests.find(r => r.tenantSlug === slug && ["pending", "paid"].includes(r.status));
+  res.json({ request: pending || null });
 });
 
 // ── Tenant Login (for mobile app) ─────────────────────
@@ -1894,13 +2014,26 @@ app.get("/api/tenant/:slug/license-info", tenantLimiter, (req, res) => {
   const keys = readLicenseKeys();
   const licKey = keys.find(k => k.key === tenant.licenseKey);
   if (!licKey) return res.json({ key: null });
+  const limits = getLicKeyLimits(licKey);
+  const db = readDb();
+  // Extra event slots granted by super admin
+  const extraSlotsKey = `t_${slug}_wv_extra_event_slots`;
+  const extraEventSlots = typeof db[extraSlotsKey] === "number" ? db[extraSlotsKey] : 0;
+  // Lifetime event counter (bootstrapped from current array if not yet set)
+  const counterKey = `t_${slug}_wv_event_counter`;
+  const currentRaw = db[`t_${slug}_wv_event_types`];
+  const currentEventTypes = currentRaw ? (typeof currentRaw === "string" ? JSON.parse(currentRaw) : (Array.isArray(currentRaw) ? currentRaw : [])) : [];
+  const eventCount = typeof db[counterKey] === "number" ? db[counterKey] : currentEventTypes.length;
   // Return non-sensitive fields only
   res.json({
     key: licKey.key,
     issuedTo: licKey.issuedTo,
     isTrial: licKey.isTrial || false,
-    trialMaxEvents: licKey.trialMaxEvents,
-    trialMaxBookings: licKey.trialMaxBookings,
+    maxEvents: limits.maxEvents,
+    maxBookings: limits.maxBookings,
+    extraEventPrice: limits.extraEventPrice,
+    extraEventSlots,
+    eventCount,
     expiresAt: licKey.expiresAt,
     usedAt: licKey.usedAt,
   });
@@ -2216,6 +2349,7 @@ app.post("/api/license-plans/purchases/:purchaseId/activate", planLimiter, (req,
 
 // ── License Keys ──────────────────────────────────────
 const LICENSE_KEYS_FILE = path.join(DATA_DIR, "license_keys.json");
+const EVENT_SLOT_REQUESTS_FILE = path.join(DATA_DIR, "event_slot_requests.json");
 
 function readLicenseKeys() {
   try {
@@ -2228,6 +2362,30 @@ function readLicenseKeys() {
 
 function writeLicenseKeys(keys) {
   fs.writeFileSync(LICENSE_KEYS_FILE, JSON.stringify(keys, null, 2));
+}
+
+function readEventSlotRequests() {
+  try {
+    if (!fs.existsSync(EVENT_SLOT_REQUESTS_FILE)) return [];
+    return JSON.parse(fs.readFileSync(EVENT_SLOT_REQUESTS_FILE, "utf-8"));
+  } catch { return []; }
+}
+
+function writeEventSlotRequests(requests) {
+  fs.writeFileSync(EVENT_SLOT_REQUESTS_FILE, JSON.stringify(requests, null, 2));
+}
+
+/**
+ * Resolve the effective limits for a license key.
+ * Works for both trial and non-trial keys. maxEvents/maxBookings take precedence
+ * over the deprecated trialMaxEvents/trialMaxBookings fields.
+ */
+function getLicKeyLimits(licKey) {
+  return {
+    maxEvents: licKey.maxEvents ?? licKey.trialMaxEvents ?? null,
+    maxBookings: licKey.maxBookings ?? licKey.trialMaxBookings ?? null,
+    extraEventPrice: licKey.extraEventPrice ?? null,
+  };
 }
 
 function generateKeyString() {
@@ -2246,7 +2404,7 @@ app.get("/api/license-keys", licenseKeyLimiter, (_req, res) => {
 
 // Generate a new key
 app.post("/api/license-keys/generate", licenseKeyLimiter, (req, res) => {
-  const { issuedTo, expiresAt, notes, isTrial, trialMaxEvents, trialMaxBookings } = req.body || {};
+  const { issuedTo, expiresAt, notes, isTrial, maxEvents, maxBookings, extraEventPrice } = req.body || {};
   if (!issuedTo || typeof issuedTo !== "string" || !issuedTo.trim()) {
     return res.status(400).json({ error: "issuedTo is required" });
   }
@@ -2261,11 +2419,10 @@ app.post("/api/license-keys/generate", licenseKeyLimiter, (req, res) => {
     setupToken: crypto.randomBytes(32).toString("hex"),
     ...(expiresAt ? { expiresAt } : {}),
     ...(notes ? { notes: notes.trim() } : {}),
-    ...(isTrial ? {
-      isTrial: true,
-      trialMaxEvents: typeof trialMaxEvents === "number" && trialMaxEvents > 0 ? trialMaxEvents : 1,
-      trialMaxBookings: typeof trialMaxBookings === "number" && trialMaxBookings > 0 ? trialMaxBookings : 10,
-    } : {}),
+    ...(isTrial ? { isTrial: true } : {}),
+    ...(typeof maxEvents === "number" && maxEvents > 0 ? { maxEvents } : {}),
+    ...(typeof maxBookings === "number" && maxBookings > 0 ? { maxBookings } : {}),
+    ...(typeof extraEventPrice === "number" && extraEventPrice > 0 ? { extraEventPrice } : {}),
   };
   keys.push(newKey);
   writeLicenseKeys(keys);
