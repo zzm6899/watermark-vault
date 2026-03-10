@@ -131,6 +131,13 @@ export function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+/** Format a bytes-per-second value as a human-readable speed string (e.g. "2.4 MB/s"). */
+export function formatSpeed(bytesPerSecond: number): string {
+  if (bytesPerSecond < 1024) return `${Math.round(bytesPerSecond)} B/s`;
+  if (bytesPerSecond < 1024 * 1024) return `${(bytesPerSecond / 1024).toFixed(1)} KB/s`;
+  return `${(bytesPerSecond / (1024 * 1024)).toFixed(1)} MB/s`;
+}
+
 /** Check approximate localStorage usage */
 export function getLocalStorageUsage(): { used: number; limit: number } {
   let used = 0;
