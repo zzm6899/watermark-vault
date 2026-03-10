@@ -1735,7 +1735,7 @@ app.get("/api/tenant/by-domain", tenantPublicLimiter, (req, res) => {
   const tenant = tenants.find(
     t => t.active !== false && t.customDomain && t.customDomain.toLowerCase() === normalized
   );
-  if (!tenant) return res.status(404).json({ error: "No tenant found for this domain" });
+  if (!tenant) return res.json({});
   res.json({ slug: tenant.slug, displayName: tenant.displayName });
 });
 
