@@ -263,6 +263,52 @@ function replaceBookingVars(text: string, bk: Booking, eventTypes: EventType[] =
     .replace(/\{\{[^}]+\}\}/g, "");
 }
 
+/**
+ * Renders email text as HTML for live preview.
+ * Known vars with a value → green highlight.
+ * Known vars with no value → amber highlight (kept as {{var}} so user can see what's missing).
+ * Unknown vars → red strikethrough (will be removed on actual send).
+ */
+function previewBookingVarsHtml(text: string, bk: Booking, eventTypes: EventType[] = []): string {
+  const et = eventTypes.find(e => e.id === bk.eventTypeId);
+  const firstName = (bk.clientName || "").split(" ")[0];
+  const location = et?.location || "";
+  const duration = emailFormatDuration(bk.duration || 60);
+  const rawDeposit = bk.depositAmount ?? 0;
+  const rawTotal = bk.paymentAmount ?? 0;
+  const rawRemaining = rawTotal > rawDeposit ? rawTotal - rawDeposit : 0;
+  const varMap: Record<string, string> = {
+    clientName: bk.clientName || "",
+    firstName,
+    eventTitle: bk.type || et?.title || "",
+    date: bk.date || "",
+    dateFormatted: emailFormatDateNice(bk.date),
+    time: bk.time || "",
+    timeFormatted: emailFormatTime12(bk.time),
+    duration,
+    amount: rawTotal ? `$${rawTotal}` : "",
+    depositAmount: rawDeposit ? `$${rawDeposit}` : "",
+    remainingAmount: rawRemaining ? `$${rawRemaining}` : "",
+    location,
+    email: bk.clientEmail || "",
+    bookingId: bk.id || "",
+    notes: bk.notes || "",
+    instagram: bk.instagramHandle || "",
+  };
+  const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return esc(text)
+    .replace(/\{\{([^}]+)\}\}/g, (_, varName) => {
+      if (varName in varMap) {
+        const val = varMap[varName];
+        return val
+          ? `<mark style="background:rgba(34,197,94,0.18);color:rgb(74,222,128);border-radius:3px;padding:0 3px;">${esc(val)}</mark>`
+          : `<mark style="background:rgba(251,191,36,0.18);color:rgb(253,224,71);border-radius:3px;padding:0 3px;" title="No value for this variable">{{${varName}}}</mark>`;
+      }
+      return `<mark style="background:rgba(239,68,68,0.18);color:rgb(252,165,165);border-radius:3px;padding:0 3px;text-decoration:line-through;" title="Unknown variable — will be removed">{{${varName}}}</mark>`;
+    })
+    .replace(/\n/g, "<br/>");
+}
+
 /** All template variables with human descriptions — used to render the hints UI. */
 const EMAIL_TEMPLATE_VARS: { variable: string; description: string }[] = [
   { variable: "{{clientName}}", description: "Full client name" },
@@ -1343,14 +1389,15 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
   const [customEmailSubject, setCustomEmailSubject] = useState("");
   const [customEmailBody, setCustomEmailBody] = useState("");
   const [sendingCustomEmail, setSendingCustomEmail] = useState(false);
-  const [showEmailPreview, setShowEmailPreview] = useState(false);
+  const [showEmailPreview, setShowEmailPreview] = useState(true);
   const [selectedBookingIds, setSelectedBookingIds] = useState<Set<string>>(new Set());
   const [bulkEmailOpen, setBulkEmailOpen] = useState(false);
   const [selectMode, setSelectMode] = useState(false);
   const [bulkEmailSubject, setBulkEmailSubject] = useState("");
   const [bulkEmailBody, setBulkEmailBody] = useState("");
   const [sendingBulkEmail, setSendingBulkEmail] = useState(false);
-  const [showBulkPreview, setShowBulkPreview] = useState(false);
+  const [showBulkPreview, setShowBulkPreview] = useState(true);
+  const [bulkPreviewIndex, setBulkPreviewIndex] = useState(0);
   const [bulkEmailProgress, setBulkEmailProgress] = useState<{ sent: number; total: number } | null>(null);
   const emailTemplates = getEmailTemplates();
   const settings = getSettings();
@@ -1593,7 +1640,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                   <button key={t.id} onClick={() => {
                     setBulkEmailSubject(t.subject);
                     setBulkEmailBody(t.body);
-                    setShowBulkPreview(false);
+                    setBulkPreviewIndex(0);
                   }} className="text-[10px] font-body px-2.5 py-1 rounded-full bg-primary/10 text-primary hover:bg-primary/20 transition-colors">
                     {t.name}
                   </button>
@@ -1602,23 +1649,43 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
             </div>
           )}
 
-          <Input value={bulkEmailSubject} onChange={e => { setBulkEmailSubject(e.target.value); setShowBulkPreview(false); }} placeholder="Email subject… (supports {{clientName}}, {{eventTitle}}, etc.)" className="bg-secondary border-border text-foreground font-body text-sm" />
-          <Textarea value={bulkEmailBody} onChange={e => { setBulkEmailBody(e.target.value); setShowBulkPreview(false); }} placeholder="Email body… Variables will be replaced per recipient." className="bg-secondary border-border text-foreground font-body text-sm min-h-[100px]" />
+          <Input value={bulkEmailSubject} onChange={e => setBulkEmailSubject(e.target.value)} placeholder="Email subject… (supports {{clientName}}, {{eventTitle}}, etc.)" className="bg-secondary border-border text-foreground font-body text-sm" />
+          <Textarea value={bulkEmailBody} onChange={e => setBulkEmailBody(e.target.value)} placeholder="Email body… Variables will be replaced per recipient." className="bg-secondary border-border text-foreground font-body text-sm min-h-[100px]" />
 
-          {/* Bulk Preview — shows first selected booking as example */}
+          {/* Bulk Live Preview — cycles through selected recipients */}
           {showBulkPreview && bulkEmailSubject.trim() && bulkEmailBody.trim() && (() => {
-            const sample = bookings.find(b => selectedBookingIds.has(b.id));
-            if (!sample) return null;
+            const selectedArr = bookings.filter(b => selectedBookingIds.has(b.id));
+            if (selectedArr.length === 0) return null;
+            const safeIdx = Math.min(bulkPreviewIndex, selectedArr.length - 1);
+            const sample = selectedArr[safeIdx];
             return (
               <div className="rounded-lg border border-border/50 overflow-hidden">
-                <div className="px-3 py-2 bg-muted/30 border-b border-border/50">
-                  <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground">Preview (showing: {sample.clientName})</p>
+                <div className="px-3 py-2 bg-muted/30 border-b border-border/50 flex items-center justify-between gap-2 flex-wrap">
+                  <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground">
+                    Live Preview — {sample.clientName}
+                    {selectedArr.length > 1 && (
+                      <span className="ml-1 normal-case">({safeIdx + 1}/{selectedArr.length})</span>
+                    )}
+                  </p>
+                  <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-2 text-[10px] font-body">
+                      <span style={{ color: "rgb(74,222,128)" }}>● filled</span>
+                      <span style={{ color: "rgb(253,224,71)" }}>● empty</span>
+                      <span style={{ color: "rgb(252,165,165)" }}>● unknown</span>
+                    </div>
+                    {selectedArr.length > 1 && (
+                      <div className="flex items-center gap-1">
+                        <button onClick={() => setBulkPreviewIndex(i => Math.max(0, i - 1))} disabled={safeIdx === 0} className="text-[10px] font-body px-1.5 py-0.5 rounded border border-border/50 text-muted-foreground hover:text-foreground disabled:opacity-30">‹</button>
+                        <button onClick={() => setBulkPreviewIndex(i => Math.min(selectedArr.length - 1, i + 1))} disabled={safeIdx === selectedArr.length - 1} className="text-[10px] font-body px-1.5 py-0.5 rounded border border-border/50 text-muted-foreground hover:text-foreground disabled:opacity-30">›</button>
+                      </div>
+                    )}
+                  </div>
                 </div>
                 <div className="p-4 bg-background/50">
                   <p className="text-xs font-body text-muted-foreground mb-1">To: <span className="text-foreground">{sample.clientEmail}</span></p>
-                  <p className="text-xs font-body text-muted-foreground mb-3">Subject: <span className="text-foreground font-medium">{replaceBookingVars(bulkEmailSubject, sample, eventTypes)}</span></p>
+                  <p className="text-xs font-body text-muted-foreground mb-3">Subject: <span className="text-foreground font-medium" dangerouslySetInnerHTML={{ __html: previewBookingVarsHtml(bulkEmailSubject, sample, eventTypes) }} /></p>
                   <div className="rounded-lg p-4" style={{ background: "#0a0a0a", color: "#f5f5f5", fontFamily: "sans-serif", maxWidth: 520 }}>
-                    <p style={{ color: "#ccc", lineHeight: 1.8, whiteSpace: "pre-wrap" }} dangerouslySetInnerHTML={{ __html: replaceBookingVars(bulkEmailBody, sample, eventTypes).replace(/\n/g, "<br/>") }} />
+                    <p style={{ color: "#ccc", lineHeight: 1.8, whiteSpace: "pre-wrap" }} dangerouslySetInnerHTML={{ __html: previewBookingVarsHtml(bulkEmailBody, sample, eventTypes) }} />
                   </div>
                 </div>
               </div>
@@ -1636,9 +1703,8 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
 
           <div className="flex items-center gap-2 flex-wrap">
             <Button size="sm" variant="outline" onClick={() => setShowBulkPreview(!showBulkPreview)}
-              disabled={!bulkEmailSubject.trim() || !bulkEmailBody.trim()}
               className="gap-1.5 font-body text-xs border-border text-foreground hover:bg-secondary">
-              <Eye className="w-3 h-3" /> {showBulkPreview ? "Hide Preview" : "Preview"}
+              <Eye className="w-3 h-3" /> {showBulkPreview ? "Hide Preview" : "Show Preview"}
             </Button>
             <Button size="sm" disabled={sendingBulkEmail || !bulkEmailSubject.trim() || !bulkEmailBody.trim()}
               className="gap-1.5 bg-primary text-primary-foreground font-body text-xs"
@@ -1938,9 +2004,8 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                                 <div className="flex flex-wrap gap-1.5">
                                   {emailTemplates.map(t => (
                                     <button key={t.id} onClick={() => {
-                                      setCustomEmailSubject(replaceBookingVars(t.subject, bk, eventTypes));
-                                      setCustomEmailBody(replaceBookingVars(t.body, bk, eventTypes));
-                                      setShowEmailPreview(false);
+                                      setCustomEmailSubject(t.subject);
+                                      setCustomEmailBody(t.body);
                                     }} className="text-[10px] font-body px-2.5 py-1 rounded-full bg-primary/10 text-primary hover:bg-primary/20 transition-colors">
                                       {t.name}
                                     </button>
@@ -1949,20 +2014,25 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                               </div>
                             )}
 
-                            <Input value={customEmailSubject} onChange={e => { setCustomEmailSubject(e.target.value); setShowEmailPreview(false); }} placeholder="Email subject…" className="bg-secondary border-border text-foreground font-body text-sm" />
-                            <Textarea value={customEmailBody} onChange={e => { setCustomEmailBody(e.target.value); setShowEmailPreview(false); }} placeholder="Write your message… (supports basic formatting)" className="bg-secondary border-border text-foreground font-body text-sm min-h-[100px]" />
+                            <Input value={customEmailSubject} onChange={e => setCustomEmailSubject(e.target.value)} placeholder="Email subject…" className="bg-secondary border-border text-foreground font-body text-sm" />
+                            <Textarea value={customEmailBody} onChange={e => setCustomEmailBody(e.target.value)} placeholder="Write your message… (supports {{clientName}}, {{eventTitle}}, etc.)" className="bg-secondary border-border text-foreground font-body text-sm min-h-[100px]" />
                             
-                            {/* Email Preview */}
+                            {/* Live Email Preview */}
                             {showEmailPreview && customEmailSubject.trim() && customEmailBody.trim() && (
                               <div className="rounded-lg border border-border/50 overflow-hidden">
-                                <div className="px-3 py-2 bg-muted/30 border-b border-border/50">
-                                  <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground">Email Preview</p>
+                                <div className="px-3 py-2 bg-muted/30 border-b border-border/50 flex items-center justify-between gap-2 flex-wrap">
+                                  <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground">Live Preview</p>
+                                  <div className="flex items-center gap-2 text-[10px] font-body">
+                                    <span style={{ color: "rgb(74,222,128)" }}>● filled</span>
+                                    <span style={{ color: "rgb(253,224,71)" }}>● empty</span>
+                                    <span style={{ color: "rgb(252,165,165)" }}>● unknown</span>
+                                  </div>
                                 </div>
                                 <div className="p-4 bg-background/50">
                                   <p className="text-xs font-body text-muted-foreground mb-1">To: <span className="text-foreground">{bk.clientEmail}</span></p>
-                                  <p className="text-xs font-body text-muted-foreground mb-3">Subject: <span className="text-foreground font-medium">{customEmailSubject}</span></p>
+                                  <p className="text-xs font-body text-muted-foreground mb-3">Subject: <span className="text-foreground font-medium" dangerouslySetInnerHTML={{ __html: previewBookingVarsHtml(customEmailSubject, bk, eventTypes) }} /></p>
                                   <div className="rounded-lg p-4" style={{ background: "#0a0a0a", color: "#f5f5f5", fontFamily: "sans-serif", maxWidth: 520 }}>
-                                    <p style={{ color: "#ccc", lineHeight: 1.8, whiteSpace: "pre-wrap" }} dangerouslySetInnerHTML={{ __html: customEmailBody.replace(/\n/g, "<br/>") }} />
+                                    <p style={{ color: "#ccc", lineHeight: 1.8, whiteSpace: "pre-wrap" }} dangerouslySetInnerHTML={{ __html: previewBookingVarsHtml(customEmailBody, bk, eventTypes) }} />
                                   </div>
                                 </div>
                               </div>
@@ -1970,31 +2040,31 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
 
                             <div className="flex items-center gap-2 flex-wrap">
                               <Button size="sm" variant="outline" onClick={() => setShowEmailPreview(!showEmailPreview)}
-                                disabled={!customEmailSubject.trim() || !customEmailBody.trim()}
                                 className="gap-1.5 font-body text-xs border-border text-foreground hover:bg-secondary">
                                 <Eye className="w-3 h-3" />
-                                {showEmailPreview ? "Hide Preview" : "Preview"}
+                                {showEmailPreview ? "Hide Preview" : "Show Preview"}
                               </Button>
                               <Button size="sm" disabled={sendingCustomEmail || !customEmailSubject.trim() || !customEmailBody.trim()}
                                 className="gap-1.5 bg-primary text-primary-foreground font-body text-xs"
                                 onClick={async () => {
                                   setSendingCustomEmail(true);
-                                  const html = `<div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:32px;background:#0a0a0a;color:#f5f5f5;border-radius:12px;"><p style="color:#ccc;line-height:1.8;white-space:pre-wrap;">${customEmailBody.replace(/\n/g, "<br/>")}</p></div>`;
-                                  const result = await sendCustomEmail(bk.clientEmail, customEmailSubject, html, customEmailBody, bk.id);
+                                  const finalSubject = replaceBookingVars(customEmailSubject, bk, eventTypes);
+                                  const finalBody = replaceBookingVars(customEmailBody, bk, eventTypes);
+                                  const html = `<div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:32px;background:#0a0a0a;color:#f5f5f5;border-radius:12px;"><p style="color:#ccc;line-height:1.8;white-space:pre-wrap;">${finalBody.replace(/\n/g, "<br/>")}</p></div>`;
+                                  const result = await sendCustomEmail(bk.clientEmail, finalSubject, html, finalBody, bk.id);
                                   setSendingCustomEmail(false);
                                   if (result.ok) {
                                     toast.success(`Custom email sent to ${bk.clientEmail}`);
                                     setCustomEmailTarget(null);
                                     setCustomEmailSubject("");
                                     setCustomEmailBody("");
-                                    setShowEmailPreview(false);
                                     await fetchEmailLog(bk.id);
                                   } else toast.error(result.error || "Failed to send");
                                 }}>
                                 <Send className="w-3 h-3" />
                                 {sendingCustomEmail ? "Sending…" : "Send Email"}
                               </Button>
-                              <Button size="sm" variant="ghost" onClick={() => { setCustomEmailTarget(null); setShowEmailPreview(false); }} className="font-body text-xs text-muted-foreground">
+                              <Button size="sm" variant="ghost" onClick={() => setCustomEmailTarget(null)} className="font-body text-xs text-muted-foreground">
                                 Cancel
                               </Button>
                             </div>
