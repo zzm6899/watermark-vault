@@ -96,7 +96,7 @@ export default function BookingModify() {
     const dateStr = toDateStr(selectedDate);
     return getAvailabilityForDate(eventType, selectedDate)
       .flatMap(r => generateTimeSlots(r.startTime, r.endTime, booking.duration))
-      .filter(t => !isSlotBooked(dateStr, t, booking.duration));
+      .filter(t => !isSlotBooked(dateStr, t, booking.duration, booking.id));
   }, [selectedDate, booking, eventType]);
 
   const handleCancel = useCallback(() => {
@@ -113,7 +113,7 @@ export default function BookingModify() {
   const handleReschedule = useCallback(() => {
     if (!booking || !selectedDate || !selectedTime) return;
     const dateStr = toDateStr(selectedDate);
-    if (isSlotBooked(dateStr, selectedTime, booking.duration)) { toast.error("Slot just taken, pick another."); return; }
+    if (isSlotBooked(dateStr, selectedTime, booking.duration, booking.id)) { toast.error("Slot just taken, pick another."); return; }
     const updated = { ...booking, date: dateStr, time: selectedTime };
     updateBooking(updated);
     setBooking(updated);

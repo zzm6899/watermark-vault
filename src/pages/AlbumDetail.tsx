@@ -414,7 +414,7 @@ export default function AlbumDetail() {
       const currentIdx = lbPhotos.findIndex((p: any) => p.id === lightboxPhotoId);
       if (e.key === "Escape") { setLightboxPhotoId(null); setLbZoom(1); setLbPan({ x: 0, y: 0 }); }
       if (e.key === "ArrowLeft" && currentIdx > 0) { setLightboxPhotoId(lbPhotos[currentIdx - 1].id); setLbZoom(1); setLbPan({ x: 0, y: 0 }); }
-      if (e.key === "ArrowRight" && currentIdx < lbPhotos.length - 1) { setLightboxPhotoId(lbPhotos[currentIdx + 1].id); setLbZoom(1); setLbPan({ x: 0, y: 0 }); }
+      if (e.key === "ArrowRight" && currentIdx >= 0 && currentIdx < lbPhotos.length - 1) { setLightboxPhotoId(lbPhotos[currentIdx + 1].id); setLbZoom(1); setLbPan({ x: 0, y: 0 }); }
       if ((e.key === "+" || e.key === "=") && !e.ctrlKey) setLbZoom(z => Math.min(4, +(z + 0.5).toFixed(1)));
       if (e.key === "-" && !e.ctrlKey) setLbZoom(z => { const next = Math.max(1, +(z - 0.5).toFixed(1)); if (next === 1) setLbPan({ x: 0, y: 0 }); return next; });
       if (e.key === "0") { setLbZoom(1); setLbPan({ x: 0, y: 0 }); }
