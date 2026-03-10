@@ -188,6 +188,7 @@ export function isSlotBooked(date: string, time: string, duration: number, exclu
   const slotEnd = slotStart + duration;
   
   for (const bk of bookings) {
+    if (!bk.time || !/^\d{2}:\d{2}$/.test(bk.time)) continue; // skip malformed booking times
     const [bh, bm] = bk.time.split(":").map(Number);
     const bookingStart = bh * 60 + bm;
     const bookingEnd = bookingStart + bk.duration;

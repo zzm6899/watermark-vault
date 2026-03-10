@@ -600,7 +600,7 @@ export default function AlbumDetail() {
    *  Clean photos → authenticated /api/photo/original endpoint (no watermark).
    *  Watermarked photos → plain /uploads/ URL so the server applies the watermark. */
   const getDownloadSrc = (photo: { src: string; id: string }) => {
-    if (isServerMode() && photo.src.startsWith("/uploads/")) {
+    if (isServerMode() && photo.src?.startsWith("/uploads/")) {
       // Strip query params (e.g. ?tenant=slug) to get the bare filename
       const filename = photo.src.split("?")[0].split("/").pop() || "";
       if (isCleanDownload(photo.id)) {
