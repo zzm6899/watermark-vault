@@ -295,7 +295,7 @@ function previewBookingVarsHtml(text: string, bk: Booking, eventTypes: EventType
     notes: bk.notes || "",
     instagram: bk.instagramHandle || "",
   };
-  const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
   return esc(text)
     .replace(/\{\{([^}]+)\}\}/g, (_, varName) => {
       if (varName in varMap) {
@@ -1403,6 +1403,9 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
   const settings = getSettings();
   const eventTypes = getEventTypes();
 
+  // Reset recipient navigator when selection changes
+  useEffect(() => { setBulkPreviewIndex(0); }, [selectedBookingIds]);
+
   const fetchEmailLog = async (bookingId: string) => {
     const log = await getBookingEmailLog(bookingId);
     setEmailLogs(prev => ({ ...prev, [bookingId]: log }));
@@ -1656,7 +1659,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
           {showBulkPreview && bulkEmailSubject.trim() && bulkEmailBody.trim() && (() => {
             const selectedArr = bookings.filter(b => selectedBookingIds.has(b.id));
             if (selectedArr.length === 0) return null;
-            const safeIdx = Math.min(bulkPreviewIndex, selectedArr.length - 1);
+            const safeIdx = Math.max(0, Math.min(bulkPreviewIndex, selectedArr.length - 1));
             const sample = selectedArr[safeIdx];
             return (
               <div className="rounded-lg border border-border/50 overflow-hidden">
