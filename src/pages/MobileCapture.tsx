@@ -507,53 +507,65 @@ function MobileCaptureInner() {
     setImporting(true); setImportProgress(0);
     const isOnline = await recheckServer();
     setServerOnline(isOnline);
+    // Process freshHandles in chunks to bound peak memory — only IMPORT_CHUNK_SIZE photos'
+    // base64 payloads reside in JS memory at once.  Prevents OOM on burst shots (>~15 photos).
+    const IMPORT_CHUNK_SIZE = 10;
+    const newPhotos: Photo[] = [];
     try {
-      const importResult = await CameraUsb.importFiles({ handles: freshHandles });
-      const imported = importResult?.files ?? [];
-      if (imported.length === 0) { toast.error("Camera returned no files"); setImporting(false); return; }
-      setImportProgress(50);
-      const newPhotos: Photo[] = [];
-      if (isOnline) {
-        // Decode all base64 payloads to File objects up-front, then upload in parallel batches
-        setImportLabel(`Decoding ${imported.length} file${imported.length !== 1 ? "s" : ""}…`);
-        const decodedFiles: File[] = [];
-        const failedIdxs: number[] = [];
-        for (let i = 0; i < imported.length; i++) {
-          const f = imported[i];
-          if (!f.base64) { console.error("[import] No base64 for", f.localPath); failedIdxs.push(i); continue; }
-          try {
-            const byteChars = atob(f.base64);
-            const byteArr = new Uint8Array(byteChars.length);
-            for (let b = 0; b < byteChars.length; b++) byteArr[b] = byteChars.charCodeAt(b);
-            const blob = new Blob([byteArr], { type: f.mimeType || "image/jpeg" });
-            decodedFiles.push(new File([blob], f.localPath?.split("/").pop() || `photo_${i}.jpg`, { type: f.mimeType || "image/jpeg" }));
-          } catch (e) {
-            console.error("Decode error:", e);
-            failedIdxs.push(i);
-          }
+      for (let chunkStart = 0; chunkStart < freshHandles.length; chunkStart += IMPORT_CHUNK_SIZE) {
+        const chunkHandles = freshHandles.slice(chunkStart, chunkStart + IMPORT_CHUNK_SIZE);
+        const importResult = await CameraUsb.importFiles({ handles: chunkHandles });
+        const imported = importResult?.files ?? [];
+        if (imported.length === 0) {
+          if (chunkStart === 0) toast.error("Camera returned no files");
+          continue;
         }
-        failedIdxs.forEach(i => setFailedHandles(prev => [...prev, freshHandles[i]]));
-        if (decodedFiles.length > 0) {
-          setImportLabel(`Uploading ${decodedFiles.length} file${decodedFiles.length !== 1 ? "s" : ""}…`);
-          try {
-            const results = await uploadPhotosToServer(decodedFiles, (done, total, bytesPerSecond) => {
-              setImportProgress(50 + Math.round((done / total) * 50));
-              if (bytesPerSecond != null) setImportSpeed(bytesPerSecond);
-            });
-            for (const r of results) {
-              newPhotos.push({ id: r.id, src: r.url, thumbnail: r.url + "?size=thumb", title: r.originalName, width: 0, height: 0, proofing: true });
+        if (isOnline) {
+          // Decode this chunk's base64 payloads to File objects, then upload before the next chunk
+          setImportLabel(`Decoding ${imported.length} file${imported.length !== 1 ? "s" : ""}…`);
+          const decodedFiles: File[] = [];
+          for (let i = 0; i < imported.length; i++) {
+            const f = imported[i];
+            if (!f.base64) { console.error("[import] No base64 for", f.localPath); setFailedHandles(prev => [...prev, chunkHandles[i]]); continue; }
+            try {
+              const byteChars = atob(f.base64);
+              const byteArr = new Uint8Array(byteChars.length);
+              for (let b = 0; b < byteChars.length; b++) byteArr[b] = byteChars.charCodeAt(b);
+              const blob = new Blob([byteArr], { type: f.mimeType || "image/jpeg" });
+              decodedFiles.push(new File([blob], f.localPath?.split("/").pop() || `photo_${chunkStart + i}.jpg`, { type: f.mimeType || "image/jpeg" }));
+            } catch (e) {
+              console.error("Decode error:", e);
+              setFailedHandles(prev => [...prev, chunkHandles[i]]);
             }
-          } catch (e) {
-            console.error("Upload error:", e);
           }
+          if (decodedFiles.length > 0) {
+            setImportLabel(`Uploading ${decodedFiles.length} file${decodedFiles.length !== 1 ? "s" : ""}…`);
+            try {
+              const chunkResults = await uploadPhotosToServer(decodedFiles, (done, _total, bytesPerSecond) => {
+                setImportProgress(Math.round((chunkStart + done) / freshHandles.length * 100));
+                if (bytesPerSecond != null) setImportSpeed(bytesPerSecond);
+              });
+              for (const r of chunkResults) {
+                newPhotos.push({ id: r.id, src: r.url, thumbnail: r.url + "?size=thumb", title: r.originalName, width: 0, height: 0, proofing: true });
+              }
+            } catch (e) {
+              console.error("Upload error:", e);
+            }
+          }
+        } else {
+          for (const f of imported)
+            newPhotos.push({ id: crypto.randomUUID(), src: f.uri, thumbnail: f.uri, title: f.localPath.split("/").pop() || "photo", width: 0, height: 0, proofing: true });
+          setImportProgress(Math.round((chunkStart + chunkHandles.length) / freshHandles.length * 100));
         }
-        setImportProgress(100);
-        setImportSpeed(null);
-      } else {
-        for (const f of imported)
-          newPhotos.push({ id: crypto.randomUUID(), src: f.uri, thumbnail: f.uri, title: f.localPath.split("/").pop() || "photo", width: 0, height: 0, proofing: true });
-        setImportProgress(100);
+        // Track imported keys per-chunk to prevent re-import within the session
+        const importedKeys = imported.map((f: any) => {
+          const n = f.localPath?.split('/').pop() || f.name || '';
+          return n ? `${n}:${f.size ?? 0}` : '';
+        }).filter(Boolean);
+        importedKeys.forEach((k: string) => importedNamesRef.current.add(k));
       }
+      setImportProgress(100);
+      setImportSpeed(null);
       if (newPhotos.length > 0) {
         const fresh = albums.find(a => a.id === album.id) || album;
         const updated: Album = { ...fresh, photos: [...fresh.photos, ...newPhotos], photoCount: fresh.photos.length + newPhotos.length, coverImage: fresh.coverImage || newPhotos[0]?.src || "" };
@@ -571,15 +583,8 @@ function MobileCaptureInner() {
         setUploadedCount(p => p + newPhotos.length);
         sessionUploadedRef.current = true;
         setImportLabel("");
-        if (newPhotos.length > 0) toast.success(`${newPhotos.length} photos imported`);
-        // Warn about failures separately so success count is honest
+        toast.success(`${newPhotos.length} photos imported`);
       }
-      // Store "name:size" keys — handles name collisions across sessions
-      const importedKeys = imported.map((f: any) => {
-        const n = f.localPath?.split('/').pop() || f.name || '';
-        return n ? `${n}:${f.size ?? 0}` : '';
-      }).filter(Boolean);
-      importedKeys.forEach((k: string) => importedNamesRef.current.add(k));
       setCameraFiles(prev => prev.filter(f => {
         const n = f.name || '';
         const key = `${n}:${(f as any).size ?? 0}`;
