@@ -340,8 +340,13 @@ class CameraUsbPlugin : Plugin() {
             // Snapshot current handles so we only report NEW files
             lastKnownHandles.clear()
             for (storageId in storageIds) {
-                val handles = mtp.getObjectHandles(storageId, MtpConstants.FORMAT_EXIF_JPEG, 0)
-                if (handles != null) lastKnownHandles.addAll(handles.toList())
+                try {
+                    val handles = mtp.getObjectHandles(storageId, MtpConstants.FORMAT_EXIF_JPEG, 0)
+                    if (handles != null) lastKnownHandles.addAll(handles.toList())
+                } catch (e: Exception) {
+                    // Skip storages that fail (e.g. empty or mis-formatted slot in a dual-card camera)
+                    android.util.Log.w("CameraUsb", "startWatching: skipping storage $storageId: ${e.message}")
+                }
             }
 
             // Schedule polling on MTP thread (safe — same thread as all MTP calls)
@@ -381,16 +386,31 @@ class CameraUsbPlugin : Plugin() {
 
             val currentHandles = mutableSetOf<Int>()
             val newFiles = mutableListOf<JSObject>()
+            // Track filenames seen this poll cycle across all storages.
+            // Dual-slot cameras in backup mode write the same JPEG to both cards;
+            // without this guard every new shot would be imported twice.
+            val seenFileNames = mutableSetOf<String>()
 
             for (storageId in storageIds) {
-                val handles = mtp.getObjectHandles(storageId, MtpConstants.FORMAT_EXIF_JPEG, 0) ?: continue
+                val handles = try {
+                    mtp.getObjectHandles(storageId, MtpConstants.FORMAT_EXIF_JPEG, 0) ?: continue
+                } catch (e: Exception) {
+                    // A single storage failure (e.g. empty/mis-formatted slot) must not
+                    // abort the whole poll cycle or close the MTP connection.
+                    android.util.Log.w("CameraUsb", "checkForNewFiles: skipping storage $storageId: ${e.message}")
+                    continue
+                }
                 for (handle in handles) {
                     currentHandles.add(handle)
                     if (!lastKnownHandles.contains(handle)) {
                         val info = mtp.getObjectInfo(handle) ?: continue
+                        val fileName = info.name ?: "photo_$handle.jpg"
+                        // Skip if this filename was already emitted from another storage slot
+                        // in this same poll cycle (backup / mirror mode).
+                        if (!seenFileNames.add(fileName)) continue
                         newFiles.add(JSObject().apply {
                             put("handle", handle)
-                            put("name", info.name ?: "photo_$handle.jpg")
+                            put("name", fileName)
                             put("mimeType", "image/jpeg")
                             put("size", info.compressedSize)
                             put("dateModified", info.dateModified * 1000L)
