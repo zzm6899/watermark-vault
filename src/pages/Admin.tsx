@@ -6304,7 +6304,18 @@ function LicenseKeysPanel() {
             <div className="flex items-center gap-3 pt-1">
               <Switch
                 checked={newIsTrial}
-                onCheckedChange={setNewIsTrial}
+                onCheckedChange={(v) => {
+                  setNewIsTrial(v);
+                  if (v) {
+                    // Pre-fill classic trial defaults so limits are enforced immediately
+                    if (!newMaxEvents.trim()) setNewMaxEvents("1");
+                    if (!newMaxBookings.trim()) setNewMaxBookings("10");
+                  } else {
+                    // Clear defaults when un-marking as trial (only if they still match the defaults)
+                    if (newMaxEvents === "1") setNewMaxEvents("");
+                    if (newMaxBookings === "10") setNewMaxBookings("");
+                  }
+                }}
                 id="trial-toggle"
               />
               <label htmlFor="trial-toggle" className="text-xs font-body text-foreground cursor-pointer">
