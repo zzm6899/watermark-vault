@@ -272,7 +272,7 @@ function MobileCaptureInner() {
   const [offlineQueue, setOfflineQueue] = useState<File[]>([]);
   const [starFilter, setStarFilter] = useState(false);
   const [showAlbumEdit, setShowAlbumEdit] = useState(false);
-  const [enableProofing, setEnableProofing] = useState(false);
+  const [sendingProofing, setSendingProofing] = useState(false);
   const emailSentRef = useRef(false);
   const sessionUploadedRef = useRef(false);
 
@@ -676,6 +676,46 @@ function MobileCaptureInner() {
       toast.success(`${results.length} queued photo${results.length !== 1 ? "s" : ""} uploaded`);
     } catch { toast.error("Failed to flush offline queue"); }
     finally { setUploading(false); setUploadSpeed(null); }
+  };
+
+  const handleSendForProofing = async () => {
+    if (!targetAlbum || !getSettings().proofingEnabled) return;
+    setSendingProofing(true);
+    try {
+      const clientToken = targetAlbum.clientToken || `ct-${crypto.randomUUID()}`;
+      const newRound = {
+        roundNumber: (targetAlbum.proofingRounds?.length || 0) + 1,
+        sentAt: new Date().toISOString(),
+        selectedPhotoIds: [],
+      };
+      const updatedAlbum: Album = {
+        ...targetAlbum,
+        proofingEnabled: true,
+        proofingStage: "proofing",
+        proofingRounds: [...(targetAlbum.proofingRounds || []), newRound],
+        clientToken,
+      };
+      await saveAlbum(updatedAlbum);
+      setTargetAlbum(updatedAlbum);
+      setAlbums(prev => prev.map(a => a.id === updatedAlbum.id ? updatedAlbum : a));
+      if (selectedBooking?.clientEmail && serverOnline) {
+        const galleryUrl = `${window.location.origin}/gallery/${targetAlbum.slug}?token=${clientToken}`;
+        fetch("/api/email/send", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            to: selectedBooking.clientEmail,
+            subject: `📸 Your proofing gallery is ready — ${targetAlbum.title}`,
+            html: `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;"><h2 style="margin:0 0 16px;font-size:20px;">Your photos are ready to review! ⭐</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${selectedBooking.clientName || "there"}, your ${selectedBooking.type || "session"} photos are ready for you to star your favourites.</p><p style="color:#9ca3af;margin:0 0 20px;">Click the link below to open your private gallery.</p><a href="${galleryUrl}" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">View My Gallery →</a></div>`,
+          }),
+        }).catch(() => { toast.error("Failed to send proofing email"); });
+        toast.success("Proofing invite sent!");
+      } else {
+        toast.success("Proofing enabled!");
+      }
+    } finally {
+      setSendingProofing(false);
+    }
   };
 
   const filteredCameraFiles = jpegOnly
@@ -1370,23 +1410,47 @@ function MobileCaptureInner() {
         );
       })()}
 
-      {/* Mark Complete */}
-      {selectedBooking && selectedBooking.status !== "completed" && (
-        <div className="mt-4 space-y-3">
-          {/* Proofing toggle */}
-          {getSettings().proofingEnabled && (
-            <div className="flex items-center justify-between p-3 rounded-xl border border-border bg-secondary/30">
-              <div>
-                <p className="text-xs font-body text-foreground font-medium">Send Proofing Gallery</p>
-                <p className="text-[10px] font-body text-muted-foreground/70 mt-0.5">Email client a link to pick their favourite shots</p>
+      {/* Send for Proofing */}
+      {getSettings().proofingEnabled && targetAlbum && targetAlbum.photos.length > 0 && (
+        <div className="mt-4">
+          {(!targetAlbum.proofingStage || targetAlbum.proofingStage === "not-started") ? (
+            <button
+              onClick={handleSendForProofing}
+              disabled={sendingProofing}
+              className="w-full flex items-center justify-center gap-2 py-3 rounded-xl border border-yellow-500/30 text-yellow-400 bg-yellow-500/5 text-xs font-body tracking-wider uppercase hover:bg-yellow-500/10 transition-colors active:scale-[0.99] disabled:opacity-50"
+            >
+              <Star className="w-4 h-4" />
+              {sendingProofing ? "Sending…" : "Send for Proofing"}
+            </button>
+          ) : (
+            <div className="flex items-center justify-between p-3 rounded-xl border border-yellow-500/20 bg-yellow-500/5">
+              <div className="flex items-center gap-2">
+                <Star className="w-4 h-4 text-yellow-400 fill-yellow-400/30" />
+                <div>
+                  <p className="text-xs font-body text-foreground font-medium">Proofing Active</p>
+                  <p className="text-[10px] font-body text-muted-foreground/70 mt-0.5">Round {targetAlbum.proofingRounds?.length || 1}</p>
+                </div>
               </div>
-              <Switch checked={enableProofing} onCheckedChange={setEnableProofing} />
+              {targetAlbum.proofingStage === "selections-submitted" && (
+                <button
+                  onClick={handleSendForProofing}
+                  disabled={sendingProofing}
+                  className="text-[10px] font-body tracking-wider uppercase px-2.5 py-1.5 rounded-full border border-yellow-500/40 text-yellow-400 hover:bg-yellow-500/10 disabled:opacity-50 transition-all"
+                >
+                  {sendingProofing ? "Sending…" : "New Round"}
+                </button>
+              )}
             </div>
           )}
+        </div>
+      )}
+
+      {/* Mark Complete */}
+      {selectedBooking && selectedBooking.status !== "completed" && (
+        <div className="mt-4">
           <button
             onClick={async () => {
               if (tenantSession) {
-                // Tenant mode — update booking status via server API
                 fetch(`/api/tenant/${encodeURIComponent(tenantSession.slug)}/bookings/${encodeURIComponent(selectedBooking.id)}`, {
                   method: "PUT",
                   headers: { "Content-Type": "application/json" },
@@ -1397,35 +1461,12 @@ function MobileCaptureInner() {
               }
               setBookings(prev => prev.map(b => b.id === selectedBooking.id ? { ...b, status: "completed" } : b));
               setSelectedBooking(prev => prev ? { ...prev, status: "completed" } : prev);
-              if (enableProofing && targetAlbum && getSettings().proofingEnabled) {
-                const clientToken = targetAlbum.clientToken || `ct-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-                const newRound = { roundNumber: (targetAlbum.proofingRounds?.length || 0) + 1, sentAt: new Date().toISOString(), selectedPhotoIds: [] };
-                const updatedAlbum = { ...targetAlbum, proofingEnabled: true, proofingStage: "proofing" as const, proofingRounds: [...(targetAlbum.proofingRounds || []), newRound], clientToken };
-                await saveAlbum(updatedAlbum);
-                setTargetAlbum(updatedAlbum);
-                if (selectedBooking.clientEmail && serverOnline) {
-                  const galleryUrl = `${window.location.origin}/gallery/${targetAlbum.slug}?token=${clientToken}`;
-                  fetch("/api/email/send", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                      to: selectedBooking.clientEmail,
-                      subject: `📸 Your proofing gallery is ready — ${targetAlbum.title}`,
-                      html: `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;"><h2 style="margin:0 0 16px;font-size:20px;">Your photos are ready to review! ⭐</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${selectedBooking.clientName || "there"}, your ${selectedBooking.type || "session"} photos are ready for you to star your favourites.</p><p style="color:#9ca3af;margin:0 0 20px;">Click the link below to open your private gallery.</p><a href="${galleryUrl}" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">View My Gallery →</a></div>`,
-                    }),
-                  }).catch(() => {});
-                  toast.success("Session complete — proofing invite sent!");
-                } else {
-                  toast.success("Session complete — proofing enabled!");
-                }
-              } else {
-                toast.success("Session marked as completed");
-              }
+              toast.success("Session marked as completed");
             }}
             className="w-full flex items-center justify-center gap-2 py-3 rounded-xl border border-green-500/30 text-green-400 bg-green-500/5 text-xs font-body tracking-wider uppercase hover:bg-green-500/10 transition-colors active:scale-[0.99]"
           >
             <CheckCircle2 className="w-4 h-4" />
-            {enableProofing ? "Complete & Send Proofing" : "Mark Session Complete"}
+            Mark Session Complete
           </button>
         </div>
       )}
