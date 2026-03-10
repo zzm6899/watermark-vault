@@ -1848,11 +1848,17 @@ function TenantAlbumEditor({ slug, album, onSave, onCancel }: {
           <p className="text-xs font-body text-muted-foreground">Click to upload photos</p>
           <input ref={uploadRef} type="file" accept="image/*" multiple className="absolute inset-0 opacity-0 cursor-pointer" onChange={handlePhotoUpload} />
         </div>
-        {/* Camera capture shortcut — shown on touch/mobile devices only */}
-        <label className="mb-3 flex items-center justify-center gap-2 p-2.5 rounded-lg border border-border/50 text-xs font-body text-muted-foreground cursor-pointer hover:bg-secondary/50 transition-colors sm:hidden">
-          <Camera className="w-4 h-4" /> Take a photo
-          <input type="file" accept="image/*" capture="environment" className="sr-only" onChange={handlePhotoUpload} />
-        </label>
+        {/* Camera / gallery shortcuts — shown on touch/mobile devices only */}
+        <div className="mb-3 flex gap-2 sm:hidden">
+          <label className="flex-1 flex items-center justify-center gap-2 p-2.5 rounded-lg border border-border/50 text-xs font-body text-muted-foreground cursor-pointer hover:bg-secondary/50 transition-colors">
+            <Camera className="w-4 h-4" /> Take a photo
+            <input type="file" accept="image/*" capture="environment" className="sr-only" onChange={handlePhotoUpload} />
+          </label>
+          <label className="flex-1 flex items-center justify-center gap-2 p-2.5 rounded-lg border border-border/50 text-xs font-body text-muted-foreground cursor-pointer hover:bg-secondary/50 transition-colors">
+            <Upload className="w-4 h-4" /> Choose photos
+            <input type="file" accept="image/*" multiple className="sr-only" onChange={handlePhotoUpload} />
+          </label>
+        </div>
         {uploading && (
           <div className="mb-3 h-1.5 bg-secondary rounded-full overflow-hidden">
             <div className="h-full bg-primary rounded-full transition-all" style={{ width: `${uploadProgress}%` }} />
@@ -2367,11 +2373,17 @@ function TenantPhotos({ slug }: { slug: string }) {
           </p>
           <input type="file" accept="image/*" multiple className="absolute inset-0 opacity-0 cursor-pointer" onChange={handleUpload} />
         </div>
-        {/* Camera capture shortcut — shown on touch/mobile devices only */}
-        <label className="mt-3 flex items-center justify-center gap-2 p-2.5 rounded-lg border border-border/50 text-xs font-body text-muted-foreground cursor-pointer hover:bg-secondary/50 transition-colors sm:hidden">
-          <Camera className="w-4 h-4" /> Take a photo
-          <input type="file" accept="image/*" capture="environment" className="sr-only" onChange={handleUpload} />
-        </label>
+        {/* Camera / gallery shortcuts — shown on touch/mobile devices only */}
+        <div className="mt-3 flex gap-2 sm:hidden">
+          <label className="flex-1 flex items-center justify-center gap-2 p-2.5 rounded-lg border border-border/50 text-xs font-body text-muted-foreground cursor-pointer hover:bg-secondary/50 transition-colors">
+            <Camera className="w-4 h-4" /> Take a photo
+            <input type="file" accept="image/*" capture="environment" className="sr-only" onChange={handleUpload} />
+          </label>
+          <label className="flex-1 flex items-center justify-center gap-2 p-2.5 rounded-lg border border-border/50 text-xs font-body text-muted-foreground cursor-pointer hover:bg-secondary/50 transition-colors">
+            <Upload className="w-4 h-4" /> Choose photos
+            <input type="file" accept="image/*" multiple className="sr-only" onChange={handleUpload} />
+          </label>
+        </div>
         {uploadStats && (
           <div className="mt-3 p-3 rounded-lg bg-secondary/50 border border-border">
             <div className="flex items-center justify-between text-xs font-body text-muted-foreground">
