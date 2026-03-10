@@ -2806,7 +2806,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
       });
       // Add all photos immediately — use server-side thumbnails (no heavy client-side canvas work)
       const newPhotos: Photo[] = results.map(r => ({
-        id: r.id, src: r.url, thumbnail: r.url + "?size=thumb", title: r.originalName.replace(/\.[^.]+$/, ""), width: 800, height: 600, uploadedAt: new Date().toISOString(),
+        id: r.id, src: r.url, thumbnail: r.url + "?size=thumb", title: r.originalName.replace(/\.[^.]+$/, "").replace(/^_+/, ""), width: 800, height: 600, uploadedAt: new Date().toISOString(),
         ...(r.ftpUploaded ? { ftpUploaded: true } : {}),
       }));
       const allPhotos = [...photos, ...newPhotos];
@@ -3613,7 +3613,7 @@ function PhotosView() {
       });
       // Add all photos in a single batch update to avoid stale-closure overwrite
       const newPhotos: Photo[] = results.map(r => ({
-        id: r.id, src: r.url, thumbnail: r.url + "?size=thumb", title: r.originalName.replace(/\.[^.]+$/, ""), width: 800, height: 600, uploadedAt: new Date().toISOString(),
+        id: r.id, src: r.url, thumbnail: r.url + "?size=thumb", title: r.originalName.replace(/\.[^.]+$/, "").replace(/^_+/, ""), width: 800, height: 600, uploadedAt: new Date().toISOString(),
         ...(r.ftpUploaded ? { ftpUploaded: true } : {}),
       }));
       if (newPhotos.length > 0) {
@@ -3645,7 +3645,7 @@ function PhotosView() {
         try {
           const result = await compressImage(file);
           const thumb = await generateThumbnail(result.src).catch(() => undefined);
-          const photo: Photo = { id: generateId("ph"), src: result.src, thumbnail: thumb, title: file.name.replace(/\.[^.]+$/, ""), width: result.width, height: result.height, uploadedAt: new Date().toISOString() };
+          const photo: Photo = { id: generateId("ph"), src: result.src, thumbnail: thumb, title: file.name.replace(/\.[^.]+$/, "").replace(/^_+/, ""), width: result.width, height: result.height, uploadedAt: new Date().toISOString() };
           addPhotoToTarget(photo);
           setUploadStats(prev => prev ? { ...prev, done: prev.done + 1, savedBytes: prev.savedBytes + (result.originalSize - result.compressedSize) } : null);
         } catch {

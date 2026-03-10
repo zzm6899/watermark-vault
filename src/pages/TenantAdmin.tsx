@@ -1477,7 +1477,7 @@ function TenantAlbumEditor({ slug, album, onSave, onCancel }: {
     }
     const newPhotos: Photo[] = results.map(r => ({
       id: r.id, src: r.url, thumbnail: r.url + "?size=thumb",
-      title: r.originalName.replace(/\.[^.]+$/, ""), width: 800, height: 600,
+      title: r.originalName.replace(/\.[^.]+$/, "").replace(/^_+/, ""), width: 800, height: 600,
       uploadedAt: new Date().toISOString(),
       ...(r.ftpUploaded ? { ftpUploaded: true } : {}),
     }));
@@ -2244,7 +2244,7 @@ function TenantPhotos({ slug }: { slug: string }) {
       }, slug);
       const newPhotos: Photo[] = results.map(r => ({
         id: r.id, src: r.url, thumbnail: r.url + "?size=thumb",
-        title: r.originalName.replace(/\.[^.]+$/, ""), width: 0, height: 0,
+        title: r.originalName.replace(/\.[^.]+$/, "").replace(/^_+/, ""), width: 0, height: 0,
         uploadedAt: new Date().toISOString(),
         ...(r.ftpUploaded ? { ftpUploaded: true } : {}),
       }));
@@ -2274,7 +2274,7 @@ function TenantPhotos({ slug }: { slug: string }) {
           const thumb = await generateThumbnail(result.src).catch(() => undefined);
           const photo: Photo = {
             id: generateId("ph"), src: result.src, thumbnail: thumb,
-            title: file.name.replace(/\.[^.]+$/, ""), width: result.width, height: result.height,
+            title: file.name.replace(/\.[^.]+$/, "").replace(/^_+/, ""), width: result.width, height: result.height,
             uploadedAt: new Date().toISOString(),
           };
           if (selectedAlbum) {
