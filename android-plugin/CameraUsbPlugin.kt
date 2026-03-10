@@ -403,11 +403,7 @@ class CameraUsbPlugin : Plugin() {
 
             for (storageId in storageIds) {
                 val handles = try {
-                    mtp.getObjectHandles(storageId, MtpConstants.FORMAT_EXIF_JPEG, 0) ?: run {
-                        // Carry forward previous handles so no false positives next cycle
-                        currentHandlesByStorage[storageId] = lastKnownHandlesByStorage[storageId] ?: mutableSetOf()
-                        continue
-                    }
+                    mtp.getObjectHandles(storageId, MtpConstants.FORMAT_EXIF_JPEG, 0)
                 } catch (e: Exception) {
                     // A single storage failure (e.g. empty/mis-formatted slot) must not
                     // abort the whole poll cycle or close the MTP connection.
@@ -415,6 +411,11 @@ class CameraUsbPlugin : Plugin() {
                     // once the storage becomes available again.
                     currentHandlesByStorage[storageId] = lastKnownHandlesByStorage[storageId] ?: mutableSetOf()
                     android.util.Log.w("CameraUsb", "checkForNewFiles: skipping storage $storageId: ${e.message}")
+                    continue
+                }
+                if (handles == null) {
+                    // Carry forward previous handles so no false positives next cycle
+                    currentHandlesByStorage[storageId] = lastKnownHandlesByStorage[storageId] ?: mutableSetOf()
                     continue
                 }
                 val knownForStorage = lastKnownHandlesByStorage[storageId] ?: mutableSetOf()
