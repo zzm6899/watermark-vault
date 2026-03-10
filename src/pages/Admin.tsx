@@ -2809,7 +2809,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
     setTimeout(() => setFtpUploadProgress(null), 4000);
   };
 
-
+  const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
     const fileArr = Array.from(files);

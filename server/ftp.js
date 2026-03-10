@@ -203,7 +203,7 @@ function sanitizeFolderName(name) {
   return name
     .replace(/[/\\:*?"<>|]/g, "-")
     .replace(/\s+/g, "_")
-    .replace(/_-_/g, "-")
+    .replace(/[-_]{2,}/g, "-")
     .replace(/^[-_.]+|[-_.]+$/g, "")
     .slice(0, 100) || "album";
 }

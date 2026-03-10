@@ -248,7 +248,8 @@ app.post("/api/tenant/:slug/settings/ftp/test", async (req, res) => {
 // ── FTP: Bulk album re-upload with SSE progress ─────────────────────────────
 // POST /api/ftp/upload-album/:albumSlug?tenant=<slug>
 // Uploads all photos from an album to FTP, streaming progress events to the client.
-app.post("/api/ftp/upload-album/:albumSlug", async (req, res) => {
+const ftpUploadAlbumLimiter = rateLimit({ windowMs: 60_000, max: 5, standardHeaders: true, legacyHeaders: false, message: { error: "Too many FTP upload requests — please wait" } });
+app.post("/api/ftp/upload-album/:albumSlug", ftpUploadAlbumLimiter, async (req, res) => {
   const { albumSlug } = req.params;
   const tenantSlug = req.query.tenant ? String(req.query.tenant) : null;
 
@@ -352,7 +353,8 @@ app.post("/api/ftp/upload-album/:albumSlug", async (req, res) => {
 
 // ── FTP: Move a starred photo to the "{albumName}-starred" sub-folder ────────
 // POST /api/ftp/move-starred
-app.post("/api/ftp/move-starred", async (req, res) => {
+const ftpMoveStarredLimiter = rateLimit({ windowMs: 60_000, max: 60, standardHeaders: true, legacyHeaders: false, message: { error: "Too many FTP move requests — please wait" } });
+app.post("/api/ftp/move-starred", ftpMoveStarredLimiter, async (req, res) => {
   const { photoSrc, albumTitle, albumSlug, tenantSlug } = req.body || {};
 
   if (!photoSrc) return res.json({ ok: false, error: "photoSrc is required" });
@@ -1301,8 +1303,7 @@ app.post("/api/proofing/submit", async (req, res) => {
           const localFilePath = path.join(UPLOADS_DIR, filename);
           const fromPath = path.posix.join(sourceFolder, filename);
           const toPath = path.posix.join(starredFolder, filename);
-          const { moveFileOnFtp: moveFn } = require("./ftp");
-          await moveFn(
+          await moveFileOnFtp(
             fs.existsSync(localFilePath) ? localFilePath : null,
             fromPath,
             toPath,
