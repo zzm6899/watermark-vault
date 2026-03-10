@@ -525,10 +525,12 @@ function isPhotoAccessible(filename, sessionKey, albumId) {
     const sessionParsed = typeof sessionData === "string" ? JSON.parse(sessionData) : sessionData;
     if (sessionParsed?.unlockedPhotoIds?.includes(photo.id)) return true;
 
-    // Check free remaining — first N photos in album are free
-    const freeRemaining = typeof album.freeDownloads === "number" ? album.freeDownloads : 5;
-    const photoIndex = album.photos.indexOf(photo);
-    if (photoIndex >= 0 && photoIndex < freeRemaining) return true;
+    // Check per-session free download quota — any photo is accessible if the
+    // session still has remaining free downloads (tracked client-side via
+    // usedFreeDownloads and persisted to the album on the server).
+    const sessionFreeUsed = album.usedFreeDownloads?.[sessionKey] || 0;
+    const freeQuota = typeof album.freeDownloads === "number" ? album.freeDownloads : 5;
+    if (sessionFreeUsed < freeQuota) return true;
 
     return false;
   } catch {
