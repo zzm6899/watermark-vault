@@ -282,6 +282,10 @@ export async function createBookingCheckout(params: {
     const res = await fetch("/api/stripe/checkout/booking", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(params),
     });
+    if (!res.ok) {
+      try { const e = await res.json(); return { error: e.error || `Request failed (${res.status})` }; }
+      catch { return { error: `Request failed (${res.status})` }; }
+    }
     return await res.json();
   } catch { return { error: "Network error" }; }
 }
@@ -296,6 +300,10 @@ export async function createAlbumCheckout(params: {
     const res = await fetch("/api/stripe/checkout/album", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(params),
     });
+    if (!res.ok) {
+      try { const e = await res.json(); return { error: e.error || `Request failed (${res.status})` }; }
+      catch { return { error: `Request failed (${res.status})` }; }
+    }
     return await res.json();
   } catch { return { error: "Network error" }; }
 }
@@ -1378,6 +1386,10 @@ export async function createTenantAlbumCheckout(slug: string, params: {
     const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/stripe/checkout/album`, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(params),
     });
+    if (!res.ok) {
+      try { const e = await res.json(); return { error: e.error || `Request failed (${res.status})` }; }
+      catch { return { error: `Request failed (${res.status})` }; }
+    }
     return await res.json();
   } catch { return { error: "Network error" }; }
 }

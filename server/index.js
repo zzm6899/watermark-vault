@@ -687,7 +687,9 @@ function isPhotoAccessible(filename, sessionKey, albumId) {
 
     const photo = album.photos?.find(p => {
       const url = p.url || p.src || "";
-      return url.includes(filename);
+      // Compare exact basename to avoid substring collisions (e.g. "photo.jpg" matching "group-photo.jpg")
+      const urlBasename = url.split("?")[0].split("/").pop() || "";
+      return urlBasename === filename;
     });
     if (!photo) return false;
 
