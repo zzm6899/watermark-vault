@@ -804,14 +804,21 @@ function TenantEvents({ slug }: { slug: string }) {
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<EventType | null>(null);
   const [showNew, setShowNew] = useState(false);
+  const [licInfo, setLicInfo] = useState<{ isTrial?: boolean; trialMaxEvents?: number } | null>(null);
 
   const load = useCallback(async () => {
-    const data = await getTenantStoreKey<EventType[]>(slug, "wv_event_types");
+    const [data, lic] = await Promise.all([
+      getTenantStoreKey<EventType[]>(slug, "wv_event_types"),
+      getTenantLicenseInfo(slug),
+    ]);
     setEts(Array.isArray(data) ? data : []);
+    setLicInfo(lic);
     setLoading(false);
   }, [slug]);
 
   useEffect(() => { load(); }, [load]);
+
+  const trialLimitReached = !!(licInfo?.isTrial && eventTypes.length >= (licInfo.trialMaxEvents ?? 1));
 
   const save = async (ets: EventType[]) => {
     const { ok, error } = await saveTenantStoreKey(slug, "wv_event_types", ets);
@@ -849,10 +856,16 @@ function TenantEvents({ slug }: { slug: string }) {
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
       <div className="flex items-center justify-between mb-6">
         <h2 className="font-display text-2xl text-foreground">Event Types</h2>
-        <Button size="sm" onClick={() => setShowNew(true)} className="gap-2 bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase">
+        <Button size="sm" onClick={() => setShowNew(true)} disabled={trialLimitReached} title={trialLimitReached ? `Trial limit: ${licInfo?.trialMaxEvents ?? 1} event type${(licInfo?.trialMaxEvents ?? 1) !== 1 ? "s" : ""}` : undefined} className="gap-2 bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase disabled:opacity-50 disabled:cursor-not-allowed">
           <Plus className="w-4 h-4" /> New
         </Button>
       </div>
+
+      {trialLimitReached && (
+        <div className="mb-4 p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 text-xs font-body text-amber-500">
+          Free trial limit reached ({licInfo?.trialMaxEvents ?? 1} event type{(licInfo?.trialMaxEvents ?? 1) !== 1 ? "s" : ""}). Contact your platform administrator to upgrade your plan.
+        </div>
+      )}
 
       {(showNew || editing) && (
         <TenantEventEditor
@@ -868,9 +881,11 @@ function TenantEvents({ slug }: { slug: string }) {
             <Clock className="w-10 h-10 mx-auto mb-3 opacity-30" />
             <p className="font-body text-sm">No event types yet</p>
             <p className="font-body text-xs text-muted-foreground/60 mt-1">Add event types so clients can book sessions with you.</p>
-            <Button onClick={() => setShowNew(true)} variant="outline" className="mt-4 gap-2 font-body text-sm">
-              <Plus className="w-4 h-4" /> Create First Event Type
-            </Button>
+            {!trialLimitReached && (
+              <Button onClick={() => setShowNew(true)} variant="outline" className="mt-4 gap-2 font-body text-sm">
+                <Plus className="w-4 h-4" /> Create First Event Type
+              </Button>
+            )}
           </div>
         ) : eventTypes.map(et => (
           <div key={et.id} className={`glass-panel rounded-xl p-4 border transition-all ${et.active ? "border-border/50" : "border-border/20 opacity-60"}`}>

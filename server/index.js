@@ -1573,8 +1573,27 @@ app.get("/api/tenant/:slug/store/:key", tenantLimiter, (req, res) => {
 
 // Set tenant-scoped store key
 app.put("/api/tenant/:slug/store/:key", tenantLimiter, (req, res) => {
+  const slug = req.params.slug;
+
+  // ── Trial license key enforcement for event types ──────────────────────
+  if (req.params.key === "wv_event_types") {
+    const tenants = readTenants();
+    const tenant = tenants.find(t => t.slug === slug);
+    if (tenant && tenant.licenseKey) {
+      const allKeys = readLicenseKeys();
+      const licKey = allKeys.find(k => k.key === tenant.licenseKey);
+      if (licKey && licKey.isTrial) {
+        const newEventTypes = Array.isArray(req.body.value) ? req.body.value : [];
+        const maxEvents = licKey.trialMaxEvents ?? 1;
+        if (newEventTypes.length > maxEvents) {
+          return res.status(403).json({ error: `Free trial limit reached (${maxEvents} event type${maxEvents !== 1 ? "s" : ""}). Contact your platform administrator to upgrade your plan.` });
+        }
+      }
+    }
+  }
+
   const db = readDb();
-  const fullKey = `t_${req.params.slug}_${req.params.key}`;
+  const fullKey = `t_${slug}_${req.params.key}`;
   db[fullKey] = req.body.value;
   writeDb(db);
   res.json({ ok: true });
