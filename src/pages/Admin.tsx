@@ -8058,9 +8058,90 @@ function StorageView() {
   } | null>(null);
   const [loading, setLoading] = useState(true);
   const [deleteAllState, setDeleteAllState] = useState<"idle" | "confirming" | "deleting">("idle");
+  const [ftpEnabled, setFtpEnabled] = useState<boolean | null>(null);
+  const [ftpSyncJob, setFtpSyncJob] = useState<{
+    running: boolean;
+    albumsDone: number;
+    albumsTotal: number;
+    filesDone: number;
+    filesTotal: number;
+    filesFailed: number;
+    currentAlbum: string;
+    startTime: number;
+    elapsed: number;
+    results: Array<{ album: string; done: number; total: number; failed: number }>;
+  } | null>(null);
+  const ftpAbortRef = useRef(false);
 
   useEffect(() => {
     getServerStorageStats().then(s => { setServerStats(s); setLoading(false); });
+  }, []);
+
+  useEffect(() => {
+    if (!isServerMode()) return;
+    getGlobalFtpSettings().then(s => setFtpEnabled(!!(s.ftpEnabled && s.ftpHost)));
+  }, []);
+
+  const handleFtpSyncAll = useCallback(async () => {
+    ftpAbortRef.current = false;
+    const settings = await getGlobalFtpSettings();
+    if (!settings.ftpEnabled || !settings.ftpHost) {
+      toast.error("FTP is not enabled. Configure FTP in Settings → FTP Upload first.");
+      return;
+    }
+    const currentAlbums = getAlbums().filter(a => a.slug && (a.photos?.length || 0) > 0);
+    if (currentAlbums.length === 0) {
+      toast.info("No albums with photos to sync to FTP.");
+      return;
+    }
+    const startTime = Date.now();
+    const results: Array<{ album: string; done: number; total: number; failed: number }> = [];
+    let totalFilesDone = 0;
+    let totalFilesFailed = 0;
+    let grandTotal = 0;
+    setFtpSyncJob({
+      running: true, albumsDone: 0, albumsTotal: currentAlbums.length,
+      filesDone: 0, filesTotal: 0, filesFailed: 0,
+      currentAlbum: currentAlbums[0]?.title || currentAlbums[0]?.slug || "",
+      startTime, elapsed: 0, results: [],
+    });
+    for (let i = 0; i < currentAlbums.length; i++) {
+      if (ftpAbortRef.current) break;
+      const album = currentAlbums[i];
+      setFtpSyncJob(prev => prev ? {
+        ...prev, albumsDone: i, currentAlbum: album.title || album.slug,
+        elapsed: (Date.now() - startTime) / 1000,
+      } : null);
+      const result = await ftpUploadAlbum(
+        album.slug,
+        (done, total, failed) => {
+          if (ftpAbortRef.current) return;
+          const elapsed = (Date.now() - startTime) / 1000;
+          setFtpSyncJob(prev => prev ? {
+            ...prev, filesDone: totalFilesDone + done, filesTotal: grandTotal + total,
+            filesFailed: totalFilesFailed + failed, elapsed,
+          } : null);
+        },
+      );
+      grandTotal += result.total;
+      totalFilesDone += result.done;
+      totalFilesFailed += result.failed;
+      results.push({ album: album.title || album.slug, done: result.done, total: result.total, failed: result.failed });
+      setFtpSyncJob(prev => prev ? {
+        ...prev, albumsDone: i + 1,
+        filesDone: totalFilesDone, filesTotal: grandTotal, filesFailed: totalFilesFailed,
+        elapsed: (Date.now() - startTime) / 1000, results: [...results],
+      } : null);
+    }
+    const elapsed = (Date.now() - startTime) / 1000;
+    setFtpSyncJob(prev => prev ? { ...prev, running: false, elapsed, results } : null);
+    if (ftpAbortRef.current) {
+      toast.info("FTP sync cancelled");
+    } else if (totalFilesFailed === 0) {
+      toast.success(`FTP sync complete — ${totalFilesDone} file${totalFilesDone !== 1 ? "s" : ""} synced across ${results.length} album${results.length !== 1 ? "s" : ""}`);
+    } else {
+      toast.error(`FTP sync done with errors — ${totalFilesDone} uploaded, ${totalFilesFailed} failed`);
+    }
   }, []);
 
   const handleDeleteAllPhotos = async () => {
@@ -8333,6 +8414,106 @@ function StorageView() {
           </>
         )}
       </div>
+
+      {/* FTP Sync */}
+      {isServerMode() && (
+        <div className="glass-panel rounded-xl p-6 mb-6">
+          <h3 className="font-display text-base text-foreground mb-3 flex items-center gap-2">
+            <Upload className="w-4 h-4 text-primary" /> FTP Sync
+          </h3>
+          {ftpEnabled === false ? (
+            <p className="text-xs font-body text-muted-foreground">
+              FTP is not configured. Enable and configure it in <strong className="text-foreground">Settings → FTP Upload</strong>.
+            </p>
+          ) : (
+            <>
+              {ftpSyncJob && (
+                <div className="mb-4 space-y-2">
+                  <div className="flex items-center justify-between text-xs font-body text-muted-foreground">
+                    <span className="truncate max-w-[60%]">
+                      {ftpSyncJob.running ? `Syncing: ${ftpSyncJob.currentAlbum}` : "Sync complete"}
+                    </span>
+                    <span className={ftpSyncJob.running ? "text-primary" : ftpSyncJob.filesFailed > 0 ? "text-destructive" : "text-green-500"}>
+                      {ftpSyncJob.running
+                        ? `Album ${Math.min(ftpSyncJob.albumsDone + 1, ftpSyncJob.albumsTotal)}/${ftpSyncJob.albumsTotal}`
+                        : ftpSyncJob.filesFailed > 0 ? "Completed with errors" : "✓ Done"}
+                    </span>
+                  </div>
+                  <div className="h-2 rounded-full bg-secondary overflow-hidden">
+                    <div
+                      className={`h-full rounded-full transition-all duration-300 ${ftpSyncJob.running ? "bg-primary" : ftpSyncJob.filesFailed > 0 ? "bg-destructive" : "bg-green-500"}`}
+                      style={{ width: ftpSyncJob.albumsTotal > 0 ? `${(ftpSyncJob.albumsDone / ftpSyncJob.albumsTotal) * 100}%` : "0%" }}
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1">
+                    <div className="p-2 rounded-lg bg-secondary/50">
+                      <p className="text-[10px] font-body text-muted-foreground">Files Transferred</p>
+                      <p className="font-display text-base text-foreground">{ftpSyncJob.filesDone}</p>
+                    </div>
+                    <div className="p-2 rounded-lg bg-secondary/50">
+                      <p className="text-[10px] font-body text-muted-foreground">Failed</p>
+                      <p className={`font-display text-base ${ftpSyncJob.filesFailed > 0 ? "text-destructive" : "text-foreground"}`}>{ftpSyncJob.filesFailed}</p>
+                    </div>
+                    <div className="p-2 rounded-lg bg-secondary/50">
+                      <p className="text-[10px] font-body text-muted-foreground">Albums</p>
+                      <p className="font-display text-base text-foreground">{ftpSyncJob.albumsDone}/{ftpSyncJob.albumsTotal}</p>
+                    </div>
+                    <div className="p-2 rounded-lg bg-secondary/50">
+                      <p className="text-[10px] font-body text-muted-foreground">Elapsed</p>
+                      <p className="font-display text-base text-foreground">
+                        {ftpSyncJob.elapsed < 60
+                          ? `${ftpSyncJob.elapsed.toFixed(1)}s`
+                          : `${Math.floor(ftpSyncJob.elapsed / 60)}m ${Math.floor(ftpSyncJob.elapsed % 60)}s`}
+                      </p>
+                    </div>
+                  </div>
+                  {ftpSyncJob.running && ftpSyncJob.elapsed > 1 && ftpSyncJob.filesDone > 0 && (
+                    <p className="text-[10px] font-body text-muted-foreground">
+                      Speed: <span className="text-primary font-medium">{(ftpSyncJob.filesDone / ftpSyncJob.elapsed).toFixed(1)} files/s</span>
+                    </p>
+                  )}
+                  {ftpSyncJob.results.length > 0 && (
+                    <div className="space-y-1 mt-2 max-h-32 overflow-y-auto">
+                      {ftpSyncJob.results.map((r, i) => (
+                        <div key={i} className="flex items-center justify-between text-[10px] font-body text-muted-foreground px-1">
+                          <span className="truncate flex-1 mr-2">{r.album}</span>
+                          <span className={r.failed > 0 ? "text-destructive" : "text-green-400"}>
+                            {r.done}/{r.total}{r.failed > 0 ? ` (${r.failed} failed)` : " ✓"}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  onClick={handleFtpSyncAll}
+                  disabled={!!ftpSyncJob?.running}
+                  className="gap-2 font-body text-xs"
+                >
+                  <Upload className={`w-4 h-4 ${ftpSyncJob?.running ? "animate-pulse" : ""}`} />
+                  {ftpSyncJob?.running ? "Syncing…" : "Sync All Albums to FTP"}
+                </Button>
+                {ftpSyncJob?.running && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => { ftpAbortRef.current = true; }}
+                    className="gap-2 font-body text-xs border-border text-foreground"
+                  >
+                    <X className="w-3.5 h-3.5" /> Cancel
+                  </Button>
+                )}
+              </div>
+              <p className="text-[10px] font-body text-muted-foreground/50 mt-2">
+                Uploads all album photos to the configured FTP server. Skips albums with no photos. Uses FTP settings from Settings → FTP Upload.
+              </p>
+            </>
+          )}
+        </div>
+      )}
 
       {/* TrueNAS Volume / Disk Usage */}
       {loading ? (
