@@ -76,6 +76,7 @@ export interface Booking {
   answerLabels?: Record<string, string>;
   emailLog?: any[];
   tenantSlug?: string;   // set when booking is made via a tenant's public page
+  requiresConfirmation?: boolean; // true if admin must manually confirm; false = auto-confirm once deposit paid
 }
 
 export interface Photo {

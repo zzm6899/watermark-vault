@@ -167,13 +167,18 @@ function registerRoutes(app, { writeDb } = {}) {
         const db = JSON.parse(fs.readFileSync(DB_FILE, "utf-8"));
         
         if (metadata.type === "booking-deposit" && metadata.bookingId) {
-          const bookings = db.bookings ? JSON.parse(db.bookings) : [];
+          const raw = db["wv_bookings"];
+          const bookings = raw ? (typeof raw === "string" ? JSON.parse(raw) : (Array.isArray(raw) ? raw : [])) : [];
           const idx = bookings.findIndex(b => b.id === metadata.bookingId);
           if (idx >= 0) {
-            bookings[idx].paymentStatus = "paid";
+            bookings[idx].paymentStatus = bookings[idx].depositRequired ? "deposit-paid" : "paid";
             bookings[idx].depositPaidAt = new Date().toISOString();
             bookings[idx].stripeSessionId = session.id;
-            db.bookings = JSON.stringify(bookings);
+            // Auto-confirm booking now that deposit is paid (unless admin confirmation is separately required)
+            if (bookings[idx].status === "pending" && !bookings[idx].requiresConfirmation) {
+              bookings[idx].status = "confirmed";
+            }
+            db["wv_bookings"] = JSON.stringify(bookings);
             saveDb(db);
             console.log(`📝 Booking ${metadata.bookingId} marked as paid`);
           }
@@ -497,6 +502,10 @@ function registerTenantStripeRoutes(app, { readDb, readTenants }) {
             bookings[idx].paymentStatus = "deposit-paid";
             bookings[idx].depositPaidAt = new Date().toISOString();
             bookings[idx].stripeSessionId = session.id;
+            // Auto-confirm booking now that deposit is paid (unless admin confirmation is separately required)
+            if (bookings[idx].status === "pending" && !bookings[idx].requiresConfirmation) {
+              bookings[idx].status = "confirmed";
+            }
             dbData["wv_bookings"] = JSON.stringify(bookings);
             fs.writeFileSync(DB_FILE, JSON.stringify(dbData, null, 2));
             console.log(`📝 Tenant booking ${metadata.bookingId} deposit marked as paid`);
