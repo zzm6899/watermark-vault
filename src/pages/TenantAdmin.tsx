@@ -18,7 +18,7 @@ import { Slider } from "@/components/ui/slider";
 import WatermarkedImage from "@/components/WatermarkedImage";
 import { toast } from "sonner";
 import { getMobileTenantSession, setMobileTenantSession, hashPassword } from "@/lib/storage";
-import { generateThumbnail, compressImage, formatBytes } from "@/lib/image-utils";
+import { generateThumbnail, compressImage, formatBytes, formatSpeed } from "@/lib/image-utils";
 import {
   fetchTenantMobileData, getTenantSettings, saveTenantSettings,
   deleteTenantBooking, updateTenantBookingFull,
@@ -1445,6 +1445,7 @@ function TenantAlbumEditor({ slug, album, onSave, onCancel }: {
   const [liveAlbum, setLiveAlbum] = useState<Album | null>(album);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadSpeed, setUploadSpeed] = useState<number | null>(null);
   const uploadRef = useRef<HTMLInputElement>(null);
 
   const updateLiveAlbum = async (updated: Album) => {
@@ -1459,12 +1460,15 @@ function TenantAlbumEditor({ slug, album, onSave, onCancel }: {
     if (!liveAlbum) { toast.error("Save the album first before uploading photos"); return; }
     setUploading(true);
     setUploadProgress(0);
+    setUploadSpeed(null);
     const fileArr = Array.from(files);
-    const results = await uploadPhotosToServer(fileArr, (done, total) => {
+    const results = await uploadPhotosToServer(fileArr, (done, total, bytesPerSecond) => {
       setUploadProgress(Math.round((done / total) * 100));
+      if (bytesPerSecond != null) setUploadSpeed(bytesPerSecond);
     }, slug);
     if (results.length === 0) {
       setUploading(false);
+      setUploadSpeed(null);
       toast.error("Upload failed — check server connection");
       if (e.target) e.target.value = "";
       return;
@@ -1478,6 +1482,7 @@ function TenantAlbumEditor({ slug, album, onSave, onCancel }: {
     const updatedAlbum = { ...liveAlbum, photos: [...(liveAlbum.photos || []), ...newPhotos] };
     await updateLiveAlbum(updatedAlbum);
     setUploading(false);
+    setUploadSpeed(null);
     if (results.length > 0) toast.success(`${results.length} photos uploaded`);
     if (e.target) e.target.value = "";
   };
@@ -1860,8 +1865,16 @@ function TenantAlbumEditor({ slug, album, onSave, onCancel }: {
           </label>
         </div>
         {uploading && (
-          <div className="mb-3 h-1.5 bg-secondary rounded-full overflow-hidden">
-            <div className="h-full bg-primary rounded-full transition-all" style={{ width: `${uploadProgress}%` }} />
+          <div className="mb-3">
+            <div className="flex items-center justify-between text-xs font-body text-muted-foreground mb-1">
+              <span>{uploadProgress}%</span>
+              {uploadSpeed != null && uploadSpeed > 0 && (
+                <span className="text-primary font-medium">{formatSpeed(uploadSpeed)}</span>
+              )}
+            </div>
+            <div className="h-1.5 bg-secondary rounded-full overflow-hidden">
+              <div className="h-full bg-primary rounded-full transition-all" style={{ width: `${uploadProgress}%` }} />
+            </div>
           </div>
         )}
         {liveAlbum && liveAlbum.photos && liveAlbum.photos.length > 0 && (
