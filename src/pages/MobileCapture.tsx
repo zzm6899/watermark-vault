@@ -20,6 +20,7 @@ import {
   Clock, ChevronDown, ChevronUp, CheckCircle2, Users,
   Star, CalendarDays, ChevronLeft, ChevronRight,
   AlertTriangle, RotateCcw, Settings2, LogOut,
+  Pause, Play,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
@@ -83,6 +84,14 @@ function getSessionStatus(bk: Booking, albums: Album[]): SessionStatus {
   return "upcoming";
 }
 
+
+// ── Upload queue item ──────────────────────────────────────────
+type UploadQueueItem = {
+  id: string;
+  file: File;
+  preview: string;   // object URL — revoked after upload completes
+  status: "pending" | "uploading" | "done" | "failed";
+};
 
 // ── Error Boundary — prevents PTP crash from killing the whole page ──
 class CameraErrorBoundary extends React.Component<
@@ -236,7 +245,11 @@ function MobileCaptureInner() {
   const [uploadSpeed, setUploadSpeed] = useState<number | null>(null);
   const [importSpeed, setImportSpeed] = useState<number | null>(null);
   const [uploadedCount, setUploadedCount] = useState(0);
-  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+  const [uploadQueue, setUploadQueue] = useState<UploadQueueItem[]>([]);
+  const [uploadPaused, setUploadPaused] = useState(false);
+  const uploadPausedRef = useRef(false);
+  const [liveCapturePaused, setLiveCapturePaused] = useState(false);
+  const liveCapturePausedRef = useRef(false);
   const [serverOnline, setServerOnline] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const watchInputRef = useRef<HTMLInputElement>(null);
@@ -405,7 +418,7 @@ function MobileCaptureInner() {
   // tracks imported filenames — prevents duplicates when "On Camera" count lags behind
   const importedNamesRef = useRef<Set<string>>(new Set());
   const drainImportQueue = useCallback(async () => {
-    if (importBusyRef.current) return;
+    if (importBusyRef.current || liveCapturePausedRef.current) return;
     while (importQueueRef.current.length > 0) {
       // Collect all currently-queued handles into one batch so shots that
       // arrived while the previous import was running are processed together
@@ -540,22 +553,31 @@ function MobileCaptureInner() {
             }
           }
           if (decodedFiles.length > 0) {
+            // Sort by filename so camera sequential shots (DSC_0001.JPG…) stay in capture order
+            decodedFiles.sort((a, b) => a.name.localeCompare(b.name));
             setImportLabel(`Uploading ${decodedFiles.length} file${decodedFiles.length !== 1 ? "s" : ""}…`);
             try {
+              const uploadedAt = new Date().toISOString();
               const chunkResults = await uploadPhotosToServer(decodedFiles, (done, _total, bytesPerSecond) => {
                 setImportProgress(Math.round((chunkStart + done) / freshHandles.length * 100));
                 if (bytesPerSecond != null) setImportSpeed(bytesPerSecond);
               });
-              for (const r of chunkResults) {
-                newPhotos.push({ id: r.id, src: r.url, thumbnail: r.url + "?size=thumb", title: r.originalName, width: 0, height: 0, proofing: true });
+              // Re-order results to match the sorted decodedFiles order
+              const resultByName = new Map(chunkResults.map(r => [r.originalName, r]));
+              const orderedResults = decodedFiles.map(f => resultByName.get(f.name)).filter(Boolean);
+              for (const r of orderedResults) {
+                if (!r) continue;
+                newPhotos.push({ id: r.id, src: r.url, thumbnail: r.url + "?size=thumb", title: r.originalName, width: 0, height: 0, proofing: true, uploadedAt });
               }
             } catch (e) {
               console.error("Upload error:", e);
+              // Queue decoded files for retry when connection is restored
+              setOfflineQueue(q => [...q, ...decodedFiles]);
             }
           }
         } else {
           for (const f of imported)
-            newPhotos.push({ id: crypto.randomUUID(), src: f.uri, thumbnail: f.uri, title: f.localPath.split("/").pop() || "photo", width: 0, height: 0, proofing: true });
+            newPhotos.push({ id: crypto.randomUUID(), src: f.uri, thumbnail: f.uri, title: f.localPath.split("/").pop() || "photo", width: 0, height: 0, proofing: true, uploadedAt: new Date().toISOString() });
           setImportProgress(Math.round((chunkStart + chunkHandles.length) / freshHandles.length * 100));
         }
         // Track imported keys per-chunk to prevent re-import within the session
@@ -605,6 +627,8 @@ function MobileCaptureInner() {
       setWatching(false);
       setLiveQueueSize(0);
       importQueueRef.current = [];
+      setLiveCapturePaused(false);
+      liveCapturePausedRef.current = false;
       toast.info("Live capture stopped");
     } else {
       if (!cameraConnected) { toast.error("No camera connected"); return; }
@@ -620,6 +644,17 @@ function MobileCaptureInner() {
     }
   };
 
+  const toggleLiveCapturePause = () => {
+    const willPause = !liveCapturePaused;
+    liveCapturePausedRef.current = willPause;
+    setLiveCapturePaused(willPause);
+    if (!willPause) {
+      // Resume — drain any queued handles that arrived while paused
+      drainImportQueue();
+    }
+    toast.info(willPause ? "Live capture paused — still shooting, uploads held" : "Live capture resumed");
+  };
+
   const handleFilePick = async (files: FileList | null) => {
     if (!files || files.length === 0 || !targetAlbum) return;
     const rawExt = [".nef",".cr2",".cr3",".arw",".orf",".rw2",".dng",".raf"];
@@ -629,30 +664,97 @@ function MobileCaptureInner() {
       return true;
     });
     if (!imageFiles.length) { toast.error("No images found"); return; }
-    setPendingFiles(p => [...p, ...imageFiles]);
+
+    // Sort by capture time — File.lastModified is the EXIF capture time for photos from a camera
+    const sortedFiles = [...imageFiles].sort((a, b) => a.lastModified - b.lastModified);
+
+    // Build upload queue with thumbnail previews
+    const queueItems: UploadQueueItem[] = sortedFiles.map(f => ({
+      id: crypto.randomUUID(),
+      file: f,
+      preview: URL.createObjectURL(f),
+      status: "pending",
+    }));
+    setUploadQueue(queueItems);
+    setUploadPaused(false);
+    uploadPausedRef.current = false;
     setUploading(true); setUploadProgress(0); setUploadSpeed(null);
+
+    const newPhotos: Photo[] = [];
+    const fileInfoByName = new Map(sortedFiles.map(f => [f.name, f]));
+
     try {
       if (serverOnline) {
-        const results = await uploadPhotosToServer(imageFiles, (done, total, bytesPerSecond) => {
-          setUploadProgress(Math.round(done/total*100));
-          if (bytesPerSecond != null) setUploadSpeed(bytesPerSecond);
-        });
-        // Use server-side thumbnails — no client-side canvas work needed
-        const newPhotos: Photo[] = results.map(r => ({
-          id: r.id, src: r.url, thumbnail: r.url + "?size=thumb", title: r.originalName, width: 0, height: 0, proofing: true,
-        }));
+        // Upload in chunks of 5 — checks pause state between each chunk
+        const CHUNK = 5;
+        let totalDone = 0;
+        for (let i = 0; i < sortedFiles.length; i += CHUNK) {
+          // Wait while paused (user can still cancel by navigating away)
+          while (uploadPausedRef.current) {
+            await new Promise<void>(r => setTimeout(r, 500));
+          }
+          const chunk = sortedFiles.slice(i, i + CHUNK);
+          const chunkIds = queueItems.slice(i, i + CHUNK).map(q => q.id);
+          setUploadQueue(prev => prev.map(item =>
+            chunkIds.includes(item.id) ? { ...item, status: "uploading" } : item
+          ));
+          try {
+            const chunkResults = await uploadPhotosToServer(chunk, (done, _total, bytesPerSecond) => {
+              setUploadProgress(Math.round((totalDone + done) / sortedFiles.length * 100));
+              if (bytesPerSecond != null) setUploadSpeed(bytesPerSecond);
+            });
+            // Re-order results to match the sorted input file order
+            const resultByName = new Map(chunkResults.map(r => [r.originalName, r]));
+            const succeededNames = new Set(chunkResults.map(r => r.originalName));
+            const orderedResults = chunk.map(f => resultByName.get(f.name)).filter((r): r is NonNullable<typeof r> => !!r);
+            for (const r of orderedResults) {
+              const srcFile = fileInfoByName.get(r.originalName);
+              newPhotos.push({
+                id: r.id, src: r.url, thumbnail: r.url + "?size=thumb",
+                title: r.originalName, width: 0, height: 0, proofing: true,
+                uploadedAt: srcFile ? new Date(srcFile.lastModified).toISOString() : new Date().toISOString(),
+              });
+            }
+            totalDone += chunk.length;
+            // Mark each item individually — files missing from results were silently dropped
+            const failedFiles = chunk.filter(f => !succeededNames.has(f.name));
+            setUploadQueue(prev => prev.map(item => {
+              if (!chunkIds.includes(item.id)) return item;
+              return { ...item, status: succeededNames.has(item.file.name) ? "done" : "failed" };
+            }));
+            if (failedFiles.length > 0) setOfflineQueue(q => [...q, ...failedFiles]);
+          } catch {
+            // Failed chunk — mark as failed and add to offline queue for retry
+            setUploadQueue(prev => prev.map(item =>
+              chunkIds.includes(item.id) ? { ...item, status: "failed" } : item
+            ));
+            setOfflineQueue(q => [...q, ...chunk]);
+            totalDone += chunk.length;
+          }
+        }
+      } else {
+        setOfflineQueue(q => [...q, ...sortedFiles]);
+        setUploadQueue(prev => prev.map(item => ({ ...item, status: "failed" })));
+        toast.info(`${sortedFiles.length} file${sortedFiles.length !== 1 ? "s" : ""} queued — will upload when server is back`);
+      }
+      if (newPhotos.length > 0) {
         const fresh = albums.find(a => a.id === targetAlbum.id) || targetAlbum;
         const updated: Album = { ...fresh, photos: [...fresh.photos, ...newPhotos], photoCount: fresh.photos.length + newPhotos.length, coverImage: fresh.coverImage || newPhotos[0]?.src || "" };
         await saveAlbum(updated); setTargetAlbum(updated); setAlbums(prev => prev.map(a => a.id === updated.id ? updated : a));
         setUploadedCount(p => p + newPhotos.length);
         sessionUploadedRef.current = true;
         toast.success(`${newPhotos.length} photos uploaded`);
-      } else {
-        setOfflineQueue(q => [...q, ...imageFiles]);
-        toast.info(`${imageFiles.length} file${imageFiles.length !== 1 ? "s" : ""} queued — will upload when server is back`);
       }
     } catch { toast.error("Upload error"); }
-    finally { setUploading(false); setUploadSpeed(null); }
+    finally {
+      setUploading(false); setUploadSpeed(null);
+      // Revoke object URLs and clear queue after a brief moment so done state is visible
+      const toRevoke = queueItems.map(q => q.preview);
+      setTimeout(() => {
+        toRevoke.forEach(url => URL.revokeObjectURL(url));
+        setUploadQueue([]);
+      }, 2000);
+    }
   };
 
   // Star a photo — persists to album storage
@@ -673,7 +775,8 @@ function MobileCaptureInner() {
     const isOnline = await recheckServer();
     if (!isOnline) { toast.info("Still offline — queue retained"); return; }
     setServerOnline(true);
-    const files = [...offlineQueue];
+    // Sort by capture time before retrying
+    const files = [...offlineQueue].sort((a, b) => a.lastModified - b.lastModified);
     setOfflineQueue([]);
     setUploading(true); setUploadProgress(0); setUploadSpeed(null);
     try {
@@ -681,9 +784,13 @@ function MobileCaptureInner() {
         setUploadProgress(Math.round(done / total * 100));
         if (bytesPerSecond != null) setUploadSpeed(bytesPerSecond);
       });
-      const newPhotos: Photo[] = results.map(r => ({
-        id: r.id, src: r.url, thumbnail: r.url + "?size=thumb", title: r.originalName, width: 0, height: 0, proofing: true,
-      }));
+      const fileInfoByName = new Map(files.map(f => [f.name, f]));
+      const resultByName = new Map(results.map(r => [r.originalName, r]));
+      const orderedResults = files.map(f => resultByName.get(f.name)).filter((r): r is NonNullable<typeof r> => !!r);
+      const newPhotos: Photo[] = orderedResults.map(r => {
+        const srcFile = fileInfoByName.get(r.originalName);
+        return { id: r.id, src: r.url, thumbnail: r.url + "?size=thumb", title: r.originalName, width: 0, height: 0, proofing: true, uploadedAt: srcFile ? new Date(srcFile.lastModified).toISOString() : new Date().toISOString() };
+      });
       const fresh = albums.find(a => a.id === targetAlbum.id) || targetAlbum;
       const upd: Album = { ...fresh, photos: [...fresh.photos, ...newPhotos], photoCount: fresh.photos.length + newPhotos.length, coverImage: fresh.coverImage || newPhotos[0]?.src || "" };
       await saveAlbum(upd); setTargetAlbum(upd); setAlbums(prev => prev.map(a => a.id === upd.id ? upd : a));
@@ -1061,14 +1168,16 @@ function MobileCaptureInner() {
               <RefreshCw className="w-4 h-4 animate-spin text-primary flex-shrink-0" />
             ) : (
               <span className="w-4 h-4 flex items-center justify-center flex-shrink-0">
-                <span className="w-2 h-2 rounded-full bg-primary animate-pulse" />
+                <span className={`w-2 h-2 rounded-full ${liveCapturePaused ? "bg-amber-400" : "bg-primary animate-pulse"}`} />
               </span>
             )}
             <span className="text-sm font-body text-foreground truncate">
               {importing
                 ? (importLabel || "Importing from camera…")
                 : uploading
-                ? "Uploading…"
+                ? (uploadPaused ? "Upload paused" : "Uploading…")
+                : liveCapturePaused
+                ? `${liveQueueSize > 0 ? `${liveQueueSize} held · ` : ""}Live paused`
                 : liveQueueSize > 0
                 ? `${liveQueueSize} photo${liveQueueSize !== 1 ? "s" : ""} queued…`
                 : "Live — waiting for next shot"}
@@ -1083,6 +1192,20 @@ function MobileCaptureInner() {
               {(importing || uploading) && (
                 <span className="text-xs font-body text-muted-foreground">{importing ? importProgress : uploadProgress}%</span>
               )}
+              {/* Pause/resume for file picker uploads */}
+              {uploading && !importing && (
+                <button
+                  onClick={() => {
+                    const willPause = !uploadPaused;
+                    uploadPausedRef.current = willPause;
+                    setUploadPaused(willPause);
+                  }}
+                  className="inline-flex items-center gap-1 text-[10px] font-body tracking-wider uppercase px-2 py-1 rounded-full border border-border text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+                >
+                  {uploadPaused ? <Play className="w-3 h-3" /> : <Pause className="w-3 h-3" />}
+                  {uploadPaused ? "Resume" : "Pause"}
+                </button>
+              )}
               {!importing && !uploading && (
                 <span className="text-xs font-body text-muted-foreground">{uploadedCount} uploaded</span>
               )}
@@ -1091,6 +1214,49 @@ function MobileCaptureInner() {
           {(importing || uploading) && (
             <Progress value={importing ? importProgress : uploadProgress} className="h-1.5" />
           )}
+        </div>
+      )}
+
+      {/* Upload queue — thumbnail previews for file picker bulk uploads */}
+      {uploadQueue.length > 0 && (
+        <div className="glass-panel rounded-xl p-4 mb-4">
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-xs font-body tracking-wider uppercase text-muted-foreground">
+              Upload Queue · {uploadQueue.filter(q => q.status === "done").length}/{uploadQueue.length}
+            </p>
+            {uploadQueue.some(q => q.status === "failed") && (
+              <span className="text-[10px] font-body text-amber-400 flex items-center gap-1">
+                <AlertTriangle className="w-3 h-3" />
+                {uploadQueue.filter(q => q.status === "failed").length} failed
+              </span>
+            )}
+          </div>
+          <div className="flex gap-1.5 overflow-x-auto pb-1 scrollbar-hide">
+            {uploadQueue.map(item => (
+              <div key={item.id} className="relative flex-shrink-0 w-14 h-14 rounded-lg overflow-hidden bg-secondary">
+                <img src={item.preview} alt={item.file.name} className="w-full h-full object-cover" />
+                {/* Status overlay */}
+                {item.status === "uploading" && (
+                  <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
+                    <RefreshCw className="w-4 h-4 text-white animate-spin" />
+                  </div>
+                )}
+                {item.status === "done" && (
+                  <div className="absolute inset-0 bg-black/30 flex items-center justify-center">
+                    <CheckCircle2 className="w-4 h-4 text-green-400" />
+                  </div>
+                )}
+                {item.status === "failed" && (
+                  <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
+                    <AlertTriangle className="w-4 h-4 text-amber-400" />
+                  </div>
+                )}
+                {item.status === "pending" && (
+                  <div className="absolute inset-0 bg-black/20" />
+                )}
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
@@ -1133,14 +1299,53 @@ function MobileCaptureInner() {
               {/* Live capture toggle */}
               <div className="flex items-center justify-between pt-3 border-t border-border/50">
                 <div className="flex items-center gap-2">
-                  <Zap className={`w-4 h-4 ${watching ? "text-primary animate-pulse" : "text-muted-foreground"}`} />
+                  <Zap className={`w-4 h-4 ${watching ? (liveCapturePaused ? "text-amber-400" : "text-primary animate-pulse") : "text-muted-foreground"}`} />
                   <div>
                     <p className="text-sm font-body text-foreground">Live Capture</p>
-                    <p className="text-xs font-body text-muted-foreground">Auto-import as you shoot</p>
+                    <p className="text-xs font-body text-muted-foreground">
+                      {watching && liveCapturePaused ? "Paused — shots queued, not uploading" : "Auto-import as you shoot"}
+                    </p>
                   </div>
                 </div>
-                <Switch checked={watching} onCheckedChange={toggleLiveWatch} />
+                <div className="flex items-center gap-2">
+                  {watching && (
+                    <button
+                      onClick={toggleLiveCapturePause}
+                      className={`inline-flex items-center gap-1 text-[10px] font-body tracking-wider uppercase px-2.5 py-1.5 rounded-full border transition-all ${
+                        liveCapturePaused
+                          ? "border-amber-500/50 text-amber-400 bg-amber-500/10 hover:bg-amber-500/20"
+                          : "border-border text-muted-foreground hover:text-foreground hover:bg-secondary"
+                      }`}
+                    >
+                      {liveCapturePaused ? <Play className="w-3 h-3" /> : <Pause className="w-3 h-3" />}
+                      {liveCapturePaused ? "Resume" : "Pause"}
+                    </button>
+                  )}
+                  <Switch checked={watching} onCheckedChange={toggleLiveWatch} />
+                </div>
               </div>
+
+              {/* Queued camera handles — shown while live capture is paused or processing */}
+              {watching && liveQueueSize > 0 && (
+                <div className="mt-2 pt-2 border-t border-border/30">
+                  <p className="text-[10px] font-body text-muted-foreground/70 mb-1">
+                    {liveCapturePaused ? "Held in queue:" : "Processing:"} {liveQueueSize} photo{liveQueueSize !== 1 ? "s" : ""}
+                  </p>
+                  <div className="flex flex-wrap gap-1 max-h-16 overflow-y-auto">
+                    {importQueueRef.current.flat().slice(0, 20).map((handle, idx) => {
+                      const cf = cameraFiles.find(f => f.handle === handle);
+                      return cf ? (
+                        <span key={`${handle}-${idx}`} className="text-[9px] font-body text-muted-foreground/60 bg-secondary/50 px-1.5 py-0.5 rounded truncate max-w-[80px]">
+                          {cf.name}
+                        </span>
+                      ) : null;
+                    })}
+                    {liveQueueSize > 20 && (
+                      <span className="text-[9px] font-body text-muted-foreground/50">+{liveQueueSize - 20} more</span>
+                    )}
+                  </div>
+                </div>
+              )}
 
               {/* Import all */}
               {filteredCameraFiles.length > 0 && !watching && (
