@@ -1922,6 +1922,7 @@ app.post("/api/tenant/:slug/booking", tenantBookingLimiter, (req, res) => {
         const tenantBookingCount = existingBookings.filter(b => b.tenantSlug === slug).length;
         if (tenantBookingCount >= limits.maxBookings) {
           return res.status(403).json({ error: `Booking limit reached (${limits.maxBookings} bookings). Contact your platform administrator to upgrade your plan.` });
+        }
       }
     }
   }
