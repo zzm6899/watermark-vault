@@ -573,6 +573,15 @@ function MobileCaptureInner() {
                 if (!r) continue;
                 newPhotos.push({ id: r.id, src: r.url, thumbnail: r.url + "?size=thumb", title: r.originalName.replace(/\.[^.]+$/, "").replace(/^_+/, ""), width: 0, height: 0, proofing: true, uploadedAt });
               }
+              // Delete local cached copies now that files are safely on the server.
+              // Fire-and-forget: cleanup is best-effort and must not block the upload flow
+              // or depend on the component remaining mounted.
+              const localPaths = imported.map(f => f.localPath).filter((p): p is string => Boolean(p));
+              if (localPaths.length > 0) {
+                CameraUsb.deleteLocalFiles({ paths: localPaths }).catch(e =>
+                  console.warn("Local file cleanup failed:", e)
+                );
+              }
             } catch (e) {
               console.error("Upload error:", e);
               // Queue decoded files for retry when connection is restored

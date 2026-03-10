@@ -29,6 +29,11 @@ export class CameraUsbWeb extends WebPlugin implements CameraUsbPlugin {
     return { files: [] };
   }
 
+  async deleteLocalFiles(_options: { paths: string[] }) {
+    console.warn("CameraUsb: deleteLocalFiles not available on web");
+    return { deleted: 0 };
+  }
+
   async startWatching(_options?: { intervalMs?: number }) {
     console.warn("CameraUsb: watching not available on web");
   }

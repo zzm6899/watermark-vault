@@ -57,7 +57,11 @@ class CameraUsbPlugin : Plugin() {
     private var mtpDevice: MtpDevice? = null
     private var currentUsbDevice: UsbDevice? = null
     private var watchRunnable: Runnable? = null
-    private var lastKnownHandles = mutableSetOf<Int>()
+    // Keyed by storageId so handle numbers on CF Express and SD card don't collide.
+    // Cameras (e.g. Nikon) typically assign per-storage handles starting from 1; a
+    // flat Set would incorrectly treat an SD-card handle as "already seen" when the
+    // same number already exists for a CF Express file.
+    private var lastKnownHandlesByStorage = mutableMapOf<Int, MutableSet<Int>>()
     private var permissionReceiver: BroadcastReceiver? = null
 
     private val usbManager: UsbManager
@@ -219,10 +223,10 @@ class CameraUsbPlugin : Plugin() {
             }
 
             val allFiles = collectImageHandles(mtp, includeRaw)
-            allFiles.sortedByDescending { it.second.dateModified }
+            val sortedFiles = allFiles.sortedByDescending { it.second.dateModified }
 
             val filesArray = JSArray()
-            for ((handle, info) in allFiles.take(limit)) {
+            for ((handle, info) in sortedFiles.take(limit)) {
                 filesArray.put(JSObject().apply {
                     put("handle", handle)
                     put("name", info.name ?: "photo_$handle.jpg")
@@ -337,12 +341,15 @@ class CameraUsbPlugin : Plugin() {
             val storageIds = mtp.storageIds
                 ?: throw IllegalStateException("No storage on camera")
 
-            // Snapshot current handles so we only report NEW files
-            lastKnownHandles.clear()
+            // Snapshot current handles PER storage so we only report NEW files.
+            // Cameras assign handles independently per-storage (e.g. CF Express starts at 1
+            // and SD card also starts at 1); mixing them into a single flat set would cause
+            // handle-number collisions and miss new photos on the second card.
+            lastKnownHandlesByStorage.clear()
             for (storageId in storageIds) {
                 try {
                     val handles = mtp.getObjectHandles(storageId, MtpConstants.FORMAT_EXIF_JPEG, 0)
-                    if (handles != null) lastKnownHandles.addAll(handles.toList())
+                    if (handles != null) lastKnownHandlesByStorage[storageId] = handles.toMutableSet()
                 } catch (e: Exception) {
                     // Skip storages that fail (e.g. empty or mis-formatted slot in a dual-card camera)
                     android.util.Log.w("CameraUsb", "startWatching: skipping storage $storageId: ${e.message}")
@@ -384,7 +391,10 @@ class CameraUsbPlugin : Plugin() {
             val mtp = mtpDevice ?: return // camera not open, skip silently
             val storageIds = mtp.storageIds ?: return
 
-            val currentHandles = mutableSetOf<Int>()
+            // Build new per-storage snapshot; compare within each storage only so that
+            // handle-number collisions between CF Express and SD card are never mistaken
+            // for "already seen" files.
+            val currentHandlesByStorage = mutableMapOf<Int, MutableSet<Int>>()
             val newFiles = mutableListOf<JSObject>()
             // Track filenames seen this poll cycle across all storages.
             // Dual-slot cameras in backup mode write the same JPEG to both cards;
@@ -393,16 +403,24 @@ class CameraUsbPlugin : Plugin() {
 
             for (storageId in storageIds) {
                 val handles = try {
-                    mtp.getObjectHandles(storageId, MtpConstants.FORMAT_EXIF_JPEG, 0) ?: continue
+                    mtp.getObjectHandles(storageId, MtpConstants.FORMAT_EXIF_JPEG, 0) ?: run {
+                        // Carry forward previous handles so no false positives next cycle
+                        currentHandlesByStorage[storageId] = lastKnownHandlesByStorage[storageId] ?: mutableSetOf()
+                        continue
+                    }
                 } catch (e: Exception) {
                     // A single storage failure (e.g. empty/mis-formatted slot) must not
                     // abort the whole poll cycle or close the MTP connection.
+                    // Carry forward previous handles to avoid treating existing files as new
+                    // once the storage becomes available again.
+                    currentHandlesByStorage[storageId] = lastKnownHandlesByStorage[storageId] ?: mutableSetOf()
                     android.util.Log.w("CameraUsb", "checkForNewFiles: skipping storage $storageId: ${e.message}")
                     continue
                 }
+                val knownForStorage = lastKnownHandlesByStorage[storageId] ?: mutableSetOf()
+                currentHandlesByStorage[storageId] = handles.toMutableSet()
                 for (handle in handles) {
-                    currentHandles.add(handle)
-                    if (!lastKnownHandles.contains(handle)) {
+                    if (!knownForStorage.contains(handle)) {
                         val info = mtp.getObjectInfo(handle) ?: continue
                         val fileName = info.name ?: "photo_$handle.jpg"
                         // Skip if this filename was already emitted from another storage slot
@@ -419,7 +437,7 @@ class CameraUsbPlugin : Plugin() {
                 }
             }
 
-            lastKnownHandles = currentHandles
+            lastKnownHandlesByStorage = currentHandlesByStorage
 
             // Emit one file at a time — prevents OOM when burst shooting
             // JS processes them sequentially, never holding multiple full photos in RAM
@@ -437,6 +455,28 @@ class CameraUsbPlugin : Plugin() {
                 mainHandler.post { notifyListeners("cameraDisconnected", JSObject()) }
             }
         }
+    }
+
+    // ── deleteLocalFiles — clean up cached imports after successful upload ──────
+    @PluginMethod
+    fun deleteLocalFiles(call: PluginCall) {
+        val pathsArray = call.getArray("paths") ?: run { call.reject("Missing paths"); return }
+        val paths = (0 until pathsArray.length()).mapNotNull {
+            try { pathsArray.getString(it) } catch (_: Exception) { null }
+        }
+        var deleted = 0
+        for (path in paths) {
+            try {
+                val file = File(path)
+                if (file.exists() && file.delete()) {
+                    deleted++
+                    android.util.Log.d("CameraUsb", "Deleted local file: $path")
+                }
+            } catch (e: Exception) {
+                android.util.Log.w("CameraUsb", "Failed to delete $path: ${e.message}")
+            }
+        }
+        call.resolve(JSObject().apply { put("deleted", deleted) })
     }
 
     // ── Output directory helper ───────────────────────────────────────────────
