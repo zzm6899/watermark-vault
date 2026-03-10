@@ -180,6 +180,7 @@ export function updateBooking(bk: Booking) {
 
 // Check if a time slot is already booked
 export function isSlotBooked(date: string, time: string, duration: number, excludeBookingId?: string): boolean {
+  if (!time || !/^\d{2}:\d{2}$/.test(time)) return false;
   const bookings = getBookings().filter(
     (b) => b.date === date && b.status !== "cancelled" && b.id !== excludeBookingId
   );
