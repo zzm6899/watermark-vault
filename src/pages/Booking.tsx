@@ -389,6 +389,8 @@ export default function Booking() {
     const totalPrice = getPriceForDuration(selectedEvent, selectedDuration!);
     // If user chose pay-in-full, skip deposit logic
     const skipDeposit = payFullInstead && depositEnabled;
+    // Booking must stay "pending" until the deposit is actually received
+    const awaitingDeposit = !skipDeposit && depositEnabled && (paymentMethod === "stripe" || paymentMethod === "bank");
     const dateStr = toDateStr(selectedDate);
     return {
       id: `bk-${Date.now()}`,
@@ -399,7 +401,8 @@ export default function Booking() {
       eventTypeId: selectedEvent.id,
       type: selectedEvent.title,
       duration: selectedDuration,
-      status: selectedEvent.requiresConfirmation ? "pending" as const : "confirmed" as const,
+      status: (selectedEvent.requiresConfirmation || awaitingDeposit) ? "pending" as const : "confirmed" as const,
+      requiresConfirmation: !!selectedEvent.requiresConfirmation,
       notes: "",
       answers,
       answerLabels: Object.fromEntries(
