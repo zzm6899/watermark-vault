@@ -252,6 +252,7 @@ function MobileCaptureInner() {
   const [cameraFiles, setCameraFiles] = useState<CameraFile[]>([]);
   const [importing, setImporting] = useState(false);
   const [importProgress, setImportProgress] = useState(0);
+  const [liveQueueSize, setLiveQueueSize] = useState(0);
   const [watching, setWatching] = useState(false);
   const [notifyClient, setNotifyClient] = useState(true);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
@@ -406,7 +407,11 @@ function MobileCaptureInner() {
   const drainImportQueue = useCallback(async () => {
     if (importBusyRef.current) return;
     while (importQueueRef.current.length > 0) {
-      const handles = importQueueRef.current.shift()!;
+      // Collect all currently-queued handles into one batch so shots that
+      // arrived while the previous import was running are processed together
+      // rather than as separate sequential round-trips.
+      const handles = importQueueRef.current.splice(0).flat();
+      setLiveQueueSize(0);
       if (!importCameraFilesRef.current) break;
       importBusyRef.current = true;
       try { await importCameraFilesRef.current(handles); }
@@ -427,6 +432,7 @@ function MobileCaptureInner() {
             if (newFiles.length > 0 && targetAlbumRef.current) {
               // Queue the handles — drainImportQueue processes them serially to avoid OOM
               importQueueRef.current.push(newFiles.map((f: CameraFile) => f.handle));
+              setLiveQueueSize(importQueueRef.current.reduce((s, a) => s + a.length, 0));
               drainImportQueue();
             }
           } catch (handlerErr) {
@@ -590,6 +596,8 @@ function MobileCaptureInner() {
     if (watching) {
       try { await CameraUsb.stopWatching(); } catch (err) { console.warn("stopWatching error:", err); }
       setWatching(false);
+      setLiveQueueSize(0);
+      importQueueRef.current = [];
       toast.info("Live capture stopped");
     } else {
       if (!cameraConnected) { toast.error("No camera connected"); return; }
@@ -997,21 +1005,44 @@ function MobileCaptureInner() {
         })()}
       </div>
 
-      {/* Progress */}
-      {(uploading || importing) && (
+      {/* Progress / Live capture stats */}
+      {(uploading || importing || watching) && (
         <div className="glass-panel rounded-xl p-4 mb-4">
           <div className="flex items-center gap-2 mb-2">
-            <RefreshCw className="w-4 h-4 animate-spin text-primary" />
-            <span className="text-sm font-body text-foreground">{importing ? (importLabel || "Importing from camera…") : "Uploading…"}</span>
-            <div className="flex items-center gap-2 ml-auto">
+            {importing || uploading ? (
+              <RefreshCw className="w-4 h-4 animate-spin text-primary flex-shrink-0" />
+            ) : (
+              <span className="w-4 h-4 flex items-center justify-center flex-shrink-0">
+                <span className="w-2 h-2 rounded-full bg-primary animate-pulse" />
+              </span>
+            )}
+            <span className="text-sm font-body text-foreground truncate">
               {importing
-                ? (importSpeed != null && importSpeed > 0 && <span className="text-xs font-body text-primary font-medium">{formatSpeed(importSpeed)}</span>)
-                : (uploadSpeed != null && uploadSpeed > 0 && <span className="text-xs font-body text-primary font-medium">{formatSpeed(uploadSpeed)}</span>)
-              }
-              <span className="text-xs font-body text-muted-foreground">{importing ? importProgress : uploadProgress}%</span>
+                ? (importLabel || "Importing from camera…")
+                : uploading
+                ? "Uploading…"
+                : liveQueueSize > 0
+                ? `${liveQueueSize} photo${liveQueueSize !== 1 ? "s" : ""} queued…`
+                : "Live — waiting for next shot"}
+            </span>
+            <div className="flex items-center gap-2 ml-auto flex-shrink-0">
+              {importing && importSpeed != null && importSpeed > 0 && (
+                <span className="text-xs font-body text-primary font-medium">{formatSpeed(importSpeed)}</span>
+              )}
+              {uploading && uploadSpeed != null && uploadSpeed > 0 && (
+                <span className="text-xs font-body text-primary font-medium">{formatSpeed(uploadSpeed)}</span>
+              )}
+              {(importing || uploading) && (
+                <span className="text-xs font-body text-muted-foreground">{importing ? importProgress : uploadProgress}%</span>
+              )}
+              {!importing && !uploading && (
+                <span className="text-xs font-body text-muted-foreground">{uploadedCount} uploaded</span>
+              )}
             </div>
           </div>
-          <Progress value={importing ? importProgress : uploadProgress} className="h-1.5" />
+          {(importing || uploading) && (
+            <Progress value={importing ? importProgress : uploadProgress} className="h-1.5" />
+          )}
         </div>
       )}
 
