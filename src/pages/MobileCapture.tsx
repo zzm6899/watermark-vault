@@ -246,6 +246,7 @@ function MobileCaptureInner() {
   const [importSpeed, setImportSpeed] = useState<number | null>(null);
   const [uploadedCount, setUploadedCount] = useState(0);
   const [uploadQueue, setUploadQueue] = useState<UploadQueueItem[]>([]);
+  const uploadPendingCount = useMemo(() => uploadQueue.filter(q => q.status === "pending").length, [uploadQueue]);
   const [uploadPaused, setUploadPaused] = useState(false);
   const uploadPausedRef = useRef(false);
   const [liveCapturePaused, setLiveCapturePaused] = useState(false);
@@ -420,6 +421,9 @@ function MobileCaptureInner() {
   const drainImportQueue = useCallback(async () => {
     if (importBusyRef.current || liveCapturePausedRef.current) return;
     while (importQueueRef.current.length > 0) {
+      // Stop processing between batches if the user has paused — queued
+      // handles remain in importQueueRef so they're picked up on resume.
+      if (liveCapturePausedRef.current) break;
       // Collect all currently-queued handles into one batch so shots that
       // arrived while the previous import was running are processed together
       // rather than as separate sequential round-trips.
@@ -1172,15 +1176,19 @@ function MobileCaptureInner() {
               </span>
             )}
             <span className="text-sm font-body text-foreground truncate">
-              {importing
-                ? (importLabel || "Importing from camera…")
-                : uploading
-                ? (uploadPaused ? "Upload paused" : "Uploading…")
-                : liveCapturePaused
-                ? `${liveQueueSize > 0 ? `${liveQueueSize} held · ` : ""}Live paused`
-                : liveQueueSize > 0
-                ? `${liveQueueSize} photo${liveQueueSize !== 1 ? "s" : ""} queued…`
-                : "Live — waiting for next shot"}
+              {(() => {
+                if (importing) {
+                  const base = importLabel || "Importing from camera…";
+                  return liveQueueSize > 0 ? `${base} · ${liveQueueSize} waiting` : base;
+                }
+                if (uploading) {
+                  if (uploadPaused) return `Upload paused${uploadPendingCount > 0 ? ` · ${uploadPendingCount} pending` : ""}`;
+                  return `Uploading…${uploadPendingCount > 0 ? ` · ${uploadPendingCount} pending` : ""}`;
+                }
+                if (liveCapturePaused) return `${liveQueueSize > 0 ? `${liveQueueSize} held · ` : ""}Live paused`;
+                if (liveQueueSize > 0) return `${liveQueueSize} photo${liveQueueSize !== 1 ? "s" : ""} queued…`;
+                return "Live — waiting for next shot";
+              })()}
             </span>
             <div className="flex items-center gap-2 ml-auto flex-shrink-0">
               {(importing || watching) && importSpeed != null && importSpeed > 0 && (
