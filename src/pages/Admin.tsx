@@ -1248,7 +1248,6 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
 
   // Waitlist state
   const [waitlist, setWaitlist] = useState<WaitlistEntry[]>([]);
-  const [waitlistLoading, setWaitlistLoading] = useState(false);
   const [showWaitlist, setShowWaitlist] = useState(false);
 
   useEffect(() => {
@@ -1626,6 +1625,14 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
             <div className="relative flex-1 max-w-xs">
               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
               <Input value={bookingSearch} onChange={e => setBookingSearch(e.target.value)} placeholder="Search bookings…" className="pl-8 h-8 text-xs font-body" />
+            </div>
+            <div className="flex items-center gap-1 flex-wrap overflow-x-auto">
+              <span className="text-[10px] font-body text-muted-foreground/50 mr-1">Filter:</span>
+              {(["all", "pending", "confirmed", "completed", "cancelled"] as const).map(s => (
+                <button key={s} onClick={() => setStatusFilter(s)} className={`text-[10px] font-body tracking-wider uppercase px-2 py-1 rounded transition-colors capitalize ${statusFilter === s ? "bg-primary/15 text-primary" : "text-muted-foreground hover:text-foreground"}`}>
+                  {s}
+                </button>
+              ))}
             </div>
             <div className="flex items-center gap-1 flex-wrap overflow-x-auto">
               <span className="text-[10px] font-body text-muted-foreground/50 mr-1">Sort:</span>

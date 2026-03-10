@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { usePageTitle } from "@/hooks/use-page-title";
 import { motion } from "framer-motion";
@@ -77,7 +77,7 @@ export default function BookingModify() {
   const [stripeAvailable, setStripeAvailable] = useState(false);
   const [currentMonth, setCurrentMonth] = useState(() => new Date(new Date().getFullYear(), new Date().getMonth()));
 
-  useState(() => { getStripeStatus().then(s => setStripeAvailable(s.configured)); });
+  useEffect(() => { getStripeStatus().then(s => setStripeAvailable(s.configured)); }, []);
 
   usePageTitle(
     eventType && booking
