@@ -477,6 +477,7 @@ function MobileCaptureInner() {
     const album = getOrCreateAlbum(booking);
     setTargetAlbum(album);
     setUploadedCount(0);
+    setImportSpeed(null);
     emailSentRef.current = false;
     sessionUploadedRef.current = false;
     // Seed with "name:0" — album photos lack size data; name match alone blocks re-import from same session
@@ -504,7 +505,7 @@ function MobileCaptureInner() {
     }
     if (freshHandles.length < handles.length)
       toast.info(`Skipping ${handles.length - freshHandles.length} already-imported photo(s)`);
-    setImporting(true); setImportProgress(0);
+    setImporting(true); setImportProgress(0); setImportSpeed(null);
     const isOnline = await recheckServer();
     setServerOnline(isOnline);
     // Process freshHandles in chunks to bound peak memory — only IMPORT_CHUNK_SIZE photos'
@@ -565,7 +566,8 @@ function MobileCaptureInner() {
         importedKeys.forEach((k: string) => importedNamesRef.current.add(k));
       }
       setImportProgress(100);
-      setImportSpeed(null);
+      // importSpeed is intentionally kept (not cleared) so the live capture idle panel
+      // continues to show the last measured upload speed between shots.
       if (newPhotos.length > 0) {
         const fresh = albums.find(a => a.id === album.id) || album;
         const updated: Album = { ...fresh, photos: [...fresh.photos, ...newPhotos], photoCount: fresh.photos.length + newPhotos.length, coverImage: fresh.coverImage || newPhotos[0]?.src || "" };
@@ -606,6 +608,7 @@ function MobileCaptureInner() {
       toast.info("Live capture stopped");
     } else {
       if (!cameraConnected) { toast.error("No camera connected"); return; }
+      setImportSpeed(null); // clear any stale speed from a prior session before first shot
       try {
         await CameraUsb.startWatching({ intervalMs: 2000 });
         setWatching(true);
@@ -1071,7 +1074,7 @@ function MobileCaptureInner() {
                 : "Live — waiting for next shot"}
             </span>
             <div className="flex items-center gap-2 ml-auto flex-shrink-0">
-              {importing && importSpeed != null && importSpeed > 0 && (
+              {(importing || watching) && importSpeed != null && importSpeed > 0 && (
                 <span className="text-xs font-body text-primary font-medium">{formatSpeed(importSpeed)}</span>
               )}
               {uploading && uploadSpeed != null && uploadSpeed > 0 && (
