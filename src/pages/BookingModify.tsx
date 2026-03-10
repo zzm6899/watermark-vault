@@ -44,7 +44,7 @@ function generateTimeSlots(startTime: string, endTime: string, duration: number)
   const slots: string[] = [];
   const [sh,sm] = startTime.split(":").map(Number);
   const [eh,em] = endTime.split(":").map(Number);
-  for (let m = sh*60+sm; m+duration <= eh*60+em; m += 15)
+  for (let m = sh*60+sm; m+duration <= eh*60+em; m += duration)
     slots.push(`${Math.floor(m/60).toString().padStart(2,"0")}:${(m%60).toString().padStart(2,"0")}`);
   return slots;
 }
