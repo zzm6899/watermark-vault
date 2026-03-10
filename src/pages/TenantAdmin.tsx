@@ -554,12 +554,16 @@ function TenantBookings({ slug }: { slug: string }) {
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [showCreate, setShowCreate] = useState(false);
   const [editingBooking, setEditingBooking] = useState<Booking | null>(null);
+  const [licInfo, setLicInfo] = useState<{ isTrial?: boolean; trialMaxBookings?: number } | null>(null);
 
   const load = useCallback(() => {
     fetchTenantMobileData(slug).then(d => { setBookings(d.bookings || []); setLoading(false); });
   }, [slug]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    load();
+    getTenantLicenseInfo(slug).then(setLicInfo);
+  }, [load, slug]);
 
   const handleStatusChange = async (bk: Booking, status: Booking["status"]) => {
     const { ok, error } = await updateTenantBookingFull(slug, bk.id, { status });
@@ -632,6 +636,8 @@ function TenantBookings({ slug }: { slug: string }) {
 
   if (loading) return <div className="py-16 text-center text-muted-foreground font-body text-sm animate-pulse">Loading…</div>;
 
+  const trialLimitReached = !!(licInfo?.isTrial && bookings.length >= (licInfo.trialMaxBookings ?? 10));
+
   if (showCreate || editingBooking) {
     return (
       <TenantBookingEditor
@@ -660,7 +666,7 @@ function TenantBookings({ slug }: { slug: string }) {
           <span className="text-sm font-body text-muted-foreground">{bookings.length} total</span>
         </div>
         <div className="flex items-center gap-2">
-          <Button size="sm" onClick={() => setShowCreate(true)} className="gap-2 bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase">
+          <Button size="sm" onClick={() => setShowCreate(true)} disabled={trialLimitReached} title={trialLimitReached ? `Trial limit: ${licInfo?.trialMaxBookings ?? 10} bookings` : undefined} className="gap-2 bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase disabled:opacity-50 disabled:cursor-not-allowed">
             <Plus className="w-4 h-4" /> New
           </Button>
           {bookings.length > 0 && (
@@ -670,6 +676,12 @@ function TenantBookings({ slug }: { slug: string }) {
           )}
         </div>
       </div>
+
+      {trialLimitReached && (
+        <div className="mb-4 p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 text-xs font-body text-amber-500">
+          Free trial limit reached ({licInfo?.trialMaxBookings ?? 10} bookings). Contact your platform administrator to upgrade your plan.
+        </div>
+      )}
 
       <div className="flex flex-col sm:flex-row gap-3 mb-3">
         <div className="relative flex-1 max-w-sm">

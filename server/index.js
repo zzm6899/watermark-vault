@@ -1559,9 +1559,23 @@ app.get("/api/tenant/:slug/public", tenantPublicLimiter, (req, res) => {
   const eventTypes = Array.isArray(allEventTypes)
     ? allEventTypes.filter(e => e.active !== false)
     : [];
+
+  // Check if the tenant's trial booking limit has been reached
+  let bookingLimitReached = false;
+  if (tenant.licenseKey) {
+    const allKeys = readLicenseKeys();
+    const licKey = allKeys.find(k => k.key === tenant.licenseKey);
+    if (licKey && licKey.isTrial) {
+      const rawBks = db["wv_bookings"];
+      const existingBookings = rawBks ? (typeof rawBks === "string" ? JSON.parse(rawBks) : (Array.isArray(rawBks) ? rawBks : [])) : [];
+      const tenantBookingCount = existingBookings.filter(b => b.tenantSlug === slug).length;
+      bookingLimitReached = tenantBookingCount >= (licKey.trialMaxBookings ?? 10);
+    }
+  }
+
   // Allow browsers and CDNs to cache for 60 s; revalidate after that.
   res.setHeader("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
-  res.json({ tenant, eventTypes });
+  res.json({ tenant, eventTypes, bookingLimitReached });
 });
 
 // Get tenant-scoped store key (for main admin to manage tenant data)

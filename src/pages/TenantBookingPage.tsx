@@ -81,6 +81,7 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
   const [notFound, setNotFound] = useState(false);
   const [tenant, setTenant] = useState<Tenant | null>(null);
   const [eventTypes, setEventTypes] = useState<EventType[]>([]);
+  const [bookingLimitReached, setBookingLimitReached] = useState(false);
 
   const [step, setStep] = useState<Step>("event-select");
   const [selectedEvent, setSelectedEvent] = useState<EventType | null>(null);
@@ -102,7 +103,7 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
   useEffect(() => {
     if (!tenantSlug) { setNotFound(true); setLoading(false); return; }
     getTenantPublicData(tenantSlug).then((data) => {
-      if (!data) { setNotFound(true); } else { setTenant(data.tenant); setEventTypes(data.eventTypes); }
+      if (!data) { setNotFound(true); } else { setTenant(data.tenant); setEventTypes(data.eventTypes); setBookingLimitReached(!!data.bookingLimitReached); }
       setLoading(false);
     });
   }, [tenantSlug]);
@@ -220,7 +221,13 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
                   <RichTextDisplay html={tenant.bio} />
                 </div>
               )}
-              {eventTypes.length === 0 ? (
+              {bookingLimitReached ? (
+                <div className="glass-panel rounded-xl p-10 text-center space-y-3">
+                  <CalendarIcon className="w-10 h-10 text-muted-foreground/30 mx-auto" />
+                  <p className="text-sm font-body text-muted-foreground">Online bookings are not available at this time.</p>
+                  <p className="text-xs font-body text-muted-foreground/60">Please contact {tenant.displayName} directly to arrange a session.</p>
+                </div>
+              ) : eventTypes.length === 0 ? (
                 <div className="glass-panel rounded-xl p-10 text-center">
                   <CalendarIcon className="w-10 h-10 text-muted-foreground/30 mx-auto mb-4" />
                   <p className="text-sm font-body text-muted-foreground">No sessions available right now.</p>

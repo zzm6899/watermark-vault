@@ -966,6 +966,7 @@ export async function getTenantByDomain(domain: string): Promise<{ slug: string;
 export async function getTenantPublicData(slug: string): Promise<{
   tenant: import("./types").Tenant;
   eventTypes: import("./types").EventType[];
+  bookingLimitReached?: boolean;
 } | null> {
   try {
     const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/public`);
