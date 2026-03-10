@@ -39,6 +39,9 @@ export interface CameraUsbPlugin {
   /** Import multiple files. Returns array of local file URIs */
   importFiles(options: { handles: number[] }): Promise<{ files: Array<{ handle: number; uri: string; localPath: string; base64?: string; mimeType?: string }> }>;
 
+  /** Delete local cached copies of imported files (call after successful server upload) */
+  deleteLocalFiles(options: { paths: string[] }): Promise<{ deleted: number }>;
+
   /** Start watching for new files on camera (polling). Emits 'newFiles' event */
   startWatching(options: { intervalMs?: number }): Promise<void>;
 
