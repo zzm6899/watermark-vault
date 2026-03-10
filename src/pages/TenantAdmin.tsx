@@ -1206,8 +1206,9 @@ function TenantAlbums({ slug }: { slug: string }) {
     toast.success(updated.enabled !== false ? "Album enabled" : "Album disabled");
   };
 
-  const copyLink = (albumSlug: string) => {
-    const url = `${window.location.origin}/gallery/${albumSlug}`;
+  const copyLink = (album: Album) => {
+    const tok = album.clientToken;
+    const url = `${window.location.origin}/gallery/${album.slug}${tok ? `?token=${tok}` : ""}`;
     navigator.clipboard.writeText(url).then(() => toast.success("Gallery link copied!")).catch(() => {
       const ta = document.createElement("textarea");
       ta.value = url;
@@ -1357,7 +1358,7 @@ function TenantAlbums({ slug }: { slug: string }) {
                         checked={alb.enabled !== false}
                         onCheckedChange={() => handleToggle(alb)}
                       />
-                      <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary" title="Copy gallery link" onClick={() => copyLink(alb.slug)}>
+                      <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary" title="Copy gallery link" onClick={() => copyLink(alb)}>
                         <Copy className="w-3.5 h-3.5" />
                       </Button>
                       <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary" title="Email client" onClick={() => handleSendNotification(alb)}>
@@ -1644,6 +1645,9 @@ function TenantAlbumEditor({ slug, album, onSave, onCancel }: {
         const latest = rounds[rounds.length - 1];
         const email = liveAlbum.clientEmail;
 
+        const buildProofingEmailHtml = (galleryUrl: string, expiryDateStr: string, adminNote?: string) =>
+          `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;"><h2 style="margin:0 0 16px;font-size:20px;">Your photos are ready to review!</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${liveAlbum.clientName || "there"},</p><p style="color:#9ca3af;margin:0 0 12px;">Your proofing gallery for <strong style="color:#e5e7eb;">${liveAlbum.title}</strong> is ready. Browse and star the ones you love, then hit Submit Picks.</p>${expiryDateStr ? `<p style="color:#ef4444;margin:0 0 12px;padding:10px 14px;background:#1f1f1f;border-radius:8px;font-size:13px;">⏰ <strong>Proofing window closes: ${expiryDateStr}</strong></p>` : ""}${adminNote ? `<p style="color:#9ca3af;margin:0 0 20px;padding:12px;background:#1f1f1f;border-radius:8px;"><em>"${adminNote}"</em></p>` : ""}<a href="${galleryUrl}" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">View Your Gallery →</a></div>`;
+
         const startProofing = async () => {
           const noteEl = document.getElementById("t-proofing-note") as HTMLTextAreaElement;
           const expiryEl = document.getElementById("t-proofing-expiry") as HTMLInputElement;
@@ -1657,10 +1661,20 @@ function TenantAlbumEditor({ slug, album, onSave, onCancel }: {
           if (email) {
             const galleryUrl = `${window.location.origin}/gallery/${liveAlbum.slug}?token=${clientToken}`;
             const expiryDateStr = new Date(proofingExpiresAt).toLocaleString("en-AU", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
-            const html = `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;"><h2 style="margin:0 0 16px;font-size:20px;">Your photos are ready to review!</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${liveAlbum.clientName || "there"},</p><p style="color:#9ca3af;margin:0 0 12px;">Your proofing gallery for <strong style="color:#e5e7eb;">${liveAlbum.title}</strong> is ready. Browse and star the ones you love, then hit Submit Picks.</p><p style="color:#ef4444;margin:0 0 12px;padding:10px 14px;background:#1f1f1f;border-radius:8px;font-size:13px;">⏰ <strong>Proofing window closes: ${expiryDateStr}</strong></p>${note ? `<p style="color:#9ca3af;margin:0 0 20px;padding:12px;background:#1f1f1f;border-radius:8px;"><em>"${note}"</em></p>` : ""}<a href="${galleryUrl}" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">View Your Gallery →</a></div>`;
-            sendTenantEmail(slug, email, `📸 Your proofing gallery is ready — ${liveAlbum.title}`, html).catch(() => {});
+            sendTenantEmail(slug, email, `📸 Your proofing gallery is ready — ${liveAlbum.title}`, buildProofingEmailHtml(galleryUrl, expiryDateStr, note || undefined)).catch(() => {});
           }
           toast.success("Proofing round started" + (email ? " — invite sent to client" : " (no client email on file)"));
+        };
+
+        const resendProofingEmail = () => {
+          if (!email) return;
+          const tok = liveAlbum.clientToken;
+          const galleryUrl = `${window.location.origin}/gallery/${liveAlbum.slug}${tok ? `?token=${tok}` : ""}`;
+          const expiryDateStr = liveAlbum.proofingExpiresAt
+            ? new Date(liveAlbum.proofingExpiresAt as string).toLocaleString("en-AU", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })
+            : "";
+          sendTenantEmail(slug, email, `📸 Your proofing gallery is ready — ${liveAlbum.title}`, buildProofingEmailHtml(galleryUrl, expiryDateStr, latest?.adminNote)).catch(() => {});
+          toast.success("Proofing invite resent to client");
         };
 
         const approveSelections = async (free: boolean) => {
@@ -1747,6 +1761,16 @@ function TenantAlbumEditor({ slug, album, onSave, onCancel }: {
                     <p className="text-[11px] font-body text-yellow-400/80 flex items-center gap-1"><Clock className="w-3 h-3" /> Closes {exp.toLocaleString("en-AU", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</p>
                   );
                 })()}
+                <div className="flex gap-2 pt-0.5">
+                  {email && (
+                    <button onClick={resendProofingEmail} className="flex items-center gap-1.5 bg-secondary hover:bg-secondary/80 text-muted-foreground hover:text-foreground border border-border rounded-lg px-3 py-1.5 text-[10px] font-body tracking-wider uppercase transition-colors">
+                      <Mail className="w-3 h-3" /> Resend invite
+                    </button>
+                  )}
+                  <button onClick={() => copyLink(liveAlbum)} className="flex items-center gap-1.5 bg-secondary hover:bg-secondary/80 text-muted-foreground hover:text-foreground border border-border rounded-lg px-3 py-1.5 text-[10px] font-body tracking-wider uppercase transition-colors">
+                    <Copy className="w-3 h-3" /> Copy link
+                  </button>
+                </div>
               </div>
             )}
 

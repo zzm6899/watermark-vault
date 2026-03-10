@@ -2471,8 +2471,9 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
     toast.success(`Merged ${mergeSelection.size} albums with ${totalFree} free downloads`);
   };
 
-  const copyLink = (slug: string) => {
-    const url = `${window.location.origin}/gallery/${slug}`;
+  const copyLink = (album: Album) => {
+    const tok = album.clientToken;
+    const url = `${window.location.origin}/gallery/${album.slug}${tok ? `?token=${tok}` : ""}`;
     navigator.clipboard.writeText(url);
     toast.success("Gallery link copied!");
   };
@@ -2670,7 +2671,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                         toast.success(v ? "Album enabled" : "Album disabled");
                       }}
                     />
-                    <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary" onClick={() => copyLink(alb.slug)}>
+                    <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary" onClick={() => copyLink(alb)}>
                       <Copy className="w-3.5 h-3.5" />
                     </Button>
                     <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary" onClick={() => handleSendNotification(alb)}>
@@ -3083,6 +3084,9 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
         const clientEmail = liveAlbum!.clientEmail;
         const isFreeAlbum = !liveAlbum!.pricePerPhoto && !liveAlbum!.priceFullAlbum;
 
+        const buildProofingEmailHtml = (galleryUrl: string, expiryDateStr: string, adminNote?: string) =>
+          `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;"><h2 style="margin:0 0 16px;font-size:20px;">Your photos are ready to review!</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${liveAlbum!.clientName || "there"},</p><p style="color:#9ca3af;margin:0 0 12px;">Your proofing gallery for <strong style="color:#e5e7eb;">${liveAlbum!.title}</strong> is ready. Browse and star the ones you love, then hit Submit Picks.</p>${expiryDateStr ? `<p style="color:#ef4444;margin:0 0 12px;padding:10px 14px;background:#1f1f1f;border-radius:8px;font-size:13px;">⏰ <strong>Proofing window closes: ${expiryDateStr}</strong></p>` : ""}${adminNote ? `<p style="color:#9ca3af;margin:0 0 20px;padding:12px;background:#1f1f1f;border-radius:8px;"><em>"${adminNote}"</em></p>` : ""}<a href="${galleryUrl}" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">View Your Gallery →</a></div>`;
+
         const startProofing = async () => {
           const note = (document.getElementById("proofing-admin-note") as HTMLInputElement)?.value || "";
           const expiryInput = document.getElementById("proofing-expiry-hours") as HTMLInputElement;
@@ -3097,10 +3101,21 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
           if (clientEmail) {
             const galleryUrl = `${window.location.origin}/gallery/${liveAlbum!.slug}?token=${clientToken}`;
             const expiryDateStr = new Date(proofingExpiresAt).toLocaleString("en-AU", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
-            fetch("/api/email/send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ to: clientEmail, subject: `📸 Your proofing gallery is ready — ${liveAlbum!.title}`, html: `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;"><h2 style="margin:0 0 16px;font-size:20px;">Your photos are ready to review!</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${liveAlbum!.clientName || "there"},</p><p style="color:#9ca3af;margin:0 0 12px;">Your proofing gallery for <strong style="color:#e5e7eb;">${liveAlbum!.title}</strong> is ready. Browse and star the ones you love, then hit Submit Picks.</p><p style="color:#ef4444;margin:0 0 12px;padding:10px 14px;background:#1f1f1f;border-radius:8px;font-size:13px;">⏰ <strong>Proofing window closes: ${expiryDateStr}</strong></p>${note ? `<p style="color:#9ca3af;margin:0 0 20px;padding:12px;background:#1f1f1f;border-radius:8px;"><em>"${note}"</em></p>` : ""}<a href="${galleryUrl}" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">View Your Gallery →</a></div>` }) }).catch(() => {});
+            fetch("/api/email/send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ to: clientEmail, subject: `📸 Your proofing gallery is ready — ${liveAlbum!.title}`, html: buildProofingEmailHtml(galleryUrl, expiryDateStr, note || undefined) }) }).catch(() => {});
           }
           toast.success("Proofing round started" + (clientEmail ? " — invite sent to client" : " (no client email on file)"));
           onUpdate?.(updated);
+        };
+
+        const resendProofingEmail = () => {
+          if (!clientEmail) return;
+          const tok = liveAlbum!.clientToken;
+          const galleryUrl = `${window.location.origin}/gallery/${liveAlbum!.slug}${tok ? `?token=${tok}` : ""}`;
+          const expiryDateStr = liveAlbum!.proofingExpiresAt
+            ? new Date(liveAlbum!.proofingExpiresAt as string).toLocaleString("en-AU", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })
+            : "";
+          fetch("/api/email/send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ to: clientEmail, subject: `📸 Your proofing gallery is ready — ${liveAlbum!.title}`, html: buildProofingEmailHtml(galleryUrl, expiryDateStr, latest?.adminNote) }) }).catch(() => {});
+          toast.success("Proofing invite resent to client");
         };
 
         const approveSelections = (free: boolean) => {
@@ -3205,6 +3220,16 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
                     </p>
                   );
                 })()}
+                <div className="flex gap-2 pt-0.5">
+                  {clientEmail && (
+                    <button onClick={resendProofingEmail} className="flex items-center gap-1.5 bg-secondary hover:bg-secondary/80 text-muted-foreground hover:text-foreground border border-border rounded-lg px-3 py-1.5 text-[10px] font-body tracking-wider uppercase transition-colors">
+                      <Mail className="w-3 h-3" /> Resend invite
+                    </button>
+                  )}
+                  <button onClick={() => copyLink(liveAlbum!)} className="flex items-center gap-1.5 bg-secondary hover:bg-secondary/80 text-muted-foreground hover:text-foreground border border-border rounded-lg px-3 py-1.5 text-[10px] font-body tracking-wider uppercase transition-colors">
+                    <Copy className="w-3 h-3" /> Copy link
+                  </button>
+                </div>
               </div>
             )}
 
