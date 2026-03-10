@@ -259,7 +259,8 @@ function replaceBookingVars(text: string, bk: Booking, eventTypes: EventType[] =
     .replace(/\{\{email\}\}/g, bk.clientEmail || "")
     .replace(/\{\{bookingId\}\}/g, bk.id || "")
     .replace(/\{\{notes\}\}/g, bk.notes || "")
-    .replace(/\{\{instagram\}\}/g, bk.instagramHandle || "");
+    .replace(/\{\{instagram\}\}/g, bk.instagramHandle || "")
+    .replace(/\{\{[^}]+\}\}/g, "");
 }
 
 /** All template variables with human descriptions — used to render the hints UI. */
