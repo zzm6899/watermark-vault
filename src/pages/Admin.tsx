@@ -5674,9 +5674,9 @@ function SettingsView() {
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
       <h2 className="font-display text-2xl text-foreground mb-6">Settings</h2>
-      <div className="space-y-6 max-w-lg">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 max-w-4xl">
         {/* Watermark */}
-        <div className="glass-panel rounded-xl p-6 space-y-4">
+        <div className="glass-panel rounded-xl p-6 space-y-4 lg:col-span-2">
           <h3 className="font-display text-base text-foreground">Watermark</h3>
           <div>
             <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Watermark Text</label>
@@ -5822,7 +5822,9 @@ function SettingsView() {
         </div>
 
         {/* Email Templates Manager */}
-        <EmailTemplatesManager />
+        <div className="lg:col-span-2">
+          <EmailTemplatesManager />
+        </div>
 
         {/* Discord Webhook */}
         <div className="glass-panel rounded-xl p-6 space-y-4">
@@ -6046,11 +6048,13 @@ function SettingsView() {
         </div>
 
         {/* Google Calendar */}
-        <GoogleCalendarSection />
+        <div className="lg:col-span-2">
+          <GoogleCalendarSection />
+        </div>
 
         {/* Watermark rebuild / cache clear progress */}
         {rebuildProgress && (
-          <div className="p-3 rounded-lg bg-secondary/50 border border-border">
+          <div className="p-3 rounded-lg bg-secondary/50 border border-border lg:col-span-2">
             <div className="flex items-center justify-between text-xs font-body text-muted-foreground mb-1.5">
               <span className="flex items-center gap-1.5">
                 <RefreshCw className={`w-3 h-3 ${rebuildProgress.running ? "animate-spin" : "text-green-500"}`} />
@@ -6071,7 +6075,7 @@ function SettingsView() {
           </div>
         )}
 
-        <Button onClick={handleSave} disabled={!!rebuildProgress?.running} className="bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs tracking-wider uppercase gap-2">
+        <Button onClick={handleSave} disabled={!!rebuildProgress?.running} className="bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs tracking-wider uppercase gap-2 lg:col-span-2 w-full sm:w-auto justify-center sm:justify-start">
           <Save className="w-4 h-4" /> Save All Settings
         </Button>
       </div>
@@ -6094,7 +6098,7 @@ function LicenseKeysPanel() {
   const [newTrialMaxEvents, setNewTrialMaxEvents] = useState(String(TRIAL_DEFAULT_MAX_EVENTS));
   const [newTrialMaxBookings, setNewTrialMaxBookings] = useState(String(TRIAL_DEFAULT_MAX_BOOKINGS));
   const [generating, setGenerating] = useState(false);
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(true);
 
   const loadKeys = async () => {
     setLoading(true);
@@ -6104,8 +6108,8 @@ function LicenseKeysPanel() {
   };
 
   useEffect(() => {
-    if (expanded) loadKeys();
-  }, [expanded]);
+    loadKeys();
+  }, []);
 
   const handleGenerate = async () => {
     if (!newIssuedTo.trim()) {
