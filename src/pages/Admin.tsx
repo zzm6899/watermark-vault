@@ -9,7 +9,7 @@ import {
   MapPin, Lock, Bell, Download, Unlock, Eye, Grid, List, LayoutGrid, HardDrive, CheckSquare, XSquare, Search, RefreshCw, RefreshCcw, Mail,
   MessageSquare,
   Star, CheckCircle2, Sparkles, ChevronLeft, ChevronRight, Flag, FileText, Receipt, Printer, AlertCircle, BookOpen,
-  ArrowUpDown, MoreHorizontal, TrendingUp, TrendingDown, Key, Globe,
+  ArrowUpDown, MoreHorizontal, TrendingUp, TrendingDown, Key, Globe, Wifi,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -30,7 +30,7 @@ import {
   isSuperAdmin, setSuperAdmin, getAdminCredentials, hashPassword,
 } from "@/lib/storage";
 import { compressImage, formatBytes, formatSpeed, getLocalStorageUsage, generateThumbnail } from "@/lib/image-utils";
-import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar, getServerStorageStats, syncFromServer, sendEmail, bulkDeleteFiles, syncBookingsToSheet, getBookingEmailLog, sendBookingReminder, sendCustomEmail, getWaitlistEntries, deleteWaitlistEntry, notifyWaitlistOnCancel, notifyDiscord, getCacheStats, warmCache, createInvoiceCheckout, sendInvoiceEmail, getStripeStatus, sendEnquiryAcceptedEmail, sendEnquiryDeclinedEmail, getLicenseKeys, generateLicenseKey, revokeLicenseKey, getTenants, createTenant, updateTenant, deleteTenant, getSuperAdminInfo, getSuperStats, getAllBookings, getLicensePlans, createLicensePlan, updateLicensePlan, deleteLicensePlan, getLicensePurchases, activateBankPurchase, getLicensePlanCheckout, getTenantSettings, saveTenantSettings, getSuperAdminWebhooks, getGlobalFtpSettings, saveGlobalFtpSettings } from "@/lib/api";
+import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar, getServerStorageStats, syncFromServer, sendEmail, bulkDeleteFiles, syncBookingsToSheet, getBookingEmailLog, sendBookingReminder, sendCustomEmail, getWaitlistEntries, deleteWaitlistEntry, notifyWaitlistOnCancel, notifyDiscord, getCacheStats, warmCache, createInvoiceCheckout, sendInvoiceEmail, getStripeStatus, sendEnquiryAcceptedEmail, sendEnquiryDeclinedEmail, getLicenseKeys, generateLicenseKey, revokeLicenseKey, getTenants, createTenant, updateTenant, deleteTenant, getSuperAdminInfo, getSuperStats, getAllBookings, getLicensePlans, createLicensePlan, updateLicensePlan, deleteLicensePlan, getLicensePurchases, activateBankPurchase, getLicensePlanCheckout, getTenantSettings, saveTenantSettings, getSuperAdminWebhooks, getGlobalFtpSettings, saveGlobalFtpSettings, testFtpConnection } from "@/lib/api";
 import type { CacheBreakdown } from "@/lib/api";
 import RichTextEditor, { RichTextDisplay } from "@/components/RichTextEditor";
 import Login from "@/pages/Login";
@@ -5539,6 +5539,7 @@ function SettingsView() {
   }>({});
   const [ftpLoaded, setFtpLoaded] = useState(false);
   const [savingFtp, setSavingFtp] = useState(false);
+  const [testingFtp, setTestingFtp] = useState(false);
 
   useEffect(() => {
     if (!isServerMode()) return;
@@ -5554,6 +5555,14 @@ function SettingsView() {
     const updated = await getGlobalFtpSettings();
     setFtpSettings(prev => ({ ...updated, ftpPassword: "" }));
     toast.success("FTP settings saved");
+  };
+
+  const handleTestFtp = async () => {
+    setTestingFtp(true);
+    const { ok, error } = await testFtpConnection();
+    setTestingFtp(false);
+    if (ok) toast.success("FTP connection successful ✓");
+    else toast.error(error || "FTP connection failed");
   };
 
   const watermarkOptions: { value: WatermarkPosition; label: string }[] = [
@@ -5931,9 +5940,16 @@ function SettingsView() {
                 </div>
               </div>
             )}
-            <Button onClick={handleSaveFtp} disabled={savingFtp} size="sm" className="bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2">
-              <Save className="w-3.5 h-3.5" /> {savingFtp ? "Saving…" : "Save FTP Settings"}
-            </Button>
+            <div className="flex items-center gap-2 flex-wrap">
+              <Button onClick={handleSaveFtp} disabled={savingFtp} size="sm" className="bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2">
+                <Save className="w-3.5 h-3.5" /> {savingFtp ? "Saving…" : "Save FTP Settings"}
+              </Button>
+              {ftpSettings.ftpHost && (
+                <Button onClick={handleTestFtp} disabled={testingFtp} variant="outline" size="sm" className="font-body text-xs gap-2">
+                  <Wifi className="w-3.5 h-3.5" /> {testingFtp ? "Testing…" : "Test Connection"}
+                </Button>
+              )}
+            </div>
           </div>
         )}
 

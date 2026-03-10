@@ -95,4 +95,39 @@ async function uploadFilesToFtp(localFilePaths, settings) {
   return { ok: failed === 0, failed };
 }
 
-module.exports = { uploadFileToFtp, uploadFilesToFtp };
+/**
+ * Test a connection to an FTP server without uploading any files.
+ *
+ * @param {object} settings
+ * @returns {Promise<{ ok: boolean; error?: string }>}
+ */
+async function testFtpConnection(settings) {
+  const { ftpHost, ftpPort = 21, ftpUser = "anonymous", ftpPassword = "", ftpRemotePath = "/" } = settings;
+
+  if (!ftpHost) return { ok: false, error: "FTP host not configured" };
+
+  const client = new ftp.Client();
+  client.ftp.verbose = false;
+
+  try {
+    await client.access({
+      host: ftpHost,
+      port: Number(ftpPort) || 21,
+      user: ftpUser || "anonymous",
+      password: ftpPassword || "",
+      secure: false,
+    });
+
+    // Verify the remote path is reachable / creatable
+    const remotePath = ftpRemotePath || "/";
+    await client.ensureDir(remotePath);
+
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message || "FTP connection failed" };
+  } finally {
+    client.close();
+  }
+}
+
+module.exports = { uploadFileToFtp, uploadFilesToFtp, testFtpConnection };

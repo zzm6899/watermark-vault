@@ -1253,6 +1253,24 @@ export async function saveGlobalFtpSettings(settings: {
   } catch { return { ok: false, error: "Network error" }; }
 }
 
+/** Test the saved FTP connection. Uses credentials stored on the server (password is never sent to the browser). */
+export async function testFtpConnection(): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch("/api/settings/ftp/test", { method: "POST" });
+    const json = await res.json();
+    return { ok: !!json.ok, error: json.error };
+  } catch { return { ok: false, error: "Network error" }; }
+}
+
+/** Test the saved FTP connection for a specific tenant. Uses credentials stored on the server. */
+export async function testTenantFtpConnection(slug: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/settings/ftp/test`, { method: "POST" });
+    const json = await res.json();
+    return { ok: !!json.ok, error: json.error };
+  } catch { return { ok: false, error: "Network error" }; }
+}
+
 /** Get the Stripe publishable key and configured status for a tenant. */
 export async function getTenantStripeStatus(slug: string): Promise<{ configured: boolean; publishableKey?: string }> {
   try {

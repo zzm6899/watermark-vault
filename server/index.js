@@ -6,7 +6,7 @@ const fs = require("fs");
 const sharp = require("sharp");
 const archiver = require("archiver");
 const rateLimit = require("express-rate-limit");
-const { uploadFilesToFtp } = require("./ftp");
+const { uploadFilesToFtp, testFtpConnection } = require("./ftp");
 const { registerRoutes: registerGoogleCalendarRoutes } = require("./google-calendar");
 const { registerRoutes: registerEmailRoutes } = require("./email");
 const { registerRoutes: registerStripeRoutes, registerTenantStripeRoutes } = require("./stripe");
@@ -220,6 +220,29 @@ app.put("/api/settings/ftp", (req, res) => {
   db["wv_ftp_settings"] = JSON.stringify(updated);
   writeDb(db);
   res.json({ ok: true, settings: maskFtpSettings(updated) });
+});
+
+app.post("/api/settings/ftp/test", async (req, res) => {
+  const db = readDb();
+  const raw = db["wv_ftp_settings"];
+  const settings = raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : {};
+  if (!settings.ftpHost) {
+    return res.json({ ok: false, error: "FTP host not configured. Save your settings first." });
+  }
+  const result = await testFtpConnection(settings);
+  res.json(result);
+});
+
+app.post("/api/tenant/:slug/settings/ftp/test", async (req, res) => {
+  const { slug } = req.params;
+  const db = readDb();
+  const raw = db[`t_${slug}_wv_tenant_settings`];
+  const settings = raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : {};
+  if (!settings.ftpHost) {
+    return res.json({ ok: false, error: "FTP host not configured. Save your settings first." });
+  }
+  const result = await testFtpConnection(settings);
+  res.json(result);
 });
 
 // ── Photo Upload ──────────────────────────────────────
