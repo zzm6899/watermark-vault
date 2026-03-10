@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { formatSpeed } from "@/lib/image-utils";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -15,7 +16,7 @@ type UploadResult = { id: string; url: string; originalName: string; size: numbe
 // ---------------------------------------------------------------------------
 async function uploadPhotosToServer(
   files: File[],
-  onProgress?: (done: number, total: number) => void,
+  onProgress?: (done: number, total: number, bytesPerSecond?: number) => void,
   tenantSlug?: string,
   concurrency = 3,
   fetchFn: typeof fetch = fetch,
@@ -32,12 +33,15 @@ async function uploadPhotosToServer(
 
   const results: UploadResult[] = [];
   let done = 0;
+  let doneBytes = 0;
   let batchIndex = 0;
+  const startTime = Date.now();
 
   const runWorker = async () => {
     while (batchIndex < batches.length) {
       const idx = batchIndex++;
       const batch = batches[idx];
+      const batchBytes = batch.reduce((sum, f) => sum + f.size, 0);
       const form = new FormData();
       batch.forEach((f) => form.append("photos", f));
       try {
@@ -50,7 +54,10 @@ async function uploadPhotosToServer(
         // skip failed batch
       }
       done += batch.length;
-      onProgress?.(Math.min(done, files.length), files.length);
+      doneBytes += batchBytes;
+      const elapsedSec = (Date.now() - startTime) / 1000;
+      const bytesPerSecond = elapsedSec > 0 ? doneBytes / elapsedSec : 0;
+      onProgress?.(Math.min(done, files.length), files.length, bytesPerSecond);
     }
   };
 
@@ -149,12 +156,12 @@ describe("uploadPhotosToServer (concurrent implementation)", () => {
   });
 
   it("calls onProgress for each batch", async () => {
-    const progressUpdates: [number, number][] = [];
+    const progressUpdates: [number, number, number | undefined][] = [];
     const files = Array.from({ length: 7 }, (_, i) => makeFile(`p${i}.jpg`));
 
     await uploadPhotosToServer(
       files,
-      (done, total) => progressUpdates.push([done, total]),
+      (done, total, bps) => progressUpdates.push([done, total, bps]),
       undefined,
       3,
       mockFetch,
@@ -164,6 +171,27 @@ describe("uploadPhotosToServer (concurrent implementation)", () => {
     expect(progressUpdates).toHaveLength(2);
     expect(progressUpdates[progressUpdates.length - 1][0]).toBe(7); // final done = total
     expect(progressUpdates[0][1]).toBe(7); // total always = 7
+    // bytesPerSecond must be a non-negative number on each update
+    for (const [, , bps] of progressUpdates) {
+      expect(typeof bps).toBe("number");
+      expect(bps).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it("passes bytesPerSecond as a non-negative number via onProgress", async () => {
+    const files = Array.from({ length: 5 }, (_, i) => makeFile(`big${i}.jpg`, 1024));
+    const speedValues: number[] = [];
+    await uploadPhotosToServer(
+      files,
+      (_done, _total, bps) => { if (bps != null) speedValues.push(bps); },
+      undefined,
+      1,
+      mockFetch,
+    );
+    expect(speedValues).toHaveLength(1);
+    // Speed is always a non-negative number (can be 0 if elapsed rounds to 0 in fast tests)
+    expect(typeof speedValues[0]).toBe("number");
+    expect(speedValues[0]).toBeGreaterThanOrEqual(0);
   });
 
   it("includes tenant slug in the upload URL", async () => {
@@ -202,5 +230,25 @@ describe("uploadPhotosToServer (concurrent implementation)", () => {
     const result = await uploadPhotosToServer(files, undefined, undefined, 10, mockFetch);
     expect(mockFetch).toHaveBeenCalledTimes(1);
     expect(result).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// formatSpeed
+// ---------------------------------------------------------------------------
+describe("formatSpeed", () => {
+  it("formats sub-kilobyte speeds as B/s", () => {
+    expect(formatSpeed(512)).toBe("512 B/s");
+    expect(formatSpeed(0)).toBe("0 B/s");
+  });
+
+  it("formats kilobyte speeds as KB/s", () => {
+    expect(formatSpeed(1024)).toBe("1.0 KB/s");
+    expect(formatSpeed(512 * 1024)).toBe("512.0 KB/s");
+  });
+
+  it("formats megabyte speeds as MB/s", () => {
+    expect(formatSpeed(1024 * 1024)).toBe("1.0 MB/s");
+    expect(formatSpeed(2.5 * 1024 * 1024)).toBe("2.5 MB/s");
   });
 });

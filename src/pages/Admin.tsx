@@ -29,7 +29,7 @@ import {
   getEnquiries, updateEnquiry, deleteEnquiry,
   isSuperAdmin, setSuperAdmin, getAdminCredentials, hashPassword,
 } from "@/lib/storage";
-import { compressImage, formatBytes, getLocalStorageUsage, generateThumbnail } from "@/lib/image-utils";
+import { compressImage, formatBytes, formatSpeed, getLocalStorageUsage, generateThumbnail } from "@/lib/image-utils";
 import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar, getServerStorageStats, syncFromServer, sendEmail, bulkDeleteFiles, syncBookingsToSheet, getBookingEmailLog, sendBookingReminder, sendCustomEmail, getWaitlistEntries, deleteWaitlistEntry, notifyWaitlistOnCancel, notifyDiscord, getCacheStats, warmCache, createInvoiceCheckout, sendInvoiceEmail, getStripeStatus, sendEnquiryAcceptedEmail, sendEnquiryDeclinedEmail, getLicenseKeys, generateLicenseKey, revokeLicenseKey, getTenants, createTenant, updateTenant, deleteTenant, getSuperAdminInfo, getSuperStats, getAllBookings, getLicensePlans, createLicensePlan, updateLicensePlan, deleteLicensePlan, getLicensePurchases, activateBankPurchase, getLicensePlanCheckout, getTenantSettings, saveTenantSettings, getSuperAdminWebhooks, getGlobalFtpSettings, saveGlobalFtpSettings } from "@/lib/api";
 import type { CacheBreakdown } from "@/lib/api";
 import RichTextEditor, { RichTextDisplay } from "@/components/RichTextEditor";
@@ -2783,7 +2783,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
   const [expiresAt, setExpiresAt] = useState(album?.expiresAt || "");
   const [displaySize, setDisplaySize] = useState<AlbumDisplaySize>(album?.displaySize || "medium");
 
-  const [uploadStats, setUploadStats] = useState<{ total: number; done: number; errors: number; savedBytes: number } | null>(null);
+  const [uploadStats, setUploadStats] = useState<{ total: number; done: number; errors: number; savedBytes: number; speed?: number } | null>(null);
 
   const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
@@ -2793,8 +2793,8 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
 
     if (isServerMode()) {
       // Upload to server — files saved to TrueNAS disk
-      const results = await uploadPhotosToServer(fileArr, (done, total) => {
-        setUploadStats(prev => prev ? { ...prev, done, total } : null);
+      const results = await uploadPhotosToServer(fileArr, (done, total, bytesPerSecond) => {
+        setUploadStats(prev => prev ? { ...prev, done, total, speed: bytesPerSecond } : null);
       });
       // Add all photos immediately — use server-side thumbnails (no heavy client-side canvas work)
       const newPhotos: Photo[] = results.map(r => ({
@@ -3329,7 +3329,12 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
           <div className="mb-3 p-3 rounded-lg bg-secondary/50 border border-border">
             <div className="flex items-center justify-between text-xs font-body text-muted-foreground">
               <span>Processed {uploadStats.done}/{uploadStats.total} photos{uploadStats.errors > 0 ? ` (${uploadStats.errors} failed)` : ""}</span>
-              {uploadStats.savedBytes > 0 && <span className="text-green-500">Saved {formatBytes(uploadStats.savedBytes)}</span>}
+              <div className="flex items-center gap-2">
+                {uploadStats.speed != null && uploadStats.done < uploadStats.total && (
+                  <span className="text-primary font-medium">{formatSpeed(uploadStats.speed)}</span>
+                )}
+                {uploadStats.savedBytes > 0 && <span className="text-green-500">Saved {formatBytes(uploadStats.savedBytes)}</span>}
+              </div>
             </div>
             {uploadStats.done < uploadStats.total && (
               <div className="mt-1.5 h-1.5 rounded-full bg-border overflow-hidden">
@@ -3371,8 +3376,7 @@ function PhotosView() {
   const [libraryPhotos, setLibraryPhotosState] = useState<Photo[]>(getPhotoLibrary());
   const [albums, setAlbumsState] = useState<Album[]>(getAlbums());
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [uploadStats, setUploadStats] = useState<{ total: number; done: number; errors: number; savedBytes: number } | null>(null);
-  const [showAddToAlbum, setShowAddToAlbum] = useState(false);
+  const [uploadStats, setUploadStats] = useState<{ total: number; done: number; errors: number; savedBytes: number; speed?: number } | null>(null);
   const [viewSource, setViewSource] = useState<"all" | "library" | string>("all");
   const [starredOnly, setStarredOnly] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -3566,8 +3570,8 @@ function PhotosView() {
     setUploadStats({ total: fileArr.length, done: 0, errors: 0, savedBytes: 0 });
 
     if (isServerMode()) {
-      const results = await uploadPhotosToServer(fileArr, (done, total) => {
-        setUploadStats(prev => prev ? { ...prev, done, total } : null);
+      const results = await uploadPhotosToServer(fileArr, (done, total, bytesPerSecond) => {
+        setUploadStats(prev => prev ? { ...prev, done, total, speed: bytesPerSecond } : null);
       });
       // Add all photos in a single batch update to avoid stale-closure overwrite
       const newPhotos: Photo[] = results.map(r => ({
@@ -3830,7 +3834,12 @@ function PhotosView() {
           <div className="mt-3 p-3 rounded-lg bg-secondary/50 border border-border">
             <div className="flex items-center justify-between text-xs font-body text-muted-foreground">
               <span>Processed {uploadStats.done}/{uploadStats.total} photos{uploadStats.errors > 0 ? ` (${uploadStats.errors} failed)` : ""}</span>
-              {uploadStats.savedBytes > 0 && <span className="text-green-500">Saved {formatBytes(uploadStats.savedBytes)}</span>}
+              <div className="flex items-center gap-2">
+                {uploadStats.speed != null && uploadStats.done < uploadStats.total && (
+                  <span className="text-primary font-medium">{formatSpeed(uploadStats.speed)}</span>
+                )}
+                {uploadStats.savedBytes > 0 && <span className="text-green-500">Saved {formatBytes(uploadStats.savedBytes)}</span>}
+              </div>
             </div>
             {uploadStats.done < uploadStats.total && (
               <div className="mt-1.5 h-1.5 rounded-full bg-border overflow-hidden">

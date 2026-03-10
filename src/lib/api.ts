@@ -94,7 +94,7 @@ export function deleteFromServer(key: string): void {
  *  Uploads are split into batches and sent concurrently to maximise throughput. */
 export async function uploadPhotosToServer(
   files: File[],
-  onProgress?: (done: number, total: number) => void,
+  onProgress?: (done: number, total: number, bytesPerSecond?: number) => void,
   tenantSlug?: string,
   concurrency = 3,
 ): Promise<{ id: string; url: string; originalName: string; size: number; ftpUploaded?: boolean }[]> {
@@ -113,13 +113,16 @@ export async function uploadPhotosToServer(
 
   const results: { id: string; url: string; originalName: string; size: number; ftpUploaded?: boolean }[] = [];
   let done = 0;
+  let doneBytes = 0;
   let batchIndex = 0;
+  const startTime = Date.now();
 
   // Worker that keeps consuming batches until they're all dispatched
   const runWorker = async () => {
     while (batchIndex < batches.length) {
       const idx = batchIndex++;
       const batch = batches[idx];
+      const batchBytes = batch.reduce((sum, f) => sum + f.size, 0);
       const form = new FormData();
       batch.forEach((f) => form.append("photos", f));
       try {
@@ -132,7 +135,10 @@ export async function uploadPhotosToServer(
         // skip failed batch
       }
       done += batch.length;
-      onProgress?.(Math.min(done, files.length), files.length);
+      doneBytes += batchBytes;
+      const elapsedSec = (Date.now() - startTime) / 1000;
+      const bytesPerSecond = elapsedSec > 0 ? doneBytes / elapsedSec : 0;
+      onProgress?.(Math.min(done, files.length), files.length, bytesPerSecond);
     }
   };
 

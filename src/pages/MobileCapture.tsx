@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { getBookings, getAlbums, getSettings, updateAlbum, addAlbum, updateBooking, getMobileTenantSession, setMobileTenantSession, isLoggedIn } from "@/lib/storage";
 import { uploadPhotosToServer, isServerMode, recheckServer, sendEmail, fetchTenantMobileData, saveTenantAlbum } from "@/lib/api";
-import { generateThumbnail } from "@/lib/image-utils";
+import { generateThumbnail, formatSpeed } from "@/lib/image-utils";
 import CameraUsb from "@/plugins/camera-usb";
 import type { CameraFile } from "@/plugins/camera-usb";
 import { Capacitor } from "@capacitor/core";
@@ -233,6 +233,8 @@ function MobileCaptureInner() {
   const [targetAlbum, setTargetAlbum] = useState<Album | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadSpeed, setUploadSpeed] = useState<number | null>(null);
+  const [importSpeed, setImportSpeed] = useState<number | null>(null);
   const [uploadedCount, setUploadedCount] = useState(0);
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [serverOnline, setServerOnline] = useState(false);
@@ -522,15 +524,15 @@ function MobileCaptureInner() {
           } catch (e) {
             console.error("Decode error:", e);
             failedIdxs.push(i);
-            setFailedHandles(prev => [...prev, freshHandles[i]]);
           }
         }
         failedIdxs.forEach(i => setFailedHandles(prev => [...prev, freshHandles[i]]));
         if (decodedFiles.length > 0) {
           setImportLabel(`Uploading ${decodedFiles.length} file${decodedFiles.length !== 1 ? "s" : ""}…`);
           try {
-            const results = await uploadPhotosToServer(decodedFiles, (done, total) => {
+            const results = await uploadPhotosToServer(decodedFiles, (done, total, bytesPerSecond) => {
               setImportProgress(50 + Math.round((done / total) * 50));
+              if (bytesPerSecond != null) setImportSpeed(bytesPerSecond);
             });
             for (const r of results) {
               newPhotos.push({ id: r.id, src: r.url, thumbnail: r.url + "?size=thumb", title: r.originalName, width: 0, height: 0, proofing: true });
@@ -540,6 +542,7 @@ function MobileCaptureInner() {
           }
         }
         setImportProgress(100);
+        setImportSpeed(null);
       } else {
         for (const f of imported)
           newPhotos.push({ id: crypto.randomUUID(), src: f.uri, thumbnail: f.uri, title: f.localPath.split("/").pop() || "photo", width: 0, height: 0, proofing: true });
@@ -611,10 +614,13 @@ function MobileCaptureInner() {
     });
     if (!imageFiles.length) { toast.error("No images found"); return; }
     setPendingFiles(p => [...p, ...imageFiles]);
-    setUploading(true); setUploadProgress(0);
+    setUploading(true); setUploadProgress(0); setUploadSpeed(null);
     try {
       if (serverOnline) {
-        const results = await uploadPhotosToServer(imageFiles, (done, total) => setUploadProgress(Math.round(done/total*100)));
+        const results = await uploadPhotosToServer(imageFiles, (done, total, bytesPerSecond) => {
+          setUploadProgress(Math.round(done/total*100));
+          if (bytesPerSecond != null) setUploadSpeed(bytesPerSecond);
+        });
         // Use server-side thumbnails — no client-side canvas work needed
         const newPhotos: Photo[] = results.map(r => ({
           id: r.id, src: r.url, thumbnail: r.url + "?size=thumb", title: r.originalName, width: 0, height: 0, proofing: true,
@@ -630,7 +636,7 @@ function MobileCaptureInner() {
         toast.info(`${imageFiles.length} file${imageFiles.length !== 1 ? "s" : ""} queued — will upload when server is back`);
       }
     } catch { toast.error("Upload error"); }
-    finally { setUploading(false); }
+    finally { setUploading(false); setUploadSpeed(null); }
   };
 
   // Star a photo — persists to album storage
@@ -653,9 +659,12 @@ function MobileCaptureInner() {
     setServerOnline(true);
     const files = [...offlineQueue];
     setOfflineQueue([]);
-    setUploading(true); setUploadProgress(0);
+    setUploading(true); setUploadProgress(0); setUploadSpeed(null);
     try {
-      const results = await uploadPhotosToServer(files, (done, total) => setUploadProgress(Math.round(done / total * 100)));
+      const results = await uploadPhotosToServer(files, (done, total, bytesPerSecond) => {
+        setUploadProgress(Math.round(done / total * 100));
+        if (bytesPerSecond != null) setUploadSpeed(bytesPerSecond);
+      });
       const newPhotos: Photo[] = results.map(r => ({
         id: r.id, src: r.url, thumbnail: r.url + "?size=thumb", title: r.originalName, width: 0, height: 0, proofing: true,
       }));
@@ -666,7 +675,7 @@ function MobileCaptureInner() {
       sessionUploadedRef.current = true;
       toast.success(`${results.length} queued photo${results.length !== 1 ? "s" : ""} uploaded`);
     } catch { toast.error("Failed to flush offline queue"); }
-    finally { setUploading(false); }
+    finally { setUploading(false); setUploadSpeed(null); }
   };
 
   const filteredCameraFiles = jpegOnly
@@ -994,7 +1003,13 @@ function MobileCaptureInner() {
           <div className="flex items-center gap-2 mb-2">
             <RefreshCw className="w-4 h-4 animate-spin text-primary" />
             <span className="text-sm font-body text-foreground">{importing ? (importLabel || "Importing from camera…") : "Uploading…"}</span>
-            <span className="text-xs font-body text-muted-foreground ml-auto">{importing ? importProgress : uploadProgress}%</span>
+            <div className="flex items-center gap-2 ml-auto">
+              {importing
+                ? (importSpeed != null && importSpeed > 0 && <span className="text-xs font-body text-primary font-medium">{formatSpeed(importSpeed)}</span>)
+                : (uploadSpeed != null && uploadSpeed > 0 && <span className="text-xs font-body text-primary font-medium">{formatSpeed(uploadSpeed)}</span>)
+              }
+              <span className="text-xs font-body text-muted-foreground">{importing ? importProgress : uploadProgress}%</span>
+            </div>
           </div>
           <Progress value={importing ? importProgress : uploadProgress} className="h-1.5" />
         </div>
