@@ -30,7 +30,7 @@ import {
   isSuperAdmin, setSuperAdmin, getAdminCredentials, hashPassword,
 } from "@/lib/storage";
 import { compressImage, formatBytes, formatSpeed, getLocalStorageUsage, generateThumbnail } from "@/lib/image-utils";
-import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar, getServerStorageStats, syncFromServer, sendEmail, bulkDeleteFiles, syncBookingsToSheet, getBookingEmailLog, sendBookingReminder, sendCustomEmail, getWaitlistEntries, deleteWaitlistEntry, notifyWaitlistOnCancel, notifyDiscord, getCacheStats, warmCache, createInvoiceCheckout, sendInvoiceEmail, getStripeStatus, sendEnquiryAcceptedEmail, sendEnquiryDeclinedEmail, getLicenseKeys, generateLicenseKey, revokeLicenseKey, getTenants, createTenant, updateTenant, deleteTenant, getSuperAdminInfo, getSuperStats, getAllBookings, getLicensePlans, createLicensePlan, updateLicensePlan, deleteLicensePlan, getLicensePurchases, activateBankPurchase, getLicensePlanCheckout, getTenantSettings, saveTenantSettings, getSuperAdminWebhooks, getGlobalFtpSettings, saveGlobalFtpSettings, testFtpConnection } from "@/lib/api";
+import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar, getServerStorageStats, syncFromServer, sendEmail, bulkDeleteFiles, syncBookingsToSheet, getBookingEmailLog, sendBookingReminder, sendCustomEmail, getWaitlistEntries, deleteWaitlistEntry, notifyWaitlistOnCancel, notifyDiscord, getCacheStats, warmCache, createInvoiceCheckout, sendInvoiceEmail, getStripeStatus, sendEnquiryAcceptedEmail, sendEnquiryDeclinedEmail, getLicenseKeys, generateLicenseKey, revokeLicenseKey, getTenants, createTenant, updateTenant, deleteTenant, getSuperAdminInfo, getSuperStats, getAllBookings, getLicensePlans, createLicensePlan, updateLicensePlan, deleteLicensePlan, getLicensePurchases, activateBankPurchase, getLicensePlanCheckout, getTenantSettings, saveTenantSettings, getSuperAdminWebhooks, getGlobalFtpSettings, saveGlobalFtpSettings, testFtpConnection, getEventSlotRequests, confirmEventSlotRequest, rejectEventSlotRequest } from "@/lib/api";
 import type { CacheBreakdown } from "@/lib/api";
 import RichTextEditor, { RichTextDisplay } from "@/components/RichTextEditor";
 import Login from "@/pages/Login";
@@ -39,7 +39,7 @@ import type {
   ProfileSettings, AppSettings, Booking, WatermarkPosition,
   Album, Photo, PaymentStatus, AlbumDisplaySize, AlbumDownloadRecord, DownloadHistoryEntry,
   EmailTemplate, WaitlistEntry, Invoice, InvoiceItem, InvoiceParty, InvoiceStatus, Contact,
-  Enquiry, EnquiryStatus, LicenseKey, Tenant, LicensePlan, LicensePurchase, TenantSettings,
+  Enquiry, EnquiryStatus, LicenseKey, Tenant, LicensePlan, LicensePurchase, TenantSettings, EventSlotRequest,
 } from "@/lib/types";
 import WatermarkedImage from "@/components/WatermarkedImage";
 import ProgressiveImg from "@/components/ProgressiveImg";
@@ -6083,11 +6083,101 @@ function SettingsView() {
   );
 }
 
-// ─── License Keys Panel ───────────────────────────────
-// Default trial limits — used in both the UI and server-side enforcement
-const TRIAL_DEFAULT_MAX_EVENTS = 1;
-const TRIAL_DEFAULT_MAX_BOOKINGS = 10;
+// ─── Event Slot Requests Panel (Super Admin) ──────────
+function EventSlotRequestsPanel() {
+  const [requests, setRequests] = useState<(EventSlotRequest & { tenantDisplayName?: string })[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [processingId, setProcessingId] = useState<string | null>(null);
 
+  const load = async () => { setLoading(true); setRequests(await getEventSlotRequests()); setLoading(false); };
+  useEffect(() => { load(); }, []);
+
+  const handleConfirm = async (req: EventSlotRequest & { tenantDisplayName?: string }) => {
+    if (!confirm(`Confirm extra event slot for ${req.tenantDisplayName || req.tenantSlug}? This will grant them one additional event type slot immediately.`)) return;
+    setProcessingId(req.id);
+    const { ok, error } = await confirmEventSlotRequest(req.id, "super-admin");
+    setProcessingId(null);
+    if (!ok) { toast.error(error || "Failed to confirm"); return; }
+    toast.success("Slot granted!");
+    load();
+  };
+
+  const handleReject = async (req: EventSlotRequest & { tenantDisplayName?: string }) => {
+    if (!confirm(`Reject event slot request from ${req.tenantDisplayName || req.tenantSlug}?`)) return;
+    setProcessingId(req.id);
+    const { ok, error } = await rejectEventSlotRequest(req.id, "super-admin");
+    setProcessingId(null);
+    if (!ok) { toast.error(error || "Failed to reject"); return; }
+    toast.success("Request rejected");
+    load();
+  };
+
+  const statusBadge = (status: EventSlotRequest["status"]) => {
+    switch (status) {
+      case "pending": return <span className="text-[10px] font-body bg-amber-500/10 text-amber-500 px-1.5 py-0.5 rounded-full">Pending</span>;
+      case "paid": return <span className="text-[10px] font-body bg-blue-500/10 text-blue-400 px-1.5 py-0.5 rounded-full">Paid — Awaiting Approval</span>;
+      case "confirmed": return <span className="text-[10px] font-body bg-green-500/10 text-green-500 px-1.5 py-0.5 rounded-full">Confirmed</span>;
+      case "rejected": return <span className="text-[10px] font-body bg-red-500/10 text-red-400 px-1.5 py-0.5 rounded-full">Rejected</span>;
+    }
+  };
+
+  return (
+    <div className="glass-panel rounded-xl p-6 space-y-4">
+      <div className="flex items-center justify-between">
+        <h3 className="font-display text-base text-foreground flex items-center gap-2">
+          <CreditCard className="w-4 h-4 text-primary" /> Event Slot Requests
+        </h3>
+        <Button size="sm" variant="outline" onClick={load} className="font-body text-xs gap-1.5 border-border">
+          <RefreshCw className="w-3 h-3" /> Refresh
+        </Button>
+      </div>
+      <p className="text-xs font-body text-muted-foreground">Tenants who have reached their event type limit can request an extra slot. Review and approve or reject each request here. The slot is only granted after you confirm.</p>
+      {loading ? (
+        <p className="text-xs font-body text-muted-foreground animate-pulse">Loading…</p>
+      ) : requests.length === 0 ? (
+        <p className="text-xs font-body text-muted-foreground">No event slot requests yet.</p>
+      ) : (
+        <div className="space-y-2">
+          {requests.map(r => (
+            <div key={r.id} className="p-3 rounded-lg bg-secondary/30 border border-border/40 space-y-2">
+              <div className="flex items-start justify-between gap-3 flex-wrap">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-sm font-body font-medium text-foreground">{r.tenantDisplayName || r.tenantSlug}</span>
+                    {statusBadge(r.status)}
+                    <span className="text-[10px] font-body text-muted-foreground capitalize">{r.paymentMethod} payment</span>
+                  </div>
+                  <div className="text-[11px] font-body text-muted-foreground mt-0.5 flex flex-wrap gap-2">
+                    <span>Requested: {new Date(r.requestedAt).toLocaleDateString("en-AU")}</span>
+                    <span>· Amount: ${r.amount}</span>
+                    {r.paidAt && <span>· Paid: {new Date(r.paidAt).toLocaleDateString("en-AU")}</span>}
+                    {r.confirmedAt && r.confirmedBy && <span>· Confirmed by {r.confirmedBy}</span>}
+                    {r.rejectedAt && r.rejectedBy && <span>· Rejected by {r.rejectedBy}</span>}
+                  </div>
+                  {r.paymentMethod === "bank" && ["pending", "paid"].includes(r.status) && (
+                    <p className="text-[10px] font-body text-amber-500 mt-1">Bank transfer — verify payment in your account before confirming.</p>
+                  )}
+                </div>
+                {["pending", "paid"].includes(r.status) && (
+                  <div className="flex items-center gap-2 shrink-0">
+                    <Button size="sm" onClick={() => handleConfirm(r)} disabled={processingId === r.id} className="bg-green-600 hover:bg-green-700 text-white font-body text-xs gap-1">
+                      <CheckCircle2 className="w-3 h-3" /> Confirm
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => handleReject(r)} disabled={processingId === r.id} className="text-destructive hover:text-destructive hover:bg-destructive/10 font-body text-xs gap-1">
+                      <X className="w-3 h-3" /> Reject
+                    </Button>
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── License Keys Panel ───────────────────────────────
 function LicenseKeysPanel() {
   const [keys, setKeys] = useState<LicenseKey[]>([]);
   const [loading, setLoading] = useState(false);
@@ -6095,8 +6185,9 @@ function LicenseKeysPanel() {
   const [newExpiresAt, setNewExpiresAt] = useState("");
   const [newNotes, setNewNotes] = useState("");
   const [newIsTrial, setNewIsTrial] = useState(false);
-  const [newTrialMaxEvents, setNewTrialMaxEvents] = useState(String(TRIAL_DEFAULT_MAX_EVENTS));
-  const [newTrialMaxBookings, setNewTrialMaxBookings] = useState(String(TRIAL_DEFAULT_MAX_BOOKINGS));
+  const [newMaxEvents, setNewMaxEvents] = useState("");
+  const [newMaxBookings, setNewMaxBookings] = useState("");
+  const [newExtraEventPrice, setNewExtraEventPrice] = useState("");
   const [generating, setGenerating] = useState(false);
   const [expanded, setExpanded] = useState(true);
 
@@ -6117,15 +6208,16 @@ function LicenseKeysPanel() {
       return;
     }
     setGenerating(true);
+    const parsePositiveInt = (s: string) => { const n = parseInt(s); return Number.isFinite(n) && n > 0 ? n : undefined; };
+    const parsePositiveFloat = (s: string) => { const n = parseFloat(s); return Number.isFinite(n) && n > 0 ? n : undefined; };
+    const maxEvents = newMaxEvents.trim() ? parsePositiveInt(newMaxEvents) : undefined;
+    const maxBookings = newMaxBookings.trim() ? parsePositiveInt(newMaxBookings) : undefined;
+    const extraEventPrice = newExtraEventPrice.trim() ? parsePositiveFloat(newExtraEventPrice) : undefined;
     const { key, error } = await generateLicenseKey(
       newIssuedTo.trim(),
       newExpiresAt || undefined,
       newNotes || undefined,
-      newIsTrial ? {
-        isTrial: true,
-        trialMaxEvents: parseInt(newTrialMaxEvents) || 1,
-        trialMaxBookings: parseInt(newTrialMaxBookings) || 10,
-      } : undefined,
+      { isTrial: newIsTrial || undefined, maxEvents, maxBookings, extraEventPrice },
     );
     setGenerating(false);
     if (error || !key) {
@@ -6133,12 +6225,8 @@ function LicenseKeysPanel() {
       return;
     }
     toast.success(`Key generated: ${key.key}`);
-    setNewIssuedTo("");
-    setNewExpiresAt("");
-    setNewNotes("");
-    setNewIsTrial(false);
-    setNewTrialMaxEvents(String(TRIAL_DEFAULT_MAX_EVENTS));
-    setNewTrialMaxBookings(String(TRIAL_DEFAULT_MAX_BOOKINGS));
+    setNewIssuedTo(""); setNewExpiresAt(""); setNewNotes("");
+    setNewIsTrial(false); setNewMaxEvents(""); setNewMaxBookings(""); setNewExtraEventPrice("");
     setKeys((prev) => [...prev, key]);
   };
 
@@ -6161,6 +6249,9 @@ function LicenseKeysPanel() {
     const url = `${window.location.origin}/tenant-setup/${setupToken}`;
     navigator.clipboard.writeText(url).then(() => toast.success("Setup URL copied!")).catch(() => toast.error("Copy failed"));
   };
+
+  const effectiveMaxEvents = (k: LicenseKey) => k.maxEvents ?? k.trialMaxEvents ?? null;
+  const effectiveMaxBookings = (k: LicenseKey) => k.maxBookings ?? k.trialMaxBookings ?? null;
 
   return (
     <div className="glass-panel rounded-xl p-6 space-y-4">
@@ -6217,43 +6308,71 @@ function LicenseKeysPanel() {
             <div className="flex items-center gap-3 pt-1">
               <Switch
                 checked={newIsTrial}
-                onCheckedChange={setNewIsTrial}
+                onCheckedChange={(v) => {
+                  setNewIsTrial(v);
+                  if (v) {
+                    // Pre-fill classic trial defaults so limits are enforced immediately
+                    if (!newMaxEvents.trim()) setNewMaxEvents("1");
+                    if (!newMaxBookings.trim()) setNewMaxBookings("10");
+                  } else {
+                    // Clear defaults when un-marking as trial (only if they still match the defaults)
+                    if (newMaxEvents === "1") setNewMaxEvents("");
+                    if (newMaxBookings === "10") setNewMaxBookings("");
+                  }
+                }}
                 id="trial-toggle"
               />
               <label htmlFor="trial-toggle" className="text-xs font-body text-foreground cursor-pointer">
-                Free Trial Key
+                Mark as Free Trial
               </label>
               {newIsTrial && (
-                <span className="text-[10px] font-body bg-amber-500/10 text-amber-500 px-1.5 py-0.5 rounded-full">Limited Usage</span>
+                <span className="text-[10px] font-body bg-amber-500/10 text-amber-500 px-1.5 py-0.5 rounded-full">Trial</span>
               )}
             </div>
 
-            {newIsTrial && (
-              <div className="grid grid-cols-2 gap-3 p-3 rounded-lg bg-amber-500/5 border border-amber-500/20">
+            {/* Plan limits (available for any key type) */}
+            <div className="space-y-2 p-3 rounded-lg bg-secondary/50 border border-border/50">
+              <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground">Usage Limits (optional)</p>
+              <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="text-xs font-body text-muted-foreground mb-1 block">Max Event Types</label>
                   <Input
                     type="number"
                     min={1}
-                    value={newTrialMaxEvents}
-                    onChange={(e) => setNewTrialMaxEvents(e.target.value)}
+                    placeholder="Unlimited"
+                    value={newMaxEvents}
+                    onChange={(e) => setNewMaxEvents(e.target.value)}
                     className="bg-background border-border text-foreground font-body text-sm"
                   />
-                  <p className="text-[10px] font-body text-muted-foreground mt-0.5">Event type slots for this trial</p>
+                  <p className="text-[10px] font-body text-muted-foreground mt-0.5">Leave blank for unlimited</p>
                 </div>
                 <div>
                   <label className="text-xs font-body text-muted-foreground mb-1 block">Max Bookings</label>
                   <Input
                     type="number"
                     min={1}
-                    value={newTrialMaxBookings}
-                    onChange={(e) => setNewTrialMaxBookings(e.target.value)}
+                    placeholder="Unlimited"
+                    value={newMaxBookings}
+                    onChange={(e) => setNewMaxBookings(e.target.value)}
                     className="bg-background border-border text-foreground font-body text-sm"
                   />
-                  <p className="text-[10px] font-body text-muted-foreground mt-0.5">Total bookings allowed</p>
+                  <p className="text-[10px] font-body text-muted-foreground mt-0.5">Leave blank for unlimited</p>
                 </div>
               </div>
-            )}
+              <div>
+                <label className="text-xs font-body text-muted-foreground mb-1 block">Extra Event Slot Price ($)</label>
+                <Input
+                  type="number"
+                  min={0}
+                  step={0.01}
+                  placeholder="e.g. 25 — leave blank to disable add-ons"
+                  value={newExtraEventPrice}
+                  onChange={(e) => setNewExtraEventPrice(e.target.value)}
+                  className="bg-background border-border text-foreground font-body text-sm"
+                />
+                <p className="text-[10px] font-body text-muted-foreground mt-0.5">Price tenant pays to unlock one extra event type slot (Stripe or bank). Super admin must confirm each purchase.</p>
+              </div>
+            </div>
 
             <Button
               onClick={handleGenerate}
@@ -6285,8 +6404,21 @@ function LicenseKeysPanel() {
                       <span className="text-[10px] font-body bg-primary/10 text-primary px-1.5 py-0.5 rounded-full">Active</span>
                     )}
                     {k.isTrial && (
-                      <span className="text-[10px] font-body bg-amber-500/10 text-amber-500 px-1.5 py-0.5 rounded-full">
-                        Free Trial · {k.trialMaxEvents ?? 1} event{(k.trialMaxEvents ?? 1) !== 1 ? "s" : ""} · {k.trialMaxBookings ?? 10} bookings
+                      <span className="text-[10px] font-body bg-amber-500/10 text-amber-500 px-1.5 py-0.5 rounded-full">Trial</span>
+                    )}
+                    {effectiveMaxEvents(k) != null && (
+                      <span className="text-[10px] font-body bg-secondary text-muted-foreground px-1.5 py-0.5 rounded-full">
+                        {effectiveMaxEvents(k)} event{effectiveMaxEvents(k) !== 1 ? "s" : ""}
+                      </span>
+                    )}
+                    {effectiveMaxBookings(k) != null && (
+                      <span className="text-[10px] font-body bg-secondary text-muted-foreground px-1.5 py-0.5 rounded-full">
+                        {effectiveMaxBookings(k)} bookings
+                      </span>
+                    )}
+                    {k.extraEventPrice != null && (
+                      <span className="text-[10px] font-body bg-blue-500/10 text-blue-400 px-1.5 py-0.5 rounded-full">
+                        +${k.extraEventPrice}/slot
                       </span>
                     )}
                   </div>
@@ -6640,7 +6772,7 @@ function PlatformView() {
   const [plans, setPlans] = useState<LicensePlan[]>([]);
   const [purchases, setPurchases] = useState<LicensePurchase[]>([]);
   const [loadingStats, setLoadingStats] = useState(true);
-  const [activeSection, setActiveSection] = useState<"overview" | "bookings" | "tenants" | "keys" | "plans" | "purchases" | "webhooks">("overview");
+  const [activeSection, setActiveSection] = useState<"overview" | "bookings" | "tenants" | "keys" | "event-slots" | "plans" | "purchases" | "webhooks">("overview");
   const [selectedTenantForSettings, setSelectedTenantForSettings] = useState<Tenant | null>(null);
 
   // Tenant create form
@@ -6822,6 +6954,7 @@ function PlatformView() {
     { id: "overview", label: "Overview" },
     { id: "tenants", label: "Tenants" },
     { id: "keys", label: "License Keys" },
+    { id: "event-slots", label: "Event Slot Requests" },
     { id: "plans", label: "License Plans" },
     { id: "purchases", label: "Purchases" },
     { id: "bookings", label: "All Bookings" },
@@ -7082,6 +7215,9 @@ function PlatformView() {
           <LicenseKeysPanel />
         </div>
       )}
+
+      {/* ── Event Slot Requests ── */}
+      {activeSection === "event-slots" && <EventSlotRequestsPanel />}
 
 
       {activeSection === "bookings" && (
