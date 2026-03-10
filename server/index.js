@@ -535,14 +535,14 @@ function getWatermarkSettings(tenantSlug) {
     const settings = db["wv_settings"];
     const parsed = typeof settings === "string" ? JSON.parse(settings) : settings;
     return {
-      text: parsed?.watermarkText || "ZAC MORGAN PHOTOGRAPHY",
+      text: parsed?.watermarkText || "WATERMARK VAULT",
       opacity: Math.min(1, Math.max(0, (parsed?.watermarkOpacity ?? 20) / 100)),
       position: parsed?.watermarkPosition || "tiled",
       imageBase64: parsed?.watermarkImage || null, // base64 data URL
       size: parsed?.watermarkSize ?? 40,
     };
   } catch {
-    return { text: "ZAC MORGAN PHOTOGRAPHY", opacity: 0.2, position: "tiled", imageBase64: null, size: 40 };
+    return { text: "WATERMARK VAULT", opacity: 0.2, position: "tiled", imageBase64: null, size: 40 };
   }
 }
 

@@ -520,7 +520,7 @@ export default function AlbumDetail() {
   const freeUsed = getFreeUsed(album, sessionKey);
   const freeRemaining = Math.max(0, album.freeDownloads - freeUsed);
   const isFullyUnlocked = album.allUnlocked === true; // admin-set only (proofing delivery, manual unlock)
-  const isExpired = !!(album.downloadExpiresAt && new Date(album.downloadExpiresAt) < new Date());
+  const isExpired = !!(album.downloadExpiresAt && new Date(album.downloadExpiresAt + "T23:59:59") < new Date());
   // Per-session purchase record for this viewer
   const sessionPurchase = album.sessionPurchases?.[sessionKey];
   const sessionFullAlbum = sessionPurchase?.fullAlbum === true;
@@ -1063,7 +1063,7 @@ export default function AlbumDetail() {
                     <div>
                       <p className="text-sm font-display text-foreground">Download access has expired</p>
                       <p className="text-xs font-body text-muted-foreground mt-1">
-                        This gallery's download period ended on {new Date(album.downloadExpiresAt! + "T12:00:00").toLocaleDateString("en-AU", { day: "numeric", month: "long", year: "numeric" })}. Contact your photographer to request an extension.
+                        This gallery's download period ended on {new Date(album.downloadExpiresAt! + "T23:59:59").toLocaleDateString("en-AU", { day: "numeric", month: "long", year: "numeric" })}. Contact your photographer to request an extension.
                       </p>
                     </div>
                   </div>
