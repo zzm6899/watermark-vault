@@ -34,6 +34,11 @@ export class CameraUsbWeb extends WebPlugin implements CameraUsbPlugin {
     return { deleted: 0 };
   }
 
+  async reconnect() {
+    console.warn("CameraUsb: reconnect not available on web");
+    return { granted: false };
+  }
+
   async startWatching(_options?: { intervalMs?: number }) {
     console.warn("CameraUsb: watching not available on web");
   }

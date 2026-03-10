@@ -13,10 +13,12 @@ const path = require("path");
  *
  * @param {string} localFilePath - Absolute path to the file on disk.
  * @param {{ ftpHost: string; ftpPort?: number; ftpUser?: string; ftpPassword?: string; ftpRemotePath?: string }} settings
+ * @param {{ subFolder?: string }} [options]
  * @returns {Promise<{ ok: boolean; error?: string }>}
  */
-async function uploadFileToFtp(localFilePath, settings) {
+async function uploadFileToFtp(localFilePath, settings, options = {}) {
   const { ftpHost, ftpPort = 21, ftpUser = "anonymous", ftpPassword = "", ftpRemotePath = "/" } = settings;
+  const { subFolder } = options;
 
   if (!ftpHost) return { ok: false, error: "FTP host not configured" };
 
@@ -32,8 +34,10 @@ async function uploadFileToFtp(localFilePath, settings) {
       secure: false,
     });
 
-    // Ensure the remote directory exists
-    const remotePath = ftpRemotePath || "/";
+    // Ensure the remote directory exists (with optional sub-folder)
+    const remotePath = subFolder
+      ? path.posix.join(ftpRemotePath || "/", sanitizeFolderName(subFolder))
+      : (ftpRemotePath || "/");
     await client.ensureDir(remotePath);
 
     const remoteFile = path.posix.join(remotePath, path.basename(localFilePath));
@@ -52,12 +56,14 @@ async function uploadFileToFtp(localFilePath, settings) {
  *
  * @param {string[]} localFilePaths
  * @param {object} settings
+ * @param {{ subFolder?: string; onProgress?: (done: number, total: number) => void }} [options]
  * @returns {Promise<{ ok: boolean; failed: number; error?: string }>}
  */
-async function uploadFilesToFtp(localFilePaths, settings) {
+async function uploadFilesToFtp(localFilePaths, settings, options = {}) {
   if (!localFilePaths || localFilePaths.length === 0) return { ok: true, failed: 0 };
 
   const { ftpHost, ftpPort = 21, ftpUser = "anonymous", ftpPassword = "", ftpRemotePath = "/" } = settings;
+  const { subFolder, onProgress } = options;
 
   if (!ftpHost) return { ok: false, failed: localFilePaths.length, error: "FTP host not configured" };
 
@@ -65,6 +71,7 @@ async function uploadFilesToFtp(localFilePaths, settings) {
   client.ftp.verbose = false;
 
   let failed = 0;
+  let done = 0;
   try {
     await client.access({
       host: ftpHost,
@@ -74,7 +81,9 @@ async function uploadFilesToFtp(localFilePaths, settings) {
       secure: false,
     });
 
-    const remotePath = ftpRemotePath || "/";
+    const remotePath = subFolder
+      ? path.posix.join(ftpRemotePath || "/", sanitizeFolderName(subFolder))
+      : (ftpRemotePath || "/");
     await client.ensureDir(remotePath);
 
     for (const localFilePath of localFilePaths) {
@@ -85,6 +94,8 @@ async function uploadFilesToFtp(localFilePaths, settings) {
         console.warn(`[FTP] File upload failed for ${path.basename(localFilePath)}:`, err.message);
         failed++;
       }
+      done++;
+      if (onProgress) onProgress(done, localFilePaths.length);
     }
   } catch (err) {
     return { ok: false, failed: localFilePaths.length, error: err.message || "FTP connection failed" };
@@ -93,6 +104,57 @@ async function uploadFilesToFtp(localFilePaths, settings) {
   }
 
   return { ok: failed === 0, failed };
+}
+
+/**
+ * Move a file from one remote FTP path to another (for starred folder feature).
+ * If the file does not exist at fromPath, attempts to upload from localFilePath instead.
+ *
+ * @param {string} localFilePath - Absolute local path (used as fallback upload source).
+ * @param {string} fromRemotePath - Current remote path of the file (e.g. /photos/album/photo.jpg).
+ * @param {string} toRemotePath - Target remote path (e.g. /photos/album-starred/photo.jpg).
+ * @param {object} settings - FTP connection settings.
+ * @returns {Promise<{ ok: boolean; error?: string }>}
+ */
+async function moveFileOnFtp(localFilePath, fromRemotePath, toRemotePath, settings) {
+  const { ftpHost, ftpPort = 21, ftpUser = "anonymous", ftpPassword = "" } = settings;
+
+  if (!ftpHost) return { ok: false, error: "FTP host not configured" };
+
+  const client = new ftp.Client();
+  client.ftp.verbose = false;
+
+  try {
+    await client.access({
+      host: ftpHost,
+      port: Number(ftpPort) || 21,
+      user: ftpUser || "anonymous",
+      password: ftpPassword || "",
+      secure: false,
+    });
+
+    // Ensure the target directory exists
+    const toDir = path.posix.dirname(toRemotePath);
+    await client.ensureDir(toDir);
+
+    // Try to rename/move the file; fall back to upload if rename fails
+    try {
+      await client.rename(fromRemotePath, toRemotePath);
+    } catch (_renameErr) {
+      // File may not exist at fromRemotePath yet — upload it directly to the target path
+      if (localFilePath) {
+        await client.uploadFrom(localFilePath, toRemotePath);
+      } else {
+        throw _renameErr;
+      }
+    }
+
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message || "FTP move failed" };
+  } finally {
+    client.close();
+  }
 }
 
 /**
@@ -130,4 +192,20 @@ async function testFtpConnection(settings) {
   }
 }
 
-module.exports = { uploadFileToFtp, uploadFilesToFtp, testFtpConnection };
+/**
+ * Sanitize a string for use as an FTP folder name.
+ * Strips characters that are unsafe in FTP paths.
+ *
+ * @param {string} name
+ * @returns {string}
+ */
+function sanitizeFolderName(name) {
+  return name
+    .replace(/[/\\:*?"<>|]/g, "-")
+    .replace(/\s+/g, "_")
+    .replace(/_-_/g, "-")
+    .replace(/^[-_.]+|[-_.]+$/g, "")
+    .slice(0, 100) || "album";
+}
+
+module.exports = { uploadFileToFtp, uploadFilesToFtp, moveFileOnFtp, testFtpConnection, sanitizeFolderName };

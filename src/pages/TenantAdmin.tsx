@@ -31,7 +31,7 @@ import {
   getTenantGoogleCalendarStatus, startTenantGoogleCalendarAuth,
   disconnectTenantGoogleCalendar, getTenantGoogleCalendars,
   saveTenantCalendarSettings, getTenantStorageStats, upsertTenantBookingAdmin,
-  testTenantFtpConnection,
+  testTenantFtpConnection, ftpUploadAlbum, ftpMoveToStarred,
 } from "@/lib/api";
 import ProgressiveImg from "@/components/ProgressiveImg";
 import RichTextEditor from "@/components/RichTextEditor";
@@ -1448,12 +1448,29 @@ function TenantAlbumEditor({ slug, album, onSave, onCancel }: {
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadSpeed, setUploadSpeed] = useState<number | null>(null);
+  const [ftpUploadProgress, setFtpUploadProgress] = useState<{ done: number; total: number; failed: number } | null>(null);
+  const [ftpUploading, setFtpUploading] = useState(false);
   const uploadRef = useRef<HTMLInputElement>(null);
 
   const updateLiveAlbum = async (updated: Album) => {
     const { ok, error } = await saveTenantAlbum(slug, updated);
     if (!ok) { toast.error(error || "Failed to update album"); return; }
     setLiveAlbum(updated);
+  };
+
+  const handleFtpReupload = async () => {
+    if (!album?.slug || ftpUploading) return;
+    setFtpUploading(true);
+    setFtpUploadProgress({ done: 0, total: 0, failed: 0 });
+    const result = await ftpUploadAlbum(
+      album.slug,
+      (done, total, failed) => setFtpUploadProgress({ done, total, failed }),
+      slug,
+    );
+    setFtpUploading(false);
+    if (result.ok) toast.success(`FTP upload complete: ${result.done} photo${result.done !== 1 ? "s" : ""} uploaded`);
+    else toast.error(result.error || `FTP upload failed (${result.failed} error${result.failed !== 1 ? "s" : ""})`);
+    setTimeout(() => setFtpUploadProgress(null), 4000);
   };
 
   const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1467,7 +1484,7 @@ function TenantAlbumEditor({ slug, album, onSave, onCancel }: {
     const results = await uploadPhotosToServer(fileArr, (done, total, bytesPerSecond) => {
       setUploadProgress(Math.round((done / total) * 100));
       if (bytesPerSecond != null) setUploadSpeed(bytesPerSecond);
-    }, slug);
+    }, slug, 3, title || undefined);
     if (results.length === 0) {
       setUploading(false);
       setUploadSpeed(null);
@@ -1900,6 +1917,50 @@ function TenantAlbumEditor({ slug, album, onSave, onCancel }: {
             <div className="h-1.5 bg-secondary rounded-full overflow-hidden">
               <div className="h-full bg-primary rounded-full transition-all" style={{ width: `${uploadProgress}%` }} />
             </div>
+          </div>
+        )}
+        {/* FTP upload progress / re-upload */}
+        {isServerMode() && album && (
+          <div className="mb-3">
+            {ftpUploadProgress ? (
+              <div className="p-3 rounded-lg bg-secondary/50 border border-border space-y-1.5">
+                <div className="flex items-center justify-between text-xs font-body text-muted-foreground">
+                  <span className="flex items-center gap-1.5">
+                    <Upload className="w-3 h-3 text-primary" />
+                    FTP: {ftpUploadProgress.done}/{ftpUploadProgress.total} uploaded
+                    {ftpUploadProgress.failed > 0 && <span className="text-destructive">({ftpUploadProgress.failed} failed)</span>}
+                  </span>
+                  <span className="text-primary font-medium">{ftpUploadProgress.total > 0 ? Math.round(ftpUploadProgress.done / ftpUploadProgress.total * 100) : 0}%</span>
+                </div>
+                {ftpUploadProgress.total > 0 && (
+                  <div className="h-1.5 rounded-full bg-border overflow-hidden">
+                    <div className="h-full bg-primary rounded-full transition-all" style={{ width: `${Math.round(ftpUploadProgress.done / ftpUploadProgress.total * 100)}%` }} />
+                  </div>
+                )}
+              </div>
+            ) : (
+              (() => {
+                const ftpCount = (liveAlbum?.photos || []).filter(p => (p as any).ftpUploaded).length;
+                const total = liveAlbum?.photos?.length || 0;
+                return total > 0 ? (
+                  <div className="flex items-center justify-between text-xs font-body text-muted-foreground">
+                    <span className="flex items-center gap-1.5">
+                      <Upload className="w-3 h-3" />
+                      FTP: {ftpCount}/{total} uploaded ({total > 0 ? Math.round(ftpCount / total * 100) : 0}%)
+                    </span>
+                    {ftpCount < total && (
+                      <button
+                        onClick={handleFtpReupload}
+                        disabled={ftpUploading}
+                        className="inline-flex items-center gap-1 text-[10px] font-body tracking-wider uppercase px-2 py-1 rounded border border-border hover:bg-secondary transition-all disabled:opacity-50"
+                      >
+                        <Upload className="w-3 h-3" /> {ftpUploading ? "Uploading…" : "Upload to FTP"}
+                      </button>
+                    )}
+                  </div>
+                ) : null;
+              })()
+            )}
           </div>
         )}
         {liveAlbum && liveAlbum.photos && liveAlbum.photos.length > 0 && (
@@ -3554,6 +3615,23 @@ function TenantSettingsView({ slug }: { slug: string }) {
                     <label className="text-xs font-body text-muted-foreground mb-1 block">Remote Path</label>
                     <Input value={settings.ftpRemotePath || ""} onChange={e => set({ ftpRemotePath: e.target.value })}
                       placeholder="/photos" className="bg-background border-border text-foreground font-body text-xs" />
+                  </div>
+                </div>
+                {/* Folder organisation options */}
+                <div className="space-y-2 pt-2 border-t border-border/30">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-xs font-body text-foreground">Organise by Album / Booking Type</p>
+                      <p className="text-[10px] font-body text-muted-foreground/70 mt-0.5">Upload each album's photos into a sub-folder named after the album (e.g. <code>/photos/AlbumName/</code>).</p>
+                    </div>
+                    <Switch checked={!!settings.ftpOrganizeByAlbum} onCheckedChange={v => set({ ftpOrganizeByAlbum: v })} />
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-xs font-body text-foreground">Starred Photos → Separate Folder</p>
+                      <p className="text-[10px] font-body text-muted-foreground/70 mt-0.5">When a photo is starred, move it on FTP to a <code>AlbumName-starred</code> sub-folder for easy sorting.</p>
+                    </div>
+                    <Switch checked={!!settings.ftpStarredFolder} onCheckedChange={v => set({ ftpStarredFolder: v })} />
                   </div>
                 </div>
                 {settings.ftpHost && (

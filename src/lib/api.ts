@@ -97,12 +97,16 @@ export async function uploadPhotosToServer(
   onProgress?: (done: number, total: number, bytesPerSecond?: number) => void,
   tenantSlug?: string,
   concurrency = 3,
+  albumFolder?: string,
 ): Promise<{ id: string; url: string; originalName: string; size: number; ftpUploaded?: boolean }[]> {
   if (!(await checkServer())) return [];
 
-  const uploadUrl = tenantSlug
+  let uploadUrl = tenantSlug
     ? `/api/upload?tenant=${encodeURIComponent(tenantSlug)}`
     : "/api/upload";
+  if (albumFolder) {
+    uploadUrl += (uploadUrl.includes("?") ? "&" : "?") + `albumFolder=${encodeURIComponent(albumFolder)}`;
+  }
 
   // Smaller batches improve granular progress feedback and concurrent throughput
   const batchSize = 5;
@@ -1266,6 +1270,88 @@ export async function testFtpConnection(): Promise<{ ok: boolean; error?: string
 export async function testTenantFtpConnection(slug: string): Promise<{ ok: boolean; error?: string }> {
   try {
     const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/settings/ftp/test`, { method: "POST" });
+    const json = await res.json();
+    return { ok: !!json.ok, error: json.error };
+  } catch { return { ok: false, error: "Network error" }; }
+}
+
+/**
+ * Bulk-upload an album's photos to FTP with real-time SSE progress.
+ * Calls `onProgress(done, total, failed)` for each file uploaded.
+ * Returns when all uploads are complete (or the stream ends).
+ */
+export async function ftpUploadAlbum(
+  albumSlug: string,
+  onProgress: (done: number, total: number, failed: number) => void,
+  tenantSlug?: string,
+): Promise<{ ok: boolean; done: number; total: number; failed: number; error?: string }> {
+  const url = tenantSlug
+    ? `/api/ftp/upload-album/${encodeURIComponent(albumSlug)}?tenant=${encodeURIComponent(tenantSlug)}`
+    : `/api/ftp/upload-album/${encodeURIComponent(albumSlug)}`;
+
+  try {
+    const res = await fetch(url, { method: "POST" });
+
+    // Non-SSE fast responses (errors, empty albums)
+    const contentType = res.headers.get("content-type") || "";
+    if (!contentType.includes("text/event-stream")) {
+      const json = await res.json();
+      return { ok: !!json.ok, done: json.done ?? 0, total: json.total ?? 0, failed: json.failed ?? 0, error: json.error };
+    }
+
+    return await new Promise<{ ok: boolean; done: number; total: number; failed: number; error?: string }>((resolve) => {
+      const reader = res.body!.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let lastEvent = { done: 0, total: 0, failed: 0 };
+
+      const pump = async () => {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) {
+            resolve({ ok: lastEvent.failed === 0, ...lastEvent });
+            return;
+          }
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() ?? "";
+          for (const line of lines) {
+            if (!line.startsWith("data:")) continue;
+            try {
+              const evt = JSON.parse(line.slice(5).trim());
+              lastEvent = { done: evt.done ?? lastEvent.done, total: evt.total ?? lastEvent.total, failed: evt.failed ?? lastEvent.failed };
+              onProgress(lastEvent.done, lastEvent.total, lastEvent.failed);
+              if (evt.complete) {
+                resolve({ ok: (evt.failed ?? 0) === 0 && !evt.error, ...lastEvent, error: evt.error });
+                return;
+              }
+            } catch { /* skip malformed lines */ }
+          }
+        }
+      };
+      pump().catch((err) => resolve({ ok: false, done: lastEvent.done, total: lastEvent.total, failed: lastEvent.failed, error: err.message }));
+    });
+  } catch (err: any) {
+    return { ok: false, done: 0, total: 0, failed: 0, error: err?.message ?? "Network error" };
+  }
+}
+
+/**
+ * Move a starred photo to the "{albumName}-starred" FTP sub-folder.
+ * Only works when the ftpStarredFolder setting is enabled server-side.
+ */
+export async function ftpMoveToStarred(params: {
+  photoSrc: string;
+  albumTitle: string;
+  albumSlug: string;
+  tenantSlug?: string;
+}): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch("/api/ftp/move-starred", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(params),
+    });
     const json = await res.json();
     return { ok: !!json.ok, error: json.error };
   } catch { return { ok: false, error: "Network error" }; }

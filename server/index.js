@@ -6,7 +6,7 @@ const fs = require("fs");
 const sharp = require("sharp");
 const archiver = require("archiver");
 const rateLimit = require("express-rate-limit");
-const { uploadFilesToFtp, testFtpConnection } = require("./ftp");
+const { uploadFilesToFtp, moveFileOnFtp, testFtpConnection, sanitizeFolderName } = require("./ftp");
 const { registerRoutes: registerGoogleCalendarRoutes } = require("./google-calendar");
 const { registerRoutes: registerEmailRoutes } = require("./email");
 const { registerRoutes: registerStripeRoutes, registerTenantStripeRoutes } = require("./stripe");
@@ -245,6 +245,164 @@ app.post("/api/tenant/:slug/settings/ftp/test", async (req, res) => {
   res.json(result);
 });
 
+// ── FTP: Bulk album re-upload with SSE progress ─────────────────────────────
+// POST /api/ftp/upload-album/:albumSlug?tenant=<slug>
+// Uploads all photos from an album to FTP, streaming progress events to the client.
+app.post("/api/ftp/upload-album/:albumSlug", async (req, res) => {
+  const { albumSlug } = req.params;
+  const tenantSlug = req.query.tenant ? String(req.query.tenant) : null;
+
+  const db = readDb();
+
+  // Resolve FTP settings (tenant-specific or global)
+  let ftpSettings = null;
+  if (tenantSlug) {
+    const raw = db[`t_${tenantSlug}_wv_tenant_settings`];
+    const ts = raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : {};
+    if (ts.ftpEnabled && ts.ftpHost) ftpSettings = ts;
+  } else {
+    const raw = db["wv_ftp_settings"];
+    const gs = raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : {};
+    if (gs.ftpEnabled && gs.ftpHost) ftpSettings = gs;
+  }
+
+  if (!ftpSettings) {
+    return res.json({ ok: false, error: "FTP is not configured or not enabled." });
+  }
+
+  // Resolve album
+  const albumsKey = tenantSlug ? `t_${tenantSlug}_wv_albums` : "wv_albums";
+  const albumsRaw = db[albumsKey];
+  const albums = albumsRaw ? (typeof albumsRaw === "string" ? JSON.parse(albumsRaw) : albumsRaw) : [];
+  const album = albums.find((a) => a.slug === albumSlug || a.id === albumSlug);
+
+  if (!album) {
+    return res.json({ ok: false, error: "Album not found." });
+  }
+
+  const photos = album.photos || [];
+  const localPaths = photos
+    .map((p) => {
+      const src = typeof p === "string" ? p : p.src;
+      if (!src) return null;
+      const filename = src.split("/").pop();
+      if (!filename || filename.startsWith("_cache")) return null;
+      return path.join(UPLOADS_DIR, filename);
+    })
+    .filter((p) => p && fs.existsSync(p));
+
+  if (localPaths.length === 0) {
+    return res.json({ ok: true, done: 0, total: 0, message: "No local photos to upload." });
+  }
+
+  // Set up SSE stream
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+
+  const subFolder = ftpSettings.ftpOrganizeByAlbum ? (album.title || albumSlug) : null;
+  let done = 0;
+  let failed = 0;
+
+  const { ftpHost, ftpPort = 21, ftpUser = "anonymous", ftpPassword = "", ftpRemotePath = "/" } = ftpSettings;
+  const { Client: FtpClient } = require("basic-ftp");
+  const client = new FtpClient();
+  client.ftp.verbose = false;
+
+  const sendEvent = (data) => {
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+
+  try {
+    await client.access({
+      host: ftpHost,
+      port: Number(ftpPort) || 21,
+      user: ftpUser || "anonymous",
+      password: ftpPassword || "",
+      secure: false,
+    });
+
+    const remotePath = subFolder
+      ? path.posix.join(ftpRemotePath || "/", sanitizeFolderName(subFolder))
+      : (ftpRemotePath || "/");
+    await client.ensureDir(remotePath);
+
+    for (const localFilePath of localPaths) {
+      try {
+        const remoteFile = path.posix.join(remotePath, path.basename(localFilePath));
+        await client.uploadFrom(localFilePath, remoteFile);
+      } catch (err) {
+        console.warn(`[FTP] Bulk upload failed for ${path.basename(localFilePath)}:`, err.message);
+        failed++;
+      }
+      done++;
+      sendEvent({ done, total: localPaths.length, failed });
+    }
+
+    sendEvent({ done, total: localPaths.length, failed, complete: true });
+  } catch (err) {
+    sendEvent({ error: err.message || "FTP connection failed", done, total: localPaths.length, complete: true });
+  } finally {
+    client.close();
+    res.end();
+  }
+});
+
+// ── FTP: Move a starred photo to the "{albumName}-starred" sub-folder ────────
+// POST /api/ftp/move-starred
+app.post("/api/ftp/move-starred", async (req, res) => {
+  const { photoSrc, albumTitle, albumSlug, tenantSlug } = req.body || {};
+
+  if (!photoSrc) return res.json({ ok: false, error: "photoSrc is required" });
+  if (!albumTitle && !albumSlug) return res.json({ ok: false, error: "albumTitle or albumSlug is required" });
+
+  const db = readDb();
+
+  // Resolve FTP settings
+  let ftpSettings = null;
+  if (tenantSlug) {
+    const raw = db[`t_${tenantSlug}_wv_tenant_settings`];
+    const ts = raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : {};
+    if (ts.ftpEnabled && ts.ftpHost && ts.ftpStarredFolder) ftpSettings = ts;
+  } else {
+    const raw = db["wv_ftp_settings"];
+    const gs = raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : {};
+    if (gs.ftpEnabled && gs.ftpHost && gs.ftpStarredFolder) ftpSettings = gs;
+  }
+
+  if (!ftpSettings) {
+    return res.json({ ok: false, error: "FTP starred folder feature is not enabled or configured." });
+  }
+
+  // Derive local file path from photoSrc
+  const filename = photoSrc.split("/").pop();
+  if (!filename) return res.json({ ok: false, error: "Could not determine filename from photoSrc." });
+  const localFilePath = path.join(UPLOADS_DIR, filename);
+
+  const folderBase = sanitizeFolderName(albumTitle || albumSlug);
+  const remotePath = ftpSettings.ftpRemotePath || "/";
+
+  // Source: album folder (if ftpOrganizeByAlbum) or root remote path
+  const sourceFolder = ftpSettings.ftpOrganizeByAlbum
+    ? path.posix.join(remotePath, folderBase)
+    : remotePath;
+  const fromPath = path.posix.join(sourceFolder, filename);
+
+  // Destination: "{albumName}-starred" sub-folder
+  const starredFolder = path.posix.join(remotePath, `${folderBase}-starred`);
+  const toPath = path.posix.join(starredFolder, filename);
+
+  const result = await moveFileOnFtp(
+    fs.existsSync(localFilePath) ? localFilePath : null,
+    fromPath,
+    toPath,
+    ftpSettings
+  );
+  res.json(result);
+});
+
 // ── Photo Upload ──────────────────────────────────────
 const storage = multer.diskStorage({
   destination: UPLOADS_DIR,
@@ -277,6 +435,8 @@ app.post("/api/upload", upload.array("photos", 100), async (req, res) => {
   // otherwise fall back to global admin FTP settings stored in wv_ftp_settings.
   let ftpSettings = null;
   const tenantSlug = req.query.tenant;
+  // albumFolder: optional sub-directory name (album title or booking type)
+  const albumFolder = req.query.albumFolder ? String(req.query.albumFolder) : null;
   const db = readDb();
 
   if (tenantSlug) {
@@ -292,7 +452,9 @@ app.post("/api/upload", upload.array("photos", 100), async (req, res) => {
   let ftpUploaded = false;
   if (ftpSettings) {
     const localPaths = uploadedFiles.map((f) => f.localPath);
-    const result = await uploadFilesToFtp(localPaths, ftpSettings);
+    // Use album sub-folder when ftpOrganizeByAlbum is enabled and a folder name was supplied
+    const subFolder = ftpSettings.ftpOrganizeByAlbum && albumFolder ? albumFolder : null;
+    const result = await uploadFilesToFtp(localPaths, ftpSettings, { subFolder });
     ftpUploaded = result.ok;
     if (!result.ok) {
       console.warn(`[FTP] Upload failed: ${result.error || "unknown error"} (${result.failed}/${uploadedFiles.length} file(s) failed)`);
@@ -1109,6 +1271,48 @@ app.post("/api/proofing/submit", async (req, res) => {
     parsed[idx] = updatedAlbum;
     db[storeKey] = JSON.stringify(parsed);
     writeDb(db);
+
+    // ── FTP: move newly-starred photos to the "-starred" sub-folder ──────────
+    // Only runs when ftpStarredFolder is enabled in the applicable FTP settings.
+    (async () => {
+      try {
+        let ftpSettings = null;
+        if (tenantSlug) {
+          const tsRaw = db[`t_${tenantSlug}_wv_tenant_settings`];
+          const ts = tsRaw ? (typeof tsRaw === "string" ? JSON.parse(tsRaw) : tsRaw) : {};
+          if (ts.ftpEnabled && ts.ftpHost && ts.ftpStarredFolder) ftpSettings = ts;
+        } else {
+          const raw = db["wv_ftp_settings"];
+          const gs = raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : {};
+          if (gs.ftpEnabled && gs.ftpHost && gs.ftpStarredFolder) ftpSettings = gs;
+        }
+        if (!ftpSettings) return;
+
+        const folderBase = sanitizeFolderName(album.title || album.slug || albumId);
+        const remotePath = ftpSettings.ftpRemotePath || "/";
+        const sourceFolder = ftpSettings.ftpOrganizeByAlbum
+          ? path.posix.join(remotePath, folderBase)
+          : remotePath;
+        const starredFolder = path.posix.join(remotePath, `${folderBase}-starred`);
+
+        for (const p of updatedPhotos.filter(p => p.starred)) {
+          const filename = (p.src || "").split("/").pop();
+          if (!filename) continue;
+          const localFilePath = path.join(UPLOADS_DIR, filename);
+          const fromPath = path.posix.join(sourceFolder, filename);
+          const toPath = path.posix.join(starredFolder, filename);
+          const { moveFileOnFtp: moveFn } = require("./ftp");
+          await moveFn(
+            fs.existsSync(localFilePath) ? localFilePath : null,
+            fromPath,
+            toPath,
+            ftpSettings
+          ).catch(err => console.warn("[FTP] Starred move failed for", filename, err.message));
+        }
+      } catch (ftpErr) {
+        console.warn("[FTP] Starred folder move error:", ftpErr.message);
+      }
+    })();
 
     // Fire discord notification — use tenant webhook if available, else main
     let discordUrl, discordNotify;
