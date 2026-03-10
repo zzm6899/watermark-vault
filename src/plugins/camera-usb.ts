@@ -42,6 +42,13 @@ export interface CameraUsbPlugin {
   /** Delete local cached copies of imported files (call after successful server upload) */
   deleteLocalFiles(options: { paths: string[] }): Promise<{ deleted: number }>;
 
+  /**
+   * Force-close the current MTP connection and re-request USB device permission.
+   * Use this when the camera reports "connected" but live capture cannot be started
+   * (e.g. after a USB re-enumeration or a stale MTP session).
+   */
+  reconnect(): Promise<{ granted: boolean }>;
+
   /** Start watching for new files on camera (polling). Emits 'newFiles' event */
   startWatching(options: { intervalMs?: number }): Promise<void>;
 

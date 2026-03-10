@@ -400,6 +400,29 @@ function MobileCaptureInner() {
     }
   }, [isNative]);
 
+  /**
+   * Force-reconnect the camera: closes any stale MTP session, re-requests USB
+   * device permission (so the OS dialog appears if needed), then refreshes the
+   * file list.  Called when the user taps the Refresh button while the camera
+   * is shown as "connected" but live capture cannot be toggled on.
+   */
+  const reconnectCamera = useCallback(async () => {
+    if (!isNative) return;
+    try {
+      const permResult = await CameraUsb.reconnect();
+      const granted = permResult?.granted ?? false;
+      if (!granted) {
+        setCameraConnected(false);
+        setCameraFiles([]);
+        return;
+      }
+    } catch (err) {
+      console.warn("reconnectCamera failed:", err);
+    }
+    // Re-run normal check to update state and file list after reconnect
+    await checkCamera();
+  }, [isNative, checkCamera]);
+
   useEffect(() => {
     if (!isNative) return;
     checkCamera();
@@ -565,7 +588,7 @@ function MobileCaptureInner() {
               const chunkResults = await uploadPhotosToServer(decodedFiles, (done, _total, bytesPerSecond) => {
                 setImportProgress(Math.round((chunkStart + done) / freshHandles.length * 100));
                 if (bytesPerSecond != null) setImportSpeed(bytesPerSecond);
-              });
+              }, tenantSession?.slug, 3, album?.title || undefined);
               // Re-order results to match the sorted decodedFiles order
               const resultByName = new Map(chunkResults.map(r => [r.originalName, r]));
               const orderedResults = decodedFiles.map(f => resultByName.get(f.name)).filter(Boolean);
@@ -715,7 +738,7 @@ function MobileCaptureInner() {
             const chunkResults = await uploadPhotosToServer(chunk, (done, _total, bytesPerSecond) => {
               setUploadProgress(Math.round((totalDone + done) / sortedFiles.length * 100));
               if (bytesPerSecond != null) setUploadSpeed(bytesPerSecond);
-            });
+            }, tenantSession?.slug, 3, targetAlbum?.title || undefined);
             // Re-order results to match the sorted input file order
             const resultByName = new Map(chunkResults.map(r => [r.originalName, r]));
             const succeededNames = new Set(chunkResults.map(r => r.originalName));
@@ -796,7 +819,7 @@ function MobileCaptureInner() {
       const results = await uploadPhotosToServer(files, (done, total, bytesPerSecond) => {
         setUploadProgress(Math.round(done / total * 100));
         if (bytesPerSecond != null) setUploadSpeed(bytesPerSecond);
-      });
+      }, tenantSession?.slug, 3, targetAlbum?.title || undefined);
       const fileInfoByName = new Map(files.map(f => [f.name, f]));
       const resultByName = new Map(results.map(r => [r.originalName, r]));
       const orderedResults = files.map(f => resultByName.get(f.name)).filter((r): r is NonNullable<typeof r> => !!r);
@@ -1308,7 +1331,7 @@ function MobileCaptureInner() {
                     <p className="text-xs font-body text-muted-foreground">{filteredCameraFiles.length} photos{jpegOnly ? " (JPEG)" : ""}</p>
                   </div>
                 </div>
-                <button onClick={checkCamera} className="inline-flex items-center gap-1.5 text-xs font-body tracking-wider uppercase text-muted-foreground hover:text-foreground px-2.5 py-1.5 rounded-full border border-border hover:bg-secondary transition-all">
+                <button onClick={reconnectCamera} className="inline-flex items-center gap-1.5 text-xs font-body tracking-wider uppercase text-muted-foreground hover:text-foreground px-2.5 py-1.5 rounded-full border border-border hover:bg-secondary transition-all" title="Force-close and re-open the camera connection, and re-request access permission">
                   <RefreshCw className="w-3 h-3" /> Refresh
                 </button>
               </div>

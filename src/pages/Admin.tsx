@@ -30,7 +30,64 @@ import {
   isSuperAdmin, setSuperAdmin, getAdminCredentials, hashPassword,
 } from "@/lib/storage";
 import { compressImage, formatBytes, formatSpeed, getLocalStorageUsage, generateThumbnail } from "@/lib/image-utils";
-import { uploadPhotosToServer, isServerMode, deletePhotoFromServer, getGoogleCalendarStatus, startGoogleCalendarAuth, disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, syncBookingToCalendar, getServerStorageStats, syncFromServer, sendEmail, bulkDeleteFiles, syncBookingsToSheet, getBookingEmailLog, sendBookingReminder, sendCustomEmail, getWaitlistEntries, deleteWaitlistEntry, notifyWaitlistOnCancel, notifyDiscord, getCacheStats, warmCache, createInvoiceCheckout, sendInvoiceEmail, getStripeStatus, sendEnquiryAcceptedEmail, sendEnquiryDeclinedEmail, getLicenseKeys, generateLicenseKey, revokeLicenseKey, getTenants, createTenant, updateTenant, deleteTenant, getSuperAdminInfo, getSuperStats, getAllBookings, getLicensePlans, createLicensePlan, updateLicensePlan, deleteLicensePlan, getLicensePurchases, activateBankPurchase, getLicensePlanCheckout, getTenantSettings, saveTenantSettings, getSuperAdminWebhooks, getGlobalFtpSettings, saveGlobalFtpSettings, testFtpConnection, getEventSlotRequests, confirmEventSlotRequest, rejectEventSlotRequest } from "@/lib/api";
+import {
+  uploadPhotosToServer,
+  isServerMode,
+  deletePhotoFromServer,
+  getGoogleCalendarStatus,
+  startGoogleCalendarAuth,
+  disconnectGoogleCalendar,
+  getGoogleCalendars,
+  syncAllBookingsToCalendar,
+  syncBookingToCalendar,
+  getServerStorageStats,
+  syncFromServer,
+  sendEmail,
+  bulkDeleteFiles,
+  syncBookingsToSheet,
+  getBookingEmailLog,
+  sendBookingReminder,
+  sendCustomEmail,
+  getWaitlistEntries,
+  deleteWaitlistEntry,
+  notifyWaitlistOnCancel,
+  notifyDiscord,
+  getCacheStats,
+  warmCache,
+  createInvoiceCheckout,
+  sendInvoiceEmail,
+  getStripeStatus,
+  sendEnquiryAcceptedEmail,
+  sendEnquiryDeclinedEmail,
+  getLicenseKeys,
+  generateLicenseKey,
+  revokeLicenseKey,
+  getTenants,
+  createTenant,
+  updateTenant,
+  deleteTenant,
+  getSuperAdminInfo,
+  getSuperStats,
+  getAllBookings,
+  getLicensePlans,
+  createLicensePlan,
+  updateLicensePlan,
+  deleteLicensePlan,
+  getLicensePurchases,
+  activateBankPurchase,
+  getLicensePlanCheckout,
+  getTenantSettings,
+  saveTenantSettings,
+  getSuperAdminWebhooks,
+  getGlobalFtpSettings,
+  saveGlobalFtpSettings,
+  testFtpConnection,
+  ftpUploadAlbum,
+  ftpMoveToStarred,
+  getEventSlotRequests,
+  confirmEventSlotRequest,
+  rejectEventSlotRequest
+} from "@/lib/api";
 import type { CacheBreakdown } from "@/lib/api";
 import RichTextEditor, { RichTextDisplay } from "@/components/RichTextEditor";
 import Login from "@/pages/Login";
@@ -2792,6 +2849,22 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
   const [displaySize, setDisplaySize] = useState<AlbumDisplaySize>(album?.displaySize || "medium");
 
   const [uploadStats, setUploadStats] = useState<{ total: number; done: number; errors: number; savedBytes: number; speed?: number } | null>(null);
+  const [ftpUploadProgress, setFtpUploadProgress] = useState<{ done: number; total: number; failed: number } | null>(null);
+  const [ftpUploading, setFtpUploading] = useState(false);
+
+  const handleFtpReupload = async () => {
+    if (!album?.slug || ftpUploading) return;
+    setFtpUploading(true);
+    setFtpUploadProgress({ done: 0, total: 0, failed: 0 });
+    const result = await ftpUploadAlbum(
+      album.slug,
+      (done, total, failed) => setFtpUploadProgress({ done, total, failed }),
+    );
+    setFtpUploading(false);
+    if (result.ok) toast.success(`FTP upload complete: ${result.done} photo${result.done !== 1 ? "s" : ""} uploaded`);
+    else toast.error(result.error || `FTP upload failed (${result.failed} error${result.failed !== 1 ? "s" : ""})`);
+    setTimeout(() => setFtpUploadProgress(null), 4000);
+  };
 
   const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
@@ -2803,7 +2876,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
       // Upload to server — files saved to TrueNAS disk
       const results = await uploadPhotosToServer(fileArr, (done, total, bytesPerSecond) => {
         setUploadStats(prev => prev ? { ...prev, done, total, speed: bytesPerSecond } : null);
-      });
+      }, undefined, 3, title || undefined);
       // Add all photos immediately — use server-side thumbnails (no heavy client-side canvas work)
       const newPhotos: Photo[] = results.map(r => ({
         id: r.id, src: r.url, thumbnail: r.url + "?size=thumb", title: r.originalName.replace(/\.[^.]+$/, "").replace(/^_+/, ""), width: 800, height: 600, uploadedAt: new Date().toISOString(),
@@ -3378,6 +3451,50 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
               <div className="mt-1.5 h-1.5 rounded-full bg-border overflow-hidden">
                 <div className="h-full bg-primary rounded-full transition-all" style={{ width: `${(uploadStats.done / uploadStats.total) * 100}%` }} />
               </div>
+            )}
+          </div>
+        )}
+        {/* FTP upload progress / re-upload */}
+        {isServerMode() && album && (
+          <div className="mb-3">
+            {ftpUploadProgress ? (
+              <div className="p-3 rounded-lg bg-secondary/50 border border-border space-y-1.5">
+                <div className="flex items-center justify-between text-xs font-body text-muted-foreground">
+                  <span className="flex items-center gap-1.5">
+                    <Upload className="w-3 h-3 text-primary" />
+                    FTP: {ftpUploadProgress.done}/{ftpUploadProgress.total} uploaded
+                    {ftpUploadProgress.failed > 0 && <span className="text-destructive">({ftpUploadProgress.failed} failed)</span>}
+                  </span>
+                  <span className="text-primary font-medium">{ftpUploadProgress.total > 0 ? Math.round(ftpUploadProgress.done / ftpUploadProgress.total * 100) : 0}%</span>
+                </div>
+                {ftpUploadProgress.total > 0 && (
+                  <div className="h-1.5 rounded-full bg-border overflow-hidden">
+                    <div className="h-full bg-primary rounded-full transition-all" style={{ width: `${Math.round(ftpUploadProgress.done / ftpUploadProgress.total * 100)}%` }} />
+                  </div>
+                )}
+              </div>
+            ) : (
+              (() => {
+                const ftpCount = photos.filter(p => (p as any).ftpUploaded).length;
+                const total = photos.length;
+                return total > 0 ? (
+                  <div className="flex items-center justify-between text-xs font-body text-muted-foreground">
+                    <span className="flex items-center gap-1.5">
+                      <Upload className="w-3 h-3" />
+                      FTP: {ftpCount}/{total} uploaded ({total > 0 ? Math.round(ftpCount / total * 100) : 0}%)
+                    </span>
+                    {ftpCount < total && (
+                      <button
+                        onClick={handleFtpReupload}
+                        disabled={ftpUploading}
+                        className="inline-flex items-center gap-1 text-[10px] font-body tracking-wider uppercase px-2 py-1 rounded border border-border hover:bg-secondary transition-all disabled:opacity-50"
+                      >
+                        <Upload className="w-3 h-3" /> {ftpUploading ? "Uploading…" : "Upload to FTP"}
+                      </button>
+                    )}
+                  </div>
+                ) : null;
+              })()
             )}
           </div>
         )}
@@ -5940,6 +6057,23 @@ function SettingsView() {
                       placeholder="/photos" className="bg-secondary border-border text-foreground font-body" />
                   </div>
                 </div>
+                {/* Folder organisation options */}
+                <div className="space-y-2 pt-2 border-t border-border/30">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-xs font-body text-foreground">Organise by Album / Booking Type</p>
+                      <p className="text-[10px] font-body text-muted-foreground/70 mt-0.5">Upload each album's photos into a sub-folder named after the album (e.g. <code>/photos/AlbumName/</code>).</p>
+                    </div>
+                    <Switch checked={!!ftpSettings.ftpOrganizeByAlbum} onCheckedChange={(v) => setFtpSettings(s => ({ ...s, ftpOrganizeByAlbum: v }))} />
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-xs font-body text-foreground">Starred Photos → Separate Folder</p>
+                      <p className="text-[10px] font-body text-muted-foreground/70 mt-0.5">When a photo is starred, move it on FTP to a <code>AlbumName-starred</code> sub-folder for easy sorting.</p>
+                    </div>
+                    <Switch checked={!!ftpSettings.ftpStarredFolder} onCheckedChange={(v) => setFtpSettings(s => ({ ...s, ftpStarredFolder: v }))} />
+                  </div>
+                </div>
               </div>
             )}
             <div className="flex items-center gap-2 flex-wrap">
@@ -6709,44 +6843,63 @@ function TenantSettingsPanel({ tenant, onClose }: { tenant: Tenant; onClose: () 
         </div>
         <p className="text-[10px] font-body text-muted-foreground -mt-1">Automatically send uploaded photos to an FTP server. Tagged photos will show an FTP badge.</p>
         {settings.ftpEnabled && (
-          <div className="grid grid-cols-2 gap-3 pt-1">
-            <div>
-              <label className="text-xs font-body text-muted-foreground mb-1 block">FTP Host / IP</label>
-              <Input value={settings.ftpHost || ""} onChange={(e) => set({ ftpHost: e.target.value })}
-                placeholder="192.168.1.100" className="bg-background border-border text-foreground font-body text-xs" />
-            </div>
-            <div>
-              <label className="text-xs font-body text-muted-foreground mb-1 block">Port</label>
-              <Input type="number" value={settings.ftpPort || ""} onChange={(e) => set({ ftpPort: parseInt(e.target.value) || undefined })}
-                placeholder="21" className="bg-background border-border text-foreground font-body text-xs" />
-            </div>
-            <div>
-              <label className="text-xs font-body text-muted-foreground mb-1 block">Username</label>
-              <Input value={settings.ftpUser || ""} onChange={(e) => set({ ftpUser: e.target.value })}
-                placeholder="ftpuser" className="bg-background border-border text-foreground font-body text-xs" />
-            </div>
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <label className="text-xs font-body text-muted-foreground">Password</label>
-                {settings.ftpPasswordSet && !settings.ftpPassword && (
-                  <span className="text-[10px] font-body text-green-400">✓ Configured</span>
-                )}
+          <>
+            <div className="grid grid-cols-2 gap-3 pt-1">
+              <div>
+                <label className="text-xs font-body text-muted-foreground mb-1 block">FTP Host / IP</label>
+                <Input value={settings.ftpHost || ""} onChange={(e) => set({ ftpHost: e.target.value })}
+                  placeholder="192.168.1.100" className="bg-background border-border text-foreground font-body text-xs" />
               </div>
-              <div className="flex gap-2">
-                <Input type="password" value={settings.ftpPassword || ""} onChange={(e) => set({ ftpPassword: e.target.value })}
-                  placeholder={settings.ftpPasswordSet ? "Enter new password to replace" : "••••••••"}
-                  className="bg-background border-border text-foreground font-body text-xs flex-1" />
-                {settings.ftpPasswordSet && !settings.ftpPassword && (
-                  <button onClick={() => set({ ftpPassword: "" })} className="text-[10px] font-body text-destructive hover:text-destructive/80 px-2 shrink-0">Clear</button>
-                )}
+              <div>
+                <label className="text-xs font-body text-muted-foreground mb-1 block">Port</label>
+                <Input type="number" value={settings.ftpPort || ""} onChange={(e) => set({ ftpPort: parseInt(e.target.value) || undefined })}
+                  placeholder="21" className="bg-background border-border text-foreground font-body text-xs" />
+              </div>
+              <div>
+                <label className="text-xs font-body text-muted-foreground mb-1 block">Username</label>
+                <Input value={settings.ftpUser || ""} onChange={(e) => set({ ftpUser: e.target.value })}
+                  placeholder="ftpuser" className="bg-background border-border text-foreground font-body text-xs" />
+              </div>
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-xs font-body text-muted-foreground">Password</label>
+                  {settings.ftpPasswordSet && !settings.ftpPassword && (
+                    <span className="text-[10px] font-body text-green-400">✓ Configured</span>
+                  )}
+                </div>
+                <div className="flex gap-2">
+                  <Input type="password" value={settings.ftpPassword || ""} onChange={(e) => set({ ftpPassword: e.target.value })}
+                    placeholder={settings.ftpPasswordSet ? "Enter new password to replace" : "••••••••"}
+                    className="bg-background border-border text-foreground font-body text-xs flex-1" />
+                  {settings.ftpPasswordSet && !settings.ftpPassword && (
+                    <button onClick={() => set({ ftpPassword: "" })} className="text-[10px] font-body text-destructive hover:text-destructive/80 px-2 shrink-0">Clear</button>
+                  )}
+                </div>
+              </div>
+              <div className="col-span-2">
+                <label className="text-xs font-body text-muted-foreground mb-1 block">Remote Path</label>
+                <Input value={settings.ftpRemotePath || ""} onChange={(e) => set({ ftpRemotePath: e.target.value })}
+                  placeholder="/photos" className="bg-background border-border text-foreground font-body text-xs" />
               </div>
             </div>
-            <div className="col-span-2">
-              <label className="text-xs font-body text-muted-foreground mb-1 block">Remote Path</label>
-              <Input value={settings.ftpRemotePath || ""} onChange={(e) => set({ ftpRemotePath: e.target.value })}
-                placeholder="/photos" className="bg-background border-border text-foreground font-body text-xs" />
+            {/* Folder organisation options */}
+            <div className="space-y-2 pt-2 border-t border-border/30">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs font-body text-foreground">Organise by Album / Booking Type</p>
+                  <p className="text-[10px] font-body text-muted-foreground/70 mt-0.5">Upload each album's photos into a sub-folder named after the album (e.g. <code>/photos/AlbumName/</code>).</p>
+                </div>
+                <Switch checked={!!settings.ftpOrganizeByAlbum} onCheckedChange={(v) => set({ ftpOrganizeByAlbum: v })} />
+              </div>
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs font-body text-foreground">Starred Photos → Separate Folder</p>
+                  <p className="text-[10px] font-body text-muted-foreground/70 mt-0.5">When a photo is starred, move it on FTP to a <code>AlbumName-starred</code> sub-folder for easy sorting.</p>
+                </div>
+                <Switch checked={!!settings.ftpStarredFolder} onCheckedChange={(v) => set({ ftpStarredFolder: v })} />
+              </div>
             </div>
-          </div>
+          </>
         )}
       </div>
 

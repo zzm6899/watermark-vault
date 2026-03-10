@@ -480,6 +480,57 @@ class CameraUsbPlugin : Plugin() {
         call.resolve(JSObject().apply { put("deleted", deleted) })
     }
 
+    // ── reconnect — force-close MTP session and re-request USB permission ────
+    // Use this when isConnected() reports true but live capture cannot start
+    // (stale MTP session after USB re-enumeration, or permission dialog needed).
+    @PluginMethod
+    fun reconnect(call: PluginCall) {
+        val camera = findCamera()
+        if (camera == null) {
+            call.resolve(JSObject().apply { put("granted", false) })
+            return
+        }
+
+        // Close any existing MTP session on the worker thread before requesting permission
+        mtpHandler.post {
+            stopWatchingInternal()
+            try { mtpDevice?.close() } catch (_: Exception) {}
+            mtpDevice = null
+            currentUsbDevice = null
+            android.util.Log.i("CameraUsb", "reconnect: MTP session closed, re-requesting permission")
+
+            // Always show the permission dialog (even if previously granted) so the
+            // user can confirm access — this also re-opens the USB device connection.
+            mainHandler.post {
+                permissionReceiver?.let {
+                    try { context.unregisterReceiver(it) } catch (_: Exception) {}
+                }
+
+                val receiver = object : BroadcastReceiver() {
+                    override fun onReceive(ctx: Context, intent: Intent) {
+                        try { context.unregisterReceiver(this) } catch (_: Exception) {}
+                        permissionReceiver = null
+                        val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
+                        android.util.Log.i("CameraUsb", "reconnect: permission result = $granted")
+                        call.resolve(JSObject().apply { put("granted", granted) })
+                    }
+                }
+                permissionReceiver = receiver
+
+                val flags = PendingIntent.FLAG_IMMUTABLE
+                val pi = PendingIntent.getBroadcast(context, 1, Intent(ACTION_USB_PERMISSION), flags)
+
+                if (Build.VERSION.SDK_INT >= 33) {
+                    context.registerReceiver(receiver, IntentFilter(ACTION_USB_PERMISSION), Context.RECEIVER_NOT_EXPORTED)
+                } else {
+                    context.registerReceiver(receiver, IntentFilter(ACTION_USB_PERMISSION))
+                }
+
+                usbManager.requestPermission(camera, pi)
+            }
+        }
+    }
+
     // ── Output directory helper ───────────────────────────────────────────────
     private fun getOutputFile(fileName: String): File {
         val dir = if (Build.VERSION.SDK_INT >= 29) {

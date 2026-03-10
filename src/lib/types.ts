@@ -208,6 +208,10 @@ export interface AppSettings {
   ftpPort?: number;
   ftpUser?: string;
   ftpRemotePath?: string;
+  /** Organise FTP uploads into sub-folders named after the album/booking type. */
+  ftpOrganizeByAlbum?: boolean;
+  /** Move starred photos to a "{albumName}-starred" sub-folder on FTP automatically. */
+  ftpStarredFolder?: boolean;
 }
 
 export interface ProofingRound {
@@ -453,6 +457,10 @@ export interface TenantSettings {
   ftpUser?: string;
   ftpPassword?: string;
   ftpRemotePath?: string;
+  /** Organise FTP uploads into sub-folders named after the album/booking type. */
+  ftpOrganizeByAlbum?: boolean;
+  /** Move starred photos to a "{albumName}-starred" sub-folder on FTP automatically. */
+  ftpStarredFolder?: boolean;
   // ── Secret-field set-indicators (returned by API instead of actual values) ──
   // The server never returns secret field values; it returns these booleans instead
   // so the UI can show a "Configured ✓" status without exposing the actual secret.
