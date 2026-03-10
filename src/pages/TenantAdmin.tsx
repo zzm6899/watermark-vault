@@ -8,7 +8,7 @@ import {
   Save, X, ChevronDown, ChevronUp, Globe, Upload, Search, Copy,
   DollarSign, MessageSquare, HardDrive, User, RefreshCw, Webhook, Star,
   ExternalLink, Mail, Send, Unlock, CreditCard, CheckCircle2, Download,
-  XSquare, CheckSquare, Bell,
+  XSquare, CheckSquare, Bell, Wifi,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -31,6 +31,7 @@ import {
   getTenantGoogleCalendarStatus, startTenantGoogleCalendarAuth,
   disconnectTenantGoogleCalendar, getTenantGoogleCalendars,
   saveTenantCalendarSettings, getTenantStorageStats, upsertTenantBookingAdmin,
+  testTenantFtpConnection,
 } from "@/lib/api";
 import ProgressiveImg from "@/components/ProgressiveImg";
 import RichTextEditor from "@/components/RichTextEditor";
@@ -3175,6 +3176,15 @@ function TenantSettingsView({ slug }: { slug: string }) {
     toast.success("Settings saved");
   };
 
+  const [testingFtp, setTestingFtp] = useState(false);
+  const handleTestFtp = async () => {
+    setTestingFtp(true);
+    const { ok, error } = await testTenantFtpConnection(slug);
+    setTestingFtp(false);
+    if (ok) toast.success("FTP connection successful ✓");
+    else toast.error(error || "FTP connection failed");
+  };
+
   const handleWatermarkImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -3507,44 +3517,51 @@ function TenantSettingsView({ slug }: { slug: string }) {
             </div>
             <p className="text-[10px] font-body text-muted-foreground -mt-1">Automatically send uploaded photos to an FTP server. Tagged photos will show an FTP badge.</p>
             {settings.ftpEnabled && (
-              <div className="grid grid-cols-2 gap-3 pt-1">
-                <div>
-                  <label className="text-xs font-body text-muted-foreground mb-1 block">FTP Host / IP</label>
-                  <Input value={settings.ftpHost || ""} onChange={e => set({ ftpHost: e.target.value })}
-                    placeholder="192.168.1.100" className="bg-background border-border text-foreground font-body text-xs" />
-                </div>
-                <div>
-                  <label className="text-xs font-body text-muted-foreground mb-1 block">Port</label>
-                  <Input type="number" value={settings.ftpPort || ""} onChange={e => set({ ftpPort: parseInt(e.target.value) || undefined })}
-                    placeholder="21" className="bg-background border-border text-foreground font-body text-xs" />
-                </div>
-                <div>
-                  <label className="text-xs font-body text-muted-foreground mb-1 block">Username</label>
-                  <Input value={settings.ftpUser || ""} onChange={e => set({ ftpUser: e.target.value })}
-                    placeholder="ftpuser" className="bg-background border-border text-foreground font-body text-xs" />
-                </div>
-                <div>
-                  <div className="flex items-center justify-between mb-1">
-                    <label className="text-xs font-body text-muted-foreground">Password</label>
-                    {settings.ftpPasswordSet && !settings.ftpPassword && (
-                      <span className="text-[10px] font-body text-green-400">✓ Configured</span>
-                    )}
+              <>
+                <div className="grid grid-cols-2 gap-3 pt-1">
+                  <div>
+                    <label className="text-xs font-body text-muted-foreground mb-1 block">FTP Host / IP</label>
+                    <Input value={settings.ftpHost || ""} onChange={e => set({ ftpHost: e.target.value })}
+                      placeholder="192.168.1.100" className="bg-background border-border text-foreground font-body text-xs" />
                   </div>
-                  <div className="flex gap-2">
-                    <Input type="password" value={settings.ftpPassword || ""} onChange={e => set({ ftpPassword: e.target.value })}
-                      placeholder={settings.ftpPasswordSet ? "Enter new password to replace" : "••••••••"}
-                      className="bg-background border-border text-foreground font-body text-xs flex-1" />
-                    {settings.ftpPasswordSet && !settings.ftpPassword && (
-                      <button onClick={() => set({ ftpPassword: "" })} className="text-[10px] font-body text-destructive hover:text-destructive/80 px-2 shrink-0">Clear</button>
-                    )}
+                  <div>
+                    <label className="text-xs font-body text-muted-foreground mb-1 block">Port</label>
+                    <Input type="number" value={settings.ftpPort || ""} onChange={e => set({ ftpPort: parseInt(e.target.value) || undefined })}
+                      placeholder="21" className="bg-background border-border text-foreground font-body text-xs" />
+                  </div>
+                  <div>
+                    <label className="text-xs font-body text-muted-foreground mb-1 block">Username</label>
+                    <Input value={settings.ftpUser || ""} onChange={e => set({ ftpUser: e.target.value })}
+                      placeholder="ftpuser" className="bg-background border-border text-foreground font-body text-xs" />
+                  </div>
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-xs font-body text-muted-foreground">Password</label>
+                      {settings.ftpPasswordSet && !settings.ftpPassword && (
+                        <span className="text-[10px] font-body text-green-400">✓ Configured</span>
+                      )}
+                    </div>
+                    <div className="flex gap-2">
+                      <Input type="password" value={settings.ftpPassword || ""} onChange={e => set({ ftpPassword: e.target.value })}
+                        placeholder={settings.ftpPasswordSet ? "Enter new password to replace" : "••••••••"}
+                        className="bg-background border-border text-foreground font-body text-xs flex-1" />
+                      {settings.ftpPasswordSet && !settings.ftpPassword && (
+                        <button onClick={() => set({ ftpPassword: "" })} className="text-[10px] font-body text-destructive hover:text-destructive/80 px-2 shrink-0">Clear</button>
+                      )}
+                    </div>
+                  </div>
+                  <div className="col-span-2">
+                    <label className="text-xs font-body text-muted-foreground mb-1 block">Remote Path</label>
+                    <Input value={settings.ftpRemotePath || ""} onChange={e => set({ ftpRemotePath: e.target.value })}
+                      placeholder="/photos" className="bg-background border-border text-foreground font-body text-xs" />
                   </div>
                 </div>
-                <div className="col-span-2">
-                  <label className="text-xs font-body text-muted-foreground mb-1 block">Remote Path</label>
-                  <Input value={settings.ftpRemotePath || ""} onChange={e => set({ ftpRemotePath: e.target.value })}
-                    placeholder="/photos" className="bg-background border-border text-foreground font-body text-xs" />
-                </div>
-              </div>
+                {settings.ftpHost && (
+                  <Button onClick={handleTestFtp} disabled={testingFtp} variant="outline" size="sm" className="font-body text-xs gap-2 mt-1">
+                    <Wifi className="w-3.5 h-3.5" /> {testingFtp ? "Testing…" : "Test Connection"}
+                  </Button>
+                )}
+              </>
             )}
           </div>
 
