@@ -12,8 +12,8 @@ import {
 import { Button } from "@/components/ui/button";
 import Footer from "@/components/Footer";
 import { toast } from "sonner";
-import { getBookings, updateBooking, getEventTypes, getProfile, getSettings, isSlotBooked } from "@/lib/storage";
-import { createBookingCheckout, getStripeStatus, syncBookingToCalendar, getGoogleBusyTimes } from "@/lib/api";
+import { getBookings, updateBooking, addBooking, getEventTypes, getProfile, getSettings, isSlotBooked } from "@/lib/storage";
+import { createBookingCheckout, getStripeStatus, syncBookingToCalendar, getGoogleBusyTimes, fetchBookingByToken } from "@/lib/api";
 import type { EventType, Booking } from "@/lib/types";
 
 function formatDuration(mins: number) {
@@ -83,6 +83,9 @@ export default function BookingModify() {
   );
   const eventType = booking ? getEventTypes().find(e => e.id === booking.eventTypeId) : null;
 
+  // True while we are fetching the booking from the server (only needed when not in localStorage)
+  const [fetchingBooking, setFetchingBooking] = useState(!booking && !!bookingId);
+
   const [mode, setMode] = useState<"status"|"reschedule"|"done">("status");
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
   const [selectedTime, setSelectedTime] = useState<string | null>(null);
@@ -95,6 +98,20 @@ export default function BookingModify() {
   const [gcalBusy, setGcalBusy] = useState<{ start: string; end: string }[]>([]);
 
   useEffect(() => { getStripeStatus().then(s => setStripeAvailable(s.configured)); }, []);
+
+  // If booking wasn't found in localStorage (e.g. lazy sync not yet complete), try fetching from server
+  useEffect(() => {
+    if (booking || !bookingId) return;
+    fetchBookingByToken(bookingId).then(found => {
+      if (!found) { setFetchingBooking(false); return; }
+      // Add to localStorage so that subsequent updateBooking/isSlotBooked calls work correctly
+      if (!getBookings().find(b => b.id === found.id)) {
+        addBooking(found);
+      }
+      setBooking(found);
+      setFetchingBooking(false);
+    }).catch(() => setFetchingBooking(false));
+  }, [booking, bookingId]);
 
   // Fetch Google Calendar busy times whenever the selected date changes
   useEffect(() => {
@@ -153,6 +170,14 @@ export default function BookingModify() {
     setCopiedField(field);
     setTimeout(() => setCopiedField(null), 2000);
   };
+
+  if (fetchingBooking) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center p-4" style={{ paddingTop: "env(safe-area-inset-top)" }}>
+        <div className="animate-pulse text-muted-foreground font-body text-sm">Loading…</div>
+      </div>
+    );
+  }
 
   if (!booking || !eventType) {
     return (

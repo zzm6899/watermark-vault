@@ -1851,7 +1851,13 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                         <Edit className="w-4 h-4" />
                       </Button>
                       <Button variant="ghost" size="icon" aria-label="Copy booking link" className="h-8 w-8 text-muted-foreground hover:text-foreground" onClick={() => {
-                        const token = bk.modifyToken || bk.id;
+                        let token = bk.modifyToken;
+                        if (!token) {
+                          token = `mod-${crypto.randomUUID()}`;
+                          const relinked = { ...bk, modifyToken: token };
+                          updateBooking(relinked);
+                          setBookingsState(getBookings());
+                        }
                         navigator.clipboard.writeText(`${window.location.origin}/booking/modify/${token}`)
                           .then(() => toast.success("Booking link copied to clipboard"))
                           .catch(() => toast.error("Failed to copy link"));
