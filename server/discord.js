@@ -7,7 +7,7 @@ const AVATAR_URL = "https://cdn.discordapp.com/embed/avatars/0.png";
 const APP_URL = process.env.APP_URL || "";
 
 async function sendDiscordEmbed(webhookUrl, payload) {
-  if (!webhookUrl || !webhookUrl.startsWith("https://discord.com/api/webhooks/")) return;
+  if (!webhookUrl || !/^https:\/\/(ptb\.|canary\.)?discord\.com\/api\/webhooks\//.test(webhookUrl)) return;
   try {
     const res = await fetch(webhookUrl, {
       method: "POST",
@@ -181,6 +181,37 @@ async function notifyProofingSubmission(webhookUrl, album, photoCount, clientNot
   });
 }
 
+// ── New Enquiry ────────────────────────────────────────────
+async function notifyNewEnquiry(webhookUrl, enquiry) {
+  if (!webhookUrl) return;
+  const adminUrl = APP_URL ? `${APP_URL}/admin` : null;
+  const components = adminUrl ? [adminButton("View in Admin", adminUrl)] : [];
+
+  const fields = [
+    { name: "👤 Name", value: enquiry.name || "Unknown", inline: true },
+    { name: "📧 Email", value: enquiry.email || "—", inline: true },
+  ];
+  if (enquiry.phone) fields.push({ name: "📞 Phone", value: enquiry.phone, inline: true });
+  if (enquiry.eventTypeTitle) fields.push({ name: "📷 Event Type", value: enquiry.eventTypeTitle, inline: true });
+  if (enquiry.preferredDate) fields.push({ name: "📅 Preferred Date", value: enquiry.preferredDate, inline: true });
+  if (enquiry.preferredStartTime || enquiry.preferredEndTime) {
+    const timeVal = [enquiry.preferredStartTime, enquiry.preferredEndTime].filter(Boolean).join(" – ");
+    fields.push({ name: "⏰ Preferred Time", value: timeVal, inline: true });
+  }
+  if (enquiry.message) fields.push({ name: "📝 Message", value: enquiry.message.slice(0, 300), inline: false });
+
+  await sendDiscordEmbed(webhookUrl, {
+    embeds: [{
+      title: "💬 New Enquiry",
+      color: 0x6366f1,
+      fields,
+      footer: { text: `Enquiry ID: ${enquiry.id} · PhotoFlow` },
+      timestamp: new Date().toISOString(),
+    }],
+    ...(components.length ? { components } : {}),
+  });
+}
+
 // ── Waitlist Notified ──────────────────────────────────────
 async function notifyWaitlistNotified(webhookUrl, cancelledBooking, notifiedNames) {
   if (!webhookUrl || !notifiedNames.length) return;
@@ -255,6 +286,7 @@ async function notifyInvoice(webhookUrl, invoice, eventType) {
 module.exports = {
   sendDiscordEmbed,
   notifyNewBooking,
+  notifyNewEnquiry,
   notifyPayment,
   notifyBookingUpdate,
   notifyAlbumPurchase,
