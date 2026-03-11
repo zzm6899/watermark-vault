@@ -467,12 +467,20 @@ function registerTenantStripeRoutes(app, { readDb, writeDb, readTenants, readLic
     const tenants = readTenants();
     const tenant = tenants.find(t => t.slug === slug);
     if (!tenant) return res.status(404).json({ error: "Tenant not found" });
-    if (!tenant.licenseKey) return res.status(400).json({ error: "No license key found" });
-    const allKeys = readLicenseKeys();
-    const licKey = allKeys.find(k => k.key === tenant.licenseKey);
-    if (!licKey) return res.status(400).json({ error: "License key not found" });
-    const limits = getLicKeyLimits(licKey);
-    if (limits.extraEventPrice == null) return res.status(400).json({ error: "Extra event slots are not available for this license" });
+    // Determine effective extra event price: tenant-level override takes priority
+    let extraEventPrice = null;
+    if (tenant.extraEventSlotRequestEnabled === true) {
+      extraEventPrice = typeof tenant.extraEventPrice === "number" ? tenant.extraEventPrice : null;
+    }
+    if (extraEventPrice == null && tenant.licenseKey) {
+      const allKeys = readLicenseKeys();
+      const licKey = allKeys.find(k => k.key === tenant.licenseKey);
+      if (licKey) {
+        const limits = getLicKeyLimits(licKey);
+        extraEventPrice = limits.extraEventPrice;
+      }
+    }
+    if (extraEventPrice == null) return res.status(400).json({ error: "Extra event slots are not available for this tenant" });
     const db = readDb();
     const raw = db[`t_${slug}_wv_tenant_settings`];
     const ts = raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : {};
@@ -489,7 +497,7 @@ function registerTenantStripeRoutes(app, { readDb, writeDb, readTenants, readLic
           price_data: {
             currency: resolved.currency,
             product_data: { name: "Extra Event Type Slot" },
-            unit_amount: Math.round(limits.extraEventPrice * 100),
+            unit_amount: Math.round(extraEventPrice * 100),
           },
           quantity: 1,
         }],
