@@ -13,12 +13,12 @@ const path = require("path");
  *
  * @param {string} localFilePath - Absolute path to the file on disk.
  * @param {{ ftpHost: string; ftpPort?: number; ftpUser?: string; ftpPassword?: string; ftpRemotePath?: string }} settings
- * @param {{ subFolder?: string }} [options]
+ * @param {{ subFolder?: string; remoteFilename?: string }} [options]
  * @returns {Promise<{ ok: boolean; error?: string }>}
  */
 async function uploadFileToFtp(localFilePath, settings, options = {}) {
   const { ftpHost, ftpPort = 21, ftpUser = "anonymous", ftpPassword = "", ftpRemotePath = "/" } = settings;
-  const { subFolder } = options;
+  const { subFolder, remoteFilename } = options;
 
   if (!ftpHost) return { ok: false, error: "FTP host not configured" };
 
@@ -40,7 +40,8 @@ async function uploadFileToFtp(localFilePath, settings, options = {}) {
       : (ftpRemotePath || "/");
     await client.ensureDir(remotePath);
 
-    const remoteFile = path.posix.join(remotePath, path.basename(localFilePath));
+    const fname = remoteFilename || path.basename(localFilePath);
+    const remoteFile = path.posix.join(remotePath, fname);
     await client.uploadFrom(localFilePath, remoteFile);
 
     return { ok: true };
@@ -54,7 +55,13 @@ async function uploadFileToFtp(localFilePath, settings, options = {}) {
 /**
  * Upload multiple local files to an FTP server.
  *
- * @param {string[]} localFilePaths
+ * Each entry in `localFilePaths` may be either a plain string (local path) or
+ * an object `{ localPath: string, remoteFilename?: string }`.  When
+ * `remoteFilename` is provided it is used as the destination file name on the
+ * FTP server (preserving the original upload name); otherwise the basename of
+ * the local path is used.
+ *
+ * @param {(string | { localPath: string; remoteFilename?: string })[]} localFilePaths
  * @param {object} settings
  * @param {{ subFolder?: string; onProgress?: (done: number, total: number) => void }} [options]
  * @returns {Promise<{ ok: boolean; failed: number; error?: string }>}
@@ -66,6 +73,11 @@ async function uploadFilesToFtp(localFilePaths, settings, options = {}) {
   const { subFolder, onProgress } = options;
 
   if (!ftpHost) return { ok: false, failed: localFilePaths.length, error: "FTP host not configured" };
+
+  // Normalise entries to { localPath, remoteFilename? } objects
+  const entries = localFilePaths.map(f =>
+    typeof f === "string" ? { localPath: f } : f
+  );
 
   const client = new ftp.Client();
   client.ftp.verbose = false;
@@ -86,16 +98,18 @@ async function uploadFilesToFtp(localFilePaths, settings, options = {}) {
       : (ftpRemotePath || "/");
     await client.ensureDir(remotePath);
 
-    for (const localFilePath of localFilePaths) {
+    for (const { localPath, remoteFilename } of entries) {
       try {
-        const remoteFile = path.posix.join(remotePath, path.basename(localFilePath));
-        await client.uploadFrom(localFilePath, remoteFile);
+        const fname = remoteFilename || path.basename(localPath);
+        const remoteFile = path.posix.join(remotePath, fname);
+        await client.uploadFrom(localPath, remoteFile);
       } catch (err) {
-        console.warn(`[FTP] File upload failed for ${path.basename(localFilePath)}:`, err.message);
+        const displayName = remoteFilename || path.basename(localPath);
+        console.warn(`[FTP] File upload failed for ${displayName}:`, err.message);
         failed++;
       }
       done++;
-      if (onProgress) onProgress(done, localFilePaths.length);
+      if (onProgress) onProgress(done, entries.length);
     }
   } catch (err) {
     return { ok: false, failed: localFilePaths.length, error: err.message || "FTP connection failed" };

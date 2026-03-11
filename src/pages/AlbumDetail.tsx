@@ -10,7 +10,7 @@ import PurchasePanel from "@/components/PurchasePanel";
 import { getAlbumBySlug, getSettings, updateAlbum } from "@/lib/storage";
 import { useBackfillThumbnails } from "@/hooks/use-backfill-thumbnails";
 import { Badge } from "@/components/ui/badge";
-import { createAlbumCheckout, createTenantAlbumCheckout, getStripeStatus, getTenantStripeStatus, getTenantSettings, isServerMode, fetchPublicAlbum, tenantPhotoSrc } from "@/lib/api";
+import { createAlbumCheckout, createTenantAlbumCheckout, getStripeStatus, getTenantStripeStatus, getTenantSettings, isServerMode, fetchPublicAlbum, tenantPhotoSrc, ftpMoveToStarred } from "@/lib/api";
 import { toast } from "sonner";
 import { resizeToTargetSize } from "@/lib/image-utils";
 import {
@@ -703,12 +703,23 @@ export default function AlbumDetail() {
   // ── Proofing handlers ─────────────────────────────────────
   const toggleStar = (photoId: string) => {
     if (!album) return;
+    const photo = album.photos.find((p: any) => p.id === photoId);
+    const nowStarred = photo ? !photo.starred : false;
     const updated = {
       ...album,
-      photos: album.photos.map((p: any) => p.id === photoId ? { ...p, starred: !p.starred } : p),
+      photos: album.photos.map((p: any) => p.id === photoId ? { ...p, starred: nowStarred } : p),
     };
     setAlbumState(updated);
     updateAlbum(updated);
+    if (nowStarred && isServerMode() && photo) {
+      ftpMoveToStarred({
+        photoSrc: photo.src,
+        albumTitle: album.title,
+        albumSlug: album.slug,
+        ...(tenantSlug ? { tenantSlug } : {}),
+        originalName: (photo as any).originalName,
+      }).catch(() => {});
+    }
   };
 
   const handleSubmitSelections = async () => {

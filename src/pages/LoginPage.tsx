@@ -118,6 +118,7 @@ export default function LoginPage() {
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
                   placeholder="admin"
+                  autoComplete="username"
                   className="bg-secondary border-border text-foreground font-body"
                   onKeyDown={(e) => e.key === "Enter" && handleAdminLogin()}
                 />
@@ -129,6 +130,7 @@ export default function LoginPage() {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="••••••"
+                  autoComplete="current-password"
                   className="bg-secondary border-border text-foreground font-body"
                   onKeyDown={(e) => e.key === "Enter" && handleAdminLogin()}
                 />
@@ -145,6 +147,7 @@ export default function LoginPage() {
                   value={tenantSlug}
                   onChange={(e) => setTenantSlug(e.target.value)}
                   placeholder="your-account-id"
+                  autoComplete="username"
                   className="bg-secondary border-border text-foreground font-body"
                   autoCapitalize="none"
                   autoCorrect="off"
@@ -158,6 +161,7 @@ export default function LoginPage() {
                   value={tenantPassword}
                   onChange={(e) => setTenantPassword(e.target.value)}
                   placeholder="••••••"
+                  autoComplete="current-password"
                   className="bg-secondary border-border text-foreground font-body"
                   onKeyDown={(e) => e.key === "Enter" && handleTenantLogin()}
                 />

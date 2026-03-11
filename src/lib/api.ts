@@ -1422,6 +1422,7 @@ export async function ftpMoveToStarred(params: {
   albumTitle: string;
   albumSlug: string;
   tenantSlug?: string;
+  originalName?: string;
 }): Promise<{ ok: boolean; error?: string }> {
   try {
     const res = await fetch("/api/ftp/move-starred", {

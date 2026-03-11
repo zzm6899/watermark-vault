@@ -2293,8 +2293,9 @@ function TenantPhotos({ slug }: { slug: string }) {
 
   // ── Toggle star ────────────────────────────────────────────────────────────
   const handleToggleStar = async (photo: Photo & { source: string }) => {
+    const nowStarred = !photo.starred;
     if (photo.source === "Library") {
-      const updated = libraryPhotos.map(p => p.id === photo.id ? { ...p, starred: !p.starred } : p);
+      const updated = libraryPhotos.map(p => p.id === photo.id ? { ...p, starred: nowStarred } : p);
       setLibraryPhotos(updated);
       await saveLibrary(updated);
     } else {
@@ -2302,10 +2303,13 @@ function TenantPhotos({ slug }: { slug: string }) {
       if (!alb) return;
       const updatedAlb: Album = {
         ...alb,
-        photos: (alb.photos || []).map(p => p.id === photo.id ? { ...p, starred: !p.starred } : p),
+        photos: (alb.photos || []).map(p => p.id === photo.id ? { ...p, starred: nowStarred } : p),
       };
       setAlbums(prev => prev.map(a => a.id === alb.id ? updatedAlb : a));
       await saveTenantAlbum(slug, updatedAlb);
+      if (nowStarred) {
+        ftpMoveToStarred({ photoSrc: photo.src, albumTitle: alb.title, albumSlug: alb.slug, tenantSlug: slug, originalName: photo.originalName }).catch(() => {});
+      }
     }
   };
 
@@ -2651,14 +2655,20 @@ function TenantPhotos({ slug }: { slug: string }) {
                 className="w-full h-full object-cover"
                 loading="lazy"
               />
-              {p.starred && <span className="absolute top-1 left-1 text-[10px] leading-none">⭐</span>}
+              <button
+                onClick={e => { e.stopPropagation(); handleToggleStar(p); }}
+                className={`absolute top-1 left-1 w-5 h-5 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity ${p.starred ? "opacity-100 bg-yellow-500/80" : "bg-black/40"}`}
+                title={p.starred ? "Unstar" : "Star"}
+              >
+                <span className="text-[9px] leading-none">{p.starred ? "★" : "☆"}</span>
+              </button>
+              {selectedIds.has(p.id) && (
+                <div className="absolute top-1 right-1 w-5 h-5 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-[10px] font-bold">✓</div>
+              )}
               <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-background/80 to-transparent p-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
                 <p className="text-[9px] font-body text-foreground font-medium truncate">{p.title}</p>
                 <p className="text-[8px] font-body text-muted-foreground truncate">{p.source}</p>
               </div>
-              {selectedIds.has(p.id) && (
-                <div className="absolute top-1 right-1 w-5 h-5 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-[10px] font-bold">✓</div>
-              )}
               <button
                 onClick={e => { e.stopPropagation(); handleDeletePhoto(p.id, p.source, p.src); }}
                 className="absolute bottom-1 right-1 w-5 h-5 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
