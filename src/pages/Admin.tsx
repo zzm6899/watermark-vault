@@ -40,6 +40,7 @@ import {
   getGoogleCalendars,
   syncAllBookingsToCalendar,
   syncBookingToCalendar,
+  syncTenantBookingToCalendar,
   getServerStorageStats,
   syncFromServer,
   sendEmail,
@@ -1429,7 +1430,10 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
     notifyDiscord({ type: "booking-update", booking: updated, oldStatus: bk.status, newStatus: status }).catch(() => {});
     // Push status change to Google Calendar (updates event color)
     if (bk.gcalEventId || status !== "cancelled") {
-      syncBookingToCalendar(updated).then(res => {
+      const syncPromise = updated.tenantSlug
+        ? syncTenantBookingToCalendar(updated.tenantSlug, updated)
+        : syncBookingToCalendar(updated);
+      syncPromise.then(res => {
         if (res?.eventId) updateBooking({ ...updated, gcalEventId: res.eventId });
       }).catch(() => {});
     }

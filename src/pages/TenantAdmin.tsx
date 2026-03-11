@@ -31,6 +31,7 @@ import {
   getTenantGoogleCalendarStatus, startTenantGoogleCalendarAuth,
   disconnectTenantGoogleCalendar, getTenantGoogleCalendars,
   saveTenantCalendarSettings, getTenantStorageStats, upsertTenantBookingAdmin,
+  syncTenantBookingToCalendar,
   testTenantFtpConnection,
   submitEventSlotRequest, getTenantEventSlotRequest, createEventSlotCheckout,testTenantFtpConnection, ftpUploadAlbum, ftpMoveToStarred
 } from "@/lib/api";
@@ -570,6 +571,11 @@ function TenantBookings({ slug }: { slug: string }) {
     const { ok, error } = await updateTenantBookingFull(slug, bk.id, { status });
     if (!ok) { toast.error(error || "Failed to update"); return; }
     toast.success(`Booking ${status}`);
+    // Push status change to Google Calendar
+    const updated = { ...bk, status };
+    if (bk.gcalEventId || status !== "cancelled") {
+      syncTenantBookingToCalendar(slug, updated).catch(() => {});
+    }
     load();
   };
 
