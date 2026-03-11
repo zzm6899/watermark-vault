@@ -1,6 +1,6 @@
 const stripe = require("stripe");
 const rateLimit = require("express-rate-limit");
-const { notifyInvoice } = require("./discord");
+const { notifyInvoice, notifyAlbumPurchase } = require("./discord");
 const { sendInvoicePaidEmail } = require("./email");
 
 let stripeClient = null;
@@ -210,6 +210,19 @@ function registerRoutes(app, { writeDb } = {}) {
             albums[albumIdx] = album;
             db["wv_albums"] = JSON.stringify(albums);
             saveDb(db);
+
+            // Discord notification for album purchase
+            try {
+              const rawSettings = db["wv_settings"];
+              const settings = typeof rawSettings === "string" ? JSON.parse(rawSettings) : (rawSettings || {});
+              const discordUrl = settings?.discordWebhookUrl;
+              if (discordUrl && settings?.discordNotifyDownloads !== false) {
+                const purchaseType = metadata.isFullAlbum === "true" ? "full" : "individual";
+                notifyAlbumPurchase(discordUrl, album, purchaseType, (session.amount_total || 0) / 100, session.customer_email || "").catch(err => console.error("Discord album-purchase notify error:", err.message));
+              }
+            } catch (discordErr) {
+              console.error("Discord settings read error:", discordErr.message);
+            }
           } else {
             console.warn(`Album ${metadata.albumId} not found in wv_albums`);
           }
@@ -590,6 +603,22 @@ function registerTenantStripeRoutes(app, { readDb, writeDb, readTenants, readLic
             dbData[albumsKey] = JSON.stringify(albums);
             fs.writeFileSync(DB_FILE, JSON.stringify(dbData, null, 2));
             console.log(`📝 Tenant album ${metadata.albumId} purchase processed for session ${metadata.sessionKey || session.id}`);
+
+            // Discord notification for tenant album purchase
+            try {
+              const tenantSettingsRaw = dbData[`t_${slug}_wv_tenant_settings`];
+              const tenantSettings = tenantSettingsRaw ? (typeof tenantSettingsRaw === "string" ? JSON.parse(tenantSettingsRaw) : tenantSettingsRaw) : {};
+              const globalSettingsRaw = dbData["wv_settings"];
+              const globalSettings = typeof globalSettingsRaw === "string" ? JSON.parse(globalSettingsRaw) : (globalSettingsRaw || {});
+              const activeSettings = tenantSettings?.discordWebhookUrl ? tenantSettings : globalSettings;
+              const discordUrl = activeSettings?.discordWebhookUrl;
+              if (discordUrl && activeSettings?.discordNotifyDownloads !== false) {
+                const purchaseType = metadata.isFullAlbum === "true" ? "full" : "individual";
+                notifyAlbumPurchase(discordUrl, album, purchaseType, (session.amount_total || 0) / 100, session.customer_email || "").catch(err => console.error("Discord tenant album-purchase notify error:", err.message));
+              }
+            } catch (discordErr) {
+              console.error("Discord tenant settings read error:", discordErr.message);
+            }
           } else {
             console.warn(`Tenant album ${metadata.albumId} not found in ${albumsKey}`);
           }

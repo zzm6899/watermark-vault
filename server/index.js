@@ -15,6 +15,7 @@ const { registerRoutes: registerGoogleSheetsRoutes } = require("./google-sheets"
 const {
   sendDiscordEmbed,
   notifyNewBooking,
+  notifyNewEnquiry,
   notifyPayment,
   notifyBookingUpdate,
   notifyAlbumPurchase,
@@ -1299,6 +1300,11 @@ app.post("/api/discord/notify", async (req, res) => {
       case "new-booking":
         if (parsed?.discordNotifyBookings !== false && booking) await notifyNewBooking(webhookUrl, booking);
         break;
+      case "new-enquiry": {
+        const enquiry = req.body.enquiry;
+        if (parsed?.discordNotifyBookings !== false && enquiry) await notifyNewEnquiry(webhookUrl, enquiry);
+        break;
+      }
       case "booking-update":
       case "booking-status":
         if (parsed?.discordNotifyBookings !== false && booking) await notifyBookingUpdate(webhookUrl, booking, req.body.oldStatus || booking.oldStatus, req.body.newStatus || booking.newStatus);
