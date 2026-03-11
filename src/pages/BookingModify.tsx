@@ -13,7 +13,7 @@ import { Button } from "@/components/ui/button";
 import Footer from "@/components/Footer";
 import { toast } from "sonner";
 import { getBookings, updateBooking, getEventTypes, getProfile, getSettings, isSlotBooked } from "@/lib/storage";
-import { createBookingCheckout, getStripeStatus, syncBookingToCalendar } from "@/lib/api";
+import { createBookingCheckout, getStripeStatus, syncBookingToCalendar, getGoogleBusyTimes } from "@/lib/api";
 import type { EventType, Booking } from "@/lib/types";
 
 function formatDuration(mins: number) {
@@ -55,6 +55,22 @@ function buildGoogleCalendarUrl(event: EventType, date: Date, time: string, dura
   const fmt = (d: Date) => d.toISOString().replace(/[-:]/g,"").replace(/\.\d{3}/,"");
   return `https://calendar.google.com/calendar/render?${new URLSearchParams({ action:"TEMPLATE", text:event.title, dates:`${fmt(start)}/${fmt(end)}`, details:event.description||"", location:event.location||"" })}`;
 }
+function isSlotBusyOnGoogle(
+  time: string, duration: number,
+  busyPeriods: { start: string; end: string }[]
+): boolean {
+  const [h, m] = time.split(":").map(Number);
+  const slotStart = h * 60 + m;
+  const slotEnd   = slotStart + duration;
+  for (const b of busyPeriods) {
+    const bs = new Date(b.start);
+    const be = new Date(b.end);
+    const bStartMins = bs.getHours() * 60 + bs.getMinutes();
+    const bEndMins   = be.getHours() * 60 + be.getMinutes();
+    if (slotStart < bEndMins && slotEnd > bStartMins) return true;
+  }
+  return false;
+}
 
 export default function BookingModify() {
   const { bookingId } = useParams();
@@ -76,8 +92,15 @@ export default function BookingModify() {
   const [processingPayment, setProcessingPayment] = useState(false);
   const [stripeAvailable, setStripeAvailable] = useState(false);
   const [currentMonth, setCurrentMonth] = useState(() => new Date(new Date().getFullYear(), new Date().getMonth()));
+  const [gcalBusy, setGcalBusy] = useState<{ start: string; end: string }[]>([]);
 
   useEffect(() => { getStripeStatus().then(s => setStripeAvailable(s.configured)); }, []);
+
+  // Fetch Google Calendar busy times whenever the selected date changes
+  useEffect(() => {
+    if (!selectedDate) { setGcalBusy([]); return; }
+    getGoogleBusyTimes(toDateStr(selectedDate)).then(setGcalBusy).catch(() => setGcalBusy([]));
+  }, [selectedDate]);
 
   usePageTitle(
     eventType && booking
@@ -96,8 +119,9 @@ export default function BookingModify() {
     const dateStr = toDateStr(selectedDate);
     return getAvailabilityForDate(eventType, selectedDate)
       .flatMap(r => generateTimeSlots(r.startTime, r.endTime, booking.duration))
-      .filter(t => !isSlotBooked(dateStr, t, booking.duration, booking.id));
-  }, [selectedDate, booking, eventType]);
+      .filter(t => !isSlotBooked(dateStr, t, booking.duration, booking.id) &&
+                   !isSlotBusyOnGoogle(t, booking.duration, gcalBusy));
+  }, [selectedDate, booking, eventType, gcalBusy]);
 
   const handleCancel = useCallback(() => {
     if (!booking || !confirm("Cancel this booking?")) return;
