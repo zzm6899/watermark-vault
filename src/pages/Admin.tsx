@@ -7068,6 +7068,12 @@ function PlatformView() {
   const [customDomainInput, setCustomDomainInput] = useState("");
   const [savingDomain, setSavingDomain] = useState(false);
 
+  // Tenant event slot editing
+  const [editingSlotSlug, setEditingSlotSlug] = useState<string | null>(null);
+  const [slotRequestEnabled, setSlotRequestEnabled] = useState(false);
+  const [slotPriceInput, setSlotPriceInput] = useState("");
+  const [savingSlot, setSavingSlot] = useState(false);
+
   // Plan form state
   const [newPlanName, setNewPlanName] = useState("");
   const [newPlanType, setNewPlanType] = useState<"one-time" | "monthly" | "yearly">("one-time");
@@ -7218,6 +7224,26 @@ function PlatformView() {
     loadAll();
   };
 
+  const handleSaveSlotSettings = async (slug: string) => {
+    const trimmed = slotPriceInput.trim();
+    const price = trimmed === "" ? undefined : parseFloat(trimmed);
+    if (slotRequestEnabled && (price === undefined || isNaN(price) || price <= 0)) {
+      toast.error("A valid price greater than 0 is required when event slot requests are enabled");
+      return;
+    }
+    setSavingSlot(true);
+    const { ok, error } = await updateTenant(slug, {
+      extraEventSlotRequestEnabled: slotRequestEnabled,
+      extraEventPrice: slotRequestEnabled && price !== undefined ? price : undefined,
+    });
+    setSavingSlot(false);
+    if (!ok) { toast.error(error || "Failed to save slot settings"); return; }
+    toast.success(`Event slot settings saved for /${slug}`);
+    setEditingSlotSlug(null);
+    setSlotPriceInput("");
+    loadAll();
+  };
+
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text).then(() => toast.success("Copied!")).catch(() => toast.error("Copy failed"));
   };
@@ -7363,6 +7389,9 @@ function PlatformView() {
                         {t.customDomain && (
                           <p className="text-[10px] font-mono text-blue-400 mt-0.5">🌐 {t.customDomain}</p>
                         )}
+                        {t.extraEventSlotRequestEnabled && (
+                          <p className="text-[10px] font-body text-amber-400 mt-0.5">🎟 Slots enabled{t.extraEventPrice != null ? ` — $${t.extraEventPrice}/slot` : ""}</p>
+                        )}
                       </div>
                       <div className="text-right shrink-0">
                         <p className="text-xs font-body text-foreground">{t.bookingCount} bookings</p>
@@ -7380,6 +7409,7 @@ function PlatformView() {
                           setNewTempPassword("");
                           setSelectedTenantForSettings(null);
                           setEditingDomainSlug(null);
+                          setEditingSlotSlug(null);
                         }}
                         className={`text-xs font-body px-2 py-1 rounded-md border transition-colors ${resettingSlug === t.slug ? "bg-yellow-500/10 text-yellow-400 border-yellow-500/30" : "border-border text-muted-foreground hover:text-foreground hover:border-foreground"}`}
                         title="Reset password"
@@ -7393,6 +7423,7 @@ function PlatformView() {
                           setCustomDomainInput(opening ? (t.customDomain || "") : "");
                           setResettingSlug(null);
                           setSelectedTenantForSettings(null);
+                          setEditingSlotSlug(null);
                         }}
                         className={`text-xs font-body px-2 py-1 rounded-md border transition-colors ${editingDomainSlug === t.slug ? "bg-blue-500/10 text-blue-400 border-blue-500/30" : "border-border text-muted-foreground hover:text-foreground hover:border-foreground"}`}
                         title="Custom domain"
@@ -7400,7 +7431,25 @@ function PlatformView() {
                         🌐 Domain
                       </button>
                       <button
-                        onClick={() => setSelectedTenantForSettings(selectedTenantForSettings?.slug === t.slug ? null : t)}
+                        onClick={() => {
+                          const opening = editingSlotSlug !== t.slug;
+                          setEditingSlotSlug(opening ? t.slug : null);
+                          setSlotRequestEnabled(opening ? (t.extraEventSlotRequestEnabled ?? false) : false);
+                          setSlotPriceInput(opening && t.extraEventPrice != null ? String(t.extraEventPrice) : "");
+                          setResettingSlug(null);
+                          setSelectedTenantForSettings(null);
+                          setEditingDomainSlug(null);
+                        }}
+                        className={`text-xs font-body px-2 py-1 rounded-md border transition-colors ${editingSlotSlug === t.slug ? "bg-amber-500/10 text-amber-400 border-amber-500/30" : "border-border text-muted-foreground hover:text-foreground hover:border-foreground"}`}
+                        title="Event slot request settings"
+                      >
+                        🎟 Slots
+                      </button>
+                      <button
+                        onClick={() => {
+                          setSelectedTenantForSettings(selectedTenantForSettings?.slug === t.slug ? null : t);
+                          setEditingSlotSlug(null);
+                        }}
                         className={`text-xs font-body px-2 py-1 rounded-md border transition-colors ${selectedTenantForSettings?.slug === t.slug ? "bg-primary text-primary-foreground border-primary" : "border-border text-muted-foreground hover:text-foreground hover:border-foreground"}`}
                         title="Configure tenant settings"
                       >
@@ -7475,6 +7524,50 @@ function PlatformView() {
                             <button onClick={() => { setCustomDomainInput(""); handleSaveCustomDomain(t.slug); }} className="text-destructive hover:underline">Remove</button>
                           </p>
                         )}
+                      </div>
+                    )}
+                    {editingSlotSlug === t.slug && (
+                      <div className="mt-1 p-4 rounded-lg bg-amber-500/5 border border-amber-500/20 space-y-3">
+                        <p className="text-xs font-body text-amber-400 font-medium">Event slot requests for /{t.slug}</p>
+                        <p className="text-[11px] font-body text-muted-foreground">
+                          Enable to allow this tenant to purchase extra event type slots. The price set here overrides the license key price. If disabled or no price is set, the license key price will be used as a fallback (if available).
+                        </p>
+                        <div className="flex items-center gap-3">
+                          <Switch
+                            checked={slotRequestEnabled}
+                            onCheckedChange={setSlotRequestEnabled}
+                          />
+                          <span className="text-xs font-body text-foreground">{slotRequestEnabled ? "Enabled" : "Disabled"}</span>
+                        </div>
+                        {slotRequestEnabled && (
+                          <div>
+                            <label className="text-xs font-body text-muted-foreground mb-1 block">Price per extra slot</label>
+                            <Input
+                              type="number"
+                              min="0.01"
+                              step="0.01"
+                              value={slotPriceInput}
+                              onChange={e => setSlotPriceInput(e.target.value)}
+                              placeholder="e.g. 29.00"
+                              className="bg-background border-border text-foreground font-body text-sm font-mono max-w-[180px]"
+                            />
+                          </div>
+                        )}
+                        <div className="flex gap-2 items-center">
+                          <Button size="sm" onClick={() => handleSaveSlotSettings(t.slug)} disabled={savingSlot}
+                            className="bg-amber-600 hover:bg-amber-700 text-white font-body text-xs gap-1 shrink-0">
+                            {savingSlot ? "Saving…" : "Save"}
+                          </Button>
+                          <Button size="sm" variant="ghost" onClick={() => { setEditingSlotSlug(null); setSlotPriceInput(""); }}
+                            className="font-body text-xs text-muted-foreground">
+                            Cancel
+                          </Button>
+                          {t.extraEventSlotRequestEnabled && (
+                            <span className="text-[10px] font-body text-amber-400 ml-auto">
+                              Currently enabled — {t.extraEventPrice != null ? `$${t.extraEventPrice}/slot` : "license key price"}
+                            </span>
+                          )}
+                        </div>
                       </div>
                     )}
                   </div>

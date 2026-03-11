@@ -2240,12 +2240,21 @@ app.post("/api/tenant/:slug/event-slot-request", tenantLimiter, (req, res) => {
   if (!paymentMethod || !["stripe", "bank"].includes(paymentMethod)) {
     return res.status(400).json({ error: "paymentMethod must be 'stripe' or 'bank'" });
   }
-  if (!tenant.licenseKey) return res.status(400).json({ error: "No license key found" });
-  const allKeys = readLicenseKeys();
-  const licKey = allKeys.find(k => k.key === tenant.licenseKey);
-  if (!licKey) return res.status(400).json({ error: "License key not found" });
-  const limits = getLicKeyLimits(licKey);
-  if (limits.extraEventPrice == null) return res.status(400).json({ error: "Extra event slots are not available for this license" });
+  // Determine effective extra event price: tenant-level override takes priority
+  let extraEventPrice = null;
+  if (tenant.extraEventSlotRequestEnabled === true) {
+    extraEventPrice = typeof tenant.extraEventPrice === "number" ? tenant.extraEventPrice : null;
+  }
+  // Fall back to license key price if not overridden at tenant level
+  if (extraEventPrice == null && tenant.licenseKey) {
+    const allKeys = readLicenseKeys();
+    const licKey = allKeys.find(k => k.key === tenant.licenseKey);
+    if (licKey) {
+      const limits = getLicKeyLimits(licKey);
+      extraEventPrice = limits.extraEventPrice;
+    }
+  }
+  if (extraEventPrice == null) return res.status(400).json({ error: "Extra event slots are not available for this tenant" });
   // Reject if a pending/paid request already exists
   const existingRequests = readEventSlotRequests();
   const hasPending = existingRequests.some(r => r.tenantSlug === slug && ["pending", "paid"].includes(r.status));
@@ -2255,7 +2264,7 @@ app.post("/api/tenant/:slug/event-slot-request", tenantLimiter, (req, res) => {
     tenantSlug: slug,
     requestedAt: new Date().toISOString(),
     paymentMethod,
-    amount: limits.extraEventPrice,
+    amount: extraEventPrice,
     status: "pending",
   };
   existingRequests.push(request);
@@ -2386,11 +2395,6 @@ app.get("/api/tenant/:slug/license-info", tenantLimiter, (req, res) => {
   const tenants = readTenants();
   const tenant = tenants.find(t => t.slug === slug && t.active !== false);
   if (!tenant) return res.status(404).json({ error: "Tenant not found" });
-  if (!tenant.licenseKey) return res.json({ key: null });
-  const keys = readLicenseKeys();
-  const licKey = keys.find(k => k.key === tenant.licenseKey);
-  if (!licKey) return res.json({ key: null });
-  const limits = getLicKeyLimits(licKey);
   const db = readDb();
   // Extra event slots granted by super admin
   const extraSlotsKey = `t_${slug}_wv_extra_event_slots`;
@@ -2400,18 +2404,42 @@ app.get("/api/tenant/:slug/license-info", tenantLimiter, (req, res) => {
   const currentRaw = db[`t_${slug}_wv_event_types`];
   const currentEventTypes = currentRaw ? (typeof currentRaw === "string" ? JSON.parse(currentRaw) : (Array.isArray(currentRaw) ? currentRaw : [])) : [];
   const eventCount = typeof db[counterKey] === "number" ? db[counterKey] : currentEventTypes.length;
+  // Base response — may be enriched by license key and/or tenant-level overrides
+  let licKeyInfo = { key: null, issuedTo: null, isTrial: false, maxEvents: null, maxBookings: null, extraEventPrice: null, expiresAt: null, usedAt: null };
+  if (tenant.licenseKey) {
+    const keys = readLicenseKeys();
+    const licKey = keys.find(k => k.key === tenant.licenseKey);
+    if (licKey) {
+      const limits = getLicKeyLimits(licKey);
+      licKeyInfo = {
+        key: licKey.key,
+        issuedTo: licKey.issuedTo,
+        isTrial: licKey.isTrial || false,
+        maxEvents: limits.maxEvents,
+        maxBookings: limits.maxBookings,
+        extraEventPrice: limits.extraEventPrice,
+        expiresAt: licKey.expiresAt,
+        usedAt: licKey.usedAt,
+      };
+    }
+  }
+  // Per-tenant override: if enabled, apply tenant-level extraEventPrice (falls back to license key price)
+  let effectiveExtraEventPrice = licKeyInfo.extraEventPrice;
+  if (tenant.extraEventSlotRequestEnabled === true) {
+    effectiveExtraEventPrice = typeof tenant.extraEventPrice === "number" ? tenant.extraEventPrice : effectiveExtraEventPrice;
+  }
   // Return non-sensitive fields only
   res.json({
-    key: licKey.key,
-    issuedTo: licKey.issuedTo,
-    isTrial: licKey.isTrial || false,
-    maxEvents: limits.maxEvents,
-    maxBookings: limits.maxBookings,
-    extraEventPrice: limits.extraEventPrice,
+    key: licKeyInfo.key,
+    issuedTo: licKeyInfo.issuedTo,
+    isTrial: licKeyInfo.isTrial,
+    maxEvents: licKeyInfo.maxEvents,
+    maxBookings: licKeyInfo.maxBookings,
+    extraEventPrice: effectiveExtraEventPrice,
     extraEventSlots,
     eventCount,
-    expiresAt: licKey.expiresAt,
-    usedAt: licKey.usedAt,
+    expiresAt: licKeyInfo.expiresAt,
+    usedAt: licKeyInfo.usedAt,
   });
 });
 
