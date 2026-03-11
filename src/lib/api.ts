@@ -31,8 +31,12 @@ const CRITICAL_STORE_KEYS = [
 
 // Keys that can be large (contain full photo metadata, etc.) and are
 // loaded in the background after the app is already interactive.
+// NOTE: wv_albums is intentionally excluded — even stripped of baked assets
+// the photos[] arrays (one entry per photo) are large and are needed only in
+// the admin Albums tab.  Album stubs (no photos) are fetched by the admin via
+// fetchAlbumStubs() so the booking page and other non-album routes never pay
+// the download cost.
 const LAZY_STORE_KEYS = [
-  "wv_albums",
   "wv_bookings",
   "wv_photo_library",
   "wv_invoices",
@@ -1690,4 +1694,42 @@ export async function upsertTenantBookingAdmin(slug: string, booking: import("./
     const json = await res.json();
     return { ok: !!json.ok, error: json.error };
   } catch { return { ok: false, error: "Network error" }; }
+}
+
+/**
+ * Fetch album stubs (album metadata without the photos array) from the server.
+ * Stubs are suitable for displaying the albums list in the admin UI without
+ * incurring the cost of downloading every photo entry.  Albums returned carry
+ * `_photosStripped: true` so callers can distinguish stubs from full albums.
+ *
+ * Returns null when the server is unavailable.
+ */
+export async function fetchAlbumStubs(): Promise<import("./types").Album[] | null> {
+  if (serverAvailable !== true) return null;
+  try {
+    const res = await fetch("/api/albums/stubs");
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Fetch the photos array for a single album from the server.
+ * Use this when the album editor is opened so photo data is loaded on demand
+ * rather than being included in the initial page sync.
+ *
+ * Returns null when the server is unavailable or the album is not found.
+ */
+export async function fetchAlbumPhotos(albumId: string): Promise<import("./types").Photo[] | null> {
+  if (serverAvailable !== true) return null;
+  try {
+    const res = await fetch(`/api/albums/${encodeURIComponent(albumId)}/photos`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    return Array.isArray(data?.photos) ? data.photos : null;
+  } catch {
+    return null;
+  }
 }

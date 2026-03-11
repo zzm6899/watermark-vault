@@ -294,6 +294,44 @@ app.delete("/api/store/:key", (req, res) => {
   res.json({ ok: true });
 });
 
+// ── Album stubs (metadata-only, no photos array) ──────────────────────────
+// The photos array is the dominant contributor to /api/store payload size.
+// Even after baked-field stripping, 200 URL-path photo entries per album still
+// add ~50-100 KB per album.  These two endpoints let the admin list view and
+// the booking page download only the tiny album metadata, and defer the full
+// photos array to a single targeted request when an album is actually opened
+// for editing.
+//
+// A stub album carries `_photosStripped: true` so the frontend knows photos
+// have not been loaded yet and should be fetched before editing.
+function _makeAlbumStub(album) {
+  const { photos: _photos, ...rest } = album;
+  return { ...rest, photos: [], _photosStripped: true };
+}
+
+function _parseAlbumsFromDb(raw) {
+  if (!raw) return [];
+  const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+  return Array.isArray(parsed) ? parsed : [];
+}
+
+// GET /api/albums/stubs — all main albums without photos
+app.get("/api/albums/stubs", (req, res) => {
+  const db = readDb();
+  const albums = _parseAlbumsFromDb(db[ALBUMS_KEY]);
+  res.json(albums.map(_makeAlbumStub));
+});
+
+// GET /api/albums/:albumId/photos — photos for a single album, on demand
+app.get("/api/albums/:albumId/photos", (req, res) => {
+  const db = readDb();
+  const albums = _parseAlbumsFromDb(db[ALBUMS_KEY]);
+  const album = albums.find(a => a.id === req.params.albumId || a.slug === req.params.albumId);
+  if (!album) return res.status(404).json({ photos: [] });
+  // Apply baked-field stripping so the response stays lean.
+  res.json({ photos: _stripBakedFromPhotos(album.photos || []) });
+});
+
 // ── Global FTP Settings ───────────────────────────────
 // The FTP password is stored server-side only and never returned to the browser.
 // The response includes a boolean `ftpPasswordSet` instead of the actual value.
