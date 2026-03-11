@@ -1850,6 +1850,14 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                       <Button variant="ghost" size="icon" aria-label="Edit booking" className="h-8 w-8 text-muted-foreground hover:text-foreground" onClick={() => { setEditingBooking(bk); setShowCreateBooking(false); setExpandedId(null); }}>
                         <Edit className="w-4 h-4" />
                       </Button>
+                      <Button variant="ghost" size="icon" aria-label="Copy booking link" className="h-8 w-8 text-muted-foreground hover:text-foreground" onClick={() => {
+                        const token = bk.modifyToken || bk.id;
+                        navigator.clipboard.writeText(`${window.location.origin}/booking/modify/${token}`)
+                          .then(() => toast.success("Booking link copied to clipboard"))
+                          .catch(() => toast.error("Failed to copy link"));
+                      }}>
+                        <Link2 className="w-4 h-4" />
+                      </Button>
                       <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-destructive" onClick={() => handleDelete(bk.id)}>
                         <Trash2 className="w-4 h-4" />
                       </Button>
