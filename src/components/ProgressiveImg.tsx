@@ -9,7 +9,7 @@ interface ProgressiveImgProps extends React.ImgHTMLAttributes<HTMLImageElement> 
 export default function ProgressiveImg({ thumbSrc, fullSrc, className, ...props }: ProgressiveImgProps) {
   // Only render the thumbnail — never load fullSrc in grids
   if (thumbSrc) {
-    return <img {...props} src={thumbSrc} className={className} />;
+    return <img {...props} src={thumbSrc} className={className} loading="lazy" decoding="async" />;
   }
   // No thumbnail yet — show a lightweight placeholder instead of the full-res image
   return (
