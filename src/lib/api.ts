@@ -1414,7 +1414,9 @@ export async function ftpUploadAlbum(
 }
 
 /**
- * Move a starred photo to the "{albumName}-starred" FTP sub-folder.
+ * Move a photo to or from the "{albumName}-starred" FTP sub-folder.
+ * Pass `starred: true` (default) to move into the starred folder when starring,
+ * or `starred: false` to move back to the regular album folder when unstarring.
  * Only works when the ftpStarredFolder setting is enabled server-side.
  */
 export async function ftpMoveToStarred(params: {
@@ -1423,6 +1425,7 @@ export async function ftpMoveToStarred(params: {
   albumSlug: string;
   tenantSlug?: string;
   originalName?: string;
+  starred?: boolean;
 }): Promise<{ ok: boolean; error?: string }> {
   try {
     const res = await fetch("/api/ftp/move-starred", {

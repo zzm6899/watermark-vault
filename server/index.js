@@ -537,7 +537,7 @@ app.post("/api/ftp/upload-album/:albumSlug", ftpUploadAlbumLimiter, async (req, 
 // POST /api/ftp/move-starred
 const ftpMoveStarredLimiter = rateLimit({ windowMs: 60_000, max: 60, standardHeaders: true, legacyHeaders: false, message: { error: "Too many FTP move requests — please wait" } });
 app.post("/api/ftp/move-starred", ftpMoveStarredLimiter, async (req, res) => {
-  const { photoSrc, albumTitle, albumSlug, tenantSlug, originalName } = req.body || {};
+  const { photoSrc, albumTitle, albumSlug, tenantSlug, originalName, starred = true } = req.body || {};
 
   if (!photoSrc) return res.json({ ok: false, error: "photoSrc is required" });
   if (!albumTitle && !albumSlug) return res.json({ ok: false, error: "albumTitle or albumSlug is required" });
@@ -571,15 +571,19 @@ app.post("/api/ftp/move-starred", ftpMoveStarredLimiter, async (req, res) => {
   const folderBase = sanitizeFolderName(albumTitle || albumSlug);
   const remotePath = ftpSettings.ftpRemotePath || "/";
 
-  // Source: album folder (if ftpOrganizeByAlbum) or root remote path
-  const sourceFolder = ftpSettings.ftpOrganizeByAlbum
+  // Regular album folder (if ftpOrganizeByAlbum) or root remote path
+  const albumFolder = ftpSettings.ftpOrganizeByAlbum
     ? path.posix.join(remotePath, folderBase)
     : remotePath;
-  const fromPath = path.posix.join(sourceFolder, ftpFilename);
+  const albumPath = path.posix.join(albumFolder, ftpFilename);
 
-  // Destination: "{albumName}-starred" sub-folder
+  // Starred sub-folder: "{albumName}-starred"
   const starredFolder = path.posix.join(remotePath, `${folderBase}-starred`);
-  const toPath = path.posix.join(starredFolder, ftpFilename);
+  const starredPath = path.posix.join(starredFolder, ftpFilename);
+
+  // Direction: starring moves album→starred, unstarring moves starred→album
+  const fromPath = starred ? albumPath : starredPath;
+  const toPath = starred ? starredPath : albumPath;
 
   const result = await moveFileOnFtp(
     fs.existsSync(localFilePath) ? localFilePath : null,

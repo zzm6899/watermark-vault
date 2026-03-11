@@ -711,13 +711,14 @@ export default function AlbumDetail() {
     };
     setAlbumState(updated);
     updateAlbum(updated);
-    if (nowStarred && isServerMode() && photo) {
+    if (isServerMode() && photo) {
       ftpMoveToStarred({
         photoSrc: photo.src,
         albumTitle: album.title,
         albumSlug: album.slug,
         ...(tenantSlug ? { tenantSlug } : {}),
         originalName: (photo as any).originalName,
+        starred: nowStarred,
       }).catch(() => {});
     }
   };
