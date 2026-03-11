@@ -4490,7 +4490,7 @@ function buildInvoiceEmailHtml(inv: Invoice, shareUrl: string, isReminder = fals
   const taxRate = inv.tax ?? 0;
   const taxAmt  = (sub - disc) * (taxRate / 100);
   const rows = inv.items.map(it =>
-    `<tr><td style="padding:8px 12px;border-bottom:1px solid #333">${it.description}</td>
+    `<tr><td style="padding:8px 12px;border-bottom:1px solid #333">${it.description}${it.subdescription ? `<br><span style="font-size:11px;color:#888">${it.subdescription}</span>` : ""}</td>
      <td style="padding:8px 12px;border-bottom:1px solid #333;text-align:right">${it.quantity}</td>
      <td style="padding:8px 12px;border-bottom:1px solid #333;text-align:right">$${it.unitPrice.toFixed(2)}</td>
      <td style="padding:8px 12px;border-bottom:1px solid #333;text-align:right">$${(it.quantity * it.unitPrice).toFixed(2)}</td></tr>`
@@ -5133,6 +5133,7 @@ function InvoiceForm({
                 <div className="flex-1">
                   {idx === 0 && <label className={labelClass}>Description</label>}
                   <input className={fieldClass} value={item.description} onChange={e => setItem(item.id, { description: e.target.value })} placeholder="Photography session" />
+                  <input className={`${fieldClass} mt-1`} value={item.subdescription ?? ""} onChange={e => setItem(item.id, { subdescription: e.target.value || undefined })} placeholder="Subdescription (optional)" />
                 </div>
                 <button type="button" onClick={() => removeItem(item.id)} className="shrink-0 mb-0.5 p-2 rounded hover:bg-red-500/10 text-muted-foreground/40 hover:text-red-400 transition-colors"><X className="w-4 h-4" /></button>
               </div>
@@ -5155,6 +5156,7 @@ function InvoiceForm({
                 <div className="col-span-5">
                   {idx === 0 && <label className={labelClass}>Description</label>}
                   <input className={fieldClass} value={item.description} onChange={e => setItem(item.id, { description: e.target.value })} placeholder="Photography session" />
+                  <input className={`${fieldClass} mt-1`} value={item.subdescription ?? ""} onChange={e => setItem(item.id, { subdescription: e.target.value || undefined })} placeholder="Subdescription (optional)" />
                 </div>
                 <div className="col-span-2">
                   {idx === 0 && <label className={labelClass}>Qty</label>}

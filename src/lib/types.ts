@@ -267,6 +267,7 @@ export interface InvoiceParty {
 export interface InvoiceItem {
   id: string;
   description: string;
+  subdescription?: string;
   quantity: number;
   unitPrice: number;
 }
