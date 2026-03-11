@@ -34,7 +34,8 @@ function isPublicRoute(): boolean {
     p.startsWith("/book/") ||
     p.startsWith("/gallery/") ||
     p.startsWith("/invoice/") ||
-    p.startsWith("/tenant-setup/")
+    p.startsWith("/tenant-setup/") ||
+    p === "/login"
   );
 }
 
