@@ -3929,8 +3929,8 @@ function PhotosView() {
         const updated = { ...alb, photos: alb.photos.map(p => p.id === photo.id ? { ...p, starred: nowStarred } : p) };
         updateAlbum(updated);
         setAlbumsState(getAlbums());
-        if (nowStarred && isServerMode()) {
-          ftpMoveToStarred({ photoSrc: photo.src, albumTitle: alb.title, albumSlug: alb.slug, originalName: photo.originalName }).catch(() => {});
+        if (isServerMode()) {
+          ftpMoveToStarred({ photoSrc: photo.src, albumTitle: alb.title, albumSlug: alb.slug, originalName: photo.originalName, starred: nowStarred }).catch(() => {});
         }
       }
     }
