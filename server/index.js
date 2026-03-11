@@ -2084,6 +2084,20 @@ app.get("/api/tenant/:slug/cache/stats", tenantLimiter, (req, res) => {
   res.json({ ok: true, count, sizeBytes });
 });
 
+// Public endpoint: look up a booking by its modifyToken or id (used by the reschedule page)
+// Rate-limited to prevent enumeration of booking IDs
+const bookingLookupLimiter = rateLimit({ windowMs: 60_000, max: 30, standardHeaders: true, legacyHeaders: false, message: { error: "Too many requests" } });
+app.get("/api/booking/:token", bookingLookupLimiter, (req, res) => {
+  const { token } = req.params;
+  if (!token || typeof token !== "string") return res.status(400).json({ error: "Invalid token" });
+  const db = readDb();
+  const raw = db["wv_bookings"];
+  const bookings = raw ? (typeof raw === "string" ? JSON.parse(raw) : (Array.isArray(raw) ? raw : [])) : [];
+  const booking = bookings.find(b => b.modifyToken === token || b.id === token);
+  if (!booking) return res.status(404).json({ error: "Booking not found" });
+  res.json({ booking });
+});
+
 // Create a booking on behalf of a tenant
 app.post("/api/tenant/:slug/booking", tenantBookingLimiter, (req, res) => {
   const slug = req.params.slug;
@@ -2125,6 +2139,7 @@ app.post("/api/tenant/:slug/booking", tenantBookingLimiter, (req, res) => {
 
   const booking = {
     id: `bk-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    modifyToken: `mod-${crypto.randomUUID()}`,
     clientName: clientName.trim(),
     clientEmail: clientEmail.trim(),
     date,

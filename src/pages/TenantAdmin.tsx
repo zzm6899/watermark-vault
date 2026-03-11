@@ -801,8 +801,14 @@ function TenantBookings({ slug }: { slug: string }) {
                       </button>
                     )}
                     <button
-                      onClick={() => {
-                        const token = bk.modifyToken || bk.id;
+                      onClick={async () => {
+                        let token = bk.modifyToken;
+                        if (!token) {
+                          token = `mod-${crypto.randomUUID()}`;
+                          const { ok } = await updateTenantBookingFull(slug, bk.id, { modifyToken: token });
+                          if (!ok) { toast.error("Failed to generate booking link"); return; }
+                          setBookings(prev => prev.map(b => b.id === bk.id ? { ...b, modifyToken: token! } : b));
+                        }
                         navigator.clipboard.writeText(`${window.location.origin}/booking/modify/${token}`)
                           .then(() => toast.success("Booking link copied to clipboard"))
                           .catch(() => toast.error("Failed to copy link"));

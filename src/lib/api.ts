@@ -1064,6 +1064,16 @@ export async function createTenantBooking(slug: string, booking: {
   } catch { return { ok: false, error: "Network error" }; }
 }
 
+/** Look up a booking by its modifyToken or id from the server (for the reschedule page). */
+export async function fetchBookingByToken(token: string): Promise<import("./types").Booking | null> {
+  try {
+    const res = await fetch(`/api/booking/${encodeURIComponent(token)}`);
+    if (!res.ok) return null;
+    const json = await res.json();
+    return json.booking ?? null;
+  } catch { return null; }
+}
+
 /** Set tenant-specific event types (stored separately from main admin's event types). */
 export async function setTenantEventTypes(slug: string, eventTypes: import("./types").EventType[]): Promise<{ ok: boolean; error?: string }> {
   try {
