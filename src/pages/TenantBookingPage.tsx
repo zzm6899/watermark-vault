@@ -519,7 +519,7 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
           )}
 
       </div>
-      <Footer />
+      <Footer tenantName={tenant?.displayName} tenantEmail={tenant?.email} />
     </div>
   );
 }

@@ -156,6 +156,7 @@ export default function AlbumDetail() {
   const [album, setAlbumState] = useState(() => albumId ? getAlbumBySlug(albumId) : undefined);
   const [tenantSlug, setTenantSlug] = useState<string | null>(null);
   const [tenantDisplayName, setTenantDisplayName] = useState<string | null>(null);
+  const [tenantEmail, setTenantEmail] = useState<string | null>(null);
   const [tenantBankTransfer, setTenantBankTransfer] = useState<typeof settings.bankTransfer | null>(null);
   const [albumLoading, setAlbumLoading] = useState(() => !!(albumId && !getAlbumBySlug(albumId)));
   const settings = getSettings();
@@ -268,6 +269,9 @@ export default function AlbumDetail() {
             ]);
             if (publicInfo?.tenant?.displayName) {
               setTenantDisplayName(publicInfo.tenant.displayName);
+            }
+            if (publicInfo?.tenant?.email) {
+              setTenantEmail(publicInfo.tenant.email);
             }
             if (tenantSettings) {
               setTenantBankTransfer({
@@ -1852,7 +1856,7 @@ export default function AlbumDetail() {
         ) : null}
       </AnimatePresence>
 
-      <Footer />
+      <Footer tenantName={tenantDisplayName ?? undefined} tenantEmail={tenantEmail ?? undefined} />
     </div>
   );
 }
