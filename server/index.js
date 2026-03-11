@@ -67,7 +67,9 @@ function readDbDirect() {
 // ── In-memory DB cache (avoids disk reads on every request) ──
 let _dbCache = null;
 let _dbCacheTime = 0;
-const DB_CACHE_TTL = 5000; // 5 seconds
+// Cache TTL is long because every writeDb() call updates the in-memory cache immediately,
+// so reads only fall back to disk on the very first request or after a long idle period.
+const DB_CACHE_TTL = 60000; // 60 seconds
 
 function readDb() {
   const now = Date.now();
@@ -82,12 +84,54 @@ function readDb() {
     return _dbCache || {};
   }
 }
+
+// ── Debounced async write ─────────────────────────────────────────────────
+// Updates in-memory cache immediately (so all reads reflect the new data
+// straight away) and schedules a single async disk write after a short idle
+// window.  Rapid back-to-back mutations (e.g. bulk photo uploads) therefore
+// only result in one or two actual disk writes instead of hundreds, which
+// prevents the synchronous I/O from blocking the Node.js event loop.
+let _writeDebounceTimer = null;
+let _writePending = false;
+
+function _flushDbToDisk() {
+  _writePending = false;
+  _writeDebounceTimer = null;
+  const snapshot = _dbCache;
+  if (!snapshot) return;
+  // Use compact JSON (no indentation) — reduces file size by ~30-40 % compared
+  // to the previous pretty-printed format, which directly speeds up reads and
+  // network transfer of the /api/store endpoint.
+  fs.writeFile(DB_FILE, JSON.stringify(snapshot), (err) => {
+    if (err) console.error("writeDb error:", err);
+  });
+}
+
 function writeDb(data) {
-  fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
-  // Invalidate cache immediately so the next read reflects the new data
+  // Always update the in-memory cache synchronously so subsequent reads are
+  // consistent with the mutation that just happened.
   _dbCache = data;
   _dbCacheTime = Date.now();
+  // Schedule (or re-schedule) the debounced async disk write.
+  _writePending = true;
+  if (_writeDebounceTimer) clearTimeout(_writeDebounceTimer);
+  _writeDebounceTimer = setTimeout(_flushDbToDisk, 300);
 }
+
+// Flush any pending write on clean shutdown so data is never lost.
+function _flushDbSync() {
+  if (_writePending && _dbCache) {
+    if (_writeDebounceTimer) {
+      clearTimeout(_writeDebounceTimer);
+      _writeDebounceTimer = null;
+    }
+    try { fs.writeFileSync(DB_FILE, JSON.stringify(_dbCache)); } catch (e) { console.error("Failed to flush database to disk on shutdown:", e); }
+    _writePending = false;
+  }
+}
+process.on("exit", _flushDbSync);
+process.on("SIGTERM", () => { _flushDbSync(); process.exit(0); });
+process.on("SIGINT",  () => { _flushDbSync(); process.exit(0); });
 
 // Bootstrap super admin from env vars (runs after writeDb is available)
 seedSuperAdminIfNeeded();
@@ -158,15 +202,88 @@ function getStorageUsage() {
 
 app.get("/api/storage", (_req, res) => res.json(getStorageUsage()));
 
+// ── Baked-asset stripping ─────────────────────────────────────────────────
+// thumbnailWatermarked, mediumWatermarked, and fullWatermarked are base64
+// JPEG data-URLs produced client-side by the "Rebuild Watermarked Assets"
+// feature (up to ~1.6 MB *per photo*).  In server mode the watermark overlay
+// is already applied on the fly by /uploads/:filename, so these pre-baked
+// blobs add zero value server-side.  Stripping them on both reads AND writes
+// keeps db.json lean and eliminates the primary source of inflated
+// /api/store payloads (100 photos × 2.4 MB each = 240 MB before this fix).
+const BAKED_PHOTO_FIELDS = ["thumbnailWatermarked", "mediumWatermarked", "fullWatermarked"];
+const ALBUMS_KEY        = "wv_albums";
+const PHOTO_LIB_KEY     = "wv_photo_library";
+const TENANT_ALBUMS_SUFFIX   = "_wv_albums";
+const TENANT_PHOTO_LIB_SUFFIX = "_wv_photo_library";
+
+function _stripBakedFromPhotos(photos) {
+  if (!Array.isArray(photos)) return photos;
+  return photos.map(p => {
+    if (!p || typeof p !== "object") return p;
+    const out = { ...p };
+    for (const f of BAKED_PHOTO_FIELDS) delete out[f];
+    return out;
+  });
+}
+
+// Returns true when the db key may contain Photo objects with baked fields.
+function _isBulkyPhotoKey(key) {
+  if (key === ALBUMS_KEY || key === PHOTO_LIB_KEY) return true;
+  if (key.startsWith("t_") && (key.endsWith(TENANT_ALBUMS_SUFFIX) || key.endsWith(TENANT_PHOTO_LIB_SUFFIX))) return true;
+  return false;
+}
+
+// Parse a db value that may have been stringified before storage.
+function _parseDbValue(val) {
+  if (typeof val !== "string") return val;
+  try { return JSON.parse(val); } catch { return val; }
+}
+
+// Return a copy of `value` with baked photo fields removed for any key that
+// could contain Photo objects.  Safe to call for any key/value pair.
+function stripBakedFields(key, value) {
+  if (!_isBulkyPhotoKey(key)) return value;
+  const parsed = _parseDbValue(value);
+  if (key === ALBUMS_KEY || (key.startsWith("t_") && key.endsWith(TENANT_ALBUMS_SUFFIX))) {
+    if (!Array.isArray(parsed)) return value;
+    return parsed.map(album => ({ ...album, photos: _stripBakedFromPhotos(album.photos || []) }));
+  }
+  // photo library keys
+  return _stripBakedFromPhotos(Array.isArray(parsed) ? parsed : value);
+}
+
 // ── Key-Value Store ────────────────────────────────────
-app.get("/api/store", (_req, res) => res.json(readDb()));
+// Supports optional ?keys=key1,key2,... query parameter to return only a
+// subset of the database.  The frontend uses this to load critical keys
+// (settings, profile, event types) immediately and defer heavy keys
+// (albums, bookings, photo library) to a background request, so the app
+// becomes interactive much sooner.
+app.get("/api/store", (req, res) => {
+  const db = readDb();
+  if (req.query.keys) {
+    const requested = String(req.query.keys).split(",").map(k => k.trim()).filter(Boolean);
+    const subset = {};
+    for (const k of requested) {
+      if (Object.prototype.hasOwnProperty.call(db, k)) subset[k] = stripBakedFields(k, db[k]);
+    }
+    return res.json(subset);
+  }
+  // Strip baked fields from every key in the full-dump path too, so that
+  // any existing inflated databases are immediately lean on the wire.
+  const result = {};
+  for (const [k, v] of Object.entries(db)) result[k] = stripBakedFields(k, v);
+  res.json(result);
+});
 app.get("/api/store/:key", (req, res) => {
   const db = readDb();
-  res.json({ value: db[req.params.key] ?? null });
+  const key = req.params.key;
+  res.json({ value: key in db ? stripBakedFields(key, db[key]) : null });
 });
 app.put("/api/store/:key", (req, res) => {
   const db = readDb();
-  db[req.params.key] = req.body.value;
+  const key = req.params.key;
+  // Strip baked photo blobs before persisting so they never reach db.json.
+  db[key] = stripBakedFields(key, req.body.value);
   writeDb(db);
   res.json({ ok: true });
 });
@@ -2144,7 +2261,10 @@ app.get("/api/tenant/:slug/mobile-data", tenantPublicLimiter, (req, res) => {
   const tenantBookings = allBookings.filter(b => b.tenantSlug === slug);
   const albumsRaw = db[`t_${slug}_wv_albums`];
   const albums = albumsRaw ? (typeof albumsRaw === "string" ? JSON.parse(albumsRaw) : (Array.isArray(albumsRaw) ? albumsRaw : [])) : [];
-  res.json({ tenant, bookings: tenantBookings, albums });
+  // Strip baked watermark blobs before sending to client — they are not needed
+  // for admin views and would greatly inflate the response size.
+  const leanAlbums = albums.map(a => ({ ...a, photos: _stripBakedFromPhotos(a.photos || []) }));
+  res.json({ tenant, bookings: tenantBookings, albums: leanAlbums });
 });
 
 // Create or update a tenant album (used by mobile app in tenant mode)
@@ -2155,10 +2275,13 @@ app.put("/api/tenant/:slug/albums/:albumId", tenantLimiter, (req, res) => {
   const raw = db[key];
   const albums = raw ? (typeof raw === "string" ? JSON.parse(raw) : (Array.isArray(raw) ? raw : [])) : [];
   const idx = albums.findIndex(a => a.id === albumId);
+  // Strip baked watermark fields before persisting to keep db.json lean.
+  const incoming = { ...req.body, id: albumId };
+  if (incoming.photos) incoming.photos = _stripBakedFromPhotos(incoming.photos);
   if (idx >= 0) {
-    albums[idx] = { ...albums[idx], ...req.body, id: albumId };
+    albums[idx] = { ...albums[idx], ...incoming };
   } else {
-    albums.push({ ...req.body, id: albumId });
+    albums.push(incoming);
   }
   db[key] = JSON.stringify(albums);
   writeDb(db);
@@ -2790,8 +2913,9 @@ app.get("/api/public-album/:albumSlug", (req, res) => {
   const main = mainRaw ? (typeof mainRaw === "string" ? JSON.parse(mainRaw) : mainRaw) : [];
   const mainAlbum = findIn(main);
   if (mainAlbum) {
+    const album = { ...mainAlbum, photos: _stripBakedFromPhotos(mainAlbum.photos || []) };
     res.setHeader("Cache-Control", SHORT_CACHE);
-    return res.json({ album: mainAlbum, tenantSlug: null });
+    return res.json({ album, tenantSlug: null });
   }
 
   // Check all tenant album stores
@@ -2802,8 +2926,9 @@ app.get("/api/public-album/:albumSlug", (req, res) => {
     const parsed = raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : [];
     const found = findIn(parsed);
     if (found) {
+      const album = { ...found, photos: _stripBakedFromPhotos(found.photos || []) };
       res.setHeader("Cache-Control", SHORT_CACHE);
-      return res.json({ album: found, tenantSlug: tSlug });
+      return res.json({ album, tenantSlug: tSlug });
     }
   }
 

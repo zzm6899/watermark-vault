@@ -17,26 +17,81 @@ async function checkServer(): Promise<boolean> {
   return serverAvailable;
 }
 
-/** Fetch all stored data from server and populate localStorage */
-export async function syncFromServer(): Promise<boolean> {
-  if (!(await checkServer())) return false;
+// Keys that are small and required before the UI can render anything useful.
+// These are fetched synchronously during app startup.
+const CRITICAL_STORE_KEYS = [
+  "wv_setup_complete",
+  "wv_admin",
+  "wv_profile",
+  "wv_settings",
+  "wv_event_types",
+  "wv_email_templates",
+  "wv_ftp_settings",
+];
+
+// Keys that can be large (contain full photo metadata, etc.) and are
+// loaded in the background after the app is already interactive.
+const LAZY_STORE_KEYS = [
+  "wv_albums",
+  "wv_bookings",
+  "wv_photo_library",
+  "wv_invoices",
+  "wv_contacts",
+  "wv_enquiries",
+  "wv_waitlist",
+];
+
+const SESSION_KEY = "wv_session";
+
+/** Write a batch of key/value pairs from the server response into localStorage. */
+function _applyStoreData(data: Record<string, unknown>): void {
+  for (const [key, value] of Object.entries(data)) {
+    // Never restore session from server — auth must always be re-done per browser
+    if (key === SESSION_KEY) continue;
+    // Server store values are often already JSON strings
+    localStorage.setItem(key, typeof value === "string" ? value : JSON.stringify(value));
+  }
+}
+
+/**
+ * Load a subset of store keys from the server and apply them to localStorage.
+ * Returns false on any error.
+ */
+async function _fetchStoreKeys(keys: string[]): Promise<boolean> {
   try {
-    const res = await fetch("/api/store");
+    const param = keys.map(encodeURIComponent).join(",");
+    const res = await fetch(`/api/store?keys=${param}`);
     if (!res.ok) return false;
     const data = await res.json();
     if (!data || typeof data !== "object" || Array.isArray(data)) return false;
-    const SESSION_KEY = "wv_session";
-    for (const [key, value] of Object.entries(data)) {
-      // Never restore session from server — auth must always be re-done per browser
-      if (key === SESSION_KEY) continue;
-      // Server store values are often already JSON strings
-      localStorage.setItem(key, typeof value === "string" ? value : JSON.stringify(value));
-    }
-    console.log("✅ Synced from server");
+    _applyStoreData(data as Record<string, unknown>);
     return true;
   } catch {
     return false;
   }
+}
+
+/**
+ * Fetch all stored data from server and populate localStorage.
+ *
+ * Phase 1 (awaited): loads only small/critical keys so the app becomes
+ *   interactive as fast as possible.
+ * Phase 2 (background): loads large keys (albums, bookings, photo library, …)
+ *   without blocking the caller.  These will be available in localStorage
+ *   shortly after the UI first renders.
+ */
+export async function syncFromServer(): Promise<boolean> {
+  if (!(await checkServer())) return false;
+  // Phase 1 — critical keys only (fast)
+  const ok = await _fetchStoreKeys(CRITICAL_STORE_KEYS);
+  if (!ok) return false;
+  console.log("✅ Synced critical keys from server");
+  // Phase 2 — heavy keys in background (non-blocking)
+  _fetchStoreKeys(LAZY_STORE_KEYS).then((lazyOk) => {
+    if (lazyOk) console.log("✅ Synced lazy keys from server");
+    else console.warn("⚠️ Failed to sync lazy keys from server");
+  });
+  return true;
 }
 
 // Queue for writes that arrive before server availability is confirmed
