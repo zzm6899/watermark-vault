@@ -4264,6 +4264,7 @@ function TenantLicense({ slug }: { slug: string }) {
     eventCount?: number;
     expiresAt?: string;
     usedAt?: string;
+    keyPurchaseEnabled?: boolean;
   } | null>(null);
   const [bookingCount, setBookingCount] = useState(0);
   const [pendingSlotRequest, setPendingSlotRequest] = useState<EventSlotRequest | null>(null);
@@ -4353,7 +4354,7 @@ function TenantLicense({ slug }: { slug: string }) {
             <p className="font-body text-sm text-muted-foreground">No license key linked to your account.</p>
             <p className="font-body text-xs text-muted-foreground/60">Contact your platform administrator.</p>
           </div>
-          {plans.filter(p => p.active !== false).length > 0 && (
+          {plans.filter(p => p.active !== false).length > 0 && licInfo?.keyPurchaseEnabled && (
             <div className="glass-panel rounded-xl p-5 space-y-4">
               <div className="flex items-center gap-2">
                 <CreditCard className="w-4 h-4 text-primary" />
@@ -4520,7 +4521,7 @@ function TenantLicense({ slug }: { slug: string }) {
           )}
 
           {/* License plan upgrade */}
-          {plans.filter(p => p.active !== false).length > 0 && (
+          {licInfo.keyPurchaseEnabled && plans.filter(p => p.active !== false).length > 0 && (
             <div className="glass-panel rounded-xl p-5 space-y-4">
               <div className="flex items-center gap-2">
                 <CreditCard className="w-4 h-4 text-primary" />

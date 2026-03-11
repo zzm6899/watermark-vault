@@ -386,6 +386,8 @@ export interface Tenant {
   extraEventSlotRequestEnabled?: boolean;
   /** Per-tenant price for an extra event slot. Overrides license key price when extraEventSlotRequestEnabled is true. */
   extraEventPrice?: number;
+  /** When true, the tenant can purchase new license plan keys directly from their licensing panel. */
+  keyPurchaseEnabled?: boolean;
 }
 
 // ─── Tenant Settings ─────────────────────────────────────────────────────────

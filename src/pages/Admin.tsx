@@ -7074,6 +7074,11 @@ function PlatformView() {
   const [slotPriceInput, setSlotPriceInput] = useState("");
   const [savingSlot, setSavingSlot] = useState(false);
 
+  // Tenant key purchase toggle
+  const [editingKeyPurchaseSlug, setEditingKeyPurchaseSlug] = useState<string | null>(null);
+  const [keyPurchaseEnabled, setKeyPurchaseEnabled] = useState(false);
+  const [savingKeyPurchase, setSavingKeyPurchase] = useState(false);
+
   // Plan form state
   const [newPlanName, setNewPlanName] = useState("");
   const [newPlanType, setNewPlanType] = useState<"one-time" | "monthly" | "yearly">("one-time");
@@ -7244,6 +7249,16 @@ function PlatformView() {
     loadAll();
   };
 
+  const handleSaveKeyPurchase = async (slug: string) => {
+    setSavingKeyPurchase(true);
+    const { ok, error } = await updateTenant(slug, { keyPurchaseEnabled });
+    setSavingKeyPurchase(false);
+    if (!ok) { toast.error(error || "Failed to save key purchase setting"); return; }
+    toast.success(`Key purchase ${keyPurchaseEnabled ? "enabled" : "disabled"} for /${slug}`);
+    setEditingKeyPurchaseSlug(null);
+    loadAll();
+  };
+
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text).then(() => toast.success("Copied!")).catch(() => toast.error("Copy failed"));
   };
@@ -7392,6 +7407,9 @@ function PlatformView() {
                         {t.extraEventSlotRequestEnabled && (
                           <p className="text-[10px] font-body text-amber-400 mt-0.5">🎟 Slots enabled{t.extraEventPrice != null ? ` — $${t.extraEventPrice}/slot` : ""}</p>
                         )}
+                        {t.keyPurchaseEnabled && (
+                          <p className="text-[10px] font-body text-green-400 mt-0.5">🛒 Key purchase enabled</p>
+                        )}
                       </div>
                       <div className="text-right shrink-0">
                         <p className="text-xs font-body text-foreground">{t.bookingCount} bookings</p>
@@ -7410,6 +7428,7 @@ function PlatformView() {
                           setSelectedTenantForSettings(null);
                           setEditingDomainSlug(null);
                           setEditingSlotSlug(null);
+                          setEditingKeyPurchaseSlug(null);
                         }}
                         className={`text-xs font-body px-2 py-1 rounded-md border transition-colors ${resettingSlug === t.slug ? "bg-yellow-500/10 text-yellow-400 border-yellow-500/30" : "border-border text-muted-foreground hover:text-foreground hover:border-foreground"}`}
                         title="Reset password"
@@ -7424,6 +7443,7 @@ function PlatformView() {
                           setResettingSlug(null);
                           setSelectedTenantForSettings(null);
                           setEditingSlotSlug(null);
+                          setEditingKeyPurchaseSlug(null);
                         }}
                         className={`text-xs font-body px-2 py-1 rounded-md border transition-colors ${editingDomainSlug === t.slug ? "bg-blue-500/10 text-blue-400 border-blue-500/30" : "border-border text-muted-foreground hover:text-foreground hover:border-foreground"}`}
                         title="Custom domain"
@@ -7439,6 +7459,7 @@ function PlatformView() {
                           setResettingSlug(null);
                           setSelectedTenantForSettings(null);
                           setEditingDomainSlug(null);
+                          setEditingKeyPurchaseSlug(null);
                         }}
                         className={`text-xs font-body px-2 py-1 rounded-md border transition-colors ${editingSlotSlug === t.slug ? "bg-amber-500/10 text-amber-400 border-amber-500/30" : "border-border text-muted-foreground hover:text-foreground hover:border-foreground"}`}
                         title="Event slot request settings"
@@ -7447,8 +7468,24 @@ function PlatformView() {
                       </button>
                       <button
                         onClick={() => {
+                          const opening = editingKeyPurchaseSlug !== t.slug;
+                          setEditingKeyPurchaseSlug(opening ? t.slug : null);
+                          setKeyPurchaseEnabled(opening ? (t.keyPurchaseEnabled ?? false) : false);
+                          setResettingSlug(null);
+                          setSelectedTenantForSettings(null);
+                          setEditingDomainSlug(null);
+                          setEditingSlotSlug(null);
+                        }}
+                        className={`text-xs font-body px-2 py-1 rounded-md border transition-colors ${editingKeyPurchaseSlug === t.slug ? "bg-green-500/10 text-green-400 border-green-500/30" : "border-border text-muted-foreground hover:text-foreground hover:border-foreground"}`}
+                        title="Key purchase settings"
+                      >
+                        🛒 Purchase
+                      </button>
+                      <button
+                        onClick={() => {
                           setSelectedTenantForSettings(selectedTenantForSettings?.slug === t.slug ? null : t);
                           setEditingSlotSlug(null);
+                          setEditingKeyPurchaseSlug(null);
                         }}
                         className={`text-xs font-body px-2 py-1 rounded-md border transition-colors ${selectedTenantForSettings?.slug === t.slug ? "bg-primary text-primary-foreground border-primary" : "border-border text-muted-foreground hover:text-foreground hover:border-foreground"}`}
                         title="Configure tenant settings"
@@ -7566,6 +7603,31 @@ function PlatformView() {
                             <span className="text-[10px] font-body text-amber-400 ml-auto">
                               Currently enabled — {t.extraEventPrice != null ? `$${t.extraEventPrice}/slot` : "license key price"}
                             </span>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                    {editingKeyPurchaseSlug === t.slug && (
+                      <div className="mt-1 p-4 rounded-lg bg-green-500/5 border border-green-500/20 space-y-3">
+                        <p className="text-xs font-body text-green-400 font-medium">Key purchase setting for /{t.slug}</p>
+                        <p className="text-[11px] font-body text-muted-foreground">
+                          When enabled, this tenant can browse and purchase available license plans directly from their License panel — before hitting any plan limit.
+                        </p>
+                        <div className="flex items-center gap-3">
+                          <Switch checked={keyPurchaseEnabled} onCheckedChange={setKeyPurchaseEnabled} />
+                          <span className="text-xs font-body text-foreground">{keyPurchaseEnabled ? "Enabled" : "Disabled"}</span>
+                        </div>
+                        <div className="flex gap-2 items-center">
+                          <Button size="sm" onClick={() => handleSaveKeyPurchase(t.slug)} disabled={savingKeyPurchase}
+                            className="bg-green-600 hover:bg-green-700 text-white font-body text-xs gap-1 shrink-0">
+                            {savingKeyPurchase ? "Saving…" : "Save"}
+                          </Button>
+                          <Button size="sm" variant="ghost" onClick={() => setEditingKeyPurchaseSlug(null)}
+                            className="font-body text-xs text-muted-foreground">
+                            Cancel
+                          </Button>
+                          {t.keyPurchaseEnabled && (
+                            <span className="text-[10px] font-body text-green-400 ml-auto">Currently enabled</span>
                           )}
                         </div>
                       </div>

@@ -2440,6 +2440,7 @@ app.get("/api/tenant/:slug/license-info", tenantLimiter, (req, res) => {
     eventCount,
     expiresAt: licKeyInfo.expiresAt,
     usedAt: licKeyInfo.usedAt,
+    keyPurchaseEnabled: tenant.keyPurchaseEnabled === true,
   });
 });
 
