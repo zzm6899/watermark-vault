@@ -2993,6 +2993,13 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
     setTimeout(() => setFtpUploadProgress(null), 4000);
   };
 
+  const copyLink = (alb: Album) => {
+    const tok = alb.clientToken;
+    const url = `${window.location.origin}/gallery/${alb.slug}${tok ? `?token=${tok}` : ""}`;
+    navigator.clipboard.writeText(url);
+    toast.success("Gallery link copied!");
+  };
+
   const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
@@ -3007,6 +3014,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
       // Add all photos immediately — use server-side thumbnails (no heavy client-side canvas work)
       const newPhotos: Photo[] = results.map(r => ({
         id: r.id, src: r.url, thumbnail: r.url + "?size=thumb", title: r.originalName.replace(/\.[^.]+$/, "").replace(/^_+/, ""), width: 800, height: 600, uploadedAt: new Date().toISOString(),
+        originalName: r.originalName,
         ...(r.ftpUploaded ? { ftpUploaded: true } : {}),
       }));
       const allPhotos = [...photos, ...newPhotos];
@@ -3858,6 +3866,7 @@ function PhotosView() {
       // Add all photos in a single batch update to avoid stale-closure overwrite
       const newPhotos: Photo[] = results.map(r => ({
         id: r.id, src: r.url, thumbnail: r.url + "?size=thumb", title: r.originalName.replace(/\.[^.]+$/, "").replace(/^_+/, ""), width: 800, height: 600, uploadedAt: new Date().toISOString(),
+        originalName: r.originalName,
         ...(r.ftpUploaded ? { ftpUploaded: true } : {}),
       }));
       if (newPhotos.length > 0) {
@@ -3906,6 +3915,25 @@ function PhotosView() {
       if (next.has(id)) next.delete(id); else next.add(id);
       return next;
     });
+  };
+
+  const handleToggleStar = async (photo: Photo & { source: string }) => {
+    const nowStarred = !photo.starred;
+    if (photo.source === "Library") {
+      const updated = libraryPhotos.map(p => p.id === photo.id ? { ...p, starred: nowStarred } : p);
+      setPhotoLibrary(updated);
+      setLibraryPhotosState(updated);
+    } else {
+      const alb = albums.find(a => a.title === photo.source);
+      if (alb) {
+        const updated = { ...alb, photos: alb.photos.map(p => p.id === photo.id ? { ...p, starred: nowStarred } : p) };
+        updateAlbum(updated);
+        setAlbumsState(getAlbums());
+        if (nowStarred && isServerMode()) {
+          ftpMoveToStarred({ photoSrc: photo.src, albumTitle: alb.title, albumSlug: alb.slug, originalName: photo.originalName }).catch(() => {});
+        }
+      }
+    }
   };
 
   const handleDeletePhoto = (id: string, source: string) => {
@@ -4150,9 +4178,13 @@ function PhotosView() {
             <div key={p.id + p.source} className={`relative group aspect-square rounded-md overflow-hidden bg-secondary cursor-pointer border-2 transition-all ${selectedIds.has(p.id) ? "border-primary ring-2 ring-primary/20" : "border-transparent hover:border-border"}`}
               onClick={() => toggleSelect(p.id)}>
               <ProgressiveImg thumbSrc={p.thumbnail} fullSrc={p.src} alt={p.title} className="w-full h-full object-cover" loading="lazy" />
-              {(p as any).starred && (
-                <span className="absolute top-1 left-1 text-[10px] leading-none">⭐</span>
-              )}
+              <button
+                onClick={(e) => { e.stopPropagation(); handleToggleStar(p); }}
+                className={`absolute top-1 left-1 w-5 h-5 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity ${(p as any).starred ? "opacity-100 bg-yellow-500/80" : "bg-black/40"}`}
+                title={(p as any).starred ? "Unstar" : "Star"}
+              >
+                <span className="text-[9px] leading-none">{(p as any).starred ? "★" : "☆"}</span>
+              </button>
               <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-background/80 to-transparent p-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
                 <p className="text-[9px] font-body text-foreground font-medium truncate">{p.title}</p>
                 <p className="text-[8px] font-body text-muted-foreground truncate">{p.source}</p>

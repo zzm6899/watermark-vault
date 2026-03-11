@@ -445,17 +445,22 @@ app.post("/api/ftp/upload-album/:albumSlug", ftpUploadAlbumLimiter, async (req, 
   }
 
   const photos = album.photos || [];
-  const localPaths = photos
+  const ftpEntries = photos
     .map((p) => {
       const src = typeof p === "string" ? p : p.src;
       if (!src) return null;
       const filename = src.split("/").pop();
       if (!filename || filename.startsWith("_cache")) return null;
-      return path.join(UPLOADS_DIR, filename);
+      const localPath = path.join(UPLOADS_DIR, filename);
+      if (!fs.existsSync(localPath)) return null;
+      // Use stored originalName first, then fall back to reconstructing from title + extension
+      const ext = path.extname(filename);
+      const remoteFilename = p.originalName || ((p.title && ext) ? `${p.title}${ext}` : filename);
+      return { localPath, remoteFilename };
     })
-    .filter((p) => p && fs.existsSync(p));
+    .filter(Boolean);
 
-  if (localPaths.length === 0) {
+  if (ftpEntries.length === 0) {
     return res.json({ ok: true, done: 0, total: 0, message: "No local photos to upload." });
   }
 
@@ -493,21 +498,21 @@ app.post("/api/ftp/upload-album/:albumSlug", ftpUploadAlbumLimiter, async (req, 
       : (ftpRemotePath || "/");
     await client.ensureDir(remotePath);
 
-    for (const localFilePath of localPaths) {
+    for (const { localPath: localFilePath, remoteFilename } of ftpEntries) {
       try {
-        const remoteFile = path.posix.join(remotePath, path.basename(localFilePath));
+        const remoteFile = path.posix.join(remotePath, remoteFilename);
         await client.uploadFrom(localFilePath, remoteFile);
       } catch (err) {
-        console.warn(`[FTP] Bulk upload failed for ${path.basename(localFilePath)}:`, err.message);
+        console.warn(`[FTP] Bulk upload failed for ${remoteFilename}:`, err.message);
         failed++;
       }
       done++;
-      sendEvent({ done, total: localPaths.length, failed });
+      sendEvent({ done, total: ftpEntries.length, failed });
     }
 
-    sendEvent({ done, total: localPaths.length, failed, complete: true });
+    sendEvent({ done, total: ftpEntries.length, failed, complete: true });
   } catch (err) {
-    sendEvent({ error: err.message || "FTP connection failed", done, total: localPaths.length, complete: true });
+    sendEvent({ error: err.message || "FTP connection failed", done, total: ftpEntries.length, complete: true });
   } finally {
     client.close();
     res.end();
@@ -518,7 +523,7 @@ app.post("/api/ftp/upload-album/:albumSlug", ftpUploadAlbumLimiter, async (req, 
 // POST /api/ftp/move-starred
 const ftpMoveStarredLimiter = rateLimit({ windowMs: 60_000, max: 60, standardHeaders: true, legacyHeaders: false, message: { error: "Too many FTP move requests — please wait" } });
 app.post("/api/ftp/move-starred", ftpMoveStarredLimiter, async (req, res) => {
-  const { photoSrc, albumTitle, albumSlug, tenantSlug } = req.body || {};
+  const { photoSrc, albumTitle, albumSlug, tenantSlug, originalName } = req.body || {};
 
   if (!photoSrc) return res.json({ ok: false, error: "photoSrc is required" });
   if (!albumTitle && !albumSlug) return res.json({ ok: false, error: "albumTitle or albumSlug is required" });
@@ -542,9 +547,12 @@ app.post("/api/ftp/move-starred", ftpMoveStarredLimiter, async (req, res) => {
   }
 
   // Derive local file path from photoSrc
-  const filename = photoSrc.split("/").pop();
-  if (!filename) return res.json({ ok: false, error: "Could not determine filename from photoSrc." });
-  const localFilePath = path.join(UPLOADS_DIR, filename);
+  const localFilename = photoSrc.split("/").pop();
+  if (!localFilename) return res.json({ ok: false, error: "Could not determine filename from photoSrc." });
+  const localFilePath = path.join(UPLOADS_DIR, localFilename);
+
+  // The FTP filename is the original name when available, otherwise the local filename
+  const ftpFilename = originalName || localFilename;
 
   const folderBase = sanitizeFolderName(albumTitle || albumSlug);
   const remotePath = ftpSettings.ftpRemotePath || "/";
@@ -553,11 +561,11 @@ app.post("/api/ftp/move-starred", ftpMoveStarredLimiter, async (req, res) => {
   const sourceFolder = ftpSettings.ftpOrganizeByAlbum
     ? path.posix.join(remotePath, folderBase)
     : remotePath;
-  const fromPath = path.posix.join(sourceFolder, filename);
+  const fromPath = path.posix.join(sourceFolder, ftpFilename);
 
   // Destination: "{albumName}-starred" sub-folder
   const starredFolder = path.posix.join(remotePath, `${folderBase}-starred`);
-  const toPath = path.posix.join(starredFolder, filename);
+  const toPath = path.posix.join(starredFolder, ftpFilename);
 
   const result = await moveFileOnFtp(
     fs.existsSync(localFilePath) ? localFilePath : null,
@@ -616,10 +624,10 @@ app.post("/api/upload", upload.array("photos", 100), async (req, res) => {
 
   let ftpUploaded = false;
   if (ftpSettings) {
-    const localPaths = uploadedFiles.map((f) => f.localPath);
+    const ftpEntries = uploadedFiles.map((f) => ({ localPath: f.localPath, remoteFilename: f.originalName }));
     // Use album sub-folder when ftpOrganizeByAlbum is enabled and a folder name was supplied
     const subFolder = ftpSettings.ftpOrganizeByAlbum && albumFolder ? albumFolder : null;
-    const result = await uploadFilesToFtp(localPaths, ftpSettings, { subFolder });
+    const result = await uploadFilesToFtp(ftpEntries, ftpSettings, { subFolder });
     ftpUploaded = result.ok;
     if (!result.ok) {
       console.warn(`[FTP] Upload failed: ${result.error || "unknown error"} (${result.failed}/${uploadedFiles.length} file(s) failed)`);

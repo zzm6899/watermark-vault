@@ -93,6 +93,7 @@ export interface Photo {
   takenAt?: string;     // ISO timestamp from EXIF if available
   proofing?: boolean;
   ftpUploaded?: boolean; // true when this photo was successfully sent to an FTP server
+  originalName?: string; // original filename as uploaded by the user (e.g. "IMG_1234.jpg")
 }
 
 export type AlbumDisplaySize = "small" | "medium" | "large" | "list";
