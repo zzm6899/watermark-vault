@@ -1,6 +1,7 @@
 const express = require("express");
 const multer = require("multer");
 const cors = require("cors");
+const compression = require("compression");
 const path = require("path");
 const fs = require("fs");
 const sharp = require("sharp");
@@ -31,6 +32,8 @@ const DATA_DIR = process.env.DATA_DIR || "/data";
 const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
 const DB_FILE = path.join(DATA_DIR, "db.json");
 const MAX_ZIP_FILES = 1000; // Reasonable upper bound per request to prevent resource abuse
+// Shared Cache-Control header for short-lived public read endpoints (60 s fresh, 5 min stale)
+const SHORT_CACHE = "public, max-age=60, stale-while-revalidate=300";
 
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 if (!fs.existsSync(DB_FILE)) fs.writeFileSync(DB_FILE, JSON.stringify({}));
@@ -90,6 +93,8 @@ function writeDb(data) {
 seedSuperAdminIfNeeded();
 
 app.use(cors());
+// Compress all responses (JSON, HTML, JS, CSS, etc.) — reduces transfer size by ~70-90%
+app.use(compression());
 // Skip JSON body parsing for the Stripe webhook route — it requires the raw Buffer for
 // signature verification.  The route itself applies express.raw() instead.
 app.use((req, res, next) => {
@@ -1786,7 +1791,7 @@ app.get("/api/tenant/:slug/public", tenantPublicLimiter, (req, res) => {
   }
 
   // Allow browsers and CDNs to cache for 60 s; revalidate after that.
-  res.setHeader("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
+  res.setHeader("Cache-Control", SHORT_CACHE);
   res.json({ tenant, eventTypes, bookingLimitReached });
 });
 
@@ -2784,7 +2789,10 @@ app.get("/api/public-album/:albumSlug", (req, res) => {
   const mainRaw = db["wv_albums"];
   const main = mainRaw ? (typeof mainRaw === "string" ? JSON.parse(mainRaw) : mainRaw) : [];
   const mainAlbum = findIn(main);
-  if (mainAlbum) return res.json({ album: mainAlbum, tenantSlug: null });
+  if (mainAlbum) {
+    res.setHeader("Cache-Control", SHORT_CACHE);
+    return res.json({ album: mainAlbum, tenantSlug: null });
+  }
 
   // Check all tenant album stores
   for (const key of Object.keys(db)) {
@@ -2793,7 +2801,10 @@ app.get("/api/public-album/:albumSlug", (req, res) => {
     const raw = db[key];
     const parsed = raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : [];
     const found = findIn(parsed);
-    if (found) return res.json({ album: found, tenantSlug: tSlug });
+    if (found) {
+      res.setHeader("Cache-Control", SHORT_CACHE);
+      return res.json({ album: found, tenantSlug: tSlug });
+    }
   }
 
   return res.status(404).json({ error: "Album not found" });
