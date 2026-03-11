@@ -253,7 +253,10 @@ export default function InvoiceView() {
               <tbody className="divide-y divide-border">
                 {invoice.items.map(item => (
                   <tr key={item.id}>
-                    <td className="px-4 py-3 text-foreground">{item.description}</td>
+                    <td className="px-4 py-3 text-foreground">
+                      {item.description}
+                      {item.subdescription && <p className="text-xs text-muted-foreground mt-0.5">{item.subdescription}</p>}
+                    </td>
                     <td className="px-4 py-3 text-muted-foreground text-right">{item.quantity}</td>
                     <td className="px-4 py-3 text-muted-foreground text-right">${item.unitPrice.toFixed(2)}</td>
                     <td className="px-4 py-3 text-foreground text-right">${(item.quantity * item.unitPrice).toFixed(2)}</td>
