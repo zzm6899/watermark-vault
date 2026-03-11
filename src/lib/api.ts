@@ -1156,7 +1156,16 @@ export async function saveTenantAlbum(slug: string, album: import("./types").Alb
 
 // ── License Plans ──────────────────────────────────────────────
 
-/** Fetch all active license plans. */
+/** Fetch all active license plans (public, for tenant self-service). */
+export async function getActiveLicensePlans(): Promise<import("./types").LicensePlan[]> {
+  try {
+    const res = await fetch("/api/license-plans");
+    if (!res.ok) return [];
+    return await res.json();
+  } catch { return []; }
+}
+
+/** Fetch all license plans (admin). */
 export async function getLicensePlans(): Promise<import("./types").LicensePlan[]> {
   try {
     const res = await fetch("/api/license-plans/all");

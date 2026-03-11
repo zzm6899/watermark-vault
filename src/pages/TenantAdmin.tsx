@@ -32,13 +32,14 @@ import {
   disconnectTenantGoogleCalendar, getTenantGoogleCalendars,
   saveTenantCalendarSettings, getTenantStorageStats, upsertTenantBookingAdmin,
   testTenantFtpConnection,
-  submitEventSlotRequest, getTenantEventSlotRequest, createEventSlotCheckout,testTenantFtpConnection, ftpUploadAlbum, ftpMoveToStarred
+  submitEventSlotRequest, getTenantEventSlotRequest, createEventSlotCheckout,testTenantFtpConnection, ftpUploadAlbum, ftpMoveToStarred,
+  getActiveLicensePlans, getLicensePlanCheckout, createBankLicensePurchase,
 } from "@/lib/api";
 import ProgressiveImg from "@/components/ProgressiveImg";
 import RichTextEditor from "@/components/RichTextEditor";
 import type {
   Booking, Album, Photo, AlbumDisplaySize, EventType, Invoice, InvoiceItem, InvoiceParty,
-  Contact, TenantSettings, AvailabilitySlot, QuestionField, WatermarkPosition, SpecificDateSlot, EventSlotRequest,
+  Contact, TenantSettings, AvailabilitySlot, QuestionField, WatermarkPosition, SpecificDateSlot, EventSlotRequest, LicensePlan,
 } from "@/lib/types";
 import sampleLandscape from "@/assets/sample-landscape.jpg";
 import samplePortrait from "@/assets/sample-portrait.jpg";
@@ -4265,11 +4266,80 @@ function TenantLicense({ slug }: { slug: string }) {
     usedAt?: string;
   } | null>(null);
   const [bookingCount, setBookingCount] = useState(0);
+  const [pendingSlotRequest, setPendingSlotRequest] = useState<EventSlotRequest | null>(null);
+  const [showSlotPayment, setShowSlotPayment] = useState(false);
+  const [slotRequestLoading, setSlotRequestLoading] = useState(false);
+  const [checkoutLoading, setCheckoutLoading] = useState(false);
+  const [plans, setPlans] = useState<LicensePlan[]>([]);
+  const [selectedPlanId, setSelectedPlanId] = useState<string>("");
+  const [buyerEmail, setBuyerEmail] = useState("");
+  const [buyerName, setBuyerName] = useState("");
+  const [showPlanPurchase, setShowPlanPurchase] = useState(false);
+  const [planCheckoutLoading, setPlanCheckoutLoading] = useState(false);
+  const [showPlanPaymentOptions, setShowPlanPaymentOptions] = useState(false);
 
   useEffect(() => {
-    getTenantLicenseInfo(slug).then(setLicInfo);
+    getTenantLicenseInfo(slug).then(info => {
+      setLicInfo(info);
+      if (info?.issuedTo) setBuyerName(info.issuedTo);
+    });
     fetchTenantMobileData(slug).then(d => setBookingCount((d.bookings || []).length));
+    getTenantEventSlotRequest(slug).then(setPendingSlotRequest);
+    getActiveLicensePlans().then(setPlans);
   }, [slug]);
+
+  const handleRequestSlot = async (paymentMethod: "stripe" | "bank") => {
+    setSlotRequestLoading(true);
+    const result = await submitEventSlotRequest(slug, paymentMethod);
+    if (!result.ok) { toast.error(result.error || "Failed to submit request"); setSlotRequestLoading(false); return; }
+    setPendingSlotRequest(result.request!);
+    toast.success("Request submitted! You'll be notified once it's approved.");
+    if (paymentMethod === "stripe") {
+      setCheckoutLoading(true);
+      const checkout = await createEventSlotCheckout(slug);
+      setCheckoutLoading(false);
+      if (checkout.url) {
+        window.location.href = checkout.url;
+      } else {
+        toast.error(checkout.error || "Stripe checkout failed. Contact your administrator.");
+      }
+    } else {
+      setShowSlotPayment(false);
+    }
+    setSlotRequestLoading(false);
+  };
+
+  const handlePlanStripeCheckout = async () => {
+    if (!selectedPlanId || !buyerEmail) { toast.error("Please enter your email address."); return; }
+    setPlanCheckoutLoading(true);
+    const result = await getLicensePlanCheckout(selectedPlanId, buyerEmail, buyerName || undefined);
+    setPlanCheckoutLoading(false);
+    if (result.url) {
+      window.location.href = result.url;
+    } else {
+      toast.error(result.error || "Checkout failed. Please try again.");
+    }
+  };
+
+  const handlePlanBankPurchase = async () => {
+    if (!selectedPlanId || !buyerEmail) { toast.error("Please enter your email address."); return; }
+    setPlanCheckoutLoading(true);
+    const result = await createBankLicensePurchase(selectedPlanId, buyerEmail, buyerName || undefined);
+    setPlanCheckoutLoading(false);
+    if (result.ok) {
+      toast.success("Bank transfer request submitted! Contact your administrator with payment confirmation.");
+      setShowPlanPurchase(false);
+      setShowPlanPaymentOptions(false);
+    } else {
+      toast.error(result.error || "Failed to submit request.");
+    }
+  };
+
+  const selectedPlan = plans.find(p => p.id === selectedPlanId);
+  const extraEventPrice = licInfo?.extraEventPrice ?? null;
+  const effectiveEventLimit = licInfo != null && licInfo.maxEvents != null
+    ? licInfo.maxEvents + (licInfo.extraEventSlots ?? 0)
+    : null;
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
@@ -4277,10 +4347,57 @@ function TenantLicense({ slug }: { slug: string }) {
       {!licInfo ? (
         <div className="py-8 text-center text-muted-foreground font-body text-sm animate-pulse">Loading…</div>
       ) : !licInfo.key ? (
-        <div className="glass-panel rounded-xl p-6 text-center space-y-3">
-          <Key className="w-10 h-10 text-muted-foreground/30 mx-auto" />
-          <p className="font-body text-sm text-muted-foreground">No license key linked to your account.</p>
-          <p className="font-body text-xs text-muted-foreground/60">Contact your platform administrator.</p>
+        <div className="space-y-4 max-w-lg">
+          <div className="glass-panel rounded-xl p-6 text-center space-y-3">
+            <Key className="w-10 h-10 text-muted-foreground/30 mx-auto" />
+            <p className="font-body text-sm text-muted-foreground">No license key linked to your account.</p>
+            <p className="font-body text-xs text-muted-foreground/60">Contact your platform administrator.</p>
+          </div>
+          {plans.filter(p => p.active !== false).length > 0 && (
+            <div className="glass-panel rounded-xl p-5 space-y-4">
+              <div className="flex items-center gap-2">
+                <CreditCard className="w-4 h-4 text-primary" />
+                <p className="font-display text-base text-foreground">Purchase a License</p>
+              </div>
+              <p className="text-xs font-body text-muted-foreground">Choose a plan to get started.</p>
+              <div className="space-y-2">
+                {plans.filter(p => p.active !== false).map(plan => (
+                  <button key={plan.id} onClick={() => { setSelectedPlanId(plan.id); setShowPlanPurchase(true); setShowPlanPaymentOptions(false); }}
+                    className={`w-full text-left p-3 rounded-lg border transition-colors ${selectedPlanId === plan.id ? "border-primary bg-primary/10" : "border-border bg-secondary/50 hover:border-primary/50"}`}>
+                    <div className="flex items-center justify-between">
+                      <span className="font-display text-sm text-foreground">{plan.name}</span>
+                      <span className="font-mono text-sm text-primary">{new Intl.NumberFormat("en-AU", { style: "currency", currency: plan.currency || "AUD" }).format(plan.price)}{plan.type !== "one-time" ? `/${plan.type === "monthly" ? "mo" : "yr"}` : ""}</span>
+                    </div>
+                    {plan.description && <p className="text-xs font-body text-muted-foreground mt-0.5">{plan.description}</p>}
+                  </button>
+                ))}
+              </div>
+              {showPlanPurchase && selectedPlan && (
+                <div className="space-y-3 p-3 rounded-lg bg-secondary/50 border border-border/40">
+                  <p className="text-xs font-body text-muted-foreground font-medium">Your details</p>
+                  <Input value={buyerName} onChange={e => setBuyerName(e.target.value)} placeholder="Your name" className="bg-background border-border text-foreground font-body text-sm h-8" />
+                  <Input type="email" value={buyerEmail} onChange={e => setBuyerEmail(e.target.value)} placeholder="Your email address *" className="bg-background border-border text-foreground font-body text-sm h-8" />
+                  {showPlanPaymentOptions ? (
+                    <div className="flex flex-col sm:flex-row gap-2">
+                      <Button size="sm" onClick={handlePlanStripeCheckout} disabled={planCheckoutLoading || !buyerEmail} className="gap-2 bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase">
+                        <CreditCard className="w-3.5 h-3.5" /> {planCheckoutLoading ? "Redirecting…" : "Pay by Card"}
+                      </Button>
+                      <Button size="sm" variant="outline" onClick={handlePlanBankPurchase} disabled={planCheckoutLoading || !buyerEmail} className="gap-2 font-body text-xs tracking-wider uppercase border-border">
+                        <DollarSign className="w-3.5 h-3.5" /> Pay by Bank Transfer
+                      </Button>
+                      <Button size="sm" variant="ghost" onClick={() => { setShowPlanPaymentOptions(false); }} className="font-body text-xs text-muted-foreground">
+                        Cancel
+                      </Button>
+                    </div>
+                  ) : (
+                    <Button size="sm" onClick={() => setShowPlanPaymentOptions(true)} disabled={!buyerEmail} className="gap-2 bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase">
+                      <CreditCard className="w-3.5 h-3.5" /> Purchase {selectedPlan.name} — {new Intl.NumberFormat("en-AU", { style: "currency", currency: selectedPlan.currency || "AUD" }).format(selectedPlan.price)}
+                    </Button>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       ) : (
         <div className="space-y-4 max-w-lg">
@@ -4328,14 +4445,14 @@ function TenantLicense({ slug }: { slug: string }) {
                       </div>
                     </div>
                   )}
-                  {licInfo.maxEvents != null && (
+                  {licInfo.maxEvents != null && effectiveEventLimit != null && (
                     <div>
                       <div className="flex justify-between text-xs font-body mb-1">
                         <span className="text-muted-foreground">Event Types</span>
-                        <span className="text-foreground">{licInfo.eventCount ?? 0} / {licInfo.maxEvents + (licInfo.extraEventSlots ?? 0)}</span>
+                        <span className="text-foreground">{licInfo.eventCount ?? 0} / {effectiveEventLimit}</span>
                       </div>
                       <div className="h-1.5 bg-secondary rounded-full overflow-hidden">
-                        <div className="h-full bg-primary rounded-full transition-all" style={{ width: `${Math.min(100, ((licInfo.eventCount ?? 0) / (licInfo.maxEvents + (licInfo.extraEventSlots ?? 0))) * 100)}%` }} />
+                        <div className="h-full bg-primary rounded-full transition-all" style={{ width: `${Math.min(100, ((licInfo.eventCount ?? 0) / effectiveEventLimit) * 100)}%` }} />
                       </div>
                       {(licInfo.extraEventSlots ?? 0) > 0 && (
                         <p className="text-[10px] font-body text-primary mt-0.5">+{licInfo.extraEventSlots} purchased</p>
@@ -4343,9 +4460,6 @@ function TenantLicense({ slug }: { slug: string }) {
                     </div>
                   )}
                 </div>
-                {licInfo.extraEventPrice != null && (
-                  <p className="text-[10px] font-body text-muted-foreground">Extra event slots available for {new Intl.NumberFormat("en-AU", { style: "currency", currency: "AUD" }).format(licInfo.extraEventPrice)} each (Stripe or bank transfer).</p>
-                )}
               </div>
             )}
 
@@ -4360,6 +4474,106 @@ function TenantLicense({ slug }: { slug: string }) {
               </div>
             )}
           </div>
+
+          {/* Extra event slot purchase — available proactively before the limit is reached */}
+          {extraEventPrice != null && !pendingSlotRequest && (
+            <div className="glass-panel rounded-xl p-5 space-y-3">
+              <div className="flex items-center gap-2">
+                <Plus className="w-4 h-4 text-primary" />
+                <p className="font-display text-base text-foreground">Extra Event Type Slot</p>
+              </div>
+              <p className="text-xs font-body text-muted-foreground">
+                Purchase an additional event type slot for{" "}
+                <span className="text-foreground font-medium">
+                  {new Intl.NumberFormat("en-AU", { style: "currency", currency: "AUD" }).format(extraEventPrice)}
+                </span>. Your administrator will approve the request.
+              </p>
+              {showSlotPayment ? (
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <Button size="sm" onClick={() => handleRequestSlot("stripe")} disabled={slotRequestLoading || checkoutLoading} className="gap-2 bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase">
+                    <CreditCard className="w-3.5 h-3.5" /> {checkoutLoading ? "Redirecting…" : "Pay by Card"}
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => handleRequestSlot("bank")} disabled={slotRequestLoading} className="gap-2 font-body text-xs tracking-wider uppercase border-border">
+                    <DollarSign className="w-3.5 h-3.5" /> Pay by Bank Transfer
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => setShowSlotPayment(false)} className="font-body text-xs text-muted-foreground">
+                    Cancel
+                  </Button>
+                </div>
+              ) : (
+                <Button size="sm" onClick={() => setShowSlotPayment(true)} className="gap-2 bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase">
+                  <Plus className="w-3.5 h-3.5" /> Get Extra Slot — {new Intl.NumberFormat("en-AU", { style: "currency", currency: "AUD" }).format(extraEventPrice)}
+                </Button>
+              )}
+            </div>
+          )}
+
+          {pendingSlotRequest && ["pending", "paid"].includes(pendingSlotRequest.status) && (
+            <div className="glass-panel rounded-xl p-4 space-y-1 border border-blue-500/20">
+              <p className="text-xs font-body text-blue-400 font-medium">Extra slot request pending approval</p>
+              {pendingSlotRequest.paymentMethod === "bank" ? (
+                <p className="text-xs font-body text-muted-foreground">Please transfer <span className="text-foreground font-medium">${pendingSlotRequest.amount}</span> via bank transfer and notify your administrator. Your slot will be granted once confirmed.</p>
+              ) : (
+                <p className="text-xs font-body text-muted-foreground">Payment {pendingSlotRequest.status === "paid" ? "received" : "submitted"}. Awaiting administrator approval.</p>
+              )}
+            </div>
+          )}
+
+          {/* License plan upgrade */}
+          {plans.filter(p => p.active !== false).length > 0 && (
+            <div className="glass-panel rounded-xl p-5 space-y-4">
+              <div className="flex items-center gap-2">
+                <CreditCard className="w-4 h-4 text-primary" />
+                <p className="font-display text-base text-foreground">Upgrade Your Plan</p>
+              </div>
+              <p className="text-xs font-body text-muted-foreground">Purchase a new license key to expand your limits.</p>
+              <div className="space-y-2">
+                {plans.filter(p => p.active !== false).map(plan => (
+                  <button key={plan.id} onClick={() => { setSelectedPlanId(plan.id); setShowPlanPurchase(true); setShowPlanPaymentOptions(false); }}
+                    className={`w-full text-left p-3 rounded-lg border transition-colors ${selectedPlanId === plan.id ? "border-primary bg-primary/10" : "border-border bg-secondary/50 hover:border-primary/50"}`}>
+                    <div className="flex items-center justify-between">
+                      <span className="font-display text-sm text-foreground">{plan.name}</span>
+                      <span className="font-mono text-sm text-primary">{new Intl.NumberFormat("en-AU", { style: "currency", currency: plan.currency || "AUD" }).format(plan.price)}{plan.type !== "one-time" ? `/${plan.type === "monthly" ? "mo" : "yr"}` : ""}</span>
+                    </div>
+                    {plan.description && <p className="text-xs font-body text-muted-foreground mt-0.5">{plan.description}</p>}
+                    {plan.features.length > 0 && (
+                      <ul className="mt-1.5 space-y-0.5">
+                        {plan.features.map((f, i) => (
+                          <li key={i} className="flex items-center gap-1.5 text-[11px] font-body text-muted-foreground">
+                            <CheckCircle2 className="w-3 h-3 text-green-400 shrink-0" /> {f}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </button>
+                ))}
+              </div>
+              {showPlanPurchase && selectedPlan && (
+                <div className="space-y-3 p-3 rounded-lg bg-secondary/50 border border-border/40">
+                  <p className="text-xs font-body text-muted-foreground font-medium">Your details</p>
+                  <Input value={buyerName} onChange={e => setBuyerName(e.target.value)} placeholder="Your name" className="bg-background border-border text-foreground font-body text-sm h-8" />
+                  <Input type="email" value={buyerEmail} onChange={e => setBuyerEmail(e.target.value)} placeholder="Your email address *" className="bg-background border-border text-foreground font-body text-sm h-8" />
+                  {showPlanPaymentOptions ? (
+                    <div className="flex flex-col sm:flex-row gap-2">
+                      <Button size="sm" onClick={handlePlanStripeCheckout} disabled={planCheckoutLoading || !buyerEmail} className="gap-2 bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase">
+                        <CreditCard className="w-3.5 h-3.5" /> {planCheckoutLoading ? "Redirecting…" : "Pay by Card"}
+                      </Button>
+                      <Button size="sm" variant="outline" onClick={handlePlanBankPurchase} disabled={planCheckoutLoading || !buyerEmail} className="gap-2 font-body text-xs tracking-wider uppercase border-border">
+                        <DollarSign className="w-3.5 h-3.5" /> Pay by Bank Transfer
+                      </Button>
+                      <Button size="sm" variant="ghost" onClick={() => setShowPlanPaymentOptions(false)} className="font-body text-xs text-muted-foreground">
+                        Cancel
+                      </Button>
+                    </div>
+                  ) : (
+                    <Button size="sm" onClick={() => setShowPlanPaymentOptions(true)} disabled={!buyerEmail} className="gap-2 bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase">
+                      <CreditCard className="w-3.5 h-3.5" /> Purchase {selectedPlan.name} — {new Intl.NumberFormat("en-AU", { style: "currency", currency: selectedPlan.currency || "AUD" }).format(selectedPlan.price)}
+                    </Button>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
     </motion.div>
