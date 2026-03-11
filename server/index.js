@@ -456,7 +456,7 @@ app.post("/api/ftp/upload-album/:albumSlug", ftpUploadAlbumLimiter, async (req, 
       // Use stored originalName first, then fall back to reconstructing from title + extension
       const ext = path.extname(filename);
       const remoteFilename = p.originalName || ((p.title && ext) ? `${p.title}${ext}` : filename);
-      return { localPath, remoteFilename };
+      return { localPath, remoteFilename, starred: !!p.starred };
     })
     .filter(Boolean);
 
@@ -471,7 +471,7 @@ app.post("/api/ftp/upload-album/:albumSlug", ftpUploadAlbumLimiter, async (req, 
     Connection: "keep-alive",
   });
 
-  const subFolder = ftpSettings.ftpOrganizeByAlbum ? (album.title || albumSlug) : null;
+  const sanitizedAlbumName = sanitizeFolderName(album.title || albumSlug);
   let done = 0;
   let failed = 0;
 
@@ -493,14 +493,28 @@ app.post("/api/ftp/upload-album/:albumSlug", ftpUploadAlbumLimiter, async (req, 
       secure: false,
     });
 
-    const remotePath = subFolder
-      ? path.posix.join(ftpRemotePath || "/", sanitizeFolderName(subFolder))
+    const remotePath = ftpSettings.ftpOrganizeByAlbum
+      ? path.posix.join(ftpRemotePath || "/", sanitizedAlbumName)
       : (ftpRemotePath || "/");
     await client.ensureDir(remotePath);
 
-    for (const { localPath: localFilePath, remoteFilename } of ftpEntries) {
+    // Starred sub-folder: "{albumName}-starred" always relative to the base remote path
+    const starredRemotePath = ftpSettings.ftpStarredFolder
+      ? path.posix.join(ftpRemotePath || "/", `${sanitizedAlbumName}-starred`)
+      : null;
+    let starredDirEnsured = false;
+
+    for (const { localPath: localFilePath, remoteFilename, starred } of ftpEntries) {
       try {
-        const remoteFile = path.posix.join(remotePath, remoteFilename);
+        let targetDir = remotePath;
+        if (starred && starredRemotePath) {
+          if (!starredDirEnsured) {
+            await client.ensureDir(starredRemotePath);
+            starredDirEnsured = true;
+          }
+          targetDir = starredRemotePath;
+        }
+        const remoteFile = path.posix.join(targetDir, remoteFilename);
         await client.uploadFrom(localFilePath, remoteFile);
       } catch (err) {
         console.warn(`[FTP] Bulk upload failed for ${remoteFilename}:`, err.message);
