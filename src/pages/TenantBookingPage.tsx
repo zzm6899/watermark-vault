@@ -76,6 +76,7 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
   const { tenantSlug: paramSlug } = useParams<{ tenantSlug: string }>();
   const tenantSlug = overrideSlug || paramSlug;
   const navigate = useNavigate();
+  const hasHistory = (window.history.state?.idx ?? 0) > 0;
 
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
@@ -180,9 +181,11 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
           <Camera className="w-12 h-12 text-muted-foreground/30 mx-auto" />
           <h1 className="font-display text-2xl text-foreground">Page not found</h1>
           <p className="text-sm font-body text-muted-foreground">This booking page doesn't exist or has been deactivated.</p>
-          <Button variant="outline" onClick={() => navigate("/")} className="font-body text-xs gap-2">
-            <ArrowLeft className="w-3.5 h-3.5" /> Back to main
-          </Button>
+          {!overrideSlug && (
+            <Button variant="outline" onClick={() => navigate("/")} className="font-body text-xs gap-2">
+              <ArrowLeft className="w-3.5 h-3.5" /> Back to main
+            </Button>
+          )}
         </div>
       </div>
     );
@@ -191,9 +194,11 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
   return (    <div className="min-h-screen bg-background flex flex-col" style={{ paddingTop: "env(safe-area-inset-top)", paddingBottom: "env(safe-area-inset-bottom)" }}>
       {/* Header */}
       <header className="border-b border-border/50 py-4 px-6 flex items-center gap-4">
-        <Button variant="ghost" size="sm" onClick={() => window.history.state?.idx > 0 ? navigate(-1) : navigate("/")} className="font-body text-xs text-muted-foreground gap-1.5 p-0 h-auto hover:text-foreground">
-          <ArrowLeft className="w-3.5 h-3.5" /> Back
-        </Button>
+        {hasHistory && (
+          <Button variant="ghost" size="sm" onClick={() => navigate(-1)} className="font-body text-xs text-muted-foreground gap-1.5 p-0 h-auto hover:text-foreground">
+            <ArrowLeft className="w-3.5 h-3.5" /> Back
+          </Button>
+        )}
         <div className="flex items-center gap-3 ml-2">
           <div className="w-9 h-9 rounded-full bg-primary/20 flex items-center justify-center overflow-hidden shrink-0">
             <Camera className="w-4 h-4 text-primary" />
