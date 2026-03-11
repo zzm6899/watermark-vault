@@ -1841,6 +1841,9 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                         <option value="cash">Cash</option>
                         <option value="pending-confirmation">Bank Transfer Pending</option>
                       </select>
+                      <Button variant="ghost" size="icon" aria-label="Edit booking" className="h-8 w-8 text-muted-foreground hover:text-foreground" onClick={() => { setEditingBooking(bk); setShowCreateBooking(false); setExpandedId(null); }}>
+                        <Edit className="w-4 h-4" />
+                      </Button>
                       <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-destructive" onClick={() => handleDelete(bk.id)}>
                         <Trash2 className="w-4 h-4" />
                       </Button>
