@@ -146,8 +146,10 @@ export default function InvoiceView() {
   }
 
   const { sub, disc, taxAmt, taxRate, total } = calcTotals(invoice);
-  const statusInfo = STATUS_STYLES[invoice.status];
   const methods = invoice.paymentMethods || [];
+  const statusInfo = invoice.status === "sent" && methods.length === 0
+    ? { ...STATUS_STYLES.sent, label: "Sent" }
+    : STATUS_STYLES[invoice.status];
   const canPay = !justPaid && invoice.status !== "paid" && invoice.status !== "cancelled" && methods.length > 0;
 
   return (
