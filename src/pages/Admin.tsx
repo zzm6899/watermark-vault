@@ -2527,9 +2527,23 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
   // Poll server for proofing updates (client submissions won't be in localStorage)
   useEffect(() => {
     let cancelled = false;
+    let timerId: ReturnType<typeof setTimeout> | undefined;
     const poll = async () => {
       if (cancelled) return;
-      await syncFromServer();
+      // Fetch only the albums key instead of the entire database to avoid
+      // overloading the server with large GET /api/store requests that can pile
+      // up when using setInterval with an async callback.
+      if (isServerMode()) {
+        try {
+          const res = await fetch("/api/store/wv_albums");
+          if (res.ok) {
+            const { value } = await res.json();
+            if (value != null) {
+              localStorage.setItem("wv_albums", typeof value === "string" ? value : JSON.stringify(value));
+            }
+          }
+        } catch { /* non-critical */ }
+      }
       if (cancelled) return;
       const fresh = getAlbums();
       setAlbumsState(fresh);
@@ -2539,10 +2553,12 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
         const updated = fresh.find(a => a.id === prev.id);
         return updated ?? prev;
       });
+      // Schedule the next poll only after the current one completes so requests
+      // never pile up when the server is slow.
+      if (!cancelled) timerId = setTimeout(poll, 5000);
     };
     poll(); // immediate on mount
-    const id = setInterval(poll, 5000);
-    return () => { cancelled = true; clearInterval(id); };
+    return () => { cancelled = true; clearTimeout(timerId); };
   }, []);
 
   // Backfill missing thumbnails for all album photos
@@ -8002,11 +8018,21 @@ function StorageView() {
     return () => window.removeEventListener("wm-rebuild-status", handler);
   }, [refreshStorageState]);
 
-  // Poll server stats every 1 s while Storage tab is open so counts stay current
+  // Poll server stats every 5 s while Storage tab is open so counts stay current.
+  // Using a recursive setTimeout (rather than setInterval) ensures each poll
+  // completes before the next one starts, preventing request pile-up when the
+  // server is slow. The initial refresh is handled by the separate useEffect
+  // below (line ~8147) which calls refreshStorageState() immediately on mount.
   useEffect(() => {
     if (!isServerMode()) return;
-    const id = setInterval(() => { refreshStorageState(); }, 1_000);
-    return () => clearInterval(id);
+    let cancelled = false;
+    let timerId: ReturnType<typeof setTimeout> | undefined;
+    const run = async () => {
+      await refreshStorageState();
+      if (!cancelled) timerId = setTimeout(run, 5_000);
+    };
+    timerId = setTimeout(run, 5_000);
+    return () => { cancelled = true; clearTimeout(timerId); };
   }, [refreshStorageState]);
 
   const applyThumbnailToStores = useCallback((photoId: string, thumb?: string) => {
