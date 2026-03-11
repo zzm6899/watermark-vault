@@ -86,7 +86,9 @@ import {
   ftpMoveToStarred,
   getEventSlotRequests,
   confirmEventSlotRequest,
-  rejectEventSlotRequest
+  rejectEventSlotRequest,
+  fetchAlbumStubs,
+  fetchAlbumPhotos,
 } from "@/lib/api";
 import type { CacheBreakdown } from "@/lib/api";
 import RichTextEditor, { RichTextDisplay } from "@/components/RichTextEditor";
@@ -2530,28 +2532,39 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
     let timerId: ReturnType<typeof setTimeout> | undefined;
     const poll = async () => {
       if (cancelled) return;
-      // Fetch only the albums key instead of the entire database to avoid
-      // overloading the server with large GET /api/store requests that can pile
-      // up when using setInterval with an async callback.
+      // Fetch only album stubs (metadata without photos) so the 5-second poll
+      // does not re-download the entire photo arrays on every tick.  Photos
+      // already loaded into localStorage are preserved by the merge below.
       if (isServerMode()) {
         try {
-          const res = await fetch("/api/store/wv_albums");
-          if (res.ok) {
-            const { value } = await res.json();
-            if (value != null) {
-              localStorage.setItem("wv_albums", typeof value === "string" ? value : JSON.stringify(value));
-            }
+          const stubs = await fetchAlbumStubs();
+          if (stubs !== null) {
+            // Merge: keep any photos already present in localStorage so that
+            // opening an album editor (which loads photos on demand) is not
+            // undone by the next poll cycle.
+            const existing = getAlbums();
+            const existingPhotos = new Map(existing.map(a => [a.id, a.photos]));
+            const merged = stubs.map(s => {
+              const photos = existingPhotos.get(s.id);
+              return photos?.length ? { ...s, photos, _photosStripped: false } : s;
+            });
+            localStorage.setItem("wv_albums", JSON.stringify(merged));
           }
         } catch { /* non-critical */ }
       }
       if (cancelled) return;
       const fresh = getAlbums();
       setAlbumsState(fresh);
-      // If an album editor is open, refresh it too so proofing picks appear live
+      // If an album editor is open, refresh its metadata (proofing stage, etc.)
+      // but always preserve the photos already loaded in the editor so the photo
+      // grid does not disappear on the next poll cycle.
       setEditing(prev => {
         if (!prev) return prev;
         const updated = fresh.find(a => a.id === prev.id);
-        return updated ?? prev;
+        if (!updated) return prev;
+        // Preserve the photos that were loaded into the editor (may be absent
+        // from the stub that just came back from the server).
+        return { ...updated, photos: prev.photos };
       });
       // Schedule the next poll only after the current one completes so requests
       // never pile up when the server is slow.
@@ -2912,9 +2925,26 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
   const [coverImage, setCoverImage] = useState(album?.coverImage || "");
   const [accessCode, setAccessCode] = useState(album?.accessCode || "");
   const [allUnlocked, setAllUnlocked] = useState(album?.allUnlocked || false);
-  const [watermarkDisabled, setWatermarkDisabled] = useState((album as any)?.watermarkDisabled || false);
-  const [purchasingDisabled, setPurchasingDisabled] = useState((album as any)?.purchasingDisabled || false);
+  const [watermarkDisabled, setWatermarkDisabled] = useState(album?.watermarkDisabled || false);
+  const [purchasingDisabled, setPurchasingDisabled] = useState(album?.purchasingDisabled || false);
   const [albumProofingEnabled, setAlbumProofingEnabled] = useState(album?.proofingEnabled || false);
+
+  // When a stub album is opened (photos stripped during sync to save bandwidth),
+  // fetch the full photos array from the server on demand.
+  const albumId = album?.id;
+  const photosStripped = album?._photosStripped ?? false;
+  useEffect(() => {
+    if (!albumId || !isServerMode() || !photosStripped) return;
+    fetchAlbumPhotos(albumId).then(fetched => {
+      if (fetched) {
+        setPhotos(fetched);
+        // Also hydrate localStorage so the cover image picker and other reads
+        // see the full album until the next poll cycle.
+        const current = getAlbums().find(a => a.id === albumId);
+        if (current) updateAlbum({ ...current, photos: fetched, _photosStripped: false });
+      }
+    });
+  }, [albumId, photosStripped]);
   // Live album state for proofing panel — keeps UI in sync when proofing actions mutate the album
   const [liveAlbum, setLiveAlbum] = useState<Album | null>(album);
   const updateLiveAlbum = (updated: Album) => { updateAlbum(updated); setLiveAlbum(updated); };
