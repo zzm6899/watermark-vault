@@ -146,8 +146,10 @@ export default function InvoiceView() {
   }
 
   const { sub, disc, taxAmt, taxRate, total } = calcTotals(invoice);
-  const statusInfo = STATUS_STYLES[invoice.status];
   const methods = invoice.paymentMethods || [];
+  const statusInfo = invoice.status === "sent" && methods.length === 0
+    ? { ...STATUS_STYLES.sent, label: "Sent" }
+    : STATUS_STYLES[invoice.status];
   const canPay = !justPaid && invoice.status !== "paid" && invoice.status !== "cancelled" && methods.length > 0;
 
   return (
@@ -183,7 +185,7 @@ export default function InvoiceView() {
               <p className="text-xs font-body text-muted-foreground uppercase tracking-wider mb-1">Invoice</p>
               <h1 className="font-display text-3xl text-foreground">{invoice.number}</h1>
             </div>
-            <span className={`inline-flex items-center gap-1.5 text-xs font-body px-3 py-1.5 rounded-full ${statusInfo.className}`}>
+            <span className={`no-print inline-flex items-center gap-1.5 text-xs font-body px-3 py-1.5 rounded-full ${statusInfo.className}`}>
               {statusInfo.icon} {statusInfo.label}
             </span>
           </div>
