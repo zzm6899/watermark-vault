@@ -185,7 +185,7 @@ export default function InvoiceView() {
               <p className="text-xs font-body text-muted-foreground uppercase tracking-wider mb-1">Invoice</p>
               <h1 className="font-display text-3xl text-foreground">{invoice.number}</h1>
             </div>
-            <span className={`inline-flex items-center gap-1.5 text-xs font-body px-3 py-1.5 rounded-full ${statusInfo.className}`}>
+            <span className={`no-print inline-flex items-center gap-1.5 text-xs font-body px-3 py-1.5 rounded-full ${statusInfo.className}`}>
               {statusInfo.icon} {statusInfo.label}
             </span>
           </div>
