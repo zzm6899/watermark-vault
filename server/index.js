@@ -99,8 +99,10 @@ app.use((req, res, next) => {
 });
 
 // ── Health check ──────────────────────────────────────
+// Intentionally lightweight – just confirms the server is alive.
+// Heavy storage stats are available via /api/storage.
 app.get("/api/health", (_req, res) => {
-  res.json({ ok: true, storage: getStorageUsage() });
+  res.json({ ok: true });
 });
 
 function getStorageUsage() {
