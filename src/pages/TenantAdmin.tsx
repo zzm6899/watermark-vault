@@ -8,7 +8,7 @@ import {
   Save, X, ChevronDown, ChevronUp, Globe, Upload, Search, Copy,
   DollarSign, MessageSquare, HardDrive, User, RefreshCw, Webhook, Star,
   ExternalLink, Mail, Send, Unlock, CreditCard, CheckCircle2, Download,
-  XSquare, CheckSquare, Bell, Wifi,
+  XSquare, CheckSquare, Bell, Wifi, Link2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -800,6 +800,17 @@ function TenantBookings({ slug }: { slug: string }) {
                         <Mail className="w-3.5 h-3.5" /> Email client
                       </button>
                     )}
+                    <button
+                      onClick={() => {
+                        const token = bk.modifyToken || bk.id;
+                        navigator.clipboard.writeText(`${window.location.origin}/booking/modify/${token}`)
+                          .then(() => toast.success("Booking link copied to clipboard"))
+                          .catch(() => toast.error("Failed to copy link"));
+                      }}
+                      className="flex items-center gap-1.5 text-xs font-body text-muted-foreground hover:text-foreground transition-colors"
+                    >
+                      <Link2 className="w-3.5 h-3.5" /> Copy link
+                    </button>
                     <button onClick={() => { setEditingBooking(bk); setExpandedId(null); }} className="flex items-center gap-1.5 text-xs font-body text-muted-foreground hover:text-foreground transition-colors">
                       <Edit className="w-3.5 h-3.5" /> Edit
                     </button>
