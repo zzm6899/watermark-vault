@@ -13,7 +13,7 @@ import { Button } from "@/components/ui/button";
 import Footer from "@/components/Footer";
 import { toast } from "sonner";
 import { getBookings, updateBooking, addBooking, getEventTypes, getProfile, getSettings, isSlotBooked } from "@/lib/storage";
-import { createBookingCheckout, getStripeStatus, syncBookingToCalendar, getGoogleBusyTimes, fetchBookingByToken } from "@/lib/api";
+import { createBookingCheckout, getStripeStatus, syncBookingToCalendar, getGoogleBusyTimes, fetchBookingByToken, getTenantPublicData } from "@/lib/api";
 import type { EventType, Booking } from "@/lib/types";
 
 function formatDuration(mins: number) {
@@ -81,7 +81,9 @@ export default function BookingModify() {
   const [booking, setBooking] = useState<Booking | undefined>(
     () => getBookings().find(b => b.modifyToken === bookingId || b.id === bookingId)
   );
-  const eventType = booking ? getEventTypes().find(e => e.id === booking.eventTypeId) : null;
+  const localEventType = booking ? getEventTypes().find(e => e.id === booking.eventTypeId) : undefined;
+  const [tenantEventType, setTenantEventType] = useState<EventType | undefined>(undefined);
+  const eventType = localEventType ?? tenantEventType ?? null;
 
   // True while we are fetching the booking from the server (only needed when not in localStorage)
   const [fetchingBooking, setFetchingBooking] = useState(!booking && !!bookingId);
@@ -112,6 +114,17 @@ export default function BookingModify() {
       setFetchingBooking(false);
     }).catch(() => setFetchingBooking(false));
   }, [booking, bookingId]);
+
+  // If booking belongs to a tenant and the event type wasn't found in local storage,
+  // fetch it from the tenant's public API (tenant event types are stored separately).
+  useEffect(() => {
+    if (localEventType || tenantEventType || !booking?.tenantSlug || !booking.eventTypeId) return;
+    getTenantPublicData(booking.tenantSlug).then(data => {
+      if (!data) return;
+      const found = data.eventTypes.find(e => e.id === booking.eventTypeId);
+      if (found) setTenantEventType(found);
+    }).catch(() => {});
+  }, [booking?.tenantSlug, booking?.eventTypeId, localEventType, tenantEventType]);
 
   // Fetch Google Calendar busy times whenever the selected date changes
   useEffect(() => {
@@ -179,7 +192,7 @@ export default function BookingModify() {
     );
   }
 
-  if (!booking || !eventType) {
+  if (!booking) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center p-4" style={{ paddingTop: "env(safe-area-inset-top)" }}>
         <div className="glass-panel rounded-xl p-8 text-center max-w-sm">
@@ -192,21 +205,35 @@ export default function BookingModify() {
     );
   }
 
+  // Use the resolved event type, or synthesise a minimal one from the booking data so
+  // the page renders immediately even while the tenant event types are still loading.
+  const et: EventType = eventType ?? {
+    id: booking.eventTypeId,
+    title: booking.type || "Session",  // booking.type stores the event type display name
+    description: "",
+    durations: [booking.duration],
+    color: "#6366f1",
+    price: booking.paymentAmount ?? 0,
+    active: true,
+    questions: [],
+    availability: { recurring: [], specificDates: [], blockedDates: [] },
+  };
+
   const depositAmt = booking.depositAmount ?? 0;
-  const totalAmt = booking.paymentAmount ?? eventType.price ?? 0;
+  const totalAmt = booking.paymentAmount ?? et.price ?? 0;
   const remainingAmt = Math.max(0, totalAmt - depositAmt);
   const isDepositPaid = booking.paymentStatus === "deposit-paid";
   const isPaidInFull = booking.paymentStatus === "paid" || booking.paymentStatus === "cash";
   const isBankPending = booking.paymentStatus === "pending-confirmation";
   const isFree = totalAmt === 0;
   const depositEnabled = booking.depositRequired && depositAmt > 0;
-  const depositMethods = eventType.depositMethods || ["stripe", "bank"];
+  const depositMethods = et.depositMethods || ["stripe", "bank"];
   const bankTransfer = settings.bankTransfer;
   const bookingDate = (() => { const [y,mo,d] = booking.date.split("-").map(Number); return new Date(y,mo-1,d); })();
 
   const handleStripePayment = async (amount: number) => {
     setProcessingPayment(true);
-    const result = await createBookingCheckout({ bookingId: booking.id, clientName: booking.clientName, clientEmail: booking.clientEmail, amount, eventTitle: eventType.title });
+    const result = await createBookingCheckout({ bookingId: booking.id, clientName: booking.clientName, clientEmail: booking.clientEmail, amount, eventTitle: et.title });
     setProcessingPayment(false);
     if (result.url) window.location.href = result.url;
     else toast.error(result.error || "Payment failed");
@@ -220,11 +247,11 @@ export default function BookingModify() {
           <CheckCircle2 className="w-12 h-12 text-green-400 mx-auto mb-4" />
           <h2 className="font-display text-xl text-foreground mb-6">Booking Rescheduled!</h2>
           <div className="border-t border-border/50 pt-4 space-y-2 text-left">
-            <div className="flex justify-between text-sm font-body"><span className="text-muted-foreground">Event</span><span className="text-foreground">{eventType.title}</span></div>
+            <div className="flex justify-between text-sm font-body"><span className="text-muted-foreground">Event</span><span className="text-foreground">{et.title}</span></div>
             <div className="flex justify-between text-sm font-body"><span className="text-muted-foreground">New Date</span><span className="text-foreground">{formatDateNice(toDateStr(selectedDate))}</span></div>
             <div className="flex justify-between text-sm font-body"><span className="text-muted-foreground">New Time</span><span className="text-primary font-medium">{formatTime12(selectedTime)}</span></div>
           </div>
-          <a href={buildGoogleCalendarUrl(eventType, selectedDate, selectedTime, booking.duration)} target="_blank" rel="noopener noreferrer" className="block mt-4">
+          <a href={buildGoogleCalendarUrl(et, selectedDate, selectedTime, booking.duration)} target="_blank" rel="noopener noreferrer" className="block mt-4">
             <Button variant="outline" className="w-full font-body text-xs gap-2"><CalendarIcon className="w-4 h-4" /> Update Google Calendar <ExternalLink className="w-3 h-3" /></Button>
           </a>
           <Button onClick={() => setMode("status")} variant="ghost" className="w-full mt-2 font-body text-xs text-muted-foreground">Back to Booking</Button>
@@ -252,11 +279,11 @@ export default function BookingModify() {
 
                 {/* Details */}
                 <div className="border-t border-border/50 pt-4 space-y-2.5">
-                  <div className="flex justify-between text-sm font-body"><span className="text-muted-foreground">Event</span><span className="text-foreground font-medium">{eventType.title}</span></div>
+                  <div className="flex justify-between text-sm font-body"><span className="text-muted-foreground">Event</span><span className="text-foreground font-medium">{et.title}</span></div>
                   <div className="flex justify-between text-sm font-body"><span className="text-muted-foreground">Duration</span><span className="text-foreground">{formatDuration(booking.duration)}</span></div>
                   <div className="flex justify-between text-sm font-body"><span className="text-muted-foreground">Date</span><span className="text-foreground">{formatDateNice(booking.date)}</span></div>
                   <div className="flex justify-between text-sm font-body"><span className="text-muted-foreground">Time</span><span className="text-primary font-medium">{formatTime12(booking.time)}</span></div>
-                  {eventType.location && <div className="flex justify-between text-sm font-body"><span className="text-muted-foreground">Location</span><span className="text-foreground">{eventType.location}</span></div>}
+                  {et.location && <div className="flex justify-between text-sm font-body"><span className="text-muted-foreground">Location</span><span className="text-foreground">{et.location}</span></div>}
                   <div className="flex justify-between text-sm font-body items-center">
                     <span className="text-muted-foreground">Status</span>
                     <span className={`text-xs px-2.5 py-1 rounded-full font-body ${booking.status === "confirmed" || booking.status === "completed" ? "bg-green-500/10 text-green-400" : booking.status === "cancelled" ? "bg-destructive/10 text-destructive" : "bg-yellow-500/10 text-yellow-400"}`}>
@@ -338,7 +365,7 @@ export default function BookingModify() {
                 {/* Actions */}
                 {booking.status !== "cancelled" && (
                   <div className="flex flex-col gap-3 mt-6 border-t border-border/50 pt-5">
-                    <a href={buildGoogleCalendarUrl(eventType, bookingDate, booking.time, booking.duration)} target="_blank" rel="noopener noreferrer">
+                    <a href={buildGoogleCalendarUrl(et, bookingDate, booking.time, booking.duration)} target="_blank" rel="noopener noreferrer">
                       <Button variant="outline" className="w-full font-body text-xs tracking-wider uppercase gap-2"><CalendarIcon className="w-4 h-4" /> Add to Google Calendar <ExternalLink className="w-3 h-3" /></Button>
                     </a>
                     <Button onClick={() => setMode("reschedule")} className="w-full bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2"><CalendarDays className="w-4 h-4" /> Change Date / Time</Button>
@@ -372,7 +399,7 @@ export default function BookingModify() {
                         const date=new Date(year,month,day);
                         const isSelected=selectedDate?.getDate()===day&&selectedDate?.getMonth()===month&&selectedDate?.getFullYear()===year;
                         const isPast=date<new Date(new Date().setHours(0,0,0,0));
-                        const isAvail=!isPast&&getAvailabilityForDate(eventType,date).length>0;
+                        const isAvail=!isPast&&getAvailabilityForDate(et,date).length>0;
                         const isToday=toDateStr(date)===toDateStr(new Date());
                         return <button key={day} disabled={!isAvail} onClick={()=>{setSelectedDate(date);setSelectedTime(null);}} className={`aspect-square rounded-lg text-sm font-body transition-all relative ${isSelected?"bg-primary text-primary-foreground ring-2 ring-primary ring-offset-2 ring-offset-background":isAvail?"text-foreground hover:bg-secondary":"text-muted-foreground/20 cursor-not-allowed"}`}>{day}{isToday&&!isSelected&&<span className="absolute bottom-1 left-1/2 -translate-x-1/2 w-1 h-1 rounded-full bg-primary"/>}</button>;
                       })}
