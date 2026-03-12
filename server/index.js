@@ -333,6 +333,26 @@ app.get("/api/albums/:albumId/photos", (req, res) => {
   res.json({ photos: _stripBakedFromPhotos(album.photos || []) });
 });
 
+// PUT /api/albums/:albumId — update a single album without touching other albums.
+// This prevents the full-array write via PUT /api/store/wv_albums from overwriting
+// other albums' photos with stub (empty) data when only one album's metadata has changed.
+app.put("/api/albums/:albumId", (req, res) => {
+  const { albumId } = req.params;
+  const db = readDb();
+  const albums = _parseAlbumsFromDb(db[ALBUMS_KEY]);
+  const idx = albums.findIndex(a => a.id === albumId);
+  const incoming = { ...req.body, id: albumId };
+  if (incoming.photos) incoming.photos = _stripBakedFromPhotos(incoming.photos);
+  if (idx >= 0) {
+    albums[idx] = { ...albums[idx], ...incoming };
+  } else {
+    albums.push(incoming);
+  }
+  db[ALBUMS_KEY] = JSON.stringify(albums);
+  writeDb(db);
+  res.json({ ok: true });
+});
+
 // ── Global FTP Settings ───────────────────────────────
 // The FTP password is stored server-side only and never returned to the browser.
 // The response includes a boolean `ftpPasswordSet` instead of the actual value.

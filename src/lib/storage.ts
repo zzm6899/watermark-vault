@@ -2,7 +2,7 @@ import type {
   EventType, Booking, Album, Photo, ProfileSettings,
   AppSettings, AdminCredentials, BankTransferSettings, WaitlistEntry, EmailTemplate, Invoice, Contact, Enquiry,
 } from "./types";
-import { persistToServer } from "./api";
+import { persistToServer, persistAlbumToServer } from "./api";
 
 const KEYS = {
   SETUP_COMPLETE: "wv_setup_complete",
@@ -214,7 +214,19 @@ export function addAlbum(alb: Album) {
 }
 
 export function updateAlbum(alb: Album) {
-  setAlbums(getAlbums().map((a) => (a.id === alb.id ? alb : a)));
+  // Update localStorage with the full array (read-modify-write).
+  // If the album doesn't exist yet, add it to the list.
+  const existing = getAlbums();
+  const found = existing.some(a => a.id === alb.id);
+  const all = found ? existing.map((a) => (a.id === alb.id ? alb : a)) : [...existing, alb];
+  try { localStorage.setItem(KEYS.ALBUMS, JSON.stringify(all)); } catch (e) {
+    console.error("localStorage save failed (quota?):", e);
+  }
+  // Persist only this album to the server via the per-album endpoint.
+  // This avoids the full-array write that would overwrite other albums'
+  // photos with stale stub (empty) data when those albums haven't been
+  // loaded into localStorage yet.
+  persistAlbumToServer(alb.id, alb);
 }
 
 export function deleteAlbum(id: string) {

@@ -2566,7 +2566,11 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
               const photos = existingPhotos.get(s.id);
               return photos?.length ? { ...s, photos, _photosStripped: false } : s;
             });
-            localStorage.setItem("wv_albums", JSON.stringify(merged));
+            // Preserve any albums that exist in localStorage but haven't yet been
+            // confirmed by the server (e.g. newly created, persistToServer in-flight).
+            const stubIds = new Set(stubs.map(s => s.id));
+            const localOnly = existing.filter(e => !stubIds.has(e.id));
+            localStorage.setItem("wv_albums", JSON.stringify([...merged, ...localOnly]));
           }
         } catch { /* non-critical */ }
       }
@@ -2956,10 +2960,20 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
     fetchAlbumPhotos(albumId).then(fetched => {
       if (fetched) {
         setPhotos(fetched);
-        // Also hydrate localStorage so the cover image picker and other reads
-        // see the full album until the next poll cycle.
-        const current = getAlbums().find(a => a.id === albumId);
-        if (current) updateAlbum({ ...current, photos: fetched, _photosStripped: false });
+        // Hydrate localStorage so the cover image picker and other reads see the
+        // full album until the next poll cycle.  Write directly to localStorage
+        // WITHOUT calling persistToServer — photos already came from the server so
+        // there is nothing new to write back, and using updateAlbum() here would
+        // persist ALL albums (including other stubs with empty photos arrays) and
+        // permanently erase those albums' photos from the database.
+        const allAlbums = getAlbums();
+        const current = allAlbums.find(a => a.id === albumId);
+        if (current) {
+          const hydrated = allAlbums.map(a =>
+            a.id === albumId ? { ...a, photos: fetched, _photosStripped: false } : a
+          );
+          try { localStorage.setItem("wv_albums", JSON.stringify(hydrated)); } catch (e) { console.error("localStorage save failed:", e); }
+        }
       }
     });
   }, [albumId, photosStripped]);
@@ -3724,28 +3738,47 @@ function PhotosView() {
       const serverFileNames = new Set(stats.allFileNames);
       let repairedAlbums = 0;
 
+      // Fetch the authoritative album list from the server (with full photos, not stubs).
+      // Using the server copy avoids false-positive "orphan" detection when localStorage
+      // only contains stubs (photos: []) from the background poll — which would
+      // otherwise cause all album photo files to be deleted as "orphaned".
+      let serverAlbums: Album[] = [];
+      try {
+        const res = await fetch("/api/store/wv_albums");
+        if (res.ok) {
+          const data = await res.json();
+          const raw = data?.value;
+          if (raw) {
+            const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+            if (Array.isArray(parsed)) serverAlbums = parsed as Album[];
+          }
+        }
+      } catch {}
+
       // Step 1: Check albums for broken photo references and repair them
-      for (const alb of albums) {
-        const brokenPhotos = alb.photos.filter(p => {
+      for (const alb of serverAlbums) {
+        const brokenPhotos = (alb.photos || []).filter(p => {
           const filename = p.src.split("/").pop();
           return filename && !serverFileNames.has(filename) && p.src.startsWith("/uploads/");
         });
         if (brokenPhotos.length > 0) {
           // Remove broken references
-          const repairedPhotos = alb.photos.filter(p => !brokenPhotos.includes(p));
+          const repairedPhotos = (alb.photos || []).filter(p => !brokenPhotos.includes(p));
           updateAlbum({ ...alb, photos: repairedPhotos, photoCount: repairedPhotos.length });
           repairedAlbums++;
         }
       }
 
-      // Step 2: Collect all known filenames (normalised) to prevent ghost duplicates
+      // Step 2: Collect all known filenames from server-authoritative data.
+      // Using server albums (not localStorage stubs) ensures photos that are tracked
+      // in the database are never incorrectly classified as orphaned.
       const knownFilenames = new Set<string>();
       for (const p of libraryPhotos) {
         const fn = p.src.split("/").pop();
         if (fn) knownFilenames.add(fn);
       }
-      for (const alb of getAlbums()) {
-        for (const p of alb.photos) {
+      for (const alb of serverAlbums) {
+        for (const p of alb.photos || []) {
           const fn = p.src.split("/").pop();
           if (fn) knownFilenames.add(fn);
         }
