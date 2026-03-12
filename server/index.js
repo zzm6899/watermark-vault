@@ -444,7 +444,7 @@ app.post("/api/tenant/:slug/settings/ftp/test", async (req, res) => {
 // ── FTP: Bulk album re-upload with SSE progress ─────────────────────────────
 // POST /api/ftp/upload-album/:albumSlug?tenant=<slug>
 // Uploads all photos from an album to FTP, streaming progress events to the client.
-const ftpUploadAlbumLimiter = rateLimit({ windowMs: 60_000, max: 5, standardHeaders: true, legacyHeaders: false, message: { error: "Too many FTP upload requests — please wait" } });
+const ftpUploadAlbumLimiter = rateLimit({ windowMs: 60_000, max: 100, standardHeaders: true, legacyHeaders: false, message: { error: "Too many FTP upload requests — please wait" } });
 app.post("/api/ftp/upload-album/:albumSlug", ftpUploadAlbumLimiter, async (req, res) => {
   const { albumSlug } = req.params;
   const tenantSlug = req.query.tenant ? String(req.query.tenant) : null;

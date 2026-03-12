@@ -8497,7 +8497,15 @@ function StorageView() {
       toast.error("FTP is not enabled. Configure FTP in Settings → FTP Upload first.");
       return;
     }
-    const currentAlbums = getAlbums().filter(a => a.slug && (a.photos?.length || 0) > 0);
+    // Fetch fresh album stubs from the server so that albums whose photos have
+    // not yet been loaded into localStorage (stubs with photos: [] but photoCount > 0)
+    // are included in the sync.  Fall back to local data when offline.
+    let albumSource = getAlbums();
+    if (isServerMode()) {
+      const stubs = await fetchAlbumStubs();
+      if (stubs !== null && stubs.length > 0) albumSource = stubs;
+    }
+    const currentAlbums = albumSource.filter(a => a.slug && ((a.photoCount || 0) > 0 || (a.photos?.length || 0) > 0));
     if (currentAlbums.length === 0) {
       toast.info("No albums with photos to sync to FTP.");
       return;
