@@ -517,6 +517,9 @@ app.post("/api/ftp/upload-album/:albumSlug", ftpUploadAlbumLimiter, async (req, 
   const { Client: FtpClient } = require("basic-ftp");
   const client = new FtpClient();
   client.ftp.verbose = false;
+  // Force IPv4 passive mode (PASV) instead of EPSV so that FTP servers that
+  // don't implement the EPSV extension don't return a 505 error.
+  client.ftp.ipFamily = 4;
 
   const sendEvent = (data) => {
     res.write(`data: ${JSON.stringify(data)}\n\n`);
