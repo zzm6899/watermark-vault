@@ -478,8 +478,9 @@ app.post("/api/ftp/upload-album/:albumSlug", ftpUploadAlbumLimiter, async (req, 
   }
 
   const photos = album.photos || [];
+  // Include photoIdx so we can mark successfully-uploaded photos in the DB afterward
   const ftpEntries = photos
-    .map((p) => {
+    .map((p, photoIdx) => {
       const src = typeof p === "string" ? p : p.src;
       if (!src) return null;
       const filename = src.split("/").pop();
@@ -489,7 +490,7 @@ app.post("/api/ftp/upload-album/:albumSlug", ftpUploadAlbumLimiter, async (req, 
       // Use stored originalName first, then fall back to reconstructing from title + extension
       const ext = path.extname(filename);
       const remoteFilename = p.originalName || ((p.title && ext) ? `${p.title}${ext}` : filename);
-      return { localPath, remoteFilename, starred: !!p.starred };
+      return { localPath, remoteFilename, starred: !!p.starred, photoIdx };
     })
     .filter(Boolean);
 
@@ -507,6 +508,7 @@ app.post("/api/ftp/upload-album/:albumSlug", ftpUploadAlbumLimiter, async (req, 
   const sanitizedAlbumName = sanitizeFolderName(album.title || albumSlug);
   let done = 0;
   let failed = 0;
+  const uploadedPhotoIndices = new Set();
 
   const { ftpHost, ftpPort = 21, ftpUser = "anonymous", ftpPassword = "", ftpRemotePath = "/" } = ftpSettings;
   const { Client: FtpClient } = require("basic-ftp");
@@ -537,7 +539,8 @@ app.post("/api/ftp/upload-album/:albumSlug", ftpUploadAlbumLimiter, async (req, 
       : null;
     let starredDirEnsured = false;
 
-    for (const { localPath: localFilePath, remoteFilename, starred } of ftpEntries) {
+    for (const { localPath: localFilePath, remoteFilename, starred, photoIdx } of ftpEntries) {
+      let uploadOk = false;
       try {
         let targetDir = remotePath;
         if (starred && starredRemotePath) {
@@ -549,12 +552,32 @@ app.post("/api/ftp/upload-album/:albumSlug", ftpUploadAlbumLimiter, async (req, 
         }
         const remoteFile = path.posix.join(targetDir, remoteFilename);
         await client.uploadFrom(localFilePath, remoteFile);
+        uploadOk = true;
       } catch (err) {
         console.warn(`[FTP] Bulk upload failed for ${remoteFilename}:`, err.message);
         failed++;
       }
+      if (uploadOk) uploadedPhotoIndices.add(photoIdx);
       done++;
       sendEvent({ done, total: ftpEntries.length, failed });
+    }
+
+    // Persist ftpUploaded=true on photos that were successfully sent so the
+    // "Upload to FTP" button disappears after a successful bulk upload.
+    if (uploadedPhotoIndices.size > 0) {
+      const freshDb = readDb();
+      const freshAlbumsRaw = freshDb[albumsKey];
+      const freshAlbums = freshAlbumsRaw ? (typeof freshAlbumsRaw === "string" ? JSON.parse(freshAlbumsRaw) : freshAlbumsRaw) : [];
+      const updatedAlbums = freshAlbums.map((a) => {
+        if (a.slug !== albumSlug && a.id !== albumSlug) return a;
+        const updatedPhotos = (a.photos || []).map((p, idx) => {
+          if (!uploadedPhotoIndices.has(idx)) return p;
+          return typeof p === "string" ? p : { ...p, ftpUploaded: true };
+        });
+        return { ...a, photos: updatedPhotos };
+      });
+      freshDb[albumsKey] = JSON.stringify(updatedAlbums);
+      writeDb(freshDb);
     }
 
     sendEvent({ done, total: ftpEntries.length, failed, complete: true });

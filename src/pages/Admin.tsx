@@ -3015,8 +3015,13 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
       (done, total, failed) => setFtpUploadProgress({ done, total, failed }),
     );
     setFtpUploading(false);
-    if (result.ok) toast.success(`FTP upload complete: ${result.done} photo${result.done !== 1 ? "s" : ""} uploaded`);
-    else toast.error(result.error || `FTP upload failed (${result.failed} error${result.failed !== 1 ? "s" : ""})`);
+    if (result.ok) {
+      toast.success(`FTP upload complete: ${result.done} photo${result.done !== 1 ? "s" : ""} uploaded`);
+      // Refresh local photos state so the "Upload to FTP" button disappears
+      setPhotos(prev => prev.map(p => ({ ...p, ftpUploaded: true })));
+    } else {
+      toast.error(result.error || `FTP upload failed (${result.failed} error${result.failed !== 1 ? "s" : ""})`);
+    }
     setTimeout(() => setFtpUploadProgress(null), 4000);
   };
 

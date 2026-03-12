@@ -7,6 +7,7 @@
 
 const ftp = require("basic-ftp");
 const path = require("path");
+const { Readable } = require("stream");
 
 /**
  * Upload a single local file to an FTP server.
@@ -172,7 +173,10 @@ async function moveFileOnFtp(localFilePath, fromRemotePath, toRemotePath, settin
 }
 
 /**
- * Test a connection to an FTP server without uploading any files.
+ * Test a connection to an FTP server AND verify file write permissions.
+ * Uploads a tiny test file then deletes it so that permission issues (e.g.
+ * "553 Permission denied" on STOR) are caught here rather than only failing
+ * on the first real album upload.
  *
  * @param {object} settings
  * @returns {Promise<{ ok: boolean; error?: string }>}
@@ -197,6 +201,14 @@ async function testFtpConnection(settings) {
     // Verify the remote path is reachable / creatable
     const remotePath = ftpRemotePath || "/";
     await client.ensureDir(remotePath);
+
+    // Verify write (STOR) permissions by uploading a tiny test file then
+    // deleting it.  This catches cases where the user can connect and list
+    // directories but cannot actually write files.
+    const testFileName = `_wv_test_${Date.now()}.tmp`;
+    const testRemotePath = path.posix.join(remotePath, testFileName);
+    await client.uploadFrom(Readable.from(Buffer.from("wv")), testRemotePath);
+    try { await client.remove(testRemotePath); } catch { /* ignore cleanup failure */ }
 
     return { ok: true };
   } catch (err) {

@@ -1607,8 +1607,13 @@ function TenantAlbumEditor({ slug, album, onSave, onCancel }: {
       slug,
     );
     setFtpUploading(false);
-    if (result.ok) toast.success(`FTP upload complete: ${result.done} photo${result.done !== 1 ? "s" : ""} uploaded`);
-    else toast.error(result.error || `FTP upload failed (${result.failed} error${result.failed !== 1 ? "s" : ""})`);
+    if (result.ok) {
+      toast.success(`FTP upload complete: ${result.done} photo${result.done !== 1 ? "s" : ""} uploaded`);
+      // Refresh liveAlbum photos state so the "Upload to FTP" button disappears
+      setLiveAlbum(prev => prev ? { ...prev, photos: (prev.photos || []).map(p => ({ ...p, ftpUploaded: true })) } : prev);
+    } else {
+      toast.error(result.error || `FTP upload failed (${result.failed} error${result.failed !== 1 ? "s" : ""})`);
+    }
     setTimeout(() => setFtpUploadProgress(null), 4000);
   };
 
