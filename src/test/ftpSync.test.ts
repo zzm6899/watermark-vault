@@ -477,3 +477,79 @@ describe("testFtpConnection with ftpOrganizeByAlbum", () => {
     expect(String(removeDirCalls[0].args[0])).toMatch(/^_wv_test_dir_/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Connection-error accounting: failed count in SSE error event
+// ---------------------------------------------------------------------------
+
+/**
+ * Simulates the server-side SSE error-event logic for the upload-album endpoint
+ * (matches the fixed server/index.js catch block).
+ *
+ * When a connection-level error occurs (e.g. client.access() throws or
+ * ensureDir() throws before all files are processed), the server sends a final
+ * SSE event that includes the accurate failed count: individual per-file failures
+ * already accumulated (`failed`) plus all entries that were never attempted
+ * because the error interrupted the loop (`total - done`).
+ */
+function simulateUploadAlbumErrorEvent(
+  total: number,
+  done: number,
+  failed: number,
+  errorMessage: string,
+): { error: string; done: number; total: number; failed: number; complete: boolean } {
+  return {
+    error: errorMessage,
+    done,
+    total,
+    failed: failed + (total - done),
+    complete: true,
+  };
+}
+
+describe("upload-album SSE error event: failed count accounting", () => {
+  it("reports failed=total when connection error occurs before any file is processed", () => {
+    // Scenario: client.access() throws immediately — done=0, failed=0
+    const evt = simulateUploadAlbumErrorEvent(120, 0, 0, "ECONNREFUSED 127.0.0.1:21");
+    expect(evt.failed).toBe(120);
+    expect(evt.done).toBe(0);
+    expect(evt.total).toBe(120);
+    expect(evt.complete).toBe(true);
+    expect(evt.error).toBeTruthy();
+  });
+
+  it("reports failed=total when ensureDir throws before the upload loop starts", () => {
+    // Scenario: ensureDir(remotePath) throws — same as connection error for accounting
+    const evt = simulateUploadAlbumErrorEvent(50, 0, 0, "550 Permission denied");
+    expect(evt.failed).toBe(50);
+    expect(evt.done).toBe(0);
+    expect(evt.total).toBe(50);
+  });
+
+  it("includes already-accumulated per-file failures plus unprocessed entries", () => {
+    // Scenario: 50 files processed (3 individual failures), then connection drops
+    // done=50, failed=3, total=120 → failed should be 3 + (120-50) = 73
+    const evt = simulateUploadAlbumErrorEvent(120, 50, 3, "Connection lost");
+    expect(evt.failed).toBe(73); // 3 individual + 70 never-attempted
+    expect(evt.done).toBe(50);
+    expect(evt.total).toBe(120);
+  });
+
+  it("reports failed=0 when all files were already processed before the error event", () => {
+    // Scenario: all 120 done (0 individual failures), error only in cleanup
+    const evt = simulateUploadAlbumErrorEvent(120, 120, 0, "Unexpected close");
+    expect(evt.failed).toBe(0); // 0 + (120 - 120) = 0
+    expect(evt.done).toBe(120);
+    expect(evt.total).toBe(120);
+    expect(evt.complete).toBe(true);
+  });
+
+  it("does not double-count individual failures when the loop completes normally", () => {
+    // Normal success path uses sendEvent with done=total, failed=X, no error field
+    // This test documents that the error formula is only applied in the catch block.
+    // When all 120 entries are processed, failed should reflect only individual errors.
+    const evt = simulateUploadAlbumErrorEvent(120, 120, 5, "Late error");
+    // 5 individual + 0 unprocessed = 5 (no double-count)
+    expect(evt.failed).toBe(5);
+  });
+});
