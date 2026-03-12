@@ -603,7 +603,10 @@ app.post("/api/ftp/upload-album/:albumSlug", ftpUploadAlbumLimiter, async (req, 
 
     sendEvent({ done, total: ftpEntries.length, failed, complete: true });
   } catch (err) {
-    sendEvent({ error: err.message || "FTP connection failed", done, total: ftpEntries.length, complete: true });
+    // Include the accurate failed count: individual per-file failures already
+    // accumulated in `failed`, plus all entries that were never attempted because
+    // the connection dropped before they could be processed.
+    sendEvent({ error: err.message || "FTP connection failed", done, total: ftpEntries.length, failed: failed + (ftpEntries.length - done), complete: true });
   } finally {
     client.close();
     res.end();
