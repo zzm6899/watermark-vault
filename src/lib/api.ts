@@ -141,6 +141,18 @@ export function persistToServer(key: string, value: unknown): void {
   }
 }
 
+/** Fire-and-forget persist a single album to the server via the per-album endpoint.
+ *  Unlike persistToServer("wv_albums", allAlbums), this only updates the one album
+ *  so other albums' photos are never overwritten with stale stub (empty) data. */
+export function persistAlbumToServer(albumId: string, album: import("./types").Album): void {
+  if (serverAvailable !== true) return;
+  fetch(`/api/albums/${encodeURIComponent(albumId)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(album),
+  }).catch(() => {});
+}
+
 /** Fire-and-forget delete a key from the server */
 export function deleteFromServer(key: string): void {
   if (serverAvailable !== true) return;
