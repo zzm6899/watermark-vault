@@ -44,7 +44,6 @@ import {
   getServerStorageStats,
   syncFromServer,
   sendEmail,
-  bulkDeleteFiles,
   syncBookingsToSheet,
   getBookingEmailLog,
   sendBookingReminder,
@@ -3790,13 +3789,26 @@ function PhotosView() {
       const messages: string[] = [];
       if (repairedAlbums > 0) messages.push(`Repaired ${repairedAlbums} album(s) with missing file references`);
       if (orphanedFileNames.length > 0) {
-        // Actually delete the orphaned files from disk
-        try {
-          await bulkDeleteFiles(orphanedFileNames);
-          messages.push(`Deleted ${orphanedFileNames.length} untracked file(s) from disk`);
-        } catch {
-          messages.push(`Found ${orphanedFileNames.length} untracked file(s) but failed to delete them`);
-        }
+        // Recover orphaned files by adding them to the photo library instead of
+        // deleting them. This is safer because files that exist on disk but lack
+        // a DB reference were likely uploaded successfully while their album-update
+        // request was cancelled (e.g. page reload before keepalive flush). Deleting
+        // them would cause permanent data loss; adding them to the library lets the
+        // admin re-assign them to the correct album.
+        const recoveredPhotos: Photo[] = orphanedFileNames.map(filename => ({
+          id: filename.replace(/\.[^.]+$/, ""),
+          src: `/uploads/${filename}`,
+          thumbnail: `/uploads/${filename}?size=thumb`,
+          title: filename.replace(/\.[^.]+$/, "").replace(/^_+/, ""),
+          width: 800,
+          height: 600,
+          uploadedAt: new Date().toISOString(),
+          originalName: filename,
+        }));
+        const updatedLibrary = [...getPhotoLibrary(), ...recoveredPhotos];
+        setPhotoLibrary(updatedLibrary);
+        setLibraryPhotosState(updatedLibrary);
+        messages.push(`Recovered ${orphanedFileNames.length} untracked file(s) to the photo library`);
       }
 
       if (messages.length === 0) {

@@ -2,7 +2,7 @@ import type {
   EventType, Booking, Album, Photo, ProfileSettings,
   AppSettings, AdminCredentials, BankTransferSettings, WaitlistEntry, EmailTemplate, Invoice, Contact, Enquiry,
 } from "./types";
-import { persistToServer, persistAlbumToServer } from "./api";
+import { persistToServer, persistAlbumToServer, deleteAlbumFromServer } from "./api";
 
 const KEYS = {
   SETUP_COMPLETE: "wv_setup_complete",
@@ -210,7 +210,13 @@ export function setAlbums(albs: Album[]) {
 export function addAlbum(alb: Album) {
   const list = getAlbums();
   list.push(alb);
-  setAlbums(list);
+  // Write the full list to localStorage so subsequent getAlbums() reads are consistent.
+  // Persist only the new album to the server via the per-album endpoint to avoid
+  // overwriting other albums' photos with stale stub (empty) data.
+  try { localStorage.setItem(KEYS.ALBUMS, JSON.stringify(list)); } catch (e) {
+    console.error("localStorage save failed:", e);
+  }
+  persistAlbumToServer(alb.id, alb);
 }
 
 export function updateAlbum(alb: Album) {
@@ -220,7 +226,7 @@ export function updateAlbum(alb: Album) {
   const found = existing.some(a => a.id === alb.id);
   const all = found ? existing.map((a) => (a.id === alb.id ? alb : a)) : [...existing, alb];
   try { localStorage.setItem(KEYS.ALBUMS, JSON.stringify(all)); } catch (e) {
-    console.error("localStorage save failed (quota?):", e);
+    console.error("localStorage save failed:", e);
   }
   // Persist only this album to the server via the per-album endpoint.
   // This avoids the full-array write that would overwrite other albums'
@@ -230,7 +236,14 @@ export function updateAlbum(alb: Album) {
 }
 
 export function deleteAlbum(id: string) {
-  setAlbums(getAlbums().filter((a) => a.id !== id));
+  // Write the filtered list to localStorage so subsequent getAlbums() reads are consistent.
+  // Use the per-album DELETE endpoint so other albums' photos are never clobbered by a
+  // full-array write that contains stale stub data for albums not yet fully loaded.
+  const filtered = getAlbums().filter((a) => a.id !== id);
+  try { localStorage.setItem(KEYS.ALBUMS, JSON.stringify(filtered)); } catch (e) {
+    console.error("localStorage save failed:", e);
+  }
+  deleteAlbumFromServer(id);
 }
 
 export function getAlbumBySlug(slug: string): Album | undefined {
