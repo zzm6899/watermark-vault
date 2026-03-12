@@ -81,7 +81,9 @@ export default function BookingModify() {
   const [booking, setBooking] = useState<Booking | undefined>(
     () => getBookings().find(b => b.modifyToken === bookingId || b.id === bookingId)
   );
-  const localEventType = booking ? getEventTypes().find(e => e.id === booking.eventTypeId) : undefined;
+  const localEventTypes = booking ? getEventTypes() : [];
+  const localEventType = localEventTypes.find(e => e.id === booking?.eventTypeId) ||
+                         localEventTypes.find(e => e.title === booking?.type);
   const [tenantEventType, setTenantEventType] = useState<EventType | undefined>(undefined);
   const eventType = localEventType ?? tenantEventType ?? null;
 
@@ -117,14 +119,17 @@ export default function BookingModify() {
 
   // If booking belongs to a tenant and the event type wasn't found in local storage,
   // fetch it from the tenant's public API (tenant event types are stored separately).
+  // Also handles bookings where eventTypeId is missing/stale — falls back to title match.
   useEffect(() => {
-    if (localEventType || tenantEventType || !booking?.tenantSlug || !booking.eventTypeId) return;
+    if (localEventType || tenantEventType || !booking?.tenantSlug) return;
     getTenantPublicData(booking.tenantSlug).then(data => {
       if (!data) return;
-      const found = data.eventTypes.find(e => e.id === booking.eventTypeId);
+      const found = data.eventTypes.find(
+        e => e.id === booking.eventTypeId || e.title === booking.type
+      );
       if (found) setTenantEventType(found);
     }).catch(() => {});
-  }, [booking?.tenantSlug, booking?.eventTypeId, localEventType, tenantEventType]);
+  }, [booking?.tenantSlug, booking?.eventTypeId, booking?.type, localEventType, tenantEventType]);
 
   // Fetch Google Calendar busy times whenever the selected date changes
   useEffect(() => {
