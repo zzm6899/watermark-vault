@@ -7,7 +7,7 @@ const fs = require("fs");
 const sharp = require("sharp");
 const archiver = require("archiver");
 const rateLimit = require("express-rate-limit");
-const { uploadFilesToFtp, moveFileOnFtp, testFtpConnection, sanitizeFolderName } = require("./ftp");
+const { uploadFilesToFtp, moveFileOnFtp, testFtpConnection, sanitizeFolderName, sanitizeRemoteFilename } = require("./ftp");
 const { registerRoutes: registerGoogleCalendarRoutes } = require("./google-calendar");
 const { registerRoutes: registerEmailRoutes } = require("./email");
 const { registerRoutes: registerStripeRoutes, registerTenantStripeRoutes } = require("./stripe");
@@ -487,9 +487,12 @@ app.post("/api/ftp/upload-album/:albumSlug", ftpUploadAlbumLimiter, async (req, 
       if (!filename || filename.startsWith("_cache")) return null;
       const localPath = path.join(UPLOADS_DIR, filename);
       if (!fs.existsSync(localPath)) return null;
-      // Use stored originalName first, then fall back to reconstructing from title + extension
+      // Use stored originalName first, then fall back to reconstructing from title + extension.
+      // sanitizeRemoteFilename strips any embedded path separators to prevent STOR from
+      // trying to navigate a non-existent sub-directory (which returns 550 on many servers).
       const ext = path.extname(filename);
-      const remoteFilename = p.originalName || ((p.title && ext) ? `${p.title}${ext}` : filename);
+      const rawName = p.originalName || ((p.title && ext) ? `${p.title}${ext}` : filename);
+      const remoteFilename = sanitizeRemoteFilename(rawName);
       return { localPath, remoteFilename, starred: !!p.starred, photoIdx };
     })
     .filter(Boolean);
