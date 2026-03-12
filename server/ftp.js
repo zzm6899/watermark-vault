@@ -35,15 +35,17 @@ async function uploadFileToFtp(localFilePath, settings, options = {}) {
       secure: false,
     });
 
-    // Ensure the remote directory exists (with optional sub-folder)
+    // Ensure the remote directory exists (with optional sub-folder).
+    // ensureDir sets the CWD to remotePath after creating it.
     const remotePath = subFolder
       ? path.posix.join(ftpRemotePath || "/", sanitizeFolderName(subFolder))
       : (ftpRemotePath || "/");
     await client.ensureDir(remotePath);
 
+    // Upload using the filename relative to CWD rather than a full absolute
+    // path; many FTP servers don't support absolute paths in STOR.
     const fname = remoteFilename || path.basename(localFilePath);
-    const remoteFile = path.posix.join(remotePath, fname);
-    await client.uploadFrom(localFilePath, remoteFile);
+    await client.uploadFrom(localFilePath, fname);
 
     return { ok: true };
   } catch (err) {
@@ -97,13 +99,17 @@ async function uploadFilesToFtp(localFilePaths, settings, options = {}) {
     const remotePath = subFolder
       ? path.posix.join(ftpRemotePath || "/", sanitizeFolderName(subFolder))
       : (ftpRemotePath || "/");
+    // ensureDir creates the directory if needed and sets the CWD to remotePath.
     await client.ensureDir(remotePath);
 
     for (const { localPath, remoteFilename } of entries) {
       try {
+        // Use just the filename (relative to CWD) rather than the full absolute
+        // path.  Many FTP servers do not support absolute paths in STOR and
+        // treat them as relative to the current working directory, which would
+        // cause uploads to fail silently after ensureDir() changed the CWD.
         const fname = remoteFilename || path.basename(localPath);
-        const remoteFile = path.posix.join(remotePath, fname);
-        await client.uploadFrom(localPath, remoteFile);
+        await client.uploadFrom(localPath, fname);
       } catch (err) {
         const displayName = remoteFilename || path.basename(localPath);
         console.warn(`[FTP] File upload failed for ${displayName}:`, err.message);
@@ -148,17 +154,20 @@ async function moveFileOnFtp(localFilePath, fromRemotePath, toRemotePath, settin
       secure: false,
     });
 
-    // Ensure the target directory exists
+    // Ensure the target directory exists and set CWD to it.
     const toDir = path.posix.dirname(toRemotePath);
     await client.ensureDir(toDir);
 
-    // Try to rename/move the file; fall back to upload if rename fails
+    // Try to rename/move the file; fall back to upload if rename fails.
+    // Note: RNFR/RNTO use absolute paths which all FTP servers support.
     try {
       await client.rename(fromRemotePath, toRemotePath);
     } catch (_renameErr) {
-      // File may not exist at fromRemotePath yet — upload it directly to the target path
+      // File may not exist at fromRemotePath yet — upload it directly to the
+      // target directory.  CWD is already toDir after ensureDir(), so use the
+      // filename only (relative) to avoid absolute-path issues in STOR.
       if (localFilePath) {
-        await client.uploadFrom(localFilePath, toRemotePath);
+        await client.uploadFrom(localFilePath, path.posix.basename(toRemotePath));
       } else {
         throw _renameErr;
       }
@@ -205,10 +214,10 @@ async function testFtpConnection(settings) {
     // Verify write (STOR) permissions by uploading a tiny test file then
     // deleting it.  This catches cases where the user can connect and list
     // directories but cannot actually write files.
+    // CWD is remotePath after ensureDir(), so use just the filename (relative).
     const testFileName = `_wv_test_${Date.now()}.tmp`;
-    const testRemotePath = path.posix.join(remotePath, testFileName);
-    await client.uploadFrom(Readable.from(Buffer.from("wv")), testRemotePath);
-    try { await client.remove(testRemotePath); } catch { /* ignore cleanup failure */ }
+    await client.uploadFrom(Readable.from(Buffer.from("wv")), testFileName);
+    try { await client.remove(testFileName); } catch { /* ignore cleanup failure */ }
 
     return { ok: true };
   } catch (err) {

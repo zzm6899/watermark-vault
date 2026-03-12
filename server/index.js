@@ -531,6 +531,7 @@ app.post("/api/ftp/upload-album/:albumSlug", ftpUploadAlbumLimiter, async (req, 
     const remotePath = ftpSettings.ftpOrganizeByAlbum
       ? path.posix.join(ftpRemotePath || "/", sanitizedAlbumName)
       : (ftpRemotePath || "/");
+    // ensureDir creates the directory if needed and sets the CWD to remotePath.
     await client.ensureDir(remotePath);
 
     // Starred sub-folder: "{albumName}-starred" always relative to the base remote path
@@ -538,20 +539,34 @@ app.post("/api/ftp/upload-album/:albumSlug", ftpUploadAlbumLimiter, async (req, 
       ? path.posix.join(ftpRemotePath || "/", `${sanitizedAlbumName}-starred`)
       : null;
     let starredDirEnsured = false;
+    // Track the directory the FTP client is currently in so we can navigate
+    // back when switching between the album folder and the starred folder.
+    let currentRemoteDir = remotePath;
 
     for (const { localPath: localFilePath, remoteFilename, starred, photoIdx } of ftpEntries) {
       let uploadOk = false;
       try {
-        let targetDir = remotePath;
-        if (starred && starredRemotePath) {
-          if (!starredDirEnsured) {
+        const targetDir = (starred && starredRemotePath) ? starredRemotePath : remotePath;
+
+        // Navigate to the target directory when it differs from where we are.
+        // Use ensureDir for the starred folder (may not exist yet) and a plain
+        // cd for the album folder (already created above).  This avoids passing
+        // absolute paths to uploadFrom: many FTP servers treat STOR paths as
+        // relative to CWD and would misinterpret them, causing silent failures
+        // while ensureDir (which uses cd commands) still succeeds.
+        if (targetDir !== currentRemoteDir) {
+          if (targetDir === starredRemotePath && !starredDirEnsured) {
             await client.ensureDir(starredRemotePath);
             starredDirEnsured = true;
+          } else {
+            await client.cd(targetDir);
           }
-          targetDir = starredRemotePath;
+          currentRemoteDir = targetDir;
         }
-        const remoteFile = path.posix.join(targetDir, remoteFilename);
-        await client.uploadFrom(localFilePath, remoteFile);
+
+        // Upload using just the filename (relative to CWD) rather than a full
+        // absolute path, which is what basic-ftp's own uploadFromDir() does.
+        await client.uploadFrom(localFilePath, remoteFilename);
         uploadOk = true;
       } catch (err) {
         console.warn(`[FTP] Bulk upload failed for ${remoteFilename}:`, err.message);
