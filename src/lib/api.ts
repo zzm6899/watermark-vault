@@ -119,11 +119,14 @@ async function _flushQueue() {
  *  If the server check hasn't completed yet, queues the write and flushes once it has. */
 export function persistToServer(key: string, value: unknown): void {
   if (serverAvailable === true) {
-    // Fast path — server known available
+    // Fast path — server known available.
+    // keepalive: true ensures the request survives a page unload / navigation
+    // so that data written just before a reload is not silently dropped.
     fetch(`/api/store/${encodeURIComponent(key)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ value }),
+      keepalive: true,
     }).catch(() => {});
     return;
   }
@@ -143,13 +146,24 @@ export function persistToServer(key: string, value: unknown): void {
 
 /** Fire-and-forget persist a single album to the server via the per-album endpoint.
  *  Unlike persistToServer("wv_albums", allAlbums), this only updates the one album
- *  so other albums' photos are never overwritten with stale stub (empty) data. */
+ *  so other albums' photos are never overwritten with stale stub (empty) data.
+ *  keepalive: true ensures the request is not cancelled on page unload. */
 export function persistAlbumToServer(albumId: string, album: import("./types").Album): void {
   if (serverAvailable !== true) return;
   fetch(`/api/albums/${encodeURIComponent(albumId)}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(album),
+    keepalive: true,
+  }).catch(() => {});
+}
+
+/** Fire-and-forget delete a single album from the server. */
+export function deleteAlbumFromServer(albumId: string): void {
+  if (serverAvailable !== true) return;
+  fetch(`/api/albums/${encodeURIComponent(albumId)}`, {
+    method: "DELETE",
+    keepalive: true,
   }).catch(() => {});
 }
 

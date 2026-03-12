@@ -353,6 +353,19 @@ app.put("/api/albums/:albumId", (req, res) => {
   res.json({ ok: true });
 });
 
+// DELETE /api/albums/:albumId — remove a single album without touching other albums.
+// Using a per-album delete avoids the full-array write via PUT /api/store/wv_albums which
+// would overwrite other albums' photos with stale stub data.
+app.delete("/api/albums/:albumId", (req, res) => {
+  const { albumId } = req.params;
+  const db = readDb();
+  const albums = _parseAlbumsFromDb(db[ALBUMS_KEY]);
+  const filtered = albums.filter(a => a.id !== albumId);
+  db[ALBUMS_KEY] = JSON.stringify(filtered);
+  writeDb(db);
+  res.json({ ok: true });
+});
+
 // ── Global FTP Settings ───────────────────────────────
 // The FTP password is stored server-side only and never returned to the browser.
 // The response includes a boolean `ftpPasswordSet` instead of the actual value.
