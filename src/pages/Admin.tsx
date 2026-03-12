@@ -8477,7 +8477,7 @@ function StorageView() {
     currentAlbum: string;
     startTime: number;
     elapsed: number;
-    results: Array<{ album: string; done: number; total: number; failed: number }>;
+    results: Array<{ album: string; done: number; total: number; failed: number; error?: string }>;
   } | null>(null);
   const ftpAbortRef = useRef(false);
 
@@ -8511,7 +8511,7 @@ function StorageView() {
       return;
     }
     const startTime = Date.now();
-    const results: Array<{ album: string; done: number; total: number; failed: number }> = [];
+    const results: Array<{ album: string; done: number; total: number; failed: number; error?: string }> = [];
     let totalFilesDone = 0;
     let totalFilesFailed = 0;
     let grandTotal = 0;
@@ -8542,7 +8542,12 @@ function StorageView() {
       grandTotal += result.total;
       totalFilesDone += result.done;
       totalFilesFailed += result.failed;
-      results.push({ album: album.title || album.slug, done: result.done, total: result.total, failed: result.failed });
+      // A connection-level error (result.ok=false, result.error set) means no files
+      // were uploaded due to an FTP failure (auth error, unreachable server, or
+      // permission denied).  Count the album's total as "failed" so that the
+      // overall status reflects the failure.
+      if (!result.ok && result.error) totalFilesFailed += result.total || 1;
+      results.push({ album: album.title || album.slug, done: result.done, total: result.total, failed: result.failed, error: result.error });
       setFtpSyncJob(prev => prev ? {
         ...prev, albumsDone: i + 1,
         filesDone: totalFilesDone, filesTotal: grandTotal, filesFailed: totalFilesFailed,
@@ -8958,8 +8963,8 @@ function StorageView() {
                       {ftpSyncJob.results.map((r, i) => (
                         <div key={i} className="flex items-center justify-between text-[10px] font-body text-muted-foreground px-1">
                           <span className="truncate flex-1 mr-2">{r.album}</span>
-                          <span className={r.failed > 0 ? "text-destructive" : "text-green-400"}>
-                            {r.done}/{r.total}{r.failed > 0 ? ` (${r.failed} failed)` : " ✓"}
+                          <span className={r.failed > 0 || r.error ? "text-destructive" : "text-green-400"}>
+                            {r.done}/{r.total}{r.failed > 0 ? ` (${r.failed} failed)` : r.error ? ` (error)` : " ✓"}
                           </span>
                         </div>
                       ))}
