@@ -1637,7 +1637,7 @@ function TenantAlbumEditor({ slug, album, onSave, onCancel }: {
       return;
     }
     const newPhotos: Photo[] = results.map(r => ({
-      id: r.id, src: r.url, thumbnail: r.url + "?size=thumb",
+      id: r.id, src: r.url, thumbnail: r.url + "?size=thumb&wm=0",
       title: r.originalName.replace(/\.[^.]+$/, "").replace(/^_+/, ""), width: 800, height: 600,
       uploadedAt: new Date().toISOString(),
       ...(r.ftpUploaded ? { ftpUploaded: true } : {}),
@@ -2452,7 +2452,7 @@ function TenantPhotos({ slug }: { slug: string }) {
         setUploadStats(prev => prev ? { ...prev, done, total } : null);
       }, slug);
       const newPhotos: Photo[] = results.map(r => ({
-        id: r.id, src: r.url, thumbnail: r.url + "?size=thumb",
+        id: r.id, src: r.url, thumbnail: r.url + "?size=thumb&wm=0",
         title: r.originalName.replace(/\.[^.]+$/, "").replace(/^_+/, ""), width: 0, height: 0,
         uploadedAt: new Date().toISOString(),
         ...(r.ftpUploaded ? { ftpUploaded: true } : {}),

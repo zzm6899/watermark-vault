@@ -97,6 +97,7 @@ function getFreeUsed(album: Album, sessionKey: string): number {
 function buildPhotoSrc(src: string, disableWatermark: boolean): string {
   if (!disableWatermark) return src;
   if (!src || src.startsWith("data:")) return src;
+  if (/[?&]wm=0(&|$)/.test(src)) return src; // already has wm=0, avoid duplicate
   return `${src}${src.includes("?") ? "&" : "?"}wm=0`;
 }
 

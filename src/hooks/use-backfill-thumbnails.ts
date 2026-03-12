@@ -7,7 +7,9 @@ import type { Photo } from "@/lib/types";
  * Background-generates missing thumbnails for photos that don't have them.
  * Calls onUpdate(photoId, thumbnailDataUrl) for each generated thumbnail.
  *
- * In server mode: assigns ?w=200&wm=0 URLs instantly (no canvas work).
+ * In server mode: assigns ?size=thumb&wm=0 URLs instantly (no canvas work).
+ *   Also fixes existing thumbnails that are missing the ?wm=0 flag so that
+ *   admin views always display clean (un-watermarked) images.
  * In localStorage mode: generates canvas-based thumbnails in batches of 3.
  */
 export function useBackfillThumbnails(
@@ -17,16 +19,19 @@ export function useBackfillThumbnails(
   const processedRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
-    let cancelled = false;
-    const missing = photos.filter(
-      (p) => !p.thumbnail && p.src && !processedRef.current.has(p.id)
-    );
-    if (missing.length === 0) return;
-
     if (isServerMode()) {
-      // Server mode: immediately assign server-served thumbnails, no canvas needed
-      for (const photo of missing) {
-        if (photo.src.startsWith("data:")) continue; // skip base64 blobs
+      // Server mode: fix thumbnails that are missing or are server URLs lacking ?wm=0
+      const toFix = photos.filter(
+        (p) =>
+          (
+            !p.thumbnail ||
+            (p.thumbnail.startsWith("/uploads/") && !/[?&]wm=0(&|$)/.test(p.thumbnail))
+          ) &&
+          p.src &&
+          !p.src.startsWith("data:") &&
+          !processedRef.current.has(p.id)
+      );
+      for (const photo of toFix) {
         processedRef.current.add(photo.id);
         onUpdate(photo.id, photo.src + "?size=thumb&wm=0");
       }
@@ -34,6 +39,12 @@ export function useBackfillThumbnails(
     }
 
     // localStorage mode: generate canvas-based thumbnails in batches to avoid blocking
+    let cancelled = false;
+    const missing = photos.filter(
+      (p) => !p.thumbnail && p.src && !processedRef.current.has(p.id)
+    );
+    if (missing.length === 0) return;
+
     (async () => {
       for (let i = 0; i < missing.length; i += 3) {
         if (cancelled) break;
