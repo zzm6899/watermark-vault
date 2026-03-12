@@ -3698,6 +3698,7 @@ function PhotosView() {
   const [starredOnly, setStarredOnly] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [syncing, setSyncing] = useState(false);
+  const [showAddToAlbum, setShowAddToAlbum] = useState(false);
   const [visibleCount, setVisibleCount] = useState(LIBRARY_INITIAL_BATCH);
   const libSentinelRef = useRef<HTMLDivElement>(null);
 
@@ -3768,11 +3769,26 @@ function PhotosView() {
         }
       }
 
+      // Step 1b: Check library photos for broken file references and remove them
+      let removedLibraryCount = 0;
+      const brokenLibrarySet = new Set(libraryPhotos.filter(p => {
+        const filename = p.src.split("/").pop();
+        return filename && !serverFileNames.has(filename) && p.src.startsWith("/uploads/");
+      }));
+      let currentLibrary = libraryPhotos;
+      if (brokenLibrarySet.size > 0) {
+        const repairedLibrary = libraryPhotos.filter(p => !brokenLibrarySet.has(p));
+        setPhotoLibrary(repairedLibrary);
+        setLibraryPhotosState(repairedLibrary);
+        currentLibrary = repairedLibrary;
+        removedLibraryCount = brokenLibrarySet.size;
+      }
+
       // Step 2: Collect all known filenames from server-authoritative data.
       // Using server albums (not localStorage stubs) ensures photos that are tracked
       // in the database are never incorrectly classified as orphaned.
       const knownFilenames = new Set<string>();
-      for (const p of libraryPhotos) {
+      for (const p of currentLibrary) {
         const fn = p.src.split("/").pop();
         if (fn) knownFilenames.add(fn);
       }
@@ -3788,6 +3804,7 @@ function PhotosView() {
 
       const messages: string[] = [];
       if (repairedAlbums > 0) messages.push(`Repaired ${repairedAlbums} album(s) with missing file references`);
+      if (removedLibraryCount > 0) messages.push(`Removed ${removedLibraryCount} library photo(s) with missing files`);
       if (orphanedFileNames.length > 0) {
         // Recover orphaned files by adding them to the photo library instead of
         // deleting them. This is safer because files that exist on disk but lack
@@ -8443,6 +8460,7 @@ function StorageView() {
   } | null>(null);
   const [loading, setLoading] = useState(true);
   const [deleteAllState, setDeleteAllState] = useState<"idle" | "confirming" | "deleting">("idle");
+  const [purgeMissingState, setPurgeMissingState] = useState<"idle" | "running">("idle");
   const [ftpEnabled, setFtpEnabled] = useState<boolean | null>(null);
   const [ftpSyncJob, setFtpSyncJob] = useState<{
     running: boolean;
@@ -8546,6 +8564,71 @@ function StorageView() {
       toast.error("Failed to delete all photos");
     }
     setDeleteAllState("idle");
+  };
+
+  const handlePurgeMissing = async () => {
+    if (!isServerMode()) { toast.error("Server not available"); return; }
+    setPurgeMissingState("running");
+    try {
+      const stats = await getServerStorageStats();
+      if (!stats || !stats.allFileNames) { toast.info("No storage data"); setPurgeMissingState("idle"); return; }
+      const serverFileNames = new Set(stats.allFileNames);
+
+      // Fetch authoritative album data from server
+      let serverAlbums: Album[] = [];
+      try {
+        const res = await fetch("/api/store/wv_albums");
+        if (res.ok) {
+          const data = await res.json();
+          const raw = data?.value;
+          if (raw) {
+            const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+            if (Array.isArray(parsed)) serverAlbums = parsed as Album[];
+          }
+        }
+      } catch {}
+
+      let removedAlbumPhotos = 0;
+      // Remove album photos whose files don't exist on disk
+      for (const alb of serverAlbums) {
+        const missingSet = new Set((alb.photos || []).filter(p => {
+          const filename = p.src.split("/").pop();
+          return filename && !serverFileNames.has(filename) && p.src.startsWith("/uploads/");
+        }));
+        if (missingSet.size > 0) {
+          const kept = (alb.photos || []).filter(p => !missingSet.has(p));
+          updateAlbum({ ...alb, photos: kept, photoCount: kept.length });
+          removedAlbumPhotos += missingSet.size;
+        }
+      }
+
+      // Remove library photos whose files don't exist on disk
+      const freshLibrary = getPhotoLibrary();
+      const missingLibrarySet = new Set(freshLibrary.filter(p => {
+        const filename = p.src.split("/").pop();
+        return filename && !serverFileNames.has(filename) && p.src.startsWith("/uploads/");
+      }));
+      let removedLibraryPhotos = 0;
+      if (missingLibrarySet.size > 0) {
+        const keptLibrary = freshLibrary.filter(p => !missingLibrarySet.has(p));
+        setPhotoLibrary(keptLibrary);
+        setLibraryPhotosState(keptLibrary);
+        removedLibraryPhotos = missingLibrarySet.size;
+      }
+
+      const total = removedAlbumPhotos + removedLibraryPhotos;
+      setAlbumsState(getAlbums());
+      await refreshStorageState();
+      window.dispatchEvent(new CustomEvent("storage-synced"));
+      if (total === 0) {
+        toast.info("No missing file references found — database is clean");
+      } else {
+        toast.success(`Purged ${total} photo record${total !== 1 ? "s" : ""} with missing files (${removedAlbumPhotos} from albums, ${removedLibraryPhotos} from library)`);
+      }
+    } catch {
+      toast.error("Failed to purge missing photo records");
+    }
+    setPurgeMissingState("idle");
   };
 
   // Backfill thumbnails and track progress
@@ -8949,31 +9032,48 @@ function StorageView() {
             {/* Danger zone: Delete all photos */}
             <div className="mt-4 pt-4 border-t border-destructive/20">
               <p className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-2">Danger Zone</p>
-              {deleteAllState === "confirming" ? (
-                <div className="p-3 rounded-lg border border-destructive/40 bg-destructive/5 space-y-2">
-                  <p className="text-xs font-body text-destructive">This will permanently delete all {serverStats.photoCount} photo files from disk and clear all photo records from every album. This cannot be undone.</p>
-                  <div className="flex gap-2">
-                    <Button size="sm" variant="destructive" onClick={handleDeleteAllPhotos} disabled={deleteAllState as string === "deleting"} className="font-body text-xs gap-1.5">
-                      <Trash2 className="w-3.5 h-3.5" /> Yes, Delete Everything
-                    </Button>
-                    <Button size="sm" variant="outline" onClick={() => setDeleteAllState("idle")} className="font-body text-xs border-border text-foreground">
-                      Cancel
-                    </Button>
-                  </div>
+              <div className="flex flex-wrap gap-2">
+                <div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={handlePurgeMissing}
+                    disabled={purgeMissingState === "running" || !isServerMode()}
+                    className="gap-2 font-body text-xs border-yellow-500/40 text-yellow-500 hover:bg-yellow-500/10"
+                  >
+                    <RefreshCw className={`w-4 h-4 ${purgeMissingState === "running" ? "animate-spin" : ""}`} />
+                    {purgeMissingState === "running" ? "Scanning…" : "Purge Missing from DB"}
+                  </Button>
+                  <p className="text-[10px] font-body text-muted-foreground/50 mt-1">Scans all album and library photos, removing database records for files that no longer exist on disk. Fixes 404 errors in the gallery.</p>
                 </div>
-              ) : (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={handleDeleteAllPhotos}
-                  disabled={deleteAllState === "deleting" || !isServerMode()}
-                  className="gap-2 font-body text-xs border-destructive/40 text-destructive hover:bg-destructive/10"
-                >
-                  <Trash2 className="w-4 h-4" />
-                  {deleteAllState === "deleting" ? "Deleting…" : "Delete All Photos"}
-                </Button>
-              )}
-              <p className="text-[10px] font-body text-muted-foreground/50 mt-1">Removes all uploaded photos from disk and clears album photo records. Album metadata (titles, clients, bookings) is preserved.</p>
+                <div>
+                  {deleteAllState === "confirming" ? (
+                    <div className="p-3 rounded-lg border border-destructive/40 bg-destructive/5 space-y-2">
+                      <p className="text-xs font-body text-destructive">This will permanently delete all {serverStats.photoCount} photo files from disk and clear all photo records from every album. This cannot be undone.</p>
+                      <div className="flex gap-2">
+                        <Button size="sm" variant="destructive" onClick={handleDeleteAllPhotos} disabled={deleteAllState as string === "deleting"} className="font-body text-xs gap-1.5">
+                          <Trash2 className="w-3.5 h-3.5" /> Yes, Delete Everything
+                        </Button>
+                        <Button size="sm" variant="outline" onClick={() => setDeleteAllState("idle")} className="font-body text-xs border-border text-foreground">
+                          Cancel
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={handleDeleteAllPhotos}
+                      disabled={deleteAllState === "deleting" || !isServerMode()}
+                      className="gap-2 font-body text-xs border-destructive/40 text-destructive hover:bg-destructive/10"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                      {deleteAllState === "deleting" ? "Deleting…" : "Delete All Photos"}
+                    </Button>
+                  )}
+                  <p className="text-[10px] font-body text-muted-foreground/50 mt-1">Removes all uploaded photos from disk and clears album photo records. Album metadata (titles, clients, bookings) is preserved.</p>
+                </div>
+              </div>
             </div>
 
             {/* Largest files */}
