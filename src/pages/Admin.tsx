@@ -3728,6 +3728,39 @@ function PhotosView() {
     return () => observer.disconnect();
   }, []);
 
+  // When this view mounts, some albums may only have stub data (photos: [],
+  // _photosStripped: true) because the background poll stores stubs to save
+  // bandwidth.  Fetch the full photos arrays for those albums so they appear
+  // in the "all" view and album-specific filter views.
+  // Empty deps is intentional: we snapshot the stubs at mount time and run
+  // once.  After photos are fetched, setAlbumsState clears _photosStripped so
+  // any subsequent invocation would find no stubs and exit immediately.
+  useEffect(() => {
+    if (!isServerMode()) return;
+    const stubs = albums.filter(a => a._photosStripped);
+    if (stubs.length === 0) return;
+    let cancelled = false;
+    Promise.all(
+      stubs.map(async (a) => {
+        const fetched = await fetchAlbumPhotos(a.id);
+        return fetched ? { id: a.id, photos: fetched } : null;
+      })
+    ).then(results => {
+      if (cancelled) return;
+      const updates = new Map(
+        results
+          .filter((r): r is { id: string; photos: Photo[] } => r !== null)
+          .map(r => [r.id, r.photos])
+      );
+      if (updates.size === 0) return;
+      setAlbumsState(prev => prev.map(a => {
+        const photos = updates.get(a.id);
+        return photos !== undefined ? { ...a, photos, _photosStripped: false } : a;
+      }));
+    });
+    return () => { cancelled = true; };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Reset visible count when filter changes
   useEffect(() => { setVisibleCount(LIBRARY_INITIAL_BATCH); }, [viewSource, starredOnly, searchQuery]);
 

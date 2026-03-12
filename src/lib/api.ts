@@ -52,6 +52,31 @@ function _applyStoreData(data: Record<string, unknown>): void {
   for (const [key, value] of Object.entries(data)) {
     // Never restore session from server — auth must always be re-done per browser
     if (key === SESSION_KEY) continue;
+
+    // For the photo library, merge server data with any locally-added photos that
+    // haven't been persisted to the server yet (e.g. uploaded just before the lazy
+    // sync response arrived).  We take the server list as the authoritative base and
+    // append any local photo entries whose IDs are not present on the server.  This
+    // prevents the background sync from silently discarding photos that were uploaded
+    // in the brief window between page load and the lazy-sync response arriving.
+    if (key === "wv_photo_library") {
+      try {
+        const serverPhotos = (typeof value === "string" ? JSON.parse(value) : value) as Array<{ id: string }>;
+        if (Array.isArray(serverPhotos)) {
+          const localRaw = localStorage.getItem(key);
+          const localPhotos = localRaw ? (JSON.parse(localRaw) as Array<{ id: string }>) : [];
+          if (Array.isArray(localPhotos) && localPhotos.length > 0) {
+            const serverIds = new Set(serverPhotos.map(p => p.id));
+            const localOnly = localPhotos.filter(p => !serverIds.has(p.id));
+            if (localOnly.length > 0) {
+              localStorage.setItem(key, JSON.stringify([...serverPhotos, ...localOnly]));
+              continue;
+            }
+          }
+        }
+      } catch { /* JSON.parse failure on corrupt data — fall through to normal write */ }
+    }
+
     // Server store values are often already JSON strings
     localStorage.setItem(key, typeof value === "string" ? value : JSON.stringify(value));
   }

@@ -756,8 +756,8 @@ app.delete("/api/upload/all", deleteAllLimiter, async (_req, res) => {
         db["wv_albums"] = JSON.stringify(wiped);
       }
     }
-    if (db["wv_library"]) {
-      db["wv_library"] = JSON.stringify([]);
+    if (db[PHOTO_LIB_KEY]) {
+      db[PHOTO_LIB_KEY] = JSON.stringify([]);
     }
     writeDb(db);
 
