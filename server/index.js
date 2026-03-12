@@ -1536,6 +1536,16 @@ app.post("/api/proofing/submit", async (req, res) => {
     // could be inconsistent if db was concurrently modified or corrupted.
     if (idx === -1) return res.status(500).json({ ok: false, error: "Album index inconsistency — please retry" });
 
+    // Reject submissions after the proofing window has closed
+    if (album.proofingExpiresAt && new Date() > new Date(album.proofingExpiresAt)) {
+      return res.status(403).json({ ok: false, error: "Proofing window has expired" });
+    }
+
+    // Reject submissions if the album is not in the active proofing stage
+    if (album.proofingStage !== "proofing") {
+      return res.status(400).json({ ok: false, error: "Album is not currently accepting proofing submissions" });
+    }
+
     // Mark starred photos and record the round
     const updatedPhotos = (album.photos || []).map(p => ({
       ...p,

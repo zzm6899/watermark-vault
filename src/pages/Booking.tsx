@@ -394,8 +394,8 @@ export default function Booking() {
     const dateStr = toDateStr(selectedDate);
     return {
       id: `bk-${Date.now()}`,
-      clientName: answers["q1"] || "Client",
-      clientEmail: answers["q2"] || "",
+      clientName: answers[selectedEvent.questions.find(q => q.label.toLowerCase().includes("name"))?.id ?? "q1"] || "Client",
+      clientEmail: answers[selectedEvent.questions.find(q => q.label.toLowerCase().includes("email"))?.id ?? "q2"] || "",
       date: dateStr,
       time: selectedTime,
       eventTypeId: selectedEvent.id,

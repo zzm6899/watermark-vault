@@ -774,7 +774,10 @@ export default function AlbumDetail() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ albumId: album.id, selectedPhotoIds: picked, clientNote: proofingClientNote }),
       });
-      if (!res.ok) throw new Error("Server error");
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || "Server error");
+      }
       // Update local UI state only — don't call updateAlbum here or it will
       // overwrite the server's picks data (selectedPhotoIds in rounds) with our
       // stale local version that doesn't have them yet
@@ -782,8 +785,8 @@ export default function AlbumDetail() {
       setAlbumState(updated);
       setProofingSubmitted(true);
       toast.success(`${picked.length} photo${picked.length !== 1 ? "s" : ""} submitted — the photographer will be in touch!`);
-    } catch {
-      toast.error("Failed to submit. Please try again.");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to submit. Please try again.");
     } finally {
       setProofingSubmitting(false);
     }
