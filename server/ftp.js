@@ -10,6 +10,23 @@ const path = require("path");
 const { Readable } = require("stream");
 
 /**
+ * Sanitize a filename for use as an FTP STOR target.
+ * Strips any directory components so that the STOR command always operates on
+ * a plain filename relative to the current working directory.  Without this,
+ * a slash embedded in originalName / title (e.g. "2023/photo.jpg") would make
+ * STOR try to navigate a sub-directory that doesn't exist, returning 550.
+ *
+ * @param {string} name
+ * @returns {string}
+ */
+function sanitizeRemoteFilename(name) {
+  // Replace all path separators (/ and \) with underscores to ensure a flat
+  // filename; without this, STOR "2023/photo.jpg" would tell the server to
+  // store into a sub-directory that may not exist, returning 550.
+  return name.replace(/[\\/]/g, "_").trim() || "file";
+}
+
+/**
  * Upload a single local file to an FTP server.
  *
  * @param {string} localFilePath - Absolute path to the file on disk.
@@ -44,7 +61,10 @@ async function uploadFileToFtp(localFilePath, settings, options = {}) {
 
     // Upload using the filename relative to CWD rather than a full absolute
     // path; many FTP servers don't support absolute paths in STOR.
-    const fname = remoteFilename || path.basename(localFilePath);
+    // Also strip any directory separators from the filename to prevent the
+    // STOR command from inadvertently referencing a sub-directory path.
+    const raw = remoteFilename || path.basename(localFilePath);
+    const fname = sanitizeRemoteFilename(raw);
     await client.uploadFrom(localFilePath, fname);
 
     return { ok: true };
@@ -108,7 +128,10 @@ async function uploadFilesToFtp(localFilePaths, settings, options = {}) {
         // path.  Many FTP servers do not support absolute paths in STOR and
         // treat them as relative to the current working directory, which would
         // cause uploads to fail silently after ensureDir() changed the CWD.
-        const fname = remoteFilename || path.basename(localPath);
+        // Also sanitize to strip any embedded directory separators that would
+        // make STOR try to navigate a non-existent sub-directory (→ 550).
+        const raw = remoteFilename || path.basename(localPath);
+        const fname = sanitizeRemoteFilename(raw);
         await client.uploadFrom(localPath, fname);
       } catch (err) {
         const displayName = remoteFilename || path.basename(localPath);
@@ -187,6 +210,13 @@ async function moveFileOnFtp(localFilePath, fromRemotePath, toRemotePath, settin
  * "553 Permission denied" on STOR) are caught here rather than only failing
  * on the first real album upload.
  *
+ * When `settings.ftpOrganizeByAlbum` is true the test also creates a
+ * temporary sub-directory, uploads into it and removes it, mirroring what
+ * the actual album-upload code does.  This catches the common scenario where
+ * the FTP user can write files to `ftpRemotePath` but cannot create
+ * sub-directories within it — which would cause a "550 Permission denied"
+ * error at upload time even though the basic connection test passed.
+ *
  * @param {object} settings
  * @returns {Promise<{ ok: boolean; error?: string }>}
  */
@@ -219,6 +249,25 @@ async function testFtpConnection(settings) {
     await client.uploadFrom(Readable.from(Buffer.from("wv")), testFileName);
     try { await client.remove(testFileName); } catch { /* ignore cleanup failure */ }
 
+    // When "Organise by Album" is enabled, actual uploads go to a sub-folder
+    // (remotePath/<AlbumName>/) rather than to remotePath directly.  Test that
+    // sub-directory creation AND writing within it both work, so that
+    // permission problems are surfaced here rather than at upload time with a
+    // cryptic "550 Permission denied" error.
+    if (settings.ftpOrganizeByAlbum) {
+      const testSubDir = `_wv_test_dir_${Date.now()}`;
+      const testSubPath = path.posix.join(remotePath, testSubDir);
+      // ensureDir navigates into the new sub-directory (MKD + cd).
+      await client.ensureDir(testSubPath);
+      // Verify that STOR works inside the sub-directory too.
+      const subTestFileName = `_wv_test_${Date.now()}.tmp`;
+      await client.uploadFrom(Readable.from(Buffer.from("wv")), subTestFileName);
+      try { await client.remove(subTestFileName); } catch { /* ignore cleanup failure */ }
+      // Navigate back up and remove the temporary test directory.
+      await client.cdup();
+      try { await client.removeEmptyDir(testSubDir); } catch { /* ignore cleanup failure */ }
+    }
+
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err.message || "FTP connection failed" };
@@ -243,4 +292,4 @@ function sanitizeFolderName(name) {
     .slice(0, 100) || "album";
 }
 
-module.exports = { uploadFileToFtp, uploadFilesToFtp, moveFileOnFtp, testFtpConnection, sanitizeFolderName };
+module.exports = { uploadFileToFtp, uploadFilesToFtp, moveFileOnFtp, testFtpConnection, sanitizeFolderName, sanitizeRemoteFilename };

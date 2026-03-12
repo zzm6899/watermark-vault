@@ -11,6 +11,15 @@
  * The fix: after ensureDir() the code now uploads with just the basename
  * (relative to CWD) instead of the full absolute path, matching the pattern
  * used by basic-ftp's own uploadFromDir() helper.
+ *
+ * Additional fix: sanitizeRemoteFilename() strips embedded path separators from
+ * file names so that STOR never inadvertently references a non-existent
+ * sub-directory (which returns "550 Permission denied" on many servers).
+ *
+ * testFtpConnection() extended: when ftpOrganizeByAlbum is enabled it now also
+ * creates a temporary sub-directory and verifies that file creation inside it
+ * works, catching the common case where the FTP user can write to the base path
+ * but cannot create sub-directories.
  */
 
 import { describe, it, expect } from "vitest";
@@ -31,6 +40,15 @@ function sanitizeFolderName(name: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Inline sanitizeRemoteFilename (mirrors server/ftp.js) so the logic is
+// testable without importing from the Node.js server module.
+// ---------------------------------------------------------------------------
+function sanitizeRemoteFilename(name: string): string {
+  // Replace all path separators (/ and \) with underscores to ensure a flat filename.
+  return name.replace(/[\\/]/g, "_").trim() || "file";
+}
+
+// ---------------------------------------------------------------------------
 // Minimal FTP client mock that records the calls made to it.
 // ---------------------------------------------------------------------------
 interface FtpCall {
@@ -46,9 +64,11 @@ function makeMockClient() {
     access: async (...args: unknown[]) => { calls.push({ method: "access", args }); },
     ensureDir: async (...args: unknown[]) => { calls.push({ method: "ensureDir", args }); },
     cd: async (...args: unknown[]) => { calls.push({ method: "cd", args }); },
+    cdup: async (...args: unknown[]) => { calls.push({ method: "cdup", args }); },
     uploadFrom: async (...args: unknown[]) => { calls.push({ method: "uploadFrom", args }); },
     rename: async (...args: unknown[]) => { calls.push({ method: "rename", args }); },
     remove: async (...args: unknown[]) => { calls.push({ method: "remove", args }); },
+    removeEmptyDir: async (...args: unknown[]) => { calls.push({ method: "removeEmptyDir", args }); },
     close: () => { calls.push({ method: "close", args: [] }); },
     calls,
   };
@@ -69,8 +89,9 @@ async function simulateUploadFilesToFtp(
   await client.ensureDir(remotePath);
 
   for (const { localPath, remoteFilename } of entries) {
-    const fname = remoteFilename || localPath.split("/").pop() || localPath;
-    // KEY FIX: use relative filename, not path.posix.join(remotePath, fname)
+    const raw = remoteFilename || localPath.split("/").pop() || localPath;
+    // KEY FIX: use relative filename, sanitized to strip directory separators
+    const fname = sanitizeRemoteFilename(raw);
     await client.uploadFrom(localPath, fname);
   }
 }
@@ -316,5 +337,143 @@ describe("bulk album upload path handling", () => {
     for (const call of uploadCalls) {
       expect(String(call.args[1])).not.toMatch(/^\//);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// sanitizeRemoteFilename
+// ---------------------------------------------------------------------------
+describe("sanitizeRemoteFilename", () => {
+  it("returns plain filename unchanged", () => {
+    expect(sanitizeRemoteFilename("photo.jpg")).toBe("photo.jpg");
+  });
+
+  it("replaces forward slashes with underscores", () => {
+    expect(sanitizeRemoteFilename("2023/photo.jpg")).toBe("2023_photo.jpg");
+  });
+
+  it("replaces back slashes with underscores", () => {
+    expect(sanitizeRemoteFilename("folder\\photo.jpg")).toBe("folder_photo.jpg");
+  });
+
+  it("handles multiple path separators", () => {
+    expect(sanitizeRemoteFilename("a/b/c/photo.jpg")).toBe("a_b_c_photo.jpg");
+  });
+
+  it("falls back to 'file' for empty input", () => {
+    expect(sanitizeRemoteFilename("")).toBe("file");
+    expect(sanitizeRemoteFilename("   ")).toBe("file");
+  });
+
+  it("preserves filenames with spaces (spaces are not separators)", () => {
+    expect(sanitizeRemoteFilename("my photo.jpg")).toBe("my photo.jpg");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// uploadFilesToFtp: sanitizeRemoteFilename applied to embedded slashes
+// ---------------------------------------------------------------------------
+describe("uploadFilesToFtp filename sanitization", () => {
+  it("strips forward slashes from remoteFilename so STOR does not reference a sub-directory", async () => {
+    const client = makeMockClient();
+    await simulateUploadFilesToFtp(
+      [{ localPath: "/data/uploads/img.jpg", remoteFilename: "2023/summer/photo.jpg" }],
+      "/photos",
+      client,
+    );
+
+    const uploadCalls = client.calls.filter(c => c.method === "uploadFrom");
+    expect(uploadCalls).toHaveLength(1);
+    // Must not contain a slash — that would make STOR navigate into a sub-dir
+    expect(String(uploadCalls[0].args[1])).not.toContain("/");
+    expect(String(uploadCalls[0].args[1])).toBe("2023_summer_photo.jpg");
+  });
+
+  it("strips back slashes from remoteFilename", async () => {
+    const client = makeMockClient();
+    await simulateUploadFilesToFtp(
+      [{ localPath: "/data/uploads/img.jpg", remoteFilename: "folder\\photo.jpg" }],
+      "/photos",
+      client,
+    );
+
+    const uploadCalls = client.calls.filter(c => c.method === "uploadFrom");
+    expect(uploadCalls[0].args[1]).toBe("folder_photo.jpg");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// testFtpConnection: subfolder test when ftpOrganizeByAlbum is enabled
+// ---------------------------------------------------------------------------
+
+// Simulates the testFtpConnection logic (mirrors server/ftp.js).
+async function simulateTestFtpConnection(
+  settings: { ftpRemotePath?: string; ftpOrganizeByAlbum?: boolean },
+  client: ReturnType<typeof makeMockClient>,
+  remotePath: string,
+) {
+  await client.ensureDir(remotePath);
+
+  // Upload test file to base path
+  const testFileName = `_wv_test_${Date.now()}.tmp`;
+  await client.uploadFrom("stream" as unknown, testFileName);
+  try { await client.remove(testFileName); } catch { /* ignore */ }
+
+  // When ftpOrganizeByAlbum is enabled, also test a sub-directory
+  if (settings.ftpOrganizeByAlbum) {
+    const testSubDir = `_wv_test_dir_${Date.now()}`;
+    const testSubPath = `${remotePath}/${testSubDir}`.replace(/\/+/g, "/");
+    await client.ensureDir(testSubPath);
+    const subTestFileName = `_wv_test_sub_${Date.now()}.tmp`;
+    await client.uploadFrom("stream" as unknown, subTestFileName);
+    try { await client.remove(subTestFileName); } catch { /* ignore */ }
+    await client.cdup();
+    try { await client.removeEmptyDir(testSubDir); } catch { /* ignore */ }
+  }
+}
+
+describe("testFtpConnection with ftpOrganizeByAlbum", () => {
+  it("does NOT test a sub-directory when ftpOrganizeByAlbum is false", async () => {
+    const client = makeMockClient();
+    await simulateTestFtpConnection({ ftpOrganizeByAlbum: false }, client, "/photos");
+
+    const ensureCalls = client.calls.filter(c => c.method === "ensureDir");
+    expect(ensureCalls).toHaveLength(1);
+    expect(ensureCalls[0].args[0]).toBe("/photos");
+
+    const cdupCalls = client.calls.filter(c => c.method === "cdup");
+    expect(cdupCalls).toHaveLength(0);
+  });
+
+  it("tests a sub-directory when ftpOrganizeByAlbum is true", async () => {
+    const client = makeMockClient();
+    await simulateTestFtpConnection({ ftpOrganizeByAlbum: true }, client, "/photos");
+
+    const ensureCalls = client.calls.filter(c => c.method === "ensureDir");
+    // First: base path; second: temp sub-directory
+    expect(ensureCalls).toHaveLength(2);
+    expect(ensureCalls[0].args[0]).toBe("/photos");
+    expect(String(ensureCalls[1].args[0])).toMatch(/^\/photos\/_wv_test_dir_/);
+  });
+
+  it("uploads a test file into the sub-directory when ftpOrganizeByAlbum is true", async () => {
+    const client = makeMockClient();
+    await simulateTestFtpConnection({ ftpOrganizeByAlbum: true }, client, "/photos");
+
+    const uploadCalls = client.calls.filter(c => c.method === "uploadFrom");
+    // Two uploads: one in base path, one in sub-directory
+    expect(uploadCalls).toHaveLength(2);
+  });
+
+  it("navigates back with cdup() and removes the test sub-directory", async () => {
+    const client = makeMockClient();
+    await simulateTestFtpConnection({ ftpOrganizeByAlbum: true }, client, "/photos");
+
+    const cdupCalls = client.calls.filter(c => c.method === "cdup");
+    expect(cdupCalls).toHaveLength(1);
+
+    const removeDirCalls = client.calls.filter(c => c.method === "removeEmptyDir");
+    expect(removeDirCalls).toHaveLength(1);
+    expect(String(removeDirCalls[0].args[0])).toMatch(/^_wv_test_dir_/);
   });
 });
