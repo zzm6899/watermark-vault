@@ -42,6 +42,9 @@ async function uploadFileToFtp(localFilePath, settings, options = {}) {
 
   const client = new ftp.Client();
   client.ftp.verbose = false;
+  // Force IPv4 passive mode (PASV) instead of EPSV so that FTP servers that
+  // don't implement the EPSV extension don't return a 505 error.
+  client.ftp.ipFamily = 4;
 
   try {
     await client.access({
@@ -104,6 +107,9 @@ async function uploadFilesToFtp(localFilePaths, settings, options = {}) {
 
   const client = new ftp.Client();
   client.ftp.verbose = false;
+  // Force IPv4 passive mode (PASV) instead of EPSV so that FTP servers that
+  // don't implement the EPSV extension don't return a 505 error.
+  client.ftp.ipFamily = 4;
 
   let failed = 0;
   let done = 0;
@@ -167,6 +173,9 @@ async function moveFileOnFtp(localFilePath, fromRemotePath, toRemotePath, settin
 
   const client = new ftp.Client();
   client.ftp.verbose = false;
+  // Force IPv4 passive mode (PASV) instead of EPSV so that FTP servers that
+  // don't implement the EPSV extension don't return a 505 error.
+  client.ftp.ipFamily = 4;
 
   try {
     await client.access({
@@ -227,6 +236,9 @@ async function testFtpConnection(settings) {
 
   const client = new ftp.Client();
   client.ftp.verbose = false;
+  // Force IPv4 passive mode (PASV) instead of EPSV so that FTP servers that
+  // don't implement the EPSV extension don't return a 505 error.
+  client.ftp.ipFamily = 4;
 
   try {
     await client.access({
