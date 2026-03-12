@@ -37,6 +37,10 @@ const MAX_ZIP_FILES = 1000; // Reasonable upper bound per request to prevent res
 const SHORT_CACHE = "public, max-age=60, stale-while-revalidate=300";
 
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+// Pre-create the image cache directory once at startup so every image request
+// avoids a redundant mkdirSync syscall on the hot path.
+const CACHE_DIR = path.join(UPLOADS_DIR, "_cache");
+fs.mkdirSync(CACHE_DIR, { recursive: true });
 if (!fs.existsSync(DB_FILE)) fs.writeFileSync(DB_FILE, JSON.stringify({}));
 
 // ── Super Admin Bootstrap ──────────────────────────────────────────────────
@@ -998,10 +1002,8 @@ function isPhotoAccessible(filename, sessionKey, albumId) {
 
 /** Generate (or load from cache) a watermarked full-res buffer for a file. */
 async function getWatermarkedBuffer(safeName, filepath) {
-  const cacheDir = path.join(UPLOADS_DIR, "_cache");
-  fs.mkdirSync(cacheDir, { recursive: true });
   const baseName = path.basename(safeName, path.extname(safeName));
-  const cacheFile = path.join(cacheDir, getCacheFilename(baseName, "full", true));
+  const cacheFile = path.join(CACHE_DIR, getCacheFilename(baseName, "full", true));
 
   if (fs.existsSync(cacheFile)) {
     return fs.readFileSync(cacheFile);
@@ -1072,12 +1074,22 @@ app.get("/uploads/:filename", imageServeLimiter, async (req, res) => {
 
   // Fast path: no resize, no watermark → serve original file directly
   if (!targetWidth && !shouldWatermark) {
+    try {
+      const stat = fs.statSync(filepath);
+      // Honour conditional GET so repeat requests return 304
+      if (req.headers["if-modified-since"] && new Date(req.headers["if-modified-since"]) >= stat.mtime) {
+        return res.status(304).end();
+      }
+      res.set({
+        "Cache-Control": "public, max-age=86400",
+        "Last-Modified": stat.mtime.toUTCString(),
+      });
+    } catch { /* non-critical — still serve the file */ }
     return res.sendFile(filepath);
   }
 
   // ── File-based cache ────────────────────────────────────────
-  const cacheDir = path.join(UPLOADS_DIR, "_cache");
-  fs.mkdirSync(cacheDir, { recursive: true });
+  const cacheDir = CACHE_DIR;
   const baseName = path.basename(safeName, path.extname(safeName));
   const sizeLabel = sizeParam || "full";
   // Include tenantSlug in cache filename so each tenant gets their own cached variant
@@ -1217,12 +1229,11 @@ function getCacheBreakdown(cacheDir) {
 }
 
 function clearImageCache() {
-  const cacheDir = path.join(UPLOADS_DIR, "_cache");
-  const before = getCacheBreakdown(cacheDir);
+  const before = getCacheBreakdown(CACHE_DIR);
   let cleared = 0;
-  if (fs.existsSync(cacheDir)) {
-    cleared = countAndDeleteDir(cacheDir);
-    fs.mkdirSync(cacheDir, { recursive: true });
+  if (fs.existsSync(CACHE_DIR)) {
+    cleared = countAndDeleteDir(CACHE_DIR);
+    fs.mkdirSync(CACHE_DIR, { recursive: true });
   }
   return { cleared, breakdown: before };
 }
@@ -1234,8 +1245,7 @@ app.post("/api/cache/clear", (_req, res) => {
 
 // ── Cache stats (counts without clearing) ──────────────
 app.get("/api/cache/stats", (_req, res) => {
-  const cacheDir = path.join(UPLOADS_DIR, "_cache");
-  const breakdown = getCacheBreakdown(cacheDir);
+  const breakdown = getCacheBreakdown(CACHE_DIR);
   const total = breakdown.thumb_wm + breakdown.thumb_clean + breakdown.medium_wm + breakdown.medium_clean + breakdown.full_wm + breakdown.full_clean + breakdown.other;
   res.json({ ok: true, total, breakdown });
 });
@@ -1251,7 +1261,6 @@ app.post("/api/upload/bulk-delete", async (req, res) => {
     return res.status(400).json({ error: "Too many filenames in a single request (max 500)" });
   }
   let deleted = 0;
-  const cacheDir = path.join(UPLOADS_DIR, "_cache");
   for (const name of filenames) {
     const safeName = path.basename(String(name));
     const filepath = path.join(UPLOADS_DIR, safeName);
@@ -1261,7 +1270,7 @@ app.post("/api/upload/bulk-delete", async (req, res) => {
       const base = path.basename(safeName, path.extname(safeName));
       for (const sizeLabel of ["thumb", "medium", "full"]) {
         for (const watermarked of [true, false]) {
-          const cf = path.join(cacheDir, getCacheFilename(base, sizeLabel, watermarked));
+          const cf = path.join(CACHE_DIR, getCacheFilename(base, sizeLabel, watermarked));
           try { if (fs.existsSync(cf)) fs.unlinkSync(cf); } catch {}
         }
       }
@@ -1624,9 +1633,6 @@ app.post("/api/cache/warm", cacheWarmLimiter, async (req, res) => {
   const forceAll = mode === "force";
   const sizesToRender = forceAll ? ["thumb", "medium", "full"] : ["thumb"];
 
-  const cacheDir = path.join(UPLOADS_DIR, "_cache");
-  fs.mkdirSync(cacheDir, { recursive: true });
-
   res.setHeader("Content-Type", "application/x-ndjson");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Transfer-Encoding", "chunked");
@@ -1657,23 +1663,31 @@ app.post("/api/cache/warm", cacheWarmLimiter, async (req, res) => {
 
     for (const sizeLabel of sizesToRender) {
       for (const watermarked of [true, false]) {
-        const cacheFile = path.join(cacheDir, getCacheFilename(baseName, sizeLabel, watermarked));
+        const cacheFile = path.join(CACHE_DIR, getCacheFilename(baseName, sizeLabel, watermarked));
         // In warm mode skip existing; in force mode always overwrite
         if (!forceAll && fs.existsSync(cacheFile)) { skipped++; continue; }
         try {
-          const targetSize = sizeLabel === "thumb" ? 700 : sizeLabel === "medium" ? 1400 : null;
+          const targetSize = sizeLabel === "thumb" ? THUMB_WIDTH : sizeLabel === "medium" ? MEDIUM_WIDTH : null;
           let pipeline = targetSize
             ? sharp(filepath).resize(targetSize, null, { fit: "inside", withoutEnlargement: true })
             : sharp(filepath);
           if (watermarked) {
             const meta = await sharp(filepath).metadata();
-            const imgW = meta.width || (targetSize || 2000);
-            const imgH = meta.height || (targetSize || 2000);
+            const origW = meta.width || 2000;
+            const origH = meta.height || 2000;
+            // Build the watermark overlay using post-resize dimensions so the
+            // warmed cache matches what the live /uploads/:filename endpoint produces.
+            let renderW = origW;
+            let renderH = origH;
+            if (targetSize && origW > targetSize) {
+              renderW = targetSize;
+              renderH = Math.round(origH * (targetSize / origW));
+            }
             const wm = getWatermarkSettings();
-            const overlay = await buildWatermarkOverlay(imgW, imgH, wm);
+            const overlay = await buildWatermarkOverlay(renderW, renderH, wm);
             pipeline = pipeline.composite([overlay]);
           }
-          const buf = await pipeline.jpeg({ quality: 88, progressive: true }).toBuffer();
+          const buf = await pipeline.jpeg({ quality: 82, progressive: true }).toBuffer();
           fs.writeFileSync(cacheFile, buf);
           generated++;
         } catch (err) { failed++; console.error(`Cache warm error [${sizeLabel}/${watermarked ? "wm" : "clean"}] ${filename}:`, err.message); }
@@ -2124,16 +2138,15 @@ app.post("/api/tenant/:slug/cache/clear", tenantLimiter, (req, res) => {
   const slug = req.params.slug;
   const tenants = readTenants();
   if (!tenants.find(t => t.slug === slug)) return res.status(404).json({ error: "Tenant not found" });
-  const cacheDir = path.join(UPLOADS_DIR, "_cache");
   // Cache filenames are `${baseName}_${sizeLabel}_t_${slug}_wm.jpg` — use underscore-bounded match
   // to prevent slug "foo" from matching slug "foobar"'s files.
   const slugPattern = new RegExp(`_t_${slug.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}_`);
   let cleared = 0;
-  if (fs.existsSync(cacheDir)) {
+  if (fs.existsSync(CACHE_DIR)) {
     try {
-      for (const f of fs.readdirSync(cacheDir)) {
+      for (const f of fs.readdirSync(CACHE_DIR)) {
         if (slugPattern.test(f)) {
-          try { fs.unlinkSync(path.join(cacheDir, f)); cleared++; } catch {}
+          try { fs.unlinkSync(path.join(CACHE_DIR, f)); cleared++; } catch {}
         }
       }
     } catch {}
@@ -2144,16 +2157,15 @@ app.post("/api/tenant/:slug/cache/clear", tenantLimiter, (req, res) => {
 // Return cache stats for a tenant (file count + total size)
 app.get("/api/tenant/:slug/cache/stats", tenantLimiter, (req, res) => {
   const slug = req.params.slug;
-  const cacheDir = path.join(UPLOADS_DIR, "_cache");
   const slugPattern = new RegExp(`_t_${slug.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}_`);
   let count = 0;
   let sizeBytes = 0;
-  if (fs.existsSync(cacheDir)) {
+  if (fs.existsSync(CACHE_DIR)) {
     try {
-      for (const f of fs.readdirSync(cacheDir)) {
+      for (const f of fs.readdirSync(CACHE_DIR)) {
         if (slugPattern.test(f)) {
           try {
-            const stat = fs.statSync(path.join(cacheDir, f));
+            const stat = fs.statSync(path.join(CACHE_DIR, f));
             count++;
             sizeBytes += stat.size;
           } catch {}

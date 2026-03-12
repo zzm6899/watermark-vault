@@ -186,7 +186,31 @@ export default function AlbumDetail() {
   const [lightboxPhotoId, setLightboxPhotoId] = useState<string | null>(null);
   const displayedPhotosRef = useRef<Photo[]>([]);
   const touchStartX = useRef<number | null>(null);
-  const gallerySentinelRef = useRef<HTMLDivElement>(null);
+  // Callback ref for the gallery load-more sentinel. Using a callback ref instead
+  // of useRef + useEffect means the IntersectionObserver is automatically
+  // re-attached whenever the sentinel mounts or re-mounts (e.g. after a
+  // filter/sort change resets galleryVisibleCount and the sentinel div returns
+  // to the DOM). With a plain ref + [] effect the observer would keep watching
+  // a detached DOM node after the sentinel disappeared and reappeared.
+  const sentinelObserverRef = useRef<IntersectionObserver | null>(null);
+  const gallerySentinelRef = useCallback((node: HTMLDivElement | null) => {
+    if (sentinelObserverRef.current) {
+      sentinelObserverRef.current.disconnect();
+      sentinelObserverRef.current = null;
+    }
+    if (node) {
+      const observer = new IntersectionObserver(
+        (entries) => {
+          if (entries[0].isIntersecting) {
+            setGalleryVisibleCount(c => c + GALLERY_BATCH_SIZE);
+          }
+        },
+        { rootMargin: "400px" }
+      );
+      observer.observe(node);
+      sentinelObserverRef.current = observer;
+    }
+  }, []);
   const [galleryVisibleCount, setGalleryVisibleCount] = useState(GALLERY_INITIAL_BATCH);
   const [showStarredOnly, setShowStarredOnly] = useState(false);
   const [sortOrder, setSortOrder] = useState<"default" | "asc" | "desc">("default");
@@ -198,6 +222,11 @@ export default function AlbumDetail() {
   const [lbZoom, setLbZoom] = useState(1);
   const [lbPan, setLbPan] = useState({ x: 0, y: 0 });
   const lbPanStart = useRef<{ mx: number; my: number; px: number; py: number } | null>(null);
+  // Stable callback for LightboxImage to update the preload cache without
+  // re-triggering its useEffect on every parent render.
+  const handleLightboxCacheUpdate = useCallback((cacheKey: string, url: string) => {
+    setLightboxSrcCache(prev => ({ ...prev, [cacheKey]: url }));
+  }, []);
   const [stripeAvailable, setStripeAvailable] = useState(false);
   const [processingStripe, setProcessingStripe] = useState(false);
   const [stripeSuccess, setStripeSuccess] = useState(() => searchParams.get("success") === "1");
@@ -389,22 +418,6 @@ export default function AlbumDetail() {
     });
   }, []));
 
-  // Gallery batch rendering — load more photos as user scrolls toward the sentinel
-  useEffect(() => {
-    const sentinel = gallerySentinelRef.current;
-    if (!sentinel) return;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries[0].isIntersecting) {
-          setGalleryVisibleCount(c => c + GALLERY_BATCH_SIZE);
-        }
-      },
-      { rootMargin: "400px" }
-    );
-    observer.observe(sentinel);
-    return () => observer.disconnect();
-  }, []);
-
   // Reset visible count when the photo list changes (filter / sort)
   useEffect(() => {
     setGalleryVisibleCount(GALLERY_INITIAL_BATCH);
@@ -425,6 +438,29 @@ export default function AlbumDetail() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
+  }, [lightboxPhotoId]);
+
+  // Preload adjacent lightbox images when the lightbox photo changes.
+  // We store album.watermarkDisabled in a ref so the effect stays stable
+  // and doesn't need to re-run whenever unrelated album state changes.
+  const albumWatermarkDisabledRef = useRef<boolean>(false);
+  albumWatermarkDisabledRef.current = !!album?.watermarkDisabled;
+
+  useEffect(() => {
+    if (!lightboxPhotoId) return;
+    const photos = displayedPhotosRef.current;
+    const idx = photos.findIndex(p => p.id === lightboxPhotoId);
+    if (idx < 0) return;
+    // Preload up to one photo in each direction at medium resolution.
+    const toPreload = [
+      idx + 1 < photos.length ? photos[idx + 1] : null,
+      idx - 1 >= 0 ? photos[idx - 1] : null,
+    ].filter((p): p is Photo => p !== null);
+    for (const photo of toPreload) {
+      const src = getPhotoVariantSrc(photo, "medium", albumWatermarkDisabledRef.current);
+      const img = new Image();
+      img.src = src;
+    }
   }, [lightboxPhotoId]);
 
   /** Save the buyer's email, then resume any pending Stripe checkout.
@@ -1821,7 +1857,7 @@ export default function AlbumDetail() {
                 <LightboxImage
                   photo={lbPhoto}
                   cache={lightboxSrcCache}
-                  onCacheUpdate={(cacheKey, url) => setLightboxSrcCache(prev => ({ ...prev, [cacheKey]: url }))}
+                  onCacheUpdate={handleLightboxCacheUpdate}
                   wmDisabled={!!(album.watermarkDisabled || isPhotoPaid(lbPhoto.id))}
                   watermarkVersion={(settings as any).watermarkVersion || (lbPhoto as any).watermarkVersion || 0}
                 />
