@@ -183,7 +183,7 @@ function getStorageUsage() {
     const lines = dfOutput.trim().split("\n");
     if (lines.length >= 2) {
       const parts = lines[1].split(/\s+/);
-      if (parts.length >= 4) {
+      if (parts.length >= 6) {
         diskStats = {
           totalBytes: parseInt(parts[1]) || 0,
           usedBytes: parseInt(parts[2]) || 0,
