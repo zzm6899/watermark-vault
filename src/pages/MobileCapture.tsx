@@ -43,7 +43,7 @@ function formatDate(dateStr: string): string {
   const tmrw = new Date(); tmrw.setDate(tmrw.getDate() + 1);
   const tmrwStr = tmrw.toISOString().split("T")[0];
   if (dateStr === today) return "Today";
-  if (dateStr === tmrwStr) return "Tomorrow";
+  if (dateStr === tmrwStr) return "Tomorrow?";
   return new Date(dateStr + "T00:00:00").toLocaleDateString("en-AU", { weekday: "short", day: "numeric", month: "short" });
 }
 function formatDuration(mins: number) {
