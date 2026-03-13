@@ -327,7 +327,7 @@ Stripe handles all card payments for bookings, photo purchases, and invoices.
 
 ## 🔄 CI/CD & Updates
 
-The GitHub Actions workflow at `.github/workflows/docker-build.yml` automatically:
+The GitHub Actions workflow at `.github/workflows/docker-image.yml` automatically:
 
 1. Builds the Docker image on every push to `main`
 2. Pushes it to **GitHub Container Registry (GHCR)** as `ghcr.io/zzm6899/watermark-vault:latest`
@@ -336,6 +336,47 @@ To update your deployment:
 
 ```bash
 docker compose pull && docker compose up -d
+```
+
+---
+
+## 📱 Android APK — When Do You Need to Rebuild?
+
+The Capacitor app is configured with a `server.url` pointing to the live server (`https://book.zacmclients.photos`). This means the WebView loads all React/web code **directly from the server at runtime** rather than from anything bundled inside the APK.
+
+### ✅ No APK rebuild needed
+
+For **web-only changes** (anything under `src/`):
+
+1. Push your changes to `main`
+2. CI automatically builds and pushes a new Docker image
+3. Pull the new image on your server: `docker compose pull && docker compose up -d`
+4. The next time the Android app opens it fetches the updated code automatically
+
+### ⚠️ APK rebuild required
+
+Rebuild and redistribute the APK when you change **native Android code**:
+
+| What changed | Needs new APK? |
+|---|---|
+| React / TypeScript (`src/`) | ❌ No — server push is enough |
+| `capacitor.config.ts` (e.g. `server.url`) | ✅ Yes |
+| `android/app/src/main/java/…` (MainActivity, plugins) | ✅ Yes |
+| `android-plugin/CameraUsbPlugin.kt` | ✅ Yes |
+| `android/app/src/main/AndroidManifest.xml` | ✅ Yes |
+| Gradle / build files in `android/` | ✅ Yes |
+
+### Building the APK
+
+```bash
+# 1. Build the web bundle (needed if you also changed web code)
+npm run build
+
+# 2. Sync web assets into the Android project
+npx cap sync android
+
+# 3. Open Android Studio and build / sign the release APK
+npx cap open android
 ```
 
 ---
