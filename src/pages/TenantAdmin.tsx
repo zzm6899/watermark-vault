@@ -188,7 +188,7 @@ export default function TenantAdmin() {
                   className={`relative flex flex-col items-center justify-center gap-0.5 px-3 py-2 min-w-[56px] min-h-[52px] flex-shrink-0 transition-colors ${isActive ? "text-primary" : "text-muted-foreground"}`}
                 >
                   <tab.icon className="w-5 h-5" />
-                  <span className="text-[9px] font-body tracking-wide whitespace-nowrap">{tab.label}</span>
+                  <span className="text-[10px] font-body tracking-wide whitespace-nowrap">{tab.label}</span>
                   {isActive && <span className="absolute top-0 inset-x-2 h-0.5 rounded-full bg-primary" />}
                 </button>
               );
@@ -2108,7 +2108,7 @@ function TenantAlbumEditor({ slug, album, onSave, onCancel }: {
           </div>
         )}
         {liveAlbum && liveAlbum.photos && liveAlbum.photos.length > 0 && (
-          <div className="grid grid-cols-4 sm:grid-cols-6 gap-1.5 max-h-48 overflow-y-auto rounded-lg">
+          <div className="grid grid-cols-3 sm:grid-cols-6 gap-1.5 max-h-48 overflow-y-auto rounded-lg">
             {liveAlbum.photos.map(photo => (
               <div key={photo.id} className={`aspect-square rounded overflow-hidden bg-secondary relative ${photo.hidden ? "opacity-40" : ""}`}>
                 <img
@@ -2585,7 +2585,7 @@ function TenantPhotos({ slug }: { slug: string }) {
       </div>
 
       {/* ── Source filter pills ── */}
-      <div className="flex gap-2 mb-4 overflow-x-auto pb-1">
+      <div className="flex gap-2 mb-4 overflow-x-auto pb-1 scrollbar-hide">
         <button onClick={() => setViewSource("all")}
           className={`text-xs font-body px-3 py-1.5 rounded-full whitespace-nowrap transition-all ${viewSource === "all" ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground hover:text-foreground"}`}>
           All ({allPhotos.length})
@@ -2663,7 +2663,7 @@ function TenantPhotos({ slug }: { slug: string }) {
         </div>
       ) : (
         <>
-        <div className="grid grid-cols-3 sm:grid-cols-5 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-1.5">
+        <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-2">
           {displayPhotos.slice(0, visibleCount).map(p => (
             <div
               key={`${p.id}::${p.source}`}
@@ -2679,23 +2679,23 @@ function TenantPhotos({ slug }: { slug: string }) {
               />
               <button
                 onClick={e => { e.stopPropagation(); handleToggleStar(p); }}
-                className={`absolute top-1 left-1 w-5 h-5 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity ${p.starred ? "opacity-100 bg-yellow-500/80" : "bg-black/40"}`}
+                className={`absolute top-1 left-1 w-6 h-6 rounded-full flex items-center justify-center transition-opacity sm:opacity-0 sm:group-hover:opacity-100 ${p.starred ? "opacity-100 bg-yellow-500/80" : "opacity-60 bg-black/40"}`}
                 title={p.starred ? "Unstar" : "Star"}
               >
-                <span className="text-[9px] leading-none">{p.starred ? "★" : "☆"}</span>
+                <span className="text-[10px] leading-none">{p.starred ? "★" : "☆"}</span>
               </button>
               {selectedIds.has(p.id) && (
-                <div className="absolute top-1 right-1 w-5 h-5 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-[10px] font-bold">✓</div>
+                <div className="absolute top-1 right-1 w-6 h-6 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-[10px] font-bold">✓</div>
               )}
-              <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-background/80 to-transparent p-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+              <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-background/80 to-transparent p-1.5 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
                 <p className="text-[9px] font-body text-foreground font-medium truncate">{p.title}</p>
                 <p className="text-[8px] font-body text-muted-foreground truncate">{p.source}</p>
               </div>
               <button
                 onClick={e => { e.stopPropagation(); handleDeletePhoto(p.id, p.source, p.src); }}
-                className="absolute bottom-1 right-1 w-5 h-5 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                className="absolute bottom-1 right-1 w-6 h-6 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center opacity-60 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity"
               >
-                <X className="w-3 h-3" />
+                <X className="w-3.5 h-3.5" />
               </button>
             </div>
           ))}
@@ -3172,8 +3172,8 @@ function TenantContacts({ slug }: { slug: string }) {
                 <p className="font-body text-xs text-muted-foreground">{[c.email, c.phone].filter(Boolean).join(" · ")}</p>
               </div>
               <div className="flex gap-1 shrink-0">
-                <button onClick={() => setEditing({ ...c })} className="p-1.5 rounded hover:bg-secondary text-muted-foreground/60 hover:text-foreground transition-colors"><Edit className="w-3.5 h-3.5" /></button>
-                <button onClick={() => handleDelete(c.id)} className="p-1.5 rounded hover:bg-red-500/10 text-muted-foreground/60 hover:text-red-400 transition-colors"><Trash2 className="w-3.5 h-3.5" /></button>
+                <button onClick={() => setEditing({ ...c })} className="p-2 rounded hover:bg-secondary text-muted-foreground/60 hover:text-foreground transition-colors"><Edit className="w-4 h-4" /></button>
+                <button onClick={() => handleDelete(c.id)} className="p-2 rounded hover:bg-red-500/10 text-muted-foreground/60 hover:text-red-400 transition-colors"><Trash2 className="w-4 h-4" /></button>
               </div>
             </div>
           ))}
