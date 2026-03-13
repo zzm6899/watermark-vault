@@ -88,6 +88,21 @@ const App = () => {
     Promise.allSettled(tasks).finally(() => setReady(true));
   }, []);
 
+  // Re-sync from the server whenever the app is brought back to the foreground
+  // (e.g. Android/iOS app resume or switching back to this browser tab).  This
+  // ensures the admin gallery and other views always show the latest data without
+  // requiring a manual force-refresh of the app.
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== "visible" || isPublicRoute()) return;
+      syncFromServer().then(() => {
+        window.dispatchEvent(new CustomEvent("storage-synced"));
+      }).catch(() => { /* non-critical: best-effort background refresh */ });
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
+  }, []);
+
   if (!ready) {
     return PageFallback;
   }
