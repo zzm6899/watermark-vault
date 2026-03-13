@@ -296,6 +296,7 @@ function TenantDashboard({ slug, session }: { slug: string; session: { displayNa
     else d.setDate(d.getDate() + 7);
     setCalDate(d);
   };
+  const goToday = () => { setCalDate(new Date()); setCalSelectedDay(todayStr); };
 
   const selectedDayBookings = calSelectedDay ? (bookingsByDate[calSelectedDay] || []) : [];
   const monthLabel = calDate.toLocaleString("en-AU", { month: "long", year: "numeric" });
@@ -351,13 +352,14 @@ function TenantDashboard({ slug, session }: { slug: string; session: { displayNa
       <div className="glass-panel rounded-xl p-4 mb-6">
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-2">
-            <button onClick={prevPeriod} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors"><ChevronDown className="w-4 h-4 rotate-90" /></button>
+            <button type="button" onClick={prevPeriod} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors"><ChevronDown className="w-4 h-4 rotate-90" /></button>
             <span className="font-display text-sm text-foreground min-w-[160px] text-center">{calView === "month" ? monthLabel : weekLabel}</span>
-            <button onClick={nextPeriod} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors"><ChevronDown className="w-4 h-4 -rotate-90" /></button>
+            <button type="button" onClick={nextPeriod} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors"><ChevronDown className="w-4 h-4 -rotate-90" /></button>
           </div>
-          <div className="flex gap-1">
+          <div className="flex items-center gap-1.5">
+            <button type="button" onClick={goToday} className="text-[10px] font-body px-2.5 py-1 rounded-full bg-secondary hover:bg-secondary/80 text-muted-foreground hover:text-foreground transition-colors">Today</button>
             {(["month", "week"] as const).map(v => (
-              <button key={v} onClick={() => setCalView(v)}
+              <button type="button" key={v} onClick={() => setCalView(v)}
                 className={`px-2.5 py-1 rounded text-xs font-body transition-colors capitalize ${calView === v ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground hover:bg-secondary"}`}>
                 {v}
               </button>
