@@ -814,7 +814,7 @@ export default function AlbumDetail() {
     }
 
     const updated = { ...album };
-    updated.usedFreeDownloads = { ...(updated.usedFreeDownloads || {}), [sessionKey]: freeUsed + canDownload };
+    updated.usedFreeDownloads = { ...(updated.usedFreeDownloads || {}), [sessionKey]: freeUsed + canDownloadFree };
     // Track download history
     const historyEntry: DownloadHistoryEntry = {
       photoIds: toDownload.map(p => p.id),

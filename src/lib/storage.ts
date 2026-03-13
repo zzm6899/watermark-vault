@@ -292,7 +292,7 @@ export function getSettings(): AppSettings {
   return {
     ...defaultSettings,
     ...stored,
-    bankTransfer: { ...defaultSettings.bankTransfer, ...stored.bankTransfer },
+    bankTransfer: { ...defaultSettings.bankTransfer, ...(stored.bankTransfer || {}) },
     invoiceFrom: { ...defaultSettings.invoiceFrom, ...(stored.invoiceFrom || {}) },
   };
 }

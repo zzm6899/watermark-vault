@@ -1437,6 +1437,10 @@ export async function ftpUploadAlbum(
       return { ok: !!json.ok, done: json.done ?? 0, total: json.total ?? 0, failed: json.failed ?? 0, error: json.error };
     }
 
+    if (!res.body) {
+      return { ok: false, done: 0, total: 0, failed: 0, error: "Empty response body" };
+    }
+
     return await new Promise<{ ok: boolean; done: number; total: number; failed: number; error?: string }>((resolve) => {
       const reader = res.body!.getReader();
       const decoder = new TextDecoder();
