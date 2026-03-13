@@ -30,7 +30,8 @@ function toMinutes(time: string): number {
   return (h || 0) * 60 + (m || 0);
 }
 function todayStr(): string {
-  return new Date().toISOString().split("T")[0];
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 function formatTime12(t: string): string {
   const [h, m] = (t || "00:00").split(":").map(Number);
@@ -41,7 +42,7 @@ function formatDate(dateStr: string): string {
   if (!dateStr) return "";
   const today = todayStr();
   const tmrw = new Date(); tmrw.setDate(tmrw.getDate() + 1);
-  const tmrwStr = tmrw.toISOString().split("T")[0];
+  const tmrwStr = `${tmrw.getFullYear()}-${String(tmrw.getMonth() + 1).padStart(2, "0")}-${String(tmrw.getDate()).padStart(2, "0")}`;
   if (dateStr === today) return "Today";
   if (dateStr === tmrwStr) return "Tomorrow";
   return new Date(dateStr + "T00:00:00").toLocaleDateString("en-AU", { weekday: "short", day: "numeric", month: "short" });
