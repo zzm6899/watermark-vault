@@ -954,20 +954,20 @@ function DashboardView() {
         {/* Calendar header */}
         <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
           <div className="flex items-center gap-2">
-            <button onClick={prevPeriod} className="w-7 h-7 rounded-lg bg-secondary hover:bg-secondary/80 flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors">
+            <button type="button" onClick={prevPeriod} className="w-7 h-7 rounded-lg bg-secondary hover:bg-secondary/80 flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors">
               <ChevronLeft className="w-4 h-4" />
             </button>
             <p className="font-display text-sm text-foreground min-w-[160px] text-center">
               {calView === "month" ? monthLabel : weekLabel}
             </p>
-            <button onClick={nextPeriod} className="w-7 h-7 rounded-lg bg-secondary hover:bg-secondary/80 flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors">
+            <button type="button" onClick={nextPeriod} className="w-7 h-7 rounded-lg bg-secondary hover:bg-secondary/80 flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors">
               <ChevronRight className="w-4 h-4" />
             </button>
           </div>
           <div className="flex items-center gap-1.5">
-            <button onClick={goToday} className="text-[10px] font-body px-2.5 py-1 rounded-full bg-secondary hover:bg-secondary/80 text-muted-foreground hover:text-foreground transition-colors">Today</button>
+            <button type="button" onClick={goToday} className="text-[10px] font-body px-2.5 py-1 rounded-full bg-secondary hover:bg-secondary/80 text-muted-foreground hover:text-foreground transition-colors">Today</button>
             {(["month", "week"] as const).map(v => (
-              <button key={v} onClick={() => setCalView(v)} className={`text-[10px] font-body px-2.5 py-1 rounded-full transition-colors capitalize ${calView === v ? "bg-primary/15 text-primary" : "bg-secondary text-muted-foreground hover:text-foreground"}`}>{v}</button>
+              <button type="button" key={v} onClick={() => setCalView(v)} className={`text-[10px] font-body px-2.5 py-1 rounded-full transition-colors capitalize ${calView === v ? "bg-primary/15 text-primary" : "bg-secondary text-muted-foreground hover:text-foreground"}`}>{v}</button>
             ))}
           </div>
         </div>
