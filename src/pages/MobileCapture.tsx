@@ -94,6 +94,29 @@ type UploadQueueItem = {
   status: "pending" | "uploading" | "done" | "failed";
 };
 
+/**
+ * Create a temporary Photo backed by a local blob URL for immediate display
+ * while the file is being uploaded to the server.
+ * Returns both the Photo object and the blob URL so the caller can track the
+ * URL for later revocation.
+ */
+function createLocalPreviewPhoto(file: File): { photo: Photo; blobUrl: string } {
+  const blobUrl = URL.createObjectURL(file);
+  return {
+    blobUrl,
+    photo: {
+      id: `lp-${crypto.randomUUID()}`,
+      src: blobUrl,
+      thumbnail: blobUrl,
+      title: file.name.replace(/\.[^.]+$/, "").replace(/^_+/, ""),
+      width: 0,
+      height: 0,
+      uploadedAt: new Date().toISOString(),
+      localPreview: true,
+    },
+  };
+}
+
 // ── Error Boundary — prevents PTP crash from killing the whole page ──
 class CameraErrorBoundary extends React.Component<
   { children: React.ReactNode },
@@ -292,6 +315,14 @@ function MobileCaptureInner() {
   const emailSentRef = useRef(false);
   const sessionUploadedRef = useRef(false);
 
+  // Local-preview photos — shown immediately from blob URLs while server upload is in-flight.
+  // Never persisted; cleared and blob URLs revoked once server upload completes.
+  const [localPreviewPhotos, setLocalPreviewPhotos] = useState<Photo[]>([]);
+  const localPreviewUrlsRef = useRef<string[]>([]);
+
+  // Camera check loading state — used for the manual "Scan" button in the disconnected panel
+  const [cameraChecking, setCameraChecking] = useState(false);
+
   /** Persist an album — uses tenant API in tenant mode, localStorage otherwise. */
   const saveAlbum = useCallback(async (album: Album) => {
     if (tenantSession) {
@@ -300,6 +331,20 @@ function MobileCaptureInner() {
       updateAlbum(album);
     }
   }, [tenantSession]);
+
+  /** Clear all local-preview photos and revoke their blob URLs to free device memory. */
+  const clearLocalPreviews = useCallback(() => {
+    setLocalPreviewPhotos([]);
+    localPreviewUrlsRef.current.forEach(url => URL.revokeObjectURL(url));
+    localPreviewUrlsRef.current = [];
+  }, []);
+
+  // Revoke all local-preview blob URLs on unmount so the browser can free the memory.
+  useEffect(() => {
+    return () => {
+      localPreviewUrlsRef.current.forEach(url => URL.revokeObjectURL(url));
+    };
+  }, []);
 
   const sendClientNotification = useCallback(async (type: "album-created" | "photos-uploaded", photoCount?: number) => {
     if (!notifyClient || !serverOnline || !selectedBooking?.clientEmail) return;
@@ -584,6 +629,17 @@ function MobileCaptureInner() {
             // Sort by filename so camera sequential shots (DSC_0001.JPG…) stay in capture order
             decodedFiles.sort((a, b) => a.name.localeCompare(b.name));
             setImportLabel(`Uploading ${decodedFiles.length} file${decodedFiles.length !== 1 ? "s" : ""}…`);
+
+            // ── Local preview: show photos immediately from blob URLs while upload is in-flight ──
+            // The photographer (and client watching the screen) can see each shot right away
+            // instead of waiting for the full server round-trip to complete.
+            const chunkPreviews: Photo[] = decodedFiles.map(file => {
+              const { photo, blobUrl } = createLocalPreviewPhoto(file);
+              localPreviewUrlsRef.current.push(blobUrl);
+              return photo;
+            });
+            setLocalPreviewPhotos(prev => [...prev, ...chunkPreviews]);
+
             try {
               const uploadedAt = new Date().toISOString();
               const chunkResults = await uploadPhotosToServer(decodedFiles, (done, _total, bytesPerSecond) => {
@@ -672,7 +728,11 @@ function MobileCaptureInner() {
         return !importedNamesRef.current.has(key) && !importedNamesRef.current.has(`${n}:0`);
       }));
     } catch (e) { console.error("Import error:", e); toast.error("Import error"); }
-    finally { setImporting(false); }
+    finally {
+      setImporting(false);
+      // Clear local previews — the album now contains server-backed URLs (or the import failed).
+      clearLocalPreviews();
+    }
   };
 
   // Keep ref in sync so drainImportQueue can call it without stale closure
@@ -733,6 +793,17 @@ function MobileCaptureInner() {
       status: "pending",
     }));
     setUploadQueue(queueItems);
+
+    // ── Local preview: show photos in the album grid immediately while uploading ──
+    // Each queueItem already has a blob URL (preview) — create a separate blob URL for
+    // the album preview grid so both can be revoked independently when their work is done.
+    const filePickPreviews: Photo[] = sortedFiles.map(f => {
+      const { photo, blobUrl } = createLocalPreviewPhoto(f);
+      localPreviewUrlsRef.current.push(blobUrl);
+      return photo;
+    });
+    setLocalPreviewPhotos(filePickPreviews);
+
     setUploadPaused(false);
     uploadPausedRef.current = false;
     setUploading(true); setUploadProgress(0); setUploadSpeed(null);
@@ -805,11 +876,14 @@ function MobileCaptureInner() {
     } catch { toast.error("Upload error"); }
     finally {
       setUploading(false); setUploadSpeed(null);
-      // Revoke object URLs and clear queue after a brief moment so done state is visible
+      // Revoke upload-queue preview URLs and clear queue after a brief moment so done state is visible.
+      // Also clear local-preview album grid entries and revoke their blob URLs at the same time.
       const toRevoke = queueItems.map(q => q.preview);
       setTimeout(() => {
         toRevoke.forEach(url => URL.revokeObjectURL(url));
         setUploadQueue([]);
+        // Clear local previews — album now has server-backed URLs (or upload failed/offline)
+        clearLocalPreviews();
       }, 2000);
     }
   };
@@ -902,6 +976,17 @@ function MobileCaptureInner() {
   const filteredCameraFiles = jpegOnly
     ? cameraFiles.filter(f => f.mimeType === "image/jpeg" || f.name?.toLowerCase().match(/\.jpe?g$/))
     : cameraFiles;
+
+  // Combined display photos: local previews (most recent, shown immediately) + server-backed photos.
+  // Local previews whose title already matches an uploaded server photo are filtered out to avoid
+  // showing a photo twice during the brief window between upload completing and state being replaced.
+  const sessionPhotosWithPreviews = useMemo(() => {
+    if (!targetAlbum) return localPreviewPhotos;
+    const uploaded = [...targetAlbum.photos].reverse();
+    const uploadedTitles = new Set(uploaded.map(p => p.title));
+    const pendingPreviews = localPreviewPhotos.filter(p => !uploadedTitles.has(p.title));
+    return [...pendingPreviews, ...uploaded];
+  }, [targetAlbum, localPreviewPhotos]);
 
   // ── Booking card ────────────────────────────────────────────
   const BookingCard = ({ bk }: { bk: Booking }) => {
@@ -1422,12 +1507,23 @@ function MobileCaptureInner() {
               )}
             </div>
           ) : (
-            <div className="flex items-center gap-3">
-              <AlertCircle className="w-5 h-5 text-muted-foreground/50 flex-shrink-0" />
-              <div>
+            <div className="flex items-start gap-3">
+              <AlertCircle className="w-5 h-5 text-muted-foreground/50 flex-shrink-0 mt-0.5" />
+              <div className="flex-1 min-w-0">
                 <p className="text-sm font-body text-foreground">No camera detected</p>
-                <p className="text-xs font-body text-muted-foreground">Connect Nikon Z6III via USB-C</p>
+                <p className="text-xs font-body text-muted-foreground">Connect via USB-C · Set USB mode to PTP on camera</p>
               </div>
+              <button
+                onClick={async () => {
+                  setCameraChecking(true);
+                  try { await checkCamera(); } finally { setCameraChecking(false); }
+                }}
+                disabled={cameraChecking}
+                className="inline-flex items-center gap-1 text-[10px] font-body tracking-wider uppercase px-2.5 py-1.5 rounded-full border border-border text-muted-foreground hover:text-foreground hover:bg-secondary disabled:opacity-50 transition-all flex-shrink-0"
+              >
+                <RefreshCw className={`w-3 h-3 ${cameraChecking ? "animate-spin" : ""}`} />
+                {cameraChecking ? "Scanning…" : "Scan"}
+              </button>
             </div>
           )}
         </div>
@@ -1456,11 +1552,12 @@ function MobileCaptureInner() {
       </div>
 
       {/* Recent uploads */}
-      {targetAlbum && targetAlbum.photos.length > 0 && (() => {
-        const allPhotos = [...targetAlbum.photos].reverse();
+      {targetAlbum && (targetAlbum.photos.length > 0 || localPreviewPhotos.length > 0) && (() => {
+        const allPhotos = sessionPhotosWithPreviews;
         const filteredByStars = starFilter ? allPhotos.filter(p => (p as any).starred) : allPhotos;
         const previewPhotos = filteredByStars.slice(0, 12);
         const hasMore = filteredByStars.length > 12;
+        const serverPhotoCount = targetAlbum.photos.length;
         return (
           <div className="glass-panel rounded-xl p-4">
             <div className="flex items-center justify-between mb-3">
@@ -1472,7 +1569,7 @@ function MobileCaptureInner() {
                 >
                   <Star className={`w-2.5 h-2.5 ${starFilter ? "fill-yellow-400" : ""}`} /> Starred
                 </button>
-                <p className="text-xs font-body text-muted-foreground/60">{allPhotos.length} total</p>
+                <p className="text-xs font-body text-muted-foreground/60">{serverPhotoCount} total</p>
                 {hasMore && (
                   <button
                     onClick={() => setViewAllMode(true)}
@@ -1490,15 +1587,23 @@ function MobileCaptureInner() {
                   >
                     <img src={getThumbSrc(photo, tenantSession?.slug)} alt={photo.title} className="w-full h-full object-cover" />
                   </button>
-                  {photo.proofing && (
+                  {/* Uploading indicator for local preview photos */}
+                  {photo.localPreview && (
+                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none bg-black/20">
+                      <RefreshCw className="w-4 h-4 text-white/80 animate-spin drop-shadow" />
+                    </div>
+                  )}
+                  {photo.proofing && !photo.localPreview && (
                     <span className="absolute top-1 left-1 text-[8px] font-body tracking-wider uppercase px-1 py-0.5 rounded bg-primary/90 text-primary-foreground leading-tight pointer-events-none">P</span>
                   )}
-                  <button
-                    onClick={e => { e.stopPropagation(); toggleStar(photo.id); }}
-                    className="absolute bottom-1 right-1 w-6 h-6 rounded-full bg-black/40 flex items-center justify-center active:scale-90 transition-all"
-                  >
-                    <Star className={`w-3 h-3 ${(photo as any).starred ? "text-yellow-400 fill-yellow-400" : "text-white/60"}`} />
-                  </button>
+                  {!photo.localPreview && (
+                    <button
+                      onClick={e => { e.stopPropagation(); toggleStar(photo.id); }}
+                      className="absolute bottom-1 right-1 w-6 h-6 rounded-full bg-black/40 flex items-center justify-center active:scale-90 transition-all"
+                    >
+                      <Star className={`w-3 h-3 ${(photo as any).starred ? "text-yellow-400 fill-yellow-400" : "text-white/60"}`} />
+                    </button>
+                  )}
                 </div>
               ))}
             </div>
@@ -1507,7 +1612,7 @@ function MobileCaptureInner() {
                 onClick={() => setViewAllMode(true)}
                 className="w-full mt-3 py-2 text-xs font-body tracking-wider uppercase text-muted-foreground hover:text-foreground border border-border/50 rounded-lg hover:bg-secondary/30 transition-colors"
               >
-                View all {allPhotos.length} photos
+                View all {serverPhotoCount} photos
               </button>
             )}
           </div>
@@ -1516,9 +1621,10 @@ function MobileCaptureInner() {
 
       {/* View All Gallery */}
       {viewAllMode && targetAlbum && (() => {
-        const allPhotos = [...targetAlbum.photos].reverse();
+        const allPhotos = sessionPhotosWithPreviews;
         const displayPhotos = viewAllStarFilter ? allPhotos.filter(p => (p as any).starred) : allPhotos;
         const starredCount = allPhotos.filter(p => (p as any).starred).length;
+        const serverPhotoCount = targetAlbum.photos.length;
         return (
           <div className="fixed inset-0 z-40 bg-background flex flex-col">
             <div className="flex items-center gap-3 px-4 border-b border-border/50 bg-background/95 backdrop-blur-sm" style={{ paddingTop: "calc(env(safe-area-inset-top) + 0.75rem)", paddingBottom: "0.75rem" }}>
@@ -1530,7 +1636,7 @@ function MobileCaptureInner() {
               </button>
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-body text-foreground truncate">{selectedBooking?.clientName || "Session"}</p>
-                <p className="text-xs font-body text-muted-foreground">{allPhotos.length} photos{starredCount > 0 ? ` · ${starredCount} starred` : ""}</p>
+                <p className="text-xs font-body text-muted-foreground">{serverPhotoCount} photos{starredCount > 0 ? ` · ${starredCount} starred` : ""}</p>
               </div>
               {starredCount > 0 && (
                 <button
@@ -1563,17 +1669,25 @@ function MobileCaptureInner() {
                           loading="lazy"
                         />
                       </button>
-                      {(photo as any).starred && (
+                      {/* Uploading indicator for local preview photos */}
+                      {photo.localPreview && (
+                        <div className="absolute inset-0 flex items-center justify-center pointer-events-none bg-black/20">
+                          <RefreshCw className="w-4 h-4 text-white/70 animate-spin drop-shadow" />
+                        </div>
+                      )}
+                      {(photo as any).starred && !photo.localPreview && (
                         <span className="absolute top-1 left-1 w-4 h-4 flex items-center justify-center pointer-events-none">
                           <Star className="w-3 h-3 text-yellow-400 fill-yellow-400 drop-shadow" />
                         </span>
                       )}
-                      <button
-                        onClick={e => { e.stopPropagation(); toggleStar(photo.id); }}
-                        className={`absolute bottom-1 right-1 w-6 h-6 rounded-full flex items-center justify-center active:scale-90 transition-all ${(photo as any).starred ? "bg-yellow-500/30" : "bg-black/40"}`}
-                      >
-                        <Star className={`w-3 h-3 ${(photo as any).starred ? "text-yellow-400 fill-yellow-400" : "text-white/60"}`} />
-                      </button>
+                      {!photo.localPreview && (
+                        <button
+                          onClick={e => { e.stopPropagation(); toggleStar(photo.id); }}
+                          className={`absolute bottom-1 right-1 w-6 h-6 rounded-full flex items-center justify-center active:scale-90 transition-all ${(photo as any).starred ? "bg-yellow-500/30" : "bg-black/40"}`}
+                        >
+                          <Star className={`w-3 h-3 ${(photo as any).starred ? "text-yellow-400 fill-yellow-400" : "text-white/60"}`} />
+                        </button>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -1586,8 +1700,8 @@ function MobileCaptureInner() {
       {/* Lightbox with prev/next arrows, touch swipe, pinch & double-tap zoom */}
       {lightboxIndex !== null && targetAlbum && (() => {
         const allPhotos = viewAllMode
-          ? (viewAllStarFilter ? [...targetAlbum.photos].reverse().filter(p => (p as any).starred) : [...targetAlbum.photos].reverse())
-          : [...targetAlbum.photos].reverse();
+          ? (viewAllStarFilter ? sessionPhotosWithPreviews.filter(p => (p as any).starred) : sessionPhotosWithPreviews)
+          : sessionPhotosWithPreviews;
         const photo = allPhotos[lightboxIndex];
         if (!photo) return null;
         const hasPrev = lightboxIndex > 0;
