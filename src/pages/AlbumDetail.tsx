@@ -1336,14 +1336,12 @@ export default function AlbumDetail() {
                   watermarkSize={settings.watermarkSize ?? 40}
                 />
                   {/* Expand button — always visible on touch devices, hover-only on pointer devices */}
-                  {!isProofing && (
-                    <button
-                      onClick={e => { e.stopPropagation(); setLightboxPhotoId(photo.id); }}
-                      className="absolute top-2 left-2 w-7 h-7 rounded-full bg-black/50 text-white flex items-center justify-center [@media(hover:none)]:opacity-100 opacity-0 group-hover:opacity-100 transition-opacity z-10"
-                    >
-                      <Maximize2 className="w-3 h-3" />
-                    </button>
-                  )}
+                  <button
+                    onClick={e => { e.stopPropagation(); setLightboxPhotoId(photo.id); }}
+                    className="absolute top-2 left-2 w-7 h-7 rounded-full bg-black/50 text-white flex items-center justify-center [@media(hover:none)]:opacity-100 opacity-0 group-hover:opacity-100 transition-opacity z-10"
+                  >
+                    <Maximize2 className="w-3 h-3" />
+                  </button>
                   {isProofing && (
                     <button
                       onClick={() => toggleStar(photo.id)}
