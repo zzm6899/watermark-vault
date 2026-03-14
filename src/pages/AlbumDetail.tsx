@@ -154,12 +154,23 @@ function getGalleryPhotoSrc(photo: Photo, disableWatermark: boolean): string {
 
 export default function AlbumDetail() {
   const { albumId } = useParams();
-  const [album, setAlbumState] = useState(() => albumId ? getAlbumBySlug(albumId) : undefined);
+  const [album, setAlbumState] = useState(() => {
+    if (!albumId) return undefined;
+    const local = getAlbumBySlug(albumId);
+    // If the local copy only has stub data (photos stripped by background poll),
+    // return undefined so the server fetch below runs and loads the full photos.
+    return local?._photosStripped ? undefined : local;
+  });
   const [tenantSlug, setTenantSlug] = useState<string | null>(null);
   const [tenantDisplayName, setTenantDisplayName] = useState<string | null>(null);
   const [tenantEmail, setTenantEmail] = useState<string | null>(null);
   const [tenantBankTransfer, setTenantBankTransfer] = useState<typeof settings.bankTransfer | null>(null);
-  const [albumLoading, setAlbumLoading] = useState(() => !!(albumId && !getAlbumBySlug(albumId)));
+  const [albumLoading, setAlbumLoading] = useState(() => {
+    if (!albumId) return false;
+    const local = getAlbumBySlug(albumId);
+    // Show loading state when album is absent or only has stub data (no photos yet).
+    return !local || !!local._photosStripped;
+  });
   const settings = getSettings();
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [showBankTransfer, setShowBankTransfer] = useState(false);

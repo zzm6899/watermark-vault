@@ -2791,7 +2791,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
               <div className="p-3 space-y-1">
                 <h3 className="font-display text-base text-foreground">{alb.title}</h3>
                 <p className="text-xs font-body text-muted-foreground">
-                  {alb.photos.length} photos · {alb.freeDownloads} free · ${alb.pricePerPhoto}/photo
+                  {alb._photosStripped ? (alb.photoCount ?? 0) : alb.photos.length} photos · {alb.freeDownloads} free · ${alb.pricePerPhoto}/photo
                 </p>
                 {alb.clientName && <p className="text-xs font-body text-primary">{alb.clientName}</p>}
                 {/* Download expiry badge */}
