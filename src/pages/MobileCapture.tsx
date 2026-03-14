@@ -629,7 +629,7 @@ function MobileCaptureInner() {
       // continues to show the last measured upload speed between shots.
       if (newPhotos.length > 0) {
         const fresh = albums.find(a => a.id === album.id) || album;
-        const updated: Album = { ...fresh, photos: [...fresh.photos, ...newPhotos], photoCount: fresh.photos.length + newPhotos.length, coverImage: fresh.coverImage || newPhotos[0]?.src || "" };
+        const updated: Album = { ...fresh, enabled: true, photos: [...fresh.photos, ...newPhotos], photoCount: fresh.photos.length + newPhotos.length, coverImage: fresh.coverImage || newPhotos[0]?.src || "" };
         await saveAlbum(updated); setTargetAlbum(updated); setAlbums(prev => prev.map(a => a.id === updated.id ? updated : a));
         // Sync album record to server so admin panel / recent uploads reflects new photos
         if (isOnline) {
@@ -776,7 +776,7 @@ function MobileCaptureInner() {
       }
       if (newPhotos.length > 0) {
         const fresh = albums.find(a => a.id === targetAlbum.id) || targetAlbum;
-        const updated: Album = { ...fresh, photos: [...fresh.photos, ...newPhotos], photoCount: fresh.photos.length + newPhotos.length, coverImage: fresh.coverImage || newPhotos[0]?.src || "" };
+        const updated: Album = { ...fresh, enabled: true, photos: [...fresh.photos, ...newPhotos], photoCount: fresh.photos.length + newPhotos.length, coverImage: fresh.coverImage || newPhotos[0]?.src || "" };
         await saveAlbum(updated); setTargetAlbum(updated); setAlbums(prev => prev.map(a => a.id === updated.id ? updated : a));
         setUploadedCount(p => p + newPhotos.length);
         sessionUploadedRef.current = true;
@@ -850,6 +850,7 @@ function MobileCaptureInner() {
       };
       const updatedAlbum: Album = {
         ...targetAlbum,
+        enabled: true,
         proofingEnabled: true,
         proofingStage: "proofing",
         proofingRounds: [...(targetAlbum.proofingRounds || []), newRound],

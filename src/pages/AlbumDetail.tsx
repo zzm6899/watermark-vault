@@ -497,7 +497,7 @@ export default function AlbumDetail() {
     setSavingEmail(false);
   }, [purchaserEmail, album?.id, albumId, pendingStripeParams, tenantSlug]);
 
-  if (!album || album.enabled === false) {
+  if (!album || (album.enabled === false && !tokenMatchesAlbum)) {
     if (albumLoading) {
       return (
         <div className="min-h-screen bg-background flex items-center justify-center">
@@ -581,10 +581,11 @@ export default function AlbumDetail() {
   // Proofing derived values
   const proofingStage = album.proofingStage || "not-started";
   const isProofingWindowExpired = !!(album.proofingExpiresAt && new Date() > new Date(album.proofingExpiresAt));
-  // effectiveProofingEnabled: true when the admin has enabled proofing globally OR the album
-  // itself has proofing enabled (server-persisted). This allows clients who open a proofing
-  // link to see the proofing UI even though their local settings default to proofingEnabled=false.
-  const effectiveProofingEnabled = settings.proofingEnabled || !!album.proofingEnabled;
+  // effectiveProofingEnabled: true when the admin has enabled proofing globally, the album
+  // itself has proofing enabled (server-persisted), or the client has a valid token. This
+  // allows clients who open a proofing link to see the proofing UI even though their local
+  // settings default to proofingEnabled=false.
+  const effectiveProofingEnabled = settings.proofingEnabled || !!album.proofingEnabled || tokenMatchesAlbum;
   const isProofing = proofingStage === "proofing" && effectiveProofingEnabled && !isProofingWindowExpired;
   const latestRound = album.proofingRounds?.[album.proofingRounds.length - 1];
   const adminNote = latestRound?.adminNote;
