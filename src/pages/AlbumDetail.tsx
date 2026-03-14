@@ -497,7 +497,7 @@ export default function AlbumDetail() {
     setSavingEmail(false);
   }, [purchaserEmail, album?.id, albumId, pendingStripeParams, tenantSlug]);
 
-  if (!album || album.enabled === false) {
+  if (!album || (album.enabled === false && !tokenMatchesAlbum)) {
     if (albumLoading) {
       return (
         <div className="min-h-screen bg-background flex items-center justify-center">
@@ -581,7 +581,12 @@ export default function AlbumDetail() {
   // Proofing derived values
   const proofingStage = album.proofingStage || "not-started";
   const isProofingWindowExpired = !!(album.proofingExpiresAt && new Date() > new Date(album.proofingExpiresAt));
-  const isProofing = proofingStage === "proofing" && !!settings.proofingEnabled && (!!album.proofingEnabled || tokenMatchesAlbum) && !isProofingWindowExpired;
+  // effectiveProofingEnabled: true when the admin has enabled proofing globally, the album
+  // itself has proofing enabled (server-persisted), or the client has a valid token. This
+  // allows clients who open a proofing link to see the proofing UI even though their local
+  // settings default to proofingEnabled=false.
+  const effectiveProofingEnabled = settings.proofingEnabled || !!album.proofingEnabled || tokenMatchesAlbum;
+  const isProofing = proofingStage === "proofing" && effectiveProofingEnabled && !isProofingWindowExpired;
   const latestRound = album.proofingRounds?.[album.proofingRounds.length - 1];
   const adminNote = latestRound?.adminNote;
   // Visible photos: hide photos marked hidden (non-selected after round approval)
@@ -1020,7 +1025,7 @@ export default function AlbumDetail() {
               {/* ── Proofing Stage Banner ───────────────────────────── */}
 
               {/* Expired window banner (shown instead of the star UI) */}
-              {settings.proofingEnabled && album.proofingEnabled && proofingStage === "proofing" && isProofingWindowExpired && (
+              {effectiveProofingEnabled && album.proofingEnabled && proofingStage === "proofing" && isProofingWindowExpired && (
                 <div className="glass-panel rounded-xl p-5 border border-destructive/30 bg-destructive/5">
                   <div className="flex items-start gap-3">
                     <Clock className="w-5 h-5 text-destructive mt-0.5 shrink-0" />
@@ -1036,7 +1041,7 @@ export default function AlbumDetail() {
               )}
 
               {/* Active proofing banner (only when window is open) */}
-              {settings.proofingEnabled && album.proofingEnabled && proofingStage === "proofing" && !isProofingWindowExpired && (
+              {effectiveProofingEnabled && album.proofingEnabled && proofingStage === "proofing" && !isProofingWindowExpired && (
                 <div className="glass-panel rounded-xl p-5 border border-yellow-500/30 bg-yellow-500/5">
                   <div className="flex items-start gap-3">
                     <Star className="w-5 h-5 text-yellow-400 mt-0.5 shrink-0 fill-yellow-400/30" />
@@ -1077,7 +1082,7 @@ export default function AlbumDetail() {
                   </div>
                 </div>
               )}
-              {settings.proofingEnabled && album.proofingEnabled && proofingStage === "selections-submitted" && (
+              {effectiveProofingEnabled && album.proofingEnabled && proofingStage === "selections-submitted" && (
                 <div className="glass-panel rounded-xl p-5 border border-primary/30 bg-primary/5">
                   <div className="flex items-start gap-3">
                     <Clock className="w-5 h-5 text-primary mt-0.5 shrink-0" />
@@ -1088,7 +1093,7 @@ export default function AlbumDetail() {
                   </div>
                 </div>
               )}
-              {settings.proofingEnabled && album.proofingEnabled && proofingStage === "editing" && (
+              {effectiveProofingEnabled && album.proofingEnabled && proofingStage === "editing" && (
                 <div className="glass-panel rounded-xl p-5 border border-primary/30 bg-primary/5">
                   <div className="flex items-start gap-3">
                     <Camera className="w-5 h-5 text-primary mt-0.5 shrink-0" />
@@ -1099,7 +1104,7 @@ export default function AlbumDetail() {
                   </div>
                 </div>
               )}
-              {settings.proofingEnabled && album.proofingEnabled && proofingStage === "finals-delivered" && (
+              {effectiveProofingEnabled && album.proofingEnabled && proofingStage === "finals-delivered" && (
                 <div className="glass-panel rounded-xl p-5 border border-green-500/30 bg-green-500/5">
                   <div className="flex items-start gap-3">
                     <Sparkles className="w-5 h-5 text-green-400 mt-0.5 shrink-0" />
