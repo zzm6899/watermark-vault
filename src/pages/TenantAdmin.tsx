@@ -1457,9 +1457,9 @@ function TenantAlbums({ slug }: { slug: string }) {
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
             {sortedAlbums.map((alb) => {
-              const coverSrc = alb.coverImage
+              const coverSrc = alb.coverImage && !alb.coverImage.startsWith("file://")
                 ? photoUrl(alb.coverImage.startsWith("/uploads/") ? `${alb.coverImage}?size=thumb` : alb.coverImage)
-                : alb.photos?.[0]
+                : alb.photos?.[0] && !alb.photos[0].src.startsWith("file://")
                   ? photoUrl(alb.photos[0].thumbnail || (alb.photos[0].src.startsWith("/uploads/") ? `${alb.photos[0].src}?size=thumb` : alb.photos[0].src))
                   : null;
               return (

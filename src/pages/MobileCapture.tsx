@@ -613,8 +613,28 @@ function MobileCaptureInner() {
             }
           }
         } else {
-          for (const f of imported)
-            newPhotos.push({ id: crypto.randomUUID(), src: f.uri, thumbnail: f.uri, title: (f.localPath.split("/").pop() || "photo").replace(/^_+/, ""), width: 0, height: 0, proofing: true, uploadedAt: new Date().toISOString() });
+          // Offline: decode base64 payloads to File objects and queue for upload
+          // when the server becomes reachable. Storing file:// Android-local URIs
+          // as Photo.src would cause "Not allowed to load local resource" errors
+          // when the admin gallery is viewed in a web browser.
+          const offlineFiles: File[] = [];
+          for (let i = 0; i < imported.length; i++) {
+            const f = imported[i];
+            if (!f.base64) { setFailedHandles(prev => [...prev, chunkHandles[i]]); continue; }
+            try {
+              const byteChars = atob(f.base64);
+              const byteArr = new Uint8Array(byteChars.length);
+              for (let b = 0; b < byteChars.length; b++) byteArr[b] = byteChars.charCodeAt(b);
+              const blob = new Blob([byteArr], { type: f.mimeType || "image/jpeg" });
+              offlineFiles.push(new File([blob], f.localPath?.split("/").pop() || `photo_${chunkStart + i}.jpg`, { type: f.mimeType || "image/jpeg" }));
+            } catch (e) {
+              console.error("Offline decode error:", e);
+              setFailedHandles(prev => [...prev, chunkHandles[i]]);
+            }
+          }
+          if (offlineFiles.length > 0) {
+            setOfflineQueue(q => [...q, ...offlineFiles]);
+          }
           setImportProgress(Math.round((chunkStart + chunkHandles.length) / freshHandles.length * 100));
         }
         // Track imported keys per-chunk to prevent re-import within the session
