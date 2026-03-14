@@ -2783,7 +2783,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                 }
               }}
             >
-              {alb.coverImage && (
+              {alb.coverImage && !alb.coverImage.startsWith("file://") && (
                 <div className="aspect-[16/9] bg-secondary overflow-hidden">
                   <img src={alb.coverImage} alt={alb.title} className="w-full h-full object-cover" loading="lazy" />
                 </div>
