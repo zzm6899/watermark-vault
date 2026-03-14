@@ -496,7 +496,7 @@ function MobileCaptureInner() {
     if (existing) return existing;
     const settings = getSettings();
     const newAlbum: Album = {
-      id: crypto.randomUUID(), slug: `session-${booking.id.slice(0, 8)}`,
+      id: crypto.randomUUID(), slug: `session-${booking.id}`,
       title: `${booking.type} — ${booking.clientName}`, description: `Session on ${booking.date}`,
       coverImage: "", date: booking.date, photoCount: 0,
       freeDownloads: settings.defaultFreeDownloads, pricePerPhoto: settings.defaultPricePerPhoto,
