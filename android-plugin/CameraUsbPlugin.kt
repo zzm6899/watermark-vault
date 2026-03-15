@@ -419,23 +419,35 @@ class CameraUsbPlugin : Plugin() {
                     continue
                 }
                 val knownForStorage = lastKnownHandlesByStorage[storageId] ?: mutableSetOf()
-                currentHandlesByStorage[storageId] = handles.toMutableSet()
+                // Build the updated known-handles set incrementally rather than pre-seeding
+                // with handles.toMutableSet().  If getObjectInfo fails for a newly-appearing
+                // handle (file still being written to the card) the handle is intentionally
+                // left out of updatedKnown so it is retried on the next poll cycle.
+                // Pre-seeding ALL handles upfront would mark such a handle as "already seen"
+                // before its metadata is readable, causing the photo to be silently lost.
+                val updatedKnown = handles.filterTo(mutableSetOf()) { knownForStorage.contains(it) }
                 for (handle in handles) {
-                    if (!knownForStorage.contains(handle)) {
-                        val info = mtp.getObjectInfo(handle) ?: continue
-                        val fileName = info.name ?: "photo_$handle.jpg"
-                        // Skip if this filename was already emitted from another storage slot
-                        // in this same poll cycle (backup / mirror mode).
-                        if (!seenFileNames.add(fileName)) continue
-                        newFiles.add(JSObject().apply {
-                            put("handle", handle)
-                            put("name", fileName)
-                            put("mimeType", "image/jpeg")
-                            put("size", info.compressedSize)
-                            put("dateModified", info.dateModified * 1000L)
-                        })
-                    }
+                    if (knownForStorage.contains(handle)) continue // already processed
+                    // New handle — attempt to read its metadata.
+                    // If not available yet, skip WITHOUT adding to updatedKnown so the next
+                    // poll cycle detects it again and retries.
+                    val info = mtp.getObjectInfo(handle) ?: continue
+                    val fileName = info.name ?: "photo_$handle.jpg"
+                    // Mark as known once info is available — even for backup-mode duplicates —
+                    // so we don't repeatedly re-check this handle on every subsequent poll.
+                    updatedKnown.add(handle)
+                    // Skip if this filename was already emitted from another storage slot
+                    // in this same poll cycle (backup / mirror mode).
+                    if (!seenFileNames.add(fileName)) continue
+                    newFiles.add(JSObject().apply {
+                        put("handle", handle)
+                        put("name", fileName)
+                        put("mimeType", "image/jpeg")
+                        put("size", info.compressedSize)
+                        put("dateModified", info.dateModified * 1000L)
+                    })
                 }
+                currentHandlesByStorage[storageId] = updatedKnown
             }
 
             lastKnownHandlesByStorage = currentHandlesByStorage
