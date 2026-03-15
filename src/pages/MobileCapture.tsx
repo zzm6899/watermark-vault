@@ -749,6 +749,7 @@ function MobileCaptureInner() {
       toast.info("Live capture stopped");
     } else {
       if (!cameraConnected) { toast.error("No camera connected"); return; }
+      if (!targetAlbumRef.current) { toast.error("Select a session first"); return; }
       setImportSpeed(null); // clear any stale speed from a prior session before first shot
       try {
         await CameraUsb.startWatching({ intervalMs: 2000 });
