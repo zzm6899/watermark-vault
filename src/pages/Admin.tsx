@@ -2601,13 +2601,15 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
         // from the stub that just came back from the server), but sync starred
         // flags when picks have been submitted so the export button and starred
         // filter reflect the client's selections.
-        let photos = prev.photos;
+        // When prev had no photos yet (stub not hydrated), fall back to whatever
+        // updated has (e.g. from localStorage after fetchAlbumPhotos ran).
+        let photos = prev.photos?.length ? prev.photos : (updated.photos || []);
         if (updated.proofingStage === "selections-submitted") {
           const latestRound = updated.proofingRounds?.[updated.proofingRounds.length - 1];
           const selectedIds = latestRound?.selectedPhotoIds;
           if (selectedIds?.length) {
             const selectedSet = new Set(selectedIds);
-            photos = prev.photos.map(p => ({ ...p, starred: selectedSet.has(p.id) }));
+            photos = photos.map(p => ({ ...p, starred: selectedSet.has(p.id) }));
           }
         }
         return { ...updated, photos };
@@ -2984,6 +2986,10 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
     fetchAlbumPhotos(albumId).then(fetched => {
       if (fetched) {
         setPhotos(fetched);
+        // Keep liveAlbum in sync so the picks export can look up photo titles.
+        // Without this, liveAlbum.photos stays empty (stub) even after the photo
+        // grid is hydrated, causing the export to fall back to raw server IDs.
+        setLiveAlbum(prev => prev ? { ...prev, photos: fetched, _photosStripped: false } : prev);
         // Hydrate localStorage so the cover image picker and other reads see the
         // full album until the next poll cycle.  Write directly to localStorage
         // WITHOUT calling persistToServer — photos already came from the server so
