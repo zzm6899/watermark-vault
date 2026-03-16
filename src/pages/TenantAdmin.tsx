@@ -1593,6 +1593,43 @@ function TenantAlbumEditor({ slug, album, onSave, onCancel }: {
   const [ftpUploading, setFtpUploading] = useState(false);
   const uploadRef = useRef<HTMLInputElement>(null);
 
+  // Poll for proofing stage changes while waiting for client picks.
+  // The tenant admin has no background poll, so we add one here to detect
+  // when a client submits their selections.
+  useEffect(() => {
+    if (!album?.id || !slug) return;
+    if (liveAlbum?.proofingStage !== "proofing") return;
+    let cancelled = false;
+    let timerId: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      if (cancelled) return;
+      try {
+        const data = await fetchTenantMobileData(slug);
+        if (cancelled || !data) { if (!cancelled) timerId = setTimeout(poll, 5000); return; }
+        const fresh = data.albums.find(a => a.id === album!.id);
+        if (fresh && fresh.proofingStage !== liveAlbum?.proofingStage) {
+          setLiveAlbum(prev => {
+            if (!prev) return fresh;
+            // Use server photos (which carry correct starred flags) when available;
+            // fall back to local photos with starred flags synced from selectedPhotoIds.
+            if (fresh.photos?.length) return fresh;
+            const latestRound = fresh.proofingRounds?.[fresh.proofingRounds.length - 1];
+            const selectedIds = latestRound?.selectedPhotoIds;
+            if (selectedIds?.length) {
+              const selectedSet = new Set(selectedIds);
+              return { ...fresh, photos: prev.photos.map(p => ({ ...p, starred: selectedSet.has(p.id) })) };
+            }
+            return { ...fresh, photos: prev.photos };
+          });
+          return; // stop polling once stage has changed
+        }
+      } catch { /* non-critical — keep polling */ }
+      if (!cancelled) timerId = setTimeout(poll, 5000);
+    };
+    timerId = setTimeout(poll, 5000);
+    return () => { cancelled = true; clearTimeout(timerId); };
+  }, [album?.id, liveAlbum?.proofingStage, slug]);
+
   const updateLiveAlbum = async (updated: Album) => {
     const { ok, error } = await saveTenantAlbum(slug, updated);
     if (!ok) { toast.error(error || "Failed to update album"); return; }
@@ -1943,6 +1980,33 @@ function TenantAlbumEditor({ slug, album, onSave, onCancel }: {
                 <div className="bg-secondary rounded-lg p-3 space-y-1">
                   <p className="text-xs font-body text-foreground font-medium">{latest.selectedPhotoIds.length} photos selected by client</p>
                   {latest.clientNote && <p className="text-xs font-body text-muted-foreground italic">"{latest.clientNote}"</p>}
+                  <button
+                    onClick={() => {
+                      const photoMap = new Map((liveAlbum.photos || []).map(p => [p.id, p]));
+                      const lines = [
+                        `# Client picks — ${liveAlbum.title}`,
+                        `# Album: ${liveAlbum.slug}`,
+                        `# Exported: ${new Date().toISOString().slice(0, 10)}`,
+                        `# ${latest.selectedPhotoIds.length} of ${(liveAlbum.photos || []).length} photos selected`,
+                        ``,
+                        ...latest.selectedPhotoIds.map((id: string) => {
+                          const p = photoMap.get(id);
+                          return p?.title?.trim() || p?.originalName || id;
+                        }),
+                      ];
+                      const blob = new Blob([lines.join("\n")], { type: "text/plain" });
+                      const url = URL.createObjectURL(blob);
+                      const a = document.createElement("a");
+                      a.href = url;
+                      a.download = `picks_${liveAlbum.slug}_${new Date().toISOString().slice(0, 10)}.txt`;
+                      a.click();
+                      URL.revokeObjectURL(url);
+                      toast.success(`Exported ${latest.selectedPhotoIds.length} picks`);
+                    }}
+                    className="flex items-center gap-1.5 text-[10px] font-body text-muted-foreground hover:text-foreground transition-colors mt-1"
+                  >
+                    <Download className="w-3 h-3" /> Export picks list
+                  </button>
                 </div>
                 <p className="text-[10px] font-body text-muted-foreground/70 uppercase tracking-wider">Does this album require payment?</p>
                 <div className="grid grid-cols-2 gap-2">
