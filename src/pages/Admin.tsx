@@ -2563,7 +2563,21 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
             const existingPhotos = new Map(existing.map(a => [a.id, a.photos]));
             const merged = stubs.map(s => {
               const photos = existingPhotos.get(s.id);
-              return photos?.length ? { ...s, photos, _photosStripped: false } : s;
+              if (photos?.length) {
+                // When picks have been submitted, sync starred flags from the
+                // authoritative proofingRounds record — the locally-cached photo
+                // array may pre-date the submission and have no starred flags set.
+                if (s.proofingStage === "selections-submitted") {
+                  const latestRound = s.proofingRounds?.[s.proofingRounds.length - 1];
+                  const selectedIds = latestRound?.selectedPhotoIds;
+                  if (selectedIds?.length) {
+                    const selectedSet = new Set(selectedIds);
+                    return { ...s, photos: photos.map(p => ({ ...p, starred: selectedSet.has(p.id) })), _photosStripped: false };
+                  }
+                }
+                return { ...s, photos, _photosStripped: false };
+              }
+              return s;
             });
             // Preserve any albums that exist in localStorage but haven't yet been
             // confirmed by the server (e.g. newly created, persistToServer in-flight).
@@ -2584,8 +2598,19 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
         const updated = fresh.find(a => a.id === prev.id);
         if (!updated) return prev;
         // Preserve the photos that were loaded into the editor (may be absent
-        // from the stub that just came back from the server).
-        return { ...updated, photos: prev.photos };
+        // from the stub that just came back from the server), but sync starred
+        // flags when picks have been submitted so the export button and starred
+        // filter reflect the client's selections.
+        let photos = prev.photos;
+        if (updated.proofingStage === "selections-submitted") {
+          const latestRound = updated.proofingRounds?.[updated.proofingRounds.length - 1];
+          const selectedIds = latestRound?.selectedPhotoIds;
+          if (selectedIds?.length) {
+            const selectedSet = new Set(selectedIds);
+            photos = prev.photos.map(p => ({ ...p, starred: selectedSet.has(p.id) }));
+          }
+        }
+        return { ...updated, photos };
       });
       // Schedule the next poll only after the current one completes so requests
       // never pile up when the server is slow.
@@ -3480,6 +3505,33 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
                   <p className="text-xs font-body text-foreground font-medium">{latest.selectedPhotoIds.length} photos selected by client</p>
                   {latest.clientNote && <p className="text-xs font-body text-muted-foreground italic">"{latest.clientNote}"</p>}
                   <p className="text-[10px] font-body text-muted-foreground/60">{latest.submittedAt ? new Date(latest.submittedAt).toLocaleString() : ""}</p>
+                  <button
+                    onClick={() => {
+                      const photoMap = new Map((liveAlbum!.photos || []).map(p => [p.id, p]));
+                      const lines = [
+                        `# Client picks — ${liveAlbum!.title}`,
+                        `# Album: ${liveAlbum!.slug}`,
+                        `# Exported: ${new Date().toISOString().slice(0, 10)}`,
+                        `# ${latest.selectedPhotoIds.length} of ${(liveAlbum!.photos || []).length} photos selected`,
+                        ``,
+                        ...latest.selectedPhotoIds.map((id: string) => {
+                          const p = photoMap.get(id);
+                          return p?.title?.trim() || p?.originalName || id;
+                        }),
+                      ];
+                      const blob = new Blob([lines.join("\n")], { type: "text/plain" });
+                      const url = URL.createObjectURL(blob);
+                      const a = document.createElement("a");
+                      a.href = url;
+                      a.download = `picks_${liveAlbum!.slug}_${new Date().toISOString().slice(0, 10)}.txt`;
+                      a.click();
+                      URL.revokeObjectURL(url);
+                      toast.success(`Exported ${latest.selectedPhotoIds.length} picks`);
+                    }}
+                    className="flex items-center gap-1.5 text-[10px] font-body text-muted-foreground hover:text-foreground transition-colors mt-1"
+                  >
+                    <Download className="w-3 h-3" /> Export picks list
+                  </button>
                 </div>
                 <p className="text-[10px] font-body text-muted-foreground/70 uppercase tracking-wider">Does this album require payment?</p>
                 <div className="grid grid-cols-2 gap-2">
