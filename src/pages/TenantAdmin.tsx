@@ -1679,6 +1679,7 @@ function TenantAlbumEditor({ slug, album, onSave, onCancel }: {
       id: r.id, src: r.url, thumbnail: r.url + "?size=thumb&wm=0",
       title: r.originalName.replace(/\.[^.]+$/, "").replace(/^_+/, ""), width: 800, height: 600,
       uploadedAt: new Date().toISOString(),
+      originalName: r.originalName,
       ...(r.ftpUploaded ? { ftpUploaded: true } : {}),
     }));
     const updatedAlbum = { ...liveAlbum, photos: [...(liveAlbum.photos || []), ...newPhotos] };
@@ -2521,6 +2522,7 @@ function TenantPhotos({ slug }: { slug: string }) {
         id: r.id, src: r.url, thumbnail: r.url + "?size=thumb&wm=0",
         title: r.originalName.replace(/\.[^.]+$/, "").replace(/^_+/, ""), width: 0, height: 0,
         uploadedAt: new Date().toISOString(),
+        originalName: r.originalName,
         ...(r.ftpUploaded ? { ftpUploaded: true } : {}),
       }));
       if (newPhotos.length > 0) {
