@@ -651,7 +651,7 @@ function MobileCaptureInner() {
               const orderedResults = decodedFiles.map(f => resultByName.get(f.name)).filter(Boolean);
               for (const r of orderedResults) {
                 if (!r) continue;
-                newPhotos.push({ id: r.id, src: r.url, thumbnail: r.url + "?size=thumb&wm=0", title: r.originalName.replace(/\.[^.]+$/, "").replace(/^_+/, ""), width: 0, height: 0, proofing: true, uploadedAt });
+                newPhotos.push({ id: r.id, src: r.url, thumbnail: r.url + "?size=thumb&wm=0", title: r.originalName.replace(/\.[^.]+$/, "").replace(/^_+/, ""), originalName: r.originalName, width: 0, height: 0, proofing: true, uploadedAt });
               }
               // Delete local cached copies now that files are safely on the server.
               // Fire-and-forget: cleanup is best-effort and must not block the upload flow
@@ -840,7 +840,7 @@ function MobileCaptureInner() {
               const srcFile = fileInfoByName.get(r.originalName);
               newPhotos.push({
                 id: r.id, src: r.url, thumbnail: r.url + "?size=thumb&wm=0",
-                title: r.originalName.replace(/\.[^.]+$/, "").replace(/^_+/, ""), width: 0, height: 0, proofing: true,
+                title: r.originalName.replace(/\.[^.]+$/, "").replace(/^_+/, ""), originalName: r.originalName, width: 0, height: 0, proofing: true,
                 uploadedAt: srcFile ? new Date(srcFile.lastModified).toISOString() : new Date().toISOString(),
               });
             }
@@ -921,7 +921,7 @@ function MobileCaptureInner() {
       const orderedResults = files.map(f => resultByName.get(f.name)).filter((r): r is NonNullable<typeof r> => !!r);
       const newPhotos: Photo[] = orderedResults.map(r => {
         const srcFile = fileInfoByName.get(r.originalName);
-        return { id: r.id, src: r.url, thumbnail: r.url + "?size=thumb&wm=0", title: r.originalName.replace(/\.[^.]+$/, "").replace(/^_+/, ""), width: 0, height: 0, proofing: true, uploadedAt: srcFile ? new Date(srcFile.lastModified).toISOString() : new Date().toISOString() };
+        return { id: r.id, src: r.url, thumbnail: r.url + "?size=thumb&wm=0", title: r.originalName.replace(/\.[^.]+$/, "").replace(/^_+/, ""), originalName: r.originalName, width: 0, height: 0, proofing: true, uploadedAt: srcFile ? new Date(srcFile.lastModified).toISOString() : new Date().toISOString() };
       });
       const fresh = albums.find(a => a.id === targetAlbum.id) || targetAlbum;
       const upd: Album = { ...fresh, photos: [...fresh.photos, ...newPhotos], photoCount: fresh.photos.length + newPhotos.length, coverImage: fresh.coverImage || newPhotos[0]?.src || "" };

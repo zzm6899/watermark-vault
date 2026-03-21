@@ -1526,7 +1526,7 @@ function TenantAlbums({ slug }: { slug: string }) {
                                 `# Exported: ${new Date().toISOString().slice(0, 10)}`,
                                 `# ${starredPhotos.length} of ${alb.photos.length} photos starred`,
                                 ``,
-                                ...starredPhotos.map(p => p.title?.trim() || p.id),
+                                ...starredPhotos.map(p => (p as any).originalName?.trim() || p.title?.trim() || p.id),
                               ];
                               const blob = new Blob([lines.join("\n")], { type: "text/plain" });
                               const url = URL.createObjectURL(blob);
@@ -1992,7 +1992,8 @@ function TenantAlbumEditor({ slug, album, onSave, onCancel }: {
                         ``,
                         ...latest.selectedPhotoIds.map((id: string) => {
                           const p = photoMap.get(id);
-                          return p?.title?.trim() || p?.originalName || id;
+                          // Prefer original filename (with extension), fall back to title (no ext), then ID
+                          return p?.originalName?.trim() || p?.title?.trim() || id;
                         }),
                       ];
                       const blob = new Blob([lines.join("\n")], { type: "text/plain" });

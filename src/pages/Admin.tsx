@@ -2911,7 +2911,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                               `# Drop this file into the PowerShell script to copy matching NEFs`,
                               `# and write 5-star XMP sidecars for Lightroom / Capture One.`,
                               ``,
-                              ...starredPhotos.map((p: any) => p.title || p.id),
+                              ...starredPhotos.map((p: any) => p.originalName?.trim() || p.title || p.id),
                             ];
                             const blob = new Blob([lines.join("\n")], { type: "text/plain" });
                             const url = URL.createObjectURL(blob);
@@ -3512,17 +3512,29 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
                   {latest.clientNote && <p className="text-xs font-body text-muted-foreground italic">"{latest.clientNote}"</p>}
                   <p className="text-[10px] font-body text-muted-foreground/60">{latest.submittedAt ? new Date(latest.submittedAt).toLocaleString() : ""}</p>
                   <button
-                    onClick={() => {
-                      const photoMap = new Map((liveAlbum!.photos || []).map(p => [p.id, p]));
+                    onClick={async () => {
+                      // Ensure photos are loaded — if the album was opened as a stub
+                      // (photos stripped for bandwidth), fetch them now so we can map
+                      // IDs to original filenames instead of falling back to raw IDs.
+                      let albumPhotos = liveAlbum!.photos || [];
+                      if (albumPhotos.length === 0 || liveAlbum!._photosStripped) {
+                        const fetched = await fetchAlbumPhotos(liveAlbum!.id);
+                        if (fetched) {
+                          albumPhotos = fetched;
+                          setLiveAlbum(prev => prev ? { ...prev, photos: fetched, _photosStripped: false } : prev);
+                        }
+                      }
+                      const photoMap = new Map(albumPhotos.map(p => [p.id, p]));
                       const lines = [
                         `# Client picks — ${liveAlbum!.title}`,
                         `# Album: ${liveAlbum!.slug}`,
                         `# Exported: ${new Date().toISOString().slice(0, 10)}`,
-                        `# ${latest.selectedPhotoIds.length} of ${(liveAlbum!.photos || []).length} photos selected`,
+                        `# ${latest.selectedPhotoIds.length} of ${albumPhotos.length} photos selected`,
                         ``,
                         ...latest.selectedPhotoIds.map((id: string) => {
                           const p = photoMap.get(id);
-                          return p?.title?.trim() || p?.originalName || id;
+                          // Prefer original filename (with extension), fall back to title (no ext), then ID
+                          return p?.originalName?.trim() || p?.title?.trim() || id;
                         }),
                       ];
                       const blob = new Blob([lines.join("\n")], { type: "text/plain" });

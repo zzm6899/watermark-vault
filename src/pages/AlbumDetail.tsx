@@ -225,7 +225,7 @@ export default function AlbumDetail() {
   }, []);
   const [galleryVisibleCount, setGalleryVisibleCount] = useState(GALLERY_INITIAL_BATCH);
   const [showStarredOnly, setShowStarredOnly] = useState(false);
-  const [sortOrder, setSortOrder] = useState<"default" | "asc" | "desc">("default");
+  const [sortOrder, setSortOrder] = useState<"default" | "asc" | "desc">("desc");
   // Local display size — defaults to admin-set album size (or "medium" fallback)
   const [localDisplaySize, setLocalDisplaySize] = useState<string>(
     () => (albumId ? getAlbumBySlug(albumId) : undefined)?.displaySize ?? "medium"
@@ -1277,7 +1277,7 @@ export default function AlbumDetail() {
               )}
               {/* Sort by time */}
               <button
-                onClick={() => setSortOrder(s => s === "default" ? "asc" : s === "asc" ? "desc" : "default")}
+                onClick={() => setSortOrder(s => s === "desc" ? "asc" : s === "asc" ? "default" : "desc")}
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-body border transition-all ${
                   sortOrder !== "default"
                     ? "bg-primary/10 border-primary/30 text-primary"
@@ -1285,12 +1285,12 @@ export default function AlbumDetail() {
                 }`}
               >
                 <ArrowUpDown className="w-3 h-3" />
-                {sortOrder === "default" ? "Sort by time" : sortOrder === "asc" ? "Oldest first" : "Newest first"}
+                {sortOrder === "desc" ? "Newest first" : sortOrder === "asc" ? "Oldest first" : "Manual order"}
               </button>
-              {/* Active filter summary */}
-              {(showStarredOnly || sortOrder !== "default") && (
+              {/* Active filter summary — only show "Clear" when not on the default (newest-first) sort */}
+              {(showStarredOnly || sortOrder !== "desc") && (
                 <button
-                  onClick={() => { setShowStarredOnly(false); setSortOrder("default"); }}
+                  onClick={() => { setShowStarredOnly(false); setSortOrder("desc"); }}
                   className="flex items-center gap-1 px-2 py-1.5 rounded-full text-xs font-body text-muted-foreground/60 hover:text-muted-foreground transition-colors"
                 >
                   <X className="w-3 h-3" /> Clear
