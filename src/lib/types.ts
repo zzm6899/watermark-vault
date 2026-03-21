@@ -159,7 +159,9 @@ export interface Album {
   downloadExpiresAt?: string;
   watermarkDisabled?: boolean;
   purchasingDisabled?: boolean;
-  sessionPurchases?: Record<string, { fullAlbum?: boolean; photoIds?: string[] }>;
+  sessionPurchases?: Record<string, { fullAlbum?: boolean; photoIds?: string[]; purchaserEmail?: string; paidAt?: string; stripeSessionId?: string }>;
+  /** When true, all downloads are blocked while proofing is in progress (any stage except not-started/finals-delivered). Unlocks when proofing is reset or finals are delivered. */
+  lockDownloadsDuringProofing?: boolean;
   instagramHandle?: string;
   /**
    * Set to `true` when an album is returned as a stub (photos array omitted to

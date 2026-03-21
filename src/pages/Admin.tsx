@@ -3014,6 +3014,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
   const [watermarkDisabled, setWatermarkDisabled] = useState(album?.watermarkDisabled || false);
   const [purchasingDisabled, setPurchasingDisabled] = useState(album?.purchasingDisabled || false);
   const [albumProofingEnabled, setAlbumProofingEnabled] = useState(album?.proofingEnabled || false);
+  const [lockDownloadsDuringProofing, setLockDownloadsDuringProofing] = useState(album?.lockDownloadsDuringProofing || false);
 
   // When a stub album is opened (photos stripped during sync to save bandwidth),
   // fetch the full photos array from the server on demand.
@@ -3191,6 +3192,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
       expiresAt: expiresAt || undefined,
       downloadExpiresAt: downloadExpiresAt || undefined,
       proofingEnabled: albumProofingEnabled,
+      lockDownloadsDuringProofing: lockDownloadsDuringProofing || undefined,
       watermarkDisabled,
       purchasingDisabled,
       displaySize,
@@ -3402,6 +3404,17 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
               toast.success(v ? "Proofing enabled for this album" : "Proofing disabled for this album");
             }}
           />
+        </div>
+      )}
+
+      {/* ── Lock downloads during proofing (only visible when proofing is on for this album) ── */}
+      {album && settings.proofingEnabled && albumProofingEnabled && (
+        <div className="flex items-center justify-between p-3 rounded-lg bg-secondary border border-yellow-500/20">
+          <div>
+            <p className="text-xs font-body text-foreground font-medium flex items-center gap-1.5"><Lock className="w-3 h-3 text-yellow-400" /> Lock downloads during proofing</p>
+            <p className="text-[10px] font-body text-muted-foreground/70 mt-0.5">Block all downloads while proofing is active. Unlocks when finals are delivered or proofing is reset.</p>
+          </div>
+          <Switch checked={lockDownloadsDuringProofing} onCheckedChange={setLockDownloadsDuringProofing} />
         </div>
       )}
 
