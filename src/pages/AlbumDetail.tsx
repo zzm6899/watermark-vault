@@ -225,7 +225,7 @@ export default function AlbumDetail() {
   }, []);
   const [galleryVisibleCount, setGalleryVisibleCount] = useState(GALLERY_INITIAL_BATCH);
   const [showStarredOnly, setShowStarredOnly] = useState(false);
-  const [sortOrder, setSortOrder] = useState<"default" | "asc" | "desc">("default");
+  const [sortOrder, setSortOrder] = useState<"default" | "asc" | "desc">("desc");
   // Local display size — defaults to admin-set album size (or "medium" fallback)
   const [localDisplaySize, setLocalDisplaySize] = useState<string>(
     () => (albumId ? getAlbumBySlug(albumId) : undefined)?.displaySize ?? "medium"
@@ -279,10 +279,18 @@ export default function AlbumDetail() {
         : "Gallery"
   );
 
-  // If album not found locally, try fetching it from server (handles tenant albums)
+  // Fetch the album from the server.
+  // In server mode we always fetch even if a local copy exists so that any
+  // photo changes made on the admin side (added, deleted) are immediately
+  // visible to clients using the gallery/proofing link on other devices.
+  // The local copy (if present) keeps showing while the fetch is in flight.
   useEffect(() => {
-    if (album || !albumId) return;
-    setAlbumLoading(true);
+    if (!albumId) return;
+    // Without a server there is nothing to fetch — rely on localStorage only.
+    if (!isServerMode() && !album) { setAlbumLoading(false); return; }
+    if (!isServerMode()) return;
+    // Only show the loading spinner when we have no data at all yet.
+    if (!album) setAlbumLoading(true);
     fetchPublicAlbum(albumId).then(async result => {
       if (result?.album) {
         const tSlug = result.tenantSlug;
@@ -1269,7 +1277,7 @@ export default function AlbumDetail() {
               )}
               {/* Sort by time */}
               <button
-                onClick={() => setSortOrder(s => s === "default" ? "asc" : s === "asc" ? "desc" : "default")}
+                onClick={() => setSortOrder(s => s === "desc" ? "asc" : s === "asc" ? "default" : "desc")}
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-body border transition-all ${
                   sortOrder !== "default"
                     ? "bg-primary/10 border-primary/30 text-primary"
@@ -1277,12 +1285,12 @@ export default function AlbumDetail() {
                 }`}
               >
                 <ArrowUpDown className="w-3 h-3" />
-                {sortOrder === "default" ? "Sort by time" : sortOrder === "asc" ? "Oldest first" : "Newest first"}
+                {sortOrder === "desc" ? "Newest first" : sortOrder === "asc" ? "Oldest first" : "Manual order"}
               </button>
-              {/* Active filter summary */}
-              {(showStarredOnly || sortOrder !== "default") && (
+              {/* Active filter summary — only show "Clear" when not on the default (newest-first) sort */}
+              {(showStarredOnly || sortOrder !== "desc") && (
                 <button
-                  onClick={() => { setShowStarredOnly(false); setSortOrder("default"); }}
+                  onClick={() => { setShowStarredOnly(false); setSortOrder("desc"); }}
                   className="flex items-center gap-1 px-2 py-1.5 rounded-full text-xs font-body text-muted-foreground/60 hover:text-muted-foreground transition-colors"
                 >
                   <X className="w-3 h-3" /> Clear

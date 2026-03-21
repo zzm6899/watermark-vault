@@ -140,6 +140,24 @@ async function _flushQueue() {
   _flushScheduled = false;
 }
 
+// Separate queue for album writes (use the per-album PUT endpoint)
+const _albumWriteQueue: Array<{ albumId: string; album: import("./types").Album }> = [];
+let _albumFlushScheduled = false;
+
+async function _flushAlbumQueue() {
+  if (!(await checkServer())) { _albumWriteQueue.length = 0; return; }
+  while (_albumWriteQueue.length > 0) {
+    const item = _albumWriteQueue.shift()!;
+    fetch(`/api/albums/${encodeURIComponent(item.albumId)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(item.album),
+      keepalive: true,
+    }).catch(() => {});
+  }
+  _albumFlushScheduled = false;
+}
+
 /** Fire-and-forget persist a key to the server.
  *  If the server check hasn't completed yet, queues the write and flushes once it has. */
 export function persistToServer(key: string, value: unknown): void {
@@ -172,15 +190,29 @@ export function persistToServer(key: string, value: unknown): void {
 /** Fire-and-forget persist a single album to the server via the per-album endpoint.
  *  Unlike persistToServer("wv_albums", allAlbums), this only updates the one album
  *  so other albums' photos are never overwritten with stale stub (empty) data.
- *  keepalive: true ensures the request is not cancelled on page unload. */
+ *  keepalive: true ensures the request is not cancelled on page unload.
+ *  If the server check has not yet completed, queues the write and flushes once it has. */
 export function persistAlbumToServer(albumId: string, album: import("./types").Album): void {
-  if (serverAvailable !== true) return;
-  fetch(`/api/albums/${encodeURIComponent(albumId)}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(album),
-    keepalive: true,
-  }).catch(() => {});
+  if (serverAvailable === false) return;
+  if (serverAvailable === true) {
+    fetch(`/api/albums/${encodeURIComponent(albumId)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(album),
+      keepalive: true,
+    }).catch(() => {});
+    return;
+  }
+  // serverAvailable is null — queue and flush once check completes.
+  // Deduplicate: if the same album is already queued, replace it.
+  const existing = _albumWriteQueue.findIndex(w => w.albumId === albumId);
+  if (existing >= 0) _albumWriteQueue[existing].album = album;
+  else _albumWriteQueue.push({ albumId, album });
+
+  if (!_albumFlushScheduled) {
+    _albumFlushScheduled = true;
+    _flushAlbumQueue();
+  }
 }
 
 /** Fire-and-forget delete a single album from the server. */
@@ -1746,7 +1778,9 @@ export function tenantPhotoSrc(src: string, slug: string): string {
 /** Fetch an album by slug/id from any store (main or tenant). Returns the album and tenantSlug (null if main). */
 export async function fetchPublicAlbum(albumSlug: string): Promise<{ album: import("./types").Album; tenantSlug: string | null } | null> {
   try {
-    const res = await fetch(`/api/public-album/${encodeURIComponent(albumSlug)}`);
+    // Use no-store so the browser never serves a cached copy — gallery photo
+    // changes (additions, deletions) must always reflect the current server state.
+    const res = await fetch(`/api/public-album/${encodeURIComponent(albumSlug)}`, { cache: 'no-store' });
     if (!res.ok) return null;
     return await res.json();
   } catch { return null; }

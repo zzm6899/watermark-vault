@@ -2911,7 +2911,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                               `# Drop this file into the PowerShell script to copy matching NEFs`,
                               `# and write 5-star XMP sidecars for Lightroom / Capture One.`,
                               ``,
-                              ...starredPhotos.map((p: any) => p.title || p.id),
+                              ...starredPhotos.map((p: any) => p.originalName?.trim() || p.title || p.id),
                             ];
                             const blob = new Blob([lines.join("\n")], { type: "text/plain" });
                             const url = URL.createObjectURL(blob);
@@ -3512,17 +3512,29 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
                   {latest.clientNote && <p className="text-xs font-body text-muted-foreground italic">"{latest.clientNote}"</p>}
                   <p className="text-[10px] font-body text-muted-foreground/60">{latest.submittedAt ? new Date(latest.submittedAt).toLocaleString() : ""}</p>
                   <button
-                    onClick={() => {
-                      const photoMap = new Map((liveAlbum!.photos || []).map(p => [p.id, p]));
+                    onClick={async () => {
+                      // Ensure photos are loaded — if the album was opened as a stub
+                      // (photos stripped for bandwidth), fetch them now so we can map
+                      // IDs to original filenames instead of falling back to raw IDs.
+                      let albumPhotos = liveAlbum!.photos || [];
+                      if (albumPhotos.length === 0 || liveAlbum!._photosStripped) {
+                        const fetched = await fetchAlbumPhotos(liveAlbum!.id);
+                        if (fetched) {
+                          albumPhotos = fetched;
+                          setLiveAlbum(prev => prev ? { ...prev, photos: fetched, _photosStripped: false } : prev);
+                        }
+                      }
+                      const photoMap = new Map(albumPhotos.map(p => [p.id, p]));
                       const lines = [
                         `# Client picks — ${liveAlbum!.title}`,
                         `# Album: ${liveAlbum!.slug}`,
                         `# Exported: ${new Date().toISOString().slice(0, 10)}`,
-                        `# ${latest.selectedPhotoIds.length} of ${(liveAlbum!.photos || []).length} photos selected`,
+                        `# ${latest.selectedPhotoIds.length} of ${albumPhotos.length} photos selected`,
                         ``,
                         ...latest.selectedPhotoIds.map((id: string) => {
                           const p = photoMap.get(id);
-                          return p?.title?.trim() || p?.originalName || id;
+                          // Prefer original filename (with extension), fall back to title (no ext), then ID
+                          return p?.originalName?.trim() || p?.title?.trim() || id;
                         }),
                       ];
                       const blob = new Blob([lines.join("\n")], { type: "text/plain" });
@@ -3728,7 +3740,12 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
             {photos.map(p => (
               <div key={p.id} className="relative group aspect-square rounded-md overflow-hidden bg-secondary">
                 <ProgressiveImg thumbSrc={p.thumbnail} fullSrc={p.src} alt={p.title} className="w-full h-full object-cover" loading="lazy" />
-                <button onClick={() => setPhotos(photos.filter(pp => pp.id !== p.id))}
+                <button onClick={() => {
+                  const filtered = photos.filter(pp => pp.id !== p.id);
+                  setPhotos(filtered);
+                  // If the removed photo was the cover, fall back to the next available photo
+                  if (coverImage === p.src) setCoverImage(filtered[0]?.src || "");
+                }}
                   className="absolute top-1 right-1 w-5 h-5 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
                   <X className="w-3 h-3" />
                 </button>
@@ -4110,16 +4127,34 @@ function PhotosView() {
 
   const handleDeletePhoto = (id: string, source: string) => {
     if (source === "Library") {
+      const lp = libraryPhotos.find(p => p.id === id);
       const updated = libraryPhotos.filter(p => p.id !== id);
       setPhotoLibrary(updated);
       setLibraryPhotosState(updated);
+      // Delete the physical file if it isn't referenced by any album
+      if (lp && isServerMode()) {
+        const usedInAlbum = albums.some(a => (a.photos || []).some(p => p.src === lp.src));
+        if (!usedInAlbum) deletePhotoFromServer(lp.src);
+      }
     } else {
       // Remove from the album it belongs to
       const alb = albums.find(a => a.title === source);
       if (alb) {
-        const updated = { ...alb, photos: alb.photos.filter(p => p.id !== id), photoCount: alb.photos.length - 1 };
+        const deletedPhoto = alb.photos.find(p => p.id === id);
+        const filtered = alb.photos.filter(p => p.id !== id);
+        // If the deleted photo was the cover image, pick the next available photo
+        const newCover = (deletedPhoto?.src && deletedPhoto.src === alb.coverImage)
+          ? (filtered[0]?.src || "")
+          : alb.coverImage;
+        const updated = { ...alb, photos: filtered, photoCount: filtered.length, coverImage: newCover };
         updateAlbum(updated);
         setAlbumsState(getAlbums());
+        // Delete the physical file if it isn't referenced anywhere else
+        if (deletedPhoto && isServerMode()) {
+          const usedElsewhere = albums.some(a => a.id !== alb.id && (a.photos || []).some(p => p.src === deletedPhoto.src))
+            || libraryPhotos.some(p => p.src === deletedPhoto.src);
+          if (!usedElsewhere) deletePhotoFromServer(deletedPhoto.src);
+        }
       }
     }
     setSelectedIds(prev => { const next = new Set(prev); next.delete(id); return next; });
@@ -4139,7 +4174,11 @@ function PhotosView() {
       if (photo.source === "Library") {
         libToDelete.add(id);
         const lp = libraryPhotos.find(p => p.id === id);
-        if (lp && isServerMode()) deletePhotoFromServer(lp.src);
+        // Delete file only if not referenced by any album
+        if (lp && isServerMode()) {
+          const usedInAlbum = albums.some(a => (a.photos || []).some(p => p.src === lp.src));
+          if (!usedInAlbum) deletePhotoFromServer(lp.src);
+        }
       } else {
         const alb = albums.find(a => a.title === photo.source);
         if (alb) {
@@ -4156,12 +4195,27 @@ function PhotosView() {
       setLibraryPhotosState(remaining);
     }
 
+    // Build remaining-library src set once — used in per-album file deletion checks below
+    const remainingLibSrcs = new Set(libraryPhotos.filter(p => !libToDelete.has(p.id)).map(p => p.src));
+
     // Delete from albums
     for (const [albumId, photoIds] of albumUpdates) {
       const alb = albums.find(a => a.id === albumId);
       if (alb) {
-        const updated = { ...alb, photos: alb.photos.filter(p => !photoIds.has(p.id)), photoCount: alb.photos.length - photoIds.size };
+        const filtered = alb.photos.filter(p => !photoIds.has(p.id));
+        // Auto-update cover image if the cover photo was among those deleted
+        const coverStillExists = filtered.some(p => p.src === alb.coverImage);
+        const newCover = coverStillExists ? alb.coverImage : (filtered[0]?.src || "");
+        const updated = { ...alb, photos: filtered, photoCount: filtered.length, coverImage: newCover };
         updateAlbum(updated);
+        // Delete physical files not referenced elsewhere
+        if (isServerMode()) {
+          for (const photo of alb.photos.filter(p => photoIds.has(p.id))) {
+            const usedElsewhere = albums.some(a => a.id !== alb.id && (a.photos || []).some(p => p.src === photo.src))
+              || remainingLibSrcs.has(photo.src);
+            if (!usedElsewhere) deletePhotoFromServer(photo.src);
+          }
+        }
       }
     }
     if (albumUpdates.size > 0) setAlbumsState(getAlbums());
@@ -4224,41 +4278,44 @@ function PhotosView() {
           <Button size="sm" variant="outline" onClick={handleSyncFromStorage} disabled={syncing} className="gap-2 font-body text-xs border-border text-foreground">
             <RefreshCw className={`w-4 h-4 ${syncing ? "animate-spin" : ""}`} /> {syncing ? "Syncing…" : "Sync Storage"}
           </Button>
-          {selectedIds.size > 0 && (
-            <>
-              <Button size="sm" variant="outline" onClick={handleMassDelete} className="gap-2 font-body text-xs border-destructive/30 text-destructive hover:bg-destructive/10">
-                <Trash2 className="w-4 h-4" /> Delete ({selectedIds.size})
-              </Button>
-              <Button size="sm" variant="ghost" onClick={() => setSelectedIds(new Set())} className="gap-1 font-body text-xs text-muted-foreground">
-                <XSquare className="w-4 h-4" /> Clear
-              </Button>
-              <div className="relative">
-                <Button size="sm" variant="outline" onClick={() => setShowAddToAlbum(!showAddToAlbum)} className="gap-2 font-body text-xs border-border text-foreground">
-                  <Plus className="w-4 h-4" /> Add to Album ({selectedIds.size})
-                </Button>
-                {showAddToAlbum && albums.length > 0 && (
-                  <div className="absolute top-full right-0 mt-1 z-50 glass-panel rounded-lg border border-border shadow-lg min-w-[200px]">
-                    {albums.map(alb => (
-                      <button key={alb.id} onClick={() => handleAddToAlbum(alb.id)} className="w-full text-left px-4 py-2.5 text-sm font-body text-foreground hover:bg-secondary transition-colors first:rounded-t-lg last:rounded-b-lg">
-                        {alb.title} ({alb.photos.length} photos)
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-              <Button size="sm" onClick={handleCreateAlbumFromSelection} className="gap-2 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs tracking-wider uppercase">
-                <Plus className="w-4 h-4" /> Create Album ({selectedIds.size})
-              </Button>
-            </>
-          )}
-          <Button size="sm" variant="ghost" onClick={() => {
-            if (selectedIds.size === displayPhotos.length) setSelectedIds(new Set());
+          <Button size="sm" variant={selectedIds.size > 0 ? "default" : "ghost"} onClick={() => {
+            if (selectedIds.size === displayPhotos.length && displayPhotos.length > 0) setSelectedIds(new Set());
             else setSelectedIds(new Set(displayPhotos.map(p => p.id)));
-          }} className="gap-1 font-body text-xs text-muted-foreground">
+          }} className={`gap-1 font-body text-xs ${selectedIds.size > 0 ? "bg-primary/20 text-primary border border-primary/30 hover:bg-primary/30" : "text-muted-foreground"}`}>
             <CheckSquare className="w-4 h-4" /> {selectedIds.size === displayPhotos.length && displayPhotos.length > 0 ? "Deselect All" : "Select All"}
           </Button>
         </div>
       </div>
+
+      {/* Selection action bar — appears when photos are selected */}
+      {selectedIds.size > 0 && (
+        <div className="sticky top-0 z-20 mb-4 p-3 rounded-xl bg-primary/10 border border-primary/20 backdrop-blur-sm flex flex-wrap items-center gap-2">
+          <span className="text-xs font-body font-semibold text-primary mr-1">{selectedIds.size} selected</span>
+          <Button size="sm" variant="outline" onClick={handleMassDelete} className="gap-1.5 font-body text-xs border-destructive/40 text-destructive hover:bg-destructive/10 hover:border-destructive">
+            <Trash2 className="w-3.5 h-3.5" /> Delete ({selectedIds.size})
+          </Button>
+          <Button size="sm" onClick={handleCreateAlbumFromSelection} className="gap-1.5 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs tracking-wider uppercase">
+            <Plus className="w-3.5 h-3.5" /> New Album
+          </Button>
+          <div className="relative">
+            <Button size="sm" variant="outline" onClick={() => setShowAddToAlbum(!showAddToAlbum)} className="gap-1.5 font-body text-xs border-border text-foreground">
+              <Plus className="w-3.5 h-3.5" /> Add to Album
+            </Button>
+            {showAddToAlbum && albums.length > 0 && (
+              <div className="absolute top-full left-0 mt-1 z-50 glass-panel rounded-lg border border-border shadow-lg min-w-[200px]">
+                {albums.map(alb => (
+                  <button key={alb.id} onClick={() => handleAddToAlbum(alb.id)} className="w-full text-left px-4 py-2.5 text-sm font-body text-foreground hover:bg-secondary transition-colors first:rounded-t-lg last:rounded-b-lg">
+                    {alb.title} ({alb.photos.length} photos)
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+          <button onClick={() => setSelectedIds(new Set())} className="ml-auto text-xs font-body text-muted-foreground hover:text-foreground flex items-center gap-1">
+            <X className="w-3.5 h-3.5" /> Clear
+          </button>
+        </div>
+      )}
 
       {/* Search bar */}
       <div className="relative mb-4">
