@@ -232,6 +232,20 @@ export function deleteFromServer(key: string): void {
   }).catch(() => {});
 }
 
+export type UploadedPhotoResult = {
+  id: string;
+  url: string;
+  originalName: string;
+  size: number;
+  ftpUploaded?: boolean;
+  /** Actual image width extracted from server-side metadata (pixels). */
+  width?: number;
+  /** Actual image height extracted from server-side metadata (pixels). */
+  height?: number;
+  /** EXIF DateTimeOriginal as ISO-8601 string, when available. */
+  takenAt?: string | null;
+};
+
 /** Upload photo files to the server. Returns URLs, or empty array if server unavailable.
  *  Uploads are split into batches and sent concurrently to maximise throughput. */
 export async function uploadPhotosToServer(
@@ -240,7 +254,7 @@ export async function uploadPhotosToServer(
   tenantSlug?: string,
   concurrency = 3,
   albumFolder?: string,
-): Promise<{ id: string; url: string; originalName: string; size: number; ftpUploaded?: boolean }[]> {
+): Promise<UploadedPhotoResult[]> {
   if (!(await checkServer())) return [];
 
   let uploadUrl = tenantSlug
@@ -257,7 +271,7 @@ export async function uploadPhotosToServer(
     batches.push(files.slice(i, i + batchSize));
   }
 
-  const results: { id: string; url: string; originalName: string; size: number; ftpUploaded?: boolean }[] = [];
+  const results: UploadedPhotoResult[] = [];
   let done = 0;
   let doneBytes = 0;
   let batchIndex = 0;

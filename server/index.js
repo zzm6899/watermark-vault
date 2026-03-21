@@ -705,14 +705,57 @@ const upload = multer({
   },
 });
 
+/**
+ * Parse a raw EXIF buffer to find the DateTimeOriginal (or DateTime) tag and
+ * return it as an ISO-8601 string.  Uses a simple text-scan approach that works
+ * for standard JFIF/EXIF JPEGs produced by cameras and modern phones.
+ * Returns null when no parseable date is found.
+ */
+function parseExifDate(exifBuf) {
+  if (!exifBuf || exifBuf.length < 10) return null;
+  try {
+    // EXIF date strings are stored as ASCII "YYYY:MM:DD HH:MM:SS" (19 chars).
+    // Scan the buffer as a latin-1 string so every byte maps 1-to-1 to a character.
+    const str = exifBuf.toString("latin1");
+    // Find the first occurrence of the EXIF date-time pattern.
+    const m = str.match(/(\d{4}):(\d{2}):(\d{2}) (\d{2}):(\d{2}):(\d{2})/);
+    if (!m) return null;
+    const [, yr, mo, dy, hr, min, sec] = m;
+    // Validate ranges to avoid corrupted data
+    if (Number(mo) < 1 || Number(mo) > 12) return null;
+    if (Number(dy) < 1 || Number(dy) > 31) return null;
+    if (Number(yr) < 1990 || Number(yr) > 2100) return null;
+    return new Date(`${yr}-${mo}-${dy}T${hr}:${min}:${sec}`).toISOString();
+  } catch {
+    return null;
+  }
+}
+
 app.post("/api/upload", upload.array("photos", 100), async (req, res) => {
-  const uploadedFiles = (req.files || []).map((f) => ({
-    id: path.basename(f.filename, path.extname(f.filename)),
-    url: `/uploads/${f.filename}`,
-    originalName: f.originalname,
-    size: f.size,
-    localPath: f.path,
-  }));
+  // ── Extract image metadata (dimensions + EXIF date) for each uploaded file ──
+  const uploadedFiles = await Promise.all(
+    (req.files || []).map(async (f) => {
+      let width = 800;
+      let height = 600;
+      let takenAt = null;
+      try {
+        const meta = await sharp(f.path).metadata();
+        if (meta.width) width = meta.width;
+        if (meta.height) height = meta.height;
+        if (meta.exif) takenAt = parseExifDate(meta.exif);
+      } catch { /* non-critical — fallback values remain */ }
+      return {
+        id: path.basename(f.filename, path.extname(f.filename)),
+        url: `/uploads/${f.filename}`,
+        originalName: f.originalname,
+        size: f.size,
+        localPath: f.path,
+        width,
+        height,
+        takenAt,
+      };
+    })
+  );
 
   // ── FTP Upload (if enabled) ──────────────────────────────────────────────
   // Determine FTP settings: use tenant-specific settings when ?tenant= is provided,
@@ -747,6 +790,32 @@ app.post("/api/upload", upload.array("photos", 100), async (req, res) => {
 
   const files = uploadedFiles.map(({ localPath: _lp, ...rest }) => ({ ...rest, ftpUploaded }));
   res.json({ files });
+
+  // ── Pre-generate thumbnails asynchronously ───────────────────────────────
+  // Fire-and-forget: warm the thumb cache for every uploaded file so the
+  // gallery renders fast thumbnails on first load without waiting for the
+  // first client request to trigger on-demand generation.
+  setImmediate(async () => {
+    const wm = getWatermarkSettings(tenantSlug || null);
+    for (const f of uploadedFiles) {
+      const baseName = path.basename(f.localPath, path.extname(f.localPath));
+      for (const watermarked of [true, false]) {
+        const cacheFile = path.join(CACHE_DIR, getCacheFilename(baseName, "thumb", watermarked, tenantSlug || null));
+        if (fs.existsSync(cacheFile)) continue;
+        try {
+          let pipeline = sharp(f.localPath).resize(THUMB_WIDTH, null, { withoutEnlargement: true });
+          if (watermarked) {
+            const renderW = Math.min(f.width, THUMB_WIDTH);
+            const renderH = f.width > THUMB_WIDTH ? Math.round(f.height * (THUMB_WIDTH / f.width)) : f.height;
+            const overlay = await buildWatermarkOverlay(renderW, renderH, wm);
+            pipeline = pipeline.composite([overlay]);
+          }
+          const buf = await pipeline.jpeg({ quality: 82, progressive: true }).toBuffer();
+          fs.writeFileSync(cacheFile, buf);
+        } catch { /* non-critical */ }
+      }
+    }
+  });
 });
 
 // ── Delete ALL uploaded photos from disk ───────────────

@@ -519,10 +519,27 @@ export default function AlbumDetail() {
   if (!album || (album.enabled === false && !tokenMatchesAlbum)) {
     if (albumLoading) {
       return (
-        <div className="min-h-screen bg-background flex items-center justify-center">
-          <div className="text-center">
-            <p className="font-display text-xl text-foreground animate-pulse">Loading gallery…</p>
-          </div>
+        <div className="min-h-screen bg-background">
+          <Header tenantSlug={null} tenantName={null} />
+          <section className="pt-28 pb-32">
+            <div className="container mx-auto px-4">
+              {/* Skeleton title */}
+              <div className="mb-12">
+                <div className="h-10 w-64 bg-secondary/60 rounded-lg animate-pulse mb-3" />
+                <div className="h-4 w-48 bg-secondary/40 rounded animate-pulse" />
+              </div>
+              {/* Skeleton photo grid */}
+              <div className="masonry-grid">
+                {Array.from({ length: 12 }).map((_, i) => (
+                  <div
+                    key={i}
+                    className="mb-4 rounded-lg bg-secondary/50 animate-pulse"
+                    style={{ height: `${160 + (i % 3) * 60}px`, breakInside: "avoid" }}
+                  />
+                ))}
+              </div>
+            </div>
+          </section>
         </div>
       );
     }

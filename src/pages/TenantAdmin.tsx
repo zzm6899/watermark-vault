@@ -1677,8 +1677,10 @@ function TenantAlbumEditor({ slug, album, onSave, onCancel }: {
     }
     const newPhotos: Photo[] = results.map(r => ({
       id: r.id, src: r.url, thumbnail: r.url + "?size=thumb&wm=0",
-      title: r.originalName.replace(/\.[^.]+$/, "").replace(/^_+/, ""), width: 800, height: 600,
+      title: r.originalName.replace(/\.[^.]+$/, "").replace(/^_+/, ""),
+      width: r.width ?? 800, height: r.height ?? 600,
       uploadedAt: new Date().toISOString(),
+      ...(r.takenAt ? { takenAt: r.takenAt } : {}),
       originalName: r.originalName,
       ...(r.ftpUploaded ? { ftpUploaded: true } : {}),
     }));
