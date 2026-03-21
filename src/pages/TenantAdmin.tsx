@@ -2408,13 +2408,26 @@ function TenantPhotos({ slug }: { slug: string }) {
       const updated = libraryPhotos.filter(p => p.id !== id);
       setLibraryPhotos(updated);
       await saveLibrary(updated);
-      if (isServerMode()) deletePhotoFromServer(src);
+      // Delete file only if it isn't referenced by any album
+      if (isServerMode()) {
+        const usedInAlbum = albums.some(a => (a.photos || []).some(p => p.src === src));
+        if (!usedInAlbum) deletePhotoFromServer(src);
+      }
     } else {
       const alb = albums.find(a => a.title === source);
       if (alb) {
-        const updatedAlb = { ...alb, photos: (alb.photos || []).filter(p => p.id !== id), photoCount: Math.max(0, (alb.photos || []).length - 1) };
+        const filtered = (alb.photos || []).filter(p => p.id !== id);
+        // If the deleted photo was the cover image, pick the next available photo
+        const newCover = (src && src === alb.coverImage) ? (filtered[0]?.src || "") : alb.coverImage;
+        const updatedAlb = { ...alb, photos: filtered, photoCount: filtered.length, coverImage: newCover };
         setAlbums(prev => prev.map(a => a.id === alb.id ? updatedAlb : a));
         await saveTenantAlbum(slug, updatedAlb);
+        // Delete file if not referenced elsewhere
+        if (isServerMode()) {
+          const usedElsewhere = albums.some(a => a.id !== alb.id && (a.photos || []).some(p => p.src === src))
+            || libraryPhotos.some(p => p.src === src);
+          if (!usedElsewhere) deletePhotoFromServer(src);
+        }
       }
     }
     setSelectedIds(prev => { const next = new Set(prev); next.delete(id); return next; });
@@ -2434,7 +2447,11 @@ function TenantPhotos({ slug }: { slug: string }) {
       if (photo.source === "Library") {
         libToDelete.add(id);
         const lp = libraryPhotos.find(p => p.id === id);
-        if (lp && isServerMode()) deletePhotoFromServer(lp.src);
+        // Delete file only if not referenced by any album
+        if (lp && isServerMode()) {
+          const usedInAlbum = albums.some(a => (a.photos || []).some(p => p.src === lp.src));
+          if (!usedInAlbum) deletePhotoFromServer(lp.src);
+        }
       } else {
         const alb = albums.find(a => a.title === photo.source);
         if (alb) {
@@ -2450,13 +2467,27 @@ function TenantPhotos({ slug }: { slug: string }) {
       await saveLibrary(remaining);
     }
 
+    // Build remaining-library src set once — used in per-album file deletion checks below
+    const remainingLibSrcs = new Set(libraryPhotos.filter(p => !libToDelete.has(p.id)).map(p => p.src));
+
     for (const [albumId, photoIds] of albumUpdates) {
       const alb = albums.find(a => a.id === albumId);
       if (alb) {
         const filteredPhotos = (alb.photos || []).filter(p => !photoIds.has(p.id));
-        const updatedAlb = { ...alb, photos: filteredPhotos, photoCount: filteredPhotos.length };
+        // Auto-update cover image if the cover photo was among those deleted
+        const coverStillExists = filteredPhotos.some(p => p.src === alb.coverImage);
+        const newCover = coverStillExists ? alb.coverImage : (filteredPhotos[0]?.src || "");
+        const updatedAlb = { ...alb, photos: filteredPhotos, photoCount: filteredPhotos.length, coverImage: newCover };
         await saveTenantAlbum(slug, updatedAlb);
         setAlbums(prev => prev.map(a => a.id === albumId ? updatedAlb : a));
+        // Delete physical files not referenced elsewhere
+        if (isServerMode()) {
+          for (const photo of (alb.photos || []).filter(p => photoIds.has(p.id))) {
+            const usedElsewhere = albums.some(a => a.id !== alb.id && (a.photos || []).some(pp => pp.src === photo.src))
+              || remainingLibSrcs.has(photo.src);
+            if (!usedElsewhere) deletePhotoFromServer(photo.src);
+          }
+        }
       }
     }
 
@@ -2592,49 +2623,51 @@ function TenantPhotos({ slug }: { slug: string }) {
           <Button size="sm" variant="outline" onClick={handleSyncStorage} disabled={syncing} className="gap-2 font-body text-xs border-border text-foreground flex-shrink-0">
             <RefreshCw className={`w-4 h-4 ${syncing ? "animate-spin" : ""}`} /> {syncing ? "Syncing…" : "Sync Storage"}
           </Button>
-          {selectedIds.size > 0 && (
-            <>
-              <Button size="sm" variant="outline" onClick={handleMassDelete}
-                className="gap-2 font-body text-xs border-destructive/30 text-destructive hover:bg-destructive/10 flex-shrink-0">
-                <Trash2 className="w-4 h-4" /> Delete ({selectedIds.size})
-              </Button>
-              <Button size="sm" variant="ghost" onClick={() => setSelectedIds(new Set())}
-                className="gap-1 font-body text-xs text-muted-foreground flex-shrink-0">
-                <XSquare className="w-4 h-4" /> Clear
-              </Button>
-              <div className="relative flex-shrink-0">
-                <Button size="sm" variant="outline" onClick={() => setShowAddToAlbum(v => !v)}
-                  className="gap-2 font-body text-xs border-border text-foreground">
-                  <Plus className="w-4 h-4" /> Add to Album ({selectedIds.size})
-                </Button>
-                {showAddToAlbum && albums.length > 0 && (
-                  <div className="absolute top-full right-0 mt-1 z-50 glass-panel rounded-lg border border-border shadow-lg min-w-[200px]">
-                    {albums.map(alb => (
-                      <button key={alb.id} onClick={() => handleAddToAlbum(alb.id)}
-                        className="w-full text-left px-4 py-2.5 text-sm font-body text-foreground hover:bg-secondary transition-colors first:rounded-t-lg last:rounded-b-lg">
-                        {alb.title} ({(alb.photos || []).length} photos)
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-              <Button size="sm" onClick={handleCreateAlbumFromSelection}
-                className="gap-2 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs tracking-wider uppercase flex-shrink-0">
-                <Plus className="w-4 h-4" /> Create Album ({selectedIds.size})
-              </Button>
-            </>
-          )}
-          <Button size="sm" variant="ghost"
+          <Button size="sm" variant={selectedIds.size > 0 ? "default" : "ghost"}
             onClick={() => {
               if (selectedIds.size === displayPhotos.length && displayPhotos.length > 0) setSelectedIds(new Set());
               else setSelectedIds(new Set(displayPhotos.map(p => p.id)));
             }}
-            className="gap-1 font-body text-xs text-muted-foreground flex-shrink-0">
+            className={`gap-1 font-body text-xs flex-shrink-0 ${selectedIds.size > 0 ? "bg-primary/20 text-primary border border-primary/30 hover:bg-primary/30" : "text-muted-foreground"}`}>
             <CheckSquare className="w-4 h-4" />
             {selectedIds.size === displayPhotos.length && displayPhotos.length > 0 ? "Deselect All" : "Select All"}
           </Button>
         </div>
       </div>
+
+      {/* Selection action bar — appears when photos are selected */}
+      {selectedIds.size > 0 && (
+        <div className="sticky top-0 z-20 mb-4 p-3 rounded-xl bg-primary/10 border border-primary/20 backdrop-blur-sm flex flex-wrap items-center gap-2">
+          <span className="text-xs font-body font-semibold text-primary mr-1">{selectedIds.size} selected</span>
+          <Button size="sm" variant="outline" onClick={handleMassDelete}
+            className="gap-1.5 font-body text-xs border-destructive/40 text-destructive hover:bg-destructive/10 hover:border-destructive flex-shrink-0">
+            <Trash2 className="w-3.5 h-3.5" /> Delete ({selectedIds.size})
+          </Button>
+          <Button size="sm" onClick={handleCreateAlbumFromSelection}
+            className="gap-1.5 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs tracking-wider uppercase flex-shrink-0">
+            <Plus className="w-3.5 h-3.5" /> New Album
+          </Button>
+          <div className="relative flex-shrink-0">
+            <Button size="sm" variant="outline" onClick={() => setShowAddToAlbum(v => !v)}
+              className="gap-1.5 font-body text-xs border-border text-foreground">
+              <Plus className="w-3.5 h-3.5" /> Add to Album
+            </Button>
+            {showAddToAlbum && albums.length > 0 && (
+              <div className="absolute top-full left-0 mt-1 z-50 glass-panel rounded-lg border border-border shadow-lg min-w-[200px]">
+                {albums.map(alb => (
+                  <button key={alb.id} onClick={() => handleAddToAlbum(alb.id)}
+                    className="w-full text-left px-4 py-2.5 text-sm font-body text-foreground hover:bg-secondary transition-colors first:rounded-t-lg last:rounded-b-lg">
+                    {alb.title} ({(alb.photos || []).length} photos)
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+          <button onClick={() => setSelectedIds(new Set())} className="ml-auto text-xs font-body text-muted-foreground hover:text-foreground flex items-center gap-1 flex-shrink-0">
+            <X className="w-3.5 h-3.5" /> Clear
+          </button>
+        </div>
+      )}
 
       {/* ── Search ── */}
       <div className="relative mb-4">

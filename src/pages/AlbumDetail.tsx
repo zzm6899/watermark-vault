@@ -279,10 +279,18 @@ export default function AlbumDetail() {
         : "Gallery"
   );
 
-  // If album not found locally, try fetching it from server (handles tenant albums)
+  // Fetch the album from the server.
+  // In server mode we always fetch even if a local copy exists so that any
+  // photo changes made on the admin side (added, deleted) are immediately
+  // visible to clients using the gallery/proofing link on other devices.
+  // The local copy (if present) keeps showing while the fetch is in flight.
   useEffect(() => {
-    if (album || !albumId) return;
-    setAlbumLoading(true);
+    if (!albumId) return;
+    // Without a server there is nothing to fetch — rely on localStorage only.
+    if (!isServerMode() && !album) { setAlbumLoading(false); return; }
+    if (!isServerMode()) return;
+    // Only show the loading spinner when we have no data at all yet.
+    if (!album) setAlbumLoading(true);
     fetchPublicAlbum(albumId).then(async result => {
       if (result?.album) {
         const tSlug = result.tenantSlug;
