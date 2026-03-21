@@ -160,6 +160,7 @@ export interface Album {
   watermarkDisabled?: boolean;
   purchasingDisabled?: boolean;
   sessionPurchases?: Record<string, { fullAlbum?: boolean; photoIds?: string[] }>;
+  instagramHandle?: string;
   /**
    * Set to `true` when an album is returned as a stub (photos array omitted to
    * reduce download size).  The admin AlbumEditor fetches the photos on demand
