@@ -602,10 +602,13 @@ export default function AlbumDetail() {
   const isProofingWindowExpired = !!(album.proofingExpiresAt && new Date() > new Date(album.proofingExpiresAt));
   // effectiveProofingEnabled: true when the admin has enabled proofing globally, the album
   // itself has proofing enabled (server-persisted), or the client has a valid token. This
-  // allows clients who open a proofing link to see the proofing UI even though their local
-  // settings default to proofingEnabled=false.
+  // allows clients who open a proofing link to see the proofing status banners even though
+  // their local settings default to proofingEnabled=false.
   const effectiveProofingEnabled = settings.proofingEnabled || !!album.proofingEnabled || tokenMatchesAlbum;
-  const isProofing = proofingStage === "proofing" && effectiveProofingEnabled && !isProofingWindowExpired;
+  // isProofing: the album must have proofing explicitly enabled by the admin (album.proofingEnabled)
+  // and be in the active "proofing" stage. Having a valid client token does NOT enable
+  // interactive proofing on its own — it only grants gallery access.
+  const isProofing = proofingStage === "proofing" && !!album.proofingEnabled && !isProofingWindowExpired;
   const latestRound = album.proofingRounds?.[album.proofingRounds.length - 1];
   const adminNote = latestRound?.adminNote;
   // Visible photos: hide photos marked hidden (non-selected after round approval)
