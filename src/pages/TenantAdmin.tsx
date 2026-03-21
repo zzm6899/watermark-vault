@@ -1724,6 +1724,9 @@ function TenantAlbumEditor({ slug, album, onSave, onCancel }: {
       proofingRounds: liveAlbum?.proofingRounds,
       clientToken: liveAlbum?.clientToken,
       proofingExpiresAt: liveAlbum?.proofingExpiresAt,
+      // Preserve the enabled/disabled state so editing an album does not silently
+      // re-enable a disabled one via the server-side merge.
+      ...(album?.enabled !== undefined ? { enabled: album.enabled } : {}),
     } as Album);
   };
 

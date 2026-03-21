@@ -3162,6 +3162,11 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
       displaySize,
       usedFreeDownloads: album?.usedFreeDownloads,
       downloadRequests: album?.downloadRequests,
+      // Preserve the enabled/disabled state so that editing an album does not
+      // silently re-enable a disabled album on the server (the server-side merge
+      // keeps the existing value when the field is absent, causing a mismatch
+      // between localStorage and the server that shows "Album Not Found").
+      ...(album?.enabled !== undefined ? { enabled: album.enabled } : {}),
     });
     if (bookingId) {
       const bk = bookings.find(b => b.id === bookingId);
