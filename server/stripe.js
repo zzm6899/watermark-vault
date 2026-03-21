@@ -196,14 +196,14 @@ function registerRoutes(app, { writeDb } = {}) {
             const sessionPurchases = album.sessionPurchases || {};
             if (metadata.isFullAlbum === "true" || !metadata.photoIds) {
               // Full album — unlock for this session only
-              sessionPurchases[sKey] = { fullAlbum: true, photoIds: [], paidAt: new Date().toISOString(), stripeSessionId: session.id };
+              sessionPurchases[sKey] = { fullAlbum: true, photoIds: [], paidAt: new Date().toISOString(), stripeSessionId: session.id, purchaserEmail: session.customer_email || "" };
               album.stripePaidAt = new Date().toISOString(); // for finance view
               console.log(`📝 Album ${metadata.albumId} full album unlocked for session ${sKey}`);
             } else {
               // Per-photo — add to this session's purchased set
               const newIds = metadata.photoIds ? metadata.photoIds.split(",").filter(Boolean) : [];
               const existing = sessionPurchases[sKey]?.photoIds || [];
-              sessionPurchases[sKey] = { fullAlbum: false, photoIds: [...new Set([...existing, ...newIds])], paidAt: new Date().toISOString(), stripeSessionId: session.id };
+              sessionPurchases[sKey] = { fullAlbum: false, photoIds: [...new Set([...existing, ...newIds])], paidAt: new Date().toISOString(), stripeSessionId: session.id, purchaserEmail: session.customer_email || "" };
               console.log(`📝 Album ${metadata.albumId}: ${newIds.length} photo(s) unlocked for session ${sKey}`);
             }
             album.sessionPurchases = sessionPurchases;
@@ -218,7 +218,8 @@ function registerRoutes(app, { writeDb } = {}) {
               const discordUrl = settings?.discordWebhookUrl;
               if (discordUrl && settings?.discordNotifyDownloads !== false) {
                 const purchaseType = metadata.isFullAlbum === "true" ? "full" : "individual";
-                notifyAlbumPurchase(discordUrl, album, purchaseType, (session.amount_total || 0) / 100, session.customer_email || "").catch(err => console.error("Discord album-purchase notify error:", err.message));
+                const purchasedPhotoIds = sessionPurchases[sKey]?.photoIds || [];
+                notifyAlbumPurchase(discordUrl, album, purchaseType, (session.amount_total || 0) / 100, session.customer_email || "", purchasedPhotoIds).catch(err => console.error("Discord album-purchase notify error:", err.message));
               }
             } catch (discordErr) {
               console.error("Discord settings read error:", discordErr.message);
@@ -236,6 +237,10 @@ function registerRoutes(app, { writeDb } = {}) {
             invoices[idx].status = "paid";
             invoices[idx].paidAt = new Date().toISOString();
             invoices[idx].stripeSessionId = session.id;
+            invoices[idx].emailLog = [
+              ...(invoices[idx].emailLog || []),
+              { sentAt: new Date().toISOString(), type: "custom", to: invoices[idx].to?.email || "", subject: "Payment Received" },
+            ];
             db["wv_invoices"] = JSON.stringify(invoices);
             saveDb(db);
             console.log(`📝 Invoice ${metadata.invoiceId} marked as paid via Stripe`);
@@ -591,12 +596,12 @@ function registerTenantStripeRoutes(app, { readDb, writeDb, readTenants, readLic
             const sKey = metadata.sessionKey || `stripe-${session.id}`;
             const sessionPurchases = album.sessionPurchases || {};
             if (metadata.isFullAlbum === "true" || !metadata.photoIds) {
-              sessionPurchases[sKey] = { fullAlbum: true, photoIds: [], paidAt: new Date().toISOString(), stripeSessionId: session.id };
+              sessionPurchases[sKey] = { fullAlbum: true, photoIds: [], paidAt: new Date().toISOString(), stripeSessionId: session.id, purchaserEmail: session.customer_email || "" };
               album.stripePaidAt = new Date().toISOString();
             } else {
               const newIds = metadata.photoIds ? metadata.photoIds.split(",").filter(Boolean) : [];
               const existing = sessionPurchases[sKey]?.photoIds || [];
-              sessionPurchases[sKey] = { fullAlbum: false, photoIds: [...new Set([...existing, ...newIds])], paidAt: new Date().toISOString(), stripeSessionId: session.id };
+              sessionPurchases[sKey] = { fullAlbum: false, photoIds: [...new Set([...existing, ...newIds])], paidAt: new Date().toISOString(), stripeSessionId: session.id, purchaserEmail: session.customer_email || "" };
             }
             album.sessionPurchases = sessionPurchases;
             albums[albumIdx] = album;
@@ -614,7 +619,8 @@ function registerTenantStripeRoutes(app, { readDb, writeDb, readTenants, readLic
               const discordUrl = activeSettings?.discordWebhookUrl;
               if (discordUrl && activeSettings?.discordNotifyDownloads !== false) {
                 const purchaseType = metadata.isFullAlbum === "true" ? "full" : "individual";
-                notifyAlbumPurchase(discordUrl, album, purchaseType, (session.amount_total || 0) / 100, session.customer_email || "").catch(err => console.error("Discord tenant album-purchase notify error:", err.message));
+                const purchasedPhotoIds = sessionPurchases[sKey]?.photoIds || [];
+                notifyAlbumPurchase(discordUrl, album, purchaseType, (session.amount_total || 0) / 100, session.customer_email || "", purchasedPhotoIds).catch(err => console.error("Discord tenant album-purchase notify error:", err.message));
               }
             } catch (discordErr) {
               console.error("Discord tenant settings read error:", discordErr.message);

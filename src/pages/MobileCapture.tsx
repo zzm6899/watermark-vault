@@ -213,6 +213,7 @@ function AlbumEditModal({ album, onClose, onSave }: { album: Album; onClose: () 
   const [editTitle, setEditTitle] = useState(album.title || "");
   const [editNotes, setEditNotes] = useState((album as any).notes || "");
   const [editClient, setEditClient] = useState(album.clientName || "");
+  const [lockDownloads, setLockDownloads] = useState(album.lockDownloadsDuringProofing || false);
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center" onClick={onClose}>
       <div className="absolute inset-0 bg-black/60" />
@@ -234,9 +235,18 @@ function AlbumEditModal({ album, onClose, onSave }: { album: Album; onClose: () 
             <label className="text-xs font-body text-muted-foreground mb-1 block">Notes</label>
             <textarea value={editNotes} onChange={e => setEditNotes(e.target.value)} rows={3} className="w-full bg-secondary border border-border rounded-lg px-3 py-2 text-sm font-body text-foreground focus:outline-none focus:ring-1 focus:ring-primary resize-none" />
           </div>
+          {album.proofingEnabled && (
+            <div className="flex items-center justify-between py-2 border-t border-border/50">
+              <div>
+                <p className="text-xs font-body text-foreground">Lock downloads during proofing</p>
+                <p className="text-[10px] font-body text-muted-foreground/60 mt-0.5">Block downloads until finals are delivered</p>
+              </div>
+              <Switch checked={lockDownloads} onCheckedChange={setLockDownloads} />
+            </div>
+          )}
         </div>
         <button
-          onClick={() => onSave({ ...album, title: editTitle, clientName: editClient, notes: editNotes } as any)}
+          onClick={() => onSave({ ...album, title: editTitle, clientName: editClient, notes: editNotes, lockDownloadsDuringProofing: lockDownloads || undefined } as any)}
           className="w-full py-3 rounded-xl bg-primary text-primary-foreground font-body text-sm font-medium tracking-wide"
         >
           Save Changes

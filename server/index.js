@@ -1029,6 +1029,11 @@ function isPhotoAccessible(filename, sessionKey, albumId) {
 
     // If purchasing is disabled, all photos are free
     if (album.purchasingDisabled) return true;
+    // If downloads are locked while proofing is active, deny access
+    if (album.lockDownloadsDuringProofing && album.proofingEnabled) {
+      const stage = album.proofingStage || "not-started";
+      if (stage !== "not-started" && stage !== "finals-delivered") return false;
+    }
     // If full album unlocked by admin
     if (album.allUnlocked) return true;
 

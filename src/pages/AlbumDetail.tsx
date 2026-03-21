@@ -614,10 +614,8 @@ export default function AlbumDetail() {
       .flatMap((r: any) => r.photoIds || [])
   );
   const paidPhotoIdSet = new Set<string>([...sessionPaidIds, ...globalPaidSet, ...bankPaidIds]);
-  const canDownload = (isFullyUnlocked || sessionFullAlbum) && !isExpired && !album.purchasingDisabled;
-  const isPhotoPaid = (id: string) => canDownload || paidPhotoIdSet.has(id);
 
-  // Proofing derived values
+  // Proofing derived values (computed before canDownload so we can use proofingStage)
   const proofingStage = album.proofingStage || "not-started";
   const isProofingWindowExpired = !!(album.proofingExpiresAt && new Date() > new Date(album.proofingExpiresAt));
   // effectiveProofingEnabled: true when the admin has enabled proofing globally, the album
@@ -629,6 +627,15 @@ export default function AlbumDetail() {
   // and be in the active "proofing" stage. Having a valid client token does NOT enable
   // interactive proofing on its own — it only grants gallery access.
   const isProofing = proofingStage === "proofing" && !!album.proofingEnabled && !isProofingWindowExpired;
+  // lockDownloadsDuringProofing: block all downloads while any proofing stage is active (except
+  // not-started and finals-delivered). Unlocks automatically once finals are delivered or proofing is reset.
+  const isDownloadLockedForProofing = !!(album.lockDownloadsDuringProofing &&
+    album.proofingEnabled &&
+    proofingStage !== "not-started" &&
+    proofingStage !== "finals-delivered");
+
+  const canDownload = (isFullyUnlocked || sessionFullAlbum) && !isExpired && !album.purchasingDisabled && !isDownloadLockedForProofing;
+  const isPhotoPaid = (id: string) => canDownload || paidPhotoIdSet.has(id);
   const latestRound = album.proofingRounds?.[album.proofingRounds.length - 1];
   const adminNote = latestRound?.adminNote;
   // Visible photos: hide photos marked hidden (non-selected after round approval)
@@ -1158,6 +1165,19 @@ export default function AlbumDetail() {
                 </div>
               )}
 
+              {/* Downloads locked during proofing */}
+              {isDownloadLockedForProofing && (
+                <div className="glass-panel rounded-xl p-5 border border-yellow-500/30 bg-yellow-500/5">
+                  <div className="flex items-start gap-3">
+                    <Lock className="w-5 h-5 text-yellow-400 mt-0.5 shrink-0" />
+                    <div>
+                      <p className="text-sm font-display text-foreground mb-1">Downloads locked during proofing</p>
+                      <p className="text-xs font-body text-muted-foreground">Downloads are unavailable while your photos are being reviewed and edited. They'll be unlocked once your finals are delivered.</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {/* ── Download Expiry Banner ─────────────────────────── */}
               {isExpired && (
                 <div className="glass-panel rounded-xl p-5 border border-destructive/30 bg-destructive/5">
@@ -1452,8 +1472,8 @@ export default function AlbumDetail() {
         </motion.div>
       )}
 
-      {/* Show PurchasePanel unless every selected photo is already paid, or we're in proofing mode, or purchasing disabled */}
-      {!canDownload && !isProofing && !album.purchasingDisabled && !(selectedIds.size > 0 && Array.from(selectedIds).every(id => isPhotoPaid(id))) && (
+      {/* Show PurchasePanel unless every selected photo is already paid, or we're in proofing mode, or purchasing disabled, or downloads locked */}
+      {!canDownload && !isProofing && !album.purchasingDisabled && !isDownloadLockedForProofing && !(selectedIds.size > 0 && Array.from(selectedIds).every(id => isPhotoPaid(id))) && (
         <PurchasePanel
           selectedCount={selectedIds.size}
           unpaidCount={unpaidSelected.length}
@@ -1472,7 +1492,7 @@ export default function AlbumDetail() {
       )}
 
       {/* Download bar when all selected photos are individually paid */}
-      {!canDownload && selectedIds.size > 0 && Array.from(selectedIds).every(id => isPhotoPaid(id)) && (
+      {!canDownload && !isDownloadLockedForProofing && selectedIds.size > 0 && Array.from(selectedIds).every(id => isPhotoPaid(id)) && (
         <motion.div initial={{ y: 100, opacity: 0 }} animate={{ y: 0, opacity: 1 }}
           className="fixed bottom-0 left-0 right-0 z-40 glass-panel border-t border-border/50 p-4" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 1rem)' }}>
           <div className="container mx-auto flex items-center justify-between">
