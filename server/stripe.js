@@ -619,7 +619,8 @@ function registerTenantStripeRoutes(app, { readDb, writeDb, readTenants, readLic
               const discordUrl = activeSettings?.discordWebhookUrl;
               if (discordUrl && activeSettings?.discordNotifyDownloads !== false) {
                 const purchaseType = metadata.isFullAlbum === "true" ? "full" : "individual";
-                notifyAlbumPurchase(discordUrl, album, purchaseType, (session.amount_total || 0) / 100, session.customer_email || "").catch(err => console.error("Discord tenant album-purchase notify error:", err.message));
+                const purchasedPhotoIds = sessionPurchases[sKey]?.photoIds || [];
+                notifyAlbumPurchase(discordUrl, album, purchaseType, (session.amount_total || 0) / 100, session.customer_email || "", purchasedPhotoIds).catch(err => console.error("Discord tenant album-purchase notify error:", err.message));
               }
             } catch (discordErr) {
               console.error("Discord tenant settings read error:", discordErr.message);

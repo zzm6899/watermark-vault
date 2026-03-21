@@ -133,10 +133,11 @@ async function notifyBookingUpdate(webhookUrl, booking, oldStatus, newStatus) {
 }
 
 // ── Album Purchase ─────────────────────────────────────────
-async function notifyAlbumPurchase(webhookUrl, album, purchaseType, amount, email) {
+async function notifyAlbumPurchase(webhookUrl, album, purchaseType, amount, email, photoIds) {
   if (!webhookUrl) return;
   const adminUrl = APP_URL ? `${APP_URL}/admin/albums` : null;
   const components = adminUrl ? [adminButton("View Albums", adminUrl)] : [];
+  const purchasedCount = Array.isArray(photoIds) ? photoIds.length : 0;
 
   await sendDiscordEmbed(webhookUrl, {
     embeds: [{
@@ -147,6 +148,7 @@ async function notifyAlbumPurchase(webhookUrl, album, purchaseType, amount, emai
         { name: "📁 Album", value: album.title || "—", inline: true },
         { name: "💵 Amount", value: `$${amount}`, inline: true },
         { name: "🛍 Type", value: purchaseType === "full" ? "Full Album" : "Individual Photos", inline: true },
+        ...(purchasedCount > 0 ? [{ name: "🖼 Photos", value: `${purchasedCount} photo${purchasedCount !== 1 ? "s" : ""}`, inline: true }] : []),
         ...(email ? [{ name: "📧 Email", value: email, inline: true }] : []),
       ],
       footer: { text: `Album ID: ${album.id} · PhotoFlow` },
