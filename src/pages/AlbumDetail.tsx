@@ -286,9 +286,12 @@ export default function AlbumDetail() {
   // The local copy (if present) keeps showing while the fetch is in flight.
   useEffect(() => {
     if (!albumId) return;
-    // Without a server there is nothing to fetch — rely on localStorage only.
-    if (!isServerMode() && !album) { setAlbumLoading(false); return; }
-    if (!isServerMode()) return;
+    // Always attempt to fetch from the server — isServerMode() returns false when
+    // serverAvailable is still null (undetermined), which causes the fetch to be
+    // skipped on the very first page load and results in "Album Not Found" for
+    // albums that are not in localStorage (e.g. tenant albums, first visit from
+    // a different device).  fetchPublicAlbum handles network errors gracefully by
+    // returning null, so it is safe to call even when the server may be offline.
     // Only show the loading spinner when we have no data at all yet.
     if (!album) setAlbumLoading(true);
     fetchPublicAlbum(albumId).then(async result => {
