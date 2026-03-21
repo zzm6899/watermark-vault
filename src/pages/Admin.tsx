@@ -2534,6 +2534,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
   const [albumSortKey, setAlbumSortKey] = useState<AlbumSortKey>("date");
   const [albumSortDir, setAlbumSortDir] = useState<SortDir>("desc");
   const [albumSearch, setAlbumSearch] = useState("");
+  const [brokenCovers, setBrokenCovers] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     if (prefillBookingId) {
@@ -2759,6 +2760,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
       )}
 
       {(() => {
+        const bookingMap = new Map(bookings.map(b => [b.id, b]));
         const toggleAlbumSort = (key: AlbumSortKey) => {
           if (albumSortKey === key) setAlbumSortDir(d => d === "asc" ? "desc" : "asc");
           else { setAlbumSortKey(key); setAlbumSortDir(key === "date" ? "desc" : "asc"); }
@@ -2766,11 +2768,13 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
         const filteredAlbums = albums.filter(a => {
           if (!albumSearch) return true;
           const q = albumSearch.toLowerCase();
+          const linkedInstagram = (a.instagramHandle || bookingMap.get(a.bookingId || "")?.instagramHandle || "").toLowerCase();
           return a.title.toLowerCase().includes(q)
             || (a.clientName || "").toLowerCase().includes(q)
             || (a.clientEmail || "").toLowerCase().includes(q)
             || (a.description || "").toLowerCase().includes(q)
-            || (a.slug || "").toLowerCase().includes(q);
+            || (a.slug || "").toLowerCase().includes(q)
+            || linkedInstagram.includes(q);
         });
         const sortedAlbums = [...filteredAlbums].sort((a, b) => {
           const dir = albumSortDir === "asc" ? 1 : -1;
@@ -2820,9 +2824,10 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                 }
               }}
             >
-              {alb.coverImage && !alb.coverImage.startsWith("file://") && (
+              {alb.coverImage && !alb.coverImage.startsWith("file://") && !brokenCovers.has(alb.id) && (
                 <div className="aspect-[16/9] bg-secondary overflow-hidden">
-                  <img src={alb.coverImage} alt={alb.title} className="w-full h-full object-cover" loading="lazy" />
+                  <img src={alb.coverImage} alt={alb.title} className="w-full h-full object-cover" loading="lazy"
+                    onError={() => setBrokenCovers(prev => { const n = new Set(prev); n.add(alb.id); return n; })} />
                 </div>
               )}
               <div className="p-3 space-y-1">
@@ -2831,6 +2836,10 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                   {alb._photosStripped ? (alb.photoCount ?? 0) : alb.photos.length} photos · {alb.freeDownloads} free · ${alb.pricePerPhoto}/photo
                 </p>
                 {alb.clientName && <p className="text-xs font-body text-primary">{alb.clientName}</p>}
+                {(() => {
+                  const handle = alb.instagramHandle || bookingMap.get(alb.bookingId || "")?.instagramHandle;
+                  return handle ? <p className="text-xs font-body text-muted-foreground">@{handle.replace("@", "")}</p> : null;
+                })()}
                 {/* Download expiry badge */}
                 {/* Gallery expiry badge */}
                 {alb.expiresAt && (() => {
@@ -2937,6 +2946,24 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                         </Button>
                       );
                     })()}
+                    {/* Fix Thumbnail — shown when cover is missing or broken */}
+                    {(brokenCovers.has(alb.id) || !alb.coverImage) && !alb._photosStripped && alb.photos.length > 0 && (
+                      <Button
+                        variant="ghost" size="icon"
+                        className="h-7 w-7 text-muted-foreground hover:text-primary"
+                        title="Fix thumbnail — set cover to first photo"
+                        onClick={() => {
+                          const firstPhoto = alb.photos[0];
+                          const newCover = firstPhoto.thumbnail || firstPhoto.src;
+                          updateAlbum({ ...alb, coverImage: newCover });
+                          setBrokenCovers(prev => { const n = new Set(prev); n.delete(alb.id); return n; });
+                          refresh();
+                          toast.success("Thumbnail updated");
+                        }}
+                      >
+                        <Image className="w-3.5 h-3.5" />
+                      </Button>
+                    )}
                     <div className="flex-1" />
                     <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-foreground" onClick={() => setEditing(alb)}>
                       <Edit className="w-3.5 h-3.5" />
@@ -2976,6 +3003,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
   const [bookingId, setBookingId] = useState(album?.bookingId || prefillBookingId || "");
   const [clientName, setClientName] = useState(album?.clientName || prefillBk?.clientName || "");
   const [clientEmail, setClientEmail] = useState(album?.clientEmail || prefillBk?.clientEmail || "");
+  const [instagramHandle, setInstagramHandle] = useState(album?.instagramHandle || prefillBk?.instagramHandle || "");
   const [freeDownloads, setFreeDownloads] = useState(album?.freeDownloads ?? settings.defaultFreeDownloads);
   const [pricePerPhoto, setPricePerPhoto] = useState(album?.pricePerPhoto ?? settings.defaultPricePerPhoto);
   const [priceFullAlbum, setPriceFullAlbum] = useState(album?.priceFullAlbum ?? settings.defaultPriceFullAlbum);
@@ -3129,6 +3157,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
       if (!clientEmail) setClientEmail(bk.clientEmail);
       if (!title) setTitle(`${bk.clientName} — ${bk.type}`);
       if (!slug) setSlug(slugify(`${bk.clientName}-${bk.date}`));
+      if (!instagramHandle && bk.instagramHandle) setInstagramHandle(bk.instagramHandle);
     }
   };
 
@@ -3154,6 +3183,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
       photos,
       clientName: clientName.trim(),
       clientEmail: clientEmail.trim(),
+      instagramHandle: instagramHandle.trim() || undefined,
       bookingId: bookingId || undefined,
       accessCode: accessCode || undefined,
       mergedFrom: album?.mergedFrom,
@@ -3230,6 +3260,15 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
           <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Client Email</label>
           <Input type="email" value={clientEmail} onChange={(e) => setClientEmail(e.target.value)} className="bg-secondary border-border text-foreground font-body" />
         </div>
+      </div>
+
+      <div>
+        <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Instagram Handle</label>
+        <div className="relative">
+          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm font-body select-none">@</span>
+          <Input value={instagramHandle.replace("@", "")} onChange={(e) => setInstagramHandle(e.target.value.replace("@", ""))} placeholder="username" className="bg-secondary border-border text-foreground font-body pl-6" />
+        </div>
+        <p className="text-[10px] font-body text-muted-foreground/50 mt-1">Auto-filled from linked booking when available</p>
       </div>
 
       <div>
@@ -3757,7 +3796,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
         {photos.length > 0 && (
           <div className="grid grid-cols-3 sm:grid-cols-6 md:grid-cols-8 lg:grid-cols-10 gap-1.5 max-h-48 overflow-y-auto">
             {photos.map(p => (
-              <div key={p.id} className="relative group aspect-square rounded-md overflow-hidden bg-secondary">
+              <div key={p.id} className={`relative group aspect-square rounded-md overflow-hidden bg-secondary ${coverImage === p.src ? "ring-2 ring-primary" : ""}`}>
                 <ProgressiveImg thumbSrc={p.thumbnail} fullSrc={p.src} alt={p.title} className="w-full h-full object-cover" loading="lazy" />
                 <button onClick={() => {
                   const filtered = photos.filter(pp => pp.id !== p.id);
@@ -3773,6 +3812,21 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
                 }}
                   className="absolute top-1 right-1 w-5 h-5 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
                   <X className="w-3 h-3" />
+                </button>
+                {/* Set as album cover button */}
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setCoverImage(p.src);
+                    if (!isNew && album?.id && onUpdate) {
+                      onUpdate({ ...album, photos, photoCount: photos.length, coverImage: p.src });
+                    }
+                    toast.success("Cover photo updated");
+                  }}
+                  title={coverImage === p.src ? "Current cover photo" : "Set as album cover"}
+                  className={`absolute bottom-1 left-1 w-5 h-5 rounded-full flex items-center justify-center transition-opacity ${coverImage === p.src ? "opacity-100 bg-primary text-primary-foreground" : "opacity-0 group-hover:opacity-100 bg-black/60 text-white"}`}
+                >
+                  <Image className="w-3 h-3" />
                 </button>
               </div>
             ))}
