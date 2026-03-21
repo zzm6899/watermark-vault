@@ -3086,7 +3086,11 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
       }, undefined, 3, title || undefined);
       // Add all photos immediately — use server-side thumbnails (no heavy client-side canvas work)
       const newPhotos: Photo[] = results.map(r => ({
-        id: r.id, src: r.url, thumbnail: r.url + "?size=thumb&wm=0", title: r.originalName.replace(/\.[^.]+$/, "").replace(/^_+/, ""), width: 800, height: 600, uploadedAt: new Date().toISOString(),
+        id: r.id, src: r.url, thumbnail: r.url + "?size=thumb&wm=0",
+        title: r.originalName.replace(/\.[^.]+$/, "").replace(/^_+/, ""),
+        width: r.width ?? 800, height: r.height ?? 600,
+        uploadedAt: new Date().toISOString(),
+        ...(r.takenAt ? { takenAt: r.takenAt } : {}),
         originalName: r.originalName,
         ...(r.ftpUploaded ? { ftpUploaded: true } : {}),
       }));
@@ -4075,7 +4079,11 @@ function PhotosView() {
       });
       // Add all photos in a single batch update to avoid stale-closure overwrite
       const newPhotos: Photo[] = results.map(r => ({
-        id: r.id, src: r.url, thumbnail: r.url + "?size=thumb&wm=0", title: r.originalName.replace(/\.[^.]+$/, "").replace(/^_+/, ""), width: 800, height: 600, uploadedAt: new Date().toISOString(),
+        id: r.id, src: r.url, thumbnail: r.url + "?size=thumb&wm=0",
+        title: r.originalName.replace(/\.[^.]+$/, "").replace(/^_+/, ""),
+        width: r.width ?? 800, height: r.height ?? 600,
+        uploadedAt: new Date().toISOString(),
+        ...(r.takenAt ? { takenAt: r.takenAt } : {}),
         originalName: r.originalName,
         ...(r.ftpUploaded ? { ftpUploaded: true } : {}),
       }));
