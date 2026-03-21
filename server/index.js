@@ -346,7 +346,16 @@ app.put("/api/albums/:albumId", (req, res) => {
   const albums = _parseAlbumsFromDb(db[ALBUMS_KEY]);
   const idx = albums.findIndex(a => a.id === albumId);
   const incoming = { ...req.body, id: albumId };
-  if (incoming.photos) incoming.photos = _stripBakedFromPhotos(incoming.photos);
+  // If the client is sending a bandwidth-saving stub (_photosStripped:true, photos:[])
+  // don't overwrite the server's real photos array with the empty stub.  Stubs are only
+  // used for metadata-only updates (e.g. toggling the enabled flag from the albums list
+  // when the full photo array hasn't been loaded into the client yet).
+  if (incoming._photosStripped) {
+    delete incoming.photos;
+    delete incoming._photosStripped;
+  } else if (incoming.photos) {
+    incoming.photos = _stripBakedFromPhotos(incoming.photos);
+  }
   if (idx >= 0) {
     albums[idx] = { ...albums[idx], ...incoming };
   } else {
