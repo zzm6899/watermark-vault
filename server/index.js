@@ -3130,7 +3130,9 @@ app.get("/api/public-album/:albumSlug", (req, res) => {
   const mainAlbum = findIn(main);
   if (mainAlbum) {
     const album = { ...mainAlbum, photos: _stripBakedFromPhotos(mainAlbum.photos || []) };
-    res.setHeader("Cache-Control", SHORT_CACHE);
+    // Must not cache: photo additions/deletions in the admin must be
+    // reflected immediately when clients open the gallery link.
+    res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
     return res.json({ album, tenantSlug: null });
   }
 
@@ -3143,7 +3145,9 @@ app.get("/api/public-album/:albumSlug", (req, res) => {
     const found = findIn(parsed);
     if (found) {
       const album = { ...found, photos: _stripBakedFromPhotos(found.photos || []) };
-      res.setHeader("Cache-Control", SHORT_CACHE);
+      // Must not cache: photo additions/deletions in the admin must be
+      // reflected immediately when clients open the gallery link.
+      res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
       return res.json({ album, tenantSlug: tSlug });
     }
   }

@@ -2560,10 +2560,20 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
             // opening an album editor (which loads photos on demand) is not
             // undone by the next poll cycle.
             const existing = getAlbums();
-            const existingPhotos = new Map(existing.map(a => [a.id, a.photos]));
+            // Index by full album object (not just photos) so we can check
+            // whether the local copy was fully loaded vs still a stub.
+            const existingMap = new Map(existing.map(a => [a.id, a]));
             const merged = stubs.map(s => {
-              const photos = existingPhotos.get(s.id);
-              if (photos?.length) {
+              const local = existingMap.get(s.id);
+              // If the local album was fully loaded (not a stub), preserve its
+              // photos array even when it is empty (all photos were deleted).
+              // Falling through to the raw stub here would mark the album as
+              // _photosStripped: true, which triggers fetchAlbumPhotos() on the
+              // next render and can re-populate deleted photos from the server
+              // if the stub arrives in localStorage before the deletion PUT
+              // has propagated.
+              if (local && !local._photosStripped) {
+                const photos = local.photos || [];
                 // When picks have been submitted, sync starred flags from the
                 // authoritative proofingRounds record — the locally-cached photo
                 // array may pre-date the submission and have no starred flags set.
@@ -3742,9 +3752,15 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
                 <ProgressiveImg thumbSrc={p.thumbnail} fullSrc={p.src} alt={p.title} className="w-full h-full object-cover" loading="lazy" />
                 <button onClick={() => {
                   const filtered = photos.filter(pp => pp.id !== p.id);
+                  const newCover = coverImage === p.src ? (filtered[0]?.src || "") : coverImage;
                   setPhotos(filtered);
-                  // If the removed photo was the cover, fall back to the next available photo
-                  if (coverImage === p.src) setCoverImage(filtered[0]?.src || "");
+                  setCoverImage(newCover);
+                  // Immediately persist the deletion to the server when editing
+                  // an existing album so that the gallery reflects the change
+                  // without the admin needing to click "Save Album" first.
+                  if (!isNew && album?.id && onUpdate) {
+                    onUpdate({ ...album, photos: filtered, photoCount: filtered.length, coverImage: newCover });
+                  }
                 }}
                   className="absolute top-1 right-1 w-5 h-5 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
                   <X className="w-3 h-3" />
