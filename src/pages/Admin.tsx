@@ -6447,7 +6447,7 @@ function ContactsView() {
                 <div className="flex items-center gap-1 text-[10px] font-body text-muted-foreground">
                   <span className="px-2 py-0.5 rounded-full bg-secondary/60 border border-border/60" aria-label={`${cBookings.length} booking${cBookings.length !== 1 ? "s" : ""}`}>{cBookings.length} booking{cBookings.length !== 1 ? "s" : ""}</span>
                   <span className="px-2 py-0.5 rounded-full bg-secondary/60 border border-border/60" aria-label={`${cInvoices.length} invoice${cInvoices.length !== 1 ? "s" : ""}`}>{cInvoices.length} invoice{cInvoices.length !== 1 ? "s" : ""}</span>
-                  <span className="px-2 py-0.5 rounded-full bg-secondary/60 border border-border/60" aria-label={`Total ${cTotal.toFixed(2)}`}>${cTotal.toFixed(2)}</span>
+                  <span className="px-2 py-0.5 rounded-full bg-secondary/60 border border-border/60" aria-label={`Total $${cTotal.toFixed(2)}`}>${cTotal.toFixed(2)}</span>
                 </div>
                 <div className="flex gap-1 shrink-0">
                   <button onClick={() => setEditing({ ...c })} className="p-2 rounded hover:bg-secondary text-muted-foreground/60 hover:text-foreground transition-colors"><Edit className="w-4 h-4" /></button>
