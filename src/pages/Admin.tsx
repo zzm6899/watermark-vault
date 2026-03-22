@@ -1444,6 +1444,8 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [bookingSearch, setBookingSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "pending" | "confirmed" | "completed" | "cancelled">("all");
+  const [showCancelled, setShowCancelled] = useState(false);
+  const albums = getAlbums();
   const [emailLogs, setEmailLogs] = useState<Record<string, { id: string; type: string; sentAt: string; openedAt?: string; subject: string; to: string }[]>>({});
   const [sendingReminder, setSendingReminder] = useState<string | null>(null);
   const [customEmailTarget, setCustomEmailTarget] = useState<string | null>(null);
@@ -1556,6 +1558,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
 
   const filteredBookings = bookings.filter(bk => {
     if (statusFilter !== "all" && bk.status !== statusFilter) return false;
+    if (statusFilter === "all" && bk.status === "cancelled" && !showCancelled) return false;
     if (!bookingSearch) return true;
     const q = bookingSearch.toLowerCase();
     return (bk.clientName || "").toLowerCase().includes(q)
@@ -1824,6 +1827,11 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                   {s}
                 </button>
               ))}
+              {statusFilter === "all" && (
+                <button onClick={() => setShowCancelled(v => !v)} className={`text-[10px] font-body tracking-wider uppercase px-2 py-1 rounded transition-colors ${showCancelled ? "bg-destructive/15 text-destructive" : "text-muted-foreground hover:text-foreground"}`}>
+                  {showCancelled ? "Hide Cancelled" : "Show Cancelled"}
+                </button>
+              )}
             </div>
             <div className="flex items-center gap-1 flex-wrap overflow-x-auto">
               <span className="text-[10px] font-body text-muted-foreground/50 mr-1">Sort:</span>
@@ -1841,7 +1849,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
             const isExpanded = expandedId === bk.id;
             const et = eventTypes.find(e => e.id === bk.eventTypeId);
             return (
-              <div key={bk.id} className="glass-panel rounded-xl overflow-hidden">
+              <div key={bk.id} className={`glass-panel rounded-xl overflow-hidden${bk.status === "cancelled" ? " opacity-50" : ""}`}>
                 <div className="p-4 cursor-pointer hover:bg-secondary/20 transition-colors" onClick={() => {
                     const willExpand = expandedId !== bk.id;
                     setExpandedId(willExpand ? bk.id : null);
@@ -1873,10 +1881,13 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                       </div>
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
-                          <h3 className="text-sm font-body text-foreground font-medium">{bk.clientName}</h3>
+                          <h3 className={`text-sm font-body text-foreground font-medium${bk.status === "cancelled" ? " line-through" : ""}`}>{bk.clientName}</h3>
                           {bk.instagramHandle && <span className="text-xs font-body text-primary">@{bk.instagramHandle.replace("@", "")}</span>}
+                          {albums.some(a => a.bookingId === bk.id || (a.clientName && a.clientName === bk.clientName)) && (
+                            <span className="text-[10px] font-body px-2 py-0.5 rounded-full border border-green-500/30 bg-green-500/10 text-green-400">📷 Gallery sent</span>
+                          )}
                         </div>
-                        <p className="text-xs font-body text-muted-foreground">{bk.type} · {bk.date} at {bk.time} · {formatDuration(bk.duration)}</p>
+                        <p className={`text-xs font-body text-muted-foreground${bk.status === "cancelled" ? " line-through" : ""}`}>{bk.type} · {bk.date} at {bk.time} · {formatDuration(bk.duration)}</p>
                         {bk.createdAt && (
                           <p className="text-[10px] font-body text-muted-foreground/50">Booked {new Date(bk.createdAt).toLocaleDateString("en-AU", { day: "numeric", month: "short", year: "numeric" })}</p>
                         )}
@@ -1891,13 +1902,15 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                         "text-yellow-400 border-yellow-500/30 bg-yellow-500/10"
                       }`}>{bk.status}</span>
                       <select value={bk.status} onChange={(e) => handleStatusChange(bk, e.target.value as Booking["status"])}
-                        className="hidden sm:block text-xs font-body px-2.5 py-1 rounded-full bg-secondary border border-border text-foreground cursor-pointer">
+                        aria-label="Booking status"
+                        className="hidden sm:block text-xs font-body px-2.5 py-1 rounded-full bg-secondary border border-border text-foreground cursor-pointer sm:mr-3">
                         <option value="pending">Pending</option>
                         <option value="confirmed">Confirmed</option>
                         <option value="completed">Completed</option>
                         <option value="cancelled">Cancelled</option>
                       </select>
                       <select value={bk.paymentStatus || "unpaid"} onChange={(e) => handlePaymentChange(bk, e.target.value as PaymentStatus)}
+                        aria-label="Payment status"
                         className="hidden sm:block text-xs font-body px-2.5 py-1 rounded-full bg-secondary border border-border text-foreground cursor-pointer">
                         <option value="unpaid">Unpaid</option>
                         <option value="deposit-paid">Deposit Paid</option>
@@ -1969,7 +1982,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                         <div className="space-y-2">
                           {Object.entries(bk.answers).map(([qId, answer]) => {
                             const question = et?.questions.find(q => q.id === qId);
-                            const label = bk.answerLabels?.[qId] || question?.label || qId.replace(/^q\d+$/, "Custom Question");
+                            const label = bk.answerLabels?.[qId] || question?.label || qId.replace(/^q\d+$/, "Notes");
                             return (
                               <div key={qId} className="p-2 rounded-lg bg-secondary/30 border border-border/30">
                                 <p className="text-[10px] font-body text-muted-foreground">{label}</p>
