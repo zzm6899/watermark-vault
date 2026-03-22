@@ -15,6 +15,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { toast } from "sonner";
 import { useNavigate, useParams } from "react-router-dom";
 import {
@@ -805,7 +806,7 @@ function DashboardView() {
     { label: "Paid", value: `$${paidIncome}`, icon: DollarSign, color: "text-green-400" },
     { label: "Unpaid", value: `$${unpaidIncome}`, icon: DollarSign, color: "text-destructive" },
     { label: "Pending Requests", value: allPendingRequests.length, icon: Download, color: "text-yellow-400" },
-    { label: "Session Time", value: totalSessionLabel, icon: Clock, color: "text-blue-400" },
+    { label: "Total Shoot Time", value: totalSessionLabel, icon: Clock, color: "text-blue-400" },
   ];
 
   // Invoice stats for dashboard
@@ -827,6 +828,10 @@ function DashboardView() {
   const eventTypes = getEventTypes();
   const etColorMap: Record<string, string> = {};
   for (const et of eventTypes) etColorMap[et.id] = et.color || "#7c3aed";
+
+  const todayBookings = bookings
+    .filter(b => b.status !== "cancelled" && b.date === todayStr)
+    .sort((a, b) => a.time.localeCompare(b.time));
 
   const bookingsByDate: Record<string, typeof bookings> = {};
   for (const b of bookings) {
@@ -926,13 +931,31 @@ function DashboardView() {
 
       {/* ── Stats grid ── */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mb-3">
-        {stats.map((stat) => (
-          <div key={stat.label} className="glass-panel rounded-xl p-3 sm:p-5">
-            <stat.icon className={`w-4 h-4 ${stat.color} mb-2`} />
-            <p className="font-display text-xl sm:text-2xl text-foreground">{stat.value}</p>
-            <p className="text-[10px] font-body text-muted-foreground tracking-wider uppercase mt-0.5 leading-tight">{stat.label}</p>
-          </div>
-        ))}
+        {stats.map((stat) => {
+          if (stat.label === "Total Shoot Time") {
+            return (
+              <TooltipProvider key={stat.label}>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <div className="glass-panel rounded-xl p-3 sm:p-5 cursor-default">
+                      <stat.icon className={`w-4 h-4 ${stat.color} mb-2`} />
+                      <p className="font-display text-xl sm:text-2xl text-foreground">{stat.value}</p>
+                      <p className="text-[10px] font-body text-muted-foreground tracking-wider uppercase mt-0.5 leading-tight">{stat.label}</p>
+                    </div>
+                  </TooltipTrigger>
+                  <TooltipContent><p className="text-xs font-body">Total combined duration of all confirmed and completed bookings</p></TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            );
+          }
+          return (
+            <div key={stat.label} className="glass-panel rounded-xl p-3 sm:p-5">
+              <stat.icon className={`w-4 h-4 ${stat.color} mb-2`} />
+              <p className="font-display text-xl sm:text-2xl text-foreground">{stat.value}</p>
+              <p className="text-[10px] font-body text-muted-foreground tracking-wider uppercase mt-0.5 leading-tight">{stat.label}</p>
+            </div>
+          );
+        })}
       </div>
 
       {/* ── Invoice stats row (only when invoices exist) ── */}
@@ -949,78 +972,114 @@ function DashboardView() {
         </div>
       )}
 
-      {/* ── Booking Calendar ── */}
-      <div className="glass-panel rounded-xl p-4 mb-6">
-        {/* Calendar header */}
-        <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
-          <div className="flex items-center gap-2">
-            <button type="button" onClick={prevPeriod} className="w-7 h-7 rounded-lg bg-secondary hover:bg-secondary/80 flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors">
-              <ChevronLeft className="w-4 h-4" />
-            </button>
-            <p className="font-display text-sm text-foreground min-w-[160px] text-center">
-              {calView === "month" ? monthLabel : weekLabel}
-            </p>
-            <button type="button" onClick={nextPeriod} className="w-7 h-7 rounded-lg bg-secondary hover:bg-secondary/80 flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors">
-              <ChevronRight className="w-4 h-4" />
-            </button>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <button type="button" onClick={goToday} className="text-[10px] font-body px-2.5 py-1 rounded-full bg-secondary hover:bg-secondary/80 text-muted-foreground hover:text-foreground transition-colors">Today</button>
-            {(["month", "week"] as const).map(v => (
-              <button type="button" key={v} onClick={() => setCalView(v)} className={`text-[10px] font-body px-2.5 py-1 rounded-full transition-colors capitalize ${calView === v ? "bg-primary/15 text-primary" : "bg-secondary text-muted-foreground hover:text-foreground"}`}>{v}</button>
-            ))}
-          </div>
-        </div>
-
-        {/* Day-of-week headers */}
-        <div className="grid grid-cols-7 mb-1">
-          {["Mon","Tue","Wed","Thu","Fri","Sat","Sun"].map(d => (
-            <p key={d} className="text-[10px] font-body text-center text-muted-foreground/50 tracking-wider uppercase py-1">{d}</p>
-          ))}
-        </div>
-
-        {/* Month grid */}
-        {calView === "month" && (
-          <div className="grid grid-cols-7 gap-1">
-            {gridDays.map(day => renderDayCell(day, day.getMonth() === calDate.getMonth()))}
-          </div>
-        )}
-
-        {/* Week grid */}
-        {calView === "week" && (
-          <div className="grid grid-cols-7 gap-1">
-            {weekDays.map(day => renderDayCell(day, true))}
-          </div>
-        )}
-
-        {/* Selected day detail */}
-        {calSelectedDay && (
-          <div className="mt-3 pt-3 border-t border-border/50">
-            <p className="text-xs font-body text-muted-foreground mb-2">
-              {new Date(calSelectedDay + "T12:00:00").toLocaleDateString("en-AU", { weekday: "long", day: "numeric", month: "long" })}
-              {selectedDayBookings.length === 0 && <span className="ml-2 text-muted-foreground/50">— no bookings</span>}
-            </p>
-            <div className="space-y-1.5">
-              {selectedDayBookings
-                .slice()
-                .sort((a, b) => a.time.localeCompare(b.time))
-                .map(b => (
-                  <div key={b.id} className="flex items-center gap-2.5 p-2 rounded-lg bg-secondary/50">
-                    <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: etColorMap[b.eventTypeId] || "#7c3aed" }} />
-                    <p className="text-xs font-body text-muted-foreground w-10 shrink-0">{b.time}</p>
-                    <p className="text-xs font-body text-foreground font-medium truncate flex-1">{b.clientName}</p>
-                    <p className="text-xs font-body text-muted-foreground shrink-0">{b.duration}m</p>
-                    <span className={`text-[9px] font-body px-1.5 py-0.5 rounded-full shrink-0 ${
-                      b.status === "confirmed" ? "bg-primary/10 text-primary" :
-                      b.status === "completed" ? "bg-green-500/10 text-green-400" :
-                      b.status === "pending" ? "bg-yellow-500/10 text-yellow-400" :
-                      "bg-destructive/10 text-destructive"
-                    }`}>{b.status}</span>
-                  </div>
-                ))}
+      {/* ── Booking Calendar + Today's Schedule ── */}
+      <div className="grid grid-cols-1 lg:grid-cols-[70%_1fr] gap-4 mb-6">
+        {/* Calendar */}
+        <div className="glass-panel rounded-xl p-4">
+          {/* Calendar header */}
+          <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
+            <div className="flex items-center gap-2">
+              <button type="button" onClick={prevPeriod} className="w-7 h-7 rounded-lg bg-secondary hover:bg-secondary/80 flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors">
+                <ChevronLeft className="w-4 h-4" />
+              </button>
+              <p className="font-display text-sm text-foreground min-w-[160px] text-center">
+                {calView === "month" ? monthLabel : weekLabel}
+              </p>
+              <button type="button" onClick={nextPeriod} className="w-7 h-7 rounded-lg bg-secondary hover:bg-secondary/80 flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors">
+                <ChevronRight className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <button type="button" onClick={goToday} className="text-[10px] font-body px-2.5 py-1 rounded-full bg-secondary hover:bg-secondary/80 text-muted-foreground hover:text-foreground transition-colors">Today</button>
+              {(["month", "week"] as const).map(v => (
+                <button type="button" key={v} onClick={() => setCalView(v)} className={`text-[10px] font-body px-2.5 py-1 rounded-full transition-colors capitalize ${calView === v ? "bg-primary/15 text-primary" : "bg-secondary text-muted-foreground hover:text-foreground"}`}>{v}</button>
+              ))}
             </div>
           </div>
-        )}
+
+          {/* Day-of-week headers */}
+          <div className="grid grid-cols-7 mb-1">
+            {["Mon","Tue","Wed","Thu","Fri","Sat","Sun"].map(d => (
+              <p key={d} className="text-[10px] font-body text-center text-muted-foreground/50 tracking-wider uppercase py-1">{d}</p>
+            ))}
+          </div>
+
+          {/* Month grid */}
+          {calView === "month" && (
+            <div className="grid grid-cols-7 gap-1">
+              {gridDays.map(day => renderDayCell(day, day.getMonth() === calDate.getMonth()))}
+            </div>
+          )}
+
+          {/* Week grid */}
+          {calView === "week" && (
+            <div className="grid grid-cols-7 gap-1">
+              {weekDays.map(day => renderDayCell(day, true))}
+            </div>
+          )}
+
+          {/* Selected day detail */}
+          {calSelectedDay && (
+            <div className="mt-3 pt-3 border-t border-border/50">
+              <p className="text-xs font-body text-muted-foreground mb-2">
+                {new Date(calSelectedDay + "T12:00:00").toLocaleDateString("en-AU", { weekday: "long", day: "numeric", month: "long" })}
+                {selectedDayBookings.length === 0 && <span className="ml-2 text-muted-foreground/50">— no bookings</span>}
+              </p>
+              <div className="space-y-1.5">
+                {selectedDayBookings
+                  .slice()
+                  .sort((a, b) => a.time.localeCompare(b.time))
+                  .map(b => (
+                    <div key={b.id} className="flex items-center gap-2.5 p-2 rounded-lg bg-secondary/50">
+                      <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: etColorMap[b.eventTypeId] || "#7c3aed" }} />
+                      <p className="text-xs font-body text-muted-foreground w-10 shrink-0">{b.time}</p>
+                      <p className="text-xs font-body text-foreground font-medium truncate flex-1">{b.clientName}</p>
+                      <p className="text-xs font-body text-muted-foreground shrink-0">{b.duration}m</p>
+                      <span className={`text-[9px] font-body px-1.5 py-0.5 rounded-full shrink-0 ${
+                        b.status === "confirmed" ? "bg-primary/10 text-primary" :
+                        b.status === "completed" ? "bg-green-500/10 text-green-400" :
+                        b.status === "pending" ? "bg-yellow-500/10 text-yellow-400" :
+                        "bg-destructive/10 text-destructive"
+                      }`}>{b.status}</span>
+                    </div>
+                  ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Today's Schedule */}
+        <div className="glass-panel rounded-xl p-4 flex flex-col">
+          <h3 className="font-display text-sm text-foreground mb-3 flex items-center gap-2">
+            <Clock className="w-4 h-4 text-primary" /> Today's Schedule
+          </h3>
+          {todayBookings.length === 0 ? (
+            <div className="flex-1 flex flex-col items-center justify-center text-center py-8">
+              <Calendar className="w-8 h-8 text-muted-foreground/20 mb-2" />
+              <p className="text-xs font-body text-muted-foreground/50">No sessions today</p>
+            </div>
+          ) : (
+            <div className="space-y-2 overflow-y-auto">
+              {todayBookings.map(b => {
+                const et = eventTypes.find(e => e.id === b.eventTypeId);
+                return (
+                  <div key={b.id} className="p-2.5 rounded-lg bg-secondary/50 border border-border/30">
+                    <div className="flex items-center justify-between gap-2 mb-1">
+                      <p className="text-xs font-body font-medium text-foreground truncate">{b.clientName}</p>
+                      <span className={`text-[9px] font-body px-1.5 py-0.5 rounded-full shrink-0 ${
+                        b.status === "confirmed" ? "bg-primary/10 text-primary" :
+                        b.status === "completed" ? "bg-green-500/10 text-green-400" :
+                        b.status === "pending" ? "bg-yellow-500/10 text-yellow-400" :
+                        "bg-destructive/10 text-destructive"
+                      }`}>{b.status}</span>
+                    </div>
+                    <p className="text-[10px] font-body text-muted-foreground">{b.time} · {et?.title || b.type}</p>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* ── Pending Download Requests ── */}
@@ -3872,6 +3931,11 @@ function PhotosView() {
   const [showAddToAlbum, setShowAddToAlbum] = useState(false);
   const [visibleCount, setVisibleCount] = useState(LIBRARY_INITIAL_BATCH);
   const libSentinelRef = useRef<HTMLDivElement>(null);
+  const [uploadOpen, setUploadOpen] = useState(false);
+  const [filterDateFrom, setFilterDateFrom] = useState("");
+  const [filterDateTo, setFilterDateTo] = useState("");
+  const [filterAlbum, setFilterAlbum] = useState("");
+  const [filterSize, setFilterSize] = useState<"" | "small" | "medium" | "large">("");
 
   // Backfill missing thumbnails for library photos
   useBackfillThumbnails(libraryPhotos, useCallback((photoId, thumb) => {
@@ -3892,6 +3956,16 @@ function PhotosView() {
     );
     observer.observe(sentinel);
     return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    const onDragEnter = (e: DragEvent) => {
+      if (e.dataTransfer?.types && Array.from(e.dataTransfer.types).includes("Files")) {
+        setUploadOpen(true);
+      }
+    };
+    document.addEventListener("dragenter", onDragEnter);
+    return () => document.removeEventListener("dragenter", onDragEnter);
   }, []);
 
   // When this view mounts, some albums may only have stub data (photos: [],
@@ -3928,7 +4002,7 @@ function PhotosView() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Reset visible count when filter changes
-  useEffect(() => { setVisibleCount(LIBRARY_INITIAL_BATCH); }, [viewSource, starredOnly, searchQuery]);
+  useEffect(() => { setVisibleCount(LIBRARY_INITIAL_BATCH); }, [viewSource, starredOnly, searchQuery, filterDateFrom, filterDateTo, filterAlbum, filterSize]);
 
   // Reconcile: find files on server storage that aren't tracked in any album or library
   // Also repair albums that have broken photo references
@@ -4105,9 +4179,55 @@ function PhotosView() {
   const starredPhotos = allPhotos.filter(p => (p as any).starred);
   const sourcePhotos = viewSource === "all" ? allPhotos : viewSource === "library" ? libraryPhotos.map(p => ({ ...p, source: "Library" })) : getAlbumPhotos(viewSource);
   const unfilteredPhotos = starredOnly ? sourcePhotos.filter(p => (p as any).starred) : sourcePhotos;
-  const displayPhotos = searchQuery.trim()
-    ? unfilteredPhotos.filter(p => p.title.toLowerCase().includes(searchQuery.trim().toLowerCase()) || p.src.toLowerCase().includes(searchQuery.trim().toLowerCase()))
-    : unfilteredPhotos;
+
+  let displayPhotos = unfilteredPhotos;
+
+  // Search — match filename, album/source name, client name
+  if (searchQuery.trim()) {
+    const q = searchQuery.trim().toLowerCase();
+    displayPhotos = displayPhotos.filter(p => {
+      if (p.title.toLowerCase().includes(q)) return true;
+      if (p.src.toLowerCase().includes(q)) return true;
+      if (p.source.toLowerCase().includes(q)) return true;
+      const alb = albums.find(a => a.title === p.source);
+      if (alb?.clientName?.toLowerCase().includes(q)) return true;
+      return false;
+    });
+  }
+
+  // Date range filter (uses uploadedAt or takenAt)
+  if (filterDateFrom) {
+    displayPhotos = displayPhotos.filter(p => {
+      const d = (p.takenAt || p.uploadedAt || "").slice(0, 10);
+      return d >= filterDateFrom;
+    });
+  }
+  if (filterDateTo) {
+    displayPhotos = displayPhotos.filter(p => {
+      const d = (p.takenAt || p.uploadedAt || "").slice(0, 10);
+      return !!d && d <= filterDateTo;
+    });
+  }
+
+  // Album filter (AND logic with the album chips)
+  if (filterAlbum) {
+    const targetAlb = albums.find(a => a.id === filterAlbum);
+    if (targetAlb) {
+      displayPhotos = displayPhotos.filter(p => p.source === targetAlb.title);
+    }
+  }
+
+  // Size filter
+  if (filterSize) {
+    displayPhotos = displayPhotos.filter(p => {
+      const sz = (p as any).fileSize as number | undefined;
+      if (sz == null) return true; // no size data: include
+      if (filterSize === "small") return sz < 5 * 1024 * 1024;
+      if (filterSize === "medium") return sz >= 5 * 1024 * 1024 && sz <= 15 * 1024 * 1024;
+      if (filterSize === "large") return sz > 15 * 1024 * 1024;
+      return true;
+    });
+  }
 
   // Determine if we're viewing a specific album (for upload-to-album)
   const selectedAlbum = viewSource !== "all" && viewSource !== "library" ? albums.find(a => a.title === viewSource) : null;
@@ -4448,47 +4568,110 @@ function PhotosView() {
         ))}
       </div>
 
-      <div className="glass-panel rounded-xl p-6 mb-6">
-        <div className="border-2 border-dashed border-border rounded-lg p-8 text-center hover:border-primary/30 transition-colors cursor-pointer relative">
-          <Upload className="w-8 h-8 text-muted-foreground/50 mx-auto mb-2" />
-          <p className="text-sm font-body text-muted-foreground">
-            Upload photos to {selectedAlbum ? `"${selectedAlbum.title}"` : "your library"}
-          </p>
-          <p className="text-[10px] font-body text-muted-foreground/50 mt-1">
-            {selectedAlbum ? "Photos will be added directly to this album" : "Select photos then create albums or add to existing ones"}
-          </p>
-          <input type="file" accept="image/*" multiple className="absolute inset-0 opacity-0 cursor-pointer" onChange={handleUpload} />
+      {/* Advanced filters */}
+      {(filterDateFrom || filterDateTo || filterAlbum || filterSize) ? (
+        <div className="flex flex-wrap items-center gap-2 mb-4 p-3 rounded-xl bg-secondary/40 border border-border/40">
+          <span className="text-[10px] font-body text-muted-foreground tracking-wider uppercase">Filters:</span>
+          {filterDateFrom && <span className="text-xs font-body text-muted-foreground">From: {filterDateFrom}</span>}
+          {filterDateTo && <span className="text-xs font-body text-muted-foreground">To: {filterDateTo}</span>}
+          {filterAlbum && <span className="text-xs font-body text-muted-foreground">Album: {albums.find(a => a.id === filterAlbum)?.title}</span>}
+          {filterSize && <span className="text-xs font-body text-muted-foreground">Size: {filterSize}</span>}
+          <button onClick={() => { setFilterDateFrom(""); setFilterDateTo(""); setFilterAlbum(""); setFilterSize(""); }} className="text-xs font-body text-muted-foreground hover:text-foreground flex items-center gap-1 ml-auto">
+            <X className="w-3.5 h-3.5" /> Clear
+          </button>
         </div>
-        {/* Camera / gallery shortcuts — shown on touch/mobile devices only */}
-        <div className="mt-3 flex gap-2 sm:hidden">
-          <label className="flex-1 flex items-center justify-center gap-2 p-2.5 rounded-lg border border-border/50 text-xs font-body text-muted-foreground cursor-pointer hover:bg-secondary/50 transition-colors">
-            <Camera className="w-4 h-4" /> Take a photo
-            <input type="file" accept="image/*" capture="environment" className="sr-only" onChange={handleUpload} />
-          </label>
-          <label className="flex-1 flex items-center justify-center gap-2 p-2.5 rounded-lg border border-border/50 text-xs font-body text-muted-foreground cursor-pointer hover:bg-secondary/50 transition-colors">
-            <Upload className="w-4 h-4" /> Choose photos
-            <input type="file" accept="image/*" multiple className="sr-only" onChange={handleUpload} />
-          </label>
-        </div>
-        {uploadStats && (
-          <div className="mt-3 p-3 rounded-lg bg-secondary/50 border border-border">
-            <div className="flex items-center justify-between text-xs font-body text-muted-foreground">
-              <span>Processed {uploadStats.done}/{uploadStats.total} photos{uploadStats.errors > 0 ? ` (${uploadStats.errors} failed)` : ""}</span>
-              <div className="flex items-center gap-2">
-                {uploadStats.speed != null && uploadStats.done < uploadStats.total && (
-                  <span className="text-primary font-medium">{formatSpeed(uploadStats.speed)}</span>
-                )}
-                {uploadStats.savedBytes > 0 && <span className="text-green-500">Saved {formatBytes(uploadStats.savedBytes)}</span>}
-              </div>
-            </div>
-            {uploadStats.done < uploadStats.total && (
-              <div className="mt-1.5 h-1.5 rounded-full bg-border overflow-hidden">
-                <div className="h-full bg-primary rounded-full transition-all" style={{ width: `${(uploadStats.done / uploadStats.total) * 100}%` }} />
-              </div>
-            )}
+      ) : null}
+      <details className="mb-4 group">
+        <summary className="text-xs font-body text-muted-foreground cursor-pointer hover:text-foreground flex items-center gap-1.5 list-none select-none w-fit">
+          <ChevronDown className="w-3.5 h-3.5 group-open:rotate-180 transition-transform" /> Filter Options
+        </summary>
+        <div className="mt-2 p-3 rounded-xl bg-secondary/40 border border-border/40 flex flex-wrap gap-3 items-end">
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] font-body text-muted-foreground tracking-wider uppercase">From Date</label>
+            <input type="date" value={filterDateFrom} onChange={e => setFilterDateFrom(e.target.value)} className="h-8 rounded-md border border-border bg-secondary/50 text-xs font-body text-foreground px-2 focus:outline-none focus:ring-1 focus:ring-primary" />
           </div>
-        )}
-      </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] font-body text-muted-foreground tracking-wider uppercase">To Date</label>
+            <input type="date" value={filterDateTo} onChange={e => setFilterDateTo(e.target.value)} className="h-8 rounded-md border border-border bg-secondary/50 text-xs font-body text-foreground px-2 focus:outline-none focus:ring-1 focus:ring-primary" />
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] font-body text-muted-foreground tracking-wider uppercase">Album</label>
+            <select value={filterAlbum} onChange={e => setFilterAlbum(e.target.value)} className="h-8 rounded-md border border-border bg-secondary/50 text-xs font-body text-foreground px-2 focus:outline-none focus:ring-1 focus:ring-primary">
+              <option value="">All Albums</option>
+              {albums.map(a => <option key={a.id} value={a.id}>{a.title}</option>)}
+            </select>
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] font-body text-muted-foreground tracking-wider uppercase">File Size</label>
+            <select value={filterSize} onChange={e => setFilterSize(e.target.value as "" | "small" | "medium" | "large")} className="h-8 rounded-md border border-border bg-secondary/50 text-xs font-body text-foreground px-2 focus:outline-none focus:ring-1 focus:ring-primary">
+              <option value="">Any Size</option>
+              <option value="small">Small ({`<`}5MB)</option>
+              <option value="medium">Medium (5–15MB)</option>
+              <option value="large">Large ({`>`}15MB)</option>
+            </select>
+          </div>
+          {(filterDateFrom || filterDateTo || filterAlbum || filterSize) && (
+            <Button size="sm" variant="ghost" onClick={() => { setFilterDateFrom(""); setFilterDateTo(""); setFilterAlbum(""); setFilterSize(""); }} className="h-8 text-xs font-body text-muted-foreground gap-1">
+              <X className="w-3.5 h-3.5" /> Clear Filters
+            </Button>
+          )}
+        </div>
+      </details>
+
+      {!uploadOpen ? (
+        <div className="mb-4">
+          <Button size="sm" variant="outline" onClick={() => setUploadOpen(true)} className="gap-2 font-body text-xs border-dashed border-border text-muted-foreground hover:text-foreground hover:border-primary/50">
+            <Upload className="w-4 h-4" /> + Upload Photos
+          </Button>
+        </div>
+      ) : (
+        <div className="glass-panel rounded-xl p-6 mb-6">
+          <div className="flex justify-end mb-2">
+            <button onClick={() => setUploadOpen(false)} className="text-muted-foreground hover:text-foreground transition-colors" title="Collapse upload zone">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          <div className="border-2 border-dashed border-border rounded-lg p-8 text-center hover:border-primary/30 transition-colors cursor-pointer relative">
+            <Upload className="w-8 h-8 text-muted-foreground/50 mx-auto mb-2" />
+            <p className="text-sm font-body text-muted-foreground">
+              Upload photos to {selectedAlbum ? `"${selectedAlbum.title}"` : "your library"}
+            </p>
+            <p className="text-[10px] font-body text-muted-foreground/50 mt-1">
+              {selectedAlbum ? "Photos will be added directly to this album" : "Select photos then create albums or add to existing ones"}
+            </p>
+            <input type="file" accept="image/*" multiple className="absolute inset-0 opacity-0 cursor-pointer" onChange={handleUpload} />
+          </div>
+          {/* Camera / gallery shortcuts — shown on touch/mobile devices only */}
+          <div className="mt-3 flex gap-2 sm:hidden">
+            <label className="flex-1 flex items-center justify-center gap-2 p-2.5 rounded-lg border border-border/50 text-xs font-body text-muted-foreground cursor-pointer hover:bg-secondary/50 transition-colors">
+              <Camera className="w-4 h-4" /> Take a photo
+              <input type="file" accept="image/*" capture="environment" className="sr-only" onChange={handleUpload} />
+            </label>
+            <label className="flex-1 flex items-center justify-center gap-2 p-2.5 rounded-lg border border-border/50 text-xs font-body text-muted-foreground cursor-pointer hover:bg-secondary/50 transition-colors">
+              <Upload className="w-4 h-4" /> Choose photos
+              <input type="file" accept="image/*" multiple className="sr-only" onChange={handleUpload} />
+            </label>
+          </div>
+          {uploadStats && (
+            <div className="mt-3 p-3 rounded-lg bg-secondary/50 border border-border">
+              <div className="flex items-center justify-between text-xs font-body text-muted-foreground">
+                <span>Processed {uploadStats.done}/{uploadStats.total} photos{uploadStats.errors > 0 ? ` (${uploadStats.errors} failed)` : ""}</span>
+                <div className="flex items-center gap-2">
+                  {uploadStats.speed != null && uploadStats.done < uploadStats.total && (
+                    <span className="text-primary font-medium">{formatSpeed(uploadStats.speed)}</span>
+                  )}
+                  {uploadStats.savedBytes > 0 && <span className="text-green-500">Saved {formatBytes(uploadStats.savedBytes)}</span>}
+                </div>
+              </div>
+              {uploadStats.done < uploadStats.total && (
+                <div className="mt-1.5 h-1.5 rounded-full bg-border overflow-hidden">
+                  <div className="h-full bg-primary rounded-full transition-all" style={{ width: `${(uploadStats.done / uploadStats.total) * 100}%` }} />
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {displayPhotos.length === 0 ? (
         <div className="glass-panel rounded-xl p-12 text-center">
