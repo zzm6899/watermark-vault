@@ -130,6 +130,7 @@ export interface Album {
   coverImage: string;
   date: string;
   photoCount: number;
+  status?: "editing" | "proofing" | "delivered" | "archived";
   freeDownloads: number;
   pricePerPhoto: number;
   priceFullAlbum: number;

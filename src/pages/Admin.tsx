@@ -2883,6 +2883,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
               <AlbumSortBtn k="client" label="Client" />
             </div>
           </div>
+          <TooltipProvider delayDuration={300}>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
           {sortedAlbums.map((alb) => (
             <div key={alb.id} className={`glass-panel rounded-xl overflow-hidden transition-all ${mergeMode ? "cursor-pointer" : ""} ${mergeSelection.has(alb.id) ? "ring-2 ring-primary" : ""} ${alb.enabled === false ? "opacity-50" : ""}`}
@@ -2912,6 +2913,16 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                   const handle = alb.instagramHandle || bookingMap.get(alb.bookingId || "")?.instagramHandle;
                   return handle ? <p className="text-xs font-body text-muted-foreground">@{handle.replace("@", "")}</p> : null;
                 })()}
+                {alb.status && (
+                  <span className={`inline-flex items-center text-[10px] font-body px-2 py-0.5 rounded-full ${
+                    alb.status === "editing"   ? "bg-yellow-500/15 text-yellow-400" :
+                    alb.status === "proofing"  ? "bg-blue-500/15 text-blue-400" :
+                    alb.status === "delivered" ? "bg-green-500/15 text-green-400" :
+                    "bg-secondary text-muted-foreground"
+                  }`}>
+                    {alb.status.charAt(0).toUpperCase() + alb.status.slice(1)}
+                  </span>
+                )}
                 {/* Download expiry badge */}
                 {/* Gallery expiry badge */}
                 {alb.expiresAt && (() => {
@@ -2965,90 +2976,131 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                 {alb.mergedFrom && <p className="text-[10px] font-body text-muted-foreground/50">Merged from {alb.mergedFrom.length} albums</p>}
                 {!mergeMode && (
                   <div className="flex items-center gap-2 pt-2 border-t border-border/50">
-                    <Switch
-                      checked={alb.enabled !== false}
-                      onCheckedChange={(v) => {
-                        updateAlbum({ ...alb, enabled: v });
-                        refresh();
-                        toast.success(v ? "Album enabled" : "Album disabled");
-                      }}
-                    />
-                    <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary" onClick={() => copyLink(alb)}>
-                      <Copy className="w-3.5 h-3.5" />
-                    </Button>
-                    <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary" onClick={() => handleSendNotification(alb)}>
-                      <Send className="w-3.5 h-3.5" />
-                    </Button>
-                    <a href={`/gallery/${alb.slug}`} target="_blank" rel="noopener noreferrer">
-                      <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary">
-                        <ExternalLink className="w-3.5 h-3.5" />
-                      </Button>
-                    </a>
-                    {(() => {
-                      const starredPhotos = alb.photos.filter((p: any) => p.starred);
-                      if (starredPhotos.length === 0) return null;
-                      return (
-                        <Button
-                          variant="ghost" size="icon"
-                          className="h-7 w-7 text-yellow-500 hover:text-yellow-400"
-                          title={`Export ${starredPhotos.length} starred filenames for Lightroom`}
-                          onClick={() => {
-                            const lines = [
-                              `# Starred photos — ${alb.title}`,
-                              `# Album: ${alb.slug}`,
-                              `# Exported: ${new Date().toISOString().slice(0,10)}`,
-                              `# ${starredPhotos.length} of ${alb.photos.length} photos starred`,
-                              `#`,
-                              `# Drop this file into the PowerShell script to copy matching NEFs`,
-                              `# and write 5-star XMP sidecars for Lightroom / Capture One.`,
-                              ``,
-                              ...starredPhotos.map((p: any) => p.originalName?.trim() || p.title || p.id),
-                            ];
-                            const blob = new Blob([lines.join("\n")], { type: "text/plain" });
-                            const url = URL.createObjectURL(blob);
-                            const a = document.createElement("a");
-                            a.href = url;
-                            a.download = `starred_${alb.slug}_${new Date().toISOString().slice(0,10)}.txt`;
-                            a.click();
-                            URL.revokeObjectURL(url);
-                            toast.success(`Exported ${starredPhotos.length} starred filenames`);
-                          }}
-                        >
-                          <Star className="w-3.5 h-3.5 fill-yellow-500/40" />
-                        </Button>
-                      );
-                    })()}
-                    {/* Fix Thumbnail — shown when cover is missing or broken */}
-                    {(brokenCovers.has(alb.id) || !alb.coverImage) && !alb._photosStripped && alb.photos.length > 0 && (
-                      <Button
-                        variant="ghost" size="icon"
-                        className="h-7 w-7 text-muted-foreground hover:text-primary"
-                        title="Fix thumbnail — set cover to first photo"
-                        onClick={() => {
-                          const firstPhoto = alb.photos[0];
-                          const newCover = firstPhoto.thumbnail || firstPhoto.src;
-                          updateAlbum({ ...alb, coverImage: newCover });
-                          setBrokenCovers(prev => { const n = new Set(prev); n.delete(alb.id); return n; });
-                          refresh();
-                          toast.success("Thumbnail updated");
-                        }}
-                      >
-                        <Image className="w-3.5 h-3.5" />
-                      </Button>
-                    )}
-                    <div className="flex-1" />
-                    <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-foreground" onClick={() => setEditing(alb)}>
-                      <Edit className="w-3.5 h-3.5" />
-                    </Button>
-                    <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={() => handleDelete(alb.id)}>
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </Button>
+                    <Tooltip>
+                        <TooltipTrigger asChild>
+                          <div>
+                            <Switch
+                              checked={alb.enabled !== false}
+                              onCheckedChange={(v) => {
+                                updateAlbum({ ...alb, enabled: v });
+                                refresh();
+                                toast.success(v ? "Album enabled" : "Album disabled");
+                              }}
+                            />
+                          </div>
+                        </TooltipTrigger>
+                        <TooltipContent>Toggle Public/Private</TooltipContent>
+                      </Tooltip>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary" onClick={() => copyLink(alb)}>
+                            <Copy className="w-3.5 h-3.5" />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>Share Link</TooltipContent>
+                      </Tooltip>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary" onClick={() => handleSendNotification(alb)}>
+                            <Send className="w-3.5 h-3.5" />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>Send Notification</TooltipContent>
+                      </Tooltip>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <a href={`/gallery/${alb.slug}`} target="_blank" rel="noopener noreferrer">
+                            <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary">
+                              <ExternalLink className="w-3.5 h-3.5" />
+                            </Button>
+                          </a>
+                        </TooltipTrigger>
+                        <TooltipContent>Open Gallery</TooltipContent>
+                      </Tooltip>
+                      {(() => {
+                        const starredPhotos = alb.photos.filter((p: any) => p.starred);
+                        if (starredPhotos.length === 0) return null;
+                        return (
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                variant="ghost" size="icon"
+                                className="h-7 w-7 text-yellow-500 hover:text-yellow-400"
+                                onClick={() => {
+                                  const lines = [
+                                    `# Starred photos — ${alb.title}`,
+                                    `# Album: ${alb.slug}`,
+                                    `# Exported: ${new Date().toISOString().slice(0,10)}`,
+                                    `# ${starredPhotos.length} of ${alb.photos.length} photos starred`,
+                                    `#`,
+                                    `# Drop this file into the PowerShell script to copy matching NEFs`,
+                                    `# and write 5-star XMP sidecars for Lightroom / Capture One.`,
+                                    ``,
+                                    ...starredPhotos.map((p: any) => p.originalName?.trim() || p.title || p.id),
+                                  ];
+                                  const blob = new Blob([lines.join("\n")], { type: "text/plain" });
+                                  const url = URL.createObjectURL(blob);
+                                  const a = document.createElement("a");
+                                  a.href = url;
+                                  a.download = `starred_${alb.slug}_${new Date().toISOString().slice(0,10)}.txt`;
+                                  a.click();
+                                  URL.revokeObjectURL(url);
+                                  toast.success(`Exported ${starredPhotos.length} starred filenames`);
+                                }}
+                              >
+                                <Star className="w-3.5 h-3.5 fill-yellow-500/40" />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>Export Starred ({starredPhotos.length})</TooltipContent>
+                          </Tooltip>
+                        );
+                      })()}
+                      {/* Fix Thumbnail — shown when cover is missing or broken */}
+                      {(brokenCovers.has(alb.id) || !alb.coverImage) && !alb._photosStripped && alb.photos.length > 0 && (
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              variant="ghost" size="icon"
+                              className="h-7 w-7 text-muted-foreground hover:text-primary"
+                              onClick={() => {
+                                const firstPhoto = alb.photos[0];
+                                const newCover = firstPhoto.thumbnail || firstPhoto.src;
+                                updateAlbum({ ...alb, coverImage: newCover });
+                                setBrokenCovers(prev => { const n = new Set(prev); n.delete(alb.id); return n; });
+                                refresh();
+                                toast.success("Thumbnail updated");
+                              }}
+                            >
+                              <Image className="w-3.5 h-3.5" />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>Fix Thumbnail</TooltipContent>
+                        </Tooltip>
+                      )}
+                      <div className="flex-1" />
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-foreground" onClick={() => setEditing(alb)}>
+                            <Edit className="w-3.5 h-3.5" />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>Edit Album</TooltipContent>
+                      </Tooltip>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={() => handleDelete(alb.id)}>
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>Delete Album</TooltipContent>
+                      </Tooltip>
                   </div>
                 )}
               </div>
             </div>
           ))}
           </div>
+          </TooltipProvider>
         </>
       );
       })()}
@@ -3143,6 +3195,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
   const [downloadExpiresAt, setDownloadExpiresAt] = useState(album?.downloadExpiresAt || "");
   const [expiresAt, setExpiresAt] = useState(album?.expiresAt || "");
   const [displaySize, setDisplaySize] = useState<AlbumDisplaySize>(album?.displaySize || "medium");
+  const [albumStatus, setAlbumStatus] = useState<"editing" | "proofing" | "delivered" | "archived">(album?.status || "editing");
 
   const [uploadStats, setUploadStats] = useState<{ total: number; done: number; errors: number; savedBytes: number; speed?: number } | null>(null);
   const [ftpUploadProgress, setFtpUploadProgress] = useState<{ done: number; total: number; failed: number } | null>(null);
@@ -3268,6 +3321,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
       watermarkDisabled,
       purchasingDisabled,
       displaySize,
+      status: albumStatus,
       usedFreeDownloads: album?.usedFreeDownloads,
       downloadRequests: album?.downloadRequests,
       // Preserve the enabled/disabled state so that editing an album does not
@@ -3313,6 +3367,20 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
       <div>
         <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Description</label>
         <Textarea value={description} onChange={(e) => setDescription(e.target.value)} className="bg-secondary border-border text-foreground font-body min-h-[50px]" />
+      </div>
+
+      <div>
+        <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Status</label>
+        <select
+          value={albumStatus}
+          onChange={(e) => setAlbumStatus(e.target.value as "editing" | "proofing" | "delivered" | "archived")}
+          className="w-full bg-secondary border border-border text-foreground font-body text-sm rounded-md px-3 py-2.5"
+        >
+          <option value="editing">Editing</option>
+          <option value="proofing">Proofing</option>
+          <option value="delivered">Delivered</option>
+          <option value="archived">Archived</option>
+        </select>
       </div>
 
       <div>
