@@ -122,6 +122,13 @@
     column-count: 1;
     column-gap: 0;
   }
+  /* Prevent column breaks inside photo tiles */
+  .masonry-grid > *,
+  .masonry-grid-sm > *,
+  .masonry-grid-lg > *,
+  .masonry-grid-list > * {
+    break-inside: avoid;
+  }
 
   @media (max-width: 1024px) {
     .masonry-grid { column-count: 2; }

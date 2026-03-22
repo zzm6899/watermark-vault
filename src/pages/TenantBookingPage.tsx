@@ -71,6 +71,43 @@ function isValidEmail(email: string) {
 
 type Step = "event-select" | "datetime" | "contact" | "confirmed";
 
+const TENANT_BOOKING_STEPS: { id: Step; label: string }[] = [
+  { id: "event-select", label: "Service" },
+  { id: "datetime",     label: "Date & Time" },
+  { id: "contact",      label: "Details" },
+];
+
+function TenantBookingSteps({ currentStep }: { currentStep: Step }) {
+  if (currentStep === "confirmed") return null;
+  const currentIdx = TENANT_BOOKING_STEPS.findIndex(s => s.id === currentStep);
+  if (currentIdx < 0) return null;
+  return (
+    <div className="flex items-center justify-center gap-0 px-6 py-3 border-b border-border/50">
+      {TENANT_BOOKING_STEPS.map((s, idx) => {
+        const done = idx < currentIdx;
+        const active = idx === currentIdx;
+        return (
+          <div key={s.id} className="flex items-center">
+            <div className={`flex items-center gap-1.5 px-2 py-1 rounded-full text-[11px] font-body transition-all ${
+              active ? "text-primary font-semibold" : done ? "text-green-400" : "text-muted-foreground/50"
+            }`}>
+              <div className={`w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-bold shrink-0 transition-all ${
+                active ? "bg-primary text-primary-foreground scale-110" : done ? "bg-green-500/20 text-green-400" : "bg-border text-muted-foreground/50"
+              }`}>
+                {done ? <CheckCircle2 className="w-3 h-3" /> : idx + 1}
+              </div>
+              <span className="hidden sm:inline">{s.label}</span>
+            </div>
+            {idx < TENANT_BOOKING_STEPS.length - 1 && (
+              <div className={`h-px w-4 sm:w-6 shrink-0 transition-colors ${idx < currentIdx ? "bg-green-500/40" : "bg-border/50"}`} />
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ── Main Component ────────────────────────────────────────────────────────────
 export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: string }) {
   const { tenantSlug: paramSlug } = useParams<{ tenantSlug: string }>();
@@ -209,6 +246,7 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
           </div>
         </div>
       </header>
+      <TenantBookingSteps currentStep={step} />
 
       <div className="flex-1 max-w-4xl w-full mx-auto p-4 sm:p-6 lg:p-8">
 
@@ -238,33 +276,34 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
                   <p className="text-sm font-body text-muted-foreground">No sessions available right now.</p>
                 </div>
               ) : (
-                <div className="grid sm:grid-cols-2 gap-4">
+                <div className="grid sm:grid-cols-2 gap-3">
                   {eventTypes.map((et) => (
                     <button
                       key={et.id}
                       onClick={() => handleSelectEvent(et)}
-                      className="glass-panel rounded-xl p-5 text-left hover:border-primary/40 hover:bg-primary/5 transition-all group"
+                      className="glass-panel rounded-xl p-5 text-left hover:border-primary/30 hover:bg-secondary/50 transition-all group"
                     >
-                      <h3 className="font-display text-base text-foreground group-hover:text-primary transition-colors">{et.title}</h3>
-                      {et.description && <p className="text-xs font-body text-muted-foreground mt-1.5 line-clamp-2">{et.description}</p>}
-                      <div className="flex flex-wrap items-center gap-3 mt-3">
-                        <span className="flex items-center gap-1 text-xs font-body text-muted-foreground">
+                      <div className="flex items-start justify-between gap-2 mb-2">
+                        <h3 className="font-display text-base text-foreground group-hover:text-primary transition-colors">{et.title}</h3>
+                        {(et.price ?? 0) > 0 && (
+                          <span className="text-xs font-body text-primary bg-primary/10 rounded-full px-2 py-0.5 border border-primary/15 shrink-0">
+                            ${getPriceForDuration(et, et.durations[0])}
+                          </span>
+                        )}
+                      </div>
+                      {et.description && <p className="text-xs font-body text-muted-foreground mt-1 line-clamp-2">{et.description}</p>}
+                      <div className="flex flex-wrap items-center gap-2 mt-3">
+                        <span className="flex items-center gap-1 text-xs font-body text-muted-foreground border border-border/50 rounded-full px-2 py-0.5">
                           <Clock className="w-3 h-3" />
                           {et.durations.map(formatDuration).join(" / ")}
                         </span>
-                        {(et.price ?? 0) > 0 && (
-                          <span className="flex items-center gap-1 text-xs font-body text-primary">
-                            <DollarSign className="w-3 h-3" />
-                            {getPriceForDuration(et, et.durations[0])} {et.requiresConfirmation ? "" : ""}
-                          </span>
-                        )}
                         {et.location && (
-                          <span className="flex items-center gap-1 text-xs font-body text-muted-foreground">
+                          <span className="flex items-center gap-1 text-xs font-body text-muted-foreground border border-border/50 rounded-full px-2 py-0.5">
                             <MapPin className="w-3 h-3" /> {et.location}
                           </span>
                         )}
                         {et.requiresConfirmation && (
-                          <span className="text-[10px] font-body bg-orange-500/10 text-orange-500 px-1.5 py-0.5 rounded-full">Requires confirmation</span>
+                          <span className="text-[10px] font-body bg-orange-500/10 text-orange-400 border border-orange-500/20 px-2 py-0.5 rounded-full">Requires confirmation</span>
                         )}
                       </div>
                     </button>

@@ -6,7 +6,7 @@ import {
   CalendarDays, Upload, CheckCircle2, AlertCircle, Camera,
   MapPin, Calendar as CalendarIcon, ExternalLink, XCircle, Edit,
   CreditCard, Bell, Users, Building2, Copy, Check as CheckIcon,
-  MessageSquare,
+  MessageSquare, ChevronRight as ArrowRight,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -181,6 +181,45 @@ function BookingTimer({ minutes, onExpire }: { minutes: number; onExpire: () => 
   return (
     <div className={`text-xs font-body tabular-nums ${isLow ? "text-destructive" : "text-muted-foreground"}`}>
       ⏱ {m}:{s.toString().padStart(2, "0")} remaining
+    </div>
+  );
+}
+
+// ─── Step Progress Indicator ─────────────────────────────────────
+const BOOKING_STEPS: { id: Step; label: string }[] = [
+  { id: "event-select", label: "Service" },
+  { id: "datetime",     label: "Date & Time" },
+  { id: "questions",    label: "Details" },
+  { id: "payment",      label: "Confirm" },
+];
+
+function BookingSteps({ currentStep }: { currentStep: Step }) {
+  if (currentStep === "confirmed" || currentStep === "enquiry" || currentStep === "enquiry-confirmed") return null;
+  const currentIdx = BOOKING_STEPS.findIndex(s => s.id === currentStep);
+  if (currentIdx < 0) return null;
+  return (
+    <div className="flex items-center justify-center gap-0 mb-8 max-w-sm mx-auto">
+      {BOOKING_STEPS.map((s, idx) => {
+        const done = idx < currentIdx;
+        const active = idx === currentIdx;
+        return (
+          <div key={s.id} className="flex items-center min-w-0">
+            <div className={`flex items-center gap-1.5 px-2 py-1 rounded-full text-[11px] font-body transition-all ${
+              active ? "text-primary font-semibold" : done ? "text-green-400" : "text-muted-foreground/50"
+            }`}>
+              <div className={`w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-bold shrink-0 transition-all ${
+                active ? "bg-primary text-primary-foreground scale-110" : done ? "bg-green-500/20 text-green-400" : "bg-border text-muted-foreground/50"
+              }`}>
+                {done ? <CheckCircle2 className="w-3 h-3" /> : idx + 1}
+              </div>
+              <span className="hidden sm:inline">{s.label}</span>
+            </div>
+            {idx < BOOKING_STEPS.length - 1 && (
+              <div className={`h-px w-4 sm:w-6 shrink-0 transition-colors ${idx < currentIdx ? "bg-green-500/40" : "bg-border/50"}`} />
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -546,6 +585,7 @@ export default function Booking() {
     <div className="min-h-screen bg-background">
       <section className="min-h-screen" style={{ paddingTop: "calc(env(safe-area-inset-top) + 2rem)", paddingBottom: "calc(env(safe-area-inset-bottom) + 6rem)" }}>
         <div className="container mx-auto px-4">
+          <BookingSteps currentStep={step} />
           <AnimatePresence mode="wait">
 
             {/* ─── Step 1: Event List ─── */}
@@ -553,19 +593,21 @@ export default function Booking() {
               <motion.div key="event-select" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} className="max-w-2xl mx-auto">
                 {/* Profile Card */}
                 <div className="glass-panel rounded-xl p-6 mb-6">
-                  <div className="flex items-center gap-3 mb-3">
-                    <div className="w-12 h-12 rounded-full bg-primary/20 flex items-center justify-center overflow-hidden">
+                  <div className="flex items-start gap-4">
+                    <div className="w-16 h-16 rounded-xl bg-primary/15 flex items-center justify-center overflow-hidden shrink-0 ring-1 ring-primary/20">
                       {profile.avatar ? (
                         <img src={profile.avatar} alt="Avatar" className="w-full h-full object-cover" />
                       ) : (
-                        <Camera className="w-6 h-6 text-primary" />
+                        <Camera className="w-7 h-7 text-primary" />
+                      )}
+                    </div>
+                    <div className="flex-1 min-w-0 pt-0.5">
+                      <h1 className="font-display text-2xl text-foreground">{profile.name}</h1>
+                      {profile.bio && (
+                        <RichTextDisplay html={profile.bio} className="mt-1 text-sm text-muted-foreground" />
                       )}
                     </div>
                   </div>
-                  <h1 className="font-display text-2xl text-foreground">{profile.name}</h1>
-                  {profile.bio && (
-                    <RichTextDisplay html={profile.bio} className="mt-1" />
-                  )}
                 </div>
 
                 {eventTypes.length === 0 ? (
@@ -574,26 +616,33 @@ export default function Booking() {
                     <p className="text-sm font-body text-muted-foreground">No event types available yet.</p>
                   </div>
                 ) : (
-                  <div className="glass-panel rounded-xl divide-y divide-border/50">
+                  <div className="space-y-2">
                     {eventTypes.map((ev) => (
-                      <button key={ev.id} onClick={() => handleSelectEvent(ev)} className="w-full text-left p-5 hover:bg-secondary/30 transition-colors first:rounded-t-xl last:rounded-b-xl">
+                      <button key={ev.id} onClick={() => handleSelectEvent(ev)} className="w-full text-left glass-panel rounded-xl p-5 hover:bg-secondary/50 hover:border-primary/20 transition-all group">
                         <div className="flex items-start gap-3">
-                          <div className="w-1.5 h-10 rounded-full bg-primary mt-0.5 flex-shrink-0" />
-                          <div className="flex-1">
-                            <h3 className="font-display text-base text-foreground mb-1">{ev.title}</h3>
+                          <div className="w-8 h-8 rounded-lg bg-primary/15 flex items-center justify-center flex-shrink-0 mt-0.5 group-hover:bg-primary/25 transition-colors">
+                            <Camera className="w-4 h-4 text-primary" />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center justify-between gap-2 mb-1">
+                              <h3 className="font-display text-base text-foreground">{ev.title}</h3>
+                              <div className="flex items-center gap-2 shrink-0">
+                                {ev.price > 0 && (
+                                  <span className="text-xs font-body text-primary bg-primary/10 rounded-full px-2.5 py-0.5 border border-primary/20">
+                                    {ev.prices && Object.keys(ev.prices).length > 0
+                                      ? `from $${Math.min(...ev.durations.map(d => getPriceForDuration(ev, d)))}`
+                                      : `$${ev.price}`}
+                                  </span>
+                                )}
+                                <ArrowRight className="w-4 h-4 text-muted-foreground/40 group-hover:text-primary group-hover:translate-x-0.5 transition-all" />
+                              </div>
+                            </div>
                             {ev.description && <RichTextDisplay html={ev.description} className="mb-3 max-h-24 overflow-y-auto" />}
                             <div className="flex flex-wrap items-center gap-2">
                               <span className="inline-flex items-center gap-1 text-xs font-body text-muted-foreground border border-border rounded-full px-2.5 py-1">
                                 <Clock className="w-3 h-3" />
                                 {ev.durations.map((d) => formatDuration(d)).join(" / ")}
                               </span>
-                              {ev.price > 0 && (
-                                <span className="text-xs font-body text-primary">
-                                  {ev.prices && Object.keys(ev.prices).length > 0
-                                    ? ev.durations.map(d => `${formatDuration(d)}: $${ev.prices![d] ?? ev.price}`).join(" · ")
-                                    : `$${ev.price}`}
-                                </span>
-                              )}
                               {ev.requiresConfirmation && (
                                 <span className="inline-flex items-center gap-1 text-xs font-body text-muted-foreground border border-border rounded-full px-2.5 py-1">
                                   <AlertCircle className="w-3 h-3" />Requires confirmation
