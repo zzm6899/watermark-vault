@@ -2,7 +2,7 @@ import { useParams, useSearchParams } from "react-router-dom";
 import { useState, useCallback, useEffect, useRef } from "react";
 import { usePageTitle } from "@/hooks/use-page-title";
 import { motion, AnimatePresence } from "framer-motion";
-import { Info, Building2, Copy, Check as CheckIcon, Lock, Download, Grid, List, LayoutGrid, CreditCard, X, ChevronLeft, ChevronRight, Star, Camera, CheckCircle2, Clock, Sparkles, Maximize2, ArrowUpDown, SlidersHorizontal, ZoomIn, ZoomOut } from "lucide-react";
+import { Info, Building2, Copy, Check as CheckIcon, Lock, Download, Grid, List, LayoutGrid, CreditCard, X, ChevronLeft, ChevronRight, Star, Camera, CheckCircle2, Clock, Sparkles, Maximize2, ArrowUpDown, SlidersHorizontal, ZoomIn, ZoomOut, Images, ChevronUp } from "lucide-react";
 import Header from "@/components/Header";
 import Footer from "@/components/Footer";
 import WatermarkedImage from "@/components/WatermarkedImage";
@@ -259,6 +259,7 @@ export default function AlbumDetail() {
   const [proofingClientNote, setProofingClientNote] = useState("");
   const [proofingSubmitting, setProofingSubmitting] = useState(false);
   const [proofingSubmitted, setProofingSubmitted] = useState(false);
+  const [showScrollTop, setShowScrollTop] = useState(false);
 
   // Check Stripe availability from server — uses tenant Stripe (with fallback) when a tenant album
   useEffect(() => {
@@ -485,6 +486,13 @@ export default function AlbumDetail() {
       img.src = src;
     }
   }, [lightboxPhotoId]);
+
+  // Show scroll-to-top button after scrolling down
+  useEffect(() => {
+    const handleScroll = () => setShowScrollTop(window.scrollY > 600);
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    return () => window.removeEventListener("scroll", handleScroll);
+  }, []);
 
   /** Save the buyer's email, then resume any pending Stripe checkout.
    *  Defined here (before any conditional returns) to satisfy the Rules of Hooks. */
@@ -1067,8 +1075,16 @@ export default function AlbumDetail() {
           >
             <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
               <div>
-                <h1 className="font-display text-4xl md:text-5xl text-foreground mb-2">{album.title}</h1>
-                <p className="text-sm font-body text-muted-foreground">{album.description}</p>
+                <div className="flex items-center gap-3 mb-2">
+                  <h1 className="font-display text-4xl md:text-5xl text-foreground">{album.title}</h1>
+                  {visiblePhotos.length > 0 && (
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-primary/10 border border-primary/20 text-primary text-xs font-body shrink-0">
+                      <Images className="w-3 h-3" />
+                      {visiblePhotos.length}
+                    </span>
+                  )}
+                </div>
+                {album.description && <p className="text-sm font-body text-muted-foreground">{album.description}</p>}
               </div>
 
               {/* ── Proofing Stage Banner ───────────────────────────── */}
@@ -1376,7 +1392,7 @@ export default function AlbumDetail() {
             <>
             <div className={gridClass}>
               {displayedPhotos.slice(0, galleryVisibleCount).map((photo, i) => (
-                <div key={photo.id} className="relative group">
+                <div key={photo.id} className="relative group mb-3 sm:mb-4 overflow-hidden rounded-lg transition-transform duration-200 hover:scale-[1.01] hover:shadow-xl hover:shadow-black/40 cursor-pointer">
                   <WatermarkedImage
                 src={getGalleryPhotoSrc(photo,
                   // Branded giveaway: allUnlocked but watermarks still active and no real payment → keep watermark in gallery (matches download behaviour)
@@ -1400,7 +1416,7 @@ export default function AlbumDetail() {
                   {/* Expand button — always visible on touch devices, hover-only on pointer devices */}
                   <button
                     onClick={e => { e.stopPropagation(); setLightboxPhotoId(photo.id); }}
-                    className="absolute top-2 left-2 w-7 h-7 rounded-full bg-black/50 text-white flex items-center justify-center [@media(hover:none)]:opacity-100 opacity-0 group-hover:opacity-100 transition-opacity z-10"
+                    className="absolute top-2 left-2 w-7 h-7 rounded-full bg-black/60 backdrop-blur-sm text-white flex items-center justify-center [@media(hover:none)]:opacity-100 opacity-0 group-hover:opacity-100 transition-opacity z-10"
                   >
                     <Maximize2 className="w-3 h-3" />
                   </button>
@@ -1410,7 +1426,7 @@ export default function AlbumDetail() {
                       className={`absolute top-2 right-2 w-8 h-8 rounded-full flex items-center justify-center transition-all shadow-lg ${
                         starredIds.has(photo.id)
                           ? "bg-yellow-400 text-yellow-900 scale-110"
-                          : "bg-black/50 text-white/70 [@media(hover:none)]:opacity-100 opacity-0 group-hover:opacity-100"
+                          : "bg-black/60 backdrop-blur-sm text-white/70 [@media(hover:none)]:opacity-100 opacity-0 group-hover:opacity-100"
                       }`}
                     >
                       <Star className={`w-4 h-4 ${starredIds.has(photo.id) ? "fill-yellow-900" : ""}`} />
@@ -1429,6 +1445,22 @@ export default function AlbumDetail() {
           )}
         </div>
       </section>
+
+      {/* Scroll-to-top button */}
+      <AnimatePresence>
+        {showScrollTop && (
+          <motion.button
+            initial={{ opacity: 0, scale: 0.8 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.8 }}
+            onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+            className="fixed bottom-24 right-4 z-40 w-10 h-10 rounded-full bg-secondary/90 backdrop-blur-sm border border-border/60 text-muted-foreground hover:text-foreground hover:border-primary/40 flex items-center justify-center shadow-lg transition-colors"
+            title="Back to top"
+          >
+            <ChevronUp className="w-5 h-5" />
+          </motion.button>
+        )}
+      </AnimatePresence>
 
       {/* Stripe payment confirming banner */}
       {stripeSuccess && (
