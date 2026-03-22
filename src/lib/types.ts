@@ -94,6 +94,7 @@ export interface Photo {
   proofing?: boolean;
   ftpUploaded?: boolean; // true when this photo was successfully sent to an FTP server
   originalName?: string; // original filename as uploaded by the user (e.g. "IMG_1234.jpg")
+  fileSize?: number; // file size in bytes
   /** true while the photo is only stored as a local blob URL (upload in progress) — never persisted to the server */
   localPreview?: boolean;
 }
@@ -129,6 +130,7 @@ export interface Album {
   coverImage: string;
   date: string;
   photoCount: number;
+  status?: "editing" | "proofing" | "delivered" | "archived";
   freeDownloads: number;
   pricePerPhoto: number;
   priceFullAlbum: number;

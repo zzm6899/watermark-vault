@@ -1,4 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef } from "react";
+import DOMPurify from 'dompurify';
 import { usePageTitle } from "@/hooks/use-page-title";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -15,6 +16,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { toast } from "sonner";
 import { useNavigate, useParams } from "react-router-dom";
 import {
@@ -805,7 +807,7 @@ function DashboardView() {
     { label: "Paid", value: `$${paidIncome}`, icon: DollarSign, color: "text-green-400" },
     { label: "Unpaid", value: `$${unpaidIncome}`, icon: DollarSign, color: "text-destructive" },
     { label: "Pending Requests", value: allPendingRequests.length, icon: Download, color: "text-yellow-400" },
-    { label: "Session Time", value: totalSessionLabel, icon: Clock, color: "text-blue-400" },
+    { label: "Total Shoot Time", value: totalSessionLabel, icon: Clock, color: "text-blue-400" },
   ];
 
   // Invoice stats for dashboard
@@ -827,6 +829,10 @@ function DashboardView() {
   const eventTypes = getEventTypes();
   const etColorMap: Record<string, string> = {};
   for (const et of eventTypes) etColorMap[et.id] = et.color || "#7c3aed";
+
+  const todayBookings = bookings
+    .filter(b => b.status !== "cancelled" && b.date === todayDateStr)
+    .sort((a, b) => a.time.localeCompare(b.time));
 
   const bookingsByDate: Record<string, typeof bookings> = {};
   for (const b of bookings) {
@@ -926,13 +932,31 @@ function DashboardView() {
 
       {/* ── Stats grid ── */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mb-3">
-        {stats.map((stat) => (
-          <div key={stat.label} className="glass-panel rounded-xl p-3 sm:p-5">
-            <stat.icon className={`w-4 h-4 ${stat.color} mb-2`} />
-            <p className="font-display text-xl sm:text-2xl text-foreground">{stat.value}</p>
-            <p className="text-[10px] font-body text-muted-foreground tracking-wider uppercase mt-0.5 leading-tight">{stat.label}</p>
-          </div>
-        ))}
+        {stats.map((stat) => {
+          if (stat.label === "Total Shoot Time") {
+            return (
+              <TooltipProvider key={stat.label}>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <div className="glass-panel rounded-xl p-3 sm:p-5 cursor-default">
+                      <stat.icon className={`w-4 h-4 ${stat.color} mb-2`} />
+                      <p className="font-display text-xl sm:text-2xl text-foreground">{stat.value}</p>
+                      <p className="text-[10px] font-body text-muted-foreground tracking-wider uppercase mt-0.5 leading-tight">{stat.label}</p>
+                    </div>
+                  </TooltipTrigger>
+                  <TooltipContent><p className="text-xs font-body">Total combined duration of all confirmed and completed bookings</p></TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            );
+          }
+          return (
+            <div key={stat.label} className="glass-panel rounded-xl p-3 sm:p-5">
+              <stat.icon className={`w-4 h-4 ${stat.color} mb-2`} />
+              <p className="font-display text-xl sm:text-2xl text-foreground">{stat.value}</p>
+              <p className="text-[10px] font-body text-muted-foreground tracking-wider uppercase mt-0.5 leading-tight">{stat.label}</p>
+            </div>
+          );
+        })}
       </div>
 
       {/* ── Invoice stats row (only when invoices exist) ── */}
@@ -949,78 +973,114 @@ function DashboardView() {
         </div>
       )}
 
-      {/* ── Booking Calendar ── */}
-      <div className="glass-panel rounded-xl p-4 mb-6">
-        {/* Calendar header */}
-        <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
-          <div className="flex items-center gap-2">
-            <button type="button" onClick={prevPeriod} className="w-7 h-7 rounded-lg bg-secondary hover:bg-secondary/80 flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors">
-              <ChevronLeft className="w-4 h-4" />
-            </button>
-            <p className="font-display text-sm text-foreground min-w-[160px] text-center">
-              {calView === "month" ? monthLabel : weekLabel}
-            </p>
-            <button type="button" onClick={nextPeriod} className="w-7 h-7 rounded-lg bg-secondary hover:bg-secondary/80 flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors">
-              <ChevronRight className="w-4 h-4" />
-            </button>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <button type="button" onClick={goToday} className="text-[10px] font-body px-2.5 py-1 rounded-full bg-secondary hover:bg-secondary/80 text-muted-foreground hover:text-foreground transition-colors">Today</button>
-            {(["month", "week"] as const).map(v => (
-              <button type="button" key={v} onClick={() => setCalView(v)} className={`text-[10px] font-body px-2.5 py-1 rounded-full transition-colors capitalize ${calView === v ? "bg-primary/15 text-primary" : "bg-secondary text-muted-foreground hover:text-foreground"}`}>{v}</button>
-            ))}
-          </div>
-        </div>
-
-        {/* Day-of-week headers */}
-        <div className="grid grid-cols-7 mb-1">
-          {["Mon","Tue","Wed","Thu","Fri","Sat","Sun"].map(d => (
-            <p key={d} className="text-[10px] font-body text-center text-muted-foreground/50 tracking-wider uppercase py-1">{d}</p>
-          ))}
-        </div>
-
-        {/* Month grid */}
-        {calView === "month" && (
-          <div className="grid grid-cols-7 gap-1">
-            {gridDays.map(day => renderDayCell(day, day.getMonth() === calDate.getMonth()))}
-          </div>
-        )}
-
-        {/* Week grid */}
-        {calView === "week" && (
-          <div className="grid grid-cols-7 gap-1">
-            {weekDays.map(day => renderDayCell(day, true))}
-          </div>
-        )}
-
-        {/* Selected day detail */}
-        {calSelectedDay && (
-          <div className="mt-3 pt-3 border-t border-border/50">
-            <p className="text-xs font-body text-muted-foreground mb-2">
-              {new Date(calSelectedDay + "T12:00:00").toLocaleDateString("en-AU", { weekday: "long", day: "numeric", month: "long" })}
-              {selectedDayBookings.length === 0 && <span className="ml-2 text-muted-foreground/50">— no bookings</span>}
-            </p>
-            <div className="space-y-1.5">
-              {selectedDayBookings
-                .slice()
-                .sort((a, b) => a.time.localeCompare(b.time))
-                .map(b => (
-                  <div key={b.id} className="flex items-center gap-2.5 p-2 rounded-lg bg-secondary/50">
-                    <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: etColorMap[b.eventTypeId] || "#7c3aed" }} />
-                    <p className="text-xs font-body text-muted-foreground w-10 shrink-0">{b.time}</p>
-                    <p className="text-xs font-body text-foreground font-medium truncate flex-1">{b.clientName}</p>
-                    <p className="text-xs font-body text-muted-foreground shrink-0">{b.duration}m</p>
-                    <span className={`text-[9px] font-body px-1.5 py-0.5 rounded-full shrink-0 ${
-                      b.status === "confirmed" ? "bg-primary/10 text-primary" :
-                      b.status === "completed" ? "bg-green-500/10 text-green-400" :
-                      b.status === "pending" ? "bg-yellow-500/10 text-yellow-400" :
-                      "bg-destructive/10 text-destructive"
-                    }`}>{b.status}</span>
-                  </div>
-                ))}
+      {/* ── Booking Calendar + Today's Schedule ── */}
+      <div className="grid grid-cols-1 lg:grid-cols-[70%_1fr] gap-4 mb-6">
+        {/* Calendar */}
+        <div className="glass-panel rounded-xl p-4">
+          {/* Calendar header */}
+          <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
+            <div className="flex items-center gap-2">
+              <button type="button" onClick={prevPeriod} className="w-7 h-7 rounded-lg bg-secondary hover:bg-secondary/80 flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors">
+                <ChevronLeft className="w-4 h-4" />
+              </button>
+              <p className="font-display text-sm text-foreground min-w-[160px] text-center">
+                {calView === "month" ? monthLabel : weekLabel}
+              </p>
+              <button type="button" onClick={nextPeriod} className="w-7 h-7 rounded-lg bg-secondary hover:bg-secondary/80 flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors">
+                <ChevronRight className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <button type="button" onClick={goToday} className="text-[10px] font-body px-2.5 py-1 rounded-full bg-secondary hover:bg-secondary/80 text-muted-foreground hover:text-foreground transition-colors">Today</button>
+              {(["month", "week"] as const).map(v => (
+                <button type="button" key={v} onClick={() => setCalView(v)} className={`text-[10px] font-body px-2.5 py-1 rounded-full transition-colors capitalize ${calView === v ? "bg-primary/15 text-primary" : "bg-secondary text-muted-foreground hover:text-foreground"}`}>{v}</button>
+              ))}
             </div>
           </div>
-        )}
+
+          {/* Day-of-week headers */}
+          <div className="grid grid-cols-7 mb-1">
+            {["Mon","Tue","Wed","Thu","Fri","Sat","Sun"].map(d => (
+              <p key={d} className="text-[10px] font-body text-center text-muted-foreground/50 tracking-wider uppercase py-1">{d}</p>
+            ))}
+          </div>
+
+          {/* Month grid */}
+          {calView === "month" && (
+            <div className="grid grid-cols-7 gap-1">
+              {gridDays.map(day => renderDayCell(day, day.getMonth() === calDate.getMonth()))}
+            </div>
+          )}
+
+          {/* Week grid */}
+          {calView === "week" && (
+            <div className="grid grid-cols-7 gap-1">
+              {weekDays.map(day => renderDayCell(day, true))}
+            </div>
+          )}
+
+          {/* Selected day detail */}
+          {calSelectedDay && (
+            <div className="mt-3 pt-3 border-t border-border/50">
+              <p className="text-xs font-body text-muted-foreground mb-2">
+                {new Date(calSelectedDay + "T12:00:00").toLocaleDateString("en-AU", { weekday: "long", day: "numeric", month: "long" })}
+                {selectedDayBookings.length === 0 && <span className="ml-2 text-muted-foreground/50">— no bookings</span>}
+              </p>
+              <div className="space-y-1.5">
+                {selectedDayBookings
+                  .slice()
+                  .sort((a, b) => a.time.localeCompare(b.time))
+                  .map(b => (
+                    <div key={b.id} className="flex items-center gap-2.5 p-2 rounded-lg bg-secondary/50">
+                      <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: etColorMap[b.eventTypeId] || "#7c3aed" }} />
+                      <p className="text-xs font-body text-muted-foreground w-10 shrink-0">{b.time}</p>
+                      <p className="text-xs font-body text-foreground font-medium truncate flex-1">{b.clientName}</p>
+                      <p className="text-xs font-body text-muted-foreground shrink-0">{b.duration}m</p>
+                      <span className={`text-[9px] font-body px-1.5 py-0.5 rounded-full shrink-0 ${
+                        b.status === "confirmed" ? "bg-primary/10 text-primary" :
+                        b.status === "completed" ? "bg-green-500/10 text-green-400" :
+                        b.status === "pending" ? "bg-yellow-500/10 text-yellow-400" :
+                        "bg-destructive/10 text-destructive"
+                      }`}>{b.status}</span>
+                    </div>
+                  ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Today's Schedule */}
+        <div className="glass-panel rounded-xl p-4 flex flex-col">
+          <h3 className="font-display text-sm text-foreground mb-3 flex items-center gap-2">
+            <Clock className="w-4 h-4 text-primary" /> Today's Schedule
+          </h3>
+          {todayBookings.length === 0 ? (
+            <div className="flex-1 flex flex-col items-center justify-center text-center py-8">
+              <Calendar className="w-8 h-8 text-muted-foreground/20 mb-2" />
+              <p className="text-xs font-body text-muted-foreground/50">No sessions today</p>
+            </div>
+          ) : (
+            <div className="space-y-2 overflow-y-auto">
+              {todayBookings.map(b => {
+                const et = eventTypes.find(e => e.id === b.eventTypeId);
+                return (
+                  <div key={b.id} className="p-2.5 rounded-lg bg-secondary/50 border border-border/30">
+                    <div className="flex items-center justify-between gap-2 mb-1">
+                      <p className="text-xs font-body font-medium text-foreground truncate">{b.clientName}</p>
+                      <span className={`text-[9px] font-body px-1.5 py-0.5 rounded-full shrink-0 ${
+                        b.status === "confirmed" ? "bg-primary/10 text-primary" :
+                        b.status === "completed" ? "bg-green-500/10 text-green-400" :
+                        b.status === "pending" ? "bg-yellow-500/10 text-yellow-400" :
+                        "bg-destructive/10 text-destructive"
+                      }`}>{b.status}</span>
+                    </div>
+                    <p className="text-[10px] font-body text-muted-foreground">{b.time} · {et?.title || b.type}</p>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* ── Pending Download Requests ── */}
@@ -1385,6 +1445,8 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [bookingSearch, setBookingSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "pending" | "confirmed" | "completed" | "cancelled">("all");
+  const [showCancelled, setShowCancelled] = useState(false);
+  const albums = getAlbums();
   const [emailLogs, setEmailLogs] = useState<Record<string, { id: string; type: string; sentAt: string; openedAt?: string; subject: string; to: string }[]>>({});
   const [sendingReminder, setSendingReminder] = useState<string | null>(null);
   const [customEmailTarget, setCustomEmailTarget] = useState<string | null>(null);
@@ -1497,6 +1559,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
 
   const filteredBookings = bookings.filter(bk => {
     if (statusFilter !== "all" && bk.status !== statusFilter) return false;
+    if (statusFilter === "all" && bk.status === "cancelled" && !showCancelled) return false;
     if (!bookingSearch) return true;
     const q = bookingSearch.toLowerCase();
     return (bk.clientName || "").toLowerCase().includes(q)
@@ -1765,6 +1828,11 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                   {s}
                 </button>
               ))}
+              {statusFilter === "all" && (
+                <button onClick={() => setShowCancelled(v => !v)} className={`text-[10px] font-body tracking-wider uppercase px-2 py-1 rounded transition-colors ${showCancelled ? "bg-destructive/15 text-destructive" : "text-muted-foreground hover:text-foreground"}`}>
+                  {showCancelled ? "Hide Cancelled" : "Show Cancelled"}
+                </button>
+              )}
             </div>
             <div className="flex items-center gap-1 flex-wrap overflow-x-auto">
               <span className="text-[10px] font-body text-muted-foreground/50 mr-1">Sort:</span>
@@ -1782,7 +1850,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
             const isExpanded = expandedId === bk.id;
             const et = eventTypes.find(e => e.id === bk.eventTypeId);
             return (
-              <div key={bk.id} className="glass-panel rounded-xl overflow-hidden">
+              <div key={bk.id} className={`glass-panel rounded-xl overflow-hidden${bk.status === "cancelled" ? " opacity-50" : ""}`}>
                 <div className="p-4 cursor-pointer hover:bg-secondary/20 transition-colors" onClick={() => {
                     const willExpand = expandedId !== bk.id;
                     setExpandedId(willExpand ? bk.id : null);
@@ -1814,10 +1882,13 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                       </div>
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
-                          <h3 className="text-sm font-body text-foreground font-medium">{bk.clientName}</h3>
+                          <h3 className={`text-sm font-body text-foreground font-medium${bk.status === "cancelled" ? " line-through" : ""}`}>{bk.clientName}</h3>
                           {bk.instagramHandle && <span className="text-xs font-body text-primary">@{bk.instagramHandle.replace("@", "")}</span>}
+                          {albums.some(a => a.bookingId === bk.id || (a.clientName && a.clientName === bk.clientName)) && (
+                            <span className="text-[10px] font-body px-2 py-0.5 rounded-full border border-green-500/30 bg-green-500/10 text-green-400">📷 Gallery sent</span>
+                          )}
                         </div>
-                        <p className="text-xs font-body text-muted-foreground">{bk.type} · {bk.date} at {bk.time} · {formatDuration(bk.duration)}</p>
+                        <p className={`text-xs font-body text-muted-foreground${bk.status === "cancelled" ? " line-through" : ""}`}>{bk.type} · {bk.date} at {bk.time} · {formatDuration(bk.duration)}</p>
                         {bk.createdAt && (
                           <p className="text-[10px] font-body text-muted-foreground/50">Booked {new Date(bk.createdAt).toLocaleDateString("en-AU", { day: "numeric", month: "short", year: "numeric" })}</p>
                         )}
@@ -1832,13 +1903,15 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                         "text-yellow-400 border-yellow-500/30 bg-yellow-500/10"
                       }`}>{bk.status}</span>
                       <select value={bk.status} onChange={(e) => handleStatusChange(bk, e.target.value as Booking["status"])}
-                        className="hidden sm:block text-xs font-body px-2.5 py-1 rounded-full bg-secondary border border-border text-foreground cursor-pointer">
+                        aria-label="Booking status"
+                        className="hidden sm:block text-xs font-body px-2.5 py-1 rounded-full bg-secondary border border-border text-foreground cursor-pointer sm:mr-3">
                         <option value="pending">Pending</option>
                         <option value="confirmed">Confirmed</option>
                         <option value="completed">Completed</option>
                         <option value="cancelled">Cancelled</option>
                       </select>
                       <select value={bk.paymentStatus || "unpaid"} onChange={(e) => handlePaymentChange(bk, e.target.value as PaymentStatus)}
+                        aria-label="Payment status"
                         className="hidden sm:block text-xs font-body px-2.5 py-1 rounded-full bg-secondary border border-border text-foreground cursor-pointer">
                         <option value="unpaid">Unpaid</option>
                         <option value="deposit-paid">Deposit Paid</option>
@@ -1910,7 +1983,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                         <div className="space-y-2">
                           {Object.entries(bk.answers).map(([qId, answer]) => {
                             const question = et?.questions.find(q => q.id === qId);
-                            const label = bk.answerLabels?.[qId] || question?.label || qId.replace(/^q\d+$/, "Custom Question");
+                            const label = bk.answerLabels?.[qId] || question?.label || qId.replace(/^q\d+$/, "Notes");
                             return (
                               <div key={qId} className="p-2 rounded-lg bg-secondary/30 border border-border/30">
                                 <p className="text-[10px] font-body text-muted-foreground">{label}</p>
@@ -2811,6 +2884,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
               <AlbumSortBtn k="client" label="Client" />
             </div>
           </div>
+          <TooltipProvider delayDuration={300}>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
           {sortedAlbums.map((alb) => (
             <div key={alb.id} className={`glass-panel rounded-xl overflow-hidden transition-all ${mergeMode ? "cursor-pointer" : ""} ${mergeSelection.has(alb.id) ? "ring-2 ring-primary" : ""} ${alb.enabled === false ? "opacity-50" : ""}`}
@@ -2840,6 +2914,16 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                   const handle = alb.instagramHandle || bookingMap.get(alb.bookingId || "")?.instagramHandle;
                   return handle ? <p className="text-xs font-body text-muted-foreground">@{handle.replace("@", "")}</p> : null;
                 })()}
+                {alb.status && (
+                  <span className={`inline-flex items-center text-[10px] font-body px-2 py-0.5 rounded-full ${
+                    alb.status === "editing"   ? "bg-yellow-500/15 text-yellow-400" :
+                    alb.status === "proofing"  ? "bg-blue-500/15 text-blue-400" :
+                    alb.status === "delivered" ? "bg-green-500/15 text-green-400" :
+                    "bg-secondary text-muted-foreground"
+                  }`}>
+                    {alb.status.charAt(0).toUpperCase() + alb.status.slice(1)}
+                  </span>
+                )}
                 {/* Download expiry badge */}
                 {/* Gallery expiry badge */}
                 {alb.expiresAt && (() => {
@@ -2893,90 +2977,131 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                 {alb.mergedFrom && <p className="text-[10px] font-body text-muted-foreground/50">Merged from {alb.mergedFrom.length} albums</p>}
                 {!mergeMode && (
                   <div className="flex items-center gap-2 pt-2 border-t border-border/50">
-                    <Switch
-                      checked={alb.enabled !== false}
-                      onCheckedChange={(v) => {
-                        updateAlbum({ ...alb, enabled: v });
-                        refresh();
-                        toast.success(v ? "Album enabled" : "Album disabled");
-                      }}
-                    />
-                    <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary" onClick={() => copyLink(alb)}>
-                      <Copy className="w-3.5 h-3.5" />
-                    </Button>
-                    <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary" onClick={() => handleSendNotification(alb)}>
-                      <Send className="w-3.5 h-3.5" />
-                    </Button>
-                    <a href={`/gallery/${alb.slug}`} target="_blank" rel="noopener noreferrer">
-                      <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary">
-                        <ExternalLink className="w-3.5 h-3.5" />
-                      </Button>
-                    </a>
-                    {(() => {
-                      const starredPhotos = alb.photos.filter((p: any) => p.starred);
-                      if (starredPhotos.length === 0) return null;
-                      return (
-                        <Button
-                          variant="ghost" size="icon"
-                          className="h-7 w-7 text-yellow-500 hover:text-yellow-400"
-                          title={`Export ${starredPhotos.length} starred filenames for Lightroom`}
-                          onClick={() => {
-                            const lines = [
-                              `# Starred photos — ${alb.title}`,
-                              `# Album: ${alb.slug}`,
-                              `# Exported: ${new Date().toISOString().slice(0,10)}`,
-                              `# ${starredPhotos.length} of ${alb.photos.length} photos starred`,
-                              `#`,
-                              `# Drop this file into the PowerShell script to copy matching NEFs`,
-                              `# and write 5-star XMP sidecars for Lightroom / Capture One.`,
-                              ``,
-                              ...starredPhotos.map((p: any) => p.originalName?.trim() || p.title || p.id),
-                            ];
-                            const blob = new Blob([lines.join("\n")], { type: "text/plain" });
-                            const url = URL.createObjectURL(blob);
-                            const a = document.createElement("a");
-                            a.href = url;
-                            a.download = `starred_${alb.slug}_${new Date().toISOString().slice(0,10)}.txt`;
-                            a.click();
-                            URL.revokeObjectURL(url);
-                            toast.success(`Exported ${starredPhotos.length} starred filenames`);
-                          }}
-                        >
-                          <Star className="w-3.5 h-3.5 fill-yellow-500/40" />
-                        </Button>
-                      );
-                    })()}
-                    {/* Fix Thumbnail — shown when cover is missing or broken */}
-                    {(brokenCovers.has(alb.id) || !alb.coverImage) && !alb._photosStripped && alb.photos.length > 0 && (
-                      <Button
-                        variant="ghost" size="icon"
-                        className="h-7 w-7 text-muted-foreground hover:text-primary"
-                        title="Fix thumbnail — set cover to first photo"
-                        onClick={() => {
-                          const firstPhoto = alb.photos[0];
-                          const newCover = firstPhoto.thumbnail || firstPhoto.src;
-                          updateAlbum({ ...alb, coverImage: newCover });
-                          setBrokenCovers(prev => { const n = new Set(prev); n.delete(alb.id); return n; });
-                          refresh();
-                          toast.success("Thumbnail updated");
-                        }}
-                      >
-                        <Image className="w-3.5 h-3.5" />
-                      </Button>
-                    )}
-                    <div className="flex-1" />
-                    <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-foreground" onClick={() => setEditing(alb)}>
-                      <Edit className="w-3.5 h-3.5" />
-                    </Button>
-                    <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={() => handleDelete(alb.id)}>
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </Button>
+                    <Tooltip>
+                        <TooltipTrigger asChild>
+                          <div>
+                            <Switch
+                              checked={alb.enabled !== false}
+                              onCheckedChange={(v) => {
+                                updateAlbum({ ...alb, enabled: v });
+                                refresh();
+                                toast.success(v ? "Album enabled" : "Album disabled");
+                              }}
+                            />
+                          </div>
+                        </TooltipTrigger>
+                        <TooltipContent>Toggle Public/Private</TooltipContent>
+                      </Tooltip>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary" onClick={() => copyLink(alb)}>
+                            <Copy className="w-3.5 h-3.5" />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>Share Link</TooltipContent>
+                      </Tooltip>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary" onClick={() => handleSendNotification(alb)}>
+                            <Send className="w-3.5 h-3.5" />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>Send Notification</TooltipContent>
+                      </Tooltip>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <a href={`/gallery/${alb.slug}`} target="_blank" rel="noopener noreferrer">
+                            <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary">
+                              <ExternalLink className="w-3.5 h-3.5" />
+                            </Button>
+                          </a>
+                        </TooltipTrigger>
+                        <TooltipContent>Open Gallery</TooltipContent>
+                      </Tooltip>
+                      {(() => {
+                        const starredPhotos = alb.photos.filter((p: any) => p.starred);
+                        if (starredPhotos.length === 0) return null;
+                        return (
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                variant="ghost" size="icon"
+                                className="h-7 w-7 text-yellow-500 hover:text-yellow-400"
+                                onClick={() => {
+                                  const lines = [
+                                    `# Starred photos — ${alb.title}`,
+                                    `# Album: ${alb.slug}`,
+                                    `# Exported: ${new Date().toISOString().slice(0,10)}`,
+                                    `# ${starredPhotos.length} of ${alb.photos.length} photos starred`,
+                                    `#`,
+                                    `# Drop this file into the PowerShell script to copy matching NEFs`,
+                                    `# and write 5-star XMP sidecars for Lightroom / Capture One.`,
+                                    ``,
+                                    ...starredPhotos.map((p: any) => p.originalName?.trim() || p.title || p.id),
+                                  ];
+                                  const blob = new Blob([lines.join("\n")], { type: "text/plain" });
+                                  const url = URL.createObjectURL(blob);
+                                  const a = document.createElement("a");
+                                  a.href = url;
+                                  a.download = `starred_${alb.slug}_${new Date().toISOString().slice(0,10)}.txt`;
+                                  a.click();
+                                  URL.revokeObjectURL(url);
+                                  toast.success(`Exported ${starredPhotos.length} starred filenames`);
+                                }}
+                              >
+                                <Star className="w-3.5 h-3.5 fill-yellow-500/40" />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>Export Starred ({starredPhotos.length})</TooltipContent>
+                          </Tooltip>
+                        );
+                      })()}
+                      {/* Fix Thumbnail — shown when cover is missing or broken */}
+                      {(brokenCovers.has(alb.id) || !alb.coverImage) && !alb._photosStripped && alb.photos.length > 0 && (
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              variant="ghost" size="icon"
+                              className="h-7 w-7 text-muted-foreground hover:text-primary"
+                              onClick={() => {
+                                const firstPhoto = alb.photos[0];
+                                const newCover = firstPhoto.thumbnail || firstPhoto.src;
+                                updateAlbum({ ...alb, coverImage: newCover });
+                                setBrokenCovers(prev => { const n = new Set(prev); n.delete(alb.id); return n; });
+                                refresh();
+                                toast.success("Thumbnail updated");
+                              }}
+                            >
+                              <Image className="w-3.5 h-3.5" />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>Fix Thumbnail</TooltipContent>
+                        </Tooltip>
+                      )}
+                      <div className="flex-1" />
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-foreground" onClick={() => setEditing(alb)}>
+                            <Edit className="w-3.5 h-3.5" />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>Edit Album</TooltipContent>
+                      </Tooltip>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={() => handleDelete(alb.id)}>
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>Delete Album</TooltipContent>
+                      </Tooltip>
                   </div>
                 )}
               </div>
             </div>
           ))}
           </div>
+          </TooltipProvider>
         </>
       );
       })()}
@@ -3071,6 +3196,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
   const [downloadExpiresAt, setDownloadExpiresAt] = useState(album?.downloadExpiresAt || "");
   const [expiresAt, setExpiresAt] = useState(album?.expiresAt || "");
   const [displaySize, setDisplaySize] = useState<AlbumDisplaySize>(album?.displaySize || "medium");
+  const [albumStatus, setAlbumStatus] = useState<"editing" | "proofing" | "delivered" | "archived">(album?.status || "editing");
 
   const [uploadStats, setUploadStats] = useState<{ total: number; done: number; errors: number; savedBytes: number; speed?: number } | null>(null);
   const [ftpUploadProgress, setFtpUploadProgress] = useState<{ done: number; total: number; failed: number } | null>(null);
@@ -3196,6 +3322,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
       watermarkDisabled,
       purchasingDisabled,
       displaySize,
+      status: albumStatus,
       usedFreeDownloads: album?.usedFreeDownloads,
       downloadRequests: album?.downloadRequests,
       // Preserve the enabled/disabled state so that editing an album does not
@@ -3241,6 +3368,20 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
       <div>
         <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Description</label>
         <Textarea value={description} onChange={(e) => setDescription(e.target.value)} className="bg-secondary border-border text-foreground font-body min-h-[50px]" />
+      </div>
+
+      <div>
+        <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Status</label>
+        <select
+          value={albumStatus}
+          onChange={(e) => setAlbumStatus(e.target.value as "editing" | "proofing" | "delivered" | "archived")}
+          className="w-full bg-secondary border border-border text-foreground font-body text-sm rounded-md px-3 py-2.5"
+        >
+          <option value="editing">Editing</option>
+          <option value="proofing">Proofing</option>
+          <option value="delivered">Delivered</option>
+          <option value="archived">Archived</option>
+        </select>
       </div>
 
       <div>
@@ -3872,6 +4013,11 @@ function PhotosView() {
   const [showAddToAlbum, setShowAddToAlbum] = useState(false);
   const [visibleCount, setVisibleCount] = useState(LIBRARY_INITIAL_BATCH);
   const libSentinelRef = useRef<HTMLDivElement>(null);
+  const [uploadOpen, setUploadOpen] = useState(false);
+  const [filterDateFrom, setFilterDateFrom] = useState("");
+  const [filterDateTo, setFilterDateTo] = useState("");
+  const [filterAlbum, setFilterAlbum] = useState("");
+  const [filterSize, setFilterSize] = useState<"" | "small" | "medium" | "large">("");
 
   // Backfill missing thumbnails for library photos
   useBackfillThumbnails(libraryPhotos, useCallback((photoId, thumb) => {
@@ -3892,6 +4038,16 @@ function PhotosView() {
     );
     observer.observe(sentinel);
     return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    const onDragEnter = (e: DragEvent) => {
+      if (e.dataTransfer?.types && Array.from(e.dataTransfer.types).includes("Files")) {
+        setUploadOpen(true);
+      }
+    };
+    document.addEventListener("dragenter", onDragEnter);
+    return () => document.removeEventListener("dragenter", onDragEnter);
   }, []);
 
   // When this view mounts, some albums may only have stub data (photos: [],
@@ -3928,7 +4084,7 @@ function PhotosView() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Reset visible count when filter changes
-  useEffect(() => { setVisibleCount(LIBRARY_INITIAL_BATCH); }, [viewSource, starredOnly, searchQuery]);
+  useEffect(() => { setVisibleCount(LIBRARY_INITIAL_BATCH); }, [viewSource, starredOnly, searchQuery, filterDateFrom, filterDateTo, filterAlbum, filterSize]);
 
   // Reconcile: find files on server storage that aren't tracked in any album or library
   // Also repair albums that have broken photo references
@@ -4105,9 +4261,55 @@ function PhotosView() {
   const starredPhotos = allPhotos.filter(p => (p as any).starred);
   const sourcePhotos = viewSource === "all" ? allPhotos : viewSource === "library" ? libraryPhotos.map(p => ({ ...p, source: "Library" })) : getAlbumPhotos(viewSource);
   const unfilteredPhotos = starredOnly ? sourcePhotos.filter(p => (p as any).starred) : sourcePhotos;
-  const displayPhotos = searchQuery.trim()
-    ? unfilteredPhotos.filter(p => p.title.toLowerCase().includes(searchQuery.trim().toLowerCase()) || p.src.toLowerCase().includes(searchQuery.trim().toLowerCase()))
-    : unfilteredPhotos;
+
+  let displayPhotos = unfilteredPhotos;
+
+  // Search — match filename, album/source name, client name
+  if (searchQuery.trim()) {
+    const q = searchQuery.trim().toLowerCase();
+    displayPhotos = displayPhotos.filter(p => {
+      if (p.title.toLowerCase().includes(q)) return true;
+      if (p.src.toLowerCase().includes(q)) return true;
+      if (p.source.toLowerCase().includes(q)) return true;
+      const alb = albums.find(a => a.title === p.source);
+      if (alb?.clientName?.toLowerCase().includes(q)) return true;
+      return false;
+    });
+  }
+
+  // Date range filter (uses takenAt or uploadedAt; photos with no date are included)
+  if (filterDateFrom) {
+    displayPhotos = displayPhotos.filter(p => {
+      const d = (p.takenAt || p.uploadedAt || "").slice(0, 10);
+      return !d || d >= filterDateFrom;
+    });
+  }
+  if (filterDateTo) {
+    displayPhotos = displayPhotos.filter(p => {
+      const d = (p.takenAt || p.uploadedAt || "").slice(0, 10);
+      return !d || d <= filterDateTo;
+    });
+  }
+
+  // Album filter (AND logic with the album chips)
+  if (filterAlbum) {
+    const targetAlb = albums.find(a => a.id === filterAlbum);
+    if (targetAlb) {
+      displayPhotos = displayPhotos.filter(p => p.source === targetAlb.title);
+    }
+  }
+
+  // Size filter
+  if (filterSize) {
+    displayPhotos = displayPhotos.filter(p => {
+      const sz = (p as any).fileSize as number | undefined;
+      if (sz == null) return true; // no size data: include
+      if (filterSize === "small") return sz < 5 * 1024 * 1024;
+      if (filterSize === "medium") return sz >= 5 * 1024 * 1024 && sz <= 15 * 1024 * 1024;
+      if (filterSize === "large") return sz > 15 * 1024 * 1024;
+      return true;
+    });
+  }
 
   // Determine if we're viewing a specific album (for upload-to-album)
   const selectedAlbum = viewSource !== "all" && viewSource !== "library" ? albums.find(a => a.title === viewSource) : null;
@@ -4448,47 +4650,110 @@ function PhotosView() {
         ))}
       </div>
 
-      <div className="glass-panel rounded-xl p-6 mb-6">
-        <div className="border-2 border-dashed border-border rounded-lg p-8 text-center hover:border-primary/30 transition-colors cursor-pointer relative">
-          <Upload className="w-8 h-8 text-muted-foreground/50 mx-auto mb-2" />
-          <p className="text-sm font-body text-muted-foreground">
-            Upload photos to {selectedAlbum ? `"${selectedAlbum.title}"` : "your library"}
-          </p>
-          <p className="text-[10px] font-body text-muted-foreground/50 mt-1">
-            {selectedAlbum ? "Photos will be added directly to this album" : "Select photos then create albums or add to existing ones"}
-          </p>
-          <input type="file" accept="image/*" multiple className="absolute inset-0 opacity-0 cursor-pointer" onChange={handleUpload} />
+      {/* Advanced filters */}
+      {(filterDateFrom || filterDateTo || filterAlbum || filterSize) ? (
+        <div className="flex flex-wrap items-center gap-2 mb-4 p-3 rounded-xl bg-secondary/40 border border-border/40">
+          <span className="text-[10px] font-body text-muted-foreground tracking-wider uppercase">Filters:</span>
+          {filterDateFrom && <span className="text-xs font-body text-muted-foreground">From: {filterDateFrom}</span>}
+          {filterDateTo && <span className="text-xs font-body text-muted-foreground">To: {filterDateTo}</span>}
+          {filterAlbum && <span className="text-xs font-body text-muted-foreground">Album: {albums.find(a => a.id === filterAlbum)?.title}</span>}
+          {filterSize && <span className="text-xs font-body text-muted-foreground">Size: {filterSize}</span>}
+          <button onClick={() => { setFilterDateFrom(""); setFilterDateTo(""); setFilterAlbum(""); setFilterSize(""); }} className="text-xs font-body text-muted-foreground hover:text-foreground flex items-center gap-1 ml-auto">
+            <X className="w-3.5 h-3.5" /> Clear
+          </button>
         </div>
-        {/* Camera / gallery shortcuts — shown on touch/mobile devices only */}
-        <div className="mt-3 flex gap-2 sm:hidden">
-          <label className="flex-1 flex items-center justify-center gap-2 p-2.5 rounded-lg border border-border/50 text-xs font-body text-muted-foreground cursor-pointer hover:bg-secondary/50 transition-colors">
-            <Camera className="w-4 h-4" /> Take a photo
-            <input type="file" accept="image/*" capture="environment" className="sr-only" onChange={handleUpload} />
-          </label>
-          <label className="flex-1 flex items-center justify-center gap-2 p-2.5 rounded-lg border border-border/50 text-xs font-body text-muted-foreground cursor-pointer hover:bg-secondary/50 transition-colors">
-            <Upload className="w-4 h-4" /> Choose photos
-            <input type="file" accept="image/*" multiple className="sr-only" onChange={handleUpload} />
-          </label>
-        </div>
-        {uploadStats && (
-          <div className="mt-3 p-3 rounded-lg bg-secondary/50 border border-border">
-            <div className="flex items-center justify-between text-xs font-body text-muted-foreground">
-              <span>Processed {uploadStats.done}/{uploadStats.total} photos{uploadStats.errors > 0 ? ` (${uploadStats.errors} failed)` : ""}</span>
-              <div className="flex items-center gap-2">
-                {uploadStats.speed != null && uploadStats.done < uploadStats.total && (
-                  <span className="text-primary font-medium">{formatSpeed(uploadStats.speed)}</span>
-                )}
-                {uploadStats.savedBytes > 0 && <span className="text-green-500">Saved {formatBytes(uploadStats.savedBytes)}</span>}
-              </div>
-            </div>
-            {uploadStats.done < uploadStats.total && (
-              <div className="mt-1.5 h-1.5 rounded-full bg-border overflow-hidden">
-                <div className="h-full bg-primary rounded-full transition-all" style={{ width: `${(uploadStats.done / uploadStats.total) * 100}%` }} />
-              </div>
-            )}
+      ) : null}
+      <details className="mb-4 group">
+        <summary className="text-xs font-body text-muted-foreground cursor-pointer hover:text-foreground flex items-center gap-1.5 list-none select-none w-fit">
+          <ChevronDown className="w-3.5 h-3.5 group-open:rotate-180 transition-transform" /> Filter Options
+        </summary>
+        <div className="mt-2 p-3 rounded-xl bg-secondary/40 border border-border/40 flex flex-wrap gap-3 items-end">
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] font-body text-muted-foreground tracking-wider uppercase">From Date</label>
+            <input type="date" value={filterDateFrom} onChange={e => setFilterDateFrom(e.target.value)} className="h-8 rounded-md border border-border bg-secondary/50 text-xs font-body text-foreground px-2 focus:outline-none focus:ring-1 focus:ring-primary" />
           </div>
-        )}
-      </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] font-body text-muted-foreground tracking-wider uppercase">To Date</label>
+            <input type="date" value={filterDateTo} onChange={e => setFilterDateTo(e.target.value)} className="h-8 rounded-md border border-border bg-secondary/50 text-xs font-body text-foreground px-2 focus:outline-none focus:ring-1 focus:ring-primary" />
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] font-body text-muted-foreground tracking-wider uppercase">Album</label>
+            <select value={filterAlbum} onChange={e => setFilterAlbum(e.target.value)} className="h-8 rounded-md border border-border bg-secondary/50 text-xs font-body text-foreground px-2 focus:outline-none focus:ring-1 focus:ring-primary">
+              <option value="">All Albums</option>
+              {albums.map(a => <option key={a.id} value={a.id}>{a.title}</option>)}
+            </select>
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] font-body text-muted-foreground tracking-wider uppercase">File Size</label>
+            <select value={filterSize} onChange={e => setFilterSize(e.target.value as "" | "small" | "medium" | "large")} className="h-8 rounded-md border border-border bg-secondary/50 text-xs font-body text-foreground px-2 focus:outline-none focus:ring-1 focus:ring-primary">
+              <option value="">Any Size</option>
+              <option value="small">Small ({`<`}5MB)</option>
+              <option value="medium">Medium (5–15MB)</option>
+              <option value="large">Large ({`>`}15MB)</option>
+            </select>
+          </div>
+          {(filterDateFrom || filterDateTo || filterAlbum || filterSize) && (
+            <Button size="sm" variant="ghost" onClick={() => { setFilterDateFrom(""); setFilterDateTo(""); setFilterAlbum(""); setFilterSize(""); }} className="h-8 text-xs font-body text-muted-foreground gap-1">
+              <X className="w-3.5 h-3.5" /> Clear Filters
+            </Button>
+          )}
+        </div>
+      </details>
+
+      {!uploadOpen ? (
+        <div className="mb-4">
+          <Button size="sm" variant="outline" onClick={() => setUploadOpen(true)} className="gap-2 font-body text-xs border-dashed border-border text-muted-foreground hover:text-foreground hover:border-primary/50">
+            <Upload className="w-4 h-4" /> + Upload Photos
+          </Button>
+        </div>
+      ) : (
+        <div className="glass-panel rounded-xl p-6 mb-6">
+          <div className="flex justify-end mb-2">
+            <button onClick={() => setUploadOpen(false)} className="text-muted-foreground hover:text-foreground transition-colors" title="Collapse upload zone">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          <div className="border-2 border-dashed border-border rounded-lg p-8 text-center hover:border-primary/30 transition-colors cursor-pointer relative">
+            <Upload className="w-8 h-8 text-muted-foreground/50 mx-auto mb-2" />
+            <p className="text-sm font-body text-muted-foreground">
+              Upload photos to {selectedAlbum ? `"${selectedAlbum.title}"` : "your library"}
+            </p>
+            <p className="text-[10px] font-body text-muted-foreground/50 mt-1">
+              {selectedAlbum ? "Photos will be added directly to this album" : "Select photos then create albums or add to existing ones"}
+            </p>
+            <input type="file" accept="image/*" multiple className="absolute inset-0 opacity-0 cursor-pointer" onChange={handleUpload} />
+          </div>
+          {/* Camera / gallery shortcuts — shown on touch/mobile devices only */}
+          <div className="mt-3 flex gap-2 sm:hidden">
+            <label className="flex-1 flex items-center justify-center gap-2 p-2.5 rounded-lg border border-border/50 text-xs font-body text-muted-foreground cursor-pointer hover:bg-secondary/50 transition-colors">
+              <Camera className="w-4 h-4" /> Take a photo
+              <input type="file" accept="image/*" capture="environment" className="sr-only" onChange={handleUpload} />
+            </label>
+            <label className="flex-1 flex items-center justify-center gap-2 p-2.5 rounded-lg border border-border/50 text-xs font-body text-muted-foreground cursor-pointer hover:bg-secondary/50 transition-colors">
+              <Upload className="w-4 h-4" /> Choose photos
+              <input type="file" accept="image/*" multiple className="sr-only" onChange={handleUpload} />
+            </label>
+          </div>
+          {uploadStats && (
+            <div className="mt-3 p-3 rounded-lg bg-secondary/50 border border-border">
+              <div className="flex items-center justify-between text-xs font-body text-muted-foreground">
+                <span>Processed {uploadStats.done}/{uploadStats.total} photos{uploadStats.errors > 0 ? ` (${uploadStats.errors} failed)` : ""}</span>
+                <div className="flex items-center gap-2">
+                  {uploadStats.speed != null && uploadStats.done < uploadStats.total && (
+                    <span className="text-primary font-medium">{formatSpeed(uploadStats.speed)}</span>
+                  )}
+                  {uploadStats.savedBytes > 0 && <span className="text-green-500">Saved {formatBytes(uploadStats.savedBytes)}</span>}
+                </div>
+              </div>
+              {uploadStats.done < uploadStats.total && (
+                <div className="mt-1.5 h-1.5 rounded-full bg-border overflow-hidden">
+                  <div className="h-full bg-primary rounded-full transition-all" style={{ width: `${(uploadStats.done / uploadStats.total) * 100}%` }} />
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {displayPhotos.length === 0 ? (
         <div className="glass-panel rounded-xl p-12 text-center">
@@ -5157,8 +5422,10 @@ function InvoicesView() {
                 const logOpen = expandedEmailLog === inv.id;
                 const menuOpen = overflowMenuId === inv.id;
                 const canAct = inv.status !== "paid" && inv.status !== "cancelled";
+                const rowBorder = inv.status === "sent" ? "border-l-4 border-amber-500" : inv.status === "overdue" ? "border-l-4 border-red-500" : inv.status === "paid" ? "border-l-4 border-green-500" : "";
+                const amountColor = inv.status === "sent" ? "text-amber-400" : inv.status === "overdue" ? "text-red-400" : "text-foreground";
                 return (
-                  <div key={inv.id} className="group">
+                  <div key={inv.id} className={`group ${rowBorder}`}>
                     {/* ── Row ── */}
                     <div className="flex items-start sm:items-center gap-3 px-3 sm:px-4 py-3 hover:bg-secondary/30 transition-colors">
                       {/* Left info */}
@@ -5213,28 +5480,30 @@ function InvoicesView() {
                         </div>
                       </div>
                       {/* Amount */}
-                      <p className="text-sm font-display text-foreground w-20 text-right shrink-0">${total.toFixed(2)}</p>
+                      <p className={`text-sm font-display w-20 text-right shrink-0 ${amountColor}`}>${total.toFixed(2)}</p>
                       {/* Desktop actions */}
-                      <div className="hidden sm:flex items-center gap-1 shrink-0">
-                        <button onClick={() => openEdit(inv)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground" title="Edit"><Edit className="w-3.5 h-3.5" /></button>
-                        <button onClick={() => handleCopyLink(inv)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground" title="Copy share link"><Link2 className="w-3.5 h-3.5" /></button>
-                        <button onClick={() => handleExportPDF(inv)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground" title="Export / Download PDF"><Printer className="w-3.5 h-3.5" /></button>
-                        <button onClick={() => setExpandedEmailLog(logOpen ? null : inv.id)} className={`p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground ${logOpen ? "text-primary" : ""}`} title="Email history"><Mail className="w-3.5 h-3.5" /></button>
-                        <div className="w-px h-4 bg-border mx-0.5" />
-                        {canAct && (
-                          <>
-                            <button onClick={() => handleSendInvoice(inv)} disabled={sendingEmail} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-blue-400" title="Send invoice email"><Send className="w-3.5 h-3.5" /></button>
-                            <button onClick={() => handleSendReminder(inv)} disabled={sendingEmail} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-yellow-400" title="Send payment reminder"><Bell className="w-3.5 h-3.5" /></button>
-                          </>
-                        )}
-                        {canAct && <button onClick={() => handleMarkPaid(inv)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-green-400" title="Mark as paid (bank / manual)"><CheckCircle2 className="w-3.5 h-3.5" /></button>}
-                        {inv.status === "sent" && <button onClick={() => handleMarkOverdue(inv)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-red-400" title="Mark as overdue"><AlertCircle className="w-3.5 h-3.5" /></button>}
-                        {stripeAvailable && canAct && (inv.paymentMethods || []).includes("stripe") && (
-                          <button onClick={() => handleStripeCheckout(inv)} disabled={processingPay} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-purple-400" title="Open Stripe checkout"><CreditCard className="w-3.5 h-3.5" /></button>
-                        )}
-                        <button onClick={() => handleClone(inv)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground" title="Clone"><Copy className="w-3.5 h-3.5" /></button>
-                        <button onClick={() => handleDelete(inv)} className="opacity-0 group-hover:opacity-100 transition-opacity p-1.5 rounded hover:bg-red-500/10 text-muted-foreground/40 hover:text-red-400" title="Delete"><Trash2 className="w-3.5 h-3.5" /></button>
-                      </div>
+                      <TooltipProvider delayDuration={300}>
+                        <div className="hidden sm:flex items-center gap-1 shrink-0">
+                          <Tooltip><TooltipTrigger asChild><button onClick={() => openEdit(inv)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground"><Edit className="w-3.5 h-3.5" /></button></TooltipTrigger><TooltipContent>Edit</TooltipContent></Tooltip>
+                          <Tooltip><TooltipTrigger asChild><button onClick={() => handleCopyLink(inv)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground"><Link2 className="w-3.5 h-3.5" /></button></TooltipTrigger><TooltipContent>Copy Link</TooltipContent></Tooltip>
+                          <Tooltip><TooltipTrigger asChild><button onClick={() => handleExportPDF(inv)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground"><Printer className="w-3.5 h-3.5" /></button></TooltipTrigger><TooltipContent>Print</TooltipContent></Tooltip>
+                          <Tooltip><TooltipTrigger asChild><button onClick={() => setExpandedEmailLog(logOpen ? null : inv.id)} className={`p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground ${logOpen ? "text-primary" : ""}`}><Mail className="w-3.5 h-3.5" /></button></TooltipTrigger><TooltipContent>Email Client</TooltipContent></Tooltip>
+                          <div className="w-px h-4 bg-border mx-0.5" />
+                          {canAct && (
+                            <>
+                              <Tooltip><TooltipTrigger asChild><button onClick={() => handleSendInvoice(inv)} disabled={sendingEmail} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-blue-400"><Send className="w-3.5 h-3.5" /></button></TooltipTrigger><TooltipContent>Email Client</TooltipContent></Tooltip>
+                              <Tooltip><TooltipTrigger asChild><button onClick={() => handleSendReminder(inv)} disabled={sendingEmail} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-yellow-400"><Bell className="w-3.5 h-3.5" /></button></TooltipTrigger><TooltipContent>Send Reminder</TooltipContent></Tooltip>
+                            </>
+                          )}
+                          {canAct && <Tooltip><TooltipTrigger asChild><button onClick={() => handleMarkPaid(inv)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-green-400"><CheckCircle2 className="w-3.5 h-3.5" /></button></TooltipTrigger><TooltipContent>Mark Paid</TooltipContent></Tooltip>}
+                          {inv.status === "sent" && <Tooltip><TooltipTrigger asChild><button onClick={() => handleMarkOverdue(inv)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-red-400"><AlertCircle className="w-3.5 h-3.5" /></button></TooltipTrigger><TooltipContent>Set Due Date</TooltipContent></Tooltip>}
+                          {stripeAvailable && canAct && (inv.paymentMethods || []).includes("stripe") && (
+                            <Tooltip><TooltipTrigger asChild><button onClick={() => handleStripeCheckout(inv)} disabled={processingPay} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-purple-400"><CreditCard className="w-3.5 h-3.5" /></button></TooltipTrigger><TooltipContent>Stripe Checkout</TooltipContent></Tooltip>
+                          )}
+                          <Tooltip><TooltipTrigger asChild><button onClick={() => handleClone(inv)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground"><Copy className="w-3.5 h-3.5" /></button></TooltipTrigger><TooltipContent>Duplicate</TooltipContent></Tooltip>
+                          <Tooltip><TooltipTrigger asChild><button onClick={() => handleDelete(inv)} className="opacity-0 group-hover:opacity-100 transition-opacity p-1.5 rounded hover:bg-red-500/10 text-muted-foreground/40 hover:text-red-400"><Trash2 className="w-3.5 h-3.5" /></button></TooltipTrigger><TooltipContent>Delete</TooltipContent></Tooltip>
+                        </div>
+                      </TooltipProvider>
                     </div>
 
                     {/* Email History Panel */}
@@ -5988,7 +6257,7 @@ function ProfileView() {
             </div>
           </div>
           <h3 className="font-display text-xl text-foreground">{profile.name || "Your Name"}</h3>
-          {profile.bio && <p className="text-sm font-body text-muted-foreground mt-1">{profile.bio}</p>}
+          {profile.bio && <p className="text-sm font-body text-muted-foreground mt-1" dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(profile.bio) }} />}
         </div>
 
         <div className="glass-panel rounded-xl p-6 space-y-4">
@@ -6030,6 +6299,8 @@ function ContactsView() {
   const [contacts, setContactsState] = useState<Contact[]>(() => getContacts());
   const [editing, setEditing] = useState<Contact | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
+  const bookings = getBookings();
+  const invoices = getInvoices();
 
   const emptyContact = (): Contact => ({
     id: generateId("contact"),
@@ -6147,19 +6418,29 @@ function ContactsView() {
         </div>
       ) : (
         <div className="space-y-2">
-          {filtered.map(c => (
+          {filtered.map(c => {
+            const cBookings = bookings.filter(b => b.clientEmail === c.email || b.clientName === c.name);
+            const cInvoices = invoices.filter(i => i.to.email === c.email || i.to.name === c.name);
+            const cTotal = cInvoices.reduce((s, i) => s + calcInvTotal(i), 0);
+            return (
             <div key={c.id} className="glass-panel rounded-xl px-4 py-3 flex items-center justify-between gap-3">
               <div className="min-w-0 flex-1">
                 <p className="font-body text-sm text-foreground font-medium truncate">{c.name}{c.company ? <span className="text-muted-foreground font-normal"> · {c.company}</span> : null}</p>
                 <p className="font-body text-xs text-muted-foreground truncate">{[c.email, c.phone].filter(Boolean).join(" · ")}</p>
                 {c.abn && <p className="font-body text-[10px] text-muted-foreground/60">ABN: {c.abn}</p>}
               </div>
+              {(cBookings.length > 0 || cInvoices.length > 0) && (
+                <p className="text-xs text-muted-foreground shrink-0 hidden sm:block">
+                  {cBookings.length} booking{cBookings.length !== 1 ? "s" : ""} · {cInvoices.length} invoice{cInvoices.length !== 1 ? "s" : ""} · ${cTotal.toFixed(2)}
+                </p>
+              )}
               <div className="flex gap-1 shrink-0">
                 <button onClick={() => setEditing({ ...c })} className="p-2 rounded hover:bg-secondary text-muted-foreground/60 hover:text-foreground transition-colors"><Edit className="w-4 h-4" /></button>
                 <button onClick={() => handleDelete(c.id)} className="p-2 rounded hover:bg-red-500/10 text-muted-foreground/60 hover:text-red-400 transition-colors"><Trash2 className="w-4 h-4" /></button>
               </div>
             </div>
-          ))}
+            );
+          })}
           {filtered.length === 0 && searchQuery && (
             <p className="text-center py-8 text-sm font-body text-muted-foreground">No contacts match "{searchQuery}"</p>
           )}
@@ -6313,12 +6594,58 @@ function SettingsView() {
     }
   };
 
+  const [activeSettingsSection, setActiveSettingsSection] = React.useState("settings-watermark");
+
+  React.useEffect(() => {
+    const sectionIds = [
+      "settings-watermark", "settings-album-defaults", "settings-invoicing",
+      "settings-booking", "settings-email-templates", "settings-notifications",
+      "settings-payments", "settings-integrations",
+    ];
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const visible = entries.filter(e => e.isIntersecting).sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
+        if (visible.length > 0) setActiveSettingsSection(visible[0].target.id);
+      },
+      { rootMargin: "-10% 0px -60% 0px", threshold: 0 }
+    );
+    sectionIds.forEach(id => { const el = document.getElementById(id); if (el) observer.observe(el); });
+    return () => observer.disconnect();
+  }, []);
+
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-      <h2 className="font-display text-2xl text-foreground mb-6">Settings</h2>
+      <h2 className="font-display text-2xl text-foreground mb-4">Settings</h2>
+      {/* Sticky sub-navigation */}
+      <div className="sticky top-0 z-10 bg-background/80 backdrop-blur-sm border-b border-border/40 -mx-1 px-1 mb-6 overflow-x-auto">
+        <div className="flex items-center gap-1 min-w-max py-2">
+          {([
+            { id: "settings-watermark", label: "Watermark" },
+            { id: "settings-album-defaults", label: "Album Defaults" },
+            { id: "settings-invoicing", label: "Invoicing" },
+            { id: "settings-booking", label: "Booking" },
+            { id: "settings-email-templates", label: "Email Templates" },
+            { id: "settings-notifications", label: "Notifications" },
+            { id: "settings-payments", label: "Payments" },
+            { id: "settings-integrations", label: "Integrations" },
+          ] as const).map(({ id, label }) => (
+            <button
+              key={id}
+              onClick={() => { document.getElementById(id)?.scrollIntoView({ behavior: "smooth" }); setActiveSettingsSection(id); }}
+              className={`text-xs font-body px-3 py-1.5 rounded-md transition-colors whitespace-nowrap ${
+                activeSettingsSection === id
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:text-foreground hover:bg-secondary"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 max-w-4xl">
         {/* Watermark */}
-        <div className="glass-panel rounded-xl p-6 space-y-4 lg:col-span-2">
+        <div id="settings-watermark" className="glass-panel rounded-xl p-6 space-y-4 lg:col-span-2">
           <h3 className="font-display text-base text-foreground">Watermark</h3>
           <div>
             <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Watermark Text</label>
@@ -6364,8 +6691,7 @@ function SettingsView() {
         </div>
 
         {/* Album Defaults */}
-        <div className="glass-panel rounded-xl p-6 space-y-4">
-          <h3 className="font-display text-base text-foreground">Default Album Settings</h3>
+        <div id="settings-album-defaults" className="glass-panel rounded-xl p-6 space-y-4">
           <div className="space-y-3">
             <div>
               <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Free Downloads</label>
@@ -6383,11 +6709,7 @@ function SettingsView() {
         </div>
 
         {/* Invoice Defaults */}
-        <div className="glass-panel rounded-xl p-6 space-y-4">
-          <h3 className="font-display text-base text-foreground flex items-center gap-2">
-            <Receipt className="w-4 h-4 text-primary" /> Invoice Defaults
-          </h3>
-          <p className="text-[10px] font-body text-muted-foreground/60">These details are pre-filled in the "From" section every time you create a new invoice.</p>
+        <div id="settings-invoicing" className="glass-panel rounded-xl p-6 space-y-4">
           <div className="space-y-3">
             {(() => {
               const from = settings.invoiceFrom || { name: "", email: "", address: "", abn: "" };
@@ -6422,8 +6744,7 @@ function SettingsView() {
         </div>
 
         {/* Booking */}
-        <div className="glass-panel rounded-xl p-6 space-y-4">
-          <h3 className="font-display text-base text-foreground">Booking Settings</h3>
+        <div id="settings-booking" className="glass-panel rounded-xl p-6 space-y-4">
           <div>
             <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Booking Timer (minutes)</label>
             <Input type="number" value={settings.bookingTimerMinutes} onChange={(e) => setSettingsState({ ...settings, bookingTimerMinutes: Number(e.target.value) })} className="bg-secondary border-border text-foreground font-body w-32" />
@@ -6464,12 +6785,12 @@ function SettingsView() {
         </div>
 
         {/* Email Templates Manager */}
-        <div className="lg:col-span-2">
+        <div id="settings-email-templates" className="lg:col-span-2">
           <EmailTemplatesManager />
         </div>
 
         {/* Discord Webhook */}
-        <div className="glass-panel rounded-xl p-6 space-y-4">
+        <div id="settings-notifications" className="glass-panel rounded-xl p-6 space-y-4">
           <h3 className="font-display text-base text-foreground flex items-center gap-2">
             <Bell className="w-4 h-4 text-primary" /> Discord Webhooks
           </h3>
@@ -6653,12 +6974,7 @@ function SettingsView() {
         </div>
 
         {/* Payment Methods */}
-        <div className="glass-panel rounded-xl p-6 space-y-4">
-          <h3 className="font-display text-base text-foreground flex items-center gap-2">
-            <CreditCard className="w-4 h-4 text-primary" /> Payment Methods
-          </h3>
-
-          {/* Stripe */}
+        <div id="settings-payments" className="glass-panel rounded-xl p-6 space-y-4">
           <div className="p-4 rounded-lg bg-secondary/50 border border-border/50">
             <div className="flex items-center justify-between">
               <span className="text-sm font-body text-foreground font-medium flex items-center gap-2">
@@ -6707,7 +7023,7 @@ function SettingsView() {
         </div>
 
         {/* Google Calendar */}
-        <div className="lg:col-span-2">
+        <div id="settings-integrations" className="lg:col-span-2">
           <GoogleCalendarSection />
         </div>
 
@@ -8763,6 +9079,7 @@ function StorageView() {
     results: Array<{ album: string; done: number; total: number; failed: number; error?: string }>;
   } | null>(null);
   const ftpAbortRef = useRef(false);
+  const [expandedFileName, setExpandedFileName] = useState<string | null>(null);
 
   useEffect(() => {
     getServerStorageStats().then(s => { setServerStats(s); setLoading(false); });
@@ -9377,15 +9694,47 @@ function StorageView() {
               <div className="mt-4 pt-4 border-t border-border/30">
                 <p className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-2">Largest Files</p>
                 <div className="space-y-1 max-h-48 overflow-y-auto">
-                  {serverStats.photoFiles.slice(0, 20).map((f) => (
-                    <div key={f.name} className="flex items-center justify-between p-2 rounded-lg hover:bg-secondary/30 transition-colors">
-                      <span className="text-xs font-body text-foreground font-mono truncate max-w-[50%]">{f.name}</span>
-                      <div className="flex items-center gap-3">
-                        <span className="text-[10px] font-body text-muted-foreground">{new Date(f.modified).toLocaleDateString()}</span>
-                        <span className="text-[10px] font-body text-muted-foreground w-16 text-right">{formatBytes(f.size)}</span>
+                  {serverStats.photoFiles.slice(0, 20).map((f) => {
+                    const isExpanded = expandedFileName === f.name;
+                    const matchingAlbum = albums.find(a => a.photos.some(p => p.src.split("/").pop() === f.name || p.originalName === f.name));
+                    const matchingLibraryPhoto = !matchingAlbum ? libraryPhotos.find(p => p.src.split("/").pop() === f.name || p.originalName === f.name) : null;
+                    const albumPhoto = matchingAlbum?.photos.find(p => p.src.split("/").pop() === f.name || p.originalName === f.name);
+                    return (
+                      <div key={f.name} className="rounded-lg overflow-hidden">
+                        <div className="flex items-center justify-between p-2 hover:bg-secondary/30 transition-colors">
+                          <button
+                            onClick={() => setExpandedFileName(isExpanded ? null : f.name)}
+                            className="text-xs font-body text-primary hover:underline font-mono truncate max-w-[50%] text-left"
+                          >
+                            {f.name}
+                          </button>
+                          <div className="flex items-center gap-3">
+                            <span className="text-[10px] font-body text-muted-foreground">{new Date(f.modified).toLocaleDateString()}</span>
+                            <span className="text-[10px] font-body text-muted-foreground w-16 text-right">{formatBytes(f.size)}</span>
+                          </div>
+                        </div>
+                        {isExpanded && (
+                          <div className="px-3 pb-2 pt-1 bg-secondary/20 text-[11px] font-body space-y-0.5">
+                            {matchingAlbum ? (
+                              <>
+                                <p className="text-muted-foreground"><span className="text-foreground font-medium">Album:</span> {matchingAlbum.title}</p>
+                                {matchingAlbum.clientName && <p className="text-muted-foreground"><span className="text-foreground font-medium">Client:</span> {matchingAlbum.clientName}</p>}
+                                {albumPhoto?.uploadedAt && <p className="text-muted-foreground"><span className="text-foreground font-medium">Uploaded:</span> {new Date(albumPhoto.uploadedAt).toLocaleDateString()}</p>}
+                                <a href={`/album/${matchingAlbum.slug || matchingAlbum.id}`} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline inline-flex items-center gap-1">View album <ExternalLink className="w-3 h-3" /></a>
+                              </>
+                            ) : matchingLibraryPhoto ? (
+                              <>
+                                <p className="text-muted-foreground">Library photo — not assigned to an album</p>
+                                {matchingLibraryPhoto.uploadedAt && <p className="text-muted-foreground"><span className="text-foreground font-medium">Uploaded:</span> {new Date(matchingLibraryPhoto.uploadedAt).toLocaleDateString()}</p>}
+                              </>
+                            ) : (
+                              <p className="text-muted-foreground">Library photo — not assigned to an album</p>
+                            )}
+                          </div>
+                        )}
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             )}
