@@ -1321,10 +1321,15 @@ function TenantAlbums({ slug }: { slug: string }) {
   const [albumSortKey, setAlbumSortKey] = useState<AlbumSortKey>("date");
   const [albumSortDir, setAlbumSortDir] = useState<SortDir>("desc");
   const [albumSearch, setAlbumSearch] = useState("");
+  const [tenantSettings, setTenantSettings] = useState<TenantSettings>({});
 
   const load = useCallback(async () => {
-    const data = await fetchTenantMobileData(slug);
+    const [data, settings] = await Promise.all([
+      fetchTenantMobileData(slug),
+      getTenantSettings(slug).catch(() => ({} as TenantSettings)),
+    ]);
     setAlbums(data.albums || []);
+    setTenantSettings(settings);
     setLoading(false);
   }, [slug]);
 
@@ -1380,6 +1385,7 @@ function TenantAlbums({ slug }: { slug: string }) {
       <TenantAlbumEditor
         slug={slug}
         album={editing}
+        settings={tenantSettings}
         onSave={async (alb) => {
           const { ok, error } = await saveTenantAlbum(slug, alb);
           if (!ok) { toast.error(error || "Failed to save album"); return; }
@@ -1562,9 +1568,10 @@ function TenantAlbums({ slug }: { slug: string }) {
 }
 
 // ─── Album Editor (tenant) ────────────────────────────────────────────────────
-function TenantAlbumEditor({ slug, album, onSave, onCancel }: {
+function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
   slug: string;
   album: Album | null;
+  settings: TenantSettings;
   onSave: (alb: Album) => void;
   onCancel: () => void;
 }) {
@@ -1582,6 +1589,7 @@ function TenantAlbumEditor({ slug, album, onSave, onCancel }: {
   const [watermarkDisabled, setWatermarkDisabled] = useState((album as any)?.watermarkDisabled || false);
   const [purchasingDisabled, setPurchasingDisabled] = useState((album as any)?.purchasingDisabled || false);
   const [proofingEnabled, setProofingEnabled] = useState(album?.proofingEnabled || false);
+  const [lockDownloadsDuringProofing, setLockDownloadsDuringProofing] = useState(album?.lockDownloadsDuringProofing || false);
   const [expiresAt, setExpiresAt] = useState(album?.expiresAt || "");
   const [downloadExpiresAt, setDownloadExpiresAt] = useState(album?.downloadExpiresAt || "");
   const [displaySize, setDisplaySize] = useState<AlbumDisplaySize>(album?.displaySize || "medium");
@@ -1716,6 +1724,7 @@ function TenantAlbumEditor({ slug, album, onSave, onCancel }: {
       watermarkDisabled,
       purchasingDisabled,
       proofingEnabled,
+      lockDownloadsDuringProofing: lockDownloadsDuringProofing ? true : undefined,
       expiresAt: expiresAt || undefined,
       downloadExpiresAt: downloadExpiresAt || undefined,
       displaySize,
@@ -1726,6 +1735,7 @@ function TenantAlbumEditor({ slug, album, onSave, onCancel }: {
       proofingRounds: liveAlbum?.proofingRounds,
       clientToken: liveAlbum?.clientToken,
       proofingExpiresAt: liveAlbum?.proofingExpiresAt,
+      proofingExpiryHours: liveAlbum?.proofingExpiryHours,
       // Preserve the enabled/disabled state so editing an album does not silently
       // re-enable a disabled one via the server-side merge.
       ...(album?.enabled !== undefined ? { enabled: album.enabled } : {}),
@@ -1835,7 +1845,7 @@ function TenantAlbumEditor({ slug, album, onSave, onCancel }: {
       </div>
 
       {/* Proofing toggle */}
-      {album && (
+      {album && settings.proofingEnabled && (
         <div className="flex items-center justify-between p-3 rounded-lg bg-secondary">
           <div>
             <p className="text-xs font-body text-foreground font-medium">Proofing for this album</p>
@@ -1845,8 +1855,18 @@ function TenantAlbumEditor({ slug, album, onSave, onCancel }: {
         </div>
       )}
 
+      {album && settings.proofingEnabled && proofingEnabled && (
+        <div className="flex items-center justify-between p-3 rounded-lg bg-secondary border border-yellow-500/20">
+          <div>
+            <p className="text-xs font-body text-foreground font-medium flex items-center gap-1.5">🔒 Lock downloads during proofing</p>
+            <p className="text-[10px] font-body text-muted-foreground/70 mt-0.5">Block all downloads while proofing is active. Unlocks when finals are delivered or proofing is reset.</p>
+          </div>
+          <Switch checked={lockDownloadsDuringProofing} onCheckedChange={setLockDownloadsDuringProofing} />
+        </div>
+      )}
+
       {/* Proofing controls */}
-      {liveAlbum && proofingEnabled && album && (() => {
+      {liveAlbum && settings.proofingEnabled && proofingEnabled && album && (() => {
         const stage = liveAlbum.proofingStage || "not-started";
         const rounds = liveAlbum.proofingRounds || [];
         const latest = rounds[rounds.length - 1];
@@ -1859,11 +1879,13 @@ function TenantAlbumEditor({ slug, album, onSave, onCancel }: {
           const noteEl = document.getElementById("t-proofing-note") as HTMLTextAreaElement;
           const expiryEl = document.getElementById("t-proofing-expiry") as HTMLInputElement;
           const note = noteEl?.value || "";
-          const expiryHours = expiryEl && expiryEl.value !== "" ? Math.max(1, parseInt(expiryEl.value, 10) || 48) : 48;
+          const defaultExpiry = liveAlbum.proofingExpiryHours ?? settings.defaultProofingExpiryHours ?? 48;
+          const parsedInput = expiryEl?.value !== "" ? parseInt(expiryEl?.value, 10) : NaN;
+          const expiryHours = !isNaN(parsedInput) ? Math.max(1, parsedInput) : defaultExpiry;
           const proofingExpiresAt = new Date(Date.now() + expiryHours * 3600 * 1000).toISOString();
           const clientToken = liveAlbum.clientToken || `ct-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
           const newRound = { roundNumber: rounds.length + 1, sentAt: new Date().toISOString(), selectedPhotoIds: [], adminNote: note || undefined };
-          const updated = { ...liveAlbum, proofingEnabled: true, proofingStage: "proofing" as const, proofingRounds: [...rounds, newRound], clientToken, proofingExpiresAt };
+          const updated = { ...liveAlbum, proofingEnabled: true, proofingStage: "proofing" as const, proofingRounds: [...rounds, newRound], clientToken, proofingExpiresAt, proofingExpiryHours: expiryHours };
           await updateLiveAlbum(updated);
           if (email) {
             const galleryUrl = `${window.location.origin}/gallery/${liveAlbum.slug}?token=${clientToken}`;
@@ -1947,7 +1969,7 @@ function TenantAlbumEditor({ slug, album, onSave, onCancel }: {
                 <textarea id="t-proofing-note" placeholder="Optional message to client (e.g. 'Please pick your top 30')" rows={2} className="w-full bg-secondary border border-border rounded px-3 py-2 text-xs font-body text-foreground placeholder:text-muted-foreground/50 resize-none" />
                 <div className="flex items-center gap-2">
                   <label className="text-[11px] font-body text-muted-foreground shrink-0">Window open for</label>
-                  <input id="t-proofing-expiry" type="number" min={1} max={720} defaultValue={48} className="w-20 bg-secondary border border-border rounded px-2 py-1 text-xs font-body text-foreground text-center" />
+                  <input id="t-proofing-expiry" type="number" min={1} max={720} defaultValue={liveAlbum.proofingExpiryHours ?? settings.defaultProofingExpiryHours ?? 48} className="w-20 bg-secondary border border-border rounded px-2 py-1 text-xs font-body text-foreground text-center" />
                   <label className="text-[11px] font-body text-muted-foreground">hours</label>
                 </div>
                 <button onClick={startProofing} className="flex items-center gap-2 w-full justify-center bg-yellow-500/15 hover:bg-yellow-500/25 text-yellow-400 border border-yellow-500/30 rounded-lg px-4 py-2 text-xs font-body tracking-wider uppercase transition-colors">

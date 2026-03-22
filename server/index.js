@@ -2561,7 +2561,14 @@ app.put("/api/tenant/:slug/albums/:albumId", tenantLimiter, (req, res) => {
   const idx = albums.findIndex(a => a.id === albumId);
   // Strip baked watermark fields before persisting to keep db.json lean.
   const incoming = { ...req.body, id: albumId };
-  if (incoming.photos) incoming.photos = _stripBakedFromPhotos(incoming.photos);
+  // If the client is sending a bandwidth-saving stub (_photosStripped:true, photos:[])
+  // don't overwrite the server's real photos array with the empty stub.
+  if (incoming._photosStripped) {
+    delete incoming.photos;
+    delete incoming._photosStripped;
+  } else if (incoming.photos) {
+    incoming.photos = _stripBakedFromPhotos(incoming.photos);
+  }
   if (idx >= 0) {
     albums[idx] = { ...albums[idx], ...incoming };
   } else {

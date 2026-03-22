@@ -3192,7 +3192,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
       expiresAt: expiresAt || undefined,
       downloadExpiresAt: downloadExpiresAt || undefined,
       proofingEnabled: albumProofingEnabled,
-      lockDownloadsDuringProofing: lockDownloadsDuringProofing || undefined,
+      lockDownloadsDuringProofing: lockDownloadsDuringProofing ? true : undefined,
       watermarkDisabled,
       purchasingDisabled,
       displaySize,
@@ -3424,7 +3424,6 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
         const rounds = liveAlbum!.proofingRounds || [];
         const latest = rounds[rounds.length - 1];
         const clientEmail = liveAlbum!.clientEmail;
-        const isFreeAlbum = !liveAlbum!.pricePerPhoto && !liveAlbum!.priceFullAlbum;
 
         const buildProofingEmailHtml = (galleryUrl: string, expiryDateStr: string, adminNote?: string) =>
           `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;"><h2 style="margin:0 0 16px;font-size:20px;">Your photos are ready to review!</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${liveAlbum!.clientName || "there"},</p><p style="color:#9ca3af;margin:0 0 12px;">Your proofing gallery for <strong style="color:#e5e7eb;">${liveAlbum!.title}</strong> is ready. Browse and star the ones you love, then hit Submit Picks.</p>${expiryDateStr ? `<p style="color:#ef4444;margin:0 0 12px;padding:10px 14px;background:#1f1f1f;border-radius:8px;font-size:13px;">⏰ <strong>Proofing window closes: ${expiryDateStr}</strong></p>` : ""}${adminNote ? `<p style="color:#9ca3af;margin:0 0 20px;padding:12px;background:#1f1f1f;border-radius:8px;"><em>"${adminNote}"</em></p>` : ""}<a href="${galleryUrl}" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">View Your Gallery →</a></div>`;
