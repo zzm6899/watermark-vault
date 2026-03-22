@@ -5421,8 +5421,10 @@ function InvoicesView() {
                 const logOpen = expandedEmailLog === inv.id;
                 const menuOpen = overflowMenuId === inv.id;
                 const canAct = inv.status !== "paid" && inv.status !== "cancelled";
+                const rowBorder = inv.status === "sent" ? "border-l-4 border-amber-500" : inv.status === "overdue" ? "border-l-4 border-red-500" : inv.status === "paid" ? "border-l-4 border-green-500" : "";
+                const amountColor = inv.status === "sent" ? "text-amber-400" : inv.status === "overdue" ? "text-red-400" : "text-foreground";
                 return (
-                  <div key={inv.id} className="group">
+                  <div key={inv.id} className={`group ${rowBorder}`}>
                     {/* ── Row ── */}
                     <div className="flex items-start sm:items-center gap-3 px-3 sm:px-4 py-3 hover:bg-secondary/30 transition-colors">
                       {/* Left info */}
@@ -5477,28 +5479,30 @@ function InvoicesView() {
                         </div>
                       </div>
                       {/* Amount */}
-                      <p className="text-sm font-display text-foreground w-20 text-right shrink-0">${total.toFixed(2)}</p>
+                      <p className={`text-sm font-display w-20 text-right shrink-0 ${amountColor}`}>${total.toFixed(2)}</p>
                       {/* Desktop actions */}
-                      <div className="hidden sm:flex items-center gap-1 shrink-0">
-                        <button onClick={() => openEdit(inv)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground" title="Edit"><Edit className="w-3.5 h-3.5" /></button>
-                        <button onClick={() => handleCopyLink(inv)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground" title="Copy share link"><Link2 className="w-3.5 h-3.5" /></button>
-                        <button onClick={() => handleExportPDF(inv)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground" title="Export / Download PDF"><Printer className="w-3.5 h-3.5" /></button>
-                        <button onClick={() => setExpandedEmailLog(logOpen ? null : inv.id)} className={`p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground ${logOpen ? "text-primary" : ""}`} title="Email history"><Mail className="w-3.5 h-3.5" /></button>
-                        <div className="w-px h-4 bg-border mx-0.5" />
-                        {canAct && (
-                          <>
-                            <button onClick={() => handleSendInvoice(inv)} disabled={sendingEmail} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-blue-400" title="Send invoice email"><Send className="w-3.5 h-3.5" /></button>
-                            <button onClick={() => handleSendReminder(inv)} disabled={sendingEmail} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-yellow-400" title="Send payment reminder"><Bell className="w-3.5 h-3.5" /></button>
-                          </>
-                        )}
-                        {canAct && <button onClick={() => handleMarkPaid(inv)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-green-400" title="Mark as paid (bank / manual)"><CheckCircle2 className="w-3.5 h-3.5" /></button>}
-                        {inv.status === "sent" && <button onClick={() => handleMarkOverdue(inv)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-red-400" title="Mark as overdue"><AlertCircle className="w-3.5 h-3.5" /></button>}
-                        {stripeAvailable && canAct && (inv.paymentMethods || []).includes("stripe") && (
-                          <button onClick={() => handleStripeCheckout(inv)} disabled={processingPay} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-purple-400" title="Open Stripe checkout"><CreditCard className="w-3.5 h-3.5" /></button>
-                        )}
-                        <button onClick={() => handleClone(inv)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground" title="Clone"><Copy className="w-3.5 h-3.5" /></button>
-                        <button onClick={() => handleDelete(inv)} className="opacity-0 group-hover:opacity-100 transition-opacity p-1.5 rounded hover:bg-red-500/10 text-muted-foreground/40 hover:text-red-400" title="Delete"><Trash2 className="w-3.5 h-3.5" /></button>
-                      </div>
+                      <TooltipProvider delayDuration={300}>
+                        <div className="hidden sm:flex items-center gap-1 shrink-0">
+                          <Tooltip><TooltipTrigger asChild><button onClick={() => openEdit(inv)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground"><Edit className="w-3.5 h-3.5" /></button></TooltipTrigger><TooltipContent>Edit</TooltipContent></Tooltip>
+                          <Tooltip><TooltipTrigger asChild><button onClick={() => handleCopyLink(inv)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground"><Link2 className="w-3.5 h-3.5" /></button></TooltipTrigger><TooltipContent>Copy Link</TooltipContent></Tooltip>
+                          <Tooltip><TooltipTrigger asChild><button onClick={() => handleExportPDF(inv)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground"><Printer className="w-3.5 h-3.5" /></button></TooltipTrigger><TooltipContent>Print</TooltipContent></Tooltip>
+                          <Tooltip><TooltipTrigger asChild><button onClick={() => setExpandedEmailLog(logOpen ? null : inv.id)} className={`p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground ${logOpen ? "text-primary" : ""}`}><Mail className="w-3.5 h-3.5" /></button></TooltipTrigger><TooltipContent>Email Client</TooltipContent></Tooltip>
+                          <div className="w-px h-4 bg-border mx-0.5" />
+                          {canAct && (
+                            <>
+                              <Tooltip><TooltipTrigger asChild><button onClick={() => handleSendInvoice(inv)} disabled={sendingEmail} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-blue-400"><Send className="w-3.5 h-3.5" /></button></TooltipTrigger><TooltipContent>Email Client</TooltipContent></Tooltip>
+                              <Tooltip><TooltipTrigger asChild><button onClick={() => handleSendReminder(inv)} disabled={sendingEmail} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-yellow-400"><Bell className="w-3.5 h-3.5" /></button></TooltipTrigger><TooltipContent>Send Reminder</TooltipContent></Tooltip>
+                            </>
+                          )}
+                          {canAct && <Tooltip><TooltipTrigger asChild><button onClick={() => handleMarkPaid(inv)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-green-400"><CheckCircle2 className="w-3.5 h-3.5" /></button></TooltipTrigger><TooltipContent>Mark Paid</TooltipContent></Tooltip>}
+                          {inv.status === "sent" && <Tooltip><TooltipTrigger asChild><button onClick={() => handleMarkOverdue(inv)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-red-400"><AlertCircle className="w-3.5 h-3.5" /></button></TooltipTrigger><TooltipContent>Set Due Date</TooltipContent></Tooltip>}
+                          {stripeAvailable && canAct && (inv.paymentMethods || []).includes("stripe") && (
+                            <Tooltip><TooltipTrigger asChild><button onClick={() => handleStripeCheckout(inv)} disabled={processingPay} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-purple-400"><CreditCard className="w-3.5 h-3.5" /></button></TooltipTrigger><TooltipContent>Stripe Checkout</TooltipContent></Tooltip>
+                          )}
+                          <Tooltip><TooltipTrigger asChild><button onClick={() => handleClone(inv)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground"><Copy className="w-3.5 h-3.5" /></button></TooltipTrigger><TooltipContent>Duplicate</TooltipContent></Tooltip>
+                          <Tooltip><TooltipTrigger asChild><button onClick={() => handleDelete(inv)} className="opacity-0 group-hover:opacity-100 transition-opacity p-1.5 rounded hover:bg-red-500/10 text-muted-foreground/40 hover:text-red-400"><Trash2 className="w-3.5 h-3.5" /></button></TooltipTrigger><TooltipContent>Delete</TooltipContent></Tooltip>
+                        </div>
+                      </TooltipProvider>
                     </div>
 
                     {/* Email History Panel */}
@@ -6577,12 +6581,58 @@ function SettingsView() {
     }
   };
 
+  const [activeSettingsSection, setActiveSettingsSection] = React.useState("settings-watermark");
+
+  React.useEffect(() => {
+    const sectionIds = [
+      "settings-watermark", "settings-album-defaults", "settings-invoicing",
+      "settings-booking", "settings-email-templates", "settings-notifications",
+      "settings-payments", "settings-integrations",
+    ];
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const visible = entries.filter(e => e.isIntersecting).sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
+        if (visible.length > 0) setActiveSettingsSection(visible[0].target.id);
+      },
+      { rootMargin: "-10% 0px -60% 0px", threshold: 0 }
+    );
+    sectionIds.forEach(id => { const el = document.getElementById(id); if (el) observer.observe(el); });
+    return () => observer.disconnect();
+  }, []);
+
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-      <h2 className="font-display text-2xl text-foreground mb-6">Settings</h2>
+      <h2 className="font-display text-2xl text-foreground mb-4">Settings</h2>
+      {/* Sticky sub-navigation */}
+      <div className="sticky top-0 z-10 bg-background/80 backdrop-blur-sm border-b border-border/40 -mx-1 px-1 mb-6 overflow-x-auto">
+        <div className="flex items-center gap-1 min-w-max py-2">
+          {([
+            { id: "settings-watermark", label: "Watermark" },
+            { id: "settings-album-defaults", label: "Album Defaults" },
+            { id: "settings-invoicing", label: "Invoicing" },
+            { id: "settings-booking", label: "Booking" },
+            { id: "settings-email-templates", label: "Email Templates" },
+            { id: "settings-notifications", label: "Notifications" },
+            { id: "settings-payments", label: "Payments" },
+            { id: "settings-integrations", label: "Integrations" },
+          ] as const).map(({ id, label }) => (
+            <button
+              key={id}
+              onClick={() => { document.getElementById(id)?.scrollIntoView({ behavior: "smooth" }); setActiveSettingsSection(id); }}
+              className={`text-xs font-body px-3 py-1.5 rounded-md transition-colors whitespace-nowrap ${
+                activeSettingsSection === id
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:text-foreground hover:bg-secondary"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 max-w-4xl">
         {/* Watermark */}
-        <div className="glass-panel rounded-xl p-6 space-y-4 lg:col-span-2">
+        <div id="settings-watermark" className="glass-panel rounded-xl p-6 space-y-4 lg:col-span-2">
           <h3 className="font-display text-base text-foreground">Watermark</h3>
           <div>
             <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Watermark Text</label>
@@ -6628,8 +6678,7 @@ function SettingsView() {
         </div>
 
         {/* Album Defaults */}
-        <div className="glass-panel rounded-xl p-6 space-y-4">
-          <h3 className="font-display text-base text-foreground">Default Album Settings</h3>
+        <div id="settings-album-defaults" className="glass-panel rounded-xl p-6 space-y-4">
           <div className="space-y-3">
             <div>
               <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Free Downloads</label>
@@ -6647,11 +6696,7 @@ function SettingsView() {
         </div>
 
         {/* Invoice Defaults */}
-        <div className="glass-panel rounded-xl p-6 space-y-4">
-          <h3 className="font-display text-base text-foreground flex items-center gap-2">
-            <Receipt className="w-4 h-4 text-primary" /> Invoice Defaults
-          </h3>
-          <p className="text-[10px] font-body text-muted-foreground/60">These details are pre-filled in the "From" section every time you create a new invoice.</p>
+        <div id="settings-invoicing" className="glass-panel rounded-xl p-6 space-y-4">
           <div className="space-y-3">
             {(() => {
               const from = settings.invoiceFrom || { name: "", email: "", address: "", abn: "" };
@@ -6686,8 +6731,7 @@ function SettingsView() {
         </div>
 
         {/* Booking */}
-        <div className="glass-panel rounded-xl p-6 space-y-4">
-          <h3 className="font-display text-base text-foreground">Booking Settings</h3>
+        <div id="settings-booking" className="glass-panel rounded-xl p-6 space-y-4">
           <div>
             <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Booking Timer (minutes)</label>
             <Input type="number" value={settings.bookingTimerMinutes} onChange={(e) => setSettingsState({ ...settings, bookingTimerMinutes: Number(e.target.value) })} className="bg-secondary border-border text-foreground font-body w-32" />
@@ -6728,12 +6772,12 @@ function SettingsView() {
         </div>
 
         {/* Email Templates Manager */}
-        <div className="lg:col-span-2">
+        <div id="settings-email-templates" className="lg:col-span-2">
           <EmailTemplatesManager />
         </div>
 
         {/* Discord Webhook */}
-        <div className="glass-panel rounded-xl p-6 space-y-4">
+        <div id="settings-notifications" className="glass-panel rounded-xl p-6 space-y-4">
           <h3 className="font-display text-base text-foreground flex items-center gap-2">
             <Bell className="w-4 h-4 text-primary" /> Discord Webhooks
           </h3>
@@ -6917,12 +6961,7 @@ function SettingsView() {
         </div>
 
         {/* Payment Methods */}
-        <div className="glass-panel rounded-xl p-6 space-y-4">
-          <h3 className="font-display text-base text-foreground flex items-center gap-2">
-            <CreditCard className="w-4 h-4 text-primary" /> Payment Methods
-          </h3>
-
-          {/* Stripe */}
+        <div id="settings-payments" className="glass-panel rounded-xl p-6 space-y-4">
           <div className="p-4 rounded-lg bg-secondary/50 border border-border/50">
             <div className="flex items-center justify-between">
               <span className="text-sm font-body text-foreground font-medium flex items-center gap-2">
@@ -6971,7 +7010,7 @@ function SettingsView() {
         </div>
 
         {/* Google Calendar */}
-        <div className="lg:col-span-2">
+        <div id="settings-integrations" className="lg:col-span-2">
           <GoogleCalendarSection />
         </div>
 
@@ -9027,6 +9066,7 @@ function StorageView() {
     results: Array<{ album: string; done: number; total: number; failed: number; error?: string }>;
   } | null>(null);
   const ftpAbortRef = useRef(false);
+  const [expandedFileName, setExpandedFileName] = useState<string | null>(null);
 
   useEffect(() => {
     getServerStorageStats().then(s => { setServerStats(s); setLoading(false); });
@@ -9641,15 +9681,47 @@ function StorageView() {
               <div className="mt-4 pt-4 border-t border-border/30">
                 <p className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-2">Largest Files</p>
                 <div className="space-y-1 max-h-48 overflow-y-auto">
-                  {serverStats.photoFiles.slice(0, 20).map((f) => (
-                    <div key={f.name} className="flex items-center justify-between p-2 rounded-lg hover:bg-secondary/30 transition-colors">
-                      <span className="text-xs font-body text-foreground font-mono truncate max-w-[50%]">{f.name}</span>
-                      <div className="flex items-center gap-3">
-                        <span className="text-[10px] font-body text-muted-foreground">{new Date(f.modified).toLocaleDateString()}</span>
-                        <span className="text-[10px] font-body text-muted-foreground w-16 text-right">{formatBytes(f.size)}</span>
+                  {serverStats.photoFiles.slice(0, 20).map((f) => {
+                    const isExpanded = expandedFileName === f.name;
+                    const matchingAlbum = albums.find(a => a.photos.some(p => p.src.split("/").pop() === f.name || p.originalName === f.name));
+                    const matchingLibraryPhoto = !matchingAlbum ? libraryPhotos.find(p => p.src.split("/").pop() === f.name || p.originalName === f.name) : null;
+                    const albumPhoto = matchingAlbum?.photos.find(p => p.src.split("/").pop() === f.name || p.originalName === f.name);
+                    return (
+                      <div key={f.name} className="rounded-lg overflow-hidden">
+                        <div className="flex items-center justify-between p-2 hover:bg-secondary/30 transition-colors">
+                          <button
+                            onClick={() => setExpandedFileName(isExpanded ? null : f.name)}
+                            className="text-xs font-body text-primary hover:underline font-mono truncate max-w-[50%] text-left"
+                          >
+                            {f.name}
+                          </button>
+                          <div className="flex items-center gap-3">
+                            <span className="text-[10px] font-body text-muted-foreground">{new Date(f.modified).toLocaleDateString()}</span>
+                            <span className="text-[10px] font-body text-muted-foreground w-16 text-right">{formatBytes(f.size)}</span>
+                          </div>
+                        </div>
+                        {isExpanded && (
+                          <div className="px-3 pb-2 pt-1 bg-secondary/20 text-[11px] font-body space-y-0.5">
+                            {matchingAlbum ? (
+                              <>
+                                <p className="text-muted-foreground"><span className="text-foreground font-medium">Album:</span> {matchingAlbum.title}</p>
+                                {matchingAlbum.clientName && <p className="text-muted-foreground"><span className="text-foreground font-medium">Client:</span> {matchingAlbum.clientName}</p>}
+                                {albumPhoto?.uploadedAt && <p className="text-muted-foreground"><span className="text-foreground font-medium">Uploaded:</span> {new Date(albumPhoto.uploadedAt).toLocaleDateString()}</p>}
+                                <a href={`/album/${matchingAlbum.slug || matchingAlbum.id}`} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline inline-flex items-center gap-1">View album <ExternalLink className="w-3 h-3" /></a>
+                              </>
+                            ) : matchingLibraryPhoto ? (
+                              <>
+                                <p className="text-muted-foreground">Library photo — not assigned to an album</p>
+                                {matchingLibraryPhoto.uploadedAt && <p className="text-muted-foreground"><span className="text-foreground font-medium">Uploaded:</span> {new Date(matchingLibraryPhoto.uploadedAt).toLocaleDateString()}</p>}
+                              </>
+                            ) : (
+                              <p className="text-muted-foreground">Library photo — not assigned to an album</p>
+                            )}
+                          </div>
+                        )}
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             )}
