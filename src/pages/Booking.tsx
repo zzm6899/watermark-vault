@@ -6,7 +6,7 @@ import {
   CalendarDays, Upload, CheckCircle2, AlertCircle, Camera,
   MapPin, Calendar as CalendarIcon, ExternalLink, XCircle, Edit,
   CreditCard, Bell, Users, Building2, Copy, Check as CheckIcon,
-  MessageSquare, ChevronRight as ArrowRight,
+  MessageSquare, ChevronRight as ArrowRight, MessageCircle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -87,6 +87,21 @@ function formatTime12(t: string) {
 
 function toDateStr(d: Date): string {
   return `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, "0")}-${d.getDate().toString().padStart(2, "0")}`;
+}
+
+function formatTimezone(tz: string): string {
+  try {
+    const formatter = new Intl.DateTimeFormat('en', { timeZone: tz, timeZoneName: 'short' });
+    const parts = formatter.formatToParts(new Date());
+    const abbr = parts.find(p => p.type === 'timeZoneName')?.value || tz;
+    const offsetFormatter = new Intl.DateTimeFormat('en', { timeZone: tz, timeZoneName: 'longOffset' });
+    const offsetParts = offsetFormatter.formatToParts(new Date());
+    const offset = offsetParts.find(p => p.type === 'timeZoneName')?.value?.replace('GMT', 'UTC') || '';
+    const cityName = tz.split('/').pop()?.replace(/_/g, ' ') || tz;
+    return `${cityName} (${abbr}, ${offset})`;
+  } catch {
+    return tz;
+  }
 }
 
 function getAvailabilityForDate(et: EventType, date: Date): { startTime: string; endTime: string }[] {
@@ -287,6 +302,9 @@ export default function Booking() {
   const [enquiryMessage, setEnquiryMessage] = useState("");
   const [enquirySubmitting, setEnquirySubmitting] = useState(false);
 
+  // Per-card "Read more" expanded state for event type descriptions
+  const [expandedDescriptions, setExpandedDescriptions] = useState<Record<string, boolean>>({});
+
   // Check Stripe availability on mount
   useEffect(() => {
     getStripeStatus().then(s => setStripeAvailable(s.configured));
@@ -335,6 +353,16 @@ export default function Booking() {
     }
     return allSlots;
   }, [selectedDate, selectedDuration, selectedEvent, gcalBusy]);
+
+  const hasAvailabilityThisMonth = useMemo(() => {
+    if (!selectedEvent) return false;
+    const now = new Date(new Date().setHours(0, 0, 0, 0));
+    for (let d = 1; d <= daysInMonth; d++) {
+      const date = new Date(year, month, d);
+      if (date >= now && isDayAvailable(selectedEvent, date)) return true;
+    }
+    return false;
+  }, [selectedEvent, year, month, daysInMonth]);
 
   const handleSelectEvent = (ev: EventType) => {
     setSelectedEvent(ev);
@@ -533,6 +561,25 @@ export default function Booking() {
     setPayFullInstead(false);
   };
 
+  const handleNextAvailableMonth = useCallback(() => {
+    if (!selectedEvent) return;
+    const now = new Date(new Date().setHours(0, 0, 0, 0));
+    let searchYear = year;
+    let searchMonth = month + 1;
+    for (let i = 0; i < 24; i++) {
+      if (searchMonth > 11) { searchMonth = 0; searchYear++; }
+      const daysInSearch = new Date(searchYear, searchMonth + 1, 0).getDate();
+      for (let d = 1; d <= daysInSearch; d++) {
+        const date = new Date(searchYear, searchMonth, d);
+        if (date >= now && isDayAvailable(selectedEvent, date)) {
+          setCurrentMonth(new Date(searchYear, searchMonth));
+          return;
+        }
+      }
+      searchMonth++;
+    }
+  }, [selectedEvent, year, month]);
+
   // Open the enquiry form, optionally pre-filling event and/or date
   const handleOpenEnquiry = (prefillEventId?: string, prefillDate?: string) => {
     setEnquiryEventId(prefillEventId || selectedEvent?.id || "");
@@ -617,63 +664,83 @@ export default function Booking() {
                   </div>
                 ) : (
                   <div className="space-y-2">
-                    {eventTypes.map((ev) => (
-                      <button key={ev.id} onClick={() => handleSelectEvent(ev)} className="w-full text-left glass-panel rounded-xl p-5 hover:bg-secondary/50 hover:border-primary/20 transition-all group">
-                        <div className="flex items-start gap-3">
-                          <div className="w-8 h-8 rounded-lg bg-primary/15 flex items-center justify-center flex-shrink-0 mt-0.5 group-hover:bg-primary/25 transition-colors">
-                            <Camera className="w-4 h-4 text-primary" />
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center justify-between gap-2 mb-1">
-                              <h3 className="font-display text-base text-foreground">{ev.title}</h3>
-                              <div className="flex items-center gap-2 shrink-0">
-                                {ev.price > 0 && (
+                    {eventTypes.map((ev) => {
+                      const minPrice = ev.durations.length > 0
+                        ? Math.min(...ev.durations.map(d => getPriceForDuration(ev, d)))
+                        : (ev.price ?? 0);
+                      const isExpanded = !!expandedDescriptions[ev.id];
+                      return (
+                        <button key={ev.id} onClick={() => handleSelectEvent(ev)} className="w-full text-left glass-panel rounded-xl p-5 hover:border-amber-500 hover:shadow-lg transition-all cursor-pointer group">
+                          <div className="flex items-start gap-3">
+                            <div className="w-8 h-8 rounded-lg bg-primary/15 flex items-center justify-center flex-shrink-0 mt-0.5 group-hover:bg-primary/25 transition-colors">
+                              <Camera className="w-4 h-4 text-primary" />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <h3 className="font-display text-base text-foreground mb-1">{ev.title}</h3>
+                              {ev.description && (
+                                <div>
+                                  <div className={isExpanded ? "" : "line-clamp-4"}>
+                                    <RichTextDisplay html={ev.description} className="text-xs font-body text-muted-foreground" />
+                                  </div>
+                                  <button
+                                    onClick={(e) => { e.stopPropagation(); setExpandedDescriptions(prev => ({ ...prev, [ev.id]: !prev[ev.id] })); }}
+                                    className="text-xs font-body text-primary/70 hover:text-primary mt-1"
+                                  >
+                                    {isExpanded ? "Show less" : "Read more"}
+                                  </button>
+                                </div>
+                              )}
+                              <div className="flex flex-wrap items-center gap-2 mt-2">
+                                <span className="inline-flex items-center gap-1 text-xs font-body text-muted-foreground border border-border rounded-full px-2.5 py-1">
+                                  <Clock className="w-3 h-3" />
+                                  {ev.durations.map((d) => formatDuration(d)).join(" / ")}
+                                </span>
+                                {(ev.price ?? 0) > 0 && (
                                   <span className="text-xs font-body text-primary bg-primary/10 rounded-full px-2.5 py-0.5 border border-primary/20">
-                                    {ev.prices && Object.keys(ev.prices).length > 0
-                                      ? `from $${Math.min(...ev.durations.map(d => getPriceForDuration(ev, d)))}`
-                                      : `$${ev.price}`}
+                                    from ${minPrice}
                                   </span>
                                 )}
-                                <ArrowRight className="w-4 h-4 text-muted-foreground/40 group-hover:text-primary group-hover:translate-x-0.5 transition-all" />
+                                {ev.requiresConfirmation && (
+                                  <span className="inline-flex items-center gap-1 text-xs font-body text-muted-foreground border border-border rounded-full px-2.5 py-1">
+                                    <AlertCircle className="w-3 h-3" />Requires confirmation
+                                  </span>
+                                )}
+                                {ev.location && (
+                                  <span className="inline-flex items-center gap-1 text-xs font-body text-muted-foreground border border-border rounded-full px-2.5 py-1">
+                                    <MapPin className="w-3 h-3" />{ev.location}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="flex justify-end mt-3">
+                                <span className="text-xs font-body bg-amber-500/10 text-amber-500 border border-amber-500/30 px-3 py-1 rounded-full">
+                                  Book →
+                                </span>
                               </div>
                             </div>
-                            {ev.description && <RichTextDisplay html={ev.description} className="mb-3 max-h-24 overflow-y-auto" />}
-                            <div className="flex flex-wrap items-center gap-2">
-                              <span className="inline-flex items-center gap-1 text-xs font-body text-muted-foreground border border-border rounded-full px-2.5 py-1">
-                                <Clock className="w-3 h-3" />
-                                {ev.durations.map((d) => formatDuration(d)).join(" / ")}
-                              </span>
-                              {ev.requiresConfirmation && (
-                                <span className="inline-flex items-center gap-1 text-xs font-body text-muted-foreground border border-border rounded-full px-2.5 py-1">
-                                  <AlertCircle className="w-3 h-3" />Requires confirmation
-                                </span>
-                              )}
-                              {ev.location && (
-                                <span className="inline-flex items-center gap-1 text-xs font-body text-muted-foreground border border-border rounded-full px-2.5 py-1">
-                                  <MapPin className="w-3 h-3" />{ev.location}
-                                </span>
-                              )}
-                            </div>
                           </div>
-                        </div>
-                      </button>
-                    ))}
+                        </button>
+                      );
+                    })}
                   </div>
                 )}
 
                 <div className="flex items-center justify-center gap-2 mt-6 text-xs font-body text-muted-foreground/50">
                   <Globe className="w-3.5 h-3.5" />
-                  <span>{profile.timezone}</span>
+                  <span>{profile.timezone ? formatTimezone(profile.timezone) : ""}</span>
                 </div>
 
                 {settings.enquiryEnabled && (
-                  <button
-                    onClick={() => handleOpenEnquiry()}
-                    className="mt-4 w-full flex items-center justify-center gap-2 text-sm font-body text-muted-foreground hover:text-foreground border border-dashed border-border/60 hover:border-primary/40 rounded-xl py-3.5 transition-all group"
-                  >
-                    <MessageSquare className="w-4 h-4 group-hover:text-primary transition-colors" />
-                    {settings.enquiryLabel || "Make an Enquiry"}
-                  </button>
+                  <div className="mt-4 text-center">
+                    <Button
+                      variant="outline"
+                      onClick={() => handleOpenEnquiry()}
+                      className="gap-2 font-body text-sm"
+                    >
+                      <MessageCircle className="w-4 h-4" />
+                      {settings.enquiryLabel || "Make an Enquiry"}
+                    </Button>
+                    <p className="mt-2 text-xs font-body text-muted-foreground/60">Can't find a time that works? Send a message.</p>
+                  </div>
                 )}
               </motion.div>
             )}
@@ -741,7 +808,7 @@ export default function Booking() {
                         )}
 
                         <div className="flex items-center gap-2 text-xs font-body text-muted-foreground">
-                          <Globe className="w-3.5 h-3.5" /> {profile.timezone}
+                          <Globe className="w-3.5 h-3.5" /> {profile.timezone ? formatTimezone(profile.timezone) : ""}
                         </div>
                       </div>
 
@@ -780,16 +847,44 @@ export default function Booking() {
                               <button key={day} disabled={!isAvailable} onClick={() => { setSelectedDate(date); setSelectedTime(null); setTimerActive(false); setShowWaitlist(false); setWaitlistDone(false); setWaitlistName(""); setWaitlistEmail(""); setWaitlistNote(""); }}
                                 className={`aspect-square rounded-lg text-sm font-body transition-all relative ${
                                   isSelected ? "bg-primary text-primary-foreground font-medium ring-2 ring-primary ring-offset-2 ring-offset-background"
-                                    : isAvailable ? "text-foreground hover:bg-secondary"
-                                    : "text-muted-foreground/20 cursor-not-allowed"
+                                    : isAvailable ? "text-foreground font-medium hover:bg-amber-500/10 hover:text-amber-500"
+                                    : "text-muted-foreground opacity-40 cursor-not-allowed"
                                 }`}
                               >
                                 {day}
-                                {isToday && !isSelected && <span className="absolute bottom-1 left-1/2 -translate-x-1/2 w-1 h-1 rounded-full bg-primary" />}
+                                {isAvailable && !isSelected && (
+                                  <span className="absolute bottom-1 left-1/2 -translate-x-1/2 w-1 h-1 rounded-full bg-amber-500" />
+                                )}
+                                {isToday && !isSelected && !isAvailable && (
+                                  <span className="absolute bottom-1 left-1/2 -translate-x-1/2 w-1 h-1 rounded-full bg-primary" />
+                                )}
                               </button>
                             );
                           })}
                         </div>
+
+                        {/* Calendar legend */}
+                        <div className="flex items-center justify-center gap-4 mt-3 text-[10px] font-body text-muted-foreground">
+                          <span className="flex items-center gap-1.5">
+                            <span className="w-1.5 h-1.5 rounded-full bg-amber-500 inline-block" /> Available
+                          </span>
+                          <span className="flex items-center gap-1.5">
+                            <span className="w-1.5 h-1.5 rounded-full border border-muted-foreground/40 inline-block" /> Unavailable
+                          </span>
+                        </div>
+
+                        {/* No availability this month */}
+                        {!hasAvailabilityThisMonth && (
+                          <div className="mt-4 text-center space-y-2">
+                            <p className="text-xs font-body text-muted-foreground">No availability this month</p>
+                            <button
+                              onClick={handleNextAvailableMonth}
+                              className="text-xs font-body text-primary hover:text-primary/80 border border-primary/30 hover:border-primary/60 px-3 py-1.5 rounded-full transition-colors"
+                            >
+                              Next available →
+                            </button>
+                          </div>
+                        )}
                       </div>
 
                       {/* Right: Time Slots */}
