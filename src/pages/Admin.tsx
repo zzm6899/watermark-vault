@@ -1894,7 +1894,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                         )}
                       </div>
                     </div>
-                    <div className="flex items-center gap-2 flex-shrink-0 flex-wrap pl-13 sm:pl-0" onClick={(e) => e.stopPropagation()}>
+                    <div className="flex items-center gap-3 flex-shrink-0 flex-wrap pl-13 sm:pl-0" onClick={(e) => e.stopPropagation()}>
                       {/* Status & payment badges shown on mobile, selects on sm+ */}
                       <span className={`sm:hidden text-[10px] font-body px-2 py-0.5 rounded-full border ${
                         bk.status === "confirmed" ? "text-green-400 border-green-500/30 bg-green-500/10" :
@@ -4018,6 +4018,20 @@ function PhotosView() {
   const [filterDateTo, setFilterDateTo] = useState("");
   const [filterAlbum, setFilterAlbum] = useState("");
   const [filterSize, setFilterSize] = useState<"" | "small" | "medium" | "large">("");
+  const uploadOpenRef = useRef(uploadOpen);
+
+  useEffect(() => { uploadOpenRef.current = uploadOpen; }, [uploadOpen]);
+
+  // Expand upload dropzone when files are dragged into the page
+  useEffect(() => {
+    const handleDragEnter = (e: DragEvent) => {
+      if (!uploadOpenRef.current && e.dataTransfer?.types?.includes("Files")) {
+        setUploadOpen(true);
+      }
+    };
+    window.addEventListener("dragenter", handleDragEnter);
+    return () => window.removeEventListener("dragenter", handleDragEnter);
+  }, []);
 
   // Backfill missing thumbnails for library photos
   useBackfillThumbnails(libraryPhotos, useCallback((photoId, thumb) => {
@@ -6429,14 +6443,16 @@ function ContactsView() {
                 <p className="font-body text-xs text-muted-foreground truncate">{[c.email, c.phone].filter(Boolean).join(" · ")}</p>
                 {c.abn && <p className="font-body text-[10px] text-muted-foreground/60">ABN: {c.abn}</p>}
               </div>
-              {(cBookings.length > 0 || cInvoices.length > 0) && (
-                <p className="text-xs text-muted-foreground shrink-0 hidden sm:block">
-                  {cBookings.length} booking{cBookings.length !== 1 ? "s" : ""} · {cInvoices.length} invoice{cInvoices.length !== 1 ? "s" : ""} · ${cTotal.toFixed(2)}
-                </p>
-              )}
-              <div className="flex gap-1 shrink-0">
-                <button onClick={() => setEditing({ ...c })} className="p-2 rounded hover:bg-secondary text-muted-foreground/60 hover:text-foreground transition-colors"><Edit className="w-4 h-4" /></button>
-                <button onClick={() => handleDelete(c.id)} className="p-2 rounded hover:bg-red-500/10 text-muted-foreground/60 hover:text-red-400 transition-colors"><Trash2 className="w-4 h-4" /></button>
+              <div className="flex items-center gap-2 flex-wrap justify-end shrink-0">
+                <div className="flex items-center gap-1 text-[10px] font-body text-muted-foreground">
+                  <span className="px-2 py-0.5 rounded-full bg-secondary/60 border border-border/60" aria-label={`${cBookings.length} booking${cBookings.length !== 1 ? "s" : ""}`}>{cBookings.length} booking{cBookings.length !== 1 ? "s" : ""}</span>
+                  <span className="px-2 py-0.5 rounded-full bg-secondary/60 border border-border/60" aria-label={`${cInvoices.length} invoice${cInvoices.length !== 1 ? "s" : ""}`}>{cInvoices.length} invoice{cInvoices.length !== 1 ? "s" : ""}</span>
+                  <span className="px-2 py-0.5 rounded-full bg-secondary/60 border border-border/60" aria-label={`Total $${cTotal.toFixed(2)}`}>${cTotal.toFixed(2)}</span>
+                </div>
+                <div className="flex gap-1 shrink-0">
+                  <button onClick={() => setEditing({ ...c })} className="p-2 rounded hover:bg-secondary text-muted-foreground/60 hover:text-foreground transition-colors"><Edit className="w-4 h-4" /></button>
+                  <button onClick={() => handleDelete(c.id)} className="p-2 rounded hover:bg-red-500/10 text-muted-foreground/60 hover:text-red-400 transition-colors"><Trash2 className="w-4 h-4" /></button>
+                </div>
               </div>
             </div>
             );
