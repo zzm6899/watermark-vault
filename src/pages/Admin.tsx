@@ -1,4 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef } from "react";
+import DOMPurify from 'dompurify';
 import { usePageTitle } from "@/hooks/use-page-title";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -6256,7 +6257,7 @@ function ProfileView() {
             </div>
           </div>
           <h3 className="font-display text-xl text-foreground">{profile.name || "Your Name"}</h3>
-          {profile.bio && <p className="text-sm font-body text-muted-foreground mt-1">{profile.bio}</p>}
+          {profile.bio && <p className="text-sm font-body text-muted-foreground mt-1" dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(profile.bio) }} />}
         </div>
 
         <div className="glass-panel rounded-xl p-6 space-y-4">
@@ -6298,6 +6299,8 @@ function ContactsView() {
   const [contacts, setContactsState] = useState<Contact[]>(() => getContacts());
   const [editing, setEditing] = useState<Contact | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
+  const bookings = getBookings();
+  const invoices = getInvoices();
 
   const emptyContact = (): Contact => ({
     id: generateId("contact"),
@@ -6415,19 +6418,29 @@ function ContactsView() {
         </div>
       ) : (
         <div className="space-y-2">
-          {filtered.map(c => (
+          {filtered.map(c => {
+            const cBookings = bookings.filter(b => b.clientEmail === c.email || b.clientName === c.name);
+            const cInvoices = invoices.filter(i => i.to.email === c.email || i.to.name === c.name);
+            const cTotal = cInvoices.reduce((s, i) => s + calcInvTotal(i), 0);
+            return (
             <div key={c.id} className="glass-panel rounded-xl px-4 py-3 flex items-center justify-between gap-3">
               <div className="min-w-0 flex-1">
                 <p className="font-body text-sm text-foreground font-medium truncate">{c.name}{c.company ? <span className="text-muted-foreground font-normal"> · {c.company}</span> : null}</p>
                 <p className="font-body text-xs text-muted-foreground truncate">{[c.email, c.phone].filter(Boolean).join(" · ")}</p>
                 {c.abn && <p className="font-body text-[10px] text-muted-foreground/60">ABN: {c.abn}</p>}
               </div>
+              {(cBookings.length > 0 || cInvoices.length > 0) && (
+                <p className="text-xs text-muted-foreground shrink-0 hidden sm:block">
+                  {cBookings.length} booking{cBookings.length !== 1 ? "s" : ""} · {cInvoices.length} invoice{cInvoices.length !== 1 ? "s" : ""} · ${cTotal.toFixed(2)}
+                </p>
+              )}
               <div className="flex gap-1 shrink-0">
                 <button onClick={() => setEditing({ ...c })} className="p-2 rounded hover:bg-secondary text-muted-foreground/60 hover:text-foreground transition-colors"><Edit className="w-4 h-4" /></button>
                 <button onClick={() => handleDelete(c.id)} className="p-2 rounded hover:bg-red-500/10 text-muted-foreground/60 hover:text-red-400 transition-colors"><Trash2 className="w-4 h-4" /></button>
               </div>
             </div>
-          ))}
+            );
+          })}
           {filtered.length === 0 && searchQuery && (
             <p className="text-center py-8 text-sm font-body text-muted-foreground">No contacts match "{searchQuery}"</p>
           )}
