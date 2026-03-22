@@ -830,7 +830,7 @@ function DashboardView() {
   for (const et of eventTypes) etColorMap[et.id] = et.color || "#7c3aed";
 
   const todayBookings = bookings
-    .filter(b => b.status !== "cancelled" && b.date === todayStr)
+    .filter(b => b.status !== "cancelled" && b.date === todayDateStr)
     .sort((a, b) => a.time.localeCompare(b.time));
 
   const bookingsByDate: Record<string, typeof bookings> = {};
@@ -4195,17 +4195,17 @@ function PhotosView() {
     });
   }
 
-  // Date range filter (uses uploadedAt or takenAt)
+  // Date range filter (uses takenAt or uploadedAt; photos with no date are included)
   if (filterDateFrom) {
     displayPhotos = displayPhotos.filter(p => {
       const d = (p.takenAt || p.uploadedAt || "").slice(0, 10);
-      return d >= filterDateFrom;
+      return !d || d >= filterDateFrom;
     });
   }
   if (filterDateTo) {
     displayPhotos = displayPhotos.filter(p => {
       const d = (p.takenAt || p.uploadedAt || "").slice(0, 10);
-      return !!d && d <= filterDateTo;
+      return !d || d <= filterDateTo;
     });
   }
 
