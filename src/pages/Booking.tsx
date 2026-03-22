@@ -630,7 +630,7 @@ export default function Booking() {
                                 {ev.price > 0 && (
                                   <span className="text-xs font-body text-primary bg-primary/10 rounded-full px-2.5 py-0.5 border border-primary/20">
                                     {ev.prices && Object.keys(ev.prices).length > 0
-                                      ? `from $${Math.min(...ev.durations.map(d => (ev.prices as any)[d] ?? ev.price))}`
+                                      ? `from $${Math.min(...ev.durations.map(d => getPriceForDuration(ev, d)))}`
                                       : `$${ev.price}`}
                                   </span>
                                 )}

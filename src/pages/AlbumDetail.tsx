@@ -1392,7 +1392,7 @@ export default function AlbumDetail() {
             <>
             <div className={gridClass}>
               {displayedPhotos.slice(0, galleryVisibleCount).map((photo, i) => (
-                <div key={photo.id} className="relative group mb-3 sm:mb-4 overflow-hidden rounded-lg transition-transform duration-200 hover:scale-[1.01] hover:shadow-xl hover:shadow-black/40 cursor-pointer">
+                <div key={photo.id} className="relative group mb-3 sm:mb-4 overflow-hidden rounded-lg transition-transform duration-200 hover:scale-[1.01] hover:shadow-xl hover:shadow-black/40">
                   <WatermarkedImage
                 src={getGalleryPhotoSrc(photo,
                   // Branded giveaway: allUnlocked but watermarks still active and no real payment → keep watermark in gallery (matches download behaviour)

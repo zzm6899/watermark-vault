@@ -303,7 +303,7 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
                           </span>
                         )}
                         {et.requiresConfirmation && (
-                          <span className="text-[10px] font-body bg-orange-500/10 text-orange-400 border border-orange-500/20 px-2 py-0.5 rounded-full">Confirmation required</span>
+                          <span className="text-[10px] font-body bg-orange-500/10 text-orange-400 border border-orange-500/20 px-2 py-0.5 rounded-full">Requires confirmation</span>
                         )}
                       </div>
                     </button>
