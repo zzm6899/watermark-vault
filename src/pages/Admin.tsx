@@ -3201,6 +3201,19 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
   const [editorGridSize, setEditorGridSize] = useState<"small" | "medium" | "large">("medium");
   const [editorLightboxPhoto, setEditorLightboxPhoto] = useState<Photo | null>(null);
 
+  // Keyboard navigation for editor lightbox
+  useEffect(() => {
+    if (!editorLightboxPhoto) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { setEditorLightboxPhoto(null); return; }
+      const idx = photos.findIndex(p => p.id === editorLightboxPhoto.id);
+      if (e.key === "ArrowLeft" && idx > 0) setEditorLightboxPhoto(photos[idx - 1]);
+      else if (e.key === "ArrowRight" && idx < photos.length - 1) setEditorLightboxPhoto(photos[idx + 1]);
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [editorLightboxPhoto, photos]);
+
   const [uploadStats, setUploadStats] = useState<{ total: number; done: number; errors: number; savedBytes: number; speed?: number } | null>(null);
   const [ftpUploadProgress, setFtpUploadProgress] = useState<{ done: number; total: number; failed: number } | null>(null);
   const [ftpUploading, setFtpUploading] = useState(false);
@@ -3952,26 +3965,55 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
         {photos.length > 0 && (
           <>
           {/* Album editor lightbox */}
-          {editorLightboxPhoto && (
-            <div
-              className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4"
-              onClick={() => setEditorLightboxPhoto(null)}
-            >
-              <button
-                className="absolute top-4 right-4 w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 text-white flex items-center justify-center transition-colors"
+          {editorLightboxPhoto && (() => {
+            const edLbIndex = photos.findIndex(p => p.id === editorLightboxPhoto.id);
+            return (
+              <div
+                className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-2 sm:p-4"
                 onClick={() => setEditorLightboxPhoto(null)}
               >
-                <X className="w-5 h-5" />
-              </button>
-              <img
-                src={editorLightboxPhoto.src}
-                alt={editorLightboxPhoto.title}
-                className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
-                onClick={e => e.stopPropagation()}
-              />
-              <p className="absolute bottom-4 left-1/2 -translate-x-1/2 text-xs font-body bg-black/40 px-3 py-1 rounded-full text-white/90 truncate max-w-xs text-center">{editorLightboxPhoto.title}</p>
-            </div>
-          )}
+                {/* Close */}
+                <button
+                  className="absolute top-4 right-4 w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 text-white flex items-center justify-center transition-colors z-10"
+                  onClick={() => setEditorLightboxPhoto(null)}
+                >
+                  <X className="w-5 h-5" />
+                </button>
+                {/* Prev */}
+                {edLbIndex > 0 && (
+                  <button
+                    className="absolute left-2 sm:left-4 top-1/2 -translate-y-1/2 w-11 h-11 rounded-full bg-white/10 hover:bg-white/20 active:bg-white/30 text-white flex items-center justify-center transition-colors z-10"
+                    onClick={e => { e.stopPropagation(); setEditorLightboxPhoto(photos[edLbIndex - 1]); }}
+                    aria-label="Previous photo"
+                  >
+                    <ChevronLeft className="w-6 h-6" />
+                  </button>
+                )}
+                {/* Next */}
+                {edLbIndex < photos.length - 1 && (
+                  <button
+                    className="absolute right-2 sm:right-16 top-1/2 -translate-y-1/2 w-11 h-11 rounded-full bg-white/10 hover:bg-white/20 active:bg-white/30 text-white flex items-center justify-center transition-colors z-10"
+                    onClick={e => { e.stopPropagation(); setEditorLightboxPhoto(photos[edLbIndex + 1]); }}
+                    aria-label="Next photo"
+                  >
+                    <ChevronRight className="w-6 h-6" />
+                  </button>
+                )}
+                <img
+                  src={editorLightboxPhoto.src}
+                  alt={editorLightboxPhoto.title}
+                  className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
+                  onClick={e => e.stopPropagation()}
+                />
+                <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 max-w-[90vw]">
+                  <p className="text-xs font-body bg-black/40 px-3 py-1 rounded-full text-white/90 truncate max-w-[60vw] text-center">{editorLightboxPhoto.title}</p>
+                  {photos.length > 1 && (
+                    <span className="text-xs font-body bg-black/40 px-2 py-1 rounded-full text-white/60 whitespace-nowrap shrink-0">{edLbIndex + 1} / {photos.length}</span>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
           <div className="flex items-center justify-between mb-1">
             <span className="text-xs font-body text-muted-foreground">{photos.length} photo{photos.length !== 1 ? "s" : ""}</span>
             <div className="flex items-center gap-0.5 p-0.5 bg-secondary rounded-lg border border-border/50">
@@ -4778,9 +4820,9 @@ function PhotosView() {
         );
       })()}
 
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
-        <h2 className="font-display text-2xl text-foreground">Photo Library</h2>
-        <div className="flex gap-2 items-center flex-wrap">
+      <div className="flex items-center justify-between gap-2 mb-4 flex-wrap">
+        <h2 className="font-display text-xl sm:text-2xl text-foreground shrink-0">Photo Library</h2>
+        <div className="flex gap-1.5 items-center flex-wrap">
           {/* Grid size toggle */}
           <div className="flex items-center gap-0.5 p-0.5 bg-secondary rounded-lg border border-border/50">
             {([
@@ -4798,17 +4840,18 @@ function PhotosView() {
               </button>
             ))}
           </div>
-          <Button size="sm" variant="outline" onClick={handleClearDuplicates} className="gap-2 font-body text-xs border-border text-foreground">
-            <XSquare className="w-4 h-4" /> Clear Dupes
+          {/* Icon-only on mobile, full label on sm+ */}
+          <Button size="sm" variant="outline" onClick={handleClearDuplicates} title="Clear Duplicates" className="gap-1.5 font-body text-xs border-border text-foreground px-2 sm:px-3">
+            <XSquare className="w-4 h-4 shrink-0" /> <span className="hidden sm:inline">Clear Dupes</span>
           </Button>
-          <Button size="sm" variant="outline" onClick={handleSyncFromStorage} disabled={syncing} className="gap-2 font-body text-xs border-border text-foreground">
-            <RefreshCw className={`w-4 h-4 ${syncing ? "animate-spin" : ""}`} /> {syncing ? "Syncing…" : "Sync Storage"}
+          <Button size="sm" variant="outline" onClick={handleSyncFromStorage} disabled={syncing} title={syncing ? "Syncing…" : "Sync Storage"} className="gap-1.5 font-body text-xs border-border text-foreground px-2 sm:px-3">
+            <RefreshCw className={`w-4 h-4 shrink-0 ${syncing ? "animate-spin" : ""}`} /> <span className="hidden sm:inline">{syncing ? "Syncing…" : "Sync Storage"}</span>
           </Button>
           <Button size="sm" variant={selectedIds.size > 0 ? "default" : "ghost"} onClick={() => {
             if (selectedIds.size === displayPhotos.length && displayPhotos.length > 0) setSelectedIds(new Set());
             else setSelectedIds(new Set(displayPhotos.map(p => p.id)));
-          }} className={`gap-1 font-body text-xs ${selectedIds.size > 0 ? "bg-primary/20 text-primary border border-primary/30 hover:bg-primary/30" : "text-muted-foreground"}`}>
-            <CheckSquare className="w-4 h-4" /> {selectedIds.size === displayPhotos.length && displayPhotos.length > 0 ? "Deselect All" : "Select All"}
+          }} className={`gap-1 font-body text-xs px-2 sm:px-3 ${selectedIds.size > 0 ? "bg-primary/20 text-primary border border-primary/30 hover:bg-primary/30" : "text-muted-foreground"}`}>
+            <CheckSquare className="w-4 h-4 shrink-0" /> <span className="hidden xs:inline sm:inline">{selectedIds.size === displayPhotos.length && displayPhotos.length > 0 ? "Deselect All" : "Select All"}</span>
           </Button>
         </div>
       </div>
@@ -5011,12 +5054,12 @@ function PhotosView() {
         </div>
       ) : (
         <>
-        <div className={`grid gap-2 ${
+        <div className={`grid gap-1.5 sm:gap-2 ${
           photoGridSize === "small"
-            ? "grid-cols-4 sm:grid-cols-6 md:grid-cols-8 lg:grid-cols-10 xl:grid-cols-12"
+            ? "grid-cols-5 sm:grid-cols-6 md:grid-cols-8 lg:grid-cols-10 xl:grid-cols-12"
             : photoGridSize === "large"
-            ? "grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5"
-            : "grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8"
+            ? "grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6"
+            : "grid-cols-4 sm:grid-cols-5 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10"
         }`}>
           {displayPhotos.slice(0, visibleCount).map(p => (
             <div key={p.id + p.source} className={`relative group aspect-square rounded-md overflow-hidden bg-secondary cursor-pointer border-2 transition-all ${selectedIds.has(p.id) ? "border-primary ring-2 ring-primary/20" : "border-transparent hover:border-border"}`}
@@ -8240,63 +8283,64 @@ function PlatformView() {
   }
 
   const sections = [
-    { id: "overview", label: "Overview" },
-    { id: "tenants", label: "Tenants" },
-    { id: "keys", label: "License Keys" },
-    { id: "event-slots", label: "Event Slot Requests" },
-    { id: "plans", label: "License Plans" },
-    { id: "purchases", label: "Purchases" },
-    { id: "bookings", label: "All Bookings" },
-    { id: "webhooks", label: "Webhooks" },
+    { id: "overview", label: "Overview", shortLabel: "Overview" },
+    { id: "tenants", label: "Tenants", shortLabel: "Tenants" },
+    { id: "keys", label: "License Keys", shortLabel: "Keys" },
+    { id: "event-slots", label: "Event Slot Requests", shortLabel: "Slots" },
+    { id: "plans", label: "License Plans", shortLabel: "Plans" },
+    { id: "purchases", label: "Purchases", shortLabel: "Sales" },
+    { id: "bookings", label: "All Bookings", shortLabel: "Bookings" },
+    { id: "webhooks", label: "Webhooks", shortLabel: "Hooks" },
   ] as const;
 
   return (
-    <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
-      <div className="flex items-center gap-3">
-        <Globe className="w-5 h-5 text-primary" />
-        <h2 className="font-display text-xl text-foreground">Platform Admin</h2>
-        <span className="text-[10px] font-body bg-primary/10 text-primary px-2 py-0.5 rounded-full">Super Admin</span>
+    <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="space-y-4 sm:space-y-6">
+      <div className="flex items-center gap-2 sm:gap-3">
+        <Globe className="w-4 h-4 sm:w-5 sm:h-5 text-primary shrink-0" />
+        <h2 className="font-display text-lg sm:text-xl text-foreground">Platform Admin</h2>
+        <span className="text-[10px] font-body bg-primary/10 text-primary px-2 py-0.5 rounded-full shrink-0">Super Admin</span>
       </div>
 
-      {/* Section navigation */}
-      <div className="flex gap-1 p-1 bg-secondary rounded-xl overflow-x-auto scrollbar-hide max-w-full">
+      {/* Section navigation — scrollable on mobile with shorter labels */}
+      <div className="flex gap-1 p-1 bg-secondary rounded-xl overflow-x-auto scrollbar-hide max-w-full -mx-0.5 px-0.5">
         {sections.map(s => (
           <button key={s.id} onClick={() => setActiveSection(s.id as typeof activeSection)}
-            className={`px-3 py-1.5 rounded-lg text-xs font-body transition-all whitespace-nowrap flex-shrink-0 ${activeSection === s.id ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+            className={`px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-body transition-all whitespace-nowrap flex-shrink-0 ${activeSection === s.id ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
           >
-            {s.label}
+            <span className="sm:hidden">{s.shortLabel}</span>
+            <span className="hidden sm:inline">{s.label}</span>
           </button>
         ))}
       </div>
 
       {/* ── Overview ── */}
       {activeSection === "overview" && (
-        <div className="space-y-6">
+        <div className="space-y-4 sm:space-y-6">
           {/* Stats */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4">
             {[
               { label: "Tenants", value: stats?.tenantCount ?? 0, sub: "active", onClick: () => setActiveSection("tenants") },
               { label: "Total Bookings", value: stats?.totalBookings ?? 0, sub: "all tenants", onClick: () => setActiveSection("bookings") },
               { label: "Main Bookings", value: stats?.mainBookings ?? 0, sub: "direct", onClick: undefined as (() => void) | undefined },
               { label: "License Plans", value: plans.length, sub: `${purchases.length} sold`, onClick: () => setActiveSection("plans") },
             ].map(s => s.onClick ? (
-              <button key={s.label} onClick={s.onClick} className="glass-panel rounded-xl p-4 text-left hover:ring-1 hover:ring-primary/30 transition-all w-full">
-                <p className="text-xs font-body tracking-wider uppercase text-muted-foreground">{s.label}</p>
-                <p className="font-display text-2xl text-foreground mt-1">{s.value}</p>
+              <button key={s.label} onClick={s.onClick} className="glass-panel rounded-xl p-3 sm:p-4 text-left hover:ring-1 hover:ring-primary/30 transition-all w-full">
+                <p className="text-[10px] sm:text-xs font-body tracking-wider uppercase text-muted-foreground leading-tight">{s.label}</p>
+                <p className="font-display text-xl sm:text-2xl text-foreground mt-1">{s.value}</p>
                 <p className="text-[10px] font-body text-muted-foreground">{s.sub}</p>
               </button>
             ) : (
-              <div key={s.label} className="glass-panel rounded-xl p-4">
-                <p className="text-xs font-body tracking-wider uppercase text-muted-foreground">{s.label}</p>
-                <p className="font-display text-2xl text-foreground mt-1">{s.value}</p>
+              <div key={s.label} className="glass-panel rounded-xl p-3 sm:p-4">
+                <p className="text-[10px] sm:text-xs font-body tracking-wider uppercase text-muted-foreground leading-tight">{s.label}</p>
+                <p className="font-display text-xl sm:text-2xl text-foreground mt-1">{s.value}</p>
                 <p className="text-[10px] font-body text-muted-foreground">{s.sub}</p>
               </div>
             ))}
           </div>
 
           {/* Quick Tenant List */}
-          <div className="glass-panel rounded-xl p-6">
-            <div className="flex items-center justify-between mb-4">
+          <div className="glass-panel rounded-xl p-4 sm:p-6">
+            <div className="flex items-center justify-between mb-3 sm:mb-4">
               <h3 className="font-display text-base text-foreground">Tenants</h3>
               <button onClick={() => setActiveSection("tenants")} className="text-xs font-body text-primary hover:underline">Manage →</button>
             </div>
@@ -8305,13 +8349,13 @@ function PlatformView() {
             ) : (
               <div className="space-y-2">
                 {stats.tenants.slice(0, 5).map(t => (
-                  <div key={t.slug} className="flex items-center gap-3 p-2.5 rounded-lg bg-secondary/50">
+                  <div key={t.slug} className="flex items-center gap-2 sm:gap-3 p-2 sm:p-2.5 rounded-lg bg-secondary/50">
                     <Camera className="w-3.5 h-3.5 text-primary shrink-0" />
                     <div className="flex-1 min-w-0">
-                      <span className="text-sm font-body text-foreground">{t.displayName}</span>
-                      <span className="text-[10px] font-mono text-muted-foreground ml-2">/{t.slug}</span>
+                      <p className="text-sm font-body text-foreground truncate">{t.displayName}</p>
+                      <p className="text-[10px] font-mono text-muted-foreground truncate">/{t.slug}</p>
                     </div>
-                    <span className="text-xs font-body text-muted-foreground shrink-0">{t.bookingCount} bookings</span>
+                    <span className="text-[10px] sm:text-xs font-body text-muted-foreground shrink-0">{t.bookingCount} bkgs</span>
                   </div>
                 ))}
                 {stats.tenants.length > 5 && (
@@ -9623,7 +9667,7 @@ function StorageView() {
             {lastClearStats && !previewJob.running && (
               <div className="mt-3 p-3 rounded-lg bg-green-500/5 border border-green-500/20 text-[10px] font-body text-muted-foreground space-y-1">
                 <p className="text-green-400 font-medium">✓ Cleared {lastClearStats.cleared} cached file{lastClearStats.cleared !== 1 ? "s" : ""}</p>
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-0.5 mt-1">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-x-4 gap-y-0.5 mt-1">
                   <span>Thumbs (WM): <span className="text-foreground">{lastClearStats.breakdown.thumb_wm}</span></span>
                   <span>Medium (WM): <span className="text-foreground">{lastClearStats.breakdown.medium_wm}</span></span>
                   <span>Full (WM): <span className="text-foreground">{lastClearStats.breakdown.full_wm}</span></span>
@@ -9637,7 +9681,7 @@ function StorageView() {
             {cacheStats && cacheStats.total > 0 && !previewJob.running && (
               <div className="mt-3 p-3 rounded-lg bg-secondary/50 border border-border/30 text-[10px] font-body text-muted-foreground">
                 <p className="text-xs font-body text-foreground mb-1.5">Current Cache — {cacheStats.total} file{cacheStats.total !== 1 ? "s" : ""} · {formatBytes(cacheStats.breakdown.totalBytes)}</p>
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-0.5">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-x-4 gap-y-0.5">
                   <span>Thumbs watermarked: <span className="text-foreground">{cacheStats.breakdown.thumb_wm}</span></span>
                   <span>Medium watermarked: <span className="text-foreground">{cacheStats.breakdown.medium_wm}</span></span>
                   <span>Full watermarked: <span className="text-foreground">{cacheStats.breakdown.full_wm}</span></span>
@@ -9867,10 +9911,10 @@ function StorageView() {
               <h3 className="font-display text-base text-foreground mb-1">Volume Storage</h3>
               <p className="text-[10px] font-body text-muted-foreground/50 mb-4 font-mono">{disk.mountPoint} → {serverStats.dataDir}</p>
               <div className="mb-3">
-                <div className="flex flex-wrap items-center justify-between text-xs font-body text-muted-foreground mb-1.5 gap-x-3 gap-y-1">
-                  <span>{formatBytes(disk.usedBytes)} used</span>
-                  <span>{formatBytes(disk.availableBytes)} free</span>
-                  <span>{formatBytes(disk.totalBytes)} total</span>
+                <div className="grid grid-cols-3 text-xs font-body text-muted-foreground mb-1.5 gap-1">
+                  <span><span className="font-medium text-foreground">{formatBytes(disk.usedBytes)}</span> used</span>
+                  <span className="text-center"><span className="font-medium text-foreground">{formatBytes(disk.availableBytes)}</span> free</span>
+                  <span className="text-right"><span className="font-medium text-foreground">{formatBytes(disk.totalBytes)}</span> total</span>
                 </div>
                 <div className="h-4 rounded-full bg-secondary overflow-hidden">
                   <div className={`h-full rounded-full transition-all ${diskUsedPct > 90 ? "bg-destructive" : diskUsedPct > 70 ? "bg-yellow-500" : "bg-primary"}`} style={{ width: `${diskUsedPct}%` }} />
