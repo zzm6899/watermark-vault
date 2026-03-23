@@ -4080,8 +4080,23 @@ function PhotosView() {
   const uploadOpenRef = useRef(uploadOpen);
   const [photoGridSize, setPhotoGridSize] = useState<"small" | "medium" | "large">("medium");
   const [lightboxPhoto, setLightboxPhoto] = useState<Photo | null>(null);
+  const displayPhotosRef = useRef<(Photo & { source: string })[]>([]);
 
   useEffect(() => { uploadOpenRef.current = uploadOpen; }, [uploadOpen]);
+
+  // Keyboard navigation for lightbox
+  useEffect(() => {
+    if (!lightboxPhoto) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { setLightboxPhoto(null); return; }
+      const photos = displayPhotosRef.current;
+      const idx = photos.findIndex(p => p.id === lightboxPhoto.id);
+      if (e.key === "ArrowLeft" && idx > 0) setLightboxPhoto(photos[idx - 1]);
+      else if (e.key === "ArrowRight" && idx < photos.length - 1) setLightboxPhoto(photos[idx + 1]);
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [lightboxPhoto]);
 
   // Expand upload dropzone when files are dragged into the page
   useEffect(() => {
@@ -4454,6 +4469,9 @@ function PhotosView() {
     });
   }
 
+  // Keep ref in sync for keyboard navigation
+  displayPhotosRef.current = displayPhotos;
+
   // Determine if we're viewing a specific album (for upload-to-album)
   const selectedAlbum = viewSource !== "all" && viewSource !== "library" ? albums.find(a => a.title === viewSource) : null;
 
@@ -4710,26 +4728,55 @@ function PhotosView() {
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
       {/* Lightbox */}
-      {lightboxPhoto && (
-        <div
-          className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4"
-          onClick={() => setLightboxPhoto(null)}
-        >
-          <button
-            className="absolute top-4 right-4 w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 text-white flex items-center justify-center transition-colors"
+      {lightboxPhoto && (() => {
+        const lbIndex = displayPhotos.findIndex(p => p.id === lightboxPhoto.id);
+        return (
+          <div
+            className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-2 sm:p-4"
             onClick={() => setLightboxPhoto(null)}
           >
-            <X className="w-5 h-5" />
-          </button>
-          <img
-            src={lightboxPhoto.src}
-            alt={lightboxPhoto.title}
-            className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
-            onClick={e => e.stopPropagation()}
-          />
-          <p className="absolute bottom-4 left-1/2 -translate-x-1/2 text-xs font-body bg-black/40 px-3 py-1 rounded-full text-white/90 truncate max-w-xs text-center">{lightboxPhoto.title}</p>
-        </div>
-      )}
+            {/* Close */}
+            <button
+              className="absolute top-4 right-4 w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 text-white flex items-center justify-center transition-colors z-10"
+              onClick={() => setLightboxPhoto(null)}
+            >
+              <X className="w-5 h-5" />
+            </button>
+            {/* Prev */}
+            {lbIndex > 0 && (
+              <button
+                className="absolute left-2 sm:left-4 top-1/2 -translate-y-1/2 w-11 h-11 rounded-full bg-white/10 hover:bg-white/20 active:bg-white/30 text-white flex items-center justify-center transition-colors z-10"
+                onClick={e => { e.stopPropagation(); setLightboxPhoto(displayPhotos[lbIndex - 1]); }}
+                aria-label="Previous photo"
+              >
+                <ChevronLeft className="w-6 h-6" />
+              </button>
+            )}
+            {/* Next */}
+            {lbIndex < displayPhotos.length - 1 && (
+              <button
+                className="absolute right-2 sm:right-16 top-1/2 -translate-y-1/2 w-11 h-11 rounded-full bg-white/10 hover:bg-white/20 active:bg-white/30 text-white flex items-center justify-center transition-colors z-10"
+                onClick={e => { e.stopPropagation(); setLightboxPhoto(displayPhotos[lbIndex + 1]); }}
+                aria-label="Next photo"
+              >
+                <ChevronRight className="w-6 h-6" />
+              </button>
+            )}
+            <img
+              src={lightboxPhoto.src}
+              alt={lightboxPhoto.title}
+              className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
+              onClick={e => e.stopPropagation()}
+            />
+            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 max-w-[90vw]">
+              <p className="text-xs font-body bg-black/40 px-3 py-1 rounded-full text-white/90 truncate max-w-[60vw] text-center">{lightboxPhoto.title}</p>
+              {displayPhotos.length > 1 && (
+                <span className="text-xs font-body bg-black/40 px-2 py-1 rounded-full text-white/60 whitespace-nowrap shrink-0">{lbIndex + 1} / {displayPhotos.length}</span>
+              )}
+            </div>
+          </div>
+        );
+      })()}
 
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
         <h2 className="font-display text-2xl text-foreground">Photo Library</h2>
@@ -9576,7 +9623,7 @@ function StorageView() {
             {lastClearStats && !previewJob.running && (
               <div className="mt-3 p-3 rounded-lg bg-green-500/5 border border-green-500/20 text-[10px] font-body text-muted-foreground space-y-1">
                 <p className="text-green-400 font-medium">✓ Cleared {lastClearStats.cleared} cached file{lastClearStats.cleared !== 1 ? "s" : ""}</p>
-                <div className="grid grid-cols-3 gap-x-4 gap-y-0.5 mt-1">
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-0.5 mt-1">
                   <span>Thumbs (WM): <span className="text-foreground">{lastClearStats.breakdown.thumb_wm}</span></span>
                   <span>Medium (WM): <span className="text-foreground">{lastClearStats.breakdown.medium_wm}</span></span>
                   <span>Full (WM): <span className="text-foreground">{lastClearStats.breakdown.full_wm}</span></span>
@@ -9590,7 +9637,7 @@ function StorageView() {
             {cacheStats && cacheStats.total > 0 && !previewJob.running && (
               <div className="mt-3 p-3 rounded-lg bg-secondary/50 border border-border/30 text-[10px] font-body text-muted-foreground">
                 <p className="text-xs font-body text-foreground mb-1.5">Current Cache — {cacheStats.total} file{cacheStats.total !== 1 ? "s" : ""} · {formatBytes(cacheStats.breakdown.totalBytes)}</p>
-                <div className="grid grid-cols-3 gap-x-4 gap-y-0.5">
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-0.5">
                   <span>Thumbs watermarked: <span className="text-foreground">{cacheStats.breakdown.thumb_wm}</span></span>
                   <span>Medium watermarked: <span className="text-foreground">{cacheStats.breakdown.medium_wm}</span></span>
                   <span>Full watermarked: <span className="text-foreground">{cacheStats.breakdown.full_wm}</span></span>
@@ -9820,7 +9867,7 @@ function StorageView() {
               <h3 className="font-display text-base text-foreground mb-1">Volume Storage</h3>
               <p className="text-[10px] font-body text-muted-foreground/50 mb-4 font-mono">{disk.mountPoint} → {serverStats.dataDir}</p>
               <div className="mb-3">
-                <div className="flex items-center justify-between text-xs font-body text-muted-foreground mb-1.5">
+                <div className="flex flex-wrap items-center justify-between text-xs font-body text-muted-foreground mb-1.5 gap-x-3 gap-y-1">
                   <span>{formatBytes(disk.usedBytes)} used</span>
                   <span>{formatBytes(disk.availableBytes)} free</span>
                   <span>{formatBytes(disk.totalBytes)} total</span>
