@@ -4064,38 +4064,99 @@ function PhotosView() {
     return () => document.removeEventListener("dragenter", onDragEnter);
   }, []);
 
-  // When this view mounts, some albums may only have stub data (photos: [],
-  // _photosStripped: true) because the background poll stores stubs to save
-  // bandwidth.  Fetch the full photos arrays for those albums so they appear
-  // in the "all" view and album-specific filter views.
-  // Empty deps is intentional: we snapshot the stubs at mount time and run
-  // once.  After photos are fetched, setAlbumsState clears _photosStripped so
-  // any subsequent invocation would find no stubs and exit immediately.
+  // On mount, fetch the authoritative album list and photo library from the server so
+  // that the "No Album" count (and all other counts) always reflect the latest server
+  // state rather than whatever happens to be in this device's localStorage.  Different
+  // devices can otherwise show different counts because localStorage is device-specific.
   useEffect(() => {
     if (!isServerMode()) return;
-    const stubs = albums.filter(a => a._photosStripped);
-    if (stubs.length === 0) return;
     let cancelled = false;
-    Promise.all(
-      stubs.map(async (a) => {
-        const fetched = await fetchAlbumPhotos(a.id);
-        return fetched ? { id: a.id, photos: fetched } : null;
-      })
-    ).then(results => {
+
+    async function loadFromServer() {
+      // 1. Fetch the authoritative album list from server.
+      //    If the server is reachable, use its response as the single source of truth
+      //    (replacing the potentially stale localStorage snapshot).
+      //    If unreachable (null), fall through to the original localStorage stubs so
+      //    offline / no-server mode still works.
+      const serverStubs = await fetchAlbumStubs();
       if (cancelled) return;
-      const updates = new Map(
-        results
-          .filter((r): r is { id: string; photos: Photo[] } => r !== null)
-          .map(r => [r.id, r.photos])
-      );
-      if (updates.size === 0) return;
-      setAlbumsState(prev => prev.map(a => {
-        const photos = updates.get(a.id);
-        return photos !== undefined ? { ...a, photos, _photosStripped: false } : a;
-      }));
-    });
+      if (serverStubs) {
+        // Server returned the authoritative list — use it as state base.
+        setAlbumsState(serverStubs);
+
+        // 2. Expand photos for any stubs (albums with _photosStripped: true)
+        const stubs = serverStubs.filter(a => a._photosStripped);
+        if (stubs.length > 0) {
+          const results = await Promise.all(
+            stubs.map(async (a) => {
+              const fetched = await fetchAlbumPhotos(a.id);
+              return fetched ? { id: a.id, photos: fetched } : null;
+            })
+          );
+          if (cancelled) return;
+          const updates = new Map(
+            results
+              .filter((r): r is { id: string; photos: Photo[] } => r !== null)
+              .map(r => [r.id, r.photos])
+          );
+          if (updates.size > 0) {
+            setAlbumsState(prev => prev.map(a => {
+              const photos = updates.get(a.id);
+              return photos !== undefined ? { ...a, photos, _photosStripped: false } : a;
+            }));
+          }
+        }
+      } else {
+        // Server unavailable — fall back to expanding stubs already in localStorage.
+        const localStubs = albums.filter(a => a._photosStripped);
+        if (localStubs.length > 0) {
+          const results = await Promise.all(
+            localStubs.map(async (a) => {
+              const fetched = await fetchAlbumPhotos(a.id);
+              return fetched ? { id: a.id, photos: fetched } : null;
+            })
+          );
+          if (cancelled) return;
+          const updates = new Map(
+            results
+              .filter((r): r is { id: string; photos: Photo[] } => r !== null)
+              .map(r => [r.id, r.photos])
+          );
+          if (updates.size > 0) {
+            setAlbumsState(prev => prev.map(a => {
+              const photos = updates.get(a.id);
+              return photos !== undefined ? { ...a, photos, _photosStripped: false } : a;
+            }));
+          }
+        }
+      }
+
+      // 3. Fetch the photo library directly from server to get the cross-device authoritative list
+      try {
+        const res = await fetch("/api/store/wv_photo_library");
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        if (data?.value != null && !cancelled) {
+          const photos = typeof data.value === "string" ? JSON.parse(data.value) : data.value;
+          if (Array.isArray(photos)) setLibraryPhotosState(photos as Photo[]);
+        }
+      } catch (err) {
+        console.warn("PhotosView: failed to fetch photo library from server", err);
+      }
+    }
+
+    loadFromServer();
     return () => { cancelled = true; };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // When the background sync (triggered by tab-focus / visibility change) finishes,
+  // it updates localStorage and dispatches "storage-synced".  Re-read the photo
+  // library from localStorage so the "No Album" count stays in sync across devices.
+  useEffect(() => {
+    const onSync = () => setLibraryPhotosState(getPhotoLibrary());
+    window.addEventListener("storage-synced", onSync);
+    return () => window.removeEventListener("storage-synced", onSync);
+  }, []);
 
   // Reset visible count when filter changes
   useEffect(() => { setVisibleCount(LIBRARY_INITIAL_BATCH); }, [viewSource, starredOnly, searchQuery, filterDateFrom, filterDateTo, filterAlbum, filterSize]);
