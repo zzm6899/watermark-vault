@@ -1461,7 +1461,7 @@ function TenantAlbums({ slug }: { slug: string }) {
             </div>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-2 sm:gap-3">
             {sortedAlbums.map((alb) => {
               const coverSrc = alb.coverImage && !alb.coverImage.startsWith("file://")
                 ? photoUrl(alb.coverImage.startsWith("/uploads/") ? `${alb.coverImage}?size=thumb` : alb.coverImage)
@@ -1475,8 +1475,8 @@ function TenantAlbums({ slug }: { slug: string }) {
                       <img src={coverSrc} alt={alb.title} className="w-full h-full object-cover" loading="lazy" />
                     </div>
                   )}
-                  <div className="p-3 space-y-1">
-                    <h3 className="font-display text-base text-foreground">{alb.title}</h3>
+                  <div className="p-2 sm:p-3 space-y-1">
+                    <h3 className="font-display text-sm sm:text-base text-foreground truncate">{alb.title}</h3>
                     <p className="text-xs font-body text-muted-foreground">
                       {alb.photos?.length || 0} photos · {alb.freeDownloads ?? 0} free · ${alb.pricePerPhoto ?? 0}/photo
                     </p>

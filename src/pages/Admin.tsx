@@ -2885,7 +2885,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
             </div>
           </div>
           <TooltipProvider delayDuration={300}>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-2 sm:gap-3">
           {sortedAlbums.map((alb) => (
             <div key={alb.id} className={`glass-panel rounded-xl overflow-hidden transition-all ${mergeMode ? "cursor-pointer" : ""} ${mergeSelection.has(alb.id) ? "ring-2 ring-primary" : ""} ${alb.enabled === false ? "opacity-50" : ""}`}
               onClick={() => {
@@ -2904,8 +2904,8 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                     onError={() => setBrokenCovers(prev => { const n = new Set(prev); n.add(alb.id); return n; })} />
                 </div>
               )}
-              <div className="p-3 space-y-1">
-                <h3 className="font-display text-base text-foreground">{alb.title}</h3>
+              <div className="p-2 sm:p-3 space-y-1">
+                <h3 className="font-display text-sm sm:text-base text-foreground truncate">{alb.title}</h3>
                 <p className="text-xs font-body text-muted-foreground">
                   {alb._photosStripped ? (alb.photoCount ?? 0) : alb.photos.length} photos · {alb.freeDownloads} free · ${alb.pricePerPhoto}/photo
                 </p>
@@ -8201,114 +8201,118 @@ function PlatformView() {
               <div className="space-y-2">
                 {stats.tenants.map(t => (
                   <div key={t.slug} className="space-y-0">
-                    <div className="flex items-center gap-3 p-3 rounded-lg bg-secondary/50 border border-border/40">
-                      <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center shrink-0">
-                        <Camera className="w-3.5 h-3.5 text-primary" />
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm font-body text-foreground">{t.displayName}</span>
-                          <span className="text-[10px] font-mono text-muted-foreground">/{t.slug}</span>
-                          {!t.active && <span className="text-[10px] font-body bg-muted text-muted-foreground px-1.5 py-0.5 rounded-full">Inactive</span>}
+                    <div className="p-3 rounded-lg bg-secondary/50 border border-border/40 space-y-2">
+                      <div className="flex items-center gap-2 sm:gap-3">
+                        <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center shrink-0">
+                          <Camera className="w-3.5 h-3.5 text-primary" />
                         </div>
-                        <p className="text-xs font-body text-muted-foreground">{t.email}</p>
-                        {t.customDomain && (
-                          <p className="text-[10px] font-mono text-blue-400 mt-0.5">🌐 {t.customDomain}</p>
-                        )}
-                        {t.extraEventSlotRequestEnabled && (
-                          <p className="text-[10px] font-body text-amber-400 mt-0.5">🎟 Slots enabled{t.extraEventPrice != null ? ` — $${t.extraEventPrice}/slot` : ""}</p>
-                        )}
-                        {t.keyPurchaseEnabled && (
-                          <p className="text-[10px] font-body text-green-400 mt-0.5">🛒 Key purchase enabled</p>
-                        )}
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-sm font-body text-foreground">{t.displayName}</span>
+                            <span className="text-[10px] font-mono text-muted-foreground">/{t.slug}</span>
+                            {!t.active && <span className="text-[10px] font-body bg-muted text-muted-foreground px-1.5 py-0.5 rounded-full">Inactive</span>}
+                          </div>
+                          <p className="text-xs font-body text-muted-foreground truncate">{t.email}</p>
+                          {t.customDomain && (
+                            <p className="text-[10px] font-mono text-blue-400 mt-0.5">🌐 {t.customDomain}</p>
+                          )}
+                          {t.extraEventSlotRequestEnabled && (
+                            <p className="text-[10px] font-body text-amber-400 mt-0.5">🎟 Slots enabled{t.extraEventPrice != null ? ` — $${t.extraEventPrice}/slot` : ""}</p>
+                          )}
+                          {t.keyPurchaseEnabled && (
+                            <p className="text-[10px] font-body text-green-400 mt-0.5">🛒 Key purchase enabled</p>
+                          )}
+                        </div>
+                        <div className="text-right shrink-0">
+                          <p className="text-xs font-body text-foreground">{t.bookingCount} bookings</p>
+                          {t.pendingBookings > 0 && <p className="text-[10px] font-body text-orange-400">{t.pendingBookings} pending</p>}
+                        </div>
+                        <button
+                          onClick={() => copyToClipboard(`${window.location.origin}/book/${t.slug}`)}
+                          className="text-muted-foreground hover:text-primary transition-colors shrink-0" title="Copy booking URL"
+                        >
+                          <Copy className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={() => handleDeleteTenant(t.slug, t.displayName)}
+                          className="text-muted-foreground hover:text-destructive transition-colors shrink-0" title="Delete tenant"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
                       </div>
-                      <div className="text-right shrink-0">
-                        <p className="text-xs font-body text-foreground">{t.bookingCount} bookings</p>
-                        {t.pendingBookings > 0 && <p className="text-[10px] font-body text-orange-400">{t.pendingBookings} pending</p>}
+                      <div className="flex flex-wrap gap-1.5">
+                        <button
+                          onClick={() => {
+                            setResettingSlug(resettingSlug === t.slug ? null : t.slug);
+                            setNewTempPassword("");
+                            setSelectedTenantForSettings(null);
+                            setEditingDomainSlug(null);
+                            setEditingSlotSlug(null);
+                            setEditingKeyPurchaseSlug(null);
+                          }}
+                          className={`text-xs font-body px-2 py-1 rounded-md border transition-colors ${resettingSlug === t.slug ? "bg-yellow-500/10 text-yellow-400 border-yellow-500/30" : "border-border text-muted-foreground hover:text-foreground hover:border-foreground"}`}
+                          title="Reset password"
+                        >
+                          🔑 Password
+                        </button>
+                        <button
+                          onClick={() => {
+                            const opening = editingDomainSlug !== t.slug;
+                            setEditingDomainSlug(opening ? t.slug : null);
+                            setCustomDomainInput(opening ? (t.customDomain || "") : "");
+                            setResettingSlug(null);
+                            setSelectedTenantForSettings(null);
+                            setEditingSlotSlug(null);
+                            setEditingKeyPurchaseSlug(null);
+                          }}
+                          className={`text-xs font-body px-2 py-1 rounded-md border transition-colors ${editingDomainSlug === t.slug ? "bg-blue-500/10 text-blue-400 border-blue-500/30" : "border-border text-muted-foreground hover:text-foreground hover:border-foreground"}`}
+                          title="Custom domain"
+                        >
+                          🌐 Domain
+                        </button>
+                        <button
+                          onClick={() => {
+                            const opening = editingSlotSlug !== t.slug;
+                            setEditingSlotSlug(opening ? t.slug : null);
+                            setSlotRequestEnabled(opening ? (t.extraEventSlotRequestEnabled ?? false) : false);
+                            setSlotPriceInput(opening && t.extraEventPrice != null ? String(t.extraEventPrice) : "");
+                            setResettingSlug(null);
+                            setSelectedTenantForSettings(null);
+                            setEditingDomainSlug(null);
+                            setEditingKeyPurchaseSlug(null);
+                          }}
+                          className={`text-xs font-body px-2 py-1 rounded-md border transition-colors ${editingSlotSlug === t.slug ? "bg-amber-500/10 text-amber-400 border-amber-500/30" : "border-border text-muted-foreground hover:text-foreground hover:border-foreground"}`}
+                          title="Event slot request settings"
+                        >
+                          🎟 Slots
+                        </button>
+                        <button
+                          onClick={() => {
+                            const opening = editingKeyPurchaseSlug !== t.slug;
+                            setEditingKeyPurchaseSlug(opening ? t.slug : null);
+                            setKeyPurchaseEnabled(opening ? (t.keyPurchaseEnabled ?? false) : false);
+                            setResettingSlug(null);
+                            setSelectedTenantForSettings(null);
+                            setEditingDomainSlug(null);
+                            setEditingSlotSlug(null);
+                          }}
+                          className={`text-xs font-body px-2 py-1 rounded-md border transition-colors ${editingKeyPurchaseSlug === t.slug ? "bg-green-500/10 text-green-400 border-green-500/30" : "border-border text-muted-foreground hover:text-foreground hover:border-foreground"}`}
+                          title="Key purchase settings"
+                        >
+                          🛒 Purchase
+                        </button>
+                        <button
+                          onClick={() => {
+                            setSelectedTenantForSettings(selectedTenantForSettings?.slug === t.slug ? null : t);
+                            setEditingSlotSlug(null);
+                            setEditingKeyPurchaseSlug(null);
+                          }}
+                          className={`text-xs font-body px-2 py-1 rounded-md border transition-colors ${selectedTenantForSettings?.slug === t.slug ? "bg-primary text-primary-foreground border-primary" : "border-border text-muted-foreground hover:text-foreground hover:border-foreground"}`}
+                          title="Configure tenant settings"
+                        >
+                          ⚙ Settings
+                        </button>
                       </div>
-                      <button
-                        onClick={() => copyToClipboard(`${window.location.origin}/book/${t.slug}`)}
-                        className="text-muted-foreground hover:text-primary transition-colors" title="Copy booking URL"
-                      >
-                        <Copy className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        onClick={() => {
-                          setResettingSlug(resettingSlug === t.slug ? null : t.slug);
-                          setNewTempPassword("");
-                          setSelectedTenantForSettings(null);
-                          setEditingDomainSlug(null);
-                          setEditingSlotSlug(null);
-                          setEditingKeyPurchaseSlug(null);
-                        }}
-                        className={`text-xs font-body px-2 py-1 rounded-md border transition-colors ${resettingSlug === t.slug ? "bg-yellow-500/10 text-yellow-400 border-yellow-500/30" : "border-border text-muted-foreground hover:text-foreground hover:border-foreground"}`}
-                        title="Reset password"
-                      >
-                        🔑 Password
-                      </button>
-                      <button
-                        onClick={() => {
-                          const opening = editingDomainSlug !== t.slug;
-                          setEditingDomainSlug(opening ? t.slug : null);
-                          setCustomDomainInput(opening ? (t.customDomain || "") : "");
-                          setResettingSlug(null);
-                          setSelectedTenantForSettings(null);
-                          setEditingSlotSlug(null);
-                          setEditingKeyPurchaseSlug(null);
-                        }}
-                        className={`text-xs font-body px-2 py-1 rounded-md border transition-colors ${editingDomainSlug === t.slug ? "bg-blue-500/10 text-blue-400 border-blue-500/30" : "border-border text-muted-foreground hover:text-foreground hover:border-foreground"}`}
-                        title="Custom domain"
-                      >
-                        🌐 Domain
-                      </button>
-                      <button
-                        onClick={() => {
-                          const opening = editingSlotSlug !== t.slug;
-                          setEditingSlotSlug(opening ? t.slug : null);
-                          setSlotRequestEnabled(opening ? (t.extraEventSlotRequestEnabled ?? false) : false);
-                          setSlotPriceInput(opening && t.extraEventPrice != null ? String(t.extraEventPrice) : "");
-                          setResettingSlug(null);
-                          setSelectedTenantForSettings(null);
-                          setEditingDomainSlug(null);
-                          setEditingKeyPurchaseSlug(null);
-                        }}
-                        className={`text-xs font-body px-2 py-1 rounded-md border transition-colors ${editingSlotSlug === t.slug ? "bg-amber-500/10 text-amber-400 border-amber-500/30" : "border-border text-muted-foreground hover:text-foreground hover:border-foreground"}`}
-                        title="Event slot request settings"
-                      >
-                        🎟 Slots
-                      </button>
-                      <button
-                        onClick={() => {
-                          const opening = editingKeyPurchaseSlug !== t.slug;
-                          setEditingKeyPurchaseSlug(opening ? t.slug : null);
-                          setKeyPurchaseEnabled(opening ? (t.keyPurchaseEnabled ?? false) : false);
-                          setResettingSlug(null);
-                          setSelectedTenantForSettings(null);
-                          setEditingDomainSlug(null);
-                          setEditingSlotSlug(null);
-                        }}
-                        className={`text-xs font-body px-2 py-1 rounded-md border transition-colors ${editingKeyPurchaseSlug === t.slug ? "bg-green-500/10 text-green-400 border-green-500/30" : "border-border text-muted-foreground hover:text-foreground hover:border-foreground"}`}
-                        title="Key purchase settings"
-                      >
-                        🛒 Purchase
-                      </button>
-                      <button
-                        onClick={() => {
-                          setSelectedTenantForSettings(selectedTenantForSettings?.slug === t.slug ? null : t);
-                          setEditingSlotSlug(null);
-                          setEditingKeyPurchaseSlug(null);
-                        }}
-                        className={`text-xs font-body px-2 py-1 rounded-md border transition-colors ${selectedTenantForSettings?.slug === t.slug ? "bg-primary text-primary-foreground border-primary" : "border-border text-muted-foreground hover:text-foreground hover:border-foreground"}`}
-                        title="Configure tenant settings"
-                      >
-                        ⚙ Settings
-                      </button>
-                      <button
-                        onClick={() => handleDeleteTenant(t.slug, t.displayName)}
-                        className="text-muted-foreground hover:text-destructive transition-colors" title="Delete tenant"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
                     </div>
                     {resettingSlug === t.slug && (
                       <div className="mt-1 p-4 rounded-lg bg-yellow-500/5 border border-yellow-500/20">
