@@ -11,6 +11,7 @@ import {
   MessageSquare,
   Star, CheckCircle2, Sparkles, ChevronLeft, ChevronRight, Flag, FileText, Receipt, Printer, AlertCircle, BookOpen,
   ArrowUpDown, MoreHorizontal, TrendingUp, TrendingDown, Key, Globe, Wifi,
+  Maximize2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -3197,6 +3198,8 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
   const [expiresAt, setExpiresAt] = useState(album?.expiresAt || "");
   const [displaySize, setDisplaySize] = useState<AlbumDisplaySize>(album?.displaySize || "medium");
   const [albumStatus, setAlbumStatus] = useState<"editing" | "proofing" | "delivered" | "archived">(album?.status || "editing");
+  const [editorGridSize, setEditorGridSize] = useState<"small" | "medium" | "large">("medium");
+  const [editorLightboxPhoto, setEditorLightboxPhoto] = useState<Photo | null>(null);
 
   const [uploadStats, setUploadStats] = useState<{ total: number; done: number; errors: number; savedBytes: number; speed?: number } | null>(null);
   const [ftpUploadProgress, setFtpUploadProgress] = useState<{ done: number; total: number; failed: number } | null>(null);
@@ -3947,7 +3950,54 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
           </div>
         )}
         {photos.length > 0 && (
-          <div className="grid grid-cols-3 sm:grid-cols-6 md:grid-cols-8 lg:grid-cols-10 gap-1.5 max-h-48 overflow-y-auto">
+          <>
+          {/* Album editor lightbox */}
+          {editorLightboxPhoto && (
+            <div
+              className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4"
+              onClick={() => setEditorLightboxPhoto(null)}
+            >
+              <button
+                className="absolute top-4 right-4 w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 text-white flex items-center justify-center transition-colors"
+                onClick={() => setEditorLightboxPhoto(null)}
+              >
+                <X className="w-5 h-5" />
+              </button>
+              <img
+                src={editorLightboxPhoto.src}
+                alt={editorLightboxPhoto.title}
+                className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
+                onClick={e => e.stopPropagation()}
+              />
+              <p className="absolute bottom-4 left-1/2 -translate-x-1/2 text-xs font-body bg-black/40 px-3 py-1 rounded-full text-white/90 truncate max-w-xs text-center">{editorLightboxPhoto.title}</p>
+            </div>
+          )}
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-xs font-body text-muted-foreground">{photos.length} photo{photos.length !== 1 ? "s" : ""}</span>
+            <div className="flex items-center gap-0.5 p-0.5 bg-secondary rounded-lg border border-border/50">
+              {([
+                { size: "small" as const, icon: <LayoutGrid className="w-3 h-3" />, label: "Small" },
+                { size: "medium" as const, icon: <Grid className="w-3 h-3" />, label: "Medium" },
+                { size: "large" as const, icon: <Image className="w-3 h-3" />, label: "Large" },
+              ]).map(({ size, icon, label }) => (
+                <button
+                  key={size}
+                  onClick={() => setEditorGridSize(size)}
+                  title={label}
+                  className={`p-1 rounded-md transition-all ${editorGridSize === size ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+                >
+                  {icon}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className={`grid gap-1.5 max-h-64 overflow-y-auto ${
+            editorGridSize === "small"
+              ? "grid-cols-5 sm:grid-cols-8 md:grid-cols-10 lg:grid-cols-12"
+              : editorGridSize === "large"
+              ? "grid-cols-2 sm:grid-cols-3 md:grid-cols-4"
+              : "grid-cols-3 sm:grid-cols-5 md:grid-cols-7 lg:grid-cols-9"
+          }`}>
             {photos.map(p => (
               <div key={p.id} className={`relative group aspect-square rounded-md overflow-hidden bg-secondary ${coverImage === p.src ? "ring-2 ring-primary" : ""}`}>
                 <ProgressiveImg thumbSrc={p.thumbnail} fullSrc={p.src} alt={p.title} className="w-full h-full object-cover" loading="lazy" />
@@ -3965,6 +4015,14 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
                 }}
                   className="absolute top-1 right-1 w-5 h-5 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
                   <X className="w-3 h-3" />
+                </button>
+                {/* Expand / lightbox button */}
+                <button
+                  onClick={(e) => { e.stopPropagation(); setEditorLightboxPhoto(p); }}
+                  className="absolute top-1 left-1 w-5 h-5 rounded-full bg-black/50 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity"
+                  title="View full size"
+                >
+                  <Maximize2 className="w-2.5 h-2.5" />
                 </button>
                 {/* Set as album cover button */}
                 <button
@@ -3984,6 +4042,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
               </div>
             ))}
           </div>
+          </>
         )}
       </div>
 
@@ -4019,6 +4078,8 @@ function PhotosView() {
   const [filterAlbum, setFilterAlbum] = useState("");
   const [filterSize, setFilterSize] = useState<"" | "small" | "medium" | "large">("");
   const uploadOpenRef = useRef(uploadOpen);
+  const [photoGridSize, setPhotoGridSize] = useState<"small" | "medium" | "large">("medium");
+  const [lightboxPhoto, setLightboxPhoto] = useState<Photo | null>(null);
 
   useEffect(() => { uploadOpenRef.current = uploadOpen; }, [uploadOpen]);
 
@@ -4648,9 +4709,48 @@ function PhotosView() {
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+      {/* Lightbox */}
+      {lightboxPhoto && (
+        <div
+          className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4"
+          onClick={() => setLightboxPhoto(null)}
+        >
+          <button
+            className="absolute top-4 right-4 w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 text-white flex items-center justify-center transition-colors"
+            onClick={() => setLightboxPhoto(null)}
+          >
+            <X className="w-5 h-5" />
+          </button>
+          <img
+            src={lightboxPhoto.src}
+            alt={lightboxPhoto.title}
+            className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
+            onClick={e => e.stopPropagation()}
+          />
+          <p className="absolute bottom-4 left-1/2 -translate-x-1/2 text-xs font-body bg-black/40 px-3 py-1 rounded-full text-white/90 truncate max-w-xs text-center">{lightboxPhoto.title}</p>
+        </div>
+      )}
+
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
         <h2 className="font-display text-2xl text-foreground">Photo Library</h2>
         <div className="flex gap-2 items-center flex-wrap">
+          {/* Grid size toggle */}
+          <div className="flex items-center gap-0.5 p-0.5 bg-secondary rounded-lg border border-border/50">
+            {([
+              { size: "small" as const, icon: <LayoutGrid className="w-3.5 h-3.5" />, label: "Small" },
+              { size: "medium" as const, icon: <Grid className="w-3.5 h-3.5" />, label: "Medium" },
+              { size: "large" as const, icon: <Image className="w-3.5 h-3.5" />, label: "Large" },
+            ]).map(({ size, icon, label }) => (
+              <button
+                key={size}
+                onClick={() => setPhotoGridSize(size)}
+                title={label}
+                className={`p-1.5 rounded-md transition-all ${photoGridSize === size ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+              >
+                {icon}
+              </button>
+            ))}
+          </div>
           <Button size="sm" variant="outline" onClick={handleClearDuplicates} className="gap-2 font-body text-xs border-border text-foreground">
             <XSquare className="w-4 h-4" /> Clear Dupes
           </Button>
@@ -4864,7 +4964,13 @@ function PhotosView() {
         </div>
       ) : (
         <>
-        <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-2">
+        <div className={`grid gap-2 ${
+          photoGridSize === "small"
+            ? "grid-cols-4 sm:grid-cols-6 md:grid-cols-8 lg:grid-cols-10 xl:grid-cols-12"
+            : photoGridSize === "large"
+            ? "grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5"
+            : "grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8"
+        }`}>
           {displayPhotos.slice(0, visibleCount).map(p => (
             <div key={p.id + p.source} className={`relative group aspect-square rounded-md overflow-hidden bg-secondary cursor-pointer border-2 transition-all ${selectedIds.has(p.id) ? "border-primary ring-2 ring-primary/20" : "border-transparent hover:border-border"}`}
               onClick={() => toggleSelect(p.id)}>
@@ -4876,15 +4982,23 @@ function PhotosView() {
               >
                 <span className="text-[10px] leading-none">{(p as any).starred ? "★" : "☆"}</span>
               </button>
+              {/* Expand / lightbox button */}
+              <button
+                onClick={(e) => { e.stopPropagation(); setLightboxPhoto(p); }}
+                className="absolute top-1 right-1 w-6 h-6 rounded-full bg-black/50 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity"
+                title="View full size"
+              >
+                <Maximize2 className="w-3 h-3" />
+              </button>
               <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-background/80 to-transparent p-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
                 <p className="text-[9px] font-body text-foreground font-medium truncate">{p.title}</p>
                 <p className="text-[8px] font-body text-muted-foreground truncate">{p.source}</p>
               </div>
               {selectedIds.has(p.id) && (
-                <div className="absolute top-1 right-1 w-6 h-6 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-[10px] font-bold">✓</div>
+                <div className="absolute bottom-1 right-1 w-6 h-6 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-[10px] font-bold">✓</div>
               )}
               <button onClick={(e) => { e.stopPropagation(); handleDeletePhoto(p.id, p.source); }}
-                className="absolute bottom-1 right-1 w-6 h-6 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                className="absolute bottom-1 left-1 w-6 h-6 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
                 <X className="w-3.5 h-3.5" />
               </button>
             </div>
