@@ -244,6 +244,7 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
       type: selectedEvent.title,
       duration: selectedDuration,
       notes: notes.trim(),
+      phone: phone.trim() || undefined,
     });
     setSubmitting(false);
     if (!result.ok) { toast.error(result.error || "Booking failed"); return; }

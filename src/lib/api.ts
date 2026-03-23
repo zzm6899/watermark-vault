@@ -1147,6 +1147,7 @@ export async function getTenantPublicData(slug: string): Promise<{
 export async function createTenantBooking(slug: string, booking: {
   clientName: string; clientEmail: string; date: string; time: string;
   eventTypeId?: string; type?: string; duration?: number; notes?: string;
+  phone?: string;
   answers?: Record<string, string>;
 }): Promise<{ ok: boolean; booking?: import("./types").Booking; error?: string }> {
   try {

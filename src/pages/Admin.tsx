@@ -6610,58 +6610,37 @@ function SettingsView() {
     }
   };
 
-  const [activeSettingsSection, setActiveSettingsSection] = React.useState("settings-watermark");
-
-  React.useEffect(() => {
-    const sectionIds = [
-      "settings-watermark", "settings-album-defaults", "settings-invoicing",
-      "settings-booking", "settings-email-templates", "settings-notifications",
-      "settings-payments", "settings-integrations",
-    ];
-    const observer = new IntersectionObserver(
-      (entries) => {
-        const visible = entries.filter(e => e.isIntersecting).sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
-        if (visible.length > 0) setActiveSettingsSection(visible[0].target.id);
-      },
-      { rootMargin: "-10% 0px -60% 0px", threshold: 0 }
-    );
-    sectionIds.forEach(id => { const el = document.getElementById(id); if (el) observer.observe(el); });
-    return () => observer.disconnect();
-  }, []);
+  const [activeSettingsTab, setActiveSettingsTab] = React.useState<"watermark" | "general" | "email" | "payments" | "notifications" | "integrations">("watermark");
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
       <h2 className="font-display text-2xl text-foreground mb-4">Settings</h2>
-      {/* Sticky sub-navigation */}
-      <div className="sticky top-0 z-10 bg-background/80 backdrop-blur-sm border-b border-border/40 -mx-1 px-1 mb-6 overflow-x-auto">
-        <div className="flex items-center gap-1 min-w-max py-2">
-          {([
-            { id: "settings-watermark", label: "Watermark" },
-            { id: "settings-album-defaults", label: "Album Defaults" },
-            { id: "settings-invoicing", label: "Invoicing" },
-            { id: "settings-booking", label: "Booking" },
-            { id: "settings-email-templates", label: "Email Templates" },
-            { id: "settings-notifications", label: "Notifications" },
-            { id: "settings-payments", label: "Payments" },
-            { id: "settings-integrations", label: "Integrations" },
-          ] as const).map(({ id, label }) => (
-            <button
-              key={id}
-              onClick={() => { document.getElementById(id)?.scrollIntoView({ behavior: "smooth" }); setActiveSettingsSection(id); }}
-              className={`text-xs font-body px-3 py-1.5 rounded-md transition-colors whitespace-nowrap ${
-                activeSettingsSection === id
-                  ? "bg-primary text-primary-foreground"
-                  : "text-muted-foreground hover:text-foreground hover:bg-secondary"
-              }`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
+      {/* Tab navigation */}
+      <div className="flex items-center gap-1 flex-wrap mb-6 pb-2 border-b border-border/40">
+        {(([
+          { id: "watermark", label: "Watermark" },
+          { id: "general", label: "General" },
+          { id: "email", label: "Email Templates" },
+          { id: "payments", label: "Payments" },
+          { id: "notifications", label: "Notifications" },
+          { id: "integrations", label: "Integrations" },
+        ]) as { id: "watermark" | "general" | "email" | "payments" | "notifications" | "integrations"; label: string }[]).map(({ id, label }) => (
+          <button
+            key={id}
+            onClick={() => setActiveSettingsTab(id)}
+            className={`text-xs font-body px-3 py-1.5 rounded-full transition-all whitespace-nowrap ${
+              activeSettingsTab === id
+                ? "bg-primary text-primary-foreground"
+                : "text-muted-foreground hover:text-foreground hover:bg-secondary"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
       </div>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 max-w-4xl">
-        {/* Watermark */}
-        <div id="settings-watermark" className="glass-panel rounded-xl p-6 space-y-4 lg:col-span-2">
+        {/* ── Watermark tab ── */}
+        {activeSettingsTab === "watermark" && <div id="settings-watermark" className="glass-panel rounded-xl p-6 space-y-4 lg:col-span-2">
           <h3 className="font-display text-base text-foreground">Watermark</h3>
           <div>
             <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Watermark Text</label>
@@ -6704,346 +6683,356 @@ function SettingsView() {
             <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-3 block">Preview</label>
             <WatermarkPreviewWithSamples settings={settings} />
           </div>
-        </div>
+        </div>}
 
-        {/* Album Defaults */}
-        <div id="settings-album-defaults" className="glass-panel rounded-xl p-6 space-y-4">
-          <div className="space-y-3">
-            <div>
-              <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Free Downloads</label>
-              <Input type="number" value={settings.defaultFreeDownloads} onChange={(e) => setSettingsState({ ...settings, defaultFreeDownloads: Number(e.target.value) })} className="bg-secondary border-border text-foreground font-body w-32" />
-            </div>
-            <div>
-              <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Price per Photo ($)</label>
-              <Input type="number" value={settings.defaultPricePerPhoto} onChange={(e) => setSettingsState({ ...settings, defaultPricePerPhoto: Number(e.target.value) })} className="bg-secondary border-border text-foreground font-body w-32" />
-            </div>
-            <div>
-              <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Full Album Price ($)</label>
-              <Input type="number" value={settings.defaultPriceFullAlbum} onChange={(e) => setSettingsState({ ...settings, defaultPriceFullAlbum: Number(e.target.value) })} className="bg-secondary border-border text-foreground font-body w-32" />
-            </div>
-          </div>
-        </div>
-
-        {/* Invoice Defaults */}
-        <div id="settings-invoicing" className="glass-panel rounded-xl p-6 space-y-4">
-          <div className="space-y-3">
-            {(() => {
-              const from = settings.invoiceFrom || { name: "", email: "", address: "", abn: "" };
-              const setFrom = (patch: Partial<InvoiceParty>) =>
-                setSettingsState({ ...settings, invoiceFrom: { ...from, ...patch } });
-              return (
-                <>
-                  <div>
-                    <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Business Name</label>
-                    <Input value={from.name} onChange={(e) => setFrom({ name: e.target.value })} placeholder="Your business name" className="bg-secondary border-border text-foreground font-body" />
-                  </div>
-                  <div>
-                    <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">ABN</label>
-                    <Input value={from.abn || ""} onChange={(e) => setFrom({ abn: e.target.value })} placeholder="12 345 678 901" className="bg-secondary border-border text-foreground font-body" />
-                  </div>
-                  <div>
-                    <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Email</label>
-                    <Input type="email" value={from.email} onChange={(e) => setFrom({ email: e.target.value })} className="bg-secondary border-border text-foreground font-body" />
-                  </div>
-                  <div>
-                    <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Address</label>
-                    <Textarea value={from.address} onChange={(e) => setFrom({ address: e.target.value })} placeholder="Street address" className="bg-secondary border-border text-foreground font-body min-h-[60px]" />
-                  </div>
-                </>
-              );
-            })()}
-            <div>
-              <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Default Invoice Notes</label>
-              <Textarea value={settings.invoiceNotes || ""} onChange={(e) => setSettingsState({ ...settings, invoiceNotes: e.target.value })} placeholder="e.g. Payment due within 30 days. Thank you for your business." className="bg-secondary border-border text-foreground font-body min-h-[60px]" />
-            </div>
-          </div>
-        </div>
-
-        {/* Booking */}
-        <div id="settings-booking" className="glass-panel rounded-xl p-6 space-y-4">
-          <div>
-            <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Booking Timer (minutes)</label>
-            <Input type="number" value={settings.bookingTimerMinutes} onChange={(e) => setSettingsState({ ...settings, bookingTimerMinutes: Number(e.target.value) })} className="bg-secondary border-border text-foreground font-body w-32" />
-            <p className="text-[10px] font-body text-muted-foreground/50 mt-1">How long a client has to complete their booking after selecting a time</p>
-          </div>
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-body text-muted-foreground">Show Instagram Handle Field</span>
-            <Switch checked={settings.instagramFieldEnabled} onCheckedChange={(v) => setSettingsState({ ...settings, instagramFieldEnabled: v })} />
-          </div>
-          <div className="border-t border-border/30 pt-3 space-y-3">
-            <div className="flex items-center justify-between">
+        {/* ── General tab ── */}
+        {activeSettingsTab === "general" && <>
+          {/* Album Defaults */}
+          <div id="settings-album-defaults" className="glass-panel rounded-xl p-6 space-y-4">
+            <h3 className="font-display text-base text-foreground">Album Defaults</h3>
+            <div className="space-y-3">
               <div>
-                <p className="text-xs font-body text-foreground font-medium">Enable Client Enquiries</p>
-                <p className="text-[10px] font-body text-muted-foreground/60 mt-0.5">Show an enquiry form on the booking page for custom requests</p>
+                <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Free Downloads</label>
+                <Input type="number" value={settings.defaultFreeDownloads} onChange={(e) => setSettingsState({ ...settings, defaultFreeDownloads: Number(e.target.value) })} className="bg-secondary border-border text-foreground font-body w-32" />
               </div>
-              <Switch checked={settings.enquiryEnabled ?? false} onCheckedChange={(v) => setSettingsState({ ...settings, enquiryEnabled: v })} />
-            </div>
-            {settings.enquiryEnabled && (
               <div>
-                <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Enquiry Button Label</label>
-                <Input
-                  value={settings.enquiryLabel ?? "Make an Enquiry"}
-                  onChange={(e) => setSettingsState({ ...settings, enquiryLabel: e.target.value })}
-                  placeholder="Make an Enquiry"
-                  className="bg-secondary border-border text-foreground font-body"
-                />
+                <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Price per Photo ($)</label>
+                <Input type="number" value={settings.defaultPricePerPhoto} onChange={(e) => setSettingsState({ ...settings, defaultPricePerPhoto: Number(e.target.value) })} className="bg-secondary border-border text-foreground font-body w-32" />
               </div>
-            )}
-          </div>
-        </div>
-
-        {/* Notification Email */}
-        <div className="glass-panel rounded-xl p-6 space-y-4">
-          <h3 className="font-display text-base text-foreground">Notification Email Template</h3>
-          <Textarea value={settings.notificationEmailTemplate} onChange={(e) => setSettingsState({ ...settings, notificationEmailTemplate: e.target.value })}
-            className="bg-secondary border-border text-foreground font-body min-h-[80px]" placeholder="Hey {name}, your photos are ready! {link}" />
-          <p className="text-[10px] font-body text-muted-foreground/50">Variables: {"{name}"}, {"{link}"}, {"{instagram}"}. Requires SMTP backend to send.</p>
-        </div>
-
-        {/* Email Templates Manager */}
-        <div id="settings-email-templates" className="lg:col-span-2">
-          <EmailTemplatesManager />
-        </div>
-
-        {/* Discord Webhook */}
-        <div id="settings-notifications" className="glass-panel rounded-xl p-6 space-y-4">
-          <h3 className="font-display text-base text-foreground flex items-center gap-2">
-            <Bell className="w-4 h-4 text-primary" /> Discord Webhooks
-          </h3>
-          <div className="space-y-3">
-            <div>
-              <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Webhook URL</label>
-              <Input value={settings.discordWebhookUrl} onChange={(e) => setSettingsState({ ...settings, discordWebhookUrl: e.target.value })} placeholder="https://discord.com/api/webhooks/..." className="bg-secondary border-border text-foreground font-body" />
-              <p className="text-[10px] font-body text-muted-foreground/50 mt-1">Receive notifications for new bookings, status changes, payments, downloads and proofing submissions.</p>
+              <div>
+                <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Full Album Price ($)</label>
+                <Input type="number" value={settings.defaultPriceFullAlbum} onChange={(e) => setSettingsState({ ...settings, defaultPriceFullAlbum: Number(e.target.value) })} className="bg-secondary border-border text-foreground font-body w-32" />
+              </div>
             </div>
-            {settings.discordWebhookUrl && (
-              <>
-                <div className="space-y-2 pt-1">
-                  {[
-                    { key: "discordNotifyBookings" as const, label: "Bookings & payments", desc: "New bookings, status changes, payment received" },
-                    { key: "discordNotifyDownloads" as const, label: "Album purchases & downloads", desc: "Photo purchases, album unlocks" },
-                    { key: "discordNotifyProofing" as const, label: "Proofing submissions", desc: "When clients submit their photo picks" },
-                    { key: "discordNotifyInvoices" as const, label: "Invoice events", desc: "Invoice created, sent, paid, overdue, reminders" },
-                  ].map(({ key, label, desc }) => (
-                    <div key={key} className="flex items-center justify-between py-2 border-t border-border/30">
-                      <div>
-                        <p className="text-xs font-body text-foreground">{label}</p>
-                        <p className="text-[10px] font-body text-muted-foreground/60">{desc}</p>
-                      </div>
-                      <Switch
-                        checked={settings[key] !== false}
-                        onCheckedChange={(v) => setSettingsState({ ...settings, [key]: v })}
-                      />
+          </div>
+
+          {/* Invoicing */}
+          <div id="settings-invoicing" className="glass-panel rounded-xl p-6 space-y-4">
+            <h3 className="font-display text-base text-foreground">Invoicing</h3>
+            <div className="space-y-3">
+              {(() => {
+                const from = settings.invoiceFrom || { name: "", email: "", address: "", abn: "" };
+                const setFrom = (patch: Partial<InvoiceParty>) =>
+                  setSettingsState({ ...settings, invoiceFrom: { ...from, ...patch } });
+                return (
+                  <>
+                    <div>
+                      <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Business Name</label>
+                      <Input value={from.name} onChange={(e) => setFrom({ name: e.target.value })} placeholder="Your business name" className="bg-secondary border-border text-foreground font-body" />
                     </div>
-                  ))}
-                </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="font-body text-xs gap-2"
-                  onClick={async () => {
-                    try {
-                      const res = await fetch("/api/discord/test", {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ webhookUrl: settings.discordWebhookUrl }),
-                      });
-                      const data = await res.json();
-                      if (data.ok) toast.success("Test message sent to Discord ✓");
-                      else toast.error(`Discord error: ${data.error || "Unknown"}`);
-                    } catch {
-                      toast.error("Failed to reach server");
-                    }
-                  }}
-                >
-                  <Bell className="w-3.5 h-3.5" /> Send Test Message
-                </Button>
-              </>
-            )}
+                    <div>
+                      <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">ABN</label>
+                      <Input value={from.abn || ""} onChange={(e) => setFrom({ abn: e.target.value })} placeholder="12 345 678 901" className="bg-secondary border-border text-foreground font-body" />
+                    </div>
+                    <div>
+                      <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Email</label>
+                      <Input type="email" value={from.email} onChange={(e) => setFrom({ email: e.target.value })} className="bg-secondary border-border text-foreground font-body" />
+                    </div>
+                    <div>
+                      <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Address</label>
+                      <Textarea value={from.address} onChange={(e) => setFrom({ address: e.target.value })} placeholder="Street address" className="bg-secondary border-border text-foreground font-body min-h-[60px]" />
+                    </div>
+                  </>
+                );
+              })()}
+              <div>
+                <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Default Invoice Notes</label>
+                <Textarea value={settings.invoiceNotes || ""} onChange={(e) => setSettingsState({ ...settings, invoiceNotes: e.target.value })} placeholder="e.g. Payment due within 30 days. Thank you for your business." className="bg-secondary border-border text-foreground font-body min-h-[60px]" />
+              </div>
+            </div>
           </div>
-        </div>
 
-        {/* FTP Upload */}
-        {isServerMode() && ftpLoaded && (
+          {/* Booking */}
+          <div id="settings-booking" className="glass-panel rounded-xl p-6 space-y-4">
+            <h3 className="font-display text-base text-foreground">Booking</h3>
+            <div>
+              <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Booking Timer (minutes)</label>
+              <Input type="number" value={settings.bookingTimerMinutes} onChange={(e) => setSettingsState({ ...settings, bookingTimerMinutes: Number(e.target.value) })} className="bg-secondary border-border text-foreground font-body w-32" />
+              <p className="text-[10px] font-body text-muted-foreground/50 mt-1">How long a client has to complete their booking after selecting a time</p>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-body text-muted-foreground">Show Instagram Handle Field</span>
+              <Switch checked={settings.instagramFieldEnabled} onCheckedChange={(v) => setSettingsState({ ...settings, instagramFieldEnabled: v })} />
+            </div>
+            <div className="border-t border-border/30 pt-3 space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs font-body text-foreground font-medium">Enable Client Enquiries</p>
+                  <p className="text-[10px] font-body text-muted-foreground/60 mt-0.5">Show an enquiry form on the booking page for custom requests</p>
+                </div>
+                <Switch checked={settings.enquiryEnabled ?? false} onCheckedChange={(v) => setSettingsState({ ...settings, enquiryEnabled: v })} />
+              </div>
+              {settings.enquiryEnabled && (
+                <div>
+                  <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Enquiry Button Label</label>
+                  <Input
+                    value={settings.enquiryLabel ?? "Make an Enquiry"}
+                    onChange={(e) => setSettingsState({ ...settings, enquiryLabel: e.target.value })}
+                    placeholder="Make an Enquiry"
+                    className="bg-secondary border-border text-foreground font-body"
+                  />
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Notification Email */}
+          <div className="glass-panel rounded-xl p-6 space-y-4">
+            <h3 className="font-display text-base text-foreground">Notification Email Template</h3>
+            <Textarea value={settings.notificationEmailTemplate} onChange={(e) => setSettingsState({ ...settings, notificationEmailTemplate: e.target.value })}
+              className="bg-secondary border-border text-foreground font-body min-h-[80px]" placeholder="Hey {name}, your photos are ready! {link}" />
+            <p className="text-[10px] font-body text-muted-foreground/50">Variables: {"{name}"}, {"{link}"}, {"{instagram}"}. Requires SMTP backend to send.</p>
+          </div>
+
+          {/* Client Proofing */}
           <div className="glass-panel rounded-xl p-6 space-y-4">
             <h3 className="font-display text-base text-foreground flex items-center gap-2">
-              <Upload className="w-4 h-4 text-primary" /> FTP Upload
+              <Star className="w-4 h-4 text-primary" /> Client Proofing
             </h3>
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm font-body text-foreground font-medium">Upload to FTP?</p>
-                <p className="text-[10px] font-body text-muted-foreground/70 mt-0.5">Automatically send uploaded photos to an FTP server. Tagged photos will show an FTP badge.</p>
+                <p className="text-sm font-body text-foreground font-medium">Enable Client Proofing</p>
+                <p className="text-[10px] font-body text-muted-foreground/70 mt-0.5">Allow clients to star and submit photo picks before editing</p>
               </div>
               <Switch
-                checked={!!ftpSettings.ftpEnabled}
-                onCheckedChange={(v) => setFtpSettings(s => ({ ...s, ftpEnabled: v }))}
+                checked={!!settings.proofingEnabled}
+                onCheckedChange={(v) => setSettingsState({ ...settings, proofingEnabled: v })}
               />
             </div>
-            {ftpSettings.ftpEnabled && (
-              <div className="space-y-3 pt-2 border-t border-border/50">
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">FTP Host / IP</label>
-                    <Input value={ftpSettings.ftpHost || ""} onChange={(e) => setFtpSettings(s => ({ ...s, ftpHost: e.target.value }))}
-                      placeholder="192.168.1.100" className="bg-secondary border-border text-foreground font-body" />
-                  </div>
-                  <div>
-                    <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Port</label>
-                    <Input type="number" value={ftpSettings.ftpPort || ""} onChange={(e) => setFtpSettings(s => ({ ...s, ftpPort: parseInt(e.target.value) || undefined }))}
-                      placeholder="21" className="bg-secondary border-border text-foreground font-body" />
-                  </div>
-                  <div>
-                    <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Username</label>
-                    <Input value={ftpSettings.ftpUser || ""} onChange={(e) => setFtpSettings(s => ({ ...s, ftpUser: e.target.value }))}
-                      placeholder="ftpuser" className="bg-secondary border-border text-foreground font-body" />
-                  </div>
-                  <div>
-                    <div className="flex items-center justify-between mb-1.5">
-                      <label className="text-xs font-body tracking-wider uppercase text-muted-foreground">Password</label>
-                      {ftpSettings.ftpPasswordSet && !ftpSettings.ftpPassword && (
-                        <span className="text-[10px] font-body text-green-400">✓ Configured</span>
-                      )}
-                    </div>
-                    <div className="flex gap-2">
-                      <Input type="password" value={ftpSettings.ftpPassword || ""} onChange={(e) => setFtpSettings(s => ({ ...s, ftpPassword: e.target.value }))}
-                        placeholder={ftpSettings.ftpPasswordSet ? "Enter new password to replace" : "••••••••"}
-                        className="bg-secondary border-border text-foreground font-body flex-1" />
-                      {ftpSettings.ftpPasswordSet && !ftpSettings.ftpPassword && (
-                        <button onClick={() => setFtpSettings(s => ({ ...s, ftpPassword: "" }))} className="text-[10px] font-body text-destructive hover:text-destructive/80 px-2 shrink-0">Clear</button>
-                      )}
-                    </div>
-                  </div>
-                  <div className="col-span-2">
-                    <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Remote Path</label>
-                    <Input value={ftpSettings.ftpRemotePath || ""} onChange={(e) => setFtpSettings(s => ({ ...s, ftpRemotePath: e.target.value }))}
-                      placeholder="/photos" className="bg-secondary border-border text-foreground font-body" />
-                  </div>
+            {settings.proofingEnabled && (
+              <div className="flex items-center gap-3 pt-1 border-t border-border/50">
+                <div className="flex-1">
+                  <p className="text-sm font-body text-foreground font-medium">Default Proofing Window</p>
+                  <p className="text-[10px] font-body text-muted-foreground/70 mt-0.5">
+                    How long clients have to submit picks after a round is started. Can be overridden per album.
+                  </p>
                 </div>
-                {/* Folder organisation options */}
-                <div className="space-y-2 pt-2 border-t border-border/30">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-xs font-body text-foreground">Organise by Album / Booking Type</p>
-                      <p className="text-[10px] font-body text-muted-foreground/70 mt-0.5">Upload each album's photos into a sub-folder named after the album (e.g. <code>/photos/AlbumName/</code>).</p>
-                    </div>
-                    <Switch checked={!!ftpSettings.ftpOrganizeByAlbum} onCheckedChange={(v) => setFtpSettings(s => ({ ...s, ftpOrganizeByAlbum: v }))} />
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-xs font-body text-foreground">Starred Photos → Separate Folder</p>
-                      <p className="text-[10px] font-body text-muted-foreground/70 mt-0.5">When a photo is starred, move it on FTP to a <code>AlbumName-starred</code> sub-folder for easy sorting.</p>
-                    </div>
-                    <Switch checked={!!ftpSettings.ftpStarredFolder} onCheckedChange={(v) => setFtpSettings(s => ({ ...s, ftpStarredFolder: v }))} />
-                  </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <input
+                    type="number"
+                    min={1}
+                    max={720}
+                    value={settings.defaultProofingExpiryHours ?? 48}
+                    onChange={(e) => setSettingsState({ ...settings, defaultProofingExpiryHours: Math.max(1, parseInt(e.target.value) || 48) })}
+                    className="w-20 bg-secondary border border-border rounded-md px-2 py-1.5 text-sm font-body text-foreground text-center focus:outline-none focus:ring-2 focus:ring-ring"
+                  />
+                  <span className="text-xs font-body text-muted-foreground">hours</span>
                 </div>
               </div>
             )}
-            <div className="flex items-center gap-2 flex-wrap">
-              <Button onClick={handleSaveFtp} disabled={savingFtp} size="sm" className="bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2">
-                <Save className="w-3.5 h-3.5" /> {savingFtp ? "Saving…" : "Save FTP Settings"}
-              </Button>
-              {ftpSettings.ftpHost && (
-                <Button onClick={handleTestFtp} disabled={testingFtp} variant="outline" size="sm" className="font-body text-xs gap-2">
-                  <Wifi className="w-3.5 h-3.5" /> {testingFtp ? "Testing…" : "Test Connection"}
-                </Button>
+          </div>
+        </>}
+
+        {/* ── Email Templates tab ── */}
+        {activeSettingsTab === "email" && (
+          <div id="settings-email-templates" className="lg:col-span-2">
+            <EmailTemplatesManager />
+          </div>
+        )}
+
+        {/* ── Notifications tab ── */}
+        {activeSettingsTab === "notifications" && (
+          <div id="settings-notifications" className="glass-panel rounded-xl p-6 space-y-4 lg:col-span-2 max-w-lg">
+            <h3 className="font-display text-base text-foreground flex items-center gap-2">
+              <Bell className="w-4 h-4 text-primary" /> Discord Webhooks
+            </h3>
+            <div className="space-y-3">
+              <div>
+                <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Webhook URL</label>
+                <Input value={settings.discordWebhookUrl} onChange={(e) => setSettingsState({ ...settings, discordWebhookUrl: e.target.value })} placeholder="https://discord.com/api/webhooks/..." className="bg-secondary border-border text-foreground font-body" />
+                <p className="text-[10px] font-body text-muted-foreground/50 mt-1">Receive notifications for new bookings, status changes, payments, downloads and proofing submissions.</p>
+              </div>
+              {settings.discordWebhookUrl && (
+                <>
+                  <div className="space-y-2 pt-1">
+                    {[
+                      { key: "discordNotifyBookings" as const, label: "Bookings & payments", desc: "New bookings, status changes, payment received" },
+                      { key: "discordNotifyDownloads" as const, label: "Album purchases & downloads", desc: "Photo purchases, album unlocks" },
+                      { key: "discordNotifyProofing" as const, label: "Proofing submissions", desc: "When clients submit their photo picks" },
+                      { key: "discordNotifyInvoices" as const, label: "Invoice events", desc: "Invoice created, sent, paid, overdue, reminders" },
+                    ].map(({ key, label, desc }) => (
+                      <div key={key} className="flex items-center justify-between py-2 border-t border-border/30">
+                        <div>
+                          <p className="text-xs font-body text-foreground">{label}</p>
+                          <p className="text-[10px] font-body text-muted-foreground/60">{desc}</p>
+                        </div>
+                        <Switch
+                          checked={settings[key] !== false}
+                          onCheckedChange={(v) => setSettingsState({ ...settings, [key]: v })}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="font-body text-xs gap-2"
+                    onClick={async () => {
+                      try {
+                        const res = await fetch("/api/discord/test", {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ webhookUrl: settings.discordWebhookUrl }),
+                        });
+                        const data = await res.json();
+                        if (data.ok) toast.success("Test message sent to Discord ✓");
+                        else toast.error(`Discord error: ${data.error || "Unknown"}`);
+                      } catch {
+                        toast.error("Failed to reach server");
+                      }
+                    }}
+                  >
+                    <Bell className="w-3.5 h-3.5" /> Send Test Message
+                  </Button>
+                </>
               )}
             </div>
           </div>
         )}
 
-        {/* Client Proofing */}
-        <div className="glass-panel rounded-xl p-6 space-y-4">
-          <h3 className="font-display text-base text-foreground flex items-center gap-2">
-            <Star className="w-4 h-4 text-primary" /> Client Proofing
-          </h3>
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-body text-foreground font-medium">Enable Client Proofing</p>
-              <p className="text-[10px] font-body text-muted-foreground/70 mt-0.5">Allow clients to star and submit photo picks before editing</p>
-            </div>
-            <Switch
-              checked={!!settings.proofingEnabled}
-              onCheckedChange={(v) => setSettingsState({ ...settings, proofingEnabled: v })}
-            />
-          </div>
-          {settings.proofingEnabled && (
-            <div className="flex items-center gap-3 pt-1 border-t border-border/50">
-              <div className="flex-1">
-                <p className="text-sm font-body text-foreground font-medium">Default Proofing Window</p>
-                <p className="text-[10px] font-body text-muted-foreground/70 mt-0.5">
-                  How long clients have to submit picks after a round is started. Can be overridden per album.
-                </p>
+        {/* ── Payments tab ── */}
+        {activeSettingsTab === "payments" && (
+          <div id="settings-payments" className="glass-panel rounded-xl p-6 space-y-4 lg:col-span-2 max-w-lg">
+            <h3 className="font-display text-base text-foreground">Payment Methods</h3>
+            <div className="p-4 rounded-lg bg-secondary/50 border border-border/50">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-body text-foreground font-medium flex items-center gap-2">
+                  <CreditCard className="w-4 h-4" /> Stripe
+                </span>
+                <Switch checked={settings.stripeEnabled} onCheckedChange={(v) => setSettingsState({ ...settings, stripeEnabled: v })} />
               </div>
-              <div className="flex items-center gap-2 shrink-0">
-                <input
-                  type="number"
-                  min={1}
-                  max={720}
-                  value={settings.defaultProofingExpiryHours ?? 48}
-                  onChange={(e) => setSettingsState({ ...settings, defaultProofingExpiryHours: Math.max(1, parseInt(e.target.value) || 48) })}
-                  className="w-20 bg-secondary border border-border rounded-md px-2 py-1.5 text-sm font-body text-foreground text-center focus:outline-none focus:ring-2 focus:ring-ring"
+              <p className="text-[10px] font-body text-muted-foreground/50 mt-2">Configure STRIPE_SECRET_KEY in Docker env vars</p>
+            </div>
+            <div className="p-4 rounded-lg bg-secondary/50 border border-border/50">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-sm font-body text-foreground font-medium flex items-center gap-2">
+                  <Building2 className="w-4 h-4" /> Bank Transfer / PayID
+                </span>
+                <Switch checked={settings.bankTransfer.enabled} onCheckedChange={(v) => setSettingsState({ ...settings, bankTransfer: { ...settings.bankTransfer, enabled: v } })} />
+              </div>
+              {settings.bankTransfer.enabled && (
+                <div className="space-y-3 mt-4 pt-4 border-t border-border/50">
+                  <div>
+                    <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Account Name</label>
+                    <Input value={settings.bankTransfer.accountName} onChange={(e) => setSettingsState({ ...settings, bankTransfer: { ...settings.bankTransfer, accountName: e.target.value } })} className="bg-secondary border-border text-foreground font-body" />
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">BSB</label>
+                      <Input value={settings.bankTransfer.bsb} onChange={(e) => setSettingsState({ ...settings, bankTransfer: { ...settings.bankTransfer, bsb: e.target.value } })} className="bg-secondary border-border text-foreground font-body" />
+                    </div>
+                    <div>
+                      <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Account Number</label>
+                      <Input value={settings.bankTransfer.accountNumber} onChange={(e) => setSettingsState({ ...settings, bankTransfer: { ...settings.bankTransfer, accountNumber: e.target.value } })} className="bg-secondary border-border text-foreground font-body" />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">PayID</label>
+                    <Input value={settings.bankTransfer.payId} onChange={(e) => setSettingsState({ ...settings, bankTransfer: { ...settings.bankTransfer, payId: e.target.value } })} className="bg-secondary border-border text-foreground font-body" />
+                  </div>
+                  <div>
+                    <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Payment Instructions</label>
+                    <Textarea value={settings.bankTransfer.instructions} onChange={(e) => setSettingsState({ ...settings, bankTransfer: { ...settings.bankTransfer, instructions: e.target.value } })} className="bg-secondary border-border text-foreground font-body min-h-[60px]" />
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ── Integrations tab ── */}
+        {activeSettingsTab === "integrations" && <>
+          <div id="settings-integrations" className="lg:col-span-2">
+            <GoogleCalendarSection />
+          </div>
+          {isServerMode() && ftpLoaded && (
+            <div className="glass-panel rounded-xl p-6 space-y-4">
+              <h3 className="font-display text-base text-foreground flex items-center gap-2">
+                <Upload className="w-4 h-4 text-primary" /> FTP Upload
+              </h3>
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-body text-foreground font-medium">Upload to FTP?</p>
+                  <p className="text-[10px] font-body text-muted-foreground/70 mt-0.5">Automatically send uploaded photos to an FTP server. Tagged photos will show an FTP badge.</p>
+                </div>
+                <Switch
+                  checked={!!ftpSettings.ftpEnabled}
+                  onCheckedChange={(v) => setFtpSettings(s => ({ ...s, ftpEnabled: v }))}
                 />
-                <span className="text-xs font-body text-muted-foreground">hours</span>
+              </div>
+              {ftpSettings.ftpEnabled && (
+                <div className="space-y-3 pt-2 border-t border-border/50">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">FTP Host / IP</label>
+                      <Input value={ftpSettings.ftpHost || ""} onChange={(e) => setFtpSettings(s => ({ ...s, ftpHost: e.target.value }))}
+                        placeholder="192.168.1.100" className="bg-secondary border-border text-foreground font-body" />
+                    </div>
+                    <div>
+                      <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Port</label>
+                      <Input type="number" value={ftpSettings.ftpPort || ""} onChange={(e) => setFtpSettings(s => ({ ...s, ftpPort: parseInt(e.target.value) || undefined }))}
+                        placeholder="21" className="bg-secondary border-border text-foreground font-body" />
+                    </div>
+                    <div>
+                      <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Username</label>
+                      <Input value={ftpSettings.ftpUser || ""} onChange={(e) => setFtpSettings(s => ({ ...s, ftpUser: e.target.value }))}
+                        placeholder="ftpuser" className="bg-secondary border-border text-foreground font-body" />
+                    </div>
+                    <div>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <label className="text-xs font-body tracking-wider uppercase text-muted-foreground">Password</label>
+                        {ftpSettings.ftpPasswordSet && !ftpSettings.ftpPassword && (
+                          <span className="text-[10px] font-body text-green-400">✓ Configured</span>
+                        )}
+                      </div>
+                      <div className="flex gap-2">
+                        <Input type="password" value={ftpSettings.ftpPassword || ""} onChange={(e) => setFtpSettings(s => ({ ...s, ftpPassword: e.target.value }))}
+                          placeholder={ftpSettings.ftpPasswordSet ? "Enter new password to replace" : "••••••••"}
+                          className="bg-secondary border-border text-foreground font-body flex-1" />
+                        {ftpSettings.ftpPasswordSet && !ftpSettings.ftpPassword && (
+                          <button onClick={() => setFtpSettings(s => ({ ...s, ftpPassword: "" }))} className="text-[10px] font-body text-destructive hover:text-destructive/80 px-2 shrink-0">Clear</button>
+                        )}
+                      </div>
+                    </div>
+                    <div className="col-span-2">
+                      <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Remote Path</label>
+                      <Input value={ftpSettings.ftpRemotePath || ""} onChange={(e) => setFtpSettings(s => ({ ...s, ftpRemotePath: e.target.value }))}
+                        placeholder="/photos" className="bg-secondary border-border text-foreground font-body" />
+                    </div>
+                  </div>
+                  <div className="space-y-2 pt-2 border-t border-border/30">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-xs font-body text-foreground">Organise by Album / Booking Type</p>
+                        <p className="text-[10px] font-body text-muted-foreground/70 mt-0.5">Upload each album's photos into a sub-folder named after the album (e.g. <code>/photos/AlbumName/</code>).</p>
+                      </div>
+                      <Switch checked={!!ftpSettings.ftpOrganizeByAlbum} onCheckedChange={(v) => setFtpSettings(s => ({ ...s, ftpOrganizeByAlbum: v }))} />
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-xs font-body text-foreground">Starred Photos → Separate Folder</p>
+                        <p className="text-[10px] font-body text-muted-foreground/70 mt-0.5">When a photo is starred, move it on FTP to a <code>AlbumName-starred</code> sub-folder for easy sorting.</p>
+                      </div>
+                      <Switch checked={!!ftpSettings.ftpStarredFolder} onCheckedChange={(v) => setFtpSettings(s => ({ ...s, ftpStarredFolder: v }))} />
+                    </div>
+                  </div>
+                </div>
+              )}
+              <div className="flex items-center gap-2 flex-wrap">
+                <Button onClick={handleSaveFtp} disabled={savingFtp} size="sm" className="bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2">
+                  <Save className="w-3.5 h-3.5" /> {savingFtp ? "Saving…" : "Save FTP Settings"}
+                </Button>
+                {ftpSettings.ftpHost && (
+                  <Button onClick={handleTestFtp} disabled={testingFtp} variant="outline" size="sm" className="font-body text-xs gap-2">
+                    <Wifi className="w-3.5 h-3.5" /> {testingFtp ? "Testing…" : "Test Connection"}
+                  </Button>
+                )}
               </div>
             </div>
           )}
-        </div>
+        </>}
 
-        {/* Payment Methods */}
-        <div id="settings-payments" className="glass-panel rounded-xl p-6 space-y-4">
-          <div className="p-4 rounded-lg bg-secondary/50 border border-border/50">
-            <div className="flex items-center justify-between">
-              <span className="text-sm font-body text-foreground font-medium flex items-center gap-2">
-                <CreditCard className="w-4 h-4" /> Stripe
-              </span>
-              <Switch checked={settings.stripeEnabled} onCheckedChange={(v) => setSettingsState({ ...settings, stripeEnabled: v })} />
-            </div>
-            <p className="text-[10px] font-body text-muted-foreground/50 mt-2">Configure STRIPE_SECRET_KEY in Docker env vars</p>
-          </div>
-
-          {/* Bank Transfer */}
-          <div className="p-4 rounded-lg bg-secondary/50 border border-border/50">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-sm font-body text-foreground font-medium flex items-center gap-2">
-                <Building2 className="w-4 h-4" /> Bank Transfer / PayID
-              </span>
-              <Switch checked={settings.bankTransfer.enabled} onCheckedChange={(v) => setSettingsState({ ...settings, bankTransfer: { ...settings.bankTransfer, enabled: v } })} />
-            </div>
-            {settings.bankTransfer.enabled && (
-              <div className="space-y-3 mt-4 pt-4 border-t border-border/50">
-                <div>
-                  <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Account Name</label>
-                  <Input value={settings.bankTransfer.accountName} onChange={(e) => setSettingsState({ ...settings, bankTransfer: { ...settings.bankTransfer, accountName: e.target.value } })} className="bg-secondary border-border text-foreground font-body" />
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">BSB</label>
-                    <Input value={settings.bankTransfer.bsb} onChange={(e) => setSettingsState({ ...settings, bankTransfer: { ...settings.bankTransfer, bsb: e.target.value } })} className="bg-secondary border-border text-foreground font-body" />
-                  </div>
-                  <div>
-                    <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Account Number</label>
-                    <Input value={settings.bankTransfer.accountNumber} onChange={(e) => setSettingsState({ ...settings, bankTransfer: { ...settings.bankTransfer, accountNumber: e.target.value } })} className="bg-secondary border-border text-foreground font-body" />
-                  </div>
-                </div>
-                <div>
-                  <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">PayID</label>
-                  <Input value={settings.bankTransfer.payId} onChange={(e) => setSettingsState({ ...settings, bankTransfer: { ...settings.bankTransfer, payId: e.target.value } })} className="bg-secondary border-border text-foreground font-body" />
-                </div>
-                <div>
-                  <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Payment Instructions</label>
-                  <Textarea value={settings.bankTransfer.instructions} onChange={(e) => setSettingsState({ ...settings, bankTransfer: { ...settings.bankTransfer, instructions: e.target.value } })} className="bg-secondary border-border text-foreground font-body min-h-[60px]" />
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Google Calendar */}
-        <div id="settings-integrations" className="lg:col-span-2">
-          <GoogleCalendarSection />
-        </div>
-
-        {/* Watermark rebuild / cache clear progress */}
+        {/* Rebuild progress — always visible */}
         {rebuildProgress && (
           <div className="p-3 rounded-lg bg-secondary/50 border border-border lg:col-span-2">
             <div className="flex items-center justify-between text-xs font-body text-muted-foreground mb-1.5">
@@ -9736,15 +9725,17 @@ function StorageView() {
                                 <p className="text-muted-foreground"><span className="text-foreground font-medium">Album:</span> {matchingAlbum.title}</p>
                                 {matchingAlbum.clientName && <p className="text-muted-foreground"><span className="text-foreground font-medium">Client:</span> {matchingAlbum.clientName}</p>}
                                 {albumPhoto?.uploadedAt && <p className="text-muted-foreground"><span className="text-foreground font-medium">Uploaded:</span> {new Date(albumPhoto.uploadedAt).toLocaleDateString()}</p>}
-                                <a href={`/album/${matchingAlbum.slug || matchingAlbum.id}`} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline inline-flex items-center gap-1">View album <ExternalLink className="w-3 h-3" /></a>
+                                <a href={`/gallery/${matchingAlbum.slug || matchingAlbum.id}`} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline inline-flex items-center gap-1">View album <ExternalLink className="w-3 h-3" /></a>
                               </>
                             ) : matchingLibraryPhoto ? (
                               <>
-                                <p className="text-muted-foreground">Library photo — not assigned to an album</p>
+                                <p className="text-muted-foreground">Library photo — not in any album</p>
+                                {matchingLibraryPhoto.title && <p className="text-muted-foreground"><span className="text-foreground font-medium">Name:</span> {matchingLibraryPhoto.title}</p>}
                                 {matchingLibraryPhoto.uploadedAt && <p className="text-muted-foreground"><span className="text-foreground font-medium">Uploaded:</span> {new Date(matchingLibraryPhoto.uploadedAt).toLocaleDateString()}</p>}
+                                <p className="text-muted-foreground/60 italic">No album link — view or delete from the Photos tab</p>
                               </>
                             ) : (
-                              <p className="text-muted-foreground">Library photo — not assigned to an album</p>
+                              <p className="text-muted-foreground">Untracked file — not in any album or library</p>
                             )}
                           </div>
                         )}

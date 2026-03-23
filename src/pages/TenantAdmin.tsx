@@ -2238,13 +2238,17 @@ function TenantPhotos({ slug }: { slug: string }) {
   const [libraryPhotos, setLibraryPhotos] = useState<Photo[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [viewSource, setViewSource] = useState<"all" | "library" | string>("all");
+  const [viewSource, setViewSource] = useState<"all" | "library" | "unassigned" | string>("all");
   const [starredOnly, setStarredOnly] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [syncing, setSyncing] = useState(false);
   const [showAddToAlbum, setShowAddToAlbum] = useState(false);
   const [uploadStats, setUploadStats] = useState<{ total: number; done: number; errors: number; savedBytes: number } | null>(null);
   const [visibleCount, setVisibleCount] = useState(TENANT_LIBRARY_INITIAL_BATCH);
+  const [uploadOpen, setUploadOpen] = useState(false);
+  const [filterDateFrom, setFilterDateFrom] = useState("");
+  const [filterDateTo, setFilterDateTo] = useState("");
+  const [filterSize, setFilterSize] = useState<"" | "small" | "medium" | "large">("");
   const libSentinelRef = useRef<HTMLDivElement>(null);
 
   const photoUrl = (src: string) => tenantPhotoSrc(src, slug);
@@ -2275,7 +2279,7 @@ function TenantPhotos({ slug }: { slug: string }) {
   }, []);
 
   // Reset visible count when filter changes
-  useEffect(() => { setVisibleCount(TENANT_LIBRARY_INITIAL_BATCH); }, [viewSource, starredOnly, searchQuery]);
+  useEffect(() => { setVisibleCount(TENANT_LIBRARY_INITIAL_BATCH); }, [viewSource, starredOnly, searchQuery, filterDateFrom, filterDateTo, filterSize]);
 
   // ── Persist library ────────────────────────────────────────────────────────
   const saveLibrary = async (photos: Photo[]) => {
@@ -2301,18 +2305,43 @@ function TenantPhotos({ slug }: { slug: string }) {
     return alb ? (alb.photos || []).map(p => ({ ...p, source: alb.title })) : [];
   };
 
+  // Compute library photos that aren't referenced by any album (orphans)
+  const albumPhotoSrcs = new Set(albums.flatMap(a => (a.photos || []).map(p => p.src)));
+  const unassignedPhotos = libraryPhotos.filter(p => !albumPhotoSrcs.has(p.src));
+
   const starredPhotos = allPhotos.filter(p => p.starred);
   const sourcePhotos =
     viewSource === "all" ? allPhotos
     : viewSource === "library" ? libraryPhotos.map(p => ({ ...p, source: "Library" }))
+    : viewSource === "unassigned" ? unassignedPhotos.map(p => ({ ...p, source: "Library" }))
     : getAlbumPhotos(viewSource);
-  const unfilteredPhotos = starredOnly ? sourcePhotos.filter(p => p.starred) : sourcePhotos;
-  const displayPhotos = searchQuery.trim()
-    ? unfilteredPhotos.filter(p =>
+  const afterStarFilter = starredOnly ? sourcePhotos.filter(p => p.starred) : sourcePhotos;
+  const afterSearchFilter = searchQuery.trim()
+    ? afterStarFilter.filter(p =>
         p.title.toLowerCase().includes(searchQuery.trim().toLowerCase()) ||
         p.src.toLowerCase().includes(searchQuery.trim().toLowerCase())
       )
-    : unfilteredPhotos;
+    : afterStarFilter;
+  const afterDateFilter = filterDateFrom || filterDateTo
+    ? afterSearchFilter.filter(p => {
+        if (!p.uploadedAt) return true;
+        const d = p.uploadedAt.slice(0, 10);
+        if (filterDateFrom && d < filterDateFrom) return false;
+        if (filterDateTo && d > filterDateTo) return false;
+        return true;
+      })
+    : afterSearchFilter;
+  const displayPhotos = filterSize
+    ? afterDateFilter.filter(p => {
+        const sz = (p as any).fileSize as number | undefined;
+        if (!sz) return true; // keep photos without size metadata
+        if (filterSize === "small") return sz < 5 * 1024 * 1024;
+        if (filterSize === "medium") return sz >= 5 * 1024 * 1024 && sz <= 15 * 1024 * 1024;
+        if (filterSize === "large") return sz > 15 * 1024 * 1024;
+        return true;
+      })
+    : afterDateFilter;
+  const hasActiveFilters = !!(filterDateFrom || filterDateTo || filterSize);
 
   // Album corresponding to the current view source (for upload targeting)
   const selectedAlbum =
@@ -2645,11 +2674,14 @@ function TenantPhotos({ slug }: { slug: string }) {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
         <h2 className="font-display text-2xl text-foreground shrink-0">Photo Library</h2>
         <div className="flex gap-2 items-center overflow-x-auto scrollbar-hide pb-1">
-          <Button size="sm" variant="outline" onClick={handleClearDuplicates} className="gap-2 font-body text-xs border-border text-foreground flex-shrink-0">
+          <Button size="sm" variant="outline" onClick={() => setUploadOpen(v => !v)} className="gap-2 font-body text-xs border-dashed border-border text-muted-foreground hover:text-foreground hover:border-primary/50 flex-shrink-0">
+            <Upload className="w-4 h-4" /> Upload
+          </Button>
+          <Button size="sm" variant="outline" onClick={handleClearDuplicates} className="gap-2 font-body text-xs border-border text-foreground flex-shrink-0 hidden sm:flex">
             <XSquare className="w-4 h-4" /> Clear Dupes
           </Button>
-          <Button size="sm" variant="outline" onClick={handleSyncStorage} disabled={syncing} className="gap-2 font-body text-xs border-border text-foreground flex-shrink-0">
-            <RefreshCw className={`w-4 h-4 ${syncing ? "animate-spin" : ""}`} /> {syncing ? "Syncing…" : "Sync Storage"}
+          <Button size="sm" variant="outline" onClick={handleSyncStorage} disabled={syncing} className="gap-2 font-body text-xs border-border text-foreground flex-shrink-0 hidden sm:flex">
+            <RefreshCw className={`w-4 h-4 ${syncing ? "animate-spin" : ""}`} /> {syncing ? "Syncing…" : "Sync"}
           </Button>
           <Button size="sm" variant={selectedIds.size > 0 ? "default" : "ghost"}
             onClick={() => {
@@ -2660,6 +2692,15 @@ function TenantPhotos({ slug }: { slug: string }) {
             <CheckSquare className="w-4 h-4" />
             {selectedIds.size === displayPhotos.length && displayPhotos.length > 0 ? "Deselect All" : "Select All"}
           </Button>
+          {/* Mobile-only overflow menu for less-used actions */}
+          <div className="sm:hidden flex gap-2">
+            <Button size="sm" variant="outline" onClick={handleClearDuplicates} className="gap-1.5 font-body text-xs border-border text-muted-foreground flex-shrink-0 px-2">
+              <XSquare className="w-3.5 h-3.5" />
+            </Button>
+            <Button size="sm" variant="outline" onClick={handleSyncStorage} disabled={syncing} className="gap-1.5 font-body text-xs border-border text-muted-foreground flex-shrink-0 px-2">
+              <RefreshCw className={`w-3.5 h-3.5 ${syncing ? "animate-spin" : ""}`} />
+            </Button>
+          </div>
         </div>
       </div>
 
@@ -2714,7 +2755,7 @@ function TenantPhotos({ slug }: { slug: string }) {
       </div>
 
       {/* ── Source filter pills ── */}
-      <div className="flex gap-2 mb-4 overflow-x-auto pb-1 scrollbar-hide">
+      <div className="flex gap-2 mb-3 overflow-x-auto pb-1 scrollbar-hide">
         <button onClick={() => setViewSource("all")}
           className={`text-xs font-body px-3 py-1.5 rounded-full whitespace-nowrap transition-all ${viewSource === "all" ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground hover:text-foreground"}`}>
           All ({allPhotos.length})
@@ -2723,6 +2764,13 @@ function TenantPhotos({ slug }: { slug: string }) {
           className={`text-xs font-body px-3 py-1.5 rounded-full whitespace-nowrap transition-all ${viewSource === "library" ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground hover:text-foreground"}`}>
           Library ({libraryPhotos.length})
         </button>
+        {unassignedPhotos.length > 0 && (
+          <button onClick={() => setViewSource("unassigned")}
+            className={`text-xs font-body px-3 py-1.5 rounded-full whitespace-nowrap transition-all ${viewSource === "unassigned" ? "bg-orange-500 text-white" : "bg-secondary text-orange-400 hover:text-orange-300"}`}
+            title="Photos in your library not attached to any album — safe to delete">
+            ⚠ No Album ({unassignedPhotos.length})
+          </button>
+        )}
         {starredPhotos.length > 0 && (
           <button onClick={() => setStarredOnly(v => !v)}
             className={`text-xs font-body px-3 py-1.5 rounded-full whitespace-nowrap transition-all ${starredOnly ? "bg-yellow-500 text-black" : "bg-secondary text-yellow-400 hover:text-yellow-300"}`}>
@@ -2737,43 +2785,100 @@ function TenantPhotos({ slug }: { slug: string }) {
         ))}
       </div>
 
-      {/* ── Upload zone ── */}
-      <div className="glass-panel rounded-xl p-6 mb-6">
-        <div className="border-2 border-dashed border-border rounded-lg p-8 text-center hover:border-primary/30 transition-colors cursor-pointer relative">
-          <Upload className="w-8 h-8 text-muted-foreground/50 mx-auto mb-2" />
-          <p className="text-sm font-body text-muted-foreground">
-            Upload photos to {selectedAlbum ? `"${selectedAlbum.title}"` : "your library"}
-          </p>
-          <p className="text-[10px] font-body text-muted-foreground/50 mt-1">
-            {selectedAlbum ? "Photos will be added directly to this album" : "Select photos then create albums or add to existing ones"}
-          </p>
-          <input type="file" accept="image/*" multiple className="absolute inset-0 opacity-0 cursor-pointer" onChange={handleUpload} />
+      {/* ── Active filter badges ── */}
+      {hasActiveFilters && (
+        <div className="flex flex-wrap items-center gap-2 mb-3 p-3 rounded-xl bg-secondary/40 border border-border/40">
+          <span className="text-[10px] font-body text-muted-foreground tracking-wider uppercase">Filters:</span>
+          {filterDateFrom && <span className="text-xs font-body text-muted-foreground">From: {filterDateFrom}</span>}
+          {filterDateTo && <span className="text-xs font-body text-muted-foreground">To: {filterDateTo}</span>}
+          {filterSize && <span className="text-xs font-body text-muted-foreground capitalize">Size: {filterSize}</span>}
+          <button onClick={() => { setFilterDateFrom(""); setFilterDateTo(""); setFilterSize(""); }} className="text-xs font-body text-muted-foreground hover:text-foreground flex items-center gap-1 ml-auto">
+            <X className="w-3.5 h-3.5" /> Clear
+          </button>
         </div>
-        {/* Camera / gallery shortcuts — shown on touch/mobile devices only */}
-        <div className="mt-3 flex gap-2 sm:hidden">
-          <label className="flex-1 flex items-center justify-center gap-2 p-2.5 rounded-lg border border-border/50 text-xs font-body text-muted-foreground cursor-pointer hover:bg-secondary/50 transition-colors">
-            <Camera className="w-4 h-4" /> Take a photo
-            <input type="file" accept="image/*" capture="environment" className="sr-only" onChange={handleUpload} />
-          </label>
-          <label className="flex-1 flex items-center justify-center gap-2 p-2.5 rounded-lg border border-border/50 text-xs font-body text-muted-foreground cursor-pointer hover:bg-secondary/50 transition-colors">
-            <Upload className="w-4 h-4" /> Choose photos
-            <input type="file" accept="image/*" multiple className="sr-only" onChange={handleUpload} />
-          </label>
-        </div>
-        {uploadStats && (
-          <div className="mt-3 p-3 rounded-lg bg-secondary/50 border border-border">
-            <div className="flex items-center justify-between text-xs font-body text-muted-foreground">
-              <span>Processed {uploadStats.done}/{uploadStats.total} photos{uploadStats.errors > 0 ? ` (${uploadStats.errors} failed)` : ""}</span>
-              {uploadStats.savedBytes > 0 && <span className="text-green-500">Saved {formatBytes(uploadStats.savedBytes)}</span>}
-            </div>
-            {uploadStats.done < uploadStats.total && (
-              <div className="mt-1.5 h-1.5 rounded-full bg-border overflow-hidden">
-                <div className="h-full bg-primary rounded-full transition-all" style={{ width: `${(uploadStats.done / uploadStats.total) * 100}%` }} />
-              </div>
-            )}
+      )}
+
+      {/* ── Advanced filter options ── */}
+      <details className="mb-4 group">
+        <summary className="text-xs font-body text-muted-foreground cursor-pointer hover:text-foreground flex items-center gap-1.5 list-none select-none w-fit">
+          <ChevronDown className="w-3.5 h-3.5 group-open:rotate-180 transition-transform" /> Filter Options
+        </summary>
+        <div className="mt-2 p-3 rounded-xl bg-secondary/40 border border-border/40 flex flex-wrap gap-3 items-end">
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] font-body text-muted-foreground tracking-wider uppercase">From Date</label>
+            <input type="date" value={filterDateFrom} onChange={e => setFilterDateFrom(e.target.value)} className="h-8 rounded-md border border-border bg-secondary/50 text-xs font-body text-foreground px-2 focus:outline-none focus:ring-1 focus:ring-primary" />
           </div>
-        )}
-      </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] font-body text-muted-foreground tracking-wider uppercase">To Date</label>
+            <input type="date" value={filterDateTo} onChange={e => setFilterDateTo(e.target.value)} className="h-8 rounded-md border border-border bg-secondary/50 text-xs font-body text-foreground px-2 focus:outline-none focus:ring-1 focus:ring-primary" />
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] font-body text-muted-foreground tracking-wider uppercase">File Size</label>
+            <select value={filterSize} onChange={e => setFilterSize(e.target.value as "" | "small" | "medium" | "large")} className="h-8 rounded-md border border-border bg-secondary/50 text-xs font-body text-foreground px-2 focus:outline-none focus:ring-1 focus:ring-primary">
+              <option value="">Any Size</option>
+              <option value="small">Small (&lt;5MB)</option>
+              <option value="medium">Medium (5–15MB)</option>
+              <option value="large">Large (&gt;15MB)</option>
+            </select>
+          </div>
+          {hasActiveFilters && (
+            <Button size="sm" variant="ghost" onClick={() => { setFilterDateFrom(""); setFilterDateTo(""); setFilterSize(""); }} className="h-8 text-xs font-body text-muted-foreground gap-1">
+              <X className="w-3.5 h-3.5" /> Clear Filters
+            </Button>
+          )}
+        </div>
+      </details>
+
+      {/* ── Upload zone (collapsible) ── */}
+      {uploadOpen && (
+        <div className="glass-panel rounded-xl p-6 mb-6">
+          <div className="flex justify-end mb-2">
+            <button onClick={() => setUploadOpen(false)} className="text-muted-foreground hover:text-foreground transition-colors" title="Collapse upload zone">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          <div className="border-2 border-dashed border-border rounded-lg p-8 text-center hover:border-primary/30 transition-colors cursor-pointer relative">
+            <Upload className="w-8 h-8 text-muted-foreground/50 mx-auto mb-2" />
+            <p className="text-sm font-body text-muted-foreground">
+              Upload photos to {selectedAlbum ? `"${selectedAlbum.title}"` : "your library"}
+            </p>
+            <p className="text-[10px] font-body text-muted-foreground/50 mt-1">
+              {selectedAlbum ? "Photos will be added directly to this album" : "Select photos then create albums or add to existing ones"}
+            </p>
+            <input type="file" accept="image/*" multiple className="absolute inset-0 opacity-0 cursor-pointer" onChange={handleUpload} />
+          </div>
+          {/* Camera / gallery shortcuts — shown on touch/mobile devices only */}
+          <div className="mt-3 flex gap-2 sm:hidden">
+            <label className="flex-1 flex items-center justify-center gap-2 p-2.5 rounded-lg border border-border/50 text-xs font-body text-muted-foreground cursor-pointer hover:bg-secondary/50 transition-colors">
+              <Camera className="w-4 h-4" /> Take a photo
+              <input type="file" accept="image/*" capture="environment" className="sr-only" onChange={handleUpload} />
+            </label>
+            <label className="flex-1 flex items-center justify-center gap-2 p-2.5 rounded-lg border border-border/50 text-xs font-body text-muted-foreground cursor-pointer hover:bg-secondary/50 transition-colors">
+              <Upload className="w-4 h-4" /> Choose photos
+              <input type="file" accept="image/*" multiple className="sr-only" onChange={handleUpload} />
+            </label>
+          </div>
+          {uploadStats && (
+            <div className="mt-3 p-3 rounded-lg bg-secondary/50 border border-border">
+              <div className="flex items-center justify-between text-xs font-body text-muted-foreground">
+                <span>Processed {uploadStats.done}/{uploadStats.total} photos{uploadStats.errors > 0 ? ` (${uploadStats.errors} failed)` : ""}</span>
+                {uploadStats.savedBytes > 0 && <span className="text-green-500">Saved {formatBytes(uploadStats.savedBytes)}</span>}
+              </div>
+              {uploadStats.done < uploadStats.total && (
+                <div className="mt-1.5 h-1.5 rounded-full bg-border overflow-hidden">
+                  <div className="h-full bg-primary rounded-full transition-all" style={{ width: `${(uploadStats.done / uploadStats.total) * 100}%` }} />
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+      {viewSource === "unassigned" && unassignedPhotos.length > 0 && (
+        <div className="mb-4 p-3 rounded-xl bg-orange-500/10 border border-orange-500/20 text-xs font-body text-orange-400">
+          These {unassignedPhotos.length} photos are in your library but not attached to any album. You can select them all and delete to free up storage.
+        </div>
+      )}
+
       {displayPhotos.length === 0 ? (
         <div className="glass-panel rounded-xl p-12 text-center">
           <Image className="w-10 h-10 text-muted-foreground/30 mx-auto mb-3" />
@@ -2782,10 +2887,15 @@ function TenantPhotos({ slug }: { slug: string }) {
               <p className="text-sm font-body text-muted-foreground">No photos yet</p>
               <p className="text-xs font-body text-muted-foreground/60 mt-1">Upload photos to your library or select an album filter.</p>
             </>
+          ) : viewSource === "unassigned" ? (
+            <>
+              <p className="text-sm font-body text-muted-foreground">All library photos are assigned to albums</p>
+              <p className="text-xs font-body text-muted-foreground/60 mt-1">No orphaned photos found.</p>
+            </>
           ) : (
             <>
               <p className="text-sm font-body text-muted-foreground">No photos match the current filter</p>
-              <button onClick={() => { setViewSource("all"); setStarredOnly(false); setSearchQuery(""); }}
+              <button onClick={() => { setViewSource("all"); setStarredOnly(false); setSearchQuery(""); setFilterDateFrom(""); setFilterDateTo(""); setFilterSize(""); }}
                 className="text-xs font-body text-primary hover:underline mt-2">Clear filters</button>
             </>
           )}
