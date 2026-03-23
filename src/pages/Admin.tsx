@@ -11,6 +11,7 @@ import {
   MessageSquare,
   Star, CheckCircle2, Sparkles, ChevronLeft, ChevronRight, Flag, FileText, Receipt, Printer, AlertCircle, BookOpen,
   ArrowUpDown, MoreHorizontal, TrendingUp, TrendingDown, Key, Globe, Wifi,
+  Maximize2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -2885,7 +2886,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
             </div>
           </div>
           <TooltipProvider delayDuration={300}>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-2 sm:gap-3">
           {sortedAlbums.map((alb) => (
             <div key={alb.id} className={`glass-panel rounded-xl overflow-hidden transition-all ${mergeMode ? "cursor-pointer" : ""} ${mergeSelection.has(alb.id) ? "ring-2 ring-primary" : ""} ${alb.enabled === false ? "opacity-50" : ""}`}
               onClick={() => {
@@ -2904,8 +2905,8 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                     onError={() => setBrokenCovers(prev => { const n = new Set(prev); n.add(alb.id); return n; })} />
                 </div>
               )}
-              <div className="p-3 space-y-1">
-                <h3 className="font-display text-base text-foreground">{alb.title}</h3>
+              <div className="p-2 sm:p-3 space-y-1">
+                <h3 className="font-display text-sm sm:text-base text-foreground truncate">{alb.title}</h3>
                 <p className="text-xs font-body text-muted-foreground">
                   {alb._photosStripped ? (alb.photoCount ?? 0) : alb.photos.length} photos · {alb.freeDownloads} free · ${alb.pricePerPhoto}/photo
                 </p>
@@ -3197,6 +3198,8 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
   const [expiresAt, setExpiresAt] = useState(album?.expiresAt || "");
   const [displaySize, setDisplaySize] = useState<AlbumDisplaySize>(album?.displaySize || "medium");
   const [albumStatus, setAlbumStatus] = useState<"editing" | "proofing" | "delivered" | "archived">(album?.status || "editing");
+  const [editorGridSize, setEditorGridSize] = useState<"small" | "medium" | "large">("medium");
+  const [editorLightboxPhoto, setEditorLightboxPhoto] = useState<Photo | null>(null);
 
   const [uploadStats, setUploadStats] = useState<{ total: number; done: number; errors: number; savedBytes: number; speed?: number } | null>(null);
   const [ftpUploadProgress, setFtpUploadProgress] = useState<{ done: number; total: number; failed: number } | null>(null);
@@ -3947,7 +3950,54 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
           </div>
         )}
         {photos.length > 0 && (
-          <div className="grid grid-cols-3 sm:grid-cols-6 md:grid-cols-8 lg:grid-cols-10 gap-1.5 max-h-48 overflow-y-auto">
+          <>
+          {/* Album editor lightbox */}
+          {editorLightboxPhoto && (
+            <div
+              className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4"
+              onClick={() => setEditorLightboxPhoto(null)}
+            >
+              <button
+                className="absolute top-4 right-4 w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 text-white flex items-center justify-center transition-colors"
+                onClick={() => setEditorLightboxPhoto(null)}
+              >
+                <X className="w-5 h-5" />
+              </button>
+              <img
+                src={editorLightboxPhoto.src}
+                alt={editorLightboxPhoto.title}
+                className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
+                onClick={e => e.stopPropagation()}
+              />
+              <p className="absolute bottom-4 left-1/2 -translate-x-1/2 text-xs font-body bg-black/40 px-3 py-1 rounded-full text-white/90 truncate max-w-xs text-center">{editorLightboxPhoto.title}</p>
+            </div>
+          )}
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-xs font-body text-muted-foreground">{photos.length} photo{photos.length !== 1 ? "s" : ""}</span>
+            <div className="flex items-center gap-0.5 p-0.5 bg-secondary rounded-lg border border-border/50">
+              {([
+                { size: "small" as const, icon: <LayoutGrid className="w-3 h-3" />, label: "Small" },
+                { size: "medium" as const, icon: <Grid className="w-3 h-3" />, label: "Medium" },
+                { size: "large" as const, icon: <Image className="w-3 h-3" />, label: "Large" },
+              ]).map(({ size, icon, label }) => (
+                <button
+                  key={size}
+                  onClick={() => setEditorGridSize(size)}
+                  title={label}
+                  className={`p-1 rounded-md transition-all ${editorGridSize === size ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+                >
+                  {icon}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className={`grid gap-1.5 max-h-64 overflow-y-auto ${
+            editorGridSize === "small"
+              ? "grid-cols-5 sm:grid-cols-8 md:grid-cols-10 lg:grid-cols-12"
+              : editorGridSize === "large"
+              ? "grid-cols-2 sm:grid-cols-3 md:grid-cols-4"
+              : "grid-cols-3 sm:grid-cols-5 md:grid-cols-7 lg:grid-cols-9"
+          }`}>
             {photos.map(p => (
               <div key={p.id} className={`relative group aspect-square rounded-md overflow-hidden bg-secondary ${coverImage === p.src ? "ring-2 ring-primary" : ""}`}>
                 <ProgressiveImg thumbSrc={p.thumbnail} fullSrc={p.src} alt={p.title} className="w-full h-full object-cover" loading="lazy" />
@@ -3965,6 +4015,14 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
                 }}
                   className="absolute top-1 right-1 w-5 h-5 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
                   <X className="w-3 h-3" />
+                </button>
+                {/* Expand / lightbox button */}
+                <button
+                  onClick={(e) => { e.stopPropagation(); setEditorLightboxPhoto(p); }}
+                  className="absolute top-1 left-1 w-5 h-5 rounded-full bg-black/50 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity"
+                  title="View full size"
+                >
+                  <Maximize2 className="w-2.5 h-2.5" />
                 </button>
                 {/* Set as album cover button */}
                 <button
@@ -3984,6 +4042,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
               </div>
             ))}
           </div>
+          </>
         )}
       </div>
 
@@ -4019,6 +4078,8 @@ function PhotosView() {
   const [filterAlbum, setFilterAlbum] = useState("");
   const [filterSize, setFilterSize] = useState<"" | "small" | "medium" | "large">("");
   const uploadOpenRef = useRef(uploadOpen);
+  const [photoGridSize, setPhotoGridSize] = useState<"small" | "medium" | "large">("medium");
+  const [lightboxPhoto, setLightboxPhoto] = useState<Photo | null>(null);
 
   useEffect(() => { uploadOpenRef.current = uploadOpen; }, [uploadOpen]);
 
@@ -4648,9 +4709,48 @@ function PhotosView() {
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+      {/* Lightbox */}
+      {lightboxPhoto && (
+        <div
+          className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4"
+          onClick={() => setLightboxPhoto(null)}
+        >
+          <button
+            className="absolute top-4 right-4 w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 text-white flex items-center justify-center transition-colors"
+            onClick={() => setLightboxPhoto(null)}
+          >
+            <X className="w-5 h-5" />
+          </button>
+          <img
+            src={lightboxPhoto.src}
+            alt={lightboxPhoto.title}
+            className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
+            onClick={e => e.stopPropagation()}
+          />
+          <p className="absolute bottom-4 left-1/2 -translate-x-1/2 text-xs font-body bg-black/40 px-3 py-1 rounded-full text-white/90 truncate max-w-xs text-center">{lightboxPhoto.title}</p>
+        </div>
+      )}
+
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
         <h2 className="font-display text-2xl text-foreground">Photo Library</h2>
         <div className="flex gap-2 items-center flex-wrap">
+          {/* Grid size toggle */}
+          <div className="flex items-center gap-0.5 p-0.5 bg-secondary rounded-lg border border-border/50">
+            {([
+              { size: "small" as const, icon: <LayoutGrid className="w-3.5 h-3.5" />, label: "Small" },
+              { size: "medium" as const, icon: <Grid className="w-3.5 h-3.5" />, label: "Medium" },
+              { size: "large" as const, icon: <Image className="w-3.5 h-3.5" />, label: "Large" },
+            ]).map(({ size, icon, label }) => (
+              <button
+                key={size}
+                onClick={() => setPhotoGridSize(size)}
+                title={label}
+                className={`p-1.5 rounded-md transition-all ${photoGridSize === size ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+              >
+                {icon}
+              </button>
+            ))}
+          </div>
           <Button size="sm" variant="outline" onClick={handleClearDuplicates} className="gap-2 font-body text-xs border-border text-foreground">
             <XSquare className="w-4 h-4" /> Clear Dupes
           </Button>
@@ -4864,7 +4964,13 @@ function PhotosView() {
         </div>
       ) : (
         <>
-        <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-2">
+        <div className={`grid gap-2 ${
+          photoGridSize === "small"
+            ? "grid-cols-4 sm:grid-cols-6 md:grid-cols-8 lg:grid-cols-10 xl:grid-cols-12"
+            : photoGridSize === "large"
+            ? "grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5"
+            : "grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8"
+        }`}>
           {displayPhotos.slice(0, visibleCount).map(p => (
             <div key={p.id + p.source} className={`relative group aspect-square rounded-md overflow-hidden bg-secondary cursor-pointer border-2 transition-all ${selectedIds.has(p.id) ? "border-primary ring-2 ring-primary/20" : "border-transparent hover:border-border"}`}
               onClick={() => toggleSelect(p.id)}>
@@ -4876,15 +4982,23 @@ function PhotosView() {
               >
                 <span className="text-[10px] leading-none">{(p as any).starred ? "★" : "☆"}</span>
               </button>
+              {/* Expand / lightbox button */}
+              <button
+                onClick={(e) => { e.stopPropagation(); setLightboxPhoto(p); }}
+                className="absolute top-1 right-1 w-6 h-6 rounded-full bg-black/50 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity"
+                title="View full size"
+              >
+                <Maximize2 className="w-3 h-3" />
+              </button>
               <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-background/80 to-transparent p-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
                 <p className="text-[9px] font-body text-foreground font-medium truncate">{p.title}</p>
                 <p className="text-[8px] font-body text-muted-foreground truncate">{p.source}</p>
               </div>
               {selectedIds.has(p.id) && (
-                <div className="absolute top-1 right-1 w-6 h-6 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-[10px] font-bold">✓</div>
+                <div className="absolute bottom-1 right-1 w-6 h-6 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-[10px] font-bold">✓</div>
               )}
               <button onClick={(e) => { e.stopPropagation(); handleDeletePhoto(p.id, p.source); }}
-                className="absolute bottom-1 right-1 w-6 h-6 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                className="absolute bottom-1 left-1 w-6 h-6 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
                 <X className="w-3.5 h-3.5" />
               </button>
             </div>
@@ -8201,114 +8315,118 @@ function PlatformView() {
               <div className="space-y-2">
                 {stats.tenants.map(t => (
                   <div key={t.slug} className="space-y-0">
-                    <div className="flex items-center gap-3 p-3 rounded-lg bg-secondary/50 border border-border/40">
-                      <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center shrink-0">
-                        <Camera className="w-3.5 h-3.5 text-primary" />
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm font-body text-foreground">{t.displayName}</span>
-                          <span className="text-[10px] font-mono text-muted-foreground">/{t.slug}</span>
-                          {!t.active && <span className="text-[10px] font-body bg-muted text-muted-foreground px-1.5 py-0.5 rounded-full">Inactive</span>}
+                    <div className="p-3 rounded-lg bg-secondary/50 border border-border/40 space-y-2">
+                      <div className="flex items-center gap-2 sm:gap-3">
+                        <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center shrink-0">
+                          <Camera className="w-3.5 h-3.5 text-primary" />
                         </div>
-                        <p className="text-xs font-body text-muted-foreground">{t.email}</p>
-                        {t.customDomain && (
-                          <p className="text-[10px] font-mono text-blue-400 mt-0.5">🌐 {t.customDomain}</p>
-                        )}
-                        {t.extraEventSlotRequestEnabled && (
-                          <p className="text-[10px] font-body text-amber-400 mt-0.5">🎟 Slots enabled{t.extraEventPrice != null ? ` — $${t.extraEventPrice}/slot` : ""}</p>
-                        )}
-                        {t.keyPurchaseEnabled && (
-                          <p className="text-[10px] font-body text-green-400 mt-0.5">🛒 Key purchase enabled</p>
-                        )}
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-sm font-body text-foreground">{t.displayName}</span>
+                            <span className="text-[10px] font-mono text-muted-foreground">/{t.slug}</span>
+                            {!t.active && <span className="text-[10px] font-body bg-muted text-muted-foreground px-1.5 py-0.5 rounded-full">Inactive</span>}
+                          </div>
+                          <p className="text-xs font-body text-muted-foreground truncate">{t.email}</p>
+                          {t.customDomain && (
+                            <p className="text-[10px] font-mono text-blue-400 mt-0.5">🌐 {t.customDomain}</p>
+                          )}
+                          {t.extraEventSlotRequestEnabled && (
+                            <p className="text-[10px] font-body text-amber-400 mt-0.5">🎟 Slots enabled{t.extraEventPrice != null ? ` — $${t.extraEventPrice}/slot` : ""}</p>
+                          )}
+                          {t.keyPurchaseEnabled && (
+                            <p className="text-[10px] font-body text-green-400 mt-0.5">🛒 Key purchase enabled</p>
+                          )}
+                        </div>
+                        <div className="text-right shrink-0">
+                          <p className="text-xs font-body text-foreground">{t.bookingCount} bookings</p>
+                          {t.pendingBookings > 0 && <p className="text-[10px] font-body text-orange-400">{t.pendingBookings} pending</p>}
+                        </div>
+                        <button
+                          onClick={() => copyToClipboard(`${window.location.origin}/book/${t.slug}`)}
+                          className="text-muted-foreground hover:text-primary transition-colors shrink-0" title="Copy booking URL"
+                        >
+                          <Copy className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={() => handleDeleteTenant(t.slug, t.displayName)}
+                          className="text-muted-foreground hover:text-destructive transition-colors shrink-0" title="Delete tenant"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
                       </div>
-                      <div className="text-right shrink-0">
-                        <p className="text-xs font-body text-foreground">{t.bookingCount} bookings</p>
-                        {t.pendingBookings > 0 && <p className="text-[10px] font-body text-orange-400">{t.pendingBookings} pending</p>}
+                      <div className="flex flex-wrap gap-1.5">
+                        <button
+                          onClick={() => {
+                            setResettingSlug(resettingSlug === t.slug ? null : t.slug);
+                            setNewTempPassword("");
+                            setSelectedTenantForSettings(null);
+                            setEditingDomainSlug(null);
+                            setEditingSlotSlug(null);
+                            setEditingKeyPurchaseSlug(null);
+                          }}
+                          className={`text-xs font-body px-2 py-1 rounded-md border transition-colors ${resettingSlug === t.slug ? "bg-yellow-500/10 text-yellow-400 border-yellow-500/30" : "border-border text-muted-foreground hover:text-foreground hover:border-foreground"}`}
+                          title="Reset password"
+                        >
+                          🔑 Password
+                        </button>
+                        <button
+                          onClick={() => {
+                            const opening = editingDomainSlug !== t.slug;
+                            setEditingDomainSlug(opening ? t.slug : null);
+                            setCustomDomainInput(opening ? (t.customDomain || "") : "");
+                            setResettingSlug(null);
+                            setSelectedTenantForSettings(null);
+                            setEditingSlotSlug(null);
+                            setEditingKeyPurchaseSlug(null);
+                          }}
+                          className={`text-xs font-body px-2 py-1 rounded-md border transition-colors ${editingDomainSlug === t.slug ? "bg-blue-500/10 text-blue-400 border-blue-500/30" : "border-border text-muted-foreground hover:text-foreground hover:border-foreground"}`}
+                          title="Custom domain"
+                        >
+                          🌐 Domain
+                        </button>
+                        <button
+                          onClick={() => {
+                            const opening = editingSlotSlug !== t.slug;
+                            setEditingSlotSlug(opening ? t.slug : null);
+                            setSlotRequestEnabled(opening ? (t.extraEventSlotRequestEnabled ?? false) : false);
+                            setSlotPriceInput(opening && t.extraEventPrice != null ? String(t.extraEventPrice) : "");
+                            setResettingSlug(null);
+                            setSelectedTenantForSettings(null);
+                            setEditingDomainSlug(null);
+                            setEditingKeyPurchaseSlug(null);
+                          }}
+                          className={`text-xs font-body px-2 py-1 rounded-md border transition-colors ${editingSlotSlug === t.slug ? "bg-amber-500/10 text-amber-400 border-amber-500/30" : "border-border text-muted-foreground hover:text-foreground hover:border-foreground"}`}
+                          title="Event slot request settings"
+                        >
+                          🎟 Slots
+                        </button>
+                        <button
+                          onClick={() => {
+                            const opening = editingKeyPurchaseSlug !== t.slug;
+                            setEditingKeyPurchaseSlug(opening ? t.slug : null);
+                            setKeyPurchaseEnabled(opening ? (t.keyPurchaseEnabled ?? false) : false);
+                            setResettingSlug(null);
+                            setSelectedTenantForSettings(null);
+                            setEditingDomainSlug(null);
+                            setEditingSlotSlug(null);
+                          }}
+                          className={`text-xs font-body px-2 py-1 rounded-md border transition-colors ${editingKeyPurchaseSlug === t.slug ? "bg-green-500/10 text-green-400 border-green-500/30" : "border-border text-muted-foreground hover:text-foreground hover:border-foreground"}`}
+                          title="Key purchase settings"
+                        >
+                          🛒 Purchase
+                        </button>
+                        <button
+                          onClick={() => {
+                            setSelectedTenantForSettings(selectedTenantForSettings?.slug === t.slug ? null : t);
+                            setEditingSlotSlug(null);
+                            setEditingKeyPurchaseSlug(null);
+                          }}
+                          className={`text-xs font-body px-2 py-1 rounded-md border transition-colors ${selectedTenantForSettings?.slug === t.slug ? "bg-primary text-primary-foreground border-primary" : "border-border text-muted-foreground hover:text-foreground hover:border-foreground"}`}
+                          title="Configure tenant settings"
+                        >
+                          ⚙ Settings
+                        </button>
                       </div>
-                      <button
-                        onClick={() => copyToClipboard(`${window.location.origin}/book/${t.slug}`)}
-                        className="text-muted-foreground hover:text-primary transition-colors" title="Copy booking URL"
-                      >
-                        <Copy className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        onClick={() => {
-                          setResettingSlug(resettingSlug === t.slug ? null : t.slug);
-                          setNewTempPassword("");
-                          setSelectedTenantForSettings(null);
-                          setEditingDomainSlug(null);
-                          setEditingSlotSlug(null);
-                          setEditingKeyPurchaseSlug(null);
-                        }}
-                        className={`text-xs font-body px-2 py-1 rounded-md border transition-colors ${resettingSlug === t.slug ? "bg-yellow-500/10 text-yellow-400 border-yellow-500/30" : "border-border text-muted-foreground hover:text-foreground hover:border-foreground"}`}
-                        title="Reset password"
-                      >
-                        🔑 Password
-                      </button>
-                      <button
-                        onClick={() => {
-                          const opening = editingDomainSlug !== t.slug;
-                          setEditingDomainSlug(opening ? t.slug : null);
-                          setCustomDomainInput(opening ? (t.customDomain || "") : "");
-                          setResettingSlug(null);
-                          setSelectedTenantForSettings(null);
-                          setEditingSlotSlug(null);
-                          setEditingKeyPurchaseSlug(null);
-                        }}
-                        className={`text-xs font-body px-2 py-1 rounded-md border transition-colors ${editingDomainSlug === t.slug ? "bg-blue-500/10 text-blue-400 border-blue-500/30" : "border-border text-muted-foreground hover:text-foreground hover:border-foreground"}`}
-                        title="Custom domain"
-                      >
-                        🌐 Domain
-                      </button>
-                      <button
-                        onClick={() => {
-                          const opening = editingSlotSlug !== t.slug;
-                          setEditingSlotSlug(opening ? t.slug : null);
-                          setSlotRequestEnabled(opening ? (t.extraEventSlotRequestEnabled ?? false) : false);
-                          setSlotPriceInput(opening && t.extraEventPrice != null ? String(t.extraEventPrice) : "");
-                          setResettingSlug(null);
-                          setSelectedTenantForSettings(null);
-                          setEditingDomainSlug(null);
-                          setEditingKeyPurchaseSlug(null);
-                        }}
-                        className={`text-xs font-body px-2 py-1 rounded-md border transition-colors ${editingSlotSlug === t.slug ? "bg-amber-500/10 text-amber-400 border-amber-500/30" : "border-border text-muted-foreground hover:text-foreground hover:border-foreground"}`}
-                        title="Event slot request settings"
-                      >
-                        🎟 Slots
-                      </button>
-                      <button
-                        onClick={() => {
-                          const opening = editingKeyPurchaseSlug !== t.slug;
-                          setEditingKeyPurchaseSlug(opening ? t.slug : null);
-                          setKeyPurchaseEnabled(opening ? (t.keyPurchaseEnabled ?? false) : false);
-                          setResettingSlug(null);
-                          setSelectedTenantForSettings(null);
-                          setEditingDomainSlug(null);
-                          setEditingSlotSlug(null);
-                        }}
-                        className={`text-xs font-body px-2 py-1 rounded-md border transition-colors ${editingKeyPurchaseSlug === t.slug ? "bg-green-500/10 text-green-400 border-green-500/30" : "border-border text-muted-foreground hover:text-foreground hover:border-foreground"}`}
-                        title="Key purchase settings"
-                      >
-                        🛒 Purchase
-                      </button>
-                      <button
-                        onClick={() => {
-                          setSelectedTenantForSettings(selectedTenantForSettings?.slug === t.slug ? null : t);
-                          setEditingSlotSlug(null);
-                          setEditingKeyPurchaseSlug(null);
-                        }}
-                        className={`text-xs font-body px-2 py-1 rounded-md border transition-colors ${selectedTenantForSettings?.slug === t.slug ? "bg-primary text-primary-foreground border-primary" : "border-border text-muted-foreground hover:text-foreground hover:border-foreground"}`}
-                        title="Configure tenant settings"
-                      >
-                        ⚙ Settings
-                      </button>
-                      <button
-                        onClick={() => handleDeleteTenant(t.slug, t.displayName)}
-                        className="text-muted-foreground hover:text-destructive transition-colors" title="Delete tenant"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
                     </div>
                     {resettingSlug === t.slug && (
                       <div className="mt-1 p-4 rounded-lg bg-yellow-500/5 border border-yellow-500/20">
