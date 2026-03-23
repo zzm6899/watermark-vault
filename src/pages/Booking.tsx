@@ -437,7 +437,7 @@ export default function Booking() {
     }
 
     // Proceed to payment step (skip if free)
-    if (selectedEvent.price === 0) {
+    if (getPriceForDuration(selectedEvent, selectedDuration!) === 0) {
       handleCompletePaymentFree();
     } else {
       setStep("payment");
