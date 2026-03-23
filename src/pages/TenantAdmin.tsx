@@ -2918,7 +2918,7 @@ function TenantPhotos({ slug }: { slug: string }) {
               />
               <button
                 onClick={e => { e.stopPropagation(); handleToggleStar(p); }}
-                className={`absolute top-1 left-1 w-6 h-6 rounded-full flex items-center justify-center transition-opacity sm:opacity-0 sm:group-hover:opacity-100 ${p.starred ? "opacity-100 bg-yellow-500/80" : "opacity-60 bg-black/40"}`}
+                className={`absolute top-1 left-1 w-6 h-6 rounded-full flex items-center justify-center transition-opacity ${p.starred ? "opacity-100 bg-yellow-500/80" : "opacity-0 group-hover:opacity-100 bg-black/40"}`}
                 title={p.starred ? "Unstar" : "Star"}
               >
                 <span className="text-[10px] leading-none">{p.starred ? "★" : "☆"}</span>
@@ -2926,13 +2926,13 @@ function TenantPhotos({ slug }: { slug: string }) {
               {selectedIds.has(p.id) && (
                 <div className="absolute top-1 right-1 w-6 h-6 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-[10px] font-bold">✓</div>
               )}
-              <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-background/80 to-transparent p-1.5 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
+              <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-background/80 to-transparent p-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
                 <p className="text-[9px] font-body text-foreground font-medium truncate">{p.title}</p>
                 <p className="text-[8px] font-body text-muted-foreground truncate">{p.source}</p>
               </div>
               <button
                 onClick={e => { e.stopPropagation(); handleDeletePhoto(p.id, p.source, p.src); }}
-                className="absolute bottom-1 right-1 w-6 h-6 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center opacity-60 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity"
+                className="absolute bottom-1 right-1 w-6 h-6 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
               >
                 <X className="w-3.5 h-3.5" />
               </button>

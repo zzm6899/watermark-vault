@@ -215,17 +215,21 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
     }
   };
 
+  const scrollTop = () => window.scrollTo({ top: 0, behavior: "smooth" });
+
   const handleSelectEvent = (et: EventType) => {
     setSelectedEvent(et);
     setSelectedDuration(et.durations[0] ?? 60);
     setSelectedDate(null);
     setSelectedTime(null);
     setStep("datetime");
+    scrollTop();
   };
 
   const handleSelectTime = (t: string) => {
     setSelectedTime(t);
     setStep("contact");
+    scrollTop();
   };
 
   const handleSubmit = async () => {
@@ -286,7 +290,9 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
         )}
         <div className="flex items-center gap-3 ml-2">
           <div className="w-9 h-9 rounded-full bg-primary/20 flex items-center justify-center overflow-hidden shrink-0">
-            <Camera className="w-4 h-4 text-primary" />
+            {tenant.avatar
+              ? <img src={tenant.avatar} alt={tenant.displayName} className="w-full h-full object-cover" />
+              : <Camera className="w-4 h-4 text-primary" />}
           </div>
           <div>
             <p className="font-display text-sm text-foreground leading-tight">{tenant.displayName}</p>
@@ -385,12 +391,12 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
           {/* ── Step 2: Date & Time ── */}
           {step === "datetime" && selectedEvent && (
             <div key="datetime" className="space-y-6 animate-in fade-in-0 slide-in-from-bottom-4 duration-200">
-              <button onClick={() => setStep("event-select")} className="flex items-center gap-2 text-xs font-body tracking-wider uppercase text-muted-foreground hover:text-primary transition-colors">
+              <button onClick={() => { setStep("event-select"); scrollTop(); }} className="flex items-center gap-2 text-xs font-body tracking-wider uppercase text-muted-foreground hover:text-primary transition-colors">
                 <ArrowLeft className="w-3.5 h-3.5" /> Back
               </button>
 
               <div className="glass-panel rounded-xl overflow-hidden">
-                <div className="grid lg:grid-cols-[280px_1fr_200px] divide-y lg:divide-y-0 lg:divide-x divide-border/50">
+                <div className="grid md:grid-cols-[220px_1fr_170px] lg:grid-cols-[280px_1fr_200px] divide-y md:divide-y-0 md:divide-x divide-border/50">
                   {/* Event info */}
                   <div className="p-6 space-y-4">
                     <h2 className="font-display text-lg text-foreground">{selectedEvent.title}</h2>
@@ -549,7 +555,7 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
 
               {selectedTime && (
                 <div className="flex justify-end">
-                  <Button onClick={() => setStep("contact")} className="bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2">
+                  <Button onClick={() => { setStep("contact"); scrollTop(); }} className="bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2">
                     Continue
                   </Button>
                 </div>
@@ -560,7 +566,7 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
           {/* ── Step 3: Contact Info ── */}
           {step === "contact" && selectedEvent && selectedDate && selectedTime && (
             <div key="contact" className="space-y-6 animate-in fade-in-0 slide-in-from-bottom-4 duration-200">
-              <button onClick={() => setStep("datetime")} className="flex items-center gap-2 text-xs font-body tracking-wider uppercase text-muted-foreground hover:text-primary transition-colors">
+              <button onClick={() => { setStep("datetime"); scrollTop(); }} className="flex items-center gap-2 text-xs font-body tracking-wider uppercase text-muted-foreground hover:text-primary transition-colors">
                 <ArrowLeft className="w-3.5 h-3.5" /> Back
               </button>
 
