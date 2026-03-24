@@ -130,8 +130,8 @@ export default function TenantAdmin() {
   ];
 
   return (
-    <div className="min-h-screen bg-background">
-      <div className="flex">
+    <div className="min-h-screen bg-background overflow-x-hidden">
+      <div className="flex w-full">
         {/* Desktop sidebar */}
         <aside className="w-56 fixed left-0 top-0 bottom-0 border-r border-border bg-card/50 p-4 hidden lg:flex flex-col" style={{ paddingTop: "calc(env(safe-area-inset-top, 0px) + 1rem)" }}>
           <div className="flex items-center gap-2.5 px-3 mb-2 pt-2">
@@ -197,7 +197,7 @@ export default function TenantAdmin() {
         </div>
 
         {/* Main content */}
-        <main className="flex-1 lg:ml-56 p-4 sm:p-6 lg:p-8 lg:pt-8" style={{ paddingTop: "calc(env(safe-area-inset-top, 0px) + 3.5rem)", paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 4rem)" }}>
+        <main className="flex-1 min-w-0 overflow-x-hidden lg:ml-56 p-4 sm:p-6 lg:p-8 lg:pt-8" style={{ paddingTop: "calc(env(safe-area-inset-top, 0px) + 3.5rem)", paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 4rem)" }}>
           <style>{`@media (min-width: 1024px) { #tenant-admin-main { padding-bottom: 2rem; } }`}</style>
           {activeTab === "dashboard" && <TenantDashboard slug={slug!} session={session} />}
           {activeTab === "bookings" && <TenantBookings slug={slug!} />}

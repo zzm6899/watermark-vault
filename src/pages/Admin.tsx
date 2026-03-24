@@ -634,8 +634,8 @@ export default function Admin() {
   ];
 
   return (
-    <div className="min-h-screen bg-background">
-      <div className="flex">
+    <div className="min-h-screen bg-background overflow-x-hidden">
+      <div className="flex w-full">
         <aside className="w-56 fixed left-0 top-0 bottom-0 border-r border-border bg-card/50 p-4 hidden lg:flex flex-col" style={{ paddingTop: "calc(env(safe-area-inset-top, 0px) + 1rem)" }}>
           <div className="flex items-center gap-2.5 px-3 mb-6 pt-2">
             <Camera className="w-5 h-5 text-primary" />
@@ -716,7 +716,7 @@ export default function Admin() {
         </div>
 
         <main
-          className="flex-1 lg:ml-56 p-4 sm:p-6 lg:p-8 lg:pt-8"
+          className="flex-1 min-w-0 overflow-x-hidden lg:ml-56 p-4 sm:p-6 lg:p-8 lg:pt-8"
           style={{ paddingTop: "calc(env(safe-area-inset-top, 0px) + 3.5rem)", paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 4rem)" }}
           id="admin-main"
         >
@@ -4903,7 +4903,7 @@ function PhotosView() {
       </div>
 
       {/* Source filter */}
-      <div className="flex gap-2 mb-4 overflow-x-auto pb-1 scrollbar-hide">
+      <div className="flex gap-2 mb-4 overflow-x-auto pb-1 scrollbar-hide w-full max-w-full">
         <button onClick={() => setViewSource("all")} className={`text-xs font-body px-3 py-1.5 rounded-full whitespace-nowrap transition-all ${viewSource === "all" ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground hover:text-foreground"}`}>
           All ({allPhotos.length})
         </button>
@@ -5056,10 +5056,10 @@ function PhotosView() {
         <>
         <div className={`grid gap-1.5 sm:gap-2 ${
           photoGridSize === "small"
-            ? "grid-cols-5 sm:grid-cols-6 md:grid-cols-8 lg:grid-cols-10 xl:grid-cols-12"
+            ? "grid-cols-3 sm:grid-cols-5 md:grid-cols-8 lg:grid-cols-10 xl:grid-cols-12"
             : photoGridSize === "large"
-            ? "grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6"
-            : "grid-cols-4 sm:grid-cols-5 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10"
+            ? "grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6"
+            : "grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-7 xl:grid-cols-9"
         }`}>
           {displayPhotos.slice(0, visibleCount).map(p => (
             <div key={p.id + p.source} className={`relative group aspect-square rounded-md overflow-hidden bg-secondary cursor-pointer border-2 transition-all ${selectedIds.has(p.id) ? "border-primary ring-2 ring-primary/20" : "border-transparent hover:border-border"}`}
