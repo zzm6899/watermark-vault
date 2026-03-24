@@ -242,6 +242,16 @@ export default function AlbumDetail() {
   const [stripeAvailable, setStripeAvailable] = useState(false);
   const [processingStripe, setProcessingStripe] = useState(false);
   const [stripeSuccess, setStripeSuccess] = useState(() => searchParams.get("success") === "1");
+  // Handle Stripe cancel redirect — show a friendly message once and clean up URL
+  useEffect(() => {
+    if (searchParams.get("cancelled") === "1") {
+      toast.error("Payment was cancelled — no charge was made.", { duration: 6000 });
+      const url = new URL(window.location.href);
+      url.searchParams.delete("cancelled");
+      window.history.replaceState({}, "", url.toString());
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [pollingCount, setPollingCount] = useState(0);
   const [showEmailReg, setShowEmailReg] = useState(false);
   const [emailSkippedThisSession, setEmailSkippedThisSession] = useState(false);

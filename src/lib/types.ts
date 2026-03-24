@@ -279,7 +279,7 @@ export interface InvoiceItem {
   unitPrice: number;
 }
 
-export type InvoiceStatus = "draft" | "sent" | "paid" | "overdue" | "cancelled";
+export type InvoiceStatus = "draft" | "sent" | "paid" | "partial" | "overdue" | "cancelled";
 
 export interface InvoiceEmailLogEntry {
   sentAt: string;
@@ -322,6 +322,7 @@ export interface Invoice {
   discount?: number;        // discount amount in dollars
   paymentMethods?: ("stripe" | "bank")[];  // which payment methods are available for this invoice
   stripeSessionId?: string; // Stripe checkout session ID once created
+  amountPaid?: number;      // partial payment amount already received
 }
 
 // ─── License Keys ─────────────────────────────────────────────────────────────

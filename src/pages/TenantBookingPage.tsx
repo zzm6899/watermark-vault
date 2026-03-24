@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { usePageTitle } from "@/hooks/use-page-title";
 import {
@@ -155,6 +155,19 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
 
   // Per-card "Read more" expanded state for event type descriptions
   const [expandedDescriptions, setExpandedDescriptions] = useState<Record<string, boolean>>({});
+
+  // Handle Stripe cancel redirect (?cancelled=1) — show a friendly message and clean up URL
+  const cancelHandledRef = useRef(false);
+  useEffect(() => {
+    if (cancelHandledRef.current) return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("cancelled") === "1") {
+      cancelHandledRef.current = true;
+      toast.error("Payment was cancelled — your booking is not yet confirmed.", { duration: 6000 });
+      const cleanUrl = window.location.pathname;
+      window.history.replaceState({}, "", cleanUrl);
+    }
+  }, []);
 
   useEffect(() => {
     if (!tenantSlug) { setNotFound(true); setLoading(false); return; }

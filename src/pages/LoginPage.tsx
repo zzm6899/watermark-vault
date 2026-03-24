@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { getAdminCredentials, hashPassword, login, setMobileTenantSession, getMobileTenantSession, isLoggedIn } from "@/lib/storage";
-import { syncFromServer, tenantLogin } from "@/lib/api";
+import { syncFromServer, tenantLogin, verifyAdminCredentials, isServerMode } from "@/lib/api";
 import { useNavigate } from "react-router-dom";
 
 export default function LoginPage() {
@@ -40,13 +40,13 @@ export default function LoginPage() {
     setLoading(true);
     try {
       await syncFromServer();
-      const creds = getAdminCredentials();
-      if (!creds) {
-        toast.error("No admin account set up. Please run setup first.");
-        return;
-      }
       const hash = await hashPassword(password);
-      if (creds.username !== username || creds.passwordHash !== hash) {
+      const normalizedUsername = username.trim().toLowerCase();
+      // Verify server-side in server mode (bcrypt-aware), locally in localStorage mode
+      const ok = isServerMode()
+        ? await verifyAdminCredentials(normalizedUsername, hash)
+        : (() => { const creds = getAdminCredentials(); return !!(creds && creds.username === normalizedUsername && creds.passwordHash === hash); })();
+      if (!ok) {
         toast.error("Invalid username or password");
         return;
       }

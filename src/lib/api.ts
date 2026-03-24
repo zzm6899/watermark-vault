@@ -1219,6 +1219,20 @@ export async function getAllBookings(): Promise<import("./types").Booking[]> {
 
 // ── Tenant Mobile Auth ─────────────────────────────────────────
 
+/** Verify super-admin credentials server-side (supports bcrypt and legacy SHA-256 hashes). */
+export async function verifyAdminCredentials(username: string, passwordHash: string): Promise<boolean> {
+  try {
+    const res = await fetch("/api/auth/verify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, passwordHash }),
+    });
+    if (!res.ok) return false;
+    const json = await res.json();
+    return !!json.ok;
+  } catch { return false; }
+}
+
 /** Log in as a tenant (for mobile app). Returns the tenant profile on success. */
 export async function tenantLogin(slug: string, passwordHash: string): Promise<{
   ok: boolean;

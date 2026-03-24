@@ -11,7 +11,7 @@ import {
   MessageSquare,
   Star, CheckCircle2, Sparkles, ChevronLeft, ChevronRight, Flag, FileText, Receipt, Printer, AlertCircle, BookOpen,
   ArrowUpDown, MoreHorizontal, TrendingUp, TrendingDown, Key, Globe, Wifi,
-  Maximize2,
+  Maximize2, Check,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -166,10 +166,14 @@ function slugify(text: string): string {
   return text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
 }
 
-const WATERMARK_REBUILD_STATUS_KEY = "wm_rebuild_status_v1";
+const WATERMARK_REBUILD_STATUS_KEY = "wm_rebuild_status_v2";
+// Stale threshold: if a rebuild was "running" but hasn't been updated in 3 minutes,
+// it was interrupted (page refresh / crash). Mark it as interrupted on next read.
+const WM_STALE_MS = 3 * 60 * 1000;
 
 type WatermarkRebuildStatus = {
   running: boolean;
+  interrupted: boolean;
   mode: "save" | "missing" | "all" | null;
   done: number;
   total: number;
@@ -178,20 +182,32 @@ type WatermarkRebuildStatus = {
 };
 
 function readWatermarkRebuildStatus(): WatermarkRebuildStatus {
+  const empty: WatermarkRebuildStatus = { running: false, interrupted: false, mode: null, done: 0, total: 0, stage: "", updatedAt: "" };
   try {
     const raw = localStorage.getItem(WATERMARK_REBUILD_STATUS_KEY);
-    if (!raw) return { running: false, mode: null, done: 0, total: 0, stage: "", updatedAt: "" };
+    if (!raw) return empty;
     const parsed = JSON.parse(raw);
-    return {
+    const status: WatermarkRebuildStatus = {
       running: !!parsed.running,
+      interrupted: !!parsed.interrupted,
       mode: parsed.mode ?? null,
       done: Number(parsed.done || 0),
       total: Number(parsed.total || 0),
       stage: String(parsed.stage || ""),
       updatedAt: String(parsed.updatedAt || ""),
     };
+    // Auto-detect interrupted rebuild: was running but last update >3 min ago
+    if (status.running && status.updatedAt) {
+      const age = Date.now() - new Date(status.updatedAt).getTime();
+      if (age > WM_STALE_MS) {
+        const fixed = { ...status, running: false, interrupted: true, stage: `Interrupted at ${status.done}/${status.total}` };
+        try { localStorage.setItem(WATERMARK_REBUILD_STATUS_KEY, JSON.stringify(fixed)); } catch { /* noop */ }
+        return fixed;
+      }
+    }
+    return status;
   } catch {
-    return { running: false, mode: null, done: 0, total: 0, stage: "", updatedAt: "" };
+    return empty;
   }
 }
 
@@ -598,9 +614,19 @@ export default function Admin() {
   if (!isSetupComplete()) return null;
   if (!authed) return <Login onLogin={() => setAuthed(true)} />;
   
+  // Per-tab scroll position memory: save before leaving, restore after switching.
+  const scrollPositions = useRef<Partial<Record<Tab, number>>>({});
   const setActiveTab = (tab: Tab) => {
+    // Save current tab's scroll position
+    const main = document.getElementById("admin-main");
+    if (main) scrollPositions.current[activeTab] = main.scrollTop;
     setActiveTabState(tab);
     navigate(`/admin/${tab}`, { replace: true });
+    // Restore new tab's scroll position on next frame
+    requestAnimationFrame(() => {
+      const m = document.getElementById("admin-main");
+      if (m) m.scrollTop = scrollPositions.current[tab] ?? 0;
+    });
   };
 
   const handleLogout = () => {
@@ -1505,6 +1531,23 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
     }
   };
 
+  const handleBulkStatusChange = (status: Booking["status"]) => {
+    const label = status === "confirmed" ? "confirmed" : "cancelled";
+    if (!confirm(`${status === "confirmed" ? "Confirm" : "Cancel"} ${selectedBookingIds.size} selected booking(s)?`)) return;
+    const all = getBookings();
+    let changed = 0;
+    for (const id of selectedBookingIds) {
+      const bk = all.find(b => b.id === id);
+      if (bk && bk.status !== status) {
+        updateBooking({ ...bk, status });
+        changed++;
+      }
+    }
+    setBookingsState(getBookings());
+    setSelectedBookingIds(new Set());
+    toast.success(`${changed} booking(s) ${label}`);
+  };
+
   const handlePaymentChange = async (bk: Booking, paymentStatus: PaymentStatus) => {
     updateBooking({ ...bk, paymentStatus });
     setBookingsState(getBookings());
@@ -1666,6 +1709,18 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                   {selectedBookingIds.size === sortedBookings.filter(b => b.clientEmail).length ? "Deselect All" : "Select All"}
                 </Button>
               )}
+            </>
+          )}
+          {selectedBookingIds.size > 0 && (
+            <>
+              <Button size="sm" variant="outline" onClick={() => handleBulkStatusChange("confirmed")}
+                className="gap-1.5 font-body text-xs border-green-500/40 text-green-600 hover:bg-green-500/10">
+                <Check className="w-3.5 h-3.5" /> Confirm ({selectedBookingIds.size})
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => handleBulkStatusChange("cancelled")}
+                className="gap-1.5 font-body text-xs border-red-500/40 text-red-500 hover:bg-red-500/10">
+                <X className="w-3.5 h-3.5" /> Cancel ({selectedBookingIds.size})
+              </Button>
             </>
           )}
           {selectedBookingIds.size > 0 && isServerMode() && (
@@ -4040,8 +4095,28 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
               ? "grid-cols-2 sm:grid-cols-3 md:grid-cols-4"
               : "grid-cols-3 sm:grid-cols-5 md:grid-cols-7 lg:grid-cols-9"
           }`}>
-            {photos.map(p => (
-              <div key={p.id} className={`relative group aspect-square rounded-md overflow-hidden bg-secondary ${coverImage === p.src ? "ring-2 ring-primary" : ""}`}>
+            {photos.map((p, idx) => (
+              <div key={p.id}
+                draggable
+                onDragStart={e => { e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", String(idx)); }}
+                onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; (e.currentTarget as HTMLElement).style.opacity = "0.5"; }}
+                onDragLeave={e => { (e.currentTarget as HTMLElement).style.opacity = ""; }}
+                onDrop={e => {
+                  e.preventDefault();
+                  (e.currentTarget as HTMLElement).style.opacity = "";
+                  const fromIdx = parseInt(e.dataTransfer.getData("text/plain"), 10);
+                  if (isNaN(fromIdx) || fromIdx === idx) return;
+                  const reordered = [...photos];
+                  const [moved] = reordered.splice(fromIdx, 1);
+                  reordered.splice(idx, 0, moved);
+                  setPhotos(reordered);
+                  if (!isNew && album?.id && onUpdate) {
+                    onUpdate({ ...album, photos: reordered, photoCount: reordered.length });
+                  }
+                }}
+                onDragEnd={e => { (e.currentTarget as HTMLElement).style.opacity = ""; }}
+                title="Drag to reorder"
+                className={`relative group aspect-square rounded-md overflow-hidden bg-secondary cursor-grab active:cursor-grabbing ${coverImage === p.src ? "ring-2 ring-primary" : ""}`}>
                 <ProgressiveImg thumbSrc={adminThumbSrc(p.thumbnail) ?? p.thumbnail} fullSrc={adminThumbSrc(p.src) ?? p.src} alt={p.title} className="w-full h-full object-cover" loading="lazy" />
                 <button onClick={() => {
                   const filtered = photos.filter(pp => pp.id !== p.id);
@@ -5402,11 +5477,12 @@ function calcInvTotal(inv: Invoice) {
 }
 
 const INV_STATUS_META: Record<InvoiceStatus, { label: string; color: string; bg: string }> = {
-  draft:     { label: "Draft",     color: "text-gray-400",   bg: "bg-gray-500/10"   },
-  sent:      { label: "Sent",      color: "text-blue-400",   bg: "bg-blue-500/10"   },
-  paid:      { label: "Paid",      color: "text-green-400",  bg: "bg-green-500/10"  },
-  overdue:   { label: "Overdue",   color: "text-red-400",    bg: "bg-red-500/10"    },
-  cancelled: { label: "Cancelled", color: "text-gray-400",   bg: "bg-gray-500/10"   },
+  draft:     { label: "Draft",     color: "text-gray-400",    bg: "bg-gray-500/10"    },
+  sent:      { label: "Sent",      color: "text-blue-400",    bg: "bg-blue-500/10"    },
+  paid:      { label: "Paid",      color: "text-green-400",   bg: "bg-green-500/10"   },
+  partial:   { label: "Partial",   color: "text-amber-400",   bg: "bg-amber-500/10"   },
+  overdue:   { label: "Overdue",   color: "text-red-400",     bg: "bg-red-500/10"     },
+  cancelled: { label: "Cancelled", color: "text-gray-400",    bg: "bg-gray-500/10"    },
 };
 
 function emptyParty(): InvoiceParty { return { name: "", email: "", address: "", abn: "" }; }
@@ -5579,6 +5655,56 @@ function InvoicesView() {
     window.open(`${shareUrl(inv)}?print=1`, "_blank");
   };
 
+  /** RFC 4180-compliant CSV cell: wraps in quotes and escapes internal quotes. */
+  const csvCell = (v: string | number | undefined | null) => {
+    const s = String(v ?? "");
+    return s.includes(",") || s.includes('"') || s.includes("\n") ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+
+  const handleExportAllCSV = () => {
+    const rows: string[][] = [
+      ["Invoice #", "Date", "Due Date", "Status", "Client Name", "Client Email", "From", "Item Description", "Qty", "Unit Price", "Line Total", "Subtotal", "Tax %", "Discount %", "Total"],
+    ];
+    invoices.forEach(inv => {
+      const sub = inv.items.reduce((s, it) => s + it.qty * it.unitPrice, 0);
+      const taxAmt = sub * ((inv.tax ?? 0) / 100);
+      const discAmt = sub * ((inv.discount ?? 0) / 100);
+      const total = sub + taxAmt - discAmt;
+      if (inv.items.length === 0) {
+        rows.push([inv.number, inv.createdAt.slice(0, 10), inv.dueDate || "", inv.status, inv.to.name || "", inv.to.email || "", inv.from.name || "", "", "", "", "", sub.toFixed(2), String(inv.tax ?? 0), String(inv.discount ?? 0), total.toFixed(2)]);
+      } else {
+        inv.items.forEach((it, idx) => {
+          rows.push([
+            idx === 0 ? inv.number : "",
+            idx === 0 ? inv.createdAt.slice(0, 10) : "",
+            idx === 0 ? (inv.dueDate || "") : "",
+            idx === 0 ? inv.status : "",
+            idx === 0 ? (inv.to.name || "") : "",
+            idx === 0 ? (inv.to.email || "") : "",
+            idx === 0 ? (inv.from.name || "") : "",
+            it.description,
+            String(it.qty),
+            it.unitPrice.toFixed(2),
+            (it.qty * it.unitPrice).toFixed(2),
+            idx === 0 ? sub.toFixed(2) : "",
+            idx === 0 ? String(inv.tax ?? 0) : "",
+            idx === 0 ? String(inv.discount ?? 0) : "",
+            idx === 0 ? total.toFixed(2) : "",
+          ]);
+        });
+      }
+    });
+    const csv = rows.map(r => r.map(csvCell).join(",")).join("\r\n");
+    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `invoices-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast.success(`Exported ${invoices.length} invoice${invoices.length !== 1 ? "s" : ""} to CSV`);
+  };
+
   const handleSendInvoice = async (inv: Invoice) => {
     if (!inv.to.email) { toast.error("No client email on invoice"); return; }
     setSendingEmail(true);
@@ -5663,9 +5789,14 @@ function InvoicesView() {
             <h2 className="font-display text-2xl text-foreground mb-1">Invoices</h2>
             <p className="text-sm font-body text-muted-foreground">Create and manage invoices &amp; quotes</p>
           </div>
-          <Button onClick={openCreate} className="gap-2 font-body text-sm">
-            <Plus className="w-4 h-4" /> New Invoice
-          </Button>
+          <div className="flex gap-2">
+            <Button onClick={handleExportAllCSV} variant="outline" className="gap-2 font-body text-sm border-border text-foreground" title="Export all invoices as CSV">
+              <Download className="w-4 h-4" /> CSV
+            </Button>
+            <Button onClick={openCreate} className="gap-2 font-body text-sm">
+              <Plus className="w-4 h-4" /> New Invoice
+            </Button>
+          </div>
         </div>
 
         {/* Search + Date range + Sort */}
@@ -5711,7 +5842,7 @@ function InvoicesView() {
 
           {/* Status pills */}
           <div className="flex gap-2 flex-wrap">
-            {(["all", "draft", "sent", "paid", "overdue", "cancelled"] as const).map(s => (
+            {(["all", "draft", "sent", "paid", "partial", "overdue", "cancelled"] as const).map(s => (
               <button
                 key={s}
                 onClick={() => setFilterStatus(s)}
@@ -5762,8 +5893,8 @@ function InvoicesView() {
                 const logOpen = expandedEmailLog === inv.id;
                 const menuOpen = overflowMenuId === inv.id;
                 const canAct = inv.status !== "paid" && inv.status !== "cancelled";
-                const rowBorder = inv.status === "sent" ? "border-l-4 border-amber-500" : inv.status === "overdue" ? "border-l-4 border-red-500" : inv.status === "paid" ? "border-l-4 border-green-500" : "";
-                const amountColor = inv.status === "sent" ? "text-amber-400" : inv.status === "overdue" ? "text-red-400" : "text-foreground";
+                const rowBorder = inv.status === "sent" ? "border-l-4 border-amber-500" : inv.status === "overdue" ? "border-l-4 border-red-500" : inv.status === "paid" ? "border-l-4 border-green-500" : inv.status === "partial" ? "border-l-4 border-amber-400/60" : "";
+                const amountColor = inv.status === "sent" ? "text-amber-400" : inv.status === "overdue" ? "text-red-400" : inv.status === "partial" ? "text-amber-300" : "text-foreground";
                 return (
                   <div key={inv.id} className={`group ${rowBorder}`}>
                     {/* ── Row ── */}
@@ -5820,7 +5951,12 @@ function InvoicesView() {
                         </div>
                       </div>
                       {/* Amount */}
-                      <p className={`text-sm font-display w-20 text-right shrink-0 ${amountColor}`}>${total.toFixed(2)}</p>
+                      <div className="text-right shrink-0 w-20">
+                        <p className={`text-sm font-display ${amountColor}`}>${total.toFixed(2)}</p>
+                        {inv.status === "partial" && inv.amountPaid != null && inv.amountPaid > 0 && (
+                          <p className="text-[10px] font-body text-amber-400/70">${inv.amountPaid.toFixed(2)} paid</p>
+                        )}
+                      </div>
                       {/* Desktop actions */}
                       <TooltipProvider delayDuration={300}>
                         <div className="hidden sm:flex items-center gap-1 shrink-0">
@@ -5991,7 +6127,7 @@ function InvoiceForm({
         <div>
           <label className={labelClass}>Status</label>
           <select value={inv.status} onChange={e => setInv(p => ({ ...p, status: e.target.value as InvoiceStatus }))} className={fieldClass}>
-            {(["draft","sent","paid","overdue","cancelled"] as InvoiceStatus[]).map(s => <option key={s} value={s}>{INV_STATUS_META[s].label}</option>)}
+            {(["draft","sent","paid","partial","overdue","cancelled"] as InvoiceStatus[]).map(s => <option key={s} value={s}>{INV_STATUS_META[s].label}</option>)}
           </select>
         </div>
         <div>
@@ -6013,6 +6149,25 @@ function InvoiceForm({
           </select>
         </div>
       </div>
+      {inv.status === "partial" && (
+        <div className="glass-panel rounded-xl p-4">
+          <label className={labelClass}>Amount Already Paid ($)</label>
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            value={inv.amountPaid ?? ""}
+            onChange={e => setInv(p => ({ ...p, amountPaid: e.target.value === "" ? undefined : parseFloat(e.target.value) }))}
+            placeholder="0.00"
+            className={fieldClass + " max-w-xs"}
+          />
+          <p className="text-[11px] font-body text-muted-foreground mt-1.5">
+            {inv.amountPaid != null && inv.amountPaid > 0
+              ? `Balance remaining: $${Math.max(0, calcInvTotal(inv) - inv.amountPaid).toFixed(2)}`
+              : "Enter the deposit or partial payment already received."}
+          </p>
+        </div>
+      )}
 
       {/* From / To */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -9214,9 +9369,9 @@ function StorageView() {
   const [libraryPhotos, setLibraryPhotosState] = useState(getPhotoLibrary());
   const bookings = getBookings();
   const eventTypes = getEventTypes();
-  const [previewJob, setPreviewJob] = useState<{ running: boolean; mode: "missing" | "all" | "save" | null; done: number; total: number; stage?: string }>(() => {
+  const [previewJob, setPreviewJob] = useState<{ running: boolean; interrupted?: boolean; mode: "missing" | "all" | "save" | null; done: number; total: number; stage?: string }>(() => {
     const saved = readWatermarkRebuildStatus();
-    return { running: saved.running, mode: safePreviewMode(saved.mode), done: saved.done, total: saved.total, stage: saved.stage };
+    return { running: saved.running, interrupted: saved.interrupted, mode: safePreviewMode(saved.mode), done: saved.done, total: saved.total, stage: saved.stage };
   });
   const [cacheStats, setCacheStats] = useState<{ total: number; breakdown: CacheBreakdown } | null>(null);
   const [lastClearStats, setLastClearStats] = useState<{ cleared: number; breakdown: CacheBreakdown } | null>(null);
@@ -9251,7 +9406,7 @@ function StorageView() {
   useEffect(() => {
     const handler = () => {
       const status = readWatermarkRebuildStatus();
-      setPreviewJob({ running: status.running, mode: safePreviewMode(status.mode), done: status.done, total: status.total, stage: status.stage });
+      setPreviewJob({ running: status.running, interrupted: status.interrupted, mode: safePreviewMode(status.mode), done: status.done, total: status.total, stage: status.stage });
       // Once a rebuild finishes, refresh server stats so file counts stay current
       if (!status.running) refreshStorageState();
     };
@@ -9790,6 +9945,16 @@ function StorageView() {
           </>
         ) : (
           <>
+            {previewJob.interrupted && !previewJob.running && (
+              <div className="mb-3 flex items-start gap-2 p-3 rounded-lg bg-orange-500/10 border border-orange-500/30">
+                <span className="text-orange-400 text-xs mt-0.5">⚠</span>
+                <div>
+                  <p className="text-xs font-body text-orange-400 font-medium">Watermark rebuild was interrupted</p>
+                  <p className="text-[11px] font-body text-muted-foreground mt-0.5">{previewJob.stage || "The previous rebuild did not complete — some photos may have inconsistent watermarks."} Run <strong className="text-foreground">Regenerate Missing</strong> to finish.</p>
+                </div>
+                <button onClick={() => { writeWatermarkRebuildStatus({ interrupted: false }); setPreviewJob(p => ({ ...p, interrupted: false })); }} className="ml-auto text-muted-foreground hover:text-foreground shrink-0"><X className="w-3.5 h-3.5" /></button>
+              </div>
+            )}
             <div className="flex items-center justify-between text-xs font-body text-muted-foreground mb-1.5">
               <span>
                 {previewJob.running

@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { getAdminCredentials, hashPassword, login, setMobileTenantSession } from "@/lib/storage";
-import { syncFromServer, tenantLogin } from "@/lib/api";
+import { syncFromServer, tenantLogin, verifyAdminCredentials, isServerMode } from "@/lib/api";
 import { useNavigate } from "react-router-dom";
 
 export default function Login({ onLogin }: { onLogin: () => void }) {
@@ -24,8 +24,12 @@ export default function Login({ onLogin }: { onLogin: () => void }) {
       const normalizedUsername = username.trim().toLowerCase();
 
       // Try admin credentials first
-      const creds = getAdminCredentials();
-      if (creds && creds.username === normalizedUsername && creds.passwordHash === hash) {
+      // In server mode: verify server-side so bcrypt hashes are handled correctly
+      // In localStorage mode: compare directly (sha256 === sha256)
+      const adminOk = isServerMode()
+        ? await verifyAdminCredentials(normalizedUsername, hash)
+        : (() => { const creds = getAdminCredentials(); return !!(creds && creds.username === normalizedUsername && creds.passwordHash === hash); })();
+      if (adminOk) {
         login();
         onLogin();
         return;

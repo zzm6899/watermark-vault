@@ -48,10 +48,35 @@ if (!fs.existsSync(DB_FILE)) fs.writeFileSync(DB_FILE, JSON.stringify({}));
 // (e.g. via docker-compose.yml / TrueNAS app YAML), pre-seed the admin account
 // so the Setup wizard is skipped on first run.
 const crypto = require("crypto");
+let bcrypt;
+try { bcrypt = require("bcryptjs"); } catch { bcrypt = null; }
+const BCRYPT_ROUNDS = 12;
 function sha256(str) {
   return crypto.createHash("sha256").update(str, "utf8").digest("hex");
 }
-function seedSuperAdminIfNeeded() {
+/** Hash a value with bcrypt (if available), storing it as "$2b$..." so we can detect the scheme. */
+async function bcryptHash(value) {
+  if (!bcrypt) return value; // bcryptjs not yet installed — fall back to plain sha256 hash
+  return bcrypt.hash(value, BCRYPT_ROUNDS);
+}
+/** Verify an incoming SHA-256 hash against a stored hash (bcrypt or legacy plain sha256). */
+async function verifyPasswordHash(incoming, stored) {
+  if (!stored) return false;
+  if (bcrypt && stored.startsWith("$2")) {
+    // bcrypt hash — use constant-time compare
+    return bcrypt.compare(incoming, stored);
+  }
+  // Legacy plain sha256 or "fb_" fallback hash — direct string compare
+  try {
+    const a = Buffer.from(incoming);
+    const b = Buffer.from(stored);
+    if (a.length !== b.length) return incoming === stored; // lengths differ; plain compare
+    return crypto.timingSafeEqual(a, b);
+  } catch {
+    return incoming === stored;
+  }
+}
+async function seedSuperAdminIfNeeded() {
   const username = (process.env.SUPER_ADMIN_USERNAME || "").trim();
   const password = (process.env.SUPER_ADMIN_PASSWORD || "").trim();
   if (!username || !password) return;
@@ -60,7 +85,9 @@ function seedSuperAdminIfNeeded() {
   }
   const db = readDbDirect(); // read directly to avoid cache bootstrap ordering issues
   if (db["wv_admin"] && db["wv_setup_complete"]) return; // already bootstrapped
-  db["wv_admin"] = JSON.stringify({ username, passwordHash: sha256(password) });
+  const sha = sha256(password);
+  const hash = await bcryptHash(sha);
+  db["wv_admin"] = JSON.stringify({ username, passwordHash: hash });
   db["wv_setup_complete"] = "true";
   writeDb(db);
   console.log(`✅ Super admin '${username}' bootstrapped from SUPER_ADMIN_USERNAME env var`);
@@ -139,7 +166,7 @@ process.on("SIGTERM", () => { _flushDbSync(); process.exit(0); });
 process.on("SIGINT",  () => { _flushDbSync(); process.exit(0); });
 
 // Bootstrap super admin from env vars (runs after writeDb is available)
-seedSuperAdminIfNeeded();
+seedSuperAdminIfNeeded().catch(err => console.error("seedSuperAdminIfNeeded error:", err));
 
 app.use(cors());
 // Compress all responses (JSON, HTML, JS, CSS, etc.) — reduces transfer size by ~70-90%
@@ -263,6 +290,25 @@ function stripBakedFields(key, value) {
 // (settings, profile, event types) immediately and defer heavy keys
 // (albums, bookings, photo library) to a background request, so the app
 // becomes interactive much sooner.
+// ── Admin password verification endpoint ─────────────────────────────────────
+// Returns { ok: true } if the supplied SHA-256 password hash matches the stored
+// admin credentials (supports both legacy SHA-256 and bcrypt storage formats).
+const authLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHeaders: true, legacyHeaders: false, message: { error: "Too many login attempts — please wait" } });
+app.post("/api/auth/verify", authLimiter, async (req, res) => {
+  const { username, passwordHash } = req.body || {};
+  if (!username || !passwordHash || typeof passwordHash !== "string") {
+    return res.status(400).json({ ok: false, error: "username and passwordHash are required" });
+  }
+  const db = readDb();
+  const adminRaw = db["wv_admin"];
+  const adminCreds = adminRaw ? (typeof adminRaw === "string" ? JSON.parse(adminRaw) : adminRaw) : null;
+  if (!adminCreds || adminCreds.username !== username.toLowerCase()) {
+    return res.json({ ok: false });
+  }
+  const ok = await verifyPasswordHash(passwordHash, adminCreds.passwordHash);
+  res.json({ ok });
+});
+
 app.get("/api/store", (req, res) => {
   const db = readDb();
   if (req.query.keys) {
@@ -284,11 +330,22 @@ app.get("/api/store/:key", (req, res) => {
   const key = req.params.key;
   res.json({ value: key in db ? stripBakedFields(key, db[key]) : null });
 });
-app.put("/api/store/:key", (req, res) => {
+app.put("/api/store/:key", async (req, res) => {
   const db = readDb();
   const key = req.params.key;
-  // Strip baked photo blobs before persisting so they never reach db.json.
-  db[key] = stripBakedFields(key, req.body.value);
+  let value = stripBakedFields(key, req.body.value);
+  // Upgrade super admin password hash to bcrypt on every write to wv_admin
+  if (key === "wv_admin" && bcrypt) {
+    try {
+      let creds = value;
+      if (typeof creds === "string") { try { creds = JSON.parse(creds); } catch { /* noop */ } }
+      if (creds && typeof creds === "object" && typeof creds.passwordHash === "string" && !creds.passwordHash.startsWith("$2")) {
+        creds.passwordHash = await bcryptHash(creds.passwordHash);
+        value = JSON.stringify(creds);
+      }
+    } catch { /* noop — store as-is if hashing fails */ }
+  }
+  db[key] = value;
   writeDb(db);
   res.json({ ok: true });
 });
@@ -1541,7 +1598,7 @@ app.post("/api/discord/notify", async (req, res) => {
 /** Get all tenant webhook configurations — super admin only.
  *  Requires the caller to pass the super-admin password hash as a Bearer token
  *  (matching how the rest of the app handles admin auth via hashed credentials). */
-app.get("/api/super-admin/webhooks", (req, res) => {
+app.get("/api/super-admin/webhooks", async (req, res) => {
   if (!process.env.SUPER_ADMIN_USERNAME) return res.status(403).json({ ok: false, error: "Super admin not configured" });
 
   // Verify caller provides the super admin credentials via Basic auth header
@@ -1555,7 +1612,8 @@ app.get("/api/super-admin/webhooks", (req, res) => {
     const db = readDb();
     const adminRaw = db["wv_admin"];
     const adminCreds = adminRaw ? (typeof adminRaw === "string" ? JSON.parse(adminRaw) : adminRaw) : null;
-    const isAdmin = adminCreds?.username === user && adminCreds?.passwordHash === hash;
+    const passwordOk = adminCreds ? await verifyPasswordHash(hash, adminCreds.passwordHash) : false;
+    const isAdmin = adminCreds?.username === user && passwordOk;
     const isSuperAdminUser = user === process.env.SUPER_ADMIN_USERNAME;
     if (!isAdmin || !isSuperAdminUser) return res.status(403).json({ ok: false, error: "Forbidden" });
   } catch {
@@ -2327,6 +2385,30 @@ app.post("/api/tenant/:slug/booking", tenantBookingLimiter, (req, res) => {
     }
   }
 
+  const bookingDuration = typeof duration === "number" && duration > 0 ? duration : 60;
+
+  // ── Slot conflict check (prevents double-booking the same slot) ────────────
+  // Two bookings conflict when their time ranges overlap for the same tenant.
+  // We read from the live db (not cache) to minimise race window.
+  const dbForCheck = readDb();
+  const rawForCheck = dbForCheck["wv_bookings"];
+  const existingForCheck = rawForCheck ? (typeof rawForCheck === "string" ? JSON.parse(rawForCheck) : (Array.isArray(rawForCheck) ? rawForCheck : [])) : [];
+  const [reqH, reqM] = time.split(":").map(Number);
+  const reqStart = reqH * 60 + reqM;
+  const reqEnd = reqStart + bookingDuration;
+  const conflict = existingForCheck.find(b => {
+    if (b.tenantSlug !== slug) return false;
+    if (b.date !== date) return false;
+    if (b.status === "cancelled") return false;
+    const [bH, bM] = (b.time || "0:0").split(":").map(Number);
+    const bStart = bH * 60 + bM;
+    const bEnd = bStart + (typeof b.duration === "number" && b.duration > 0 ? b.duration : 60);
+    return reqStart < bEnd && reqEnd > bStart;
+  });
+  if (conflict) {
+    return res.status(409).json({ error: "This time slot has just been booked. Please choose a different time." });
+  }
+
   const booking = {
     id: `bk-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
     modifyToken: `mod-${crypto.randomUUID()}`,
@@ -2336,7 +2418,7 @@ app.post("/api/tenant/:slug/booking", tenantBookingLimiter, (req, res) => {
     time,
     eventTypeId: eventTypeId || "",
     type: type || "",
-    duration: typeof duration === "number" ? duration : 60,
+    duration: bookingDuration,
     status: "pending",
     notes: (notes || "").trim(),
     answers: (answers && typeof answers === "object") ? answers : {},
