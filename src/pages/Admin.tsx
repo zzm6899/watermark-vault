@@ -4042,7 +4042,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
           }`}>
             {photos.map(p => (
               <div key={p.id} className={`relative group aspect-square rounded-md overflow-hidden bg-secondary ${coverImage === p.src ? "ring-2 ring-primary" : ""}`}>
-                <ProgressiveImg thumbSrc={p.thumbnail} fullSrc={p.src} alt={p.title} className="w-full h-full object-cover" loading="lazy" />
+                <ProgressiveImg thumbSrc={adminThumbSrc(p.thumbnail) ?? p.thumbnail} fullSrc={adminThumbSrc(p.src) ?? p.src} alt={p.title} className="w-full h-full object-cover" loading="lazy" />
                 <button onClick={() => {
                   const filtered = photos.filter(pp => pp.id !== p.id);
                   const newCover = coverImage === p.src ? (filtered[0]?.src || "") : coverImage;
@@ -4102,6 +4102,19 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
 const LIBRARY_INITIAL_BATCH = 60;
 const LIBRARY_BATCH_SIZE = 60;
 
+/** Strip watermark param from a server URL and force wm=0 so admin grids always show clean images. */
+function adminThumbSrc(src?: string): string | undefined {
+  if (!src || src.startsWith("data:") || src.startsWith("blob:")) return src;
+  try {
+    const hasQuery = src.includes("?");
+    const base = hasQuery ? src.replace(/[?&]wm=\d+/g, "").replace(/\?$/, "").replace(/&$/, "") : src;
+    if (src.startsWith("/uploads/") || src.startsWith("http")) {
+      return base + (base.includes("?") ? "&wm=0" : "?wm=0");
+    }
+  } catch { /* noop */ }
+  return src;
+}
+
 function PhotosView() {
   const [libraryPhotos, setLibraryPhotosState] = useState<Photo[]>(getPhotoLibrary());
   const [albums, setAlbumsState] = useState<Album[]>(getAlbums());
@@ -4119,6 +4132,7 @@ function PhotosView() {
   const [filterDateTo, setFilterDateTo] = useState("");
   const [filterAlbum, setFilterAlbum] = useState("");
   const [filterSize, setFilterSize] = useState<"" | "small" | "medium" | "large">("");
+  const [albumFilterSearch, setAlbumFilterSearch] = useState("");
   const uploadOpenRef = useRef(uploadOpen);
   const [photoGridSize, setPhotoGridSize] = useState<"small" | "medium" | "large">("medium");
   const [lightboxPhoto, setLightboxPhoto] = useState<Photo | null>(null);
@@ -4903,30 +4917,50 @@ function PhotosView() {
       </div>
 
       {/* Source filter */}
-      <div className="flex gap-2 mb-4 overflow-x-auto pb-1 scrollbar-hide w-full max-w-full">
-        <button onClick={() => setViewSource("all")} className={`text-xs font-body px-3 py-1.5 rounded-full whitespace-nowrap transition-all ${viewSource === "all" ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground hover:text-foreground"}`}>
-          All ({allPhotos.length})
-        </button>
-        <button onClick={() => setViewSource("library")} className={`text-xs font-body px-3 py-1.5 rounded-full whitespace-nowrap transition-all ${viewSource === "library" ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground hover:text-foreground"}`}>
-          Library ({libraryPhotos.length})
-        </button>
-        {unassignedPhotos.length > 0 && (
-          <button onClick={() => setViewSource("unassigned")}
-            className={`text-xs font-body px-3 py-1.5 rounded-full whitespace-nowrap transition-all ${viewSource === "unassigned" ? "bg-orange-500 text-white" : "bg-secondary text-orange-400 hover:text-orange-300"}`}
-            title="Library photos not attached to any album — safe to delete">
-            ⚠ No Album ({unassignedPhotos.length})
+      <div className="flex flex-col gap-2 mb-4">
+        {/* Fixed pills: All / Library / No Album / Starred */}
+        <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide w-full max-w-full cursor-grab active:cursor-grabbing select-none">
+          <button onClick={() => setViewSource("all")} className={`text-xs font-body px-3 py-1.5 rounded-full whitespace-nowrap transition-all flex-shrink-0 ${viewSource === "all" ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground hover:text-foreground"}`}>
+            All ({allPhotos.length})
           </button>
+          <button onClick={() => setViewSource("library")} className={`text-xs font-body px-3 py-1.5 rounded-full whitespace-nowrap transition-all flex-shrink-0 ${viewSource === "library" ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground hover:text-foreground"}`}>
+            Library ({libraryPhotos.length})
+          </button>
+          {unassignedPhotos.length > 0 && (
+            <button onClick={() => setViewSource("unassigned")}
+              className={`text-xs font-body px-3 py-1.5 rounded-full whitespace-nowrap transition-all flex-shrink-0 ${viewSource === "unassigned" ? "bg-orange-500 text-white" : "bg-secondary text-orange-400 hover:text-orange-300"}`}
+              title="Library photos not attached to any album — safe to delete">
+              ⚠ No Album ({unassignedPhotos.length})
+            </button>
+          )}
+          {starredPhotos.length > 0 && (
+            <button onClick={() => setStarredOnly(p => !p)} className={`text-xs font-body px-3 py-1.5 rounded-full whitespace-nowrap transition-all flex-shrink-0 ${starredOnly ? "bg-yellow-500 text-black" : "bg-secondary text-yellow-400 hover:text-yellow-300"}`}>
+              ⭐ Starred ({starredPhotos.length})
+            </button>
+          )}
+        </div>
+        {/* Album pills row — scrollable, with search box */}
+        {albums.length > 0 && (
+          <div className="flex items-center gap-2">
+            <div className="relative shrink-0">
+              <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-muted-foreground" />
+              <input
+                type="text"
+                placeholder="Search albums…"
+                value={albumFilterSearch}
+                onChange={e => setAlbumFilterSearch(e.target.value)}
+                className="h-7 pl-6 pr-2 rounded-full bg-secondary border border-border/50 text-[11px] font-body text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary w-28 sm:w-36"
+              />
+            </div>
+            <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide cursor-grab active:cursor-grabbing select-none min-w-0">
+              {albums.filter(a => !albumFilterSearch || a.title.toLowerCase().includes(albumFilterSearch.toLowerCase())).map(a => (
+                <button key={a.id} onClick={() => setViewSource(viewSource === a.title ? "all" : a.title)} className={`text-xs font-body px-3 py-1.5 rounded-full whitespace-nowrap transition-all flex-shrink-0 ${viewSource === a.title ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground hover:text-foreground"}`}>
+                  {a.title} ({a.photos.length})
+                </button>
+              ))}
+            </div>
+          </div>
         )}
-        {starredPhotos.length > 0 && (
-          <button onClick={() => setStarredOnly(p => !p)} className={`text-xs font-body px-3 py-1.5 rounded-full whitespace-nowrap transition-all ${starredOnly ? "bg-yellow-500 text-black" : "bg-secondary text-yellow-400 hover:text-yellow-300"}`}>
-            ⭐ Starred ({starredPhotos.length})
-          </button>
-        )}
-        {albums.map(a => (
-          <button key={a.id} onClick={() => setViewSource(a.title)} className={`text-xs font-body px-3 py-1.5 rounded-full whitespace-nowrap transition-all ${viewSource === a.title ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground hover:text-foreground"}`}>
-            {a.title} ({a.photos.length})
-          </button>
-        ))}
       </div>
 
       {/* Advanced filters */}
@@ -5054,9 +5088,9 @@ function PhotosView() {
         </div>
       ) : (
         <>
-        <div className={`grid gap-1.5 sm:gap-2 ${
+        <div className={`grid gap-1 sm:gap-1.5 ${
           photoGridSize === "small"
-            ? "grid-cols-3 sm:grid-cols-5 md:grid-cols-8 lg:grid-cols-10 xl:grid-cols-12"
+            ? "grid-cols-5 sm:grid-cols-6 md:grid-cols-8 lg:grid-cols-10 xl:grid-cols-12"
             : photoGridSize === "large"
             ? "grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6"
             : "grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-7 xl:grid-cols-9"
@@ -5064,7 +5098,7 @@ function PhotosView() {
           {displayPhotos.slice(0, visibleCount).map(p => (
             <div key={p.id + p.source} className={`relative group aspect-square rounded-md overflow-hidden bg-secondary cursor-pointer border-2 transition-all ${selectedIds.has(p.id) ? "border-primary ring-2 ring-primary/20" : "border-transparent hover:border-border"}`}
               onClick={() => toggleSelect(p.id)}>
-              <ProgressiveImg thumbSrc={p.thumbnail} fullSrc={p.src} alt={p.title} className="w-full h-full object-cover" loading="lazy" />
+              <ProgressiveImg thumbSrc={adminThumbSrc(p.thumbnail) ?? p.thumbnail} fullSrc={adminThumbSrc(p.src) ?? p.src} alt={p.title} className="w-full h-full object-cover" loading="lazy" />
               <button
                 onClick={(e) => { e.stopPropagation(); handleToggleStar(p); }}
                 className={`absolute top-1 left-1 w-6 h-6 rounded-full flex items-center justify-center transition-opacity ${(p as any).starred ? "opacity-100 bg-yellow-500/80" : "opacity-0 group-hover:opacity-100 bg-black/40"}`}
@@ -8283,7 +8317,7 @@ function PlatformView() {
   }
 
   const sections = [
-    { id: "overview", label: "Overview", shortLabel: "Overview" },
+    { id: "overview", label: "Overview", shortLabel: "Home" },
     { id: "tenants", label: "Tenants", shortLabel: "Tenants" },
     { id: "keys", label: "License Keys", shortLabel: "Keys" },
     { id: "event-slots", label: "Event Slot Requests", shortLabel: "Slots" },
@@ -8301,16 +8335,18 @@ function PlatformView() {
         <span className="text-[10px] font-body bg-primary/10 text-primary px-2 py-0.5 rounded-full shrink-0">Super Admin</span>
       </div>
 
-      {/* Section navigation — scrollable on mobile with shorter labels */}
-      <div className="flex gap-1 p-1 bg-secondary rounded-xl overflow-x-auto scrollbar-hide max-w-full -mx-0.5 px-0.5">
-        {sections.map(s => (
-          <button key={s.id} onClick={() => setActiveSection(s.id as typeof activeSection)}
-            className={`px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-body transition-all whitespace-nowrap flex-shrink-0 ${activeSection === s.id ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
-          >
-            <span className="sm:hidden">{s.shortLabel}</span>
-            <span className="hidden sm:inline">{s.label}</span>
-          </button>
-        ))}
+      {/* Section navigation — scrollable on all screen sizes */}
+      <div className="overflow-x-auto scrollbar-hide w-full">
+        <div className="flex gap-1 p-1 bg-secondary rounded-xl min-w-max">
+          {sections.map(s => (
+            <button key={s.id} onClick={() => setActiveSection(s.id as typeof activeSection)}
+              className={`px-2 sm:px-3 py-1.5 rounded-lg text-[11px] sm:text-xs font-body transition-all whitespace-nowrap flex-shrink-0 ${activeSection === s.id ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+            >
+              <span className="sm:hidden">{s.shortLabel}</span>
+              <span className="hidden sm:inline">{s.label}</span>
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* ── Overview ── */}
