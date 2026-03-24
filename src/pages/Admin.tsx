@@ -2971,14 +2971,27 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                   return handle ? <p className="text-xs font-body text-muted-foreground">@{handle.replace("@", "")}</p> : null;
                 })()}
                 {alb.status && (
-                  <span className={`inline-flex items-center text-[10px] font-body px-2 py-0.5 rounded-full ${
-                    alb.status === "editing"   ? "bg-yellow-500/15 text-yellow-400" :
-                    alb.status === "proofing"  ? "bg-blue-500/15 text-blue-400" :
-                    alb.status === "delivered" ? "bg-green-500/15 text-green-400" :
-                    "bg-secondary text-muted-foreground"
-                  }`}>
-                    {alb.status.charAt(0).toUpperCase() + alb.status.slice(1)}
-                  </span>
+                  <select
+                    value={alb.status}
+                    onClick={e => e.stopPropagation()}
+                    onChange={e => {
+                      e.stopPropagation();
+                      updateAlbum({ ...alb, status: e.target.value as Album["status"] });
+                      refresh();
+                      toast.success("Album status updated");
+                    }}
+                    className={`text-[10px] font-body px-2 py-0.5 rounded-full border-0 cursor-pointer appearance-none focus:outline-none focus:ring-1 focus:ring-primary/50 ${
+                      alb.status === "editing"   ? "bg-yellow-500/15 text-yellow-400" :
+                      alb.status === "proofing"  ? "bg-blue-500/15 text-blue-400" :
+                      alb.status === "delivered" ? "bg-green-500/15 text-green-400" :
+                      "bg-secondary text-muted-foreground"
+                    }`}
+                  >
+                    <option value="editing">Editing</option>
+                    <option value="proofing">Proofing</option>
+                    <option value="delivered">Delivered</option>
+                    <option value="archived">Archived</option>
+                  </select>
                 )}
                 {/* Download expiry badge */}
                 {/* Gallery expiry badge */}
@@ -3016,19 +3029,29 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                   );
                   return null;
                 })()}
-                {/* Proofing stage badge */}
+                {/* Proofing stage badge — clickable to change stage */}
                 {settings.proofingEnabled && alb.proofingEnabled && alb.proofingStage && alb.proofingStage !== "not-started" && (
-                  <span className={`inline-flex items-center gap-1 text-[10px] font-body px-2 py-0.5 rounded-full ${
-                    alb.proofingStage === "proofing" ? "bg-yellow-500/15 text-yellow-400" :
-                    alb.proofingStage === "selections-submitted" ? "bg-orange-500/15 text-orange-400" :
-                    alb.proofingStage === "editing" ? "bg-blue-500/15 text-blue-400" :
-                    alb.proofingStage === "finals-delivered" ? "bg-green-500/15 text-green-400" : ""
-                  }`}>
-                    {alb.proofingStage === "proofing" && "★ Proofing"}
-                    {alb.proofingStage === "selections-submitted" && "⏳ Picks submitted"}
-                    {alb.proofingStage === "editing" && "✏️ Editing"}
-                    {alb.proofingStage === "finals-delivered" && "✓ Finals delivered"}
-                  </span>
+                  <select
+                    value={alb.proofingStage}
+                    onClick={e => e.stopPropagation()}
+                    onChange={e => {
+                      e.stopPropagation();
+                      updateAlbum({ ...alb, proofingStage: e.target.value as Album["proofingStage"] });
+                      refresh();
+                      toast.success("Proofing stage updated");
+                    }}
+                    className={`text-[10px] font-body px-2 py-0.5 rounded-full border-0 cursor-pointer appearance-none focus:outline-none focus:ring-1 focus:ring-primary/50 ${
+                      alb.proofingStage === "proofing" ? "bg-yellow-500/15 text-yellow-400" :
+                      alb.proofingStage === "selections-submitted" ? "bg-orange-500/15 text-orange-400" :
+                      alb.proofingStage === "editing" ? "bg-blue-500/15 text-blue-400" :
+                      alb.proofingStage === "finals-delivered" ? "bg-green-500/15 text-green-400" : ""
+                    }`}
+                  >
+                    <option value="proofing">★ Proofing</option>
+                    <option value="selections-submitted">⏳ Picks submitted</option>
+                    <option value="editing">✏️ Editing</option>
+                    <option value="finals-delivered">✓ Finals delivered</option>
+                  </select>
                 )}
                 {alb.mergedFrom && <p className="text-[10px] font-body text-muted-foreground/50">Merged from {alb.mergedFrom.length} albums</p>}
                 {!mergeMode && (
