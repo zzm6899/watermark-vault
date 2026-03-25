@@ -1442,6 +1442,10 @@ export default function AlbumDetail() {
                       <Star className={`w-4 h-4 ${starredIds.has(photo.id) ? "fill-yellow-900" : ""}`} />
                     </button>
                   )}
+                  {/* Filename overlay on hover */}
+                  <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent px-2 pt-4 pb-1.5 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+                    <p className="text-[10px] font-body text-white/80 truncate">{((photo as any).originalName || photo.title).replace(/\.[^.]+$/, "")}</p>
+                  </div>
                 </div>
               ))}
             </div>
@@ -1976,7 +1980,7 @@ export default function AlbumDetail() {
 
               {/* Bottom bar with select/star/title */}
               <div className="absolute bottom-0 left-0 right-0 p-3 sm:p-4 bg-gradient-to-t from-black/80 to-transparent rounded-b-lg flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2" style={{ pointerEvents: lbZoom > 1 ? "none" : undefined }}>
-                <p className="text-sm font-body text-white/90 pr-12 sm:pr-0">{lbPhoto.title}</p>
+                <p className="text-sm font-body text-white/90 pr-12 sm:pr-0">{((lbPhoto as any).originalName || lbPhoto.title).replace(/\.[^.]+$/, "")}</p>
                 <div className="flex gap-2">
                   {isProofing && (
                     <Button

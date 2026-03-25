@@ -2927,7 +2927,7 @@ function TenantPhotos({ slug }: { slug: string }) {
                 <div className="absolute top-1 right-1 w-6 h-6 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-[10px] font-bold">✓</div>
               )}
               <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-background/80 to-transparent p-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                <p className="text-[9px] font-body text-foreground font-medium truncate">{p.title}</p>
+                <p className="text-[9px] font-body text-foreground font-medium truncate">{p.originalName || p.title}</p>
                 <p className="text-[8px] font-body text-muted-foreground truncate">{p.source}</p>
               </div>
               <button
