@@ -44,6 +44,7 @@ const STATUS_STYLES: Record<Invoice["status"], { label: string; icon: React.Reac
   draft:     { label: "Draft",                    icon: <Clock className="w-4 h-4" />,        className: "text-gray-400 bg-gray-500/15"   },
   sent:      { label: "Sent – Awaiting Payment",  icon: <Clock className="w-4 h-4" />,        className: "text-yellow-400 bg-yellow-500/15"},
   paid:      { label: "Paid",                     icon: <CheckCircle2 className="w-4 h-4" />, className: "text-green-400 bg-green-500/15" },
+  partial:   { label: "Partially Paid",           icon: <CreditCard className="w-4 h-4" />,   className: "text-blue-400 bg-blue-500/15"  },
   overdue:   { label: "Overdue",                  icon: <AlertCircle className="w-4 h-4" />,  className: "text-red-400 bg-red-500/15"    },
   cancelled: { label: "Cancelled",                icon: <XCircle className="w-4 h-4" />,      className: "text-gray-400 bg-gray-500/15"  },
 };

@@ -72,7 +72,7 @@ function formatDuration(mins) {
 // ── Email HTML builder ────────────────────────────────────────
 function buildBookingEmailHtml({ clientName, eventTitle, date, time, duration, location,
   price, depositAmount, paymentMethod, remainingAmount, isFree, modifyUrl, bookingId,
-  calendarUrl, trackingPixelUrl }) {
+  calendarUrl, trackingPixelUrl, unsubscribeUrl }) {
 
   const paymentRows = () => {
     if (isFree) return `<tr><td style="padding:6px 0;color:#9ca3af;font-size:14px;border-top:1px solid #1f1f1f;">Payment</td><td style="padding:6px 0;color:#22c55e;font-size:14px;text-align:right;font-weight:600;border-top:1px solid #1f1f1f;">Free ✓</td></tr>`;
@@ -126,6 +126,7 @@ function buildBookingEmailHtml({ clientName, eventTitle, date, time, duration, l
     </div>
     <div style="padding:20px 32px;border-top:1px solid #1f1f1f;text-align:center;">
       <p style="color:#4b5563;font-size:12px;margin:0;">Questions? Simply reply to this email.<br>Ref: <span style="color:#6b7280;">${bookingId}</span></p>
+      ${unsubscribeUrl ? `<p style="margin:10px 0 0;font-size:11px;color:#374151;"><a href="${unsubscribeUrl}" style="color:#4b5563;text-decoration:underline;">Unsubscribe from booking emails</a></p>` : ""}
     </div>
   </div>
   ${trackingPixelUrl ? `<img src="${trackingPixelUrl}" width="1" height="1" style="display:none;" alt="">` : ""}
@@ -173,10 +174,12 @@ async function sendBookingConfirmationEmail({
     ? `Booking Received — ${eventTitle} (payment pending)`
     : `Booking Confirmed — ${eventTitle}`;
 
+  const unsubscribeUrl = baseUrl ? `${baseUrl}/api/email/unsubscribe/${bookingId}` : null;
+
   const html = buildBookingEmailHtml({
     clientName, eventTitle, date, time, duration, location,
     price, depositAmount, paymentMethod, remainingAmount,
-    isFree, modifyUrl, bookingId, calendarUrl, trackingPixelUrl,
+    isFree, modifyUrl, bookingId, calendarUrl, trackingPixelUrl, unsubscribeUrl,
   });
 
   try {
@@ -265,6 +268,35 @@ function registerRoutes(app, store) {
     res.end(pixel);
   });
 
+  // ── Email unsubscribe ──────────────────────────────────────────────────────
+  // Linked from every booking email footer.  Sets emailsDisabled=true on the
+  // booking so future reminder/update emails are suppressed for that client.
+  app.get("/api/email/unsubscribe/:bookingId", (req, res) => {
+    const { bookingId } = req.params;
+    if (store) {
+      try {
+        const bookings = store.get("wv_bookings") || [];
+        const idx = bookings.findIndex(b => b.id === bookingId);
+        if (idx !== -1 && !bookings[idx].emailsDisabled) {
+          bookings[idx].emailsDisabled = true;
+          store.set("wv_bookings", bookings);
+          console.log(`📧 Unsubscribe: disabled emails for booking ${bookingId}`);
+        }
+      } catch (e) {
+        console.warn("Unsubscribe error:", e.message);
+      }
+    }
+    // Serve a plain confirmation page — no redirect needed
+    res.set("Content-Type", "text/html");
+    res.send(`<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>Unsubscribed</title>
+<style>body{font-family:Georgia,serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#0a0a0a;color:#d1d5db;}
+.card{max-width:420px;text-align:center;padding:48px 32px;border:1px solid #1f2937;border-radius:12px;background:#111827;}
+h1{font-size:1.5rem;margin-bottom:0.5rem;color:#f9fafb;}p{font-size:0.9rem;line-height:1.6;color:#9ca3af;}</style></head>
+<body><div class="card"><h1>You've been unsubscribed</h1>
+<p>You won't receive any more booking update emails for this session.</p>
+<p style="margin-top:1.5rem;font-size:0.75rem;">If this was a mistake, please contact the photographer directly.</p></div></body></html>`);
+  });
+
   // Get email log for a booking (used by Admin page)
   app.get("/api/email/log/:bookingId", (req, res) => {
     const { bookingId } = req.params;
@@ -288,6 +320,11 @@ function registerRoutes(app, store) {
     const bookings = store.get("wv_bookings") || [];
     const booking = bookings.find(b => b.id === bookingId);
     if (!booking) return res.status(404).json({ ok: false, error: "Booking not found" });
+
+    // Respect the client's unsubscribe preference
+    if (booking.emailsDisabled) {
+      return res.status(200).json({ ok: false, reason: "unsubscribed", message: "Client has unsubscribed from booking emails" });
+    }
 
     const appBaseUrl = req.body.appBaseUrl || `${req.protocol}://${req.get("host")}`;
     const modifyUrl = booking.modifyToken && appBaseUrl ? `${appBaseUrl}/booking/modify/${booking.modifyToken}` : null;
@@ -619,4 +656,4 @@ async function sendInvoicePaidEmail(invoice, shareUrl) {
   }
 }
 
-module.exports = { registerRoutes, getTransporter, getFromAddress, buildTenantTransporter, getTenantFromAddress, sendBookingConfirmationEmail, sendInvoicePaidEmail };
+module.exports = { registerRoutes, getTransporter, getFromAddress, buildTenantTransporter, getTenantFromAddress, sendBookingConfirmationEmail, sendInvoicePaidEmail, buildReminderEmailHtml };

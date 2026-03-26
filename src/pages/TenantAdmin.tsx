@@ -33,7 +33,7 @@ import {
   saveTenantCalendarSettings, getTenantStorageStats, upsertTenantBookingAdmin,
   syncTenantBookingToCalendar,
   testTenantFtpConnection,
-  submitEventSlotRequest, getTenantEventSlotRequest, createEventSlotCheckout,testTenantFtpConnection, ftpUploadAlbum, ftpMoveToStarred,
+  submitEventSlotRequest, getTenantEventSlotRequest, createEventSlotCheckout, ftpUploadAlbum, ftpMoveToStarred,
   getActiveLicensePlans, getLicensePlanCheckout, createBankLicensePurchase,
 } from "@/lib/api";
 import ProgressiveImg from "@/components/ProgressiveImg";
@@ -204,7 +204,7 @@ export default function TenantAdmin() {
             <span className="font-display text-sm text-foreground capitalize">{tabs.find(t => t.id === activeTab)?.label ?? "Admin"}</span>
           </div>
           <div className="flex items-center gap-2">
-            <button onClick={() => navigate("/capture")} className="flex items-center gap-1.5 text-xs font-body text-primary px-2.5 py-1.5 rounded-lg bg-primary/10 active:bg-primary/20">
+            <button onClick={() => navigate("/capture")} aria-label="Capture photos" title="Capture photos" className="flex items-center gap-1.5 text-xs font-body text-primary px-2.5 py-1.5 rounded-lg bg-primary/10 active:bg-primary/20">
               <Upload className="w-3.5 h-3.5" />
             </button>
             <button onClick={handleLogout} aria-label="Log out" className="flex items-center gap-1.5 text-xs font-body text-muted-foreground px-2.5 py-1.5 rounded-lg hover:bg-secondary">
@@ -239,7 +239,6 @@ export default function TenantAdmin() {
 
         {/* Main content */}
         <main className="flex-1 min-w-0 overflow-x-hidden lg:ml-56 p-4 sm:p-6 lg:p-8 lg:pt-8" style={{ paddingTop: "calc(env(safe-area-inset-top, 0px) + 3.5rem)", paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 4rem)" }}>
-          <style>{`@media (min-width: 1024px) { #tenant-admin-main { padding-bottom: 2rem; } }`}</style>
           {activeTab === "dashboard" && <TenantDashboard slug={slug!} session={session} />}
           {activeTab === "bookings" && <TenantBookings slug={slug!} />}
           {activeTab === "events" && <TenantEvents slug={slug!} />}

@@ -4,12 +4,13 @@ import { usePageTitle } from "@/hooks/use-page-title";
 import {
   ArrowLeft, Camera, Clock, DollarSign, CheckCircle2,
   ChevronLeft, ChevronRight, Globe, MapPin, Calendar as CalendarIcon,
+  MessageSquare,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
-import { getTenantPublicData, createTenantBooking } from "@/lib/api";
+import { getTenantPublicData, createTenantBooking, createTenantEnquiry } from "@/lib/api";
 import type { EventType, Tenant } from "@/lib/types";
 import Footer from "@/components/Footer";
 import { RichTextDisplay } from "@/components/RichTextEditor";
@@ -84,7 +85,7 @@ function formatTimezone(tz: string): string {
   }
 }
 
-type Step = "event-select" | "datetime" | "contact" | "confirmed";
+type Step = "event-select" | "datetime" | "contact" | "confirmed" | "enquiry" | "enquiry-confirmed";
 
 const TENANT_BOOKING_STEPS: { id: Step; label: string }[] = [
   { id: "event-select", label: "Service" },
@@ -93,7 +94,7 @@ const TENANT_BOOKING_STEPS: { id: Step; label: string }[] = [
 ];
 
 function TenantBookingSteps({ currentStep }: { currentStep: Step }) {
-  if (currentStep === "confirmed") return null;
+  if (currentStep === "confirmed" || currentStep === "enquiry" || currentStep === "enquiry-confirmed") return null;
   const currentIdx = TENANT_BOOKING_STEPS.findIndex(s => s.id === currentStep);
   if (currentIdx < 0) return null;
   return (
@@ -106,10 +107,10 @@ function TenantBookingSteps({ currentStep }: { currentStep: Step }) {
             <div className={`flex items-center gap-1.5 px-2 py-1 rounded-full text-[11px] font-body transition-all ${
               active ? "text-primary font-semibold" : done ? "text-green-400" : "text-muted-foreground/50"
             }`}>
-              <div className={`w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-bold shrink-0 transition-all ${
+              <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 transition-all ${
                 active ? "bg-primary text-primary-foreground scale-110" : done ? "bg-green-500/20 text-green-400" : "bg-border text-muted-foreground/50"
               }`}>
-                {done ? <CheckCircle2 className="w-3 h-3" /> : idx + 1}
+                {done ? <CheckCircle2 className="w-3.5 h-3.5" /> : idx + 1}
               </div>
               <span className="hidden sm:inline">{s.label}</span>
             </div>
@@ -135,6 +136,8 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
   const [tenant, setTenant] = useState<Tenant | null>(null);
   const [eventTypes, setEventTypes] = useState<EventType[]>([]);
   const [bookingLimitReached, setBookingLimitReached] = useState(false);
+  const [enquiryEnabled, setEnquiryEnabled] = useState(false);
+  const [enquiryLabel, setEnquiryLabel] = useState("Make an Enquiry");
 
   const [step, setStep] = useState<Step>("event-select");
   const [selectedEvent, setSelectedEvent] = useState<EventType | null>(null);
@@ -152,6 +155,17 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
   const [phone, setPhone] = useState("");
   const [notes, setNotes] = useState("");
   const [submitting, setSubmitting] = useState(false);
+
+  // Enquiry form
+  const [enquiryEventId, setEnquiryEventId] = useState("");
+  const [enquiryName, setEnquiryName] = useState("");
+  const [enquiryEmail, setEnquiryEmail] = useState("");
+  const [enquiryPhone, setEnquiryPhone] = useState("");
+  const [enquiryDate, setEnquiryDate] = useState("");
+  const [enquiryStartTime, setEnquiryStartTime] = useState("");
+  const [enquiryEndTime, setEnquiryEndTime] = useState("");
+  const [enquiryMessage, setEnquiryMessage] = useState("");
+  const [enquirySubmitting, setEnquirySubmitting] = useState(false);
 
   // Per-card "Read more" expanded state for event type descriptions
   const [expandedDescriptions, setExpandedDescriptions] = useState<Record<string, boolean>>({});
@@ -172,7 +186,13 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
   useEffect(() => {
     if (!tenantSlug) { setNotFound(true); setLoading(false); return; }
     getTenantPublicData(tenantSlug).then((data) => {
-      if (!data) { setNotFound(true); } else { setTenant(data.tenant); setEventTypes(data.eventTypes); setBookingLimitReached(!!data.bookingLimitReached); }
+      if (!data) { setNotFound(true); } else {
+        setTenant(data.tenant);
+        setEventTypes(data.eventTypes);
+        setBookingLimitReached(!!data.bookingLimitReached);
+        setEnquiryEnabled(!!data.enquiryEnabled);
+        setEnquiryLabel(data.enquiryLabel || "Make an Enquiry");
+      }
       setLoading(false);
     });
   }, [tenantSlug]);
@@ -183,6 +203,8 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
     "datetime": selectedEvent ? `${selectedEvent.title} — ${tenantName || "Booking"}` : `Choose a Date — ${tenantName || "Booking"}`,
     "contact": `Your Details — ${tenantName || "Booking"}`,
     "confirmed": `Booking Confirmed — ${tenantName || "Booking"}`,
+    "enquiry": `Send Enquiry — ${tenantName || "Booking"}`,
+    "enquiry-confirmed": `Enquiry Sent — ${tenantName || "Booking"}`,
   };
   usePageTitle(stepTitles[step]);
 
@@ -242,6 +264,42 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
   const handleSelectTime = (t: string) => {
     setSelectedTime(t);
     setStep("contact");
+    scrollTop();
+  };
+
+  const handleOpenEnquiry = (prefillEventId?: string) => {
+    setEnquiryEventId(prefillEventId || selectedEvent?.id || "");
+    setEnquiryDate("");
+    setEnquiryStartTime("");
+    setEnquiryEndTime("");
+    setEnquiryName("");
+    setEnquiryEmail("");
+    setEnquiryPhone("");
+    setEnquiryMessage("");
+    setStep("enquiry");
+    scrollTop();
+  };
+
+  const handleSubmitEnquiry = async () => {
+    if (!enquiryName.trim()) { toast.error("Please enter your name"); return; }
+    if (!isValidEmail(enquiryEmail)) { toast.error("Please enter a valid email address"); return; }
+    if (!enquiryMessage.trim()) { toast.error("Please describe what you're looking for"); return; }
+    setEnquirySubmitting(true);
+    const matchedEvent = eventTypes.find(e => e.id === enquiryEventId);
+    const result = await createTenantEnquiry(tenantSlug!, {
+      name: enquiryName.trim(),
+      email: enquiryEmail.trim(),
+      phone: enquiryPhone.trim() || undefined,
+      eventTypeId: enquiryEventId || undefined,
+      eventTypeTitle: matchedEvent?.title,
+      preferredDate: enquiryDate || undefined,
+      preferredStartTime: enquiryStartTime || undefined,
+      preferredEndTime: enquiryEndTime || undefined,
+      message: enquiryMessage.trim(),
+    });
+    setEnquirySubmitting(false);
+    if (!result.ok) { toast.error(result.error || "Failed to send enquiry"); return; }
+    setStep("enquiry-confirmed");
     scrollTop();
   };
 
@@ -336,11 +394,26 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
                   <CalendarIcon className="w-10 h-10 text-muted-foreground/30 mx-auto" />
                   <p className="text-sm font-body text-muted-foreground">Online bookings are not available at this time.</p>
                   <p className="text-xs font-body text-muted-foreground/60">Please contact {tenant.displayName} directly to arrange a session.</p>
+                  {enquiryEnabled && (
+                    <Button variant="outline" onClick={() => handleOpenEnquiry()} className="font-body text-xs gap-2 mt-2">
+                      <MessageSquare className="w-3.5 h-3.5" /> {enquiryLabel}
+                    </Button>
+                  )}
                 </div>
               ) : eventTypes.length === 0 ? (
-                <div className="glass-panel rounded-xl p-10 text-center">
+                <div className="glass-panel rounded-xl p-10 text-center space-y-3">
                   <CalendarIcon className="w-10 h-10 text-muted-foreground/30 mx-auto mb-4" />
                   <p className="text-sm font-body text-muted-foreground">No sessions available right now.</p>
+                  {enquiryEnabled && (
+                    <Button variant="outline" onClick={() => handleOpenEnquiry()} className="font-body text-xs gap-2">
+                      <MessageSquare className="w-3.5 h-3.5" /> {enquiryLabel}
+                    </Button>
+                  )}
+                  {!enquiryEnabled && tenant.email && (
+                    <a href={`mailto:${tenant.email}`} className="text-xs font-body text-primary hover:underline">
+                      Contact {tenant.displayName} →
+                    </a>
+                  )}
                 </div>
               ) : (
                 <div className="grid sm:grid-cols-2 gap-3">
@@ -396,6 +469,17 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
                       </button>
                     );
                   })}
+                </div>
+              )}
+              {/* Enquiry button — shown when enquiry mode is on and there are event types */}
+              {enquiryEnabled && !bookingLimitReached && eventTypes.length > 0 && (
+                <div className="flex justify-center pt-2">
+                  <button
+                    onClick={() => handleOpenEnquiry()}
+                    className="flex items-center gap-1.5 text-xs font-body text-muted-foreground hover:text-primary transition-colors border border-border/50 hover:border-primary/40 rounded-full px-4 py-2"
+                  >
+                    <MessageSquare className="w-3.5 h-3.5" /> {enquiryLabel}
+                  </button>
                 </div>
               )}
             </div>
@@ -493,6 +577,7 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
                             className={`aspect-square rounded-lg text-sm font-body transition-all relative ${
                               isSelected ? "bg-primary text-primary-foreground ring-2 ring-primary ring-offset-2 ring-offset-background"
                                 : isAvailable ? "text-foreground font-medium hover:bg-amber-500/10 hover:text-amber-500"
+                                : isPast ? "text-muted-foreground/30 cursor-not-allowed line-through decoration-muted-foreground/20"
                                 : "text-muted-foreground opacity-40 cursor-not-allowed"
                             }`}
                           >
@@ -515,6 +600,9 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
                       </span>
                       <span className="flex items-center gap-1.5">
                         <span className="w-1.5 h-1.5 rounded-full border border-muted-foreground/40 inline-block" /> Unavailable
+                      </span>
+                      <span className="flex items-center gap-1.5">
+                        <span className="line-through text-muted-foreground/30 leading-none">7</span> Past
                       </span>
                     </div>
 
@@ -669,6 +757,147 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
               </div>
               <Button variant="outline" onClick={() => { setStep("event-select"); setSelectedEvent(null); setSelectedDate(null); setSelectedTime(null); }} className="font-body text-xs gap-2">
                 Book another session
+              </Button>
+            </div>
+          )}
+
+          {/* ── Enquiry Form ── */}
+          {step === "enquiry" && (
+            <div key="enquiry" className="space-y-6 animate-in fade-in-0 slide-in-from-bottom-4 duration-200 max-w-lg">
+              <button onClick={() => { setStep("event-select"); scrollTop(); }} className="flex items-center gap-2 text-xs font-body tracking-wider uppercase text-muted-foreground hover:text-primary transition-colors">
+                <ArrowLeft className="w-3.5 h-3.5" /> Back
+              </button>
+
+              <div className="glass-panel rounded-xl p-6 space-y-5">
+                <div className="flex items-center gap-3 mb-1">
+                  <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
+                    <MessageSquare className="w-5 h-5 text-primary" />
+                  </div>
+                  <div>
+                    <h2 className="font-display text-xl text-foreground">{enquiryLabel}</h2>
+                    <p className="text-xs font-body text-muted-foreground">Tell us what you're looking for and we'll get back to you</p>
+                  </div>
+                </div>
+
+                {/* Event type selector */}
+                {eventTypes.length > 0 && (
+                  <div>
+                    <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Session type (optional)</label>
+                    <select
+                      value={enquiryEventId}
+                      onChange={e => setEnquiryEventId(e.target.value)}
+                      className="w-full bg-secondary border border-border text-foreground font-body text-sm rounded-md px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-ring"
+                    >
+                      <option value="">Not sure yet / other</option>
+                      {eventTypes.map(et => <option key={et.id} value={et.id}>{et.title}</option>)}
+                    </select>
+                  </div>
+                )}
+
+                {/* Preferred date + time range */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
+                    <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Preferred Date</label>
+                    <input
+                      type="date"
+                      value={enquiryDate}
+                      onChange={e => setEnquiryDate(e.target.value)}
+                      className="w-full bg-secondary border border-border rounded-md px-3 py-2.5 text-sm font-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">From</label>
+                    <input
+                      type="time"
+                      value={enquiryStartTime}
+                      onChange={e => setEnquiryStartTime(e.target.value)}
+                      className="w-full bg-secondary border border-border rounded-md px-3 py-2.5 text-sm font-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">To</label>
+                    <input
+                      type="time"
+                      value={enquiryEndTime}
+                      onChange={e => setEnquiryEndTime(e.target.value)}
+                      className="w-full bg-secondary border border-border rounded-md px-3 py-2.5 text-sm font-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                    />
+                  </div>
+                </div>
+
+                {/* Name + email */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Your Name *</label>
+                    <input
+                      type="text"
+                      value={enquiryName}
+                      onChange={e => setEnquiryName(e.target.value)}
+                      placeholder="Jane Smith"
+                      className="w-full bg-secondary border border-border rounded-md px-3 py-2.5 text-sm font-body text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-ring"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Email *</label>
+                    <input
+                      type="email"
+                      value={enquiryEmail}
+                      onChange={e => setEnquiryEmail(e.target.value)}
+                      placeholder="jane@example.com"
+                      className="w-full bg-secondary border border-border rounded-md px-3 py-2.5 text-sm font-body text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-ring"
+                    />
+                  </div>
+                </div>
+
+                {/* Phone */}
+                <div>
+                  <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Phone (optional)</label>
+                  <input
+                    type="tel"
+                    value={enquiryPhone}
+                    onChange={e => setEnquiryPhone(e.target.value)}
+                    placeholder="+61 400 000 000"
+                    className="w-full bg-secondary border border-border rounded-md px-3 py-2.5 text-sm font-body text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-ring"
+                  />
+                </div>
+
+                {/* Message */}
+                <div>
+                  <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Message / Details *</label>
+                  <textarea
+                    value={enquiryMessage}
+                    onChange={e => setEnquiryMessage(e.target.value)}
+                    placeholder="Tell us what you have in mind, any special requirements, or questions you have…"
+                    rows={4}
+                    className="w-full bg-secondary border border-border rounded-md px-3 py-2.5 text-sm font-body text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-ring resize-none"
+                  />
+                </div>
+
+                <Button
+                  onClick={handleSubmitEnquiry}
+                  disabled={enquirySubmitting}
+                  className="w-full bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2"
+                >
+                  {enquirySubmitting ? "Sending…" : "Send Enquiry"}
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {/* ── Enquiry Confirmed ── */}
+          {step === "enquiry-confirmed" && (
+            <div key="enquiry-confirmed" className="text-center py-12 space-y-6 animate-in fade-in-0 slide-in-from-bottom-4 duration-200">
+              <div className="w-16 h-16 rounded-full bg-primary/20 flex items-center justify-center mx-auto">
+                <MessageSquare className="w-8 h-8 text-primary" />
+              </div>
+              <div>
+                <h2 className="font-display text-2xl text-foreground mb-2">Enquiry Sent!</h2>
+                <p className="text-sm font-body text-muted-foreground max-w-sm mx-auto">
+                  Your message has been sent to {tenant.displayName}. They'll be in touch at {enquiryEmail}.
+                </p>
+              </div>
+              <Button variant="outline" onClick={() => { setStep("event-select"); scrollTop(); }} className="font-body text-xs gap-2">
+                Back to booking page
               </Button>
             </div>
           )}

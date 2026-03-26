@@ -350,6 +350,28 @@ const EMAIL_TEMPLATE_VARS: { variable: string; description: string }[] = [
   { variable: "{{instagram}}", description: "Instagram handle" },
 ];
 
+/** Known variable names (without braces) for fast O(1) lookup. */
+const KNOWN_EMAIL_VARS = new Set(
+  EMAIL_TEMPLATE_VARS.map(v => v.variable.slice(2, -2))
+);
+
+/**
+ * Scan an email subject + body for unknown {{variables}} and return their names.
+ * Used to warn the admin before saving a template that contains typos.
+ */
+function findUnknownEmailVars(subject: string, body: string): string[] {
+  const combined = `${subject}\n${body}`;
+  const matches = combined.match(/\{\{([^}]+)\}\}/g) || [];
+  const unknown: string[] = [];
+  for (const m of matches) {
+    const name = m.slice(2, -2).trim();
+    if (!KNOWN_EMAIL_VARS.has(name) && !unknown.includes(name)) {
+      unknown.push(name);
+    }
+  }
+  return unknown;
+}
+
 type WatermarkBakeSettings = Pick<AppSettings, "watermarkText" | "watermarkImage" | "watermarkPosition" | "watermarkOpacity" | "watermarkSize"> & {
   watermarkVersion?: number;
 };
@@ -634,6 +656,44 @@ export default function Admin() {
     navigate("/admin");
   };
 
+  // ── Session timeout warning ──────────────────────────────────────────────
+  // Reset the inactivity timer on user interaction; warn 5 min before logout;
+  // auto-logout after 60 minutes of inactivity.
+  const SESSION_TIMEOUT_MS = 60 * 60 * 1000;     // 60 minutes
+  const SESSION_WARN_MS    = SESSION_TIMEOUT_MS - 5 * 60 * 1000; // warn at 55 min
+  const [sessionTimeLeft, setSessionTimeLeft] = React.useState<number | null>(null);
+  const sessionTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sessionWarnRef  = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const resetSessionTimer = React.useCallback(() => {
+    setSessionTimeLeft(null);
+    if (sessionTimerRef.current) clearTimeout(sessionTimerRef.current);
+    if (sessionWarnRef.current)  clearTimeout(sessionWarnRef.current);
+    sessionWarnRef.current = setTimeout(() => {
+      // Start counting down seconds for the warning banner
+      setSessionTimeLeft(5 * 60);
+    }, SESSION_WARN_MS);
+    sessionTimerRef.current = setTimeout(() => {
+      handleLogout();
+    }, SESSION_TIMEOUT_MS);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  React.useEffect(() => {
+    resetSessionTimer();
+    const events = ["mousemove", "keydown", "pointerdown", "scroll"];
+    events.forEach(e => window.addEventListener(e, resetSessionTimer, { passive: true }));
+    return () => {
+      events.forEach(e => window.removeEventListener(e, resetSessionTimer));
+      if (sessionTimerRef.current) clearTimeout(sessionTimerRef.current);
+      if (sessionWarnRef.current)  clearTimeout(sessionWarnRef.current);
+    };
+  }, [resetSessionTimer]);
+  // Tick down the seconds counter when the warning banner is showing
+  React.useEffect(() => {
+    if (sessionTimeLeft === null) return;
+    if (sessionTimeLeft <= 0) { handleLogout(); return; }
+    const id = setTimeout(() => setSessionTimeLeft(t => (t ?? 1) - 1), 1000);
+    return () => clearTimeout(id);
+  }, [sessionTimeLeft]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Needed for tab badges and nav-level UI
   const settings = getSettings();
   const albums = getAlbums();
@@ -748,6 +808,25 @@ export default function Admin() {
         >
           {/* lg: use default, overridden by inline paddingBottom for desktop */}
           <style>{`@media (min-width: 1024px) { #admin-main { padding-bottom: 2rem; } }`}</style>
+          {/* Session timeout warning — shown when < 5 minutes remain */}
+          {sessionTimeLeft !== null && sessionTimeLeft > 0 && (
+            <div className="mb-4 flex items-center justify-between gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3">
+              <div className="flex items-center gap-2 text-sm font-body text-amber-300">
+                <Clock className="w-4 h-4 flex-shrink-0" />
+                <span>
+                  Session expires in{" "}
+                  <strong>{Math.floor(sessionTimeLeft / 60)}:{String(sessionTimeLeft % 60).padStart(2, "0")}</strong>
+                  {" "}— move your mouse or press a key to stay logged in.
+                </span>
+              </div>
+              <button
+                className="text-xs font-body text-amber-400 hover:text-amber-200 underline flex-shrink-0"
+                onClick={resetSessionTimer}
+              >
+                Stay logged in
+              </button>
+            </div>
+          )}
           {activeTab === "dashboard" && <DashboardView />}
           {activeTab === "bookings" && <BookingsView onCreateAlbum={handleCreateAlbumForBooking} />}
           {activeTab === "events" && <EventTypesView />}
@@ -1510,7 +1589,13 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
   };
 
   const handleStatusChange = (bk: Booking, status: Booking["status"]) => {
-    const updated = { ...bk, status };
+    // Append an entry to the status history so the timeline remains accurate
+    const historyEntry = { status, changedAt: new Date().toISOString() };
+    const updated = {
+      ...bk,
+      status,
+      statusHistory: [...(bk.statusHistory || []), historyEntry],
+    };
     updateBooking(updated);
     setBookingsState(getBookings());
     toast.success(`Booking ${status}`);
@@ -2050,6 +2135,36 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                         </div>
                       </div>
                     )}
+                    {/* Status History Timeline */}
+                    {(bk.statusHistory && bk.statusHistory.length > 0) && (
+                      <div>
+                        <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-2 flex items-center gap-1.5">
+                          <Clock className="w-3 h-3" /> Status History
+                        </p>
+                        <div className="relative pl-3 space-y-2 border-l border-border/40">
+                          {bk.statusHistory.map((entry, i) => {
+                            const statusColors: Record<string, string> = {
+                              confirmed: "bg-primary",
+                              completed: "bg-green-500",
+                              cancelled: "bg-destructive",
+                              pending: "bg-muted-foreground/50",
+                            };
+                            const dot = statusColors[entry.status] || "bg-muted-foreground/40";
+                            return (
+                              <div key={i} className="flex items-start gap-2">
+                                <div className={`absolute -left-1 mt-1 w-2 h-2 rounded-full ${dot}`} />
+                                <div className="pl-1">
+                                  <p className="text-xs font-body text-foreground capitalize">{entry.status}</p>
+                                  <p className="text-[10px] font-body text-muted-foreground/60">{new Date(entry.changedAt).toLocaleString()}</p>
+                                  {entry.note && <p className="text-[10px] font-body text-muted-foreground/50 italic">{entry.note}</p>}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
                     {/* Email Log — fetched from server */}
                     {(() => {
                       const logs = emailLogs[bk.id] || bk.emailLog || [];
@@ -6536,6 +6651,113 @@ function FinanceView() {
         </div>
       )}
 
+      {/* ── Revenue Analytics ─────────────────────────────────── */}
+      {payments.filter(p => p.status === "completed").length > 0 && (() => {
+        // Build last-12-months monthly buckets
+        const now = new Date();
+        const monthlyData = Array.from({ length: 12 }, (_, i) => {
+          const d = new Date(now.getFullYear(), now.getMonth() - (11 - i), 1);
+          const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+          const label = d.toLocaleDateString("en-AU", { month: "short", year: "2-digit" });
+          const rev = payments
+            .filter(p => p.status === "completed" && p.date?.startsWith(key))
+            .reduce((s, p) => s + p.amount, 0);
+          return { label, rev, key };
+        });
+        const maxRev = Math.max(...monthlyData.map(m => m.rev), 1);
+
+        // Revenue by service type (from bookings)
+        const bookings = getBookings();
+        const byService: Record<string, { count: number; rev: number }> = {};
+        for (const bk of bookings) {
+          if (!bk.paymentAmount) continue;
+          const key = bk.type || "Other";
+          if (!byService[key]) byService[key] = { count: 0, rev: 0 };
+          byService[key].count++;
+          byService[key].rev += bk.paymentAmount;
+        }
+        const serviceEntries = Object.entries(byService).sort((a, b) => b[1].rev - a[1].rev);
+        const confirmedPayments = payments.filter(p => p.status === "completed");
+        const avgBookingValue = bookings.length > 0
+          ? bookings.reduce((s, b) => s + (b.paymentAmount || 0), 0) / bookings.filter(b => b.paymentAmount).length
+          : 0;
+        const conversionRate = bookings.length > 0
+          ? bookings.filter(b => b.status === "confirmed" || b.status === "completed").length / bookings.length
+          : 0;
+
+        return (
+          <div className="glass-panel rounded-xl p-5 space-y-5">
+            <div className="flex items-center justify-between">
+              <h3 className="font-display text-base text-foreground">Revenue Analytics</h3>
+              <span className="text-[10px] font-body text-muted-foreground uppercase tracking-wider">Last 12 months</span>
+            </div>
+
+            {/* KPI strip */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              {[
+                { label: "Avg Booking", value: `$${isNaN(avgBookingValue) ? "0" : avgBookingValue.toFixed(0)}`, color: "text-green-400" },
+                { label: "Conversion", value: `${(conversionRate * 100).toFixed(0)}%`, color: "text-primary" },
+                { label: "Transactions", value: confirmedPayments.length, color: "text-blue-400" },
+                { label: "Service Types", value: serviceEntries.length, color: "text-purple-400" },
+              ].map(kpi => (
+                <div key={kpi.label} className="rounded-lg bg-secondary/40 border border-border/30 p-3">
+                  <p className="text-[10px] font-body text-muted-foreground tracking-wider uppercase mb-1">{kpi.label}</p>
+                  <p className={`font-display text-xl ${kpi.color}`}>{kpi.value}</p>
+                </div>
+              ))}
+            </div>
+
+            {/* Monthly bar chart */}
+            <div>
+              <p className="text-[10px] font-body text-muted-foreground tracking-wider uppercase mb-3">Monthly Revenue</p>
+              <div className="flex items-end gap-1 h-28">
+                {monthlyData.map(m => (
+                  <div key={m.key} className="flex-1 flex flex-col items-center gap-1 group relative">
+                    <div
+                      className="w-full rounded-t bg-primary/60 group-hover:bg-primary transition-colors"
+                      style={{ height: `${Math.max(2, Math.round((m.rev / maxRev) * 100))}%` }}
+                    />
+                    {/* Tooltip on hover */}
+                    {m.rev > 0 && (
+                      <div className="absolute -top-7 left-1/2 -translate-x-1/2 hidden group-hover:flex whitespace-nowrap text-[9px] font-body bg-secondary border border-border rounded px-1.5 py-0.5 text-foreground z-10 pointer-events-none">
+                        ${m.rev.toFixed(0)}
+                      </div>
+                    )}
+                    <span className="text-[8px] font-body text-muted-foreground/50 rotate-45 origin-left hidden sm:block">{m.label}</span>
+                  </div>
+                ))}
+              </div>
+              <div className="flex justify-between mt-1 sm:hidden">
+                <span className="text-[9px] font-body text-muted-foreground/40">{monthlyData[0].label}</span>
+                <span className="text-[9px] font-body text-muted-foreground/40">{monthlyData[11].label}</span>
+              </div>
+            </div>
+
+            {/* Revenue by service type */}
+            {serviceEntries.length > 0 && (
+              <div>
+                <p className="text-[10px] font-body text-muted-foreground tracking-wider uppercase mb-2">Revenue by Service</p>
+                <div className="space-y-2">
+                  {serviceEntries.slice(0, 6).map(([name, data]) => {
+                    const pct = totalRevenue > 0 ? (data.rev / totalRevenue) * 100 : 0;
+                    return (
+                      <div key={name} className="flex items-center gap-3">
+                        <p className="text-xs font-body text-foreground w-32 truncate flex-shrink-0">{name}</p>
+                        <div className="flex-1 h-1.5 rounded-full bg-secondary">
+                          <div className="h-full rounded-full bg-primary/70" style={{ width: `${pct}%` }} />
+                        </div>
+                        <p className="text-xs font-body text-muted-foreground w-16 text-right flex-shrink-0">${data.rev.toFixed(0)}</p>
+                        <p className="text-[10px] font-body text-muted-foreground/50 w-8 text-right flex-shrink-0">{pct.toFixed(0)}%</p>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
       <div className="glass-panel rounded-xl overflow-hidden">
         <div className="p-4 border-b border-border">
           <h3 className="font-display text-base text-foreground">Payment History</h3>
@@ -6656,6 +6878,30 @@ function FinanceView() {
           toast.success("Download log cleared");
         };
 
+        const handleExportDownloadCSV = () => {
+          const rows = [
+            ["Date", "Album", "Client", "Email", "Photos", "Quality", "Method"],
+            ...allDownloads.map((d: any) => [
+              new Date(d.downloadedAt).toLocaleString(),
+              `"${(d.albumTitle || "").replace(/"/g, '""')}"`,
+              `"${(d.email || "").replace(/"/g, '""')}"`,
+              `"${(d.email || "").replace(/"/g, '""')}"`,
+              d.photoCount ?? d.photoIds?.length ?? 0,
+              d.quality || "standard",
+              d.method || "—",
+            ]),
+          ];
+          const csv = rows.map(r => r.join(",")).join("\n");
+          const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = `download-log-${new Date().toISOString().slice(0, 10)}.csv`;
+          a.click();
+          URL.revokeObjectURL(url);
+          toast.success("CSV exported");
+        };
+
         return (
           <div className="glass-panel rounded-xl overflow-hidden">
             <div className="p-4 border-b border-border flex items-center justify-between">
@@ -6663,14 +6909,24 @@ function FinanceView() {
                 <h3 className="font-display text-base text-foreground">Download Log</h3>
                 <p className="text-xs font-body text-muted-foreground mt-0.5">{allDownloads.length} download event{allDownloads.length !== 1 ? "s" : ""}</p>
               </div>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={handleClearAllDownloadLog}
-                className="gap-1.5 font-body text-xs border-destructive/40 text-destructive hover:bg-destructive/10"
-              >
-                <Trash2 className="w-3 h-3" /> Clear All
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={handleExportDownloadCSV}
+                  className="gap-1.5 font-body text-xs"
+                >
+                  <Download className="w-3 h-3" /> Export CSV
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={handleClearAllDownloadLog}
+                  className="gap-1.5 font-body text-xs border-destructive/40 text-destructive hover:bg-destructive/10"
+                >
+                  <Trash2 className="w-3 h-3" /> Clear All
+                </Button>
+              </div>
             </div>
             <div className="divide-y divide-border max-h-[480px] overflow-y-auto">
               {allDownloads.map((d: any, i: number) => {
@@ -9162,6 +9418,11 @@ function EmailTemplatesManager() {
 
   const handleSave = () => {
     if (!newName.trim() || !newSubject.trim()) return;
+    // Warn on unknown variables so the admin can catch typos before sending
+    const unknownVars = findUnknownEmailVars(newSubject, newBody);
+    if (unknownVars.length > 0) {
+      toast.warning(`Unknown variable${unknownVars.length > 1 ? "s" : ""}: ${unknownVars.map(v => `{{${v}}}`).join(", ")} — these will be removed when the email is sent.`);
+    }
     if (editingId) {
       const updated: EmailTemplate = { id: editingId, name: newName, subject: newSubject, body: newBody, createdAt: templates.find(t => t.id === editingId)?.createdAt || new Date().toISOString() };
       updateEmailTemplate(updated);

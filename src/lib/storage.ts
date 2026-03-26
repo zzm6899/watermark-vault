@@ -170,6 +170,32 @@ export function addBooking(bk: Booking) {
   setBookings(list);
 }
 
+/**
+ * Checks whether an identical booking has already been submitted in the last
+ * 2 minutes by the same client for the same event, date, and time.
+ * Used to guard against accidental double-submissions (e.g. double-click or
+ * browser back + resubmit).
+ *
+ * @returns true if a likely-duplicate booking exists, false otherwise.
+ */
+export function isDuplicateBooking(bk: {
+  clientEmail: string;
+  date: string;
+  time: string;
+  eventTypeId: string;
+}): boolean {
+  const TWO_MINUTES_MS = 2 * 60 * 1000;
+  const now = Date.now();
+  return getBookings().some(existing =>
+    existing.clientEmail?.toLowerCase() === bk.clientEmail?.toLowerCase() &&
+    existing.date === bk.date &&
+    existing.time === bk.time &&
+    existing.eventTypeId === bk.eventTypeId &&
+    existing.status !== "cancelled" &&
+    now - new Date(existing.createdAt).getTime() < TWO_MINUTES_MS
+  );
+}
+
 export function deleteBooking(id: string) {
   setBookings(getBookings().filter((b) => b.id !== id));
 }

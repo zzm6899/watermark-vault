@@ -13,7 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import Footer from "@/components/Footer";
 import { toast } from "sonner";
-import { getEventTypes, getProfile, addBooking, getBookings, getSettings, isSlotBooked, updateBooking, addEnquiry } from "@/lib/storage";
+import { getEventTypes, getProfile, addBooking, getBookings, getSettings, isSlotBooked, updateBooking, addEnquiry, isDuplicateBooking } from "@/lib/storage";
 import { syncBookingToCalendar, createBookingCheckout, getStripeStatus, sendBookingConfirmationEmail, getGoogleBusyTimes, joinWaitlist, notifyDiscord, sendEnquiryReceivedEmail } from "@/lib/api";
 import type { EventType, QuestionField, Enquiry } from "@/lib/types";
 import { RichTextDisplay } from "@/components/RichTextEditor";
@@ -101,6 +101,21 @@ function formatTimezone(tz: string): string {
     return `${cityName} (${abbr}, ${offset})`;
   } catch {
     return tz;
+  }
+}
+
+/**
+ * Returns a brief "your local time" note when the visitor's timezone differs
+ * from the photographer's, e.g. "Your time: Sydney (AEST, UTC+10)".
+ * Returns null when the timezones match so no duplicate label is shown.
+ */
+function getVisitorTimezoneNote(photographerTz: string): string | null {
+  try {
+    const visitorTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (!visitorTz || visitorTz === photographerTz) return null;
+    return `Your local time: ${formatTimezone(visitorTz)}`;
+  } catch {
+    return null;
   }
 }
 
@@ -450,6 +465,14 @@ export default function Booking() {
       return;
     }
 
+    // Guard against accidental duplicate submissions (same email + slot within 2 min)
+    const clientEmailAnswer = selectedEvent.questions.find(q => q.label.toLowerCase().includes("email"));
+    const clientEmail = clientEmailAnswer ? (answers[clientEmailAnswer.id] || "") : "";
+    if (clientEmail && isDuplicateBooking({ clientEmail, date: dateStr, time: selectedTime, eventTypeId: selectedEvent.id })) {
+      toast.error("It looks like this booking was already submitted. Please check your email for a confirmation.");
+      return;
+    }
+
     // Proceed to payment step (skip if free)
     if (getPriceForDuration(selectedEvent, selectedDuration!) === 0) {
       handleCompletePaymentFree();
@@ -738,9 +761,17 @@ export default function Booking() {
                   </div>
                 )}
 
-                <div className="flex items-center justify-center gap-2 mt-6 text-xs font-body text-muted-foreground/50">
-                  <Globe className="w-3.5 h-3.5" />
-                  <span>{profile.timezone ? formatTimezone(profile.timezone) : ""}</span>
+                <div className="flex flex-col items-center gap-1 mt-6">
+                  <div className="flex items-center gap-2 text-xs font-body text-muted-foreground/50">
+                    <Globe className="w-3.5 h-3.5" />
+                    <span>{profile.timezone ? formatTimezone(profile.timezone) : ""}</span>
+                  </div>
+                  {profile.timezone && (() => {
+                    const note = getVisitorTimezoneNote(profile.timezone);
+                    return note ? (
+                      <p className="text-[11px] font-body text-muted-foreground/35 italic">{note}</p>
+                    ) : null;
+                  })()}
                 </div>
 
                 {settings.enquiryEnabled && (

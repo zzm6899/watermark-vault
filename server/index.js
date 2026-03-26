@@ -232,7 +232,32 @@ function getStorageUsage() {
   };
 }
 
-app.get("/api/storage", (_req, res) => res.json(getStorageUsage()));
+// /api/storage returns sensitive disk metadata (file names, sizes, paths).
+// Restrict it to callers that include the admin password hash so it cannot be
+// scraped by anonymous visitors who know the URL.
+app.get("/api/storage", async (req, res) => {
+  const authHeader = req.headers.authorization || "";
+  if (authHeader.startsWith("Basic ")) {
+    try {
+      const decoded = Buffer.from(authHeader.slice(6), "base64").toString("utf-8");
+      const colonIdx = decoded.indexOf(":");
+      if (colonIdx !== -1) {
+        const user = decoded.slice(0, colonIdx);
+        const hash = decoded.slice(colonIdx + 1);
+        const db = readDb();
+        const adminRaw = db["wv_admin"];
+        const adminCreds = adminRaw ? (typeof adminRaw === "string" ? JSON.parse(adminRaw) : adminRaw) : null;
+        const passwordOk = adminCreds ? await verifyPasswordHash(hash, adminCreds.passwordHash) : false;
+        if (adminCreds && adminCreds.username === user && passwordOk) {
+          return res.json(getStorageUsage());
+        }
+      }
+    } catch { /* fall through to 401 */ }
+  }
+  // Return a minimal response for unauthenticated callers — just enough for the
+  // health indicator, without exposing filenames or disk paths.
+  return res.status(401).json({ error: "Authentication required" });
+});
 
 // ── Baked-asset stripping ─────────────────────────────────────────────────
 // thumbnailWatermarked, mediumWatermarked, and fullWatermarked are base64
@@ -788,7 +813,41 @@ function parseExifDate(exifBuf) {
   }
 }
 
+// Warn when less than 500 MB remains on the data volume.
+const LOW_DISK_THRESHOLD_BYTES = 500 * 1024 * 1024; // 500 MB
+
+/**
+ * Returns available bytes on DATA_DIR's filesystem, or null if unavailable.
+ * Uses the same df logic as getStorageUsage() but as a lightweight inline check.
+ */
+function getAvailableDiskBytes() {
+  try {
+    const { execSync } = require("child_process");
+    const out = execSync(`df -B1 "${DATA_DIR}" 2>/dev/null || true`, { encoding: "utf-8" });
+    const lines = out.trim().split("\n");
+    if (lines.length >= 2) {
+      const parts = lines[1].split(/\s+/);
+      if (parts.length >= 4) return parseInt(parts[3]) || null;
+    }
+  } catch { /* non-critical */ }
+  return null;
+}
+
 app.post("/api/upload", upload.array("photos", 100), async (req, res) => {
+  // ── Disk space guard ─────────────────────────────────────────────────────
+  // Reject uploads early when the data volume is critically low to prevent
+  // partial writes that could corrupt already-uploaded files or db.json.
+  const availableBytes = getAvailableDiskBytes();
+  if (availableBytes !== null && availableBytes < LOW_DISK_THRESHOLD_BYTES) {
+    // Clean up the already-accepted multer temp files
+    for (const f of (req.files || [])) {
+      try { fs.unlinkSync(f.path); } catch {}
+    }
+    return res.status(507).json({
+      error: `Server storage is critically low (${Math.round(availableBytes / 1024 / 1024)} MB remaining). Free up space before uploading.`,
+    });
+  }
+
   // ── Extract image metadata (dimensions + EXIF date) for each uploaded file ──
   const uploadedFiles = await Promise.all(
     (req.files || []).map(async (f) => {
@@ -886,17 +945,22 @@ app.delete("/api/upload/all", deleteAllLimiter, async (_req, res) => {
     }
     clearImageCache();
 
-    // Wipe all photo records from db.json so album refs don't break
+    // Wipe all photo records from db.json so album refs don't break —
+    // including tenant albums and tenant photo libraries so stale references
+    // don't accumulate after a full storage wipe.
     const db = readDb();
-    if (db["wv_albums"]) {
-      const albums = typeof db["wv_albums"] === "string" ? JSON.parse(db["wv_albums"]) : db["wv_albums"];
+    // Collect all album keys (main + tenant)
+    const albumKeys = Object.keys(db).filter(k => k === ALBUMS_KEY || (k.startsWith("t_") && k.endsWith(TENANT_ALBUMS_SUFFIX)));
+    for (const key of albumKeys) {
+      const albums = typeof db[key] === "string" ? JSON.parse(db[key]) : db[key];
       if (Array.isArray(albums)) {
-        const wiped = albums.map(a => ({ ...a, photos: [], photoCount: 0, coverImage: "" }));
-        db["wv_albums"] = JSON.stringify(wiped);
+        db[key] = JSON.stringify(albums.map(a => ({ ...a, photos: [], photoCount: 0, coverImage: "" })));
       }
     }
-    if (db[PHOTO_LIB_KEY]) {
-      db[PHOTO_LIB_KEY] = JSON.stringify([]);
+    // Collect all photo library keys (main + tenant)
+    const photoLibKeys = Object.keys(db).filter(k => k === PHOTO_LIB_KEY || (k.startsWith("t_") && k.endsWith(TENANT_PHOTO_LIB_SUFFIX)));
+    for (const key of photoLibKeys) {
+      db[key] = JSON.stringify([]);
     }
     writeDb(db);
 
@@ -1011,7 +1075,8 @@ async function buildWatermarkOverlay(imgWidth, imgHeight, wm) {
   // Text watermark via SVG
   // Keep font size modest relative to image — ~3% of width, min 18px, max 48px
   const fontSize = Math.min(48, Math.max(18, Math.round(imgWidth * 0.03)));
-  const text = wm.text;
+  // Escape text for safe SVG embedding — prevents SVG injection via malicious watermark text
+  const text = (wm.text || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
   const alpha = Math.round(wm.opacity * 255).toString(16).padStart(2, "0");
 
   if (wm.position === "tiled") {
@@ -1194,6 +1259,19 @@ app.get("/uploads/:filename", imageServeLimiter, async (req, res) => {
 
   if (!fs.existsSync(filepath)) return res.status(404).send("Not found");
 
+  // Guard against symlink-based path traversal: resolve the real path and confirm
+  // it still starts with UPLOADS_DIR.  This prevents a malicious symlink inside the
+  // uploads folder from being used to read arbitrary files outside of it.
+  try {
+    const realFilepath = fs.realpathSync(filepath);
+    const realUploadsDir = fs.realpathSync(UPLOADS_DIR);
+    if (!realFilepath.startsWith(realUploadsDir + path.sep) && realFilepath !== realUploadsDir) {
+      return res.status(403).send("Forbidden");
+    }
+  } catch {
+    return res.status(404).send("Not found");
+  }
+
   const sizeParam = req.query.size; // 'thumb' | 'medium' | undefined
   const disableWm = req.query.wm === "0";
   // Optional tenant slug — when provided, use that tenant's watermark settings
@@ -1318,6 +1396,17 @@ app.get("/api/photo/:filename/original", async (req, res) => {
   const filepath = path.join(UPLOADS_DIR, safeName);
   if (!fs.existsSync(filepath)) return res.status(404).send("Not found");
 
+  // Guard against symlink-based path traversal
+  try {
+    const realFilepath = fs.realpathSync(filepath);
+    const realUploadsDir = fs.realpathSync(UPLOADS_DIR);
+    if (!realFilepath.startsWith(realUploadsDir + path.sep) && realFilepath !== realUploadsDir) {
+      return res.status(403).send("Forbidden");
+    }
+  } catch {
+    return res.status(404).send("Not found");
+  }
+
   const { sessionKey, albumId } = req.query;
   if (!sessionKey || !albumId) return res.status(403).send("Forbidden");
 
@@ -1406,12 +1495,22 @@ app.post("/api/upload/bulk-delete", async (req, res) => {
     const filepath = path.join(UPLOADS_DIR, safeName);
     try {
       if (fs.existsSync(filepath)) { fs.unlinkSync(filepath); deleted++; }
-      // Remove any cached variants for this file
+      // Remove any cached variants for this file (including tenant-specific variants).
+      // getCacheFilename takes an optional tenantSlug 4th arg; passing null covers the
+      // global cache and we also scan for any t_<slug> variants present on disk.
       const base = path.basename(safeName, path.extname(safeName));
-      for (const sizeLabel of ["thumb", "medium", "full"]) {
-        for (const watermarked of [true, false]) {
-          const cf = path.join(CACHE_DIR, getCacheFilename(base, sizeLabel, watermarked));
-          try { if (fs.existsSync(cf)) fs.unlinkSync(cf); } catch {}
+      // Collect tenant slugs from the database so we can wipe their caches too.
+      const db = readDb();
+      const tenantSlugs = [null, ...Object.keys(db)
+        .filter(k => k.startsWith("t_") && k.endsWith("_wv_tenant_settings"))
+        .map(k => k.slice(2, k.length - "_wv_tenant_settings".length))
+      ];
+      for (const tenantSlug of tenantSlugs) {
+        for (const sizeLabel of ["thumb", "medium", "full"]) {
+          for (const watermarked of [true, false]) {
+            const cf = path.join(CACHE_DIR, getCacheFilename(base, sizeLabel, watermarked, tenantSlug));
+            try { if (fs.existsSync(cf)) fs.unlinkSync(cf); } catch {}
+          }
         }
       }
     } catch { /* skip individual failures */ }
@@ -1859,9 +1958,28 @@ app.post("/api/cache/warm", cacheWarmLimiter, async (req, res) => {
   res.end(JSON.stringify({ ok: true, done: total, total, generated, skipped, failed, stage: "Complete" }) + "\n");
 });
 
+// ── Shared store object (used by email routes + automation scheduler) ────────
+// Provides a unified get/set interface over the in-memory DB cache so that
+// email helpers (appendEmailLog, reminder sender) don't need direct access to
+// the raw readDb / writeDb functions.
+const store = {
+  get(key) {
+    const db = readDb();
+    const raw = db[key];
+    if (raw === undefined || raw === null) return null;
+    if (typeof raw === "string") { try { return JSON.parse(raw); } catch { return raw; } }
+    return raw;
+  },
+  set(key, value) {
+    const db = readDb();
+    db[key] = value;
+    writeDb(db);
+  },
+};
+
 // ── Integrations ──────────────────────────────────────
 registerGoogleCalendarRoutes(app);
-registerEmailRoutes(app);
+registerEmailRoutes(app, store);
 registerStripeRoutes(app, { writeDb });
 registerTenantStripeRoutes(app, { readDb, writeDb, readTenants: () => {
   try {
@@ -2227,9 +2345,15 @@ app.get("/api/tenant/:slug/public", tenantPublicLimiter, (req, res) => {
     }
   }
 
+  // Include enquiry settings from tenant settings (if configured)
+  const tenantSettingsRaw = db[`t_${slug}_wv_tenant_settings`];
+  const tenantSettings = tenantSettingsRaw ? (typeof tenantSettingsRaw === "string" ? JSON.parse(tenantSettingsRaw) : tenantSettingsRaw) : {};
+  const enquiryEnabled = tenantSettings?.enquiryEnabled === true;
+  const enquiryLabel = tenantSettings?.enquiryLabel || "Make an Enquiry";
+
   // Allow browsers and CDNs to cache for 60 s; revalidate after that.
   res.setHeader("Cache-Control", SHORT_CACHE);
-  res.json({ tenant, eventTypes, bookingLimitReached });
+  res.json({ tenant, eventTypes, bookingLimitReached, enquiryEnabled, enquiryLabel });
 });
 
 // Get tenant-scoped store key (for main admin to manage tenant data)
@@ -2450,6 +2574,67 @@ app.post("/api/tenant/:slug/booking", tenantBookingLimiter, (req, res) => {
   } catch {}
 
   res.json({ ok: true, booking });
+});
+
+// Submit an enquiry to a tenant (public — rate-limited)
+app.post("/api/tenant/:slug/enquiry", tenantBookingLimiter, (req, res) => {
+  const slug = req.params.slug;
+  const tenants = readTenants();
+  const tenant = tenants.find(t => t.slug === slug && t.active !== false);
+  if (!tenant) return res.status(404).json({ error: "Tenant not found" });
+
+  // Check that enquiry mode is enabled for this tenant
+  const db = readDb();
+  const tenantSettingsRaw = db[`t_${slug}_wv_tenant_settings`];
+  const tenantSettings = tenantSettingsRaw ? (typeof tenantSettingsRaw === "string" ? JSON.parse(tenantSettingsRaw) : tenantSettingsRaw) : {};
+  if (!tenantSettings?.enquiryEnabled) {
+    return res.status(403).json({ error: "Enquiry mode is not enabled for this photographer" });
+  }
+
+  const { name, email, phone, eventTypeId, eventTypeTitle, preferredDate, preferredStartTime, preferredEndTime, message } = req.body || {};
+  if (!name || typeof name !== "string" || !name.trim()) return res.status(400).json({ error: "name is required" });
+  if (!email || typeof email !== "string" || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+    return res.status(400).json({ error: "Valid email is required" });
+  }
+  if (!message || typeof message !== "string" || !message.trim()) return res.status(400).json({ error: "message is required" });
+
+  const enquiry = {
+    id: `enq-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    name: name.trim(),
+    email: email.trim(),
+    phone: phone?.trim() || undefined,
+    eventTypeId: eventTypeId || undefined,
+    eventTypeTitle: eventTypeTitle || undefined,
+    preferredDate: preferredDate || undefined,
+    preferredStartTime: preferredStartTime || undefined,
+    preferredEndTime: preferredEndTime || undefined,
+    message: message.trim(),
+    status: "pending",
+    createdAt: new Date().toISOString(),
+    tenantSlug: slug,
+  };
+
+  // Persist enquiry into tenant-scoped store
+  const enquiryKey = `t_${slug}_wv_enquiries`;
+  const existingRaw = db[enquiryKey];
+  const existing = existingRaw ? (typeof existingRaw === "string" ? JSON.parse(existingRaw) : (Array.isArray(existingRaw) ? existingRaw : [])) : [];
+  existing.push(enquiry);
+  db[enquiryKey] = existing;
+  writeDb(db);
+
+  // Discord notification (non-blocking)
+  try {
+    const settingsRaw = db["wv_settings"];
+    const globalSettings = typeof settingsRaw === "string" ? JSON.parse(settingsRaw) : (settingsRaw || {});
+    const useTenantSettings = !!tenantSettings?.discordWebhookUrl;
+    const activeSettings = useTenantSettings ? tenantSettings : globalSettings;
+    const webhookUrl = activeSettings?.discordWebhookUrl;
+    if (webhookUrl && activeSettings?.discordNotifyBookings !== false) {
+      notifyNewEnquiry(webhookUrl, enquiry).catch(() => {});
+    }
+  } catch {}
+
+  res.json({ ok: true, enquiry });
 });
 
 // ── Super Admin Info ──────────────────────────────────
@@ -3387,6 +3572,258 @@ app.get("*", (_req, res) => {
   res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
   res.sendFile(path.join(distPath, "index.html"));
 });
+
+// ── Email Automation Rules ─────────────────────────────────────────────────
+// Rules are stored in DB under "wv_email_automations" as an array of objects:
+//   { id, enabled, trigger, delayHours, reminderType, templateSubject, templateBody }
+// trigger values: "after_booking" | "before_event" | "after_event" | "payment_overdue"
+// reminderType: "payment" | "booking"
+
+const { getTransporter, getFromAddress, buildTenantTransporter, getTenantFromAddress } = require("./email");
+const { randomUUID: ruuid } = require("crypto");
+
+function readAutomationRules() {
+  const db = readDb();
+  const raw = db["wv_email_automations"];
+  if (!raw) return [];
+  try { return typeof raw === "string" ? JSON.parse(raw) : raw; } catch { return []; }
+}
+
+function writeAutomationRules(rules) {
+  const db = readDb();
+  db["wv_email_automations"] = rules;
+  writeDb(db);
+}
+
+// Inline Basic auth check helper (reused for automation endpoints)
+async function checkAdminBasicAuth(req) {
+  const authHeader = req.headers.authorization || "";
+  if (!authHeader.startsWith("Basic ")) return false;
+  try {
+    const decoded = Buffer.from(authHeader.slice(6), "base64").toString("utf-8");
+    const colonIdx = decoded.indexOf(":");
+    if (colonIdx === -1) return false;
+    const user = decoded.slice(0, colonIdx);
+    const hash = decoded.slice(colonIdx + 1);
+    const db = readDb();
+    const adminRaw = db["wv_admin"];
+    const adminCreds = adminRaw ? (typeof adminRaw === "string" ? JSON.parse(adminRaw) : adminRaw) : null;
+    if (!adminCreds) return false;
+    const passwordOk = await verifyPasswordHash(hash, adminCreds.passwordHash);
+    return adminCreds.username === user && passwordOk;
+  } catch { return false; }
+}
+
+// GET automation rules
+app.get("/api/email-automations", async (req, res) => {
+  if (!(await checkAdminBasicAuth(req))) return res.status(401).json({ error: "Authentication required" });
+  res.json({ rules: readAutomationRules() });
+});
+
+// PUT (replace all) automation rules
+app.put("/api/email-automations", async (req, res) => {
+  if (!(await checkAdminBasicAuth(req))) return res.status(401).json({ error: "Authentication required" });
+  const { rules } = req.body;
+  if (!Array.isArray(rules)) return res.status(400).json({ error: "rules must be an array" });
+  // Ensure each rule has an id
+  const sanitised = rules.map(r => ({
+    id: r.id || ruuid(),
+    enabled: r.enabled !== false,
+    trigger: r.trigger || "after_booking",
+    delayHours: Number(r.delayHours) || 24,
+    reminderType: r.reminderType || "payment",
+    templateSubject: (r.templateSubject || "").slice(0, 200),
+    templateBody: (r.templateBody || "").slice(0, 2000),
+  }));
+  writeAutomationRules(sanitised);
+  res.json({ ok: true, rules: sanitised });
+});
+
+// ── Automation Scheduler ───────────────────────────────────────────────────
+// Runs every 5 minutes and fires reminder emails for bookings that match
+// enabled automation rules.  Each rule specifies a trigger + delay; the
+// scheduler checks whether the booking crossed that threshold since the last
+// run and that a reminder hasn't already been sent for that rule+booking combo.
+
+const AUTOMATION_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+// Track which (ruleId, bookingId) pairs we've already sent so we never double-send
+// within the same server process lifetime.  Persistent dedup is handled by
+// checking the booking's emailLog for an entry with type "auto-<ruleId>".
+const _automationSentSet = new Set();
+
+async function runEmailAutomations() {
+  const rules = readAutomationRules().filter(r => r.enabled);
+  if (rules.length === 0) return;
+
+  const t = getTransporter();
+  if (!t) return; // SMTP not configured — skip silently
+
+  const db = readDb();
+  const bookingsRaw = db["wv_bookings"];
+  const bookings = bookingsRaw
+    ? (typeof bookingsRaw === "string" ? JSON.parse(bookingsRaw) : bookingsRaw)
+    : [];
+
+  const now = Date.now();
+  let anyChange = false;
+
+  for (const rule of rules) {
+    for (const booking of bookings) {
+      // Skip cancelled bookings and bookings without email
+      if (!booking.clientEmail || booking.status === "cancelled") continue;
+      // Respect unsubscribe flag
+      if (booking.emailsDisabled) continue;
+
+      const dedupeKey = `${rule.id}:${booking.id}`;
+      if (_automationSentSet.has(dedupeKey)) continue;
+      // Also check persistent emailLog for type "auto-<ruleId>" so restart-safe
+      const alreadySent = (booking.emailLog || []).some(e => e.type === `auto-${rule.id}`);
+      if (alreadySent) { _automationSentSet.add(dedupeKey); continue; }
+
+      let shouldSend = false;
+      const delayMs = rule.delayHours * 3600 * 1000;
+
+      switch (rule.trigger) {
+        case "after_booking": {
+          // Send X hours after booking was created
+          const createdAt = booking.createdAt ? new Date(booking.createdAt).getTime() : 0;
+          shouldSend = createdAt > 0 && now >= createdAt + delayMs && now < createdAt + delayMs + AUTOMATION_INTERVAL_MS * 2;
+          break;
+        }
+        case "before_event": {
+          // Send X hours before the event date/time
+          if (booking.date && booking.time) {
+            const [y, mo, d] = booking.date.split("-").map(Number);
+            const [h, m] = booking.time.split(":").map(Number);
+            const eventTs = new Date(y, mo - 1, d, h, m).getTime();
+            const sendAt = eventTs - delayMs;
+            shouldSend = now >= sendAt && now < sendAt + AUTOMATION_INTERVAL_MS * 2;
+          }
+          break;
+        }
+        case "after_event": {
+          // Send X hours after the event date/time ends
+          if (booking.date && booking.time) {
+            const [y, mo, d] = booking.date.split("-").map(Number);
+            const [h, m] = booking.time.split(":").map(Number);
+            const eventTs = new Date(y, mo - 1, d, h, m).getTime();
+            const duration = (booking.duration || 60) * 60 * 1000;
+            const endTs = eventTs + duration;
+            shouldSend = now >= endTs + delayMs && now < endTs + delayMs + AUTOMATION_INTERVAL_MS * 2;
+          }
+          break;
+        }
+        case "payment_overdue": {
+          // Send X hours after booking creation when payment status is still "unpaid" or "pending"
+          const unpaid = !booking.paymentStatus || booking.paymentStatus === "unpaid" || booking.paymentStatus === "pending";
+          if (unpaid && booking.paymentAmount > 0) {
+            const createdAt = booking.createdAt ? new Date(booking.createdAt).getTime() : 0;
+            shouldSend = createdAt > 0 && now >= createdAt + delayMs && now < createdAt + delayMs + AUTOMATION_INTERVAL_MS * 2;
+          }
+          break;
+        }
+      }
+
+      if (!shouldSend) continue;
+
+      // Build the email — use custom template if provided, otherwise a standard reminder
+      const isPaymentReminder = rule.reminderType === "payment";
+      const clientName = booking.clientName || "there";
+      const eventTitle = booking.type || "Booking";
+      const subject = rule.templateSubject
+        ? rule.templateSubject
+            .replace(/\{name\}/gi, clientName)
+            .replace(/\{event\}/gi, eventTitle)
+            .replace(/\{date\}/gi, booking.date || "")
+        : (isPaymentReminder ? `Payment Reminder — ${eventTitle}` : `Upcoming ${eventTitle} Reminder`);
+
+      let html;
+      if (rule.templateBody) {
+        const body = rule.templateBody
+          .replace(/\{name\}/gi, clientName)
+          .replace(/\{event\}/gi, eventTitle)
+          .replace(/\{date\}/gi, booking.date || "")
+          .replace(/\{time\}/gi, booking.time || "");
+        // Wrap in minimal styled email shell
+        html = `<!DOCTYPE html><html><head><meta charset="utf-8"></head>
+<body style="margin:0;padding:0;background:#0a0a0a;font-family:'Helvetica Neue',Arial,sans-serif;">
+  <div style="max-width:560px;margin:40px auto;background:#111111;border-radius:16px;overflow:hidden;border:1px solid #1f1f1f;">
+    <div style="padding:32px;"><p style="color:#e5e7eb;font-size:15px;line-height:1.7;margin:0;white-space:pre-line;">${body.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</p></div>
+    <div style="padding:16px 32px;border-top:1px solid #1f1f1f;text-align:center;">
+      <p style="color:#4b5563;font-size:11px;margin:0;">Ref: ${booking.id}</p>
+    </div>
+  </div>
+</body></html>`;
+      } else {
+        // Fall back to the built-in reminder HTML builder from email.js
+        const { buildReminderEmailHtml } = require("./email");
+        if (buildReminderEmailHtml) {
+          html = buildReminderEmailHtml({
+            clientName,
+            eventTitle,
+            date: booking.date,
+            time: booking.time,
+            duration: booking.duration || 60,
+            isPaymentReminder,
+            paymentStatus: booking.paymentStatus || "unpaid",
+            totalPrice: booking.paymentAmount || 0,
+            depositPaid: booking.depositPaidAt ? (booking.depositAmount || 0) : 0,
+            remaining: (booking.paymentAmount || 0) - (booking.depositAmount || 0),
+            bookingId: booking.id,
+            modifyUrl: null,
+            calendarUrl: null,
+          });
+        } else {
+          html = `<p>Hi ${clientName}, this is a reminder about your ${eventTitle}.</p>`;
+        }
+      }
+
+      try {
+        const info = await t.sendMail({ from: getFromAddress(), to: booking.clientEmail, subject, html });
+        console.log(`📧 [Automation ${rule.id}] Sent to ${booking.clientEmail}: ${info.messageId}`);
+
+        // Persist log entry to booking
+        const trackingId = ruuid();
+        _automationSentSet.add(dedupeKey);
+
+        // Write log entry back to DB
+        const freshDb = readDb();
+        const freshBookings = freshDb["wv_bookings"]
+          ? (typeof freshDb["wv_bookings"] === "string" ? JSON.parse(freshDb["wv_bookings"]) : freshDb["wv_bookings"])
+          : [];
+        const idx = freshBookings.findIndex(b => b.id === booking.id);
+        if (idx !== -1) {
+          if (!freshBookings[idx].emailLog) freshBookings[idx].emailLog = [];
+          freshBookings[idx].emailLog.push({
+            id: trackingId,
+            type: `auto-${rule.id}`,
+            sentAt: new Date().toISOString(),
+            subject,
+            to: booking.clientEmail,
+            automationRule: rule.id,
+          });
+          freshDb["wv_bookings"] = freshBookings;
+          writeDb(freshDb);
+          anyChange = true;
+        }
+      } catch (err) {
+        console.error(`📧 [Automation ${rule.id}] Error sending to ${booking.clientEmail}:`, err.message);
+      }
+    }
+  }
+
+  if (anyChange) {
+    console.log(`📧 Email automation run complete`);
+  }
+}
+
+// Start scheduler after a 30-second warm-up delay so the server is fully ready
+setTimeout(() => {
+  runEmailAutomations().catch(e => console.error("Email automation error:", e.message));
+  setInterval(() => {
+    runEmailAutomations().catch(e => console.error("Email automation error:", e.message));
+  }, AUTOMATION_INTERVAL_MS);
+}, 30000);
 
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 PhotoFlow running on port ${PORT}`);

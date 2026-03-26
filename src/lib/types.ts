@@ -49,6 +49,13 @@ export interface EventType {
   prices?: Record<string, number>;
 }
 
+/** A single entry in a booking's status change history. */
+export interface BookingStatusHistoryEntry {
+  status: "pending" | "confirmed" | "completed" | "cancelled";
+  changedAt: string;   // ISO timestamp
+  note?: string;       // optional admin note (e.g. "Cancelled by client request")
+}
+
 export interface Booking {
   id: string;
   clientName: string;
@@ -77,6 +84,8 @@ export interface Booking {
   emailLog?: any[];
   tenantSlug?: string;   // set when booking is made via a tenant's public page
   requiresConfirmation?: boolean; // true if admin must manually confirm; false = auto-confirm once deposit paid
+  /** Chronological record of status transitions — appended whenever status changes. */
+  statusHistory?: BookingStatusHistoryEntry[];
 }
 
 export interface Photo {
@@ -495,6 +504,30 @@ export interface TenantSettings {
 }
 
 
+
+// ─── Email Automation Rules ───────────────────────────────────────────────────
+
+export type EmailAutomationTrigger =
+  | "after_booking"    // X hours after booking is created
+  | "before_event"     // X hours before the event
+  | "after_event"      // X hours after the event ends
+  | "payment_overdue"; // X hours after creation when still unpaid
+
+export type EmailAutomationReminderType = "payment" | "booking";
+
+/** A server-side email automation rule that fires reminder emails automatically. */
+export interface EmailAutomationRule {
+  id: string;
+  enabled: boolean;
+  trigger: EmailAutomationTrigger;
+  /** How many hours after/before the trigger point to send the email. */
+  delayHours: number;
+  reminderType: EmailAutomationReminderType;
+  /** Optional custom email subject. Supports {name}, {event}, {date}. */
+  templateSubject?: string;
+  /** Optional custom email body. Supports {name}, {event}, {date}, {time}. */
+  templateBody?: string;
+}
 
 export type LicensePlanType = "monthly" | "yearly" | "one-time";
 

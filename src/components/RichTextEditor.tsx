@@ -1,6 +1,7 @@
 import { useRef, useCallback } from "react";
 import { Bold, Italic, Heading2, Heading3, List } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import DOMPurify from "dompurify";
 
 interface RichTextEditorProps {
   value: string;
@@ -169,7 +170,7 @@ export function RichTextDisplay({
         [&_ul]:list-disc [&_ul]:pl-4 [&_ul]:my-1.5
         [&_li]:text-sm [&_li]:font-body [&_li]:text-muted-foreground
         [&_p]:mb-1.5 ${className}`}
-      dangerouslySetInnerHTML={{ __html: html }}
+      dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(html) }}
     />
   );
 }

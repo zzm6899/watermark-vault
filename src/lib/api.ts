@@ -6,6 +6,30 @@
 
 let serverAvailable: boolean | null = null;
 
+/**
+ * Wraps fetch with simple exponential-backoff retry logic.
+ * Retries only on network errors (not on HTTP error statuses).
+ * @param url      - URL to fetch
+ * @param options  - standard RequestInit options
+ * @param maxRetries - max additional attempts after the first (default 2 → 3 total)
+ */
+async function fetchWithRetry(url: string, options?: RequestInit, maxRetries = 2): Promise<Response> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const res = await fetch(url, options);
+      return res; // return on any HTTP response (caller checks res.ok)
+    } catch (err) {
+      lastError = err;
+      if (attempt < maxRetries) {
+        // Exponential backoff: 500 ms, 1 s, 2 s, …
+        await new Promise(r => setTimeout(r, Math.pow(2, attempt) * 500));
+      }
+    }
+  }
+  throw lastError;
+}
+
 async function checkServer(): Promise<boolean> {
   if (serverAvailable !== null) return serverAvailable;
   try {
@@ -349,7 +373,12 @@ export async function getServerStorageStats(): Promise<{
 } | null> {
   if (!(await checkServer())) return null;
   try {
-    const res = await fetch("/api/storage");
+    const { getAdminCredentials } = await import("./storage");
+    const creds = getAdminCredentials();
+    const authHeader = creds ? "Basic " + btoa(`${creds.username}:${creds.passwordHash}`) : "";
+    const res = await fetch("/api/storage", {
+      headers: authHeader ? { Authorization: authHeader } : {},
+    });
     if (!res.ok) return null;
     return await res.json();
   } catch {
@@ -415,15 +444,34 @@ export async function warmCache(
 
 // ── Stripe ──────────────────────────────────────────────
 
+// Cache Stripe status for 5 minutes — it rarely changes and is called on every
+// admin page mount, so skipping the round-trip on repeat visits cuts latency.
+let _stripeStatusCache: { configured: boolean; publishableKey: string | null } | null = null;
+let _stripeStatusCacheTs = 0;
+const STRIPE_STATUS_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
 export async function getStripeStatus(): Promise<{ configured: boolean; publishableKey: string | null }> {
   if (!(await checkServer())) return { configured: false, publishableKey: null };
+  const now = Date.now();
+  if (_stripeStatusCache && now - _stripeStatusCacheTs < STRIPE_STATUS_CACHE_TTL) {
+    return _stripeStatusCache;
+  }
   try {
-    const res = await fetch("/api/stripe/status");
+    const res = await fetchWithRetry("/api/stripe/status");
     if (!res.ok) return { configured: false, publishableKey: null };
-    return await res.json();
+    const data = await res.json();
+    _stripeStatusCache = data;
+    _stripeStatusCacheTs = now;
+    return data;
   } catch {
     return { configured: false, publishableKey: null };
   }
+}
+
+/** Invalidate the Stripe status cache (call after changing Stripe settings). */
+export function invalidateStripeStatusCache() {
+  _stripeStatusCache = null;
+  _stripeStatusCacheTs = 0;
 }
 
 export async function createBookingCheckout(params: {
@@ -1135,12 +1183,33 @@ export async function getTenantPublicData(slug: string): Promise<{
   tenant: import("./types").Tenant;
   eventTypes: import("./types").EventType[];
   bookingLimitReached?: boolean;
+  enquiryEnabled?: boolean;
+  enquiryLabel?: string;
 } | null> {
   try {
     const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/public`);
     if (!res.ok) return null;
     return await res.json();
   } catch { return null; }
+}
+
+/** Submit an enquiry to a tenant's public page. */
+export async function createTenantEnquiry(slug: string, enquiry: {
+  name: string; email: string; phone?: string;
+  eventTypeId?: string; eventTypeTitle?: string;
+  preferredDate?: string; preferredStartTime?: string; preferredEndTime?: string;
+  message: string;
+}): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/enquiry`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(enquiry),
+    });
+    const json = await res.json();
+    if (!res.ok) return { ok: false, error: json.error };
+    return { ok: true };
+  } catch { return { ok: false, error: "Network error" }; }
 }
 
 /** Create a booking for a tenant's public page. */
