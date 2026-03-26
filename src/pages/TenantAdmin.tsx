@@ -8,7 +8,7 @@ import {
   Save, X, ChevronDown, ChevronUp, Globe, Upload, Search, Copy,
   DollarSign, MessageSquare, HardDrive, User, RefreshCw, Webhook, Star,
   ExternalLink, Mail, Send, Unlock, CreditCard, CheckCircle2, Download,
-  XSquare, CheckSquare, Bell, Wifi, Link2,
+  XSquare, CheckSquare, Bell, Wifi, Link2, LayoutGrid, Grid,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -40,7 +40,7 @@ import ProgressiveImg from "@/components/ProgressiveImg";
 import RichTextEditor from "@/components/RichTextEditor";
 import type {
   Booking, Album, Photo, AlbumDisplaySize, EventType, Invoice, InvoiceItem, InvoiceParty,
-  Contact, TenantSettings, AvailabilitySlot, QuestionField, WatermarkPosition, SpecificDateSlot, EventSlotRequest, LicensePlan,
+  Contact, TenantSettings, AvailabilitySlot, QuestionField, WatermarkPosition, SpecificDateSlot, EventSlotRequest, LicensePlan, EmailTemplate,
 } from "@/lib/types";
 import sampleLandscape from "@/assets/sample-landscape.jpg";
 import samplePortrait from "@/assets/sample-portrait.jpg";
@@ -95,6 +95,7 @@ export default function TenantAdmin() {
   const { slug } = useParams<{ slug: string }>();
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<Tab>("dashboard");
+  const [badgeCounts, setBadgeCounts] = useState<Record<string, number>>({});
 
   // Auth check
   const session = getMobileTenantSession();
@@ -103,6 +104,31 @@ export default function TenantAdmin() {
       navigate("/login", { replace: true });
     }
   }, [session, slug, navigate]);
+
+  // Load badge counts for bottom nav indicators
+  useEffect(() => {
+    if (!slug) return;
+    const load = async () => {
+      try {
+        const [mobileData, invoiceData, enquiryData] = await Promise.all([
+          fetchTenantMobileData(slug),
+          getTenantStoreKey<Invoice[]>(slug, "wv_invoices"),
+          getTenantStoreKey<Array<{ status: string }>>(slug, "wv_enquiries"),
+        ]);
+        const albums = mobileData?.albums || [];
+        const invoices = invoiceData || [];
+        const enquiries = enquiryData || [];
+        setBadgeCounts({
+          albums: albums.filter(a => a.proofingEnabled && a.proofingStage === "selections-submitted").length,
+          invoices: invoices.filter(i => i.status === "overdue").length,
+          enquiries: enquiries.filter(e => e.status === "pending").length,
+        });
+      } catch {
+        // Badge counts are non-critical — silently ignore load failures
+      }
+    };
+    load();
+  }, [slug]);
 
   usePageTitle(session ? `${session.displayName} — ${TENANT_TAB_LABELS[activeTab]}` : "Login");
 
@@ -141,13 +167,22 @@ export default function TenantAdmin() {
           <p className="text-[10px] font-mono text-muted-foreground/60 px-3 mb-5">/{slug}</p>
           <p className="text-[10px] font-body tracking-[0.3em] uppercase text-muted-foreground mb-4 px-3">Admin Panel</p>
           <nav className="space-y-1 flex-1">
-            {tabs.map((tab) => (
-              <button key={tab.id} onClick={() => setActiveTab(tab.id)}
-                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-body transition-all ${activeTab === tab.id ? "bg-primary/10 text-primary" : "text-muted-foreground hover:text-foreground hover:bg-secondary"}`}
-              >
-                <tab.icon className="w-4 h-4" />{tab.label}
-              </button>
-            ))}
+            {tabs.map((tab) => {
+              const pendingBadge = badgeCounts[tab.id] || 0;
+              return (
+                <button key={tab.id} onClick={() => setActiveTab(tab.id)}
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-body transition-all ${activeTab === tab.id ? "bg-primary/10 text-primary" : "text-muted-foreground hover:text-foreground hover:bg-secondary"}`}
+                >
+                  <tab.icon className="w-4 h-4" />
+                  <span className="flex-1 text-left">{tab.label}</span>
+                  {pendingBadge > 0 && (
+                    <span className="ml-auto bg-orange-500 text-white text-[10px] font-bold w-4 h-4 rounded-full flex items-center justify-center flex-shrink-0">
+                      {pendingBadge}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
           </nav>
           <div className="mt-auto space-y-1">
             <button onClick={() => navigate("/capture")} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-body text-primary hover:bg-primary/10 transition-all">
@@ -183,6 +218,7 @@ export default function TenantAdmin() {
           <div className="flex overflow-x-auto scrollbar-hide">
             {tabs.map((tab) => {
               const isActive = activeTab === tab.id;
+              const pendingBadge = badgeCounts[tab.id] || 0;
               return (
                 <button key={tab.id} onClick={() => setActiveTab(tab.id)}
                   className={`relative flex flex-col items-center justify-center gap-0.5 px-3 py-2 min-w-[56px] min-h-[52px] flex-shrink-0 transition-colors ${isActive ? "text-primary" : "text-muted-foreground"}`}
@@ -190,6 +226,11 @@ export default function TenantAdmin() {
                   <tab.icon className="w-5 h-5" />
                   <span className="text-[10px] font-body tracking-wide whitespace-nowrap">{tab.label}</span>
                   {isActive && <span className="absolute top-0 inset-x-2 h-0.5 rounded-full bg-primary" />}
+                  {pendingBadge > 0 && (
+                    <span className="absolute top-1.5 right-1.5 bg-orange-500 text-white text-[8px] font-bold min-w-[14px] h-3.5 px-0.5 rounded-full flex items-center justify-center">
+                      {pendingBadge}
+                    </span>
+                  )}
                 </button>
               );
             })}
@@ -2233,6 +2274,12 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
 const TENANT_LIBRARY_INITIAL_BATCH = 60;
 const TENANT_LIBRARY_BATCH_SIZE = 60;
 
+const PHOTO_GRID_SIZE_OPTIONS = [
+  { size: "small" as const, label: "Small" },
+  { size: "medium" as const, label: "Medium" },
+  { size: "large" as const, label: "Large" },
+];
+
 function TenantPhotos({ slug }: { slug: string }) {
   const [albums, setAlbums] = useState<Album[]>([]);
   const [libraryPhotos, setLibraryPhotos] = useState<Photo[]>([]);
@@ -2249,6 +2296,7 @@ function TenantPhotos({ slug }: { slug: string }) {
   const [filterDateFrom, setFilterDateFrom] = useState("");
   const [filterDateTo, setFilterDateTo] = useState("");
   const [filterSize, setFilterSize] = useState<"" | "small" | "medium" | "large">("");
+  const [photoGridSize, setPhotoGridSize] = useState<"small" | "medium" | "large">("medium");
   const libSentinelRef = useRef<HTMLDivElement>(null);
 
   const photoUrl = (src: string) => tenantPhotoSrc(src, slug);
@@ -2692,6 +2740,18 @@ function TenantPhotos({ slug }: { slug: string }) {
             <CheckSquare className="w-4 h-4" />
             {selectedIds.size === displayPhotos.length && displayPhotos.length > 0 ? "Deselect All" : "Select All"}
           </Button>
+          {/* Grid size toggle */}
+          <div className="flex items-center gap-0.5 p-0.5 rounded-lg bg-secondary flex-shrink-0">
+            {PHOTO_GRID_SIZE_OPTIONS.map(({ size, label }) => {
+              const GridIcon = size === "small" ? LayoutGrid : size === "large" ? Image : Grid;
+              return (
+                <button key={size} onClick={() => setPhotoGridSize(size)} title={label}
+                  className={`p-1.5 rounded-md transition-all ${photoGridSize === size ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}>
+                  <GridIcon className="w-3.5 h-3.5" />
+                </button>
+              );
+            })}
+          </div>
           {/* Mobile-only overflow menu for less-used actions */}
           <div className="sm:hidden flex gap-2">
             <Button size="sm" variant="outline" onClick={handleClearDuplicates} className="gap-1.5 font-body text-xs border-border text-muted-foreground flex-shrink-0 px-2">
@@ -2902,7 +2962,13 @@ function TenantPhotos({ slug }: { slug: string }) {
         </div>
       ) : (
         <>
-        <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-2">
+        <div className={`grid gap-2 ${
+          photoGridSize === "small"
+            ? "grid-cols-4 sm:grid-cols-5 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10"
+            : photoGridSize === "large"
+              ? "grid-cols-2 sm:grid-cols-3 md:grid-cols-4"
+              : "grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-7 xl:grid-cols-9"
+        }`}>
           {displayPhotos.slice(0, visibleCount).map(p => (
             <div
               key={`${p.id}::${p.source}`}
@@ -3582,7 +3648,7 @@ function TenantSettingsView({ slug }: { slug: string }) {
   const [settings, setSettings] = useState<TenantSettings>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [activeSection, setActiveSection] = useState<"general" | "payments" | "notifications" | "watermark" | "integrations">("general");
+  const [activeSection, setActiveSection] = useState<"general" | "payments" | "notifications" | "watermark" | "integrations" | "email">("general");
   const [wmUploading, setWmUploading] = useState(false);
 
   // Google Calendar state
@@ -3685,6 +3751,7 @@ function TenantSettingsView({ slug }: { slug: string }) {
     { id: "general" as const, label: "General" },
     { id: "payments" as const, label: "Payments" },
     { id: "notifications" as const, label: "Notifications" },
+    { id: "email" as const, label: "Email Templates" },
     { id: "watermark" as const, label: "Watermark" },
     { id: "integrations" as const, label: "Integrations" },
   ];
@@ -4042,6 +4109,10 @@ function TenantSettingsView({ slug }: { slug: string }) {
         </div>
       )}
 
+      {activeSection === "email" && (
+        <TenantEmailTemplatesManager slug={slug} />
+      )}
+
       {activeSection === "watermark" && (
         <div className="space-y-5 max-w-lg">
           <div className="space-y-3 p-4 rounded-lg bg-secondary/40 border border-border/50">
@@ -4194,6 +4265,158 @@ function TenantSettingsView({ slug }: { slug: string }) {
         </div>
       )}
     </motion.div>
+  );
+}
+
+// ─── Email Templates Manager (Tenant) ────────────────────────────────────────
+const TENANT_EMAIL_TEMPLATE_VARS: { variable: string; description: string }[] = [
+  { variable: "{{clientName}}", description: "Full client name" },
+  { variable: "{{firstName}}", description: "First name only" },
+  { variable: "{{email}}", description: "Client email address" },
+  { variable: "{{eventTitle}}", description: "Event / session type" },
+  { variable: "{{date}}", description: "Date (YYYY-MM-DD)" },
+  { variable: "{{dateFormatted}}", description: "Date (e.g. Friday, 14 March 2025)" },
+  { variable: "{{time}}", description: "Time (HH:MM)" },
+  { variable: "{{timeFormatted}}", description: "Time (e.g. 2:00 PM)" },
+  { variable: "{{duration}}", description: "Session duration" },
+  { variable: "{{amount}}", description: "Total amount" },
+  { variable: "{{depositAmount}}", description: "Deposit amount" },
+  { variable: "{{remainingAmount}}", description: "Remaining balance" },
+  { variable: "{{location}}", description: "Shoot location" },
+  { variable: "{{bookingId}}", description: "Booking reference ID" },
+  { variable: "{{notes}}", description: "Booking notes" },
+];
+
+function TenantEmailTemplatesManager({ slug }: { slug: string }) {
+  const [templates, setTemplates] = useState<EmailTemplate[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [newName, setNewName] = useState("");
+  const [newSubject, setNewSubject] = useState("");
+  const [newBody, setNewBody] = useState("");
+  const [showForm, setShowForm] = useState(false);
+
+  useEffect(() => {
+    getTenantStoreKey<EmailTemplate[]>(slug, "wv_email_templates").then(data => {
+      setTemplates(data || []);
+      setLoading(false);
+    });
+  }, [slug]);
+
+  const persistTemplates = async (updated: EmailTemplate[]) => {
+    setTemplates(updated);
+    await saveTenantStoreKey(slug, "wv_email_templates", updated);
+  };
+
+  const handleSave = async () => {
+    if (!newName.trim() || !newSubject.trim()) return;
+    let updated: EmailTemplate[];
+    if (editingId) {
+      updated = templates.map(t => t.id === editingId
+        ? { id: editingId, name: newName, subject: newSubject, body: newBody, createdAt: t.createdAt }
+        : t);
+    } else {
+      const t: EmailTemplate = { id: generateId("tpl"), name: newName, subject: newSubject, body: newBody, createdAt: new Date().toISOString() };
+      updated = [...templates, t];
+    }
+    await persistTemplates(updated);
+    setShowForm(false);
+    setEditingId(null);
+    setNewName(""); setNewSubject(""); setNewBody("");
+    toast.success(editingId ? "Template updated" : "Template saved");
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!confirm("Delete this template?")) return;
+    await persistTemplates(templates.filter(t => t.id !== id));
+    toast.success("Template deleted");
+  };
+
+  const handleEdit = (t: EmailTemplate) => {
+    setEditingId(t.id);
+    setNewName(t.name);
+    setNewSubject(t.subject);
+    setNewBody(t.body);
+    setShowForm(true);
+  };
+
+  if (loading) return <div className="py-8 text-center text-muted-foreground font-body text-sm animate-pulse">Loading…</div>;
+
+  return (
+    <div className="glass-panel rounded-xl p-6 space-y-4 max-w-lg">
+      <div className="flex items-center justify-between">
+        <h3 className="font-display text-base text-foreground">Email Templates</h3>
+        <Button size="sm" variant="outline"
+          onClick={() => { setShowForm(!showForm); setEditingId(null); setNewName(""); setNewSubject(""); setNewBody(""); }}
+          className="gap-1.5 font-body text-xs">
+          <Plus className="w-3 h-3" /> {showForm ? "Cancel" : "New Template"}
+        </Button>
+      </div>
+      <p className="text-[10px] font-body text-muted-foreground/50">
+        Create reusable templates for custom emails. Click a variable badge to copy it, then paste into your subject or body.
+      </p>
+
+      {/* Variable reference */}
+      <div className="rounded-lg border border-border/50 bg-secondary/30 p-3 space-y-2">
+        <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground">Available Variables</p>
+        <div className="flex flex-wrap gap-1.5">
+          {TENANT_EMAIL_TEMPLATE_VARS.map(({ variable, description }) => (
+            <button key={variable} type="button" title={description}
+              onClick={() => { navigator.clipboard.writeText(variable).then(() => toast.success(`Copied ${variable}`)).catch(() => toast.error("Failed to copy")); }}
+              className="text-[10px] font-mono px-2 py-0.5 rounded bg-primary/10 text-primary hover:bg-primary/20 active:scale-95 transition-all border border-primary/20">
+              {variable}
+            </button>
+          ))}
+        </div>
+        <p className="text-[9px] font-body text-muted-foreground/40">Click a badge to copy it to your clipboard, then paste into your subject or body.</p>
+      </div>
+
+      {showForm && (
+        <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} className="space-y-3 p-4 rounded-lg bg-secondary/50 border border-border/50">
+          <div>
+            <label className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-1 block">Template Name</label>
+            <Input value={newName} onChange={e => setNewName(e.target.value)} placeholder="e.g. Follow Up, Thank You…" className="bg-secondary border-border text-foreground font-body text-sm" />
+          </div>
+          <div>
+            <label className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-1 block">Subject Line</label>
+            <Input value={newSubject} onChange={e => setNewSubject(e.target.value)} placeholder="e.g. Your {{eventTitle}} session on {{dateFormatted}}" className="bg-secondary border-border text-foreground font-body text-sm" />
+          </div>
+          <div>
+            <label className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-1 block">Body</label>
+            <Textarea value={newBody} onChange={e => setNewBody(e.target.value)}
+              placeholder={"Hey {{firstName}},\n\nThanks for booking your {{eventTitle}} session on {{dateFormatted}} at {{timeFormatted}}."}
+              className="bg-secondary border-border text-foreground font-body text-sm min-h-[120px]" />
+          </div>
+          <Button size="sm" onClick={handleSave} disabled={!newName.trim() || !newSubject.trim()} className="gap-1.5 bg-primary text-primary-foreground font-body text-xs">
+            <Save className="w-3 h-3" /> {editingId ? "Update Template" : "Save Template"}
+          </Button>
+        </motion.div>
+      )}
+
+      {templates.length > 0 ? (
+        <div className="space-y-2">
+          {templates.map(t => (
+            <div key={t.id} className="p-3 rounded-lg bg-secondary/30 border border-border/30 flex items-start justify-between gap-3">
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-body text-foreground font-medium">{t.name}</p>
+                <p className="text-xs font-body text-muted-foreground truncate">Subject: {t.subject}</p>
+                <p className="text-[10px] font-body text-muted-foreground/50 mt-1 line-clamp-2">{t.body}</p>
+              </div>
+              <div className="flex items-center gap-1 flex-shrink-0">
+                <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => handleEdit(t)}>
+                  <Edit className="w-3 h-3" />
+                </Button>
+                <Button size="icon" variant="ghost" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={() => handleDelete(t.id)}>
+                  <Trash2 className="w-3 h-3" />
+                </Button>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="text-xs font-body text-muted-foreground/50">No templates yet. Create one to speed up your email workflow.</p>
+      )}
+    </div>
   );
 }
 
