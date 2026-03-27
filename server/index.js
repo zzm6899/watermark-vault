@@ -334,6 +334,31 @@ app.post("/api/auth/verify", authLimiter, async (req, res) => {
   res.json({ ok });
 });
 
+// ── requireAuth middleware ─────────────────────────────────────────────────
+// Validates Basic auth header containing base64(username:passwordHash).
+// Used to protect admin-only API routes.
+async function requireAuth(req, res, next) {
+  const authHeader = req.headers.authorization || "";
+  if (authHeader.startsWith("Basic ")) {
+    try {
+      const decoded = Buffer.from(authHeader.slice(6), "base64").toString("utf-8");
+      const colonIdx = decoded.indexOf(":");
+      if (colonIdx !== -1) {
+        const user = decoded.slice(0, colonIdx);
+        const hash = decoded.slice(colonIdx + 1);
+        const db = readDb();
+        const adminRaw = db["wv_admin"];
+        const adminCreds = adminRaw ? (typeof adminRaw === "string" ? JSON.parse(adminRaw) : adminRaw) : null;
+        if (adminCreds && adminCreds.username === user) {
+          const passwordOk = await verifyPasswordHash(hash, adminCreds.passwordHash);
+          if (passwordOk) return next();
+        }
+      }
+    } catch { /* fall through to 401 */ }
+  }
+  return res.status(401).json({ error: "Authentication required" });
+}
+
 app.get("/api/store", (req, res) => {
   const db = readDb();
   if (req.query.keys) {
