@@ -2237,12 +2237,12 @@ function writeTenants(tenants) {
 }
 
 // List all tenants
-app.get("/api/tenants", tenantLimiter, (_req, res) => {
+app.get("/api/tenants", tenantLimiter, requireAuth, (_req, res) => {
   res.json(readTenants());
 });
 
 // Create tenant
-app.post("/api/tenants", tenantLimiter, (req, res) => {
+app.post("/api/tenants", tenantLimiter, requireAuth, (req, res) => {
   const { slug, displayName, email, bio, timezone, licenseKey } = req.body || {};
   if (!slug || typeof slug !== "string" || !SLUG_RE.test(slug)) {
     return res.status(400).json({ error: "Invalid slug — use lowercase letters, numbers, and hyphens (1-30 chars)" });
@@ -2270,7 +2270,7 @@ app.post("/api/tenants", tenantLimiter, (req, res) => {
 });
 
 // Update tenant
-app.put("/api/tenants/:slug", tenantLimiter, (req, res) => {
+app.put("/api/tenants/:slug", tenantLimiter, requireAuth, (req, res) => {
   const tenants = readTenants();
   const idx = tenants.findIndex(t => t.slug === req.params.slug);
   if (idx === -1) return res.status(404).json({ error: "Tenant not found" });
@@ -2304,7 +2304,7 @@ app.put("/api/tenants/:slug", tenantLimiter, (req, res) => {
 });
 
 // Delete tenant
-app.delete("/api/tenants/:slug", tenantLimiter, (req, res) => {
+app.delete("/api/tenants/:slug", tenantLimiter, requireAuth, (req, res) => {
   const tenants = readTenants();
   const slug = req.params.slug;
   const filtered = tenants.filter(t => t.slug !== slug);
@@ -2831,7 +2831,7 @@ app.get("/api/tenant/:slug/event-slot-request/pending", tenantLimiter, (req, res
 });
 
 // ── Tenant Login (for mobile app) ─────────────────────
-app.post("/api/tenant/:slug/login", tenantLimiter, (req, res) => {
+app.post("/api/tenant/:slug/login", tenantLimiter, async (req, res) => {
   const tenants = readTenants();
   const tenant = tenants.find(t => t.slug === req.params.slug && t.active !== false);
   if (!tenant) return res.status(404).json({ ok: false, error: "Tenant not found" });
@@ -2840,7 +2840,8 @@ app.post("/api/tenant/:slug/login", tenantLimiter, (req, res) => {
   if (!passwordHash || typeof passwordHash !== "string") {
     return res.status(400).json({ ok: false, error: "passwordHash is required" });
   }
-  if (tenant.passwordHash !== passwordHash) {
+  const ok = await verifyPasswordHash(passwordHash, tenant.passwordHash);
+  if (!ok) {
     return res.status(401).json({ ok: false, error: "Invalid credentials" });
   }
   res.json({ ok: true, tenant: { slug: tenant.slug, displayName: tenant.displayName, email: tenant.email, timezone: tenant.timezone } });

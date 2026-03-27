@@ -118,7 +118,7 @@ import {
 } from "@/lib/api";
 import type { CacheBreakdown } from "@/lib/api";
 import RichTextEditor, { RichTextDisplay } from "@/components/RichTextEditor";
-import Login from "@/pages/Login";
+import LoginPage from "@/pages/LoginPage";
 import type {
   EventType, QuestionField, AvailabilitySlot,
   ProfileSettings, AppSettings, Booking, WatermarkPosition,
@@ -658,7 +658,7 @@ export default function Admin() {
   usePageTitle(authed ? `${getProfile().name || "Admin"} — ${ADMIN_TAB_LABELS[activeTab]}` : "Admin Login");
 
   if (!isSetupComplete()) return null;
-  if (!authed) return <Login onLogin={() => setAuthed(true)} />;
+  if (!authed) return <LoginPage onLogin={() => setAuthed(true)} />;
   
   // Per-tab scroll position memory: save before leaving, restore after switching.
   const scrollPositions = useRef<Partial<Record<Tab, number>>>({});

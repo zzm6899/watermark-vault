@@ -8,7 +8,7 @@ import Booking from "@/pages/Booking";
 import AlbumDetail from "@/pages/AlbumDetail";
 import BookingModify from "@/pages/BookingModify";
 import Admin from "@/pages/Admin";
-import Login from "@/pages/Login";
+import LoginPage from "@/pages/LoginPage";
 import Setup from "@/pages/Setup";
 import NotFound from "@/pages/NotFound";
 import MobileCapture from "@/pages/MobileCapture";
@@ -28,7 +28,7 @@ function AdminGuard() {
     return <Setup onComplete={refresh} />;
   }
   if (!isLoggedIn()) {
-    return <Login onLogin={refresh} />;
+    return <LoginPage onLogin={refresh} />;
   }
   return <Admin />;
 }

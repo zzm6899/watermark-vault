@@ -8,7 +8,7 @@ import { getAdminCredentials, hashPassword, login, setMobileTenantSession, getMo
 import { syncFromServer, tenantLogin, verifyAdminCredentials, isServerMode } from "@/lib/api";
 import { useNavigate } from "react-router-dom";
 
-export default function LoginPage() {
+export default function LoginPage({ onLogin }: { onLogin?: () => void } = {}) {
   const navigate = useNavigate();
   const [mode, setMode] = useState<"tenant" | "admin">("tenant");
 
@@ -51,6 +51,7 @@ export default function LoginPage() {
         return;
       }
       login();
+      onLogin?.();
       navigate("/admin", { replace: true });
     } finally {
       setLoading(false);

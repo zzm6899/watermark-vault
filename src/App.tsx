@@ -16,7 +16,6 @@ const Booking = lazy(() => import("./pages/Booking"));
 const AlbumDetail = lazy(() => import("./pages/AlbumDetail"));
 const BookingModify = lazy(() => import("./pages/BookingModify"));
 const Admin = lazy(() => import("./pages/Admin"));
-const Login = lazy(() => import("./pages/Login"));
 const Setup = lazy(() => import("./pages/Setup"));
 const NotFound = lazy(() => import("./pages/NotFound"));
 const MobileCapture = lazy(() => import("./pages/MobileCapture"));
@@ -47,7 +46,7 @@ function AdminGuard() {
     return <Setup onComplete={refresh} />;
   }
   if (!isLoggedIn()) {
-    return <Login onLogin={refresh} />;
+    return <LoginPage onLogin={refresh} />;
   }
   return <Admin />;
 }
