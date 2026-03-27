@@ -1963,7 +1963,13 @@ export async function fetchAlbumPhotos(albumId: string): Promise<import("./types
 
 export async function generateIcalToken(): Promise<{ icalToken: string } | null> {
   try {
-    const res = await fetch("/api/ical/generate", { method: "POST" });
+    const { getAdminCredentials } = await import("./storage");
+    const creds = getAdminCredentials();
+    const authHeader = creds ? "Basic " + btoa(`${creds.username}:${creds.passwordHash}`) : "";
+    const res = await fetch("/api/ical/generate", {
+      method: "POST",
+      headers: authHeader ? { Authorization: authHeader } : {},
+    });
     if (!res.ok) return null;
     return res.json();
   } catch { return null; }
@@ -1971,7 +1977,13 @@ export async function generateIcalToken(): Promise<{ icalToken: string } | null>
 
 export async function deleteIcalToken(): Promise<boolean> {
   try {
-    const res = await fetch("/api/ical/token", { method: "DELETE" });
+    const { getAdminCredentials } = await import("./storage");
+    const creds = getAdminCredentials();
+    const authHeader = creds ? "Basic " + btoa(`${creds.username}:${creds.passwordHash}`) : "";
+    const res = await fetch("/api/ical/token", {
+      method: "DELETE",
+      headers: authHeader ? { Authorization: authHeader } : {},
+    });
     return res.ok;
   } catch { return false; }
 }

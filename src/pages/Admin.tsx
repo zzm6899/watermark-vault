@@ -1487,6 +1487,22 @@ function BookingEditor({ booking, onSave, onCancel }: {
   const bookingId = useRef(booking?.id || generateId("bk")).current;
   const [clientName, setClientName] = useState(booking?.clientName || "");
   const [clientEmail, setClientEmail] = useState(booking?.clientEmail || "");
+  const [contactSearch, setContactSearch] = useState("");
+  const [showContactDrop, setShowContactDrop] = useState(false);
+  const contacts = getContacts();
+  const filteredContacts = contactSearch.trim()
+    ? contacts.filter(c =>
+        c.name.toLowerCase().includes(contactSearch.toLowerCase()) ||
+        (c.email || "").toLowerCase().includes(contactSearch.toLowerCase()) ||
+        (c.company || "").toLowerCase().includes(contactSearch.toLowerCase())
+      )
+    : contacts.slice(0, 8);
+  const applyContact = (c: Contact) => {
+    setClientName(c.name);
+    setClientEmail(c.email || "");
+    setContactSearch("");
+    setShowContactDrop(false);
+  };
   const [date, setDate] = useState(booking?.date || "");
   const [time, setTime] = useState(booking?.time || "");
   const [duration, setDuration] = useState(String(booking?.duration || DEFAULT_BOOKING_DURATION));
@@ -1535,6 +1551,43 @@ function BookingEditor({ booking, onSave, onCancel }: {
         <h3 className="font-display text-lg text-foreground">{isNew ? "New Booking" : "Edit Booking"}</h3>
         <Button variant="ghost" size="icon" onClick={onCancel} className="h-8 w-8 text-muted-foreground hover:text-foreground"><X className="w-4 h-4" /></Button>
       </div>
+      {/* ── Contact picker (new bookings only) ── */}
+      {isNew && contacts.length > 0 && (
+        <div className="relative">
+          <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Fill from Contact</label>
+          <div className="relative">
+            <Users className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground/60 pointer-events-none" />
+            <Input
+              value={contactSearch}
+              onChange={e => { setContactSearch(e.target.value); setShowContactDrop(true); }}
+              onFocus={() => setShowContactDrop(true)}
+              onBlur={() => setTimeout(() => setShowContactDrop(false), 150)}
+              placeholder="Search contacts to pre-fill…"
+              className="bg-secondary border-border text-foreground font-body pl-9 text-xs"
+            />
+          </div>
+          {showContactDrop && filteredContacts.length > 0 && (
+            <div className="absolute z-50 top-full left-0 right-0 mt-1 bg-popover border border-border rounded-lg shadow-lg overflow-hidden max-h-48 overflow-y-auto">
+              {filteredContacts.map(c => (
+                <button
+                  key={c.id}
+                  type="button"
+                  onMouseDown={() => applyContact(c)}
+                  className="w-full text-left px-3 py-2 hover:bg-secondary flex items-center gap-2 transition-colors"
+                >
+                  <div className="w-6 h-6 rounded-full bg-primary/20 flex items-center justify-center shrink-0">
+                    <span className="text-[9px] font-display text-primary font-bold">{c.name.charAt(0).toUpperCase()}</span>
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-body text-foreground font-medium truncate">{c.name}{c.company ? <span className="text-muted-foreground font-normal"> · {c.company}</span> : null}</p>
+                    {c.email && <p className="text-[10px] font-body text-muted-foreground truncate">{c.email}</p>}
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
       <div className="grid md:grid-cols-2 gap-4">
         <div>
           <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Client Name *</label>
@@ -3316,29 +3369,102 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                   const handle = alb.instagramHandle || bookingMap.get(alb.bookingId || "")?.instagramHandle;
                   return handle ? <p className="text-xs font-body text-muted-foreground">@{handle.replace("@", "")}</p> : null;
                 })()}
-                {alb.status && (
-                  <select
-                    value={alb.status}
-                    onClick={e => e.stopPropagation()}
-                    onChange={e => {
-                      e.stopPropagation();
-                      updateAlbum({ ...alb, status: e.target.value as Album["status"] });
-                      refresh();
+                {/* ── Unified status dropdown — proofing stage when enabled, otherwise album status ── */}
+                {(() => {
+                  const useProofing = settings.proofingEnabled && alb.proofingEnabled;
+                  const linkedBooking = bookingMap.get(alb.bookingId || "");
+
+                  // Determine display colour based on active value
+                  const proofingColor = (stage: string) =>
+                    stage === "proofing" ? "bg-yellow-500/15 text-yellow-400" :
+                    stage === "selections-submitted" ? "bg-orange-500/15 text-orange-400" :
+                    stage === "editing" ? "bg-blue-500/15 text-blue-400" :
+                    stage === "finals-delivered" ? "bg-green-500/15 text-green-400" :
+                    "bg-secondary text-muted-foreground";
+
+                  const albumStatusColor = (s: string) =>
+                    s === "editing"   ? "bg-yellow-500/15 text-yellow-400" :
+                    s === "proofing"  ? "bg-blue-500/15 text-blue-400" :
+                    s === "delivered" ? "bg-green-500/15 text-green-400" :
+                    "bg-secondary text-muted-foreground";
+
+                  const handleChange = (val: string) => {
+                    let updated = { ...alb };
+                    if (useProofing) {
+                      updated.proofingStage = val as Album["proofingStage"];
+                      // Mirror proofing stage into album status
+                      if (val === "finals-delivered") updated.status = "delivered";
+                      else if (val === "editing" || val === "selections-submitted") updated.status = "editing";
+                      else if (val === "proofing") updated.status = "proofing";
+                    } else {
+                      updated.status = val as Album["status"];
+                    }
+                    updateAlbum(updated);
+                    // Sync to linked booking
+                    if (linkedBooking) {
+                      const isDelivered = useProofing ? val === "finals-delivered" : val === "delivered";
+                      const isArchived = !useProofing && val === "archived";
+                      if (isDelivered && linkedBooking.status !== "completed") {
+                        updateBooking({ ...linkedBooking, status: "completed", statusHistory: [...(linkedBooking.statusHistory || []), { status: "completed", changedAt: new Date().toISOString() }] });
+                        toast.success("Album status updated · Booking marked completed");
+                      } else if (isArchived) {
+                        toast.success("Album archived");
+                      } else {
+                        toast.success("Album status updated");
+                      }
+                    } else {
                       toast.success("Album status updated");
-                    }}
-                    className={`text-[10px] font-body px-2 py-0.5 rounded-full border-0 cursor-pointer appearance-none focus:outline-none focus:ring-1 focus:ring-primary/50 ${
-                      alb.status === "editing"   ? "bg-yellow-500/15 text-yellow-400" :
-                      alb.status === "proofing"  ? "bg-blue-500/15 text-blue-400" :
-                      alb.status === "delivered" ? "bg-green-500/15 text-green-400" :
-                      "bg-secondary text-muted-foreground"
-                    }`}
-                  >
-                    <option value="editing">Editing</option>
-                    <option value="proofing">Proofing</option>
-                    <option value="delivered">Delivered</option>
-                    <option value="archived">Archived</option>
-                  </select>
-                )}
+                    }
+                    refresh();
+                  };
+
+                  const currentVal = useProofing
+                    ? (alb.proofingStage && alb.proofingStage !== "not-started" ? alb.proofingStage : "proofing")
+                    : (alb.status || "editing");
+
+                  const colorClass = useProofing ? proofingColor(currentVal) : albumStatusColor(currentVal);
+
+                  return (
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <select
+                        value={currentVal}
+                        onClick={e => e.stopPropagation()}
+                        onChange={e => { e.stopPropagation(); handleChange(e.target.value); }}
+                        className={`text-[10px] font-body px-2 py-0.5 rounded-full border-0 cursor-pointer appearance-none focus:outline-none focus:ring-1 focus:ring-primary/50 ${colorClass}`}
+                      >
+                        {useProofing ? (
+                          <>
+                            <option value="proofing">★ Proofing</option>
+                            <option value="selections-submitted">⏳ Picks submitted</option>
+                            <option value="editing">✏️ Editing</option>
+                            <option value="finals-delivered">✓ Finals delivered</option>
+                          </>
+                        ) : (
+                          <>
+                            <option value="editing">Editing</option>
+                            <option value="proofing">Proofing</option>
+                            <option value="delivered">Delivered</option>
+                            <option value="archived">Archived</option>
+                          </>
+                        )}
+                      </select>
+                      {/* Linked booking status pill */}
+                      {linkedBooking && (() => {
+                        const bkColor =
+                          linkedBooking.status === "confirmed" ? "bg-emerald-500/15 text-emerald-400" :
+                          linkedBooking.status === "pending" ? "bg-amber-500/15 text-amber-400" :
+                          linkedBooking.status === "completed" ? "bg-blue-500/15 text-blue-400" :
+                          linkedBooking.status === "cancelled" ? "bg-red-500/15 text-red-400" :
+                          "bg-secondary text-muted-foreground";
+                        return (
+                          <span className={`text-[9px] font-body px-1.5 py-0.5 rounded-full ${bkColor}`} title="Linked booking status">
+                            Booking: {linkedBooking.status}
+                          </span>
+                        );
+                      })()}
+                    </div>
+                  );
+                })()}
                 {/* Download expiry badge */}
                 {/* Gallery expiry badge */}
                 {alb.expiresAt && (() => {
@@ -3375,30 +3501,6 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                   );
                   return null;
                 })()}
-                {/* Proofing stage badge — clickable to change stage */}
-                {settings.proofingEnabled && alb.proofingEnabled && alb.proofingStage && alb.proofingStage !== "not-started" && (
-                  <select
-                    value={alb.proofingStage}
-                    onClick={e => e.stopPropagation()}
-                    onChange={e => {
-                      e.stopPropagation();
-                      updateAlbum({ ...alb, proofingStage: e.target.value as Album["proofingStage"] });
-                      refresh();
-                      toast.success("Proofing stage updated");
-                    }}
-                    className={`text-[10px] font-body px-2 py-0.5 rounded-full border-0 cursor-pointer appearance-none focus:outline-none focus:ring-1 focus:ring-primary/50 ${
-                      alb.proofingStage === "proofing" ? "bg-yellow-500/15 text-yellow-400" :
-                      alb.proofingStage === "selections-submitted" ? "bg-orange-500/15 text-orange-400" :
-                      alb.proofingStage === "editing" ? "bg-blue-500/15 text-blue-400" :
-                      alb.proofingStage === "finals-delivered" ? "bg-green-500/15 text-green-400" : ""
-                    }`}
-                  >
-                    <option value="proofing">★ Proofing</option>
-                    <option value="selections-submitted">⏳ Picks submitted</option>
-                    <option value="editing">✏️ Editing</option>
-                    <option value="finals-delivered">✓ Finals delivered</option>
-                  </select>
-                )}
                 {alb.mergedFrom && <p className="text-[10px] font-body text-muted-foreground/50">Merged from {alb.mergedFrom.length} albums</p>}
                 {!mergeMode && (
                   <div className="flex items-center gap-2 pt-2 border-t border-border/50">
@@ -8261,6 +8363,9 @@ function SettingsView() {
           <div id="settings-integrations" className="lg:col-span-2">
             <GoogleCalendarSection />
           </div>
+          <div className="lg:col-span-2">
+            <IcalSettingsPanel />
+          </div>
           {isServerMode() && ftpLoaded && (
             <div className="glass-panel rounded-xl p-6 space-y-4">
               <h3 className="font-display text-base text-foreground flex items-center gap-2">
@@ -8376,9 +8481,6 @@ function SettingsView() {
         </Button>
       </div>
 
-      {/* ── iCal Feed ──────────────────────────────────────────── */}
-      <IcalSettingsPanel />
-
       {/* ── Tags Management ────────────────────────────────────── */}
       <TagsManagementPanel />
     </motion.div>
@@ -8429,7 +8531,7 @@ function IcalSettingsPanel() {
   };
 
   return (
-    <div className="glass-panel rounded-xl p-5 space-y-4 mt-6">
+    <div className="glass-panel rounded-xl p-5 space-y-4">
       <div className="flex items-center gap-2 mb-1">
         <CalendarDays className="w-4 h-4 text-primary" />
         <h3 className="font-display text-base text-foreground">iCal / Calendar Feed</h3>
