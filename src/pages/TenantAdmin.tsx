@@ -8,7 +8,7 @@ import {
   Save, X, ChevronDown, ChevronUp, Globe, Upload, Search, Copy,
   DollarSign, MessageSquare, HardDrive, User, RefreshCw, Webhook, Star,
   ExternalLink, Mail, Send, Unlock, CreditCard, CheckCircle2, Download,
-  XSquare, CheckSquare, Bell, Wifi, Link2, LayoutGrid, Grid,
+  XSquare, CheckSquare, Bell, Wifi, Link2, LayoutGrid, Grid, CalendarDays, RefreshCcw,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -35,6 +35,7 @@ import {
   testTenantFtpConnection,
   submitEventSlotRequest, getTenantEventSlotRequest, createEventSlotCheckout, ftpUploadAlbum, ftpMoveToStarred,
   getActiveLicensePlans, getLicensePlanCheckout, createBankLicensePurchase,
+  generateTenantIcalToken, deleteTenantIcalToken,
 } from "@/lib/api";
 import ProgressiveImg from "@/components/ProgressiveImg";
 import RichTextEditor from "@/components/RichTextEditor";
@@ -3704,6 +3705,29 @@ function TenantSettingsView({ slug }: { slug: string }) {
     else toast.error(error || "FTP connection failed");
   };
 
+  // iCal state
+  const [icalGenerating, setIcalGenerating] = useState(false);
+  const handleGenerateIcal = async () => {
+    setIcalGenerating(true);
+    const result = await generateTenantIcalToken(slug);
+    setIcalGenerating(false);
+    if (result?.icalToken) {
+      set({ icalToken: result.icalToken });
+      toast.success("iCal feed URL generated!");
+    } else {
+      toast.error("Failed to generate iCal token");
+    }
+  };
+  const handleRevokeIcal = async () => {
+    const ok = await deleteTenantIcalToken(slug);
+    if (ok) {
+      set({ icalToken: undefined });
+      toast.success("iCal feed revoked");
+    } else {
+      toast.error("Failed to revoke iCal token");
+    }
+  };
+
   const handleWatermarkImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -4259,6 +4283,77 @@ function TenantSettingsView({ slug }: { slug: string }) {
               </div>
             ) : !gcalStatus.configured && (
               <p className="text-xs font-body text-muted-foreground/70 pt-1">Save your Google API credentials above to connect.</p>
+            )}
+          </div>
+
+          {/* iCal Feed */}
+          <div className="space-y-3 p-4 rounded-lg bg-secondary/40 border border-border/50">
+            <div className="flex items-center gap-2">
+              <CalendarDays className="w-4 h-4 text-primary" />
+              <span className="text-xs font-body tracking-wider uppercase text-muted-foreground">iCal / CalDAV Feed</span>
+            </div>
+            <p className="text-xs font-body text-muted-foreground leading-relaxed">
+              Subscribe to your bookings in Apple Calendar, Outlook, or Google Calendar. A read-only URL — no OAuth needed.
+            </p>
+            {settings.icalToken ? (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2 p-2.5 bg-background rounded-lg border border-border overflow-hidden">
+                  <code className="text-[10px] font-mono text-muted-foreground truncate flex-1">
+                    {`${window.location.origin}/api/ical/${settings.icalToken}`}
+                  </code>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-6 w-6 shrink-0"
+                    onClick={() => {
+                      navigator.clipboard.writeText(`${window.location.origin}/api/ical/${settings.icalToken}`);
+                      toast.success("Feed URL copied!");
+                    }}
+                  >
+                    <Copy className="w-3 h-3" />
+                  </Button>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="font-body text-xs gap-1.5 border-border"
+                    onClick={() => {
+                      window.open(`webcal://${window.location.host}/api/ical/${settings.icalToken}`, "_blank");
+                    }}
+                  >
+                    <Link2 className="w-3 h-3" /> Open in Calendar App
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="font-body text-xs gap-1.5 text-muted-foreground hover:text-foreground"
+                    onClick={handleGenerateIcal}
+                    disabled={icalGenerating}
+                  >
+                    <RefreshCcw className="w-3 h-3" /> Rotate
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="font-body text-xs gap-1.5 text-destructive hover:bg-destructive/10"
+                    onClick={handleRevokeIcal}
+                  >
+                    <X className="w-3 h-3" /> Revoke
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <Button
+                onClick={handleGenerateIcal}
+                disabled={icalGenerating}
+                variant="outline"
+                size="sm"
+                className="font-body text-xs gap-1.5 border-border"
+              >
+                <CalendarDays className="w-3.5 h-3.5" />
+                {icalGenerating ? "Generating…" : "Generate Feed URL"}
+              </Button>
             )}
           </div>
         </div>

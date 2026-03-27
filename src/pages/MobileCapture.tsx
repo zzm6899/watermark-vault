@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { getBookings, getAlbums, getSettings, updateAlbum, addAlbum, updateBooking, getMobileTenantSession, setMobileTenantSession, isLoggedIn } from "@/lib/storage";
 import { uploadPhotosToServer, isServerMode, recheckServer, sendEmail, fetchTenantMobileData, saveTenantAlbum } from "@/lib/api";
+import { queueOfflineCapture, getOfflineQueue, removeOfflineItem, useOfflineUploadQueue, type OfflineCaptureItem } from "@/lib/usePwa";
 import { generateThumbnail, formatSpeed } from "@/lib/image-utils";
 import CameraUsb from "@/plugins/camera-usb";
 import type { CameraFile } from "@/plugins/camera-usb";
@@ -286,6 +287,9 @@ function MobileCaptureInner() {
   const [liveCapturePaused, setLiveCapturePaused] = useState(false);
   const liveCapturePausedRef = useRef(false);
   const [serverOnline, setServerOnline] = useState(false);
+  const [networkOnline, setNetworkOnline] = useState(navigator.onLine);
+  const [idbQueue, setIdbQueue] = useState<OfflineCaptureItem[]>([]);
+  const [showIdbQueue, setShowIdbQueue] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const watchInputRef = useRef<HTMLInputElement>(null);
 
@@ -355,6 +359,42 @@ function MobileCaptureInner() {
       localPreviewUrlsRef.current.forEach(url => URL.revokeObjectURL(url));
     };
   }, []);
+
+  // ── Network Online/Offline monitoring ──────────────────────────────────────
+  useEffect(() => {
+    const setOnline = () => setNetworkOnline(true);
+    const setOffline = () => setNetworkOnline(false);
+    window.addEventListener("online", setOnline);
+    window.addEventListener("offline", setOffline);
+    return () => {
+      window.removeEventListener("online", setOnline);
+      window.removeEventListener("offline", setOffline);
+    };
+  }, []);
+
+  // ── Load IndexedDB offline capture queue ───────────────────────────────────
+  useEffect(() => {
+    getOfflineQueue().then(q => setIdbQueue(q)).catch(() => {});
+  }, [networkOnline]);
+
+  // ── Offline upload queue flush via usePwa hook ─────────────────────────────
+  const uploadOfflineItem = useCallback(async (item: OfflineCaptureItem): Promise<boolean> => {
+    if (!item.albumId) return false;
+    const file = new File([item.file], item.fileName, { type: item.mimeType });
+    try {
+      const results = await uploadPhotosToServer([file], () => {});
+      if (results?.[0]?.src) {
+        await removeOfflineItem(item.id);
+        setIdbQueue(prev => prev.filter(q => q.id !== item.id));
+        return true;
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  }, []);
+
+  useOfflineUploadQueue(uploadOfflineItem);
 
   const sendClientNotification = useCallback(async (type: "album-created" | "photos-uploaded", photoCount?: number) => {
     if (!notifyClient || !serverOnline || !selectedBooking?.clientEmail) return;
@@ -1106,8 +1146,18 @@ function MobileCaptureInner() {
                 )}
                 <span className={`inline-flex items-center gap-0.5 text-[10px] font-body px-2 py-0.5 rounded-full border ${serverOnline ? "border-primary/50 text-primary bg-primary/10" : "border-destructive/50 text-destructive bg-destructive/10"}`}>
                   {serverOnline ? <Wifi className="w-2.5 h-2.5" /> : <WifiOff className="w-2.5 h-2.5" />}
-                  {serverOnline ? "Online" : "Offline"}
+                  {serverOnline ? "Online" : networkOnline ? "Server down" : "No network"}
                 </span>
+                {idbQueue.filter(q => q.status !== "done").length > 0 && (
+                  <button
+                    onClick={() => setShowIdbQueue(true)}
+                    className="inline-flex items-center gap-0.5 text-[10px] font-body px-2 py-0.5 rounded-full border border-amber-500/50 text-amber-400 bg-amber-500/10"
+                    title="Offline capture queue"
+                  >
+                    <Clock className="w-2.5 h-2.5" />
+                    {idbQueue.filter(q => q.status !== "done").length} queued
+                  </button>
+                )}
                 {tenantSession && (
                   <button
                     onClick={() => { setMobileTenantSession(null); navigate("/login", { replace: true }); }}

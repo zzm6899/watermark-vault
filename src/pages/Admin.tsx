@@ -11,7 +11,7 @@ import {
   MessageSquare,
   Star, CheckCircle2, Sparkles, ChevronLeft, ChevronRight, Flag, FileText, Receipt, Printer, AlertCircle, BookOpen,
   ArrowUpDown, MoreHorizontal, TrendingUp, TrendingDown, Key, Globe, Wifi,
-  Maximize2, Check,
+  Maximize2, Check, PlusCircle, Pencil, Tags, CalendarDays, Share2, ClipboardList,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -92,6 +92,29 @@ import {
   rejectEventSlotRequest,
   fetchAlbumStubs,
   fetchAlbumPhotos,
+  generateIcalToken,
+  deleteIcalToken,
+  getExpenses,
+  createExpense,
+  updateExpense,
+  deleteExpense,
+  getQuotes,
+  createQuote,
+  updateQuote,
+  deleteQuote,
+  convertQuoteToInvoice,
+  getTags,
+  createTag,
+  updateTag,
+  deleteTag,
+  setBookingTags,
+  deliverAlbum,
+  getTaskTemplates,
+  createTaskTemplate,
+  deleteTaskTemplate,
+  getBookingTasks,
+  updateBookingTasks,
+  toggleBookingTask,
 } from "@/lib/api";
 import type { CacheBreakdown } from "@/lib/api";
 import RichTextEditor, { RichTextDisplay } from "@/components/RichTextEditor";
@@ -102,6 +125,7 @@ import type {
   Album, Photo, PaymentStatus, AlbumDisplaySize, AlbumDownloadRecord, DownloadHistoryEntry,
   EmailTemplate, WaitlistEntry, Invoice, InvoiceItem, InvoiceParty, InvoiceStatus, Contact,
   Enquiry, EnquiryStatus, LicenseKey, Tenant, LicensePlan, LicensePurchase, TenantSettings, EventSlotRequest,
+  Expense, Quote, Tag, BookingTask, BookingSource,
 } from "@/lib/types";
 import WatermarkedImage from "@/components/WatermarkedImage";
 import ProgressiveImg from "@/components/ProgressiveImg";
@@ -1382,6 +1406,68 @@ function DashboardView() {
           </div>
         </>
       )}
+
+      {/* ── Booking Source Breakdown ── */}
+      {(() => {
+        const SOURCE_LABELS: Record<string, string> = {
+          direct: "Direct",
+          instagram: "Instagram",
+          referral: "Referral",
+          facebook: "Facebook",
+          tiktok: "TikTok",
+          convention: "Convention",
+          repeat: "Repeat Client",
+          email: "Email",
+          other: "Other",
+        };
+        const SOURCE_COLORS: Record<string, string> = {
+          direct: "#7c3aed",
+          instagram: "#e1306c",
+          referral: "#10b981",
+          facebook: "#1877f2",
+          tiktok: "#69c9d0",
+          convention: "#f59e0b",
+          repeat: "#8b5cf6",
+          email: "#6366f1",
+          other: "#71717a",
+        };
+        const sourceCounts = bookings.reduce((acc, b) => {
+          const src = (b as any).source || "direct";
+          acc[src] = (acc[src] || 0) + 1;
+          return acc;
+        }, {} as Record<string, number>);
+        const entries = Object.entries(sourceCounts).sort((a, b) => b[1] - a[1]);
+        if (entries.length === 0 || (entries.length === 1 && entries[0][0] === "direct")) return null;
+        const total = entries.reduce((s, [, n]) => s + n, 0);
+        return (
+          <div className="glass-panel rounded-xl p-4 mb-6">
+            <h3 className="font-display text-sm text-foreground mb-4 flex items-center gap-2">
+              <Share2 className="w-3.5 h-3.5 text-primary" /> Booking Sources
+            </h3>
+            {/* Bar chart */}
+            <div className="space-y-2">
+              {entries.map(([src, count]) => {
+                const pct = total > 0 ? Math.round((count / total) * 100) : 0;
+                const color = SOURCE_COLORS[src] || "#71717a";
+                return (
+                  <div key={src} className="flex items-center gap-3">
+                    <span className="text-xs font-body text-muted-foreground w-24 shrink-0 truncate">{SOURCE_LABELS[src] || src}</span>
+                    <div className="flex-1 bg-secondary rounded-full h-2 overflow-hidden">
+                      <div
+                        className="h-full rounded-full transition-all duration-500"
+                        style={{ width: `${pct}%`, backgroundColor: color }}
+                      />
+                    </div>
+                    <span className="text-xs font-body text-foreground w-8 text-right shrink-0">{count}</span>
+                    <span className="text-[10px] font-body text-muted-foreground w-8 text-right shrink-0">{pct}%</span>
+                  </div>
+                );
+              })}
+            </div>
+            <p className="text-[10px] font-body text-muted-foreground mt-3">Total {total} booking{total !== 1 ? "s" : ""} tracked by source</p>
+          </div>
+        );
+      })()}
     </motion.div>
   );
 }
@@ -1410,6 +1496,7 @@ function BookingEditor({ booking, onSave, onCancel }: {
   const [paymentStatus, setPaymentStatus] = useState(booking?.paymentStatus || "unpaid");
   const [paymentAmount, setPaymentAmount] = useState(String(booking?.paymentAmount || ""));
   const [instagramHandle, setInstagramHandle] = useState(booking?.instagramHandle || "");
+  const [source, setSource] = useState<BookingSource>(booking?.source || "direct");
 
   const handleSave = () => {
     if (!clientName.trim()) { toast.error("Client name is required"); return; }
@@ -1434,6 +1521,10 @@ function BookingEditor({ booking, onSave, onCancel }: {
       gcalEventId: booking?.gcalEventId,
       eventTypeId: booking?.eventTypeId || "",
       modifyToken: booking?.modifyToken,
+      source,
+      tasks: booking?.tasks,
+      tags: booking?.tags,
+      seriesId: booking?.seriesId,
     };
     onSave(bk);
   };
@@ -1501,6 +1592,20 @@ function BookingEditor({ booking, onSave, onCancel }: {
             <option value="deposit-paid">Deposit Paid</option>
           </select>
         </div>
+      </div>
+      <div>
+        <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Booking Source</label>
+        <select value={source} onChange={e => setSource(e.target.value as BookingSource)} className="w-full bg-secondary border border-border text-foreground font-body text-sm rounded-md px-3 py-2">
+          <option value="direct">Direct (Booking Page)</option>
+          <option value="convention">Convention / Event</option>
+          <option value="instagram">Instagram</option>
+          <option value="facebook">Facebook</option>
+          <option value="tiktok">TikTok</option>
+          <option value="referral">Referral</option>
+          <option value="repeat">Returning Client</option>
+          <option value="email">Email</option>
+          <option value="other">Other</option>
+        </select>
       </div>
       <div className="flex gap-3 pt-2 border-t border-border/50">
         <Button variant="outline" onClick={onCancel} className="font-body text-xs border-border text-foreground">Cancel</Button>
@@ -2352,7 +2457,16 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                           <Image className="w-3.5 h-3.5" /> Create Album
                         </Button>
                       ) : null}
+                      {/* Source badge */}
+                      {bk.source && bk.source !== "direct" && (
+                        <span className="inline-flex items-center gap-1 text-[10px] font-body px-2 py-0.5 rounded-full bg-secondary border border-border text-muted-foreground capitalize">
+                          <Share2 className="w-2.5 h-2.5" /> {bk.source}
+                        </span>
+                      )}
                     </div>
+
+                    {/* ── Task Checklist ───────────────────────────────── */}
+                    <BookingTaskChecklist bookingId={bk.id} initialTasks={bk.tasks || []} />
                   </div>
                 )}
               </div>
@@ -2362,6 +2476,88 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
         </>
       )}
     </motion.div>
+  );
+}
+
+// ─── Booking Task Checklist Component ────────────────────────────────────────
+function BookingTaskChecklist({ bookingId, initialTasks }: { bookingId: string; initialTasks: BookingTask[] }) {
+  const [tasks, setTasks] = React.useState<BookingTask[]>(initialTasks);
+  const [newTaskLabel, setNewTaskLabel] = React.useState("");
+  const [showAdd, setShowAdd] = React.useState(false);
+
+  const completedCount = tasks.filter(t => t.completed).length;
+
+  const handleToggle = async (taskId: string) => {
+    // Optimistic update
+    setTasks(prev => prev.map(t => t.id === taskId ? { ...t, completed: !t.completed, completedAt: !t.completed ? new Date().toISOString() : undefined } : t));
+    await toggleBookingTask(bookingId, taskId);
+  };
+
+  const handleAdd = async () => {
+    if (!newTaskLabel.trim()) return;
+    const newTask: BookingTask = {
+      id: crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2),
+      label: newTaskLabel.trim(),
+      completed: false,
+    };
+    const newTasks = [...tasks, newTask];
+    setTasks(newTasks);
+    setNewTaskLabel("");
+    setShowAdd(false);
+    await updateBookingTasks(bookingId, newTasks);
+  };
+
+  const handleDelete = async (taskId: string) => {
+    const newTasks = tasks.filter(t => t.id !== taskId);
+    setTasks(newTasks);
+    await updateBookingTasks(bookingId, newTasks);
+  };
+
+  if (tasks.length === 0 && !showAdd) {
+    return (
+      <div className="pt-2">
+        <button onClick={() => setShowAdd(true)} className="text-[10px] font-body text-muted-foreground/50 hover:text-muted-foreground flex items-center gap-1.5 transition-colors">
+          <ClipboardList className="w-3 h-3" /> Add task checklist
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="pt-2 space-y-2">
+      <div className="flex items-center gap-2">
+        <ClipboardList className="w-3.5 h-3.5 text-muted-foreground" />
+        <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground">Tasks</p>
+        {tasks.length > 0 && <span className="text-[10px] font-body text-muted-foreground/50">{completedCount}/{tasks.length}</span>}
+        {tasks.length > 0 && completedCount < tasks.length && (
+          <div className="flex-1 h-1 rounded-full bg-border overflow-hidden max-w-16">
+            <div className="h-full bg-primary rounded-full transition-all" style={{ width: `${(completedCount / tasks.length) * 100}%` }} />
+          </div>
+        )}
+      </div>
+      {tasks.map(task => (
+        <div key={task.id} className="flex items-center gap-2 group">
+          <button onClick={() => handleToggle(task.id)} className={`w-4 h-4 rounded border-2 flex items-center justify-center transition-colors flex-shrink-0 ${task.completed ? "bg-primary border-primary" : "border-border"}`}>
+            {task.completed && <Check className="w-2.5 h-2.5 text-primary-foreground" />}
+          </button>
+          <span className={`text-xs font-body flex-1 ${task.completed ? "line-through text-muted-foreground/50" : "text-foreground"}`}>{task.label}</span>
+          <button onClick={() => handleDelete(task.id)} className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground/50 hover:text-destructive">
+            <X className="w-3 h-3" />
+          </button>
+        </div>
+      ))}
+      {showAdd ? (
+        <div className="flex gap-2">
+          <input value={newTaskLabel} onChange={e => setNewTaskLabel(e.target.value)} onKeyDown={e => e.key === "Enter" && handleAdd()} placeholder="Task description…" autoFocus className="flex-1 text-xs font-body bg-background border border-border rounded-lg px-2 py-1 text-foreground" />
+          <button onClick={handleAdd} className="text-xs font-body px-2 py-1 rounded-lg bg-primary/10 text-primary hover:bg-primary/20">Add</button>
+          <button onClick={() => { setShowAdd(false); setNewTaskLabel(""); }} className="text-xs font-body px-2 py-1 rounded-lg border border-border text-muted-foreground"><X className="w-3 h-3" /></button>
+        </div>
+      ) : (
+        <button onClick={() => setShowAdd(true)} className="text-[10px] font-body text-muted-foreground/50 hover:text-muted-foreground flex items-center gap-1 transition-colors">
+          <Plus className="w-3 h-3" /> Add task
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -2503,6 +2699,8 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
   const [specificEndInput, setSpecificEndInput] = useState("17:00");
   const [expandAvailability, setExpandAvailability] = useState(false);
   const [expandQuestions, setExpandQuestions] = useState(false);
+  const [bufferMinutes, setBufferMinutes] = useState<number>(eventType?.bufferMinutes || 0);
+  const [maxAttendees, setMaxAttendees] = useState<number>(eventType?.maxAttendees || 1);
 
   const addDuration = () => {
     const val = parseInt(durationInput);
@@ -2537,6 +2735,8 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
       questions,
       availability: { recurring, specificDates, blockedDates },
       location: location.trim(),
+      bufferMinutes: bufferMinutes > 0 ? bufferMinutes : undefined,
+      maxAttendees: maxAttendees > 1 ? maxAttendees : undefined,
     });
   };
 
@@ -2598,6 +2798,37 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
       <div className="flex items-center justify-between">
         <span className="text-xs font-body text-muted-foreground">Requires Confirmation</span>
         <Switch checked={requiresConfirmation} onCheckedChange={setRequiresConfirmation} />
+      </div>
+
+      {/* Buffer Time + Max Attendees */}
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Buffer Time (mins)</label>
+          <Input
+            type="number"
+            min={0}
+            max={120}
+            step={5}
+            value={bufferMinutes}
+            onChange={(e) => setBufferMinutes(Math.max(0, Number(e.target.value)))}
+            placeholder="0"
+            className="bg-secondary border-border text-foreground font-body"
+          />
+          <p className="text-[10px] font-body text-muted-foreground mt-1">Blocked gap after each booking (e.g. 15 for travel time)</p>
+        </div>
+        <div>
+          <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Max Attendees</label>
+          <Input
+            type="number"
+            min={1}
+            max={100}
+            value={maxAttendees}
+            onChange={(e) => setMaxAttendees(Math.max(1, Number(e.target.value)))}
+            placeholder="1"
+            className="bg-secondary border-border text-foreground font-body"
+          />
+          <p className="text-[10px] font-body text-muted-foreground mt-1">For group/duo shoots. 1 = solo session</p>
+        </div>
       </div>
 
       {/* Deposit Section */}
@@ -4300,6 +4531,32 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
           </>
         )}
       </div>
+
+      {/* One-click delivery */}
+      {!isNew && album && album.status !== "delivered" && (
+        <div className="p-4 rounded-lg bg-green-500/5 border border-green-500/20 space-y-2">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-green-400" />
+            <p className="text-xs font-body text-green-400 font-medium">One-Click Delivery</p>
+          </div>
+          <p className="text-[10px] font-body text-muted-foreground">Instantly: removes watermarks, marks as delivered, makes public, and emails client if email is set.</p>
+          <button
+            onClick={async () => {
+              if (!confirm("Deliver this gallery to the client? This will disable watermarks and make the album public.")) return;
+              const result = await deliverAlbum(album.id);
+              if (result?.ok) {
+                toast.success(`Gallery delivered!${result.emailSent ? " Client notified by email." : ""}`);
+                onCancel(); // close editor to refresh
+              } else {
+                toast.error("Delivery failed — check server connection");
+              }
+            }}
+            className="inline-flex items-center gap-1.5 text-xs font-body px-3 py-1.5 rounded-lg bg-green-500/15 text-green-400 hover:bg-green-500/25 border border-green-500/30 transition-colors"
+          >
+            <Send className="w-3.5 h-3.5" /> Deliver Gallery Now
+          </button>
+        </div>
+      )}
 
       <div className="flex gap-3 pt-2 border-t border-border/50">
         <Button variant="outline" onClick={onCancel} className="font-body text-xs border-border text-foreground">Cancel</Button>
@@ -6998,6 +7255,243 @@ function FinanceView() {
           </div>
         );
       })()}
+
+      {/* ── Expenses Tracker ─────────────────────────────────── */}
+      <ExpensesPanel />
+
+      {/* ── Quotes ───────────────────────────────────────────── */}
+      <QuotesPanel />
+    </div>
+  );
+}
+
+// ─── Expenses Panel ───────────────────────────────────────────────────────────
+
+function ExpensesPanel() {
+  const [expenses, setExpenses] = React.useState<Expense[]>([]);
+  const [loading, setLoading] = React.useState(true);
+  const [showForm, setShowForm] = React.useState(false);
+  const [editingId, setEditingId] = React.useState<string | null>(null);
+  const [form, setForm] = React.useState({ description: "", amount: "", category: "other", date: new Date().toISOString().slice(0, 10), notes: "" });
+
+  React.useEffect(() => { getExpenses().then(e => { setExpenses(e); setLoading(false); }); }, []);
+
+  const reload = () => getExpenses().then(setExpenses);
+  const categories = ["equipment", "travel", "software", "marketing", "venue", "props", "printing", "other"];
+  const totalExpenses = expenses.reduce((s, e) => s + (e.amount || 0), 0);
+  const byCategory = categories.map(c => ({ category: c, total: expenses.filter(e => e.category === c).reduce((s, e) => s + e.amount, 0) })).filter(c => c.total > 0).sort((a, b) => b.total - a.total);
+
+  const handleSave = async () => {
+    if (!form.description || !form.amount) return;
+    if (editingId) {
+      await updateExpense(editingId, { description: form.description, amount: parseFloat(form.amount), category: form.category as Expense["category"], date: form.date, notes: form.notes });
+    } else {
+      await createExpense({ description: form.description, amount: parseFloat(form.amount), category: form.category as Expense["category"], date: form.date, notes: form.notes });
+    }
+    setShowForm(false); setEditingId(null); setForm({ description: "", amount: "", category: "other", date: new Date().toISOString().slice(0, 10), notes: "" });
+    reload();
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!confirm("Delete this expense?")) return;
+    await deleteExpense(id); reload();
+  };
+
+  const startEdit = (e: Expense) => { setForm({ description: e.description, amount: String(e.amount), category: e.category, date: e.date, notes: e.notes || "" }); setEditingId(e.id); setShowForm(true); };
+
+  return (
+    <div className="glass-panel rounded-xl p-5 space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="font-display text-base text-foreground">Expenses</h3>
+          <p className="text-xs font-body text-muted-foreground">Track business costs and overheads</p>
+        </div>
+        <div className="flex items-center gap-3">
+          <span className="text-sm font-body text-destructive">${totalExpenses.toFixed(2)} total</span>
+          <button onClick={() => { setShowForm(!showForm); setEditingId(null); setForm({ description: "", amount: "", category: "other", date: new Date().toISOString().slice(0, 10), notes: "" }); }} className="inline-flex items-center gap-1.5 text-xs font-body px-3 py-1.5 rounded-lg bg-primary/10 text-primary hover:bg-primary/20 transition-colors">
+            <PlusCircle className="w-3.5 h-3.5" /> Add Expense
+          </button>
+        </div>
+      </div>
+
+      {showForm && (
+        <div className="rounded-lg border border-border/50 bg-secondary/30 p-4 space-y-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs font-body text-muted-foreground mb-1 block">Description *</label>
+              <input value={form.description} onChange={e => setForm(p => ({ ...p, description: e.target.value }))} className="w-full text-sm font-body bg-background border border-border rounded-lg px-3 py-2 text-foreground" placeholder="e.g. Adobe Lightroom subscription" />
+            </div>
+            <div>
+              <label className="text-xs font-body text-muted-foreground mb-1 block">Amount *</label>
+              <input type="number" value={form.amount} onChange={e => setForm(p => ({ ...p, amount: e.target.value }))} className="w-full text-sm font-body bg-background border border-border rounded-lg px-3 py-2 text-foreground" placeholder="0.00" />
+            </div>
+            <div>
+              <label className="text-xs font-body text-muted-foreground mb-1 block">Category</label>
+              <select value={form.category} onChange={e => setForm(p => ({ ...p, category: e.target.value }))} className="w-full text-sm font-body bg-background border border-border rounded-lg px-3 py-2 text-foreground capitalize">
+                {categories.map(c => <option key={c} value={c} className="capitalize">{c}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="text-xs font-body text-muted-foreground mb-1 block">Date</label>
+              <input type="date" value={form.date} onChange={e => setForm(p => ({ ...p, date: e.target.value }))} className="w-full text-sm font-body bg-background border border-border rounded-lg px-3 py-2 text-foreground" />
+            </div>
+          </div>
+          <div className="flex gap-2 justify-end">
+            <button onClick={() => { setShowForm(false); setEditingId(null); }} className="text-xs font-body px-3 py-1.5 rounded-lg border border-border text-muted-foreground hover:text-foreground">Cancel</button>
+            <button onClick={handleSave} className="text-xs font-body px-3 py-1.5 rounded-lg bg-primary text-background hover:bg-primary/90">{editingId ? "Update" : "Add"} Expense</button>
+          </div>
+        </div>
+      )}
+
+      {byCategory.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {byCategory.map(c => (
+            <span key={c.category} className="text-[10px] font-body px-2 py-0.5 rounded-full bg-secondary/50 border border-border/50 text-muted-foreground capitalize">{c.category}: ${c.total.toFixed(0)}</span>
+          ))}
+        </div>
+      )}
+
+      {loading ? (
+        <p className="text-sm font-body text-muted-foreground">Loading…</p>
+      ) : expenses.length === 0 ? (
+        <p className="text-sm font-body text-muted-foreground">No expenses recorded yet.</p>
+      ) : (
+        <div className="space-y-2">
+          {expenses.slice().sort((a, b) => (b.date || "").localeCompare(a.date || "")).map(exp => (
+            <div key={exp.id} className="flex items-center gap-3 py-2 border-b border-border/30 last:border-0">
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-body text-foreground truncate">{exp.description}</p>
+                <p className="text-[10px] font-body text-muted-foreground capitalize">{exp.category} · {exp.date}</p>
+              </div>
+              <span className="text-sm font-body text-destructive font-medium">-${exp.amount.toFixed(2)}</span>
+              <button onClick={() => startEdit(exp)} className="text-muted-foreground hover:text-foreground transition-colors"><Pencil className="w-3.5 h-3.5" /></button>
+              <button onClick={() => handleDelete(exp.id)} className="text-muted-foreground hover:text-destructive transition-colors"><Trash2 className="w-3.5 h-3.5" /></button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Quotes Panel ─────────────────────────────────────────────────────────────
+
+function QuotesPanel() {
+  const [quotes, setQuotes] = React.useState<Quote[]>([]);
+  const [loading, setLoading] = React.useState(true);
+  const [showForm, setShowForm] = React.useState(false);
+  const [form, setForm] = React.useState({ clientName: "", clientEmail: "", description: "", amount: "", expiryDate: new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10), notes: "" });
+
+  React.useEffect(() => { getQuotes().then(q => { setQuotes(q); setLoading(false); }); }, []);
+  const reload = () => getQuotes().then(setQuotes);
+
+  const statusColor = (s: string) => {
+    if (s === "accepted") return "text-green-400 bg-green-500/10";
+    if (s === "declined") return "text-destructive bg-destructive/10";
+    if (s === "converted") return "text-blue-400 bg-blue-500/10";
+    if (s === "expired") return "text-muted-foreground bg-secondary/50";
+    if (s === "sent") return "text-primary bg-primary/10";
+    return "text-yellow-400 bg-yellow-500/10";
+  };
+
+  const handleSave = async () => {
+    if (!form.clientName || !form.amount) return;
+    await createQuote({
+      to: { name: form.clientName, email: form.clientEmail, address: "" },
+      items: [{ id: crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36), description: form.description || "Photography Services", quantity: 1, unitPrice: parseFloat(form.amount) || 0 }],
+      notes: form.notes,
+      expiryDate: form.expiryDate,
+    } as any);
+    setShowForm(false);
+    setForm({ clientName: "", clientEmail: "", description: "", amount: "", expiryDate: new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10), notes: "" });
+    reload();
+    toast.success("Quote created");
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!confirm("Delete this quote?")) return;
+    await deleteQuote(id); reload();
+  };
+
+  const handleConvert = async (id: string) => {
+    const result = await convertQuoteToInvoice(id);
+    if (result) { toast.success(`Converted to invoice ${result.invoice.number}`); reload(); }
+    else toast.error("Failed to convert quote");
+  };
+
+  const handleMarkSent = async (q: Quote) => {
+    await updateQuote(q.id, { status: "sent", sentAt: new Date().toISOString() });
+    reload(); toast.success("Quote marked as sent");
+  };
+
+  return (
+    <div className="glass-panel rounded-xl p-5 space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="font-display text-base text-foreground">Quotes & Estimates</h3>
+          <p className="text-xs font-body text-muted-foreground">Send cost estimates to clients before they book</p>
+        </div>
+        <button onClick={() => setShowForm(!showForm)} className="inline-flex items-center gap-1.5 text-xs font-body px-3 py-1.5 rounded-lg bg-primary/10 text-primary hover:bg-primary/20 transition-colors">
+          <PlusCircle className="w-3.5 h-3.5" /> New Quote
+        </button>
+      </div>
+
+      {showForm && (
+        <div className="rounded-lg border border-border/50 bg-secondary/30 p-4 space-y-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs font-body text-muted-foreground mb-1 block">Client Name *</label>
+              <input value={form.clientName} onChange={e => setForm(p => ({ ...p, clientName: e.target.value }))} className="w-full text-sm font-body bg-background border border-border rounded-lg px-3 py-2 text-foreground" placeholder="Client name" />
+            </div>
+            <div>
+              <label className="text-xs font-body text-muted-foreground mb-1 block">Client Email</label>
+              <input type="email" value={form.clientEmail} onChange={e => setForm(p => ({ ...p, clientEmail: e.target.value }))} className="w-full text-sm font-body bg-background border border-border rounded-lg px-3 py-2 text-foreground" placeholder="client@email.com" />
+            </div>
+            <div>
+              <label className="text-xs font-body text-muted-foreground mb-1 block">Service Description</label>
+              <input value={form.description} onChange={e => setForm(p => ({ ...p, description: e.target.value }))} className="w-full text-sm font-body bg-background border border-border rounded-lg px-3 py-2 text-foreground" placeholder="Photography Services" />
+            </div>
+            <div>
+              <label className="text-xs font-body text-muted-foreground mb-1 block">Amount *</label>
+              <input type="number" value={form.amount} onChange={e => setForm(p => ({ ...p, amount: e.target.value }))} className="w-full text-sm font-body bg-background border border-border rounded-lg px-3 py-2 text-foreground" placeholder="0.00" />
+            </div>
+            <div>
+              <label className="text-xs font-body text-muted-foreground mb-1 block">Expiry Date</label>
+              <input type="date" value={form.expiryDate} onChange={e => setForm(p => ({ ...p, expiryDate: e.target.value }))} className="w-full text-sm font-body bg-background border border-border rounded-lg px-3 py-2 text-foreground" />
+            </div>
+          </div>
+          <div className="flex gap-2 justify-end">
+            <button onClick={() => setShowForm(false)} className="text-xs font-body px-3 py-1.5 rounded-lg border border-border text-muted-foreground hover:text-foreground">Cancel</button>
+            <button onClick={handleSave} className="text-xs font-body px-3 py-1.5 rounded-lg bg-primary text-background hover:bg-primary/90">Create Quote</button>
+          </div>
+        </div>
+      )}
+
+      {loading ? (
+        <p className="text-sm font-body text-muted-foreground">Loading…</p>
+      ) : quotes.length === 0 ? (
+        <p className="text-sm font-body text-muted-foreground">No quotes yet. Create one above.</p>
+      ) : (
+        <div className="space-y-2">
+          {quotes.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map(q => {
+            const total = q.items?.reduce((s, i) => s + i.unitPrice * i.quantity, 0) || 0;
+            return (
+              <div key={q.id} className="flex items-center gap-3 py-2 border-b border-border/30 last:border-0">
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-body text-foreground truncate">{q.number} · {q.to?.name}</p>
+                  <p className="text-[10px] font-body text-muted-foreground">Expires {q.expiryDate} · ${total.toFixed(2)}</p>
+                </div>
+                <span className={`text-[10px] font-body px-2 py-0.5 rounded-full capitalize ${statusColor(q.status)}`}>{q.status}</span>
+                {q.status === "draft" && <button onClick={() => handleMarkSent(q)} className="text-[10px] font-body px-2 py-0.5 rounded bg-secondary hover:bg-secondary/80 text-muted-foreground">Mark Sent</button>}
+                {(q.status === "accepted" || q.status === "sent") && q.status !== "converted" && (
+                  <button onClick={() => handleConvert(q.id)} className="text-[10px] font-body px-2 py-0.5 rounded bg-primary/10 text-primary hover:bg-primary/20">→ Invoice</button>
+                )}
+                <button onClick={() => handleDelete(q.id)} className="text-muted-foreground hover:text-destructive transition-colors"><Trash2 className="w-3.5 h-3.5" /></button>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -7073,6 +7567,7 @@ function ContactsView() {
   const [contacts, setContactsState] = useState<Contact[]>(() => getContacts());
   const [editing, setEditing] = useState<Contact | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
+  const [expandedContactId, setExpandedContactId] = useState<string | null>(null);
   const bookings = getBookings();
   const invoices = getInvoices();
 
@@ -7196,24 +7691,71 @@ function ContactsView() {
             const cBookings = bookings.filter(b => b.clientEmail === c.email || b.clientName === c.name);
             const cInvoices = invoices.filter(i => i.to.email === c.email || i.to.name === c.name);
             const cTotal = cInvoices.reduce((s, i) => s + calcInvTotal(i), 0);
+            const isExpanded = expandedContactId === c.id;
+            const sortedBookings = [...cBookings].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
             return (
-            <div key={c.id} className="glass-panel rounded-xl px-4 py-3 flex items-center justify-between gap-3">
-              <div className="min-w-0 flex-1">
-                <p className="font-body text-sm text-foreground font-medium truncate">{c.name}{c.company ? <span className="text-muted-foreground font-normal"> · {c.company}</span> : null}</p>
-                <p className="font-body text-xs text-muted-foreground truncate">{[c.email, c.phone].filter(Boolean).join(" · ")}</p>
-                {c.abn && <p className="font-body text-[10px] text-muted-foreground/60">ABN: {c.abn}</p>}
-              </div>
-              <div className="flex items-center gap-2 flex-wrap justify-end shrink-0">
-                <div className="flex items-center gap-1 text-[10px] font-body text-muted-foreground">
-                  <span className="px-2 py-0.5 rounded-full bg-secondary/60 border border-border/60" aria-label={`${cBookings.length} booking${cBookings.length !== 1 ? "s" : ""}`}>{cBookings.length} booking{cBookings.length !== 1 ? "s" : ""}</span>
-                  <span className="px-2 py-0.5 rounded-full bg-secondary/60 border border-border/60" aria-label={`${cInvoices.length} invoice${cInvoices.length !== 1 ? "s" : ""}`}>{cInvoices.length} invoice{cInvoices.length !== 1 ? "s" : ""}</span>
-                  <span className="px-2 py-0.5 rounded-full bg-secondary/60 border border-border/60" aria-label={`Total $${cTotal.toFixed(2)}`}>${cTotal.toFixed(2)}</span>
+            <div key={c.id} className="glass-panel rounded-xl overflow-hidden">
+              {/* ── Header row ── */}
+              <div
+                className="px-4 py-3 flex items-center justify-between gap-3 cursor-pointer select-none hover:bg-secondary/20 transition-colors"
+                onClick={() => setExpandedContactId(isExpanded ? null : c.id)}
+              >
+                <div className="min-w-0 flex-1">
+                  <p className="font-body text-sm text-foreground font-medium truncate">{c.name}{c.company ? <span className="text-muted-foreground font-normal"> · {c.company}</span> : null}</p>
+                  <p className="font-body text-xs text-muted-foreground truncate">{[c.email, c.phone].filter(Boolean).join(" · ")}</p>
+                  {c.abn && <p className="font-body text-[10px] text-muted-foreground/60">ABN: {c.abn}</p>}
                 </div>
-                <div className="flex gap-1 shrink-0">
-                  <button onClick={() => setEditing({ ...c })} className="p-2 rounded hover:bg-secondary text-muted-foreground/60 hover:text-foreground transition-colors"><Edit className="w-4 h-4" /></button>
-                  <button onClick={() => handleDelete(c.id)} className="p-2 rounded hover:bg-red-500/10 text-muted-foreground/60 hover:text-red-400 transition-colors"><Trash2 className="w-4 h-4" /></button>
+                <div className="flex items-center gap-2 flex-wrap justify-end shrink-0">
+                  <div className="flex items-center gap-1 text-[10px] font-body text-muted-foreground">
+                    <span className="px-2 py-0.5 rounded-full bg-secondary/60 border border-border/60">{cBookings.length} booking{cBookings.length !== 1 ? "s" : ""}</span>
+                    <span className="px-2 py-0.5 rounded-full bg-secondary/60 border border-border/60">{cInvoices.length} invoice{cInvoices.length !== 1 ? "s" : ""}</span>
+                    <span className="px-2 py-0.5 rounded-full bg-secondary/60 border border-border/60">${cTotal.toFixed(2)}</span>
+                  </div>
+                  <div className="flex gap-1 shrink-0" onClick={e => e.stopPropagation()}>
+                    <button onClick={() => setEditing({ ...c })} className="p-2 rounded hover:bg-secondary text-muted-foreground/60 hover:text-foreground transition-colors"><Edit className="w-4 h-4" /></button>
+                    <button onClick={() => handleDelete(c.id)} className="p-2 rounded hover:bg-red-500/10 text-muted-foreground/60 hover:text-red-400 transition-colors"><Trash2 className="w-4 h-4" /></button>
+                  </div>
+                  <ChevronDown className={`w-3.5 h-3.5 text-muted-foreground/50 transition-transform duration-200 ${isExpanded ? "rotate-180" : ""}`} />
                 </div>
               </div>
+              {/* ── Expanded booking history ── */}
+              {isExpanded && (
+                <div className="border-t border-border/40 px-4 pb-3 pt-2">
+                  {sortedBookings.length === 0 ? (
+                    <p className="text-[11px] font-body text-muted-foreground/60 py-1">No bookings found for this contact.</p>
+                  ) : (
+                    <div className="space-y-1.5 mt-1">
+                      {sortedBookings.map(b => {
+                        const statusColor: Record<string, string> = {
+                          confirmed: "bg-emerald-500/15 text-emerald-400 border-emerald-500/20",
+                          pending: "bg-amber-500/15 text-amber-400 border-amber-500/20",
+                          completed: "bg-blue-500/15 text-blue-400 border-blue-500/20",
+                          cancelled: "bg-red-500/15 text-red-400 border-red-500/20",
+                        };
+                        const sColor = statusColor[b.status] || "bg-secondary/60 text-muted-foreground border-border/60";
+                        const dateStr = b.date ? new Date(b.date + "T00:00:00").toLocaleDateString("en-AU", { day: "numeric", month: "short", year: "numeric" }) : "—";
+                        return (
+                          <div key={b.id} className="flex items-center justify-between gap-2 py-1 border-b border-border/20 last:border-0">
+                            <div className="min-w-0 flex-1">
+                              <p className="font-body text-xs text-foreground font-medium truncate">{b.type || b.eventTypeId}</p>
+                              <p className="font-body text-[10px] text-muted-foreground">{dateStr}{b.time ? ` at ${b.time}` : ""}</p>
+                            </div>
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              {b.paymentAmount != null && (
+                                <span className="font-body text-[10px] text-muted-foreground">${b.paymentAmount.toFixed(2)}</span>
+                              )}
+                              <span className={`px-1.5 py-0.5 rounded-full text-[9px] font-body font-medium border ${sColor}`}>{b.status}</span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                  {c.notes && (
+                    <p className="font-body text-[10px] text-muted-foreground/70 mt-2 pt-2 border-t border-border/20 italic">{c.notes}</p>
+                  )}
+                </div>
+              )}
             </div>
             );
           })}
@@ -7513,6 +8055,20 @@ function SettingsView() {
             <div className="flex items-center justify-between">
               <span className="text-xs font-body text-muted-foreground">Show Instagram Handle Field</span>
               <Switch checked={settings.instagramFieldEnabled} onCheckedChange={(v) => setSettingsState({ ...settings, instagramFieldEnabled: v })} />
+            </div>
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs font-body text-foreground font-medium">Cosplay Fields on Booking Form</p>
+                <p className="text-[10px] font-body text-muted-foreground/60 mt-0.5">Ask clients for character name and costume/series</p>
+              </div>
+              <Switch checked={!!(settings as any).cosplayFieldsEnabled} onCheckedChange={(v) => setSettingsState({ ...settings, cosplayFieldsEnabled: v } as any)} />
+            </div>
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs font-body text-foreground font-medium">Convention / Event Field</p>
+                <p className="text-[10px] font-body text-muted-foreground/60 mt-0.5">Ask clients which convention they're attending</p>
+              </div>
+              <Switch checked={!!(settings as any).conventionFieldEnabled} onCheckedChange={(v) => setSettingsState({ ...settings, conventionFieldEnabled: v } as any)} />
             </div>
             <div className="border-t border-border/30 pt-3 space-y-3">
               <div className="flex items-center justify-between">
@@ -7819,7 +8375,148 @@ function SettingsView() {
           <Save className="w-4 h-4" /> Save All Settings
         </Button>
       </div>
+
+      {/* ── iCal Feed ──────────────────────────────────────────── */}
+      <IcalSettingsPanel />
+
+      {/* ── Tags Management ────────────────────────────────────── */}
+      <TagsManagementPanel />
     </motion.div>
+  );
+}
+
+// ─── iCal Settings Panel ──────────────────────────────────────────────────────
+
+function IcalSettingsPanel() {
+  const [icalToken, setIcalToken] = React.useState<string | null>(null);
+  const [loading, setLoading] = React.useState(false);
+  const [copied, setCopied] = React.useState(false);
+
+  // Load existing token from settings
+  React.useEffect(() => {
+    const s = getSettings() as any;
+    if (s.icalToken) setIcalToken(s.icalToken);
+  }, []);
+
+  const feedUrl = icalToken ? `${window.location.origin}/api/ical/${icalToken}` : null;
+
+  const handleGenerate = async () => {
+    setLoading(true);
+    const result = await generateIcalToken();
+    setLoading(false);
+    if (result?.icalToken) {
+      setIcalToken(result.icalToken);
+      // Persist to local settings for display without reload
+      const s = getSettings() as any;
+      s.icalToken = result.icalToken;
+      toast.success("iCal feed URL generated");
+    }
+  };
+
+  const handleRevoke = async () => {
+    if (!confirm("Revoke this iCal feed? Anyone subscribed to it will stop receiving updates.")) return;
+    await deleteIcalToken();
+    setIcalToken(null);
+    toast.success("iCal feed revoked");
+  };
+
+  const handleCopy = () => {
+    if (!feedUrl) return;
+    navigator.clipboard.writeText(feedUrl);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+    toast.success("iCal URL copied to clipboard");
+  };
+
+  return (
+    <div className="glass-panel rounded-xl p-5 space-y-4 mt-6">
+      <div className="flex items-center gap-2 mb-1">
+        <CalendarDays className="w-4 h-4 text-primary" />
+        <h3 className="font-display text-base text-foreground">iCal / Calendar Feed</h3>
+      </div>
+      <p className="text-xs font-body text-muted-foreground">Subscribe to your bookings from Apple Calendar, Google Calendar, Outlook, or any CalDAV app. No sign-in needed — just a private URL.</p>
+
+      {feedUrl ? (
+        <div className="space-y-3">
+          <div className="flex gap-2">
+            <input readOnly value={feedUrl} className="flex-1 text-xs font-body bg-background border border-border rounded-lg px-3 py-2 text-muted-foreground" />
+            <button onClick={handleCopy} className={`px-3 py-2 rounded-lg text-xs font-body border transition-colors ${copied ? "border-green-500/50 text-green-400 bg-green-500/10" : "border-border text-muted-foreground hover:text-foreground"}`}>
+              {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+            </button>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <a href={`webcal://${window.location.host}/api/ical/${icalToken}`} className="inline-flex items-center gap-1.5 text-xs font-body px-3 py-1.5 rounded-lg bg-secondary hover:bg-secondary/80 text-muted-foreground">
+              <Calendar className="w-3.5 h-3.5" /> Open in Calendar
+            </a>
+            <button onClick={handleGenerate} disabled={loading} className="inline-flex items-center gap-1.5 text-xs font-body px-3 py-1.5 rounded-lg bg-secondary hover:bg-secondary/80 text-muted-foreground">
+              <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} /> Rotate URL
+            </button>
+            <button onClick={handleRevoke} className="inline-flex items-center gap-1.5 text-xs font-body px-3 py-1.5 rounded-lg border border-destructive/30 text-destructive hover:bg-destructive/10">
+              <Trash2 className="w-3.5 h-3.5" /> Revoke
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button onClick={handleGenerate} disabled={loading} className="inline-flex items-center gap-1.5 text-xs font-body px-4 py-2 rounded-lg bg-primary/10 text-primary hover:bg-primary/20 transition-colors">
+          <CalendarDays className="w-3.5 h-3.5" /> {loading ? "Generating…" : "Generate iCal Feed URL"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+// ─── Tags Management Panel ────────────────────────────────────────────────────
+
+function TagsManagementPanel() {
+  const [tags, setTags] = React.useState<Tag[]>([]);
+  const [newLabel, setNewLabel] = React.useState("");
+  const [newColor, setNewColor] = React.useState("#a855f7");
+
+  React.useEffect(() => { getTags().then(setTags); }, []);
+
+  const reload = () => getTags().then(setTags);
+
+  const handleAdd = async () => {
+    if (!newLabel.trim()) return;
+    await createTag({ label: newLabel.trim(), color: newColor });
+    setNewLabel(""); reload();
+  };
+
+  const handleDelete = async (id: string) => {
+    await deleteTag(id); reload();
+  };
+
+  const PRESET_COLORS = ["#a855f7", "#ec4899", "#f97316", "#eab308", "#22c55e", "#06b6d4", "#3b82f6", "#ef4444"];
+
+  return (
+    <div className="glass-panel rounded-xl p-5 space-y-4 mt-4">
+      <div className="flex items-center gap-2 mb-1">
+        <Tags className="w-4 h-4 text-primary" />
+        <h3 className="font-display text-base text-foreground">Tags</h3>
+      </div>
+      <p className="text-xs font-body text-muted-foreground">Create colour-coded tags to label bookings and albums for quick filtering.</p>
+
+      <div className="flex items-center gap-2">
+        <input value={newLabel} onChange={e => setNewLabel(e.target.value)} onKeyDown={e => e.key === "Enter" && handleAdd()} placeholder="Tag name" className="flex-1 text-sm font-body bg-background border border-border rounded-lg px-3 py-2 text-foreground" />
+        <div className="flex gap-1">
+          {PRESET_COLORS.map(c => (
+            <button key={c} onClick={() => setNewColor(c)} style={{ background: c }} className={`w-5 h-5 rounded-full border-2 transition-all ${newColor === c ? "border-foreground scale-125" : "border-transparent"}`} />
+          ))}
+        </div>
+        <button onClick={handleAdd} className="px-3 py-2 rounded-lg bg-primary/10 text-primary hover:bg-primary/20 text-xs font-body">Add</button>
+      </div>
+
+      {tags.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {tags.map(tag => (
+            <span key={tag.id} className="inline-flex items-center gap-1.5 text-xs font-body px-2.5 py-1 rounded-full" style={{ background: `${tag.color}20`, color: tag.color, border: `1px solid ${tag.color}40` }}>
+              {tag.label}
+              <button onClick={() => handleDelete(tag.id)} className="hover:opacity-70"><X className="w-3 h-3" /></button>
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 

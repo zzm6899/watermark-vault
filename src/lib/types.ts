@@ -47,6 +47,14 @@ export interface EventType {
   depositType?: "fixed" | "percentage";
   depositMethods?: ("stripe" | "bank")[]; // which payment methods to offer
   prices?: Record<string, number>;
+  // ── New feature fields (EventTypeExtensions) ───────────────
+  maxAttendees?: number;
+  bufferMinutes?: number;
+  isPackage?: boolean;
+  packageEventIds?: string[];
+  durationPrices?: Record<string, number>;
+  taskTemplateId?: string;
+  defaultContractPath?: string;
 }
 
 /** A single entry in a booking's status change history. */
@@ -86,6 +94,15 @@ export interface Booking {
   requiresConfirmation?: boolean; // true if admin must manually confirm; false = auto-confirm once deposit paid
   /** Chronological record of status transitions — appended whenever status changes. */
   statusHistory?: BookingStatusHistoryEntry[];
+  // ── New feature fields (BookingExtensions) ─────────────────
+  seriesId?: string;
+  seriesConfig?: BookingSeriesConfig;
+  tasks?: BookingTask[];
+  source?: BookingSource;
+  tags?: string[];
+  contractId?: string;
+  attendeeCount?: number;
+  instalmentIds?: string[];
 }
 
 export interface Photo {
@@ -106,6 +123,10 @@ export interface Photo {
   fileSize?: number; // file size in bytes
   /** true while the photo is only stored as a local blob URL (upload in progress) — never persisted to the server */
   localPreview?: boolean;
+  // ── New feature fields (PhotoExtensions) ───────────────────
+  beforeSrc?: string;
+  afterSrc?: string;
+  comments?: PhotoComment[];
 }
 
 export type AlbumDisplaySize = "small" | "medium" | "large" | "list";
@@ -180,6 +201,11 @@ export interface Album {
    * via GET /api/albums/:id/photos and clears this flag.
    */
   _photosStripped?: boolean;
+  // ── New feature fields (AlbumExtensions) ───────────────────
+  tags?: string[];
+  shareLinks?: GalleryShareLink[];
+  deliveredAt?: string;
+  downloadCartItems?: string[];
 }
 
 export interface BankTransferSettings {
@@ -235,6 +261,11 @@ export interface AppSettings {
   ftpOrganizeByAlbum?: boolean;
   /** Move starred photos to a "{albumName}-starred" sub-folder on FTP automatically. */
   ftpStarredFolder?: boolean;
+  // ── New feature fields (AppSettingsExtensions) ─────────────
+  icalToken?: string;
+  brandColor?: string;
+  pushEnabled?: boolean;
+  vapidPublicKey?: string;
 }
 
 export interface ProofingRound {
@@ -501,6 +532,11 @@ export interface TenantSettings {
   googleApiCredentialsSet?: boolean;
   discordWebhookUrlSet?: boolean;
   ftpPasswordSet?: boolean;
+  // ── New feature fields (TenantSettingsExtensions) ──────────
+  icalToken?: string;
+  brandColor?: string;
+  vapidPublicKey?: string;
+  pushEnabled?: boolean;
 }
 
 
@@ -581,4 +617,268 @@ export interface Enquiry {
   respondedAt?: string;
   adminNote?: string;
   bookingId?: string;           // set when accepted → booking created
+}
+
+// ─── Booking Tasks ────────────────────────────────────────────────────────────
+
+export interface BookingTask {
+  id: string;
+  label: string;
+  completed: boolean;
+  completedAt?: string;         // ISO timestamp
+  dueDate?: string;             // YYYY-MM-DD
+  note?: string;
+}
+
+export interface BookingTaskTemplate {
+  id: string;
+  eventTypeId?: string;         // if set, auto-assign to bookings of this type; if null, apply to all
+  tasks: Array<{ label: string; dueOffsetDays?: number }>; // dueOffsetDays relative to booking date
+  createdAt: string;
+}
+
+// ─── Expenses ─────────────────────────────────────────────────────────────────
+
+export type ExpenseCategory =
+  | "equipment"
+  | "travel"
+  | "software"
+  | "marketing"
+  | "venue"
+  | "props"
+  | "printing"
+  | "other";
+
+export interface Expense {
+  id: string;
+  description: string;
+  amount: number;               // in platform currency
+  category: ExpenseCategory;
+  date: string;                 // YYYY-MM-DD
+  bookingId?: string;           // optional link to a booking
+  albumId?: string;             // optional link to an album
+  receiptUrl?: string;          // path to uploaded receipt image
+  notes?: string;
+  createdAt: string;
+}
+
+// ─── Quotes / Estimates ───────────────────────────────────────────────────────
+
+export type QuoteStatus = "draft" | "sent" | "accepted" | "declined" | "expired" | "converted";
+
+export interface Quote {
+  id: string;
+  number: string;               // e.g. "QUO-0001"
+  status: QuoteStatus;
+  from: InvoiceParty;
+  to: InvoiceParty;
+  items: InvoiceItem[];
+  notes: string;
+  expiryDate: string;           // YYYY-MM-DD
+  createdAt: string;
+  sentAt?: string;
+  acceptedAt?: string;
+  declinedAt?: string;
+  convertedInvoiceId?: string;  // set when accepted → invoice created
+  shareToken: string;           // random token for public share link
+  bookingId?: string;
+  tax?: number;
+  discount?: number;
+}
+
+// ─── Payment Plans / Instalments ─────────────────────────────────────────────
+
+export type InstalmentStatus = "pending" | "paid" | "overdue" | "waived";
+
+export interface PaymentInstalment {
+  id: string;
+  bookingId: string;            // or invoiceId — whichever this is tied to
+  invoiceId?: string;
+  dueDate: string;              // YYYY-MM-DD
+  amount: number;
+  status: InstalmentStatus;
+  paidAt?: string;              // ISO timestamp
+  stripeSessionId?: string;
+  note?: string;
+}
+
+// ─── Photo Comments / Annotations ────────────────────────────────────────────
+
+export interface PhotoComment {
+  id: string;
+  photoId: string;
+  albumId: string;
+  authorName: string;
+  authorEmail?: string;
+  text: string;
+  xPct?: number;                // optional pin position 0–100
+  yPct?: number;
+  createdAt: string;
+  resolvedAt?: string;
+  resolvedBy?: string;          // admin username
+}
+
+// ─── Gallery Share Links ──────────────────────────────────────────────────────
+
+export interface GalleryShareLink {
+  id: string;
+  albumId: string;
+  token: string;                // random, used in URL
+  label?: string;               // e.g. "For client review"
+  expiresAt?: string;           // ISO timestamp; undefined = never expires
+  allowDownload?: boolean;
+  createdAt: string;
+  lastAccessedAt?: string;
+  accessCount?: number;
+}
+
+// ─── Contracts ────────────────────────────────────────────────────────────────
+
+export type ContractStatus = "pending" | "signed" | "declined";
+
+export interface BookingContract {
+  id: string;
+  bookingId: string;
+  title: string;                // e.g. "Photography Services Agreement"
+  pdfPath?: string;             // server path to PDF file
+  pdfBase64?: string;           // base64 encoded PDF (for small contracts)
+  token: string;                // random — sent to client via email
+  status: ContractStatus;
+  signedAt?: string;            // ISO timestamp
+  signedName?: string;          // typed name provided by client
+  signedIp?: string;
+  createdAt: string;
+  sentAt?: string;
+}
+
+// ─── Booking Source Tracking ──────────────────────────────────────────────────
+
+export type BookingSource =
+  | "direct"        // booked via your own booking page
+  | "instagram"
+  | "referral"
+  | "facebook"
+  | "tiktok"
+  | "convention"    // met at a cosplay convention
+  | "repeat"        // returning client
+  | "email"
+  | "other";
+
+// ─── Tags ─────────────────────────────────────────────────────────────────────
+
+export interface Tag {
+  id: string;
+  label: string;
+  color: string;                // hex colour e.g. "#e879f9"
+}
+
+// ─── Recurring Booking Series ─────────────────────────────────────────────────
+
+export type RecurrenceFrequency = "weekly" | "fortnightly" | "monthly";
+
+export interface BookingSeriesConfig {
+  frequency: RecurrenceFrequency;
+  totalOccurrences: number;
+  occurrenceIndex: number;      // 1-based index for this booking within the series
+}
+
+// ─── Extended Booking fields (appended to Booking interface via augmentation) ──
+// These are optional fields added to Booking for new features.
+// Declared here as a separate interface so they can be spread onto Booking.
+export interface BookingExtensions {
+  /** Links this booking into a recurring series */
+  seriesId?: string;
+  seriesConfig?: BookingSeriesConfig;
+  /** Checklist tasks for this booking */
+  tasks?: BookingTask[];
+  /** Where the client came from */
+  source?: BookingSource;
+  /** Colour-coded tags */
+  tags?: string[];              // array of Tag ids
+  /** Contract signing record */
+  contractId?: string;
+  /** Number of additional attendees beyond the lead booker */
+  attendeeCount?: number;
+  /** Payment instalment plan IDs associated with this booking */
+  instalmentIds?: string[];
+}
+
+// ─── Extended EventType fields ────────────────────────────────────────────────
+
+export interface EventTypeExtensions {
+  /** Maximum total attendees (lead + extras). 1 = standard 1:1. */
+  maxAttendees?: number;
+  /** Buffer minutes to block after each booking of this type. */
+  bufferMinutes?: number;
+  /** If true, this is a package that bundles other event types. */
+  isPackage?: boolean;
+  /** Event type IDs included in this package. */
+  packageEventIds?: string[];
+  /** Per-duration pricing overrides (key = duration string e.g. "60") */
+  durationPrices?: Record<string, number>;
+  /** Default task template to attach to new bookings of this type */
+  taskTemplateId?: string;
+  /** Default contract PDF path to use for bookings of this type */
+  defaultContractPath?: string;
+}
+
+// ─── Extended Photo fields ────────────────────────────────────────────────────
+
+export interface PhotoExtensions {
+  /** Before-edit source URL (for before/after slider) */
+  beforeSrc?: string;
+  /** After-edit source URL (alias for src — used when beforeSrc is set) */
+  afterSrc?: string;
+  /** Client comments/annotations on this photo */
+  comments?: PhotoComment[];
+}
+
+// ─── Extended Album fields ────────────────────────────────────────────────────
+
+export interface AlbumExtensions {
+  /** Colour-coded tags */
+  tags?: string[];
+  /** Gallery share links for this album */
+  shareLinks?: GalleryShareLink[];
+  /** One-click delivery sent timestamp */
+  deliveredAt?: string;
+  /** Client download cart — photo IDs the client has added to their cart */
+  downloadCartItems?: string[];
+}
+
+// ─── Extended TenantSettings fields ──────────────────────────────────────────
+
+export interface TenantSettingsExtensions {
+  /** iCal feed token — random, used in /api/ical/:token URL */
+  icalToken?: string;
+  /** Custom brand colour (hex) shown on tenant booking page */
+  brandColor?: string;
+  /** Web Push VAPID public key */
+  vapidPublicKey?: string;
+  /** Enable PWA push notifications for this tenant */
+  pushEnabled?: boolean;
+}
+
+// ─── Extended AppSettings fields ─────────────────────────────────────────────
+
+export interface AppSettingsExtensions {
+  /** iCal feed token for main admin feed */
+  icalToken?: string;
+  /** Custom brand colour for main booking page */
+  brandColor?: string;
+  /** Enable PWA push notifications */
+  pushEnabled?: boolean;
+  /** VAPID public key for push notifications */
+  vapidPublicKey?: string;
+}
+
+// ─── Push Subscriptions ───────────────────────────────────────────────────────
+
+export interface PushSubscriptionRecord {
+  id: string;
+  endpoint: string;
+  keys: { p256dh: string; auth: string };
+  tenantSlug?: string;          // null = main admin
+  createdAt: string;
+  userAgent?: string;
 }

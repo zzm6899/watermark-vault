@@ -138,6 +138,13 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
   const [bookingLimitReached, setBookingLimitReached] = useState(false);
   const [enquiryEnabled, setEnquiryEnabled] = useState(false);
   const [enquiryLabel, setEnquiryLabel] = useState("Make an Enquiry");
+  const [brandColor, setBrandColor] = useState<string | null>(null);
+  const [cosplayFieldsEnabled, setCosplayFieldsEnabled] = useState(false);
+  const [conventionFieldEnabled, setConventionFieldEnabled] = useState(false);
+  const [bankTransfer, setBankTransfer] = useState<{
+    enabled: boolean; accountName: string | null; bsb: string | null;
+    accountNumber: string | null; payId: string | null; payIdType: string | null; instructions: string | null;
+  } | null>(null);
 
   const [step, setStep] = useState<Step>("event-select");
   const [selectedEvent, setSelectedEvent] = useState<EventType | null>(null);
@@ -154,7 +161,11 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
   const [notes, setNotes] = useState("");
+  const [cosplayCharacter, setCosplayCharacter] = useState("");
+  const [cosplayCostume, setCosplayCostume] = useState("");
+  const [conventionName, setConventionName] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [slotConflict, setSlotConflict] = useState(false);
 
   // Enquiry form
   const [enquiryEventId, setEnquiryEventId] = useState("");
@@ -192,6 +203,10 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
         setBookingLimitReached(!!data.bookingLimitReached);
         setEnquiryEnabled(!!data.enquiryEnabled);
         setEnquiryLabel(data.enquiryLabel || "Make an Enquiry");
+        if (data.brandColor) setBrandColor(data.brandColor);
+        setCosplayFieldsEnabled(!!data.cosplayFieldsEnabled);
+        setConventionFieldEnabled(!!data.conventionFieldEnabled);
+        if (data.bankTransfer) setBankTransfer(data.bankTransfer);
       }
       setLoading(false);
     });
@@ -310,6 +325,7 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
       toast.error("Please complete the date/time selection"); return;
     }
     setSubmitting(true);
+    setSlotConflict(false);
     const result = await createTenantBooking(tenantSlug!, {
       clientName: name.trim(),
       clientEmail: email.trim(),
@@ -320,9 +336,24 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
       duration: selectedDuration,
       notes: notes.trim(),
       phone: phone.trim() || undefined,
+      cosplayCharacter: cosplayCharacter.trim() || undefined,
+      cosplayCostume: cosplayCostume.trim() || undefined,
+      conventionName: conventionName.trim() || undefined,
     });
     setSubmitting(false);
-    if (!result.ok) { toast.error(result.error || "Booking failed"); return; }
+    if (!result.ok) {
+      // 409 = slot taken — send user back to pick another time
+      if (result.statusCode === 409) {
+        setSlotConflict(true);
+        setSelectedTime(null);
+        setStep("datetime");
+        scrollTop();
+        toast.error("That time slot was just taken — please pick another.");
+        return;
+      }
+      toast.error(result.error || "Booking failed");
+      return;
+    }
     setStep("confirmed");
   };
 
@@ -351,7 +382,19 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
     );
   }
 
-  return (    <div className="min-h-screen bg-background flex flex-col" style={{ paddingTop: "env(safe-area-inset-top)", paddingBottom: "env(safe-area-inset-bottom)" }}>
+  // Convert hex brand color to hsl-ish CSS vars for shadcn primary token override
+  const brandStyle: React.CSSProperties = brandColor ? {
+    paddingTop: "env(safe-area-inset-top)",
+    paddingBottom: "env(safe-area-inset-bottom)",
+    // Override the --primary CSS variable so all primary-colored UI elements pick up the brand color
+    ["--primary" as string]: brandColor,
+    ["--primary-foreground" as string]: "#ffffff",
+  } : {
+    paddingTop: "env(safe-area-inset-top)",
+    paddingBottom: "env(safe-area-inset-bottom)",
+  };
+
+  return (    <div className="min-h-screen bg-background flex flex-col" style={brandStyle}>
       {/* Header */}
       <header className="border-b border-border/50 py-4 px-6 flex items-center gap-4">
         {hasHistory && (
@@ -491,6 +534,17 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
               <button onClick={() => { setStep("event-select"); scrollTop(); }} className="flex items-center gap-2 text-xs font-body tracking-wider uppercase text-muted-foreground hover:text-primary transition-colors">
                 <ArrowLeft className="w-3.5 h-3.5" /> Back
               </button>
+
+              {/* Slot conflict notice */}
+              {slotConflict && (
+                <div className="flex items-start gap-3 rounded-xl p-4 bg-amber-500/10 border border-amber-500/20">
+                  <Clock className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-sm font-body text-amber-300 font-medium">That slot was just taken</p>
+                    <p className="text-xs font-body text-amber-300/70 mt-0.5">Someone else booked that time just before you. Please choose a different time slot below.</p>
+                  </div>
+                </div>
+              )}
 
               <div className="glass-panel rounded-xl overflow-hidden">
                 <div className="grid md:grid-cols-[220px_1fr_170px] lg:grid-cols-[280px_1fr_200px] divide-y md:divide-y-0 md:divide-x divide-border/50">
@@ -711,6 +765,26 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
                   <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Phone</label>
                   <Input type="tel" value={phone} onChange={e => setPhone(e.target.value)} placeholder="+61 400 000 000" className="bg-secondary border-border text-foreground font-body" />
                 </div>
+                {/* Convention name field */}
+                {conventionFieldEnabled && (
+                  <div>
+                    <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Convention / Event Name</label>
+                    <Input value={conventionName} onChange={e => setConventionName(e.target.value)} placeholder="e.g. Supanova Sydney 2025" className="bg-secondary border-border text-foreground font-body" />
+                  </div>
+                )}
+                {/* Cosplay-specific fields */}
+                {cosplayFieldsEnabled && (
+                  <>
+                    <div>
+                      <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Character Name</label>
+                      <Input value={cosplayCharacter} onChange={e => setCosplayCharacter(e.target.value)} placeholder="e.g. Nezuko Kamado" className="bg-secondary border-border text-foreground font-body" />
+                    </div>
+                    <div>
+                      <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Costume / Series</label>
+                      <Input value={cosplayCostume} onChange={e => setCosplayCostume(e.target.value)} placeholder="e.g. Demon Slayer — Season 2 outfit" className="bg-secondary border-border text-foreground font-body" />
+                    </div>
+                  </>
+                )}
                 <div>
                   <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Notes</label>
                   <Textarea value={notes} onChange={e => setNotes(e.target.value)} placeholder="Any special requests or questions…" className="bg-secondary border-border text-foreground font-body min-h-[80px]" />
@@ -754,7 +828,81 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
                   <span className="text-muted-foreground">Time</span>
                   <span className="text-foreground">{selectedTime ? formatTime12(selectedTime) : "—"}</span>
                 </div>
+                {cosplayCharacter && (
+                  <div className="flex justify-between text-sm font-body">
+                    <span className="text-muted-foreground">Character</span>
+                    <span className="text-foreground truncate max-w-[180px]">{cosplayCharacter}</span>
+                  </div>
+                )}
+                {conventionName && (
+                  <div className="flex justify-between text-sm font-body">
+                    <span className="text-muted-foreground">Convention</span>
+                    <span className="text-foreground truncate max-w-[180px]">{conventionName}</span>
+                  </div>
+                )}
               </div>
+
+              {/* Add to calendar */}
+              {selectedDate && selectedTime && selectedEvent && selectedDuration && (() => {
+                const [h, m] = selectedTime.split(":").map(Number);
+                const startDt = new Date(selectedDate);
+                startDt.setHours(h, m, 0, 0);
+                const endDt = new Date(startDt.getTime() + (selectedDuration || 60) * 60000);
+                const fmt = (d: Date) => d.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
+                const title = encodeURIComponent(`${selectedEvent.title} with ${tenant.displayName}`);
+                const gcalUrl = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${fmt(startDt)}/${fmt(endDt)}&details=${encodeURIComponent(`Booked via ${tenant.displayName}'s booking page`)}`;
+                return (
+                  <a
+                    href={gcalUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-2 px-4 py-2 rounded-full border border-border/60 bg-secondary/40 hover:bg-secondary text-xs font-body text-muted-foreground hover:text-foreground transition-all"
+                  >
+                    <CalendarIcon className="w-3.5 h-3.5 text-primary" />
+                    Add to Google Calendar
+                  </a>
+                );
+              })()}
+
+              {/* Bank transfer payment details */}
+              {bankTransfer?.enabled && (
+                <div className="glass-panel rounded-xl p-5 max-w-sm mx-auto text-left space-y-3 border border-amber-500/20 bg-amber-500/5">
+                  <p className="text-xs font-body font-semibold text-amber-300 tracking-wider uppercase flex items-center gap-2">
+                    <DollarSign className="w-3.5 h-3.5" />
+                    Bank Transfer Payment
+                  </p>
+                  <div className="space-y-1.5">
+                    {bankTransfer.accountName && (
+                      <div className="flex justify-between text-xs font-body">
+                        <span className="text-muted-foreground">Account Name</span>
+                        <span className="text-foreground font-medium">{bankTransfer.accountName}</span>
+                      </div>
+                    )}
+                    {bankTransfer.bsb && (
+                      <div className="flex justify-between text-xs font-body">
+                        <span className="text-muted-foreground">BSB</span>
+                        <span className="text-foreground font-medium font-mono">{bankTransfer.bsb}</span>
+                      </div>
+                    )}
+                    {bankTransfer.accountNumber && (
+                      <div className="flex justify-between text-xs font-body">
+                        <span className="text-muted-foreground">Account Number</span>
+                        <span className="text-foreground font-medium font-mono">{bankTransfer.accountNumber}</span>
+                      </div>
+                    )}
+                    {bankTransfer.payId && (
+                      <div className="flex justify-between text-xs font-body">
+                        <span className="text-muted-foreground">PayID ({bankTransfer.payIdType || ""})</span>
+                        <span className="text-foreground font-medium">{bankTransfer.payId}</span>
+                      </div>
+                    )}
+                  </div>
+                  {bankTransfer.instructions && (
+                    <p className="text-xs font-body text-muted-foreground leading-relaxed border-t border-border/40 pt-2">{bankTransfer.instructions}</p>
+                  )}
+                </div>
+              )}
+
               <Button variant="outline" onClick={() => { setStep("event-select"); setSelectedEvent(null); setSelectedDate(null); setSelectedTime(null); }} className="font-body text-xs gap-2">
                 Book another session
               </Button>

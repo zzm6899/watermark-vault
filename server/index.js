@@ -2350,10 +2350,25 @@ app.get("/api/tenant/:slug/public", tenantPublicLimiter, (req, res) => {
   const tenantSettings = tenantSettingsRaw ? (typeof tenantSettingsRaw === "string" ? JSON.parse(tenantSettingsRaw) : tenantSettingsRaw) : {};
   const enquiryEnabled = tenantSettings?.enquiryEnabled === true;
   const enquiryLabel = tenantSettings?.enquiryLabel || "Make an Enquiry";
+  const brandColor = tenantSettings?.brandColor || null;
+  // Cosplay fields toggle
+  const cosplayFieldsEnabled = tenantSettings?.cosplayFieldsEnabled === true;
+  const conventionFieldEnabled = tenantSettings?.conventionFieldEnabled === true;
+  // Bank transfer details — only expose non-secret fields
+  const bankTransfer = tenantSettings?.bankTransferEnabled ? {
+    enabled: true,
+    accountName: tenantSettings.bankAccountName || null,
+    bsb: tenantSettings.bankBsb || null,
+    accountNumber: tenantSettings.bankAccountNumber || null,
+    payId: tenantSettings.bankPayId || null,
+    payIdType: tenantSettings.bankPayIdType || null,
+    instructions: tenantSettings.bankInstructions || null,
+  } : null;
 
   // Allow browsers and CDNs to cache for 60 s; revalidate after that.
   res.setHeader("Cache-Control", SHORT_CACHE);
-  res.json({ tenant, eventTypes, bookingLimitReached, enquiryEnabled, enquiryLabel });
+  res.json({ tenant, eventTypes, bookingLimitReached, enquiryEnabled, enquiryLabel, brandColor,
+    cosplayFieldsEnabled, conventionFieldEnabled, bankTransfer });
 });
 
 // Get tenant-scoped store key (for main admin to manage tenant data)
@@ -2477,7 +2492,8 @@ app.post("/api/tenant/:slug/booking", tenantBookingLimiter, (req, res) => {
   const tenant = tenants.find(t => t.slug === slug && t.active !== false);
   if (!tenant) return res.status(404).json({ error: "Tenant not found" });
 
-  const { clientName, clientEmail, date, time, eventTypeId, type, duration, notes, answers } = req.body || {};
+  const { clientName, clientEmail, date, time, eventTypeId, type, duration, notes, answers,
+    cosplayCharacter, cosplayCostume, conventionName } = req.body || {};
   if (!clientName || typeof clientName !== "string" || !clientName.trim()) {
     return res.status(400).json({ error: "clientName is required" });
   }
@@ -2546,6 +2562,9 @@ app.post("/api/tenant/:slug/booking", tenantBookingLimiter, (req, res) => {
     status: "pending",
     notes: (notes || "").trim(),
     answers: (answers && typeof answers === "object") ? answers : {},
+    cosplayCharacter: (cosplayCharacter || "").trim() || undefined,
+    cosplayCostume: (cosplayCostume || "").trim() || undefined,
+    conventionName: (conventionName || "").trim() || undefined,
     createdAt: new Date().toISOString(),
     tenantSlug: slug,
   };
@@ -3824,6 +3843,915 @@ setTimeout(() => {
     runEmailAutomations().catch(e => console.error("Email automation error:", e.message));
   }, AUTOMATION_INTERVAL_MS);
 }, 30000);
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ── iCal Feed  (/api/ical/:token) ─────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function escapeIcal(str) {
+  if (!str) return "";
+  return String(str).replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\n/g, "\\n");
+}
+
+function toIcalDate(dateStr, timeStr) {
+  // dateStr: YYYY-MM-DD, timeStr: HH:MM
+  if (!dateStr) return null;
+  const [y, m, d] = (dateStr || "").split("-");
+  if (timeStr) {
+    const [h, mi] = (timeStr || "00:00").split(":");
+    return `${y}${m}${d}T${h}${mi}00`;
+  }
+  return `${y}${m}${d}`;
+}
+
+function toIcalDateEnd(dateStr, timeStr, durationMins) {
+  if (!dateStr || !timeStr) return toIcalDate(dateStr, timeStr);
+  const [y, mo, d] = dateStr.split("-").map(Number);
+  const [h, mi] = timeStr.split(":").map(Number);
+  const start = new Date(y, mo - 1, d, h, mi);
+  const end = new Date(start.getTime() + (durationMins || 60) * 60000);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${end.getFullYear()}${pad(end.getMonth() + 1)}${pad(end.getDate())}T${pad(end.getHours())}${pad(end.getMinutes())}00`;
+}
+
+function buildIcalFeed(bookings, calName) {
+  const now = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z/, "Z");
+  const lines = [
+    "BEGIN:VCALENDAR",
+    "VERSION:2.0",
+    `PRODID:-//PhotoFlow//Cosplay Booking Calendar//EN`,
+    "CALSCALE:GREGORIAN",
+    "METHOD:PUBLISH",
+    `X-WR-CALNAME:${escapeIcal(calName || "PhotoFlow Bookings")}`,
+    `X-WR-CALDESC:Photography booking calendar`,
+  ];
+  for (const b of bookings) {
+    if (b.status === "cancelled") continue;
+    const dtstart = toIcalDate(b.date, b.time);
+    const dtend = toIcalDateEnd(b.date, b.time, b.duration);
+    if (!dtstart) continue;
+    lines.push("BEGIN:VEVENT");
+    lines.push(`UID:wv-${b.id}@photoflow`);
+    lines.push(`DTSTAMP:${now}`);
+    lines.push(`DTSTART:${dtstart}`);
+    lines.push(`DTEND:${dtend}`);
+    lines.push(`SUMMARY:${escapeIcal(b.clientName)} — ${escapeIcal(b.type || b.eventTypeId)}`);
+    const descParts = [];
+    if (b.clientEmail) descParts.push(`Email: ${b.clientEmail}`);
+    if (b.instagramHandle) descParts.push(`IG: @${b.instagramHandle}`);
+    if (b.notes) descParts.push(b.notes);
+    if (b.status) descParts.push(`Status: ${b.status}`);
+    if (b.paymentStatus) descParts.push(`Payment: ${b.paymentStatus}`);
+    lines.push(`DESCRIPTION:${escapeIcal(descParts.join("\\n"))}`);
+    if (b.location) lines.push(`LOCATION:${escapeIcal(b.location)}`);
+    lines.push("END:VEVENT");
+  }
+  lines.push("END:VCALENDAR");
+  return lines.join("\r\n");
+}
+
+app.get("/api/ical/:token", (req, res) => {
+  const { token } = req.params;
+  const db = readDb();
+  // Check main admin ical token
+  const settings = db["wv_settings"] ? (typeof db["wv_settings"] === "string" ? JSON.parse(db["wv_settings"]) : db["wv_settings"]) : {};
+  const profile = db["wv_profile"] ? (typeof db["wv_profile"] === "string" ? JSON.parse(db["wv_profile"]) : db["wv_profile"]) : {};
+  if (settings.icalToken && settings.icalToken === token) {
+    const bookings = db["wv_bookings"] ? (typeof db["wv_bookings"] === "string" ? JSON.parse(db["wv_bookings"]) : db["wv_bookings"]) : [];
+    const cal = buildIcalFeed(bookings, `${profile.name || "PhotoFlow"} — Bookings`);
+    res.setHeader("Content-Type", "text/calendar; charset=utf-8");
+    res.setHeader("Content-Disposition", 'attachment; filename="bookings.ics"');
+    return res.send(cal);
+  }
+  // Check tenant ical tokens
+  const tenants = db["wv_tenants"] ? (typeof db["wv_tenants"] === "string" ? JSON.parse(db["wv_tenants"]) : db["wv_tenants"]) : [];
+  for (const tenant of tenants) {
+    const ts = db[`t_${tenant.slug}_wv_tenant_settings`] ? (typeof db[`t_${tenant.slug}_wv_tenant_settings`] === "string" ? JSON.parse(db[`t_${tenant.slug}_wv_tenant_settings`]) : db[`t_${tenant.slug}_wv_tenant_settings`]) : {};
+    if (ts.icalToken && ts.icalToken === token) {
+      const allBookings = db["wv_bookings"] ? (typeof db["wv_bookings"] === "string" ? JSON.parse(db["wv_bookings"]) : db["wv_bookings"]) : [];
+      const tenantBookings = allBookings.filter(b => b.tenantSlug === tenant.slug);
+      const cal = buildIcalFeed(tenantBookings, `${tenant.displayName || tenant.slug} — Bookings`);
+      res.setHeader("Content-Type", "text/calendar; charset=utf-8");
+      res.setHeader("Content-Disposition", 'attachment; filename="bookings.ics"');
+      return res.send(cal);
+    }
+  }
+  res.status(404).json({ error: "Invalid or expired iCal token" });
+});
+
+// Generate / rotate ical token
+app.post("/api/ical/generate", requireAuth, (req, res) => {
+  const db = readDb();
+  const settings = db["wv_settings"] ? (typeof db["wv_settings"] === "string" ? JSON.parse(db["wv_settings"]) : db["wv_settings"]) : {};
+  settings.icalToken = crypto.randomBytes(24).toString("hex");
+  db["wv_settings"] = settings;
+  writeDb(db);
+  res.json({ icalToken: settings.icalToken });
+});
+
+app.delete("/api/ical/token", requireAuth, (req, res) => {
+  const db = readDb();
+  const settings = db["wv_settings"] ? (typeof db["wv_settings"] === "string" ? JSON.parse(db["wv_settings"]) : db["wv_settings"]) : {};
+  delete settings.icalToken;
+  db["wv_settings"] = settings;
+  writeDb(db);
+  res.json({ ok: true });
+});
+
+// Tenant-scoped iCal token generate & delete (used by TenantAdmin)
+app.post("/api/tenant/:slug/ical/generate", tenantLimiter, (req, res) => {
+  const { slug } = req.params;
+  const tenants = readTenants();
+  if (!tenants.find(t => t.slug === slug)) return res.status(404).json({ error: "Tenant not found" });
+  const db = readDb();
+  const tsKey = `t_${slug}_wv_tenant_settings`;
+  const ts = db[tsKey] ? (typeof db[tsKey] === "string" ? JSON.parse(db[tsKey]) : db[tsKey]) : {};
+  ts.icalToken = crypto.randomBytes(24).toString("hex");
+  db[tsKey] = ts;
+  writeDb(db);
+  res.json({ icalToken: ts.icalToken });
+});
+
+app.delete("/api/tenant/:slug/ical/token", tenantLimiter, (req, res) => {
+  const { slug } = req.params;
+  const tenants = readTenants();
+  if (!tenants.find(t => t.slug === slug)) return res.status(404).json({ error: "Tenant not found" });
+  const db = readDb();
+  const tsKey = `t_${slug}_wv_tenant_settings`;
+  const ts = db[tsKey] ? (typeof db[tsKey] === "string" ? JSON.parse(db[tsKey]) : db[tsKey]) : {};
+  delete ts.icalToken;
+  db[tsKey] = ts;
+  writeDb(db);
+  res.json({ ok: true });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ── Expenses ──────────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+app.get("/api/expenses", requireAuth, (req, res) => {
+  const db = readDb();
+  const expenses = db["wv_expenses"] ? (typeof db["wv_expenses"] === "string" ? JSON.parse(db["wv_expenses"]) : db["wv_expenses"]) : [];
+  res.json(expenses);
+});
+
+app.post("/api/expenses", requireAuth, (req, res) => {
+  const db = readDb();
+  const expenses = db["wv_expenses"] ? (typeof db["wv_expenses"] === "string" ? JSON.parse(db["wv_expenses"]) : db["wv_expenses"]) : [];
+  const expense = {
+    id: crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString("hex"),
+    description: req.body.description || "",
+    amount: Number(req.body.amount) || 0,
+    category: req.body.category || "other",
+    date: req.body.date || new Date().toISOString().slice(0, 10),
+    bookingId: req.body.bookingId || null,
+    albumId: req.body.albumId || null,
+    receiptUrl: req.body.receiptUrl || null,
+    notes: req.body.notes || "",
+    createdAt: new Date().toISOString(),
+  };
+  expenses.push(expense);
+  db["wv_expenses"] = expenses;
+  writeDb(db);
+  res.json(expense);
+});
+
+app.put("/api/expenses/:id", requireAuth, (req, res) => {
+  const db = readDb();
+  const expenses = db["wv_expenses"] ? (typeof db["wv_expenses"] === "string" ? JSON.parse(db["wv_expenses"]) : db["wv_expenses"]) : [];
+  const idx = expenses.findIndex(e => e.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: "Not found" });
+  expenses[idx] = { ...expenses[idx], ...req.body, id: expenses[idx].id };
+  db["wv_expenses"] = expenses;
+  writeDb(db);
+  res.json(expenses[idx]);
+});
+
+app.delete("/api/expenses/:id", requireAuth, (req, res) => {
+  const db = readDb();
+  const expenses = db["wv_expenses"] ? (typeof db["wv_expenses"] === "string" ? JSON.parse(db["wv_expenses"]) : db["wv_expenses"]) : [];
+  const filtered = expenses.filter(e => e.id !== req.params.id);
+  db["wv_expenses"] = filtered;
+  writeDb(db);
+  res.json({ ok: true });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ── Quotes ────────────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function nextQuoteNumber(db) {
+  const quotes = db["wv_quotes"] ? (typeof db["wv_quotes"] === "string" ? JSON.parse(db["wv_quotes"]) : db["wv_quotes"]) : [];
+  const nums = quotes.map(q => parseInt((q.number || "QUO-0000").replace(/[^\d]/g, "")) || 0);
+  const next = (nums.length ? Math.max(...nums) : 0) + 1;
+  return `QUO-${String(next).padStart(4, "0")}`;
+}
+
+app.get("/api/quotes", requireAuth, (req, res) => {
+  const db = readDb();
+  const quotes = db["wv_quotes"] ? (typeof db["wv_quotes"] === "string" ? JSON.parse(db["wv_quotes"]) : db["wv_quotes"]) : [];
+  res.json(quotes);
+});
+
+app.post("/api/quotes", requireAuth, (req, res) => {
+  const db = readDb();
+  const quotes = db["wv_quotes"] ? (typeof db["wv_quotes"] === "string" ? JSON.parse(db["wv_quotes"]) : db["wv_quotes"]) : [];
+  const settings = db["wv_settings"] ? (typeof db["wv_settings"] === "string" ? JSON.parse(db["wv_settings"]) : db["wv_settings"]) : {};
+  const quote = {
+    id: crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString("hex"),
+    number: nextQuoteNumber(db),
+    status: "draft",
+    from: req.body.from || settings.invoiceFrom || { name: "", email: "", address: "" },
+    to: req.body.to || { name: "", email: "", address: "" },
+    items: req.body.items || [],
+    notes: req.body.notes || "",
+    expiryDate: req.body.expiryDate || new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10),
+    createdAt: new Date().toISOString(),
+    shareToken: crypto.randomBytes(24).toString("hex"),
+    bookingId: req.body.bookingId || null,
+    tax: req.body.tax ?? null,
+    discount: req.body.discount ?? null,
+  };
+  quotes.push(quote);
+  db["wv_quotes"] = quotes;
+  writeDb(db);
+  res.json(quote);
+});
+
+app.put("/api/quotes/:id", requireAuth, (req, res) => {
+  const db = readDb();
+  const quotes = db["wv_quotes"] ? (typeof db["wv_quotes"] === "string" ? JSON.parse(db["wv_quotes"]) : db["wv_quotes"]) : [];
+  const idx = quotes.findIndex(q => q.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: "Not found" });
+  quotes[idx] = { ...quotes[idx], ...req.body, id: quotes[idx].id, number: quotes[idx].number, shareToken: quotes[idx].shareToken };
+  db["wv_quotes"] = quotes;
+  writeDb(db);
+  res.json(quotes[idx]);
+});
+
+// Convert accepted quote to invoice
+app.post("/api/quotes/:id/convert", requireAuth, (req, res) => {
+  const db = readDb();
+  const quotes = db["wv_quotes"] ? (typeof db["wv_quotes"] === "string" ? JSON.parse(db["wv_quotes"]) : db["wv_quotes"]) : [];
+  const idx = quotes.findIndex(q => q.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: "Not found" });
+  const quote = quotes[idx];
+  // Build invoice from quote
+  const invoices = db["wv_invoices"] ? (typeof db["wv_invoices"] === "string" ? JSON.parse(db["wv_invoices"]) : db["wv_invoices"]) : [];
+  const invNums = invoices.map(i => parseInt((i.number || "INV-0000").replace(/[^\d]/g, "")) || 0);
+  const nextInvNum = (invNums.length ? Math.max(...invNums) : 0) + 1;
+  const invoice = {
+    id: crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString("hex"),
+    number: `INV-${String(nextInvNum).padStart(4, "0")}`,
+    status: "draft",
+    from: quote.from,
+    to: quote.to,
+    items: quote.items,
+    notes: quote.notes,
+    dueDate: req.body.dueDate || new Date(Date.now() + 14 * 86400000).toISOString().slice(0, 10),
+    createdAt: new Date().toISOString(),
+    shareToken: crypto.randomBytes(24).toString("hex"),
+    emailLog: [],
+    bookingId: quote.bookingId || null,
+    tax: quote.tax,
+    discount: quote.discount,
+  };
+  invoices.push(invoice);
+  quotes[idx].status = "converted";
+  quotes[idx].convertedInvoiceId = invoice.id;
+  db["wv_invoices"] = invoices;
+  db["wv_quotes"] = quotes;
+  writeDb(db);
+  res.json({ invoice, quote: quotes[idx] });
+});
+
+app.delete("/api/quotes/:id", requireAuth, (req, res) => {
+  const db = readDb();
+  const quotes = db["wv_quotes"] ? (typeof db["wv_quotes"] === "string" ? JSON.parse(db["wv_quotes"]) : db["wv_quotes"]) : [];
+  db["wv_quotes"] = quotes.filter(q => q.id !== req.params.id);
+  writeDb(db);
+  res.json({ ok: true });
+});
+
+// Public quote view (share token)
+app.get("/api/quotes/share/:token", (req, res) => {
+  const db = readDb();
+  const quotes = db["wv_quotes"] ? (typeof db["wv_quotes"] === "string" ? JSON.parse(db["wv_quotes"]) : db["wv_quotes"]) : [];
+  const quote = quotes.find(q => q.shareToken === req.params.token);
+  if (!quote) return res.status(404).json({ error: "Not found" });
+  res.json(quote);
+});
+
+// Client accepts/declines quote via token
+app.post("/api/quotes/share/:token/respond", (req, res) => {
+  const db = readDb();
+  const quotes = db["wv_quotes"] ? (typeof db["wv_quotes"] === "string" ? JSON.parse(db["wv_quotes"]) : db["wv_quotes"]) : [];
+  const idx = quotes.findIndex(q => q.shareToken === req.params.token);
+  if (idx === -1) return res.status(404).json({ error: "Not found" });
+  const { action } = req.body; // "accept" or "decline"
+  if (action === "accept") {
+    quotes[idx].status = "accepted";
+    quotes[idx].acceptedAt = new Date().toISOString();
+  } else if (action === "decline") {
+    quotes[idx].status = "declined";
+    quotes[idx].declinedAt = new Date().toISOString();
+  } else {
+    return res.status(400).json({ error: "action must be accept or decline" });
+  }
+  db["wv_quotes"] = quotes;
+  writeDb(db);
+  res.json(quotes[idx]);
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ── Booking Tasks ─────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Get tasks for a booking
+app.get("/api/bookings/:id/tasks", requireAuth, (req, res) => {
+  const db = readDb();
+  const bookings = db["wv_bookings"] ? (typeof db["wv_bookings"] === "string" ? JSON.parse(db["wv_bookings"]) : db["wv_bookings"]) : [];
+  const booking = bookings.find(b => b.id === req.params.id);
+  if (!booking) return res.status(404).json({ error: "Booking not found" });
+  res.json(booking.tasks || []);
+});
+
+// Update tasks for a booking
+app.put("/api/bookings/:id/tasks", requireAuth, (req, res) => {
+  const db = readDb();
+  const bookings = db["wv_bookings"] ? (typeof db["wv_bookings"] === "string" ? JSON.parse(db["wv_bookings"]) : db["wv_bookings"]) : [];
+  const idx = bookings.findIndex(b => b.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: "Booking not found" });
+  bookings[idx].tasks = req.body.tasks || [];
+  db["wv_bookings"] = bookings;
+  writeDb(db);
+  res.json(bookings[idx].tasks);
+});
+
+// Toggle a single task
+app.put("/api/bookings/:id/tasks/:taskId/toggle", requireAuth, (req, res) => {
+  const db = readDb();
+  const bookings = db["wv_bookings"] ? (typeof db["wv_bookings"] === "string" ? JSON.parse(db["wv_bookings"]) : db["wv_bookings"]) : [];
+  const bIdx = bookings.findIndex(b => b.id === req.params.id);
+  if (bIdx === -1) return res.status(404).json({ error: "Booking not found" });
+  const tasks = bookings[bIdx].tasks || [];
+  const tIdx = tasks.findIndex(t => t.id === req.params.taskId);
+  if (tIdx === -1) return res.status(404).json({ error: "Task not found" });
+  tasks[tIdx].completed = !tasks[tIdx].completed;
+  tasks[tIdx].completedAt = tasks[tIdx].completed ? new Date().toISOString() : null;
+  bookings[bIdx].tasks = tasks;
+  db["wv_bookings"] = bookings;
+  writeDb(db);
+  res.json(tasks[tIdx]);
+});
+
+// Task templates
+app.get("/api/task-templates", requireAuth, (req, res) => {
+  const db = readDb();
+  const templates = db["wv_task_templates"] ? (typeof db["wv_task_templates"] === "string" ? JSON.parse(db["wv_task_templates"]) : db["wv_task_templates"]) : [];
+  res.json(templates);
+});
+
+app.post("/api/task-templates", requireAuth, (req, res) => {
+  const db = readDb();
+  const templates = db["wv_task_templates"] ? (typeof db["wv_task_templates"] === "string" ? JSON.parse(db["wv_task_templates"]) : db["wv_task_templates"]) : [];
+  const template = {
+    id: crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString("hex"),
+    eventTypeId: req.body.eventTypeId || null,
+    tasks: req.body.tasks || [],
+    createdAt: new Date().toISOString(),
+  };
+  templates.push(template);
+  db["wv_task_templates"] = templates;
+  writeDb(db);
+  res.json(template);
+});
+
+app.put("/api/task-templates/:id", requireAuth, (req, res) => {
+  const db = readDb();
+  const templates = db["wv_task_templates"] ? (typeof db["wv_task_templates"] === "string" ? JSON.parse(db["wv_task_templates"]) : db["wv_task_templates"]) : [];
+  const idx = templates.findIndex(t => t.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: "Not found" });
+  templates[idx] = { ...templates[idx], ...req.body, id: templates[idx].id };
+  db["wv_task_templates"] = templates;
+  writeDb(db);
+  res.json(templates[idx]);
+});
+
+app.delete("/api/task-templates/:id", requireAuth, (req, res) => {
+  const db = readDb();
+  const templates = db["wv_task_templates"] ? (typeof db["wv_task_templates"] === "string" ? JSON.parse(db["wv_task_templates"]) : db["wv_task_templates"]) : [];
+  db["wv_task_templates"] = templates.filter(t => t.id !== req.params.id);
+  writeDb(db);
+  res.json({ ok: true });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ── Tags ──────────────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+app.get("/api/tags", requireAuth, (req, res) => {
+  const db = readDb();
+  const tags = db["wv_tags"] ? (typeof db["wv_tags"] === "string" ? JSON.parse(db["wv_tags"]) : db["wv_tags"]) : [];
+  res.json(tags);
+});
+
+app.post("/api/tags", requireAuth, (req, res) => {
+  const db = readDb();
+  const tags = db["wv_tags"] ? (typeof db["wv_tags"] === "string" ? JSON.parse(db["wv_tags"]) : db["wv_tags"]) : [];
+  const tag = {
+    id: crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString("hex"),
+    label: req.body.label || "Tag",
+    color: req.body.color || "#a855f7",
+  };
+  tags.push(tag);
+  db["wv_tags"] = tags;
+  writeDb(db);
+  res.json(tag);
+});
+
+app.put("/api/tags/:id", requireAuth, (req, res) => {
+  const db = readDb();
+  const tags = db["wv_tags"] ? (typeof db["wv_tags"] === "string" ? JSON.parse(db["wv_tags"]) : db["wv_tags"]) : [];
+  const idx = tags.findIndex(t => t.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: "Not found" });
+  tags[idx] = { ...tags[idx], ...req.body, id: tags[idx].id };
+  db["wv_tags"] = tags;
+  writeDb(db);
+  res.json(tags[idx]);
+});
+
+app.delete("/api/tags/:id", requireAuth, (req, res) => {
+  const db = readDb();
+  const tags = db["wv_tags"] ? (typeof db["wv_tags"] === "string" ? JSON.parse(db["wv_tags"]) : db["wv_tags"]) : [];
+  db["wv_tags"] = tags.filter(t => t.id !== req.params.id);
+  writeDb(db);
+  res.json({ ok: true });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ── Gallery Share Links ────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+app.get("/api/albums/:id/share-links", requireAuth, (req, res) => {
+  const db = readDb();
+  const albums = db["wv_albums"] ? (typeof db["wv_albums"] === "string" ? JSON.parse(db["wv_albums"]) : db["wv_albums"]) : [];
+  const album = albums.find(a => a.id === req.params.id);
+  if (!album) return res.status(404).json({ error: "Album not found" });
+  res.json(album.shareLinks || []);
+});
+
+app.post("/api/albums/:id/share-links", requireAuth, (req, res) => {
+  const db = readDb();
+  const albums = db["wv_albums"] ? (typeof db["wv_albums"] === "string" ? JSON.parse(db["wv_albums"]) : db["wv_albums"]) : [];
+  const idx = albums.findIndex(a => a.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: "Album not found" });
+  const link = {
+    id: crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString("hex"),
+    albumId: req.params.id,
+    token: crypto.randomBytes(20).toString("hex"),
+    label: req.body.label || null,
+    expiresAt: req.body.expiresAt || null,
+    allowDownload: req.body.allowDownload !== false,
+    createdAt: new Date().toISOString(),
+    accessCount: 0,
+  };
+  if (!albums[idx].shareLinks) albums[idx].shareLinks = [];
+  albums[idx].shareLinks.push(link);
+  db["wv_albums"] = albums;
+  writeDb(db);
+  res.json(link);
+});
+
+app.delete("/api/albums/:id/share-links/:linkId", requireAuth, (req, res) => {
+  const db = readDb();
+  const albums = db["wv_albums"] ? (typeof db["wv_albums"] === "string" ? JSON.parse(db["wv_albums"]) : db["wv_albums"]) : [];
+  const idx = albums.findIndex(a => a.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: "Album not found" });
+  albums[idx].shareLinks = (albums[idx].shareLinks || []).filter(l => l.id !== req.params.linkId);
+  db["wv_albums"] = albums;
+  writeDb(db);
+  res.json({ ok: true });
+});
+
+// Public share link access — resolves a token to album data (view-only)
+app.get("/api/gallery/share/:token", (req, res) => {
+  const db = readDb();
+  const albums = db["wv_albums"] ? (typeof db["wv_albums"] === "string" ? JSON.parse(db["wv_albums"]) : db["wv_albums"]) : [];
+  for (const album of albums) {
+    const links = album.shareLinks || [];
+    const link = links.find(l => l.token === req.params.token);
+    if (link) {
+      // Check expiry
+      if (link.expiresAt && new Date(link.expiresAt) < new Date()) {
+        return res.status(403).json({ error: "This share link has expired" });
+      }
+      // Increment access counter
+      link.accessCount = (link.accessCount || 0) + 1;
+      link.lastAccessedAt = new Date().toISOString();
+      db["wv_albums"] = albums;
+      writeDb(db);
+      // Return sanitised album (omit internal fields)
+      return res.json({
+        album: { ...album, shareLinks: undefined, downloadRequests: undefined },
+        allowDownload: link.allowDownload,
+        linkLabel: link.label,
+      });
+    }
+  }
+  res.status(404).json({ error: "Share link not found" });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ── Photo Comments / Annotations ──────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+app.get("/api/albums/:albumId/photos/:photoId/comments", requireAuth, (req, res) => {
+  const db = readDb();
+  const albums = db["wv_albums"] ? (typeof db["wv_albums"] === "string" ? JSON.parse(db["wv_albums"]) : db["wv_albums"]) : [];
+  const album = albums.find(a => a.id === req.params.albumId);
+  if (!album) return res.status(404).json({ error: "Album not found" });
+  const photo = (album.photos || []).find(p => p.id === req.params.photoId);
+  if (!photo) return res.status(404).json({ error: "Photo not found" });
+  res.json(photo.comments || []);
+});
+
+app.post("/api/albums/:albumId/photos/:photoId/comments", (req, res) => {
+  // Clients (public) can add comments too — auth optional
+  const db = readDb();
+  const albums = db["wv_albums"] ? (typeof db["wv_albums"] === "string" ? JSON.parse(db["wv_albums"]) : db["wv_albums"]) : [];
+  const aIdx = albums.findIndex(a => a.id === req.params.albumId);
+  if (aIdx === -1) return res.status(404).json({ error: "Album not found" });
+  const photos = albums[aIdx].photos || [];
+  const pIdx = photos.findIndex(p => p.id === req.params.photoId);
+  if (pIdx === -1) return res.status(404).json({ error: "Photo not found" });
+  const comment = {
+    id: crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString("hex"),
+    photoId: req.params.photoId,
+    albumId: req.params.albumId,
+    authorName: req.body.authorName || "Client",
+    authorEmail: req.body.authorEmail || null,
+    text: req.body.text || "",
+    xPct: req.body.xPct ?? null,
+    yPct: req.body.yPct ?? null,
+    createdAt: new Date().toISOString(),
+  };
+  if (!photos[pIdx].comments) photos[pIdx].comments = [];
+  photos[pIdx].comments.push(comment);
+  albums[aIdx].photos = photos;
+  db["wv_albums"] = albums;
+  writeDb(db);
+  res.json(comment);
+});
+
+app.put("/api/albums/:albumId/photos/:photoId/comments/:commentId/resolve", requireAuth, (req, res) => {
+  const db = readDb();
+  const albums = db["wv_albums"] ? (typeof db["wv_albums"] === "string" ? JSON.parse(db["wv_albums"]) : db["wv_albums"]) : [];
+  const aIdx = albums.findIndex(a => a.id === req.params.albumId);
+  if (aIdx === -1) return res.status(404).json({ error: "Album not found" });
+  const photos = albums[aIdx].photos || [];
+  const pIdx = photos.findIndex(p => p.id === req.params.photoId);
+  if (pIdx === -1) return res.status(404).json({ error: "Photo not found" });
+  const comments = photos[pIdx].comments || [];
+  const cIdx = comments.findIndex(c => c.id === req.params.commentId);
+  if (cIdx === -1) return res.status(404).json({ error: "Comment not found" });
+  comments[cIdx].resolvedAt = new Date().toISOString();
+  comments[cIdx].resolvedBy = "admin";
+  photos[pIdx].comments = comments;
+  albums[aIdx].photos = photos;
+  db["wv_albums"] = albums;
+  writeDb(db);
+  res.json(comments[cIdx]);
+});
+
+app.delete("/api/albums/:albumId/photos/:photoId/comments/:commentId", requireAuth, (req, res) => {
+  const db = readDb();
+  const albums = db["wv_albums"] ? (typeof db["wv_albums"] === "string" ? JSON.parse(db["wv_albums"]) : db["wv_albums"]) : [];
+  const aIdx = albums.findIndex(a => a.id === req.params.albumId);
+  if (aIdx === -1) return res.status(404).json({ error: "Album not found" });
+  const photos = albums[aIdx].photos || [];
+  const pIdx = photos.findIndex(p => p.id === req.params.photoId);
+  if (pIdx === -1) return res.status(404).json({ error: "Photo not found" });
+  photos[pIdx].comments = (photos[pIdx].comments || []).filter(c => c.id !== req.params.commentId);
+  albums[aIdx].photos = photos;
+  db["wv_albums"] = albums;
+  writeDb(db);
+  res.json({ ok: true });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ── Contracts ─────────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const contractUpload = multer({ dest: UPLOADS_DIR, limits: { fileSize: 20 * 1024 * 1024 } });
+
+app.post("/api/contracts", requireAuth, contractUpload.single("pdf"), (req, res) => {
+  const db = readDb();
+  const contracts = db["wv_contracts"] ? (typeof db["wv_contracts"] === "string" ? JSON.parse(db["wv_contracts"]) : db["wv_contracts"]) : [];
+  let pdfPath = null;
+  if (req.file) {
+    const dest = path.join(UPLOADS_DIR, `contract_${req.file.filename}.pdf`);
+    fs.renameSync(req.file.path, dest);
+    pdfPath = `contract_${req.file.filename}.pdf`;
+  }
+  const contract = {
+    id: crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString("hex"),
+    bookingId: req.body.bookingId || null,
+    title: req.body.title || "Photography Services Agreement",
+    pdfPath,
+    token: crypto.randomBytes(24).toString("hex"),
+    status: "pending",
+    createdAt: new Date().toISOString(),
+    sentAt: null,
+  };
+  contracts.push(contract);
+  db["wv_contracts"] = contracts;
+  writeDb(db);
+  res.json(contract);
+});
+
+app.get("/api/contracts", requireAuth, (req, res) => {
+  const db = readDb();
+  const contracts = db["wv_contracts"] ? (typeof db["wv_contracts"] === "string" ? JSON.parse(db["wv_contracts"]) : db["wv_contracts"]) : [];
+  const { bookingId } = req.query;
+  res.json(bookingId ? contracts.filter(c => c.bookingId === bookingId) : contracts);
+});
+
+// Public contract view + sign (via token)
+app.get("/api/contracts/sign/:token", (req, res) => {
+  const db = readDb();
+  const contracts = db["wv_contracts"] ? (typeof db["wv_contracts"] === "string" ? JSON.parse(db["wv_contracts"]) : db["wv_contracts"]) : [];
+  const contract = contracts.find(c => c.token === req.params.token);
+  if (!contract) return res.status(404).json({ error: "Contract not found" });
+  // Return contract info without PDF binary (client fetches PDF separately)
+  res.json({ id: contract.id, title: contract.title, status: contract.status, bookingId: contract.bookingId, pdfPath: contract.pdfPath });
+});
+
+app.post("/api/contracts/sign/:token", rateLimit({ windowMs: 15 * 60 * 1000, max: 10 }), (req, res) => {
+  const db = readDb();
+  const contracts = db["wv_contracts"] ? (typeof db["wv_contracts"] === "string" ? JSON.parse(db["wv_contracts"]) : db["wv_contracts"]) : [];
+  const idx = contracts.findIndex(c => c.token === req.params.token);
+  if (idx === -1) return res.status(404).json({ error: "Contract not found" });
+  if (contracts[idx].status === "signed") return res.status(409).json({ error: "Already signed" });
+  const { signedName } = req.body;
+  if (!signedName || !signedName.trim()) return res.status(400).json({ error: "signedName is required" });
+  contracts[idx].status = "signed";
+  contracts[idx].signedAt = new Date().toISOString();
+  contracts[idx].signedName = signedName.trim();
+  contracts[idx].signedIp = req.ip;
+  // Also mark booking contractId
+  if (contracts[idx].bookingId) {
+    const bookings = db["wv_bookings"] ? (typeof db["wv_bookings"] === "string" ? JSON.parse(db["wv_bookings"]) : db["wv_bookings"]) : [];
+    const bIdx = bookings.findIndex(b => b.id === contracts[idx].bookingId);
+    if (bIdx !== -1) {
+      bookings[bIdx].contractId = contracts[idx].id;
+      db["wv_bookings"] = bookings;
+    }
+  }
+  db["wv_contracts"] = contracts;
+  writeDb(db);
+  res.json({ ok: true, signedAt: contracts[idx].signedAt });
+});
+
+app.delete("/api/contracts/:id", requireAuth, (req, res) => {
+  const db = readDb();
+  const contracts = db["wv_contracts"] ? (typeof db["wv_contracts"] === "string" ? JSON.parse(db["wv_contracts"]) : db["wv_contracts"]) : [];
+  const contract = contracts.find(c => c.id === req.params.id);
+  if (contract?.pdfPath) {
+    try { fs.unlinkSync(path.join(UPLOADS_DIR, contract.pdfPath)); } catch {}
+  }
+  db["wv_contracts"] = contracts.filter(c => c.id !== req.params.id);
+  writeDb(db);
+  res.json({ ok: true });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ── Payment Instalments ───────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+app.get("/api/bookings/:id/instalments", requireAuth, (req, res) => {
+  const db = readDb();
+  const instalments = db["wv_instalments"] ? (typeof db["wv_instalments"] === "string" ? JSON.parse(db["wv_instalments"]) : db["wv_instalments"]) : [];
+  res.json(instalments.filter(i => i.bookingId === req.params.id));
+});
+
+app.post("/api/bookings/:id/instalments", requireAuth, (req, res) => {
+  const db = readDb();
+  const instalments = db["wv_instalments"] ? (typeof db["wv_instalments"] === "string" ? JSON.parse(db["wv_instalments"]) : db["wv_instalments"]) : [];
+  const instalment = {
+    id: crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString("hex"),
+    bookingId: req.params.id,
+    invoiceId: req.body.invoiceId || null,
+    dueDate: req.body.dueDate || new Date().toISOString().slice(0, 10),
+    amount: Number(req.body.amount) || 0,
+    status: "pending",
+    note: req.body.note || null,
+  };
+  instalments.push(instalment);
+  db["wv_instalments"] = instalments;
+  writeDb(db);
+  res.json(instalment);
+});
+
+app.put("/api/instalments/:id", requireAuth, (req, res) => {
+  const db = readDb();
+  const instalments = db["wv_instalments"] ? (typeof db["wv_instalments"] === "string" ? JSON.parse(db["wv_instalments"]) : db["wv_instalments"]) : [];
+  const idx = instalments.findIndex(i => i.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: "Not found" });
+  instalments[idx] = { ...instalments[idx], ...req.body, id: instalments[idx].id };
+  if (req.body.status === "paid" && !instalments[idx].paidAt) {
+    instalments[idx].paidAt = new Date().toISOString();
+  }
+  db["wv_instalments"] = instalments;
+  writeDb(db);
+  res.json(instalments[idx]);
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ── Auto-Overdue Invoice Detection (cron every 6 hours) ───────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function markOverdueInvoices() {
+  const db = readDb();
+  const invoices = db["wv_invoices"] ? (typeof db["wv_invoices"] === "string" ? JSON.parse(db["wv_invoices"]) : db["wv_invoices"]) : [];
+  const today = new Date().toISOString().slice(0, 10);
+  let changed = false;
+  for (const inv of invoices) {
+    if ((inv.status === "sent" || inv.status === "partial") && inv.dueDate && inv.dueDate < today) {
+      inv.status = "overdue";
+      changed = true;
+    }
+  }
+  if (changed) {
+    db["wv_invoices"] = invoices;
+    writeDb(db);
+    console.log("🔔 Marked overdue invoices");
+  }
+}
+
+// Also mark overdue instalments
+function markOverdueInstalments() {
+  const db = readDb();
+  const instalments = db["wv_instalments"] ? (typeof db["wv_instalments"] === "string" ? JSON.parse(db["wv_instalments"]) : db["wv_instalments"]) : [];
+  const today = new Date().toISOString().slice(0, 10);
+  let changed = false;
+  for (const inst of instalments) {
+    if (inst.status === "pending" && inst.dueDate && inst.dueDate < today) {
+      inst.status = "overdue";
+      changed = true;
+    }
+  }
+  if (changed) {
+    db["wv_instalments"] = instalments;
+    writeDb(db);
+  }
+}
+
+// Run overdue checks every 6 hours
+const OVERDUE_INTERVAL_MS = 6 * 60 * 60 * 1000;
+setTimeout(() => {
+  markOverdueInvoices();
+  markOverdueInstalments();
+  setInterval(() => {
+    markOverdueInvoices();
+    markOverdueInstalments();
+  }, OVERDUE_INTERVAL_MS);
+}, 60000); // run 1 min after startup
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ── One-Click Gallery Delivery ────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+app.post("/api/albums/:id/deliver", requireAuth, async (req, res) => {
+  const db = readDb();
+  const albums = db["wv_albums"] ? (typeof db["wv_albums"] === "string" ? JSON.parse(db["wv_albums"]) : db["wv_albums"]) : [];
+  const idx = albums.findIndex(a => a.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: "Album not found" });
+
+  const album = albums[idx];
+  const now = new Date().toISOString();
+
+  // 1. Disable watermarks
+  album.watermarkDisabled = true;
+  // 2. Mark as delivered
+  album.status = "delivered";
+  album.deliveredAt = now;
+  // 3. Make public
+  album.isPublic = true;
+
+  db["wv_albums"] = albums;
+  writeDb(db);
+
+  // 4. Send client email if email + bookingId available
+  const result = { ok: true, deliveredAt: now };
+  if (album.clientEmail) {
+    try {
+      const { sendEmail } = require("./email");
+      const galleryUrl = `${req.headers.origin || ""}/gallery/${album.id}`;
+      const accessCode = album.accessCode ? `\nAccess code: ${album.accessCode}` : "";
+      await sendEmail(
+        { host: process.env.SMTP_HOST, port: process.env.SMTP_PORT, user: process.env.SMTP_USER, pass: process.env.SMTP_PASS, secure: process.env.SMTP_SECURE === "true", from: process.env.SMTP_FROM },
+        {
+          to: album.clientEmail,
+          subject: `Your gallery is ready — ${album.title}`,
+          html: `<p>Hi ${album.clientName || "there"},</p><p>Your photo gallery "<strong>${album.title}</strong>" is ready for download.</p><p><a href="${galleryUrl}">View & Download Gallery</a>${accessCode}</p>`,
+          text: `Hi ${album.clientName || "there"},\n\nYour gallery "${album.title}" is ready!\n${galleryUrl}${accessCode}`,
+        }
+      );
+      result.emailSent = true;
+    } catch (e) {
+      result.emailError = e.message;
+    }
+  }
+
+  res.json(result);
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ── Booking Source Tracking ───────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// PATCH a booking's source (lightweight endpoint to avoid full booking update)
+app.patch("/api/bookings/:id/source", requireAuth, (req, res) => {
+  const db = readDb();
+  const bookings = db["wv_bookings"] ? (typeof db["wv_bookings"] === "string" ? JSON.parse(db["wv_bookings"]) : db["wv_bookings"]) : [];
+  const idx = bookings.findIndex(b => b.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: "Not found" });
+  bookings[idx].source = req.body.source;
+  db["wv_bookings"] = bookings;
+  writeDb(db);
+  res.json({ ok: true, source: bookings[idx].source });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ── PWA Push Notifications ────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Subscribe
+app.post("/api/push/subscribe", (req, res) => {
+  const db = readDb();
+  const subs = db["wv_push_subscriptions"] ? (typeof db["wv_push_subscriptions"] === "string" ? JSON.parse(db["wv_push_subscriptions"]) : db["wv_push_subscriptions"]) : [];
+  const { endpoint, keys, tenantSlug } = req.body;
+  if (!endpoint || !keys) return res.status(400).json({ error: "endpoint and keys required" });
+  // Upsert by endpoint
+  const existing = subs.findIndex(s => s.endpoint === endpoint);
+  const record = {
+    id: existing >= 0 ? subs[existing].id : (crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString("hex")),
+    endpoint,
+    keys,
+    tenantSlug: tenantSlug || null,
+    createdAt: existing >= 0 ? subs[existing].createdAt : new Date().toISOString(),
+    userAgent: req.headers["user-agent"] || null,
+  };
+  if (existing >= 0) subs[existing] = record;
+  else subs.push(record);
+  db["wv_push_subscriptions"] = subs;
+  writeDb(db);
+  res.json({ ok: true });
+});
+
+// Unsubscribe
+app.post("/api/push/unsubscribe", (req, res) => {
+  const db = readDb();
+  const subs = db["wv_push_subscriptions"] ? (typeof db["wv_push_subscriptions"] === "string" ? JSON.parse(db["wv_push_subscriptions"]) : db["wv_push_subscriptions"]) : [];
+  db["wv_push_subscriptions"] = subs.filter(s => s.endpoint !== req.body.endpoint);
+  writeDb(db);
+  res.json({ ok: true });
+});
+
+// Get VAPID public key
+app.get("/api/push/vapid-public-key", (req, res) => {
+  const key = process.env.VAPID_PUBLIC_KEY || null;
+  res.json({ vapidPublicKey: key });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ── Booking Tags (PATCH) ──────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+app.patch("/api/bookings/:id/tags", requireAuth, (req, res) => {
+  const db = readDb();
+  const bookings = db["wv_bookings"] ? (typeof db["wv_bookings"] === "string" ? JSON.parse(db["wv_bookings"]) : db["wv_bookings"]) : [];
+  const idx = bookings.findIndex(b => b.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: "Not found" });
+  bookings[idx].tags = req.body.tags || [];
+  db["wv_bookings"] = bookings;
+  writeDb(db);
+  res.json({ ok: true, tags: bookings[idx].tags });
+});
+
+app.patch("/api/albums/:id/tags", requireAuth, (req, res) => {
+  const db = readDb();
+  const albums = db["wv_albums"] ? (typeof db["wv_albums"] === "string" ? JSON.parse(db["wv_albums"]) : db["wv_albums"]) : [];
+  const idx = albums.findIndex(a => a.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: "Not found" });
+  albums[idx].tags = req.body.tags || [];
+  db["wv_albums"] = albums;
+  writeDb(db);
+  res.json({ ok: true, tags: albums[idx].tags });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
 
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 PhotoFlow running on port ${PORT}`);

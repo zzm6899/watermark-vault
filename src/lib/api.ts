@@ -1185,6 +1185,18 @@ export async function getTenantPublicData(slug: string): Promise<{
   bookingLimitReached?: boolean;
   enquiryEnabled?: boolean;
   enquiryLabel?: string;
+  brandColor?: string | null;
+  cosplayFieldsEnabled?: boolean;
+  conventionFieldEnabled?: boolean;
+  bankTransfer?: {
+    enabled: boolean;
+    accountName: string | null;
+    bsb: string | null;
+    accountNumber: string | null;
+    payId: string | null;
+    payIdType: string | null;
+    instructions: string | null;
+  } | null;
 } | null> {
   try {
     const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/public`);
@@ -1218,7 +1230,10 @@ export async function createTenantBooking(slug: string, booking: {
   eventTypeId?: string; type?: string; duration?: number; notes?: string;
   phone?: string;
   answers?: Record<string, string>;
-}): Promise<{ ok: boolean; booking?: import("./types").Booking; error?: string }> {
+  cosplayCharacter?: string;
+  cosplayCostume?: string;
+  conventionName?: string;
+}): Promise<{ ok: boolean; booking?: import("./types").Booking; error?: string; statusCode?: number }> {
   try {
     const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/booking`, {
       method: "POST",
@@ -1226,7 +1241,7 @@ export async function createTenantBooking(slug: string, booking: {
       body: JSON.stringify(booking),
     });
     const json = await res.json();
-    if (!res.ok) return { ok: false, error: json.error };
+    if (!res.ok) return { ok: false, error: json.error, statusCode: res.status };
     return { ok: true, booking: json.booking };
   } catch { return { ok: false, error: "Network error" }; }
 }
@@ -1942,4 +1957,410 @@ export async function fetchAlbumPhotos(albumId: string): Promise<import("./types
   } catch {
     return null;
   }
+}
+
+// ─── iCal Feed ────────────────────────────────────────────────────────────────
+
+export async function generateIcalToken(): Promise<{ icalToken: string } | null> {
+  try {
+    const res = await fetch("/api/ical/generate", { method: "POST" });
+    if (!res.ok) return null;
+    return res.json();
+  } catch { return null; }
+}
+
+export async function deleteIcalToken(): Promise<boolean> {
+  try {
+    const res = await fetch("/api/ical/token", { method: "DELETE" });
+    return res.ok;
+  } catch { return false; }
+}
+
+// ─── Expenses ─────────────────────────────────────────────────────────────────
+
+export async function getExpenses(): Promise<import("./types").Expense[]> {
+  try {
+    const res = await fetch("/api/expenses");
+    if (!res.ok) return [];
+    return res.json();
+  } catch { return []; }
+}
+
+export async function createExpense(data: Partial<import("./types").Expense>): Promise<import("./types").Expense | null> {
+  try {
+    const res = await fetch("/api/expenses", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
+    if (!res.ok) return null;
+    return res.json();
+  } catch { return null; }
+}
+
+export async function updateExpense(id: string, data: Partial<import("./types").Expense>): Promise<import("./types").Expense | null> {
+  try {
+    const res = await fetch(`/api/expenses/${encodeURIComponent(id)}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
+    if (!res.ok) return null;
+    return res.json();
+  } catch { return null; }
+}
+
+export async function deleteExpense(id: string): Promise<boolean> {
+  try {
+    const res = await fetch(`/api/expenses/${encodeURIComponent(id)}`, { method: "DELETE" });
+    return res.ok;
+  } catch { return false; }
+}
+
+// ─── Quotes ───────────────────────────────────────────────────────────────────
+
+export async function getQuotes(): Promise<import("./types").Quote[]> {
+  try {
+    const res = await fetch("/api/quotes");
+    if (!res.ok) return [];
+    return res.json();
+  } catch { return []; }
+}
+
+export async function createQuote(data: Partial<import("./types").Quote>): Promise<import("./types").Quote | null> {
+  try {
+    const res = await fetch("/api/quotes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
+    if (!res.ok) return null;
+    return res.json();
+  } catch { return null; }
+}
+
+export async function updateQuote(id: string, data: Partial<import("./types").Quote>): Promise<import("./types").Quote | null> {
+  try {
+    const res = await fetch(`/api/quotes/${encodeURIComponent(id)}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
+    if (!res.ok) return null;
+    return res.json();
+  } catch { return null; }
+}
+
+export async function convertQuoteToInvoice(id: string, dueDate?: string): Promise<{ invoice: import("./types").Invoice; quote: import("./types").Quote } | null> {
+  try {
+    const res = await fetch(`/api/quotes/${encodeURIComponent(id)}/convert`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ dueDate }) });
+    if (!res.ok) return null;
+    return res.json();
+  } catch { return null; }
+}
+
+export async function deleteQuote(id: string): Promise<boolean> {
+  try {
+    const res = await fetch(`/api/quotes/${encodeURIComponent(id)}`, { method: "DELETE" });
+    return res.ok;
+  } catch { return false; }
+}
+
+export async function getPublicQuote(token: string): Promise<import("./types").Quote | null> {
+  try {
+    const res = await fetch(`/api/quotes/share/${encodeURIComponent(token)}`);
+    if (!res.ok) return null;
+    return res.json();
+  } catch { return null; }
+}
+
+export async function respondToQuote(token: string, action: "accept" | "decline"): Promise<import("./types").Quote | null> {
+  try {
+    const res = await fetch(`/api/quotes/share/${encodeURIComponent(token)}/respond`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action }) });
+    if (!res.ok) return null;
+    return res.json();
+  } catch { return null; }
+}
+
+// ─── Booking Tasks ────────────────────────────────────────────────────────────
+
+export async function getBookingTasks(bookingId: string): Promise<import("./types").BookingTask[]> {
+  try {
+    const res = await fetch(`/api/bookings/${encodeURIComponent(bookingId)}/tasks`);
+    if (!res.ok) return [];
+    return res.json();
+  } catch { return []; }
+}
+
+export async function updateBookingTasks(bookingId: string, tasks: import("./types").BookingTask[]): Promise<import("./types").BookingTask[]> {
+  try {
+    const res = await fetch(`/api/bookings/${encodeURIComponent(bookingId)}/tasks`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tasks }) });
+    if (!res.ok) return tasks;
+    return res.json();
+  } catch { return tasks; }
+}
+
+export async function toggleBookingTask(bookingId: string, taskId: string): Promise<import("./types").BookingTask | null> {
+  try {
+    const res = await fetch(`/api/bookings/${encodeURIComponent(bookingId)}/tasks/${encodeURIComponent(taskId)}/toggle`, { method: "PUT" });
+    if (!res.ok) return null;
+    return res.json();
+  } catch { return null; }
+}
+
+export async function getTaskTemplates(): Promise<import("./types").BookingTaskTemplate[]> {
+  try {
+    const res = await fetch("/api/task-templates");
+    if (!res.ok) return [];
+    return res.json();
+  } catch { return []; }
+}
+
+export async function createTaskTemplate(data: Partial<import("./types").BookingTaskTemplate>): Promise<import("./types").BookingTaskTemplate | null> {
+  try {
+    const res = await fetch("/api/task-templates", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
+    if (!res.ok) return null;
+    return res.json();
+  } catch { return null; }
+}
+
+export async function updateTaskTemplate(id: string, data: Partial<import("./types").BookingTaskTemplate>): Promise<import("./types").BookingTaskTemplate | null> {
+  try {
+    const res = await fetch(`/api/task-templates/${encodeURIComponent(id)}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
+    if (!res.ok) return null;
+    return res.json();
+  } catch { return null; }
+}
+
+export async function deleteTaskTemplate(id: string): Promise<boolean> {
+  try {
+    const res = await fetch(`/api/task-templates/${encodeURIComponent(id)}`, { method: "DELETE" });
+    return res.ok;
+  } catch { return false; }
+}
+
+// ─── Tags ─────────────────────────────────────────────────────────────────────
+
+export async function getTags(): Promise<import("./types").Tag[]> {
+  try {
+    const res = await fetch("/api/tags");
+    if (!res.ok) return [];
+    return res.json();
+  } catch { return []; }
+}
+
+export async function createTag(data: Pick<import("./types").Tag, "label" | "color">): Promise<import("./types").Tag | null> {
+  try {
+    const res = await fetch("/api/tags", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
+    if (!res.ok) return null;
+    return res.json();
+  } catch { return null; }
+}
+
+export async function updateTag(id: string, data: Partial<import("./types").Tag>): Promise<import("./types").Tag | null> {
+  try {
+    const res = await fetch(`/api/tags/${encodeURIComponent(id)}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
+    if (!res.ok) return null;
+    return res.json();
+  } catch { return null; }
+}
+
+export async function deleteTag(id: string): Promise<boolean> {
+  try {
+    const res = await fetch(`/api/tags/${encodeURIComponent(id)}`, { method: "DELETE" });
+    return res.ok;
+  } catch { return false; }
+}
+
+export async function setBookingTags(bookingId: string, tags: string[]): Promise<boolean> {
+  try {
+    const res = await fetch(`/api/bookings/${encodeURIComponent(bookingId)}/tags`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tags }) });
+    return res.ok;
+  } catch { return false; }
+}
+
+export async function setAlbumTags(albumId: string, tags: string[]): Promise<boolean> {
+  try {
+    const res = await fetch(`/api/albums/${encodeURIComponent(albumId)}/tags`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tags }) });
+    return res.ok;
+  } catch { return false; }
+}
+
+// ─── Gallery Share Links ──────────────────────────────────────────────────────
+
+export async function getAlbumShareLinks(albumId: string): Promise<import("./types").GalleryShareLink[]> {
+  try {
+    const res = await fetch(`/api/albums/${encodeURIComponent(albumId)}/share-links`);
+    if (!res.ok) return [];
+    return res.json();
+  } catch { return []; }
+}
+
+export async function createAlbumShareLink(albumId: string, data: { label?: string; expiresAt?: string; allowDownload?: boolean }): Promise<import("./types").GalleryShareLink | null> {
+  try {
+    const res = await fetch(`/api/albums/${encodeURIComponent(albumId)}/share-links`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
+    if (!res.ok) return null;
+    return res.json();
+  } catch { return null; }
+}
+
+export async function deleteAlbumShareLink(albumId: string, linkId: string): Promise<boolean> {
+  try {
+    const res = await fetch(`/api/albums/${encodeURIComponent(albumId)}/share-links/${encodeURIComponent(linkId)}`, { method: "DELETE" });
+    return res.ok;
+  } catch { return false; }
+}
+
+export async function getGalleryByShareToken(token: string): Promise<{ album: import("./types").Album; allowDownload: boolean; linkLabel?: string } | null> {
+  try {
+    const res = await fetch(`/api/gallery/share/${encodeURIComponent(token)}`);
+    if (!res.ok) return null;
+    return res.json();
+  } catch { return null; }
+}
+
+// ─── Photo Comments ───────────────────────────────────────────────────────────
+
+export async function getPhotoComments(albumId: string, photoId: string): Promise<import("./types").PhotoComment[]> {
+  try {
+    const res = await fetch(`/api/albums/${encodeURIComponent(albumId)}/photos/${encodeURIComponent(photoId)}/comments`);
+    if (!res.ok) return [];
+    return res.json();
+  } catch { return []; }
+}
+
+export async function addPhotoComment(albumId: string, photoId: string, data: { authorName: string; authorEmail?: string; text: string; xPct?: number; yPct?: number }): Promise<import("./types").PhotoComment | null> {
+  try {
+    const res = await fetch(`/api/albums/${encodeURIComponent(albumId)}/photos/${encodeURIComponent(photoId)}/comments`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
+    if (!res.ok) return null;
+    return res.json();
+  } catch { return null; }
+}
+
+export async function resolvePhotoComment(albumId: string, photoId: string, commentId: string): Promise<boolean> {
+  try {
+    const res = await fetch(`/api/albums/${encodeURIComponent(albumId)}/photos/${encodeURIComponent(photoId)}/comments/${encodeURIComponent(commentId)}/resolve`, { method: "PUT" });
+    return res.ok;
+  } catch { return false; }
+}
+
+export async function deletePhotoComment(albumId: string, photoId: string, commentId: string): Promise<boolean> {
+  try {
+    const res = await fetch(`/api/albums/${encodeURIComponent(albumId)}/photos/${encodeURIComponent(photoId)}/comments/${encodeURIComponent(commentId)}`, { method: "DELETE" });
+    return res.ok;
+  } catch { return false; }
+}
+
+// ─── Contracts ────────────────────────────────────────────────────────────────
+
+export async function getContracts(bookingId?: string): Promise<import("./types").BookingContract[]> {
+  try {
+    const url = bookingId ? `/api/contracts?bookingId=${encodeURIComponent(bookingId)}` : "/api/contracts";
+    const res = await fetch(url);
+    if (!res.ok) return [];
+    return res.json();
+  } catch { return []; }
+}
+
+export async function createContract(formData: FormData): Promise<import("./types").BookingContract | null> {
+  try {
+    const res = await fetch("/api/contracts", { method: "POST", body: formData });
+    if (!res.ok) return null;
+    return res.json();
+  } catch { return null; }
+}
+
+export async function getContractByToken(token: string): Promise<Pick<import("./types").BookingContract, "id" | "title" | "status" | "bookingId" | "pdfPath"> | null> {
+  try {
+    const res = await fetch(`/api/contracts/sign/${encodeURIComponent(token)}`);
+    if (!res.ok) return null;
+    return res.json();
+  } catch { return null; }
+}
+
+export async function signContract(token: string, signedName: string): Promise<{ ok: boolean; signedAt: string } | null> {
+  try {
+    const res = await fetch(`/api/contracts/sign/${encodeURIComponent(token)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ signedName }) });
+    if (!res.ok) return null;
+    return res.json();
+  } catch { return null; }
+}
+
+export async function deleteContract(id: string): Promise<boolean> {
+  try {
+    const res = await fetch(`/api/contracts/${encodeURIComponent(id)}`, { method: "DELETE" });
+    return res.ok;
+  } catch { return false; }
+}
+
+// ─── Payment Instalments ──────────────────────────────────────────────────────
+
+export async function getInstalments(bookingId: string): Promise<import("./types").PaymentInstalment[]> {
+  try {
+    const res = await fetch(`/api/bookings/${encodeURIComponent(bookingId)}/instalments`);
+    if (!res.ok) return [];
+    return res.json();
+  } catch { return []; }
+}
+
+export async function createInstalment(bookingId: string, data: Partial<import("./types").PaymentInstalment>): Promise<import("./types").PaymentInstalment | null> {
+  try {
+    const res = await fetch(`/api/bookings/${encodeURIComponent(bookingId)}/instalments`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
+    if (!res.ok) return null;
+    return res.json();
+  } catch { return null; }
+}
+
+export async function updateInstalment(id: string, data: Partial<import("./types").PaymentInstalment>): Promise<import("./types").PaymentInstalment | null> {
+  try {
+    const res = await fetch(`/api/instalments/${encodeURIComponent(id)}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
+    if (!res.ok) return null;
+    return res.json();
+  } catch { return null; }
+}
+
+// ─── Booking Source ───────────────────────────────────────────────────────────
+
+export async function setBookingSource(bookingId: string, source: import("./types").BookingSource): Promise<boolean> {
+  try {
+    const res = await fetch(`/api/bookings/${encodeURIComponent(bookingId)}/source`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source }) });
+    return res.ok;
+  } catch { return false; }
+}
+
+// ─── One-Click Gallery Delivery ───────────────────────────────────────────────
+
+export async function deliverAlbum(albumId: string): Promise<{ ok: boolean; deliveredAt: string; emailSent?: boolean; emailError?: string } | null> {
+  try {
+    const res = await fetch(`/api/albums/${encodeURIComponent(albumId)}/deliver`, { method: "POST" });
+    if (!res.ok) return null;
+    return res.json();
+  } catch { return null; }
+}
+
+// ─── PWA Push Subscriptions ───────────────────────────────────────────────────
+
+export async function subscribePush(subscription: PushSubscription, tenantSlug?: string): Promise<boolean> {
+  try {
+    const sub = subscription.toJSON();
+    const res = await fetch("/api/push/subscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ endpoint: sub.endpoint, keys: sub.keys, tenantSlug }) });
+    return res.ok;
+  } catch { return false; }
+}
+
+export async function unsubscribePush(endpoint: string): Promise<boolean> {
+  try {
+    const res = await fetch("/api/push/unsubscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ endpoint }) });
+    return res.ok;
+  } catch { return false; }
+}
+
+export async function getVapidPublicKey(): Promise<string | null> {
+  try {
+    const res = await fetch("/api/push/vapid-public-key");
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.vapidPublicKey || null;
+  } catch { return null; }
+}
+
+// ─── Tenant iCal ──────────────────────────────────────────────────────────────
+
+export async function generateTenantIcalToken(slug: string): Promise<{ icalToken: string } | null> {
+  try {
+    const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/ical/generate`, { method: "POST" });
+    if (!res.ok) return null;
+    return res.json();
+  } catch { return null; }
+}
+
+export async function deleteTenantIcalToken(slug: string): Promise<boolean> {
+  try {
+    const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/ical/token`, { method: "DELETE" });
+    return res.ok;
+  } catch { return false; }
 }

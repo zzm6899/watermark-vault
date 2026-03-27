@@ -1,431 +1,477 @@
-# 📸 PhotoFlow
+# PhotoFlow — Cosplay Convention Photography Booking System
 
 > **Your complete photography business, in one self-hosted app.**
 
-PhotoFlow is an all-in-one platform built for photographers who want full control over their bookings, galleries, client proofing, and payments — without paying monthly SaaS fees. Deploy it on your own server, keep 100% of your revenue.
+PhotoFlow is an all-in-one platform built for cosplay convention photographers. It handles bookings, gallery delivery, watermarking, invoicing, expense tracking, and client proofing — without monthly SaaS fees. Deploy it on your own server, keep 100% of your revenue.
 
 ---
 
-## 📷 Screenshots
+## Table of Contents
 
-<table>
-  <tr>
-    <td align="center"><strong>Dashboard</strong></td>
-    <td align="center"><strong>Bookings</strong></td>
-  </tr>
-  <tr>
-    <td><img src="screenshots/dashboard.png" alt="Admin Dashboard" width="480"/></td>
-    <td><img src="screenshots/bookings.png" alt="Bookings" width="480"/></td>
-  </tr>
-  <tr>
-    <td align="center"><strong>Event Types</strong></td>
-    <td align="center"><strong>Albums</strong></td>
-  </tr>
-  <tr>
-    <td><img src="screenshots/events.png" alt="Event Types" width="480"/></td>
-    <td><img src="screenshots/albums.png" alt="Albums" width="480"/></td>
-  </tr>
-  <tr>
-    <td align="center"><strong>Invoices</strong></td>
-    <td align="center"><strong>Finance</strong></td>
-  </tr>
-  <tr>
-    <td><img src="screenshots/invoices.png" alt="Invoices" width="480"/></td>
-    <td><img src="screenshots/finance.png" alt="Finance" width="480"/></td>
-  </tr>
-  <tr>
-    <td align="center"><strong>Public Booking Page</strong></td>
-    <td align="center"><strong>Settings</strong></td>
-  </tr>
-  <tr>
-    <td><img src="screenshots/booking-page.png" alt="Public Booking Page" width="480"/></td>
-    <td><img src="screenshots/settings.png" alt="Settings" width="480"/></td>
-  </tr>
-</table>
+1. [What is PhotoFlow?](#what-is-photoflow)
+2. [Quick Start (Docker)](#quick-start-docker)
+3. [First-Time Setup Wizard](#first-time-setup-wizard)
+4. [Admin Panel Overview](#admin-panel-overview)
+5. [Bookings & Scheduling](#bookings--scheduling)
+6. [Gallery & Delivery](#gallery--delivery)
+7. [Finance & Payments](#finance--payments)
+8. [Workflow & Automation](#workflow--automation)
+9. [Mobile Capture App](#mobile-capture-app)
+10. [iCal / Calendar Feed](#ical--calendar-feed)
+11. [PWA Push Notifications](#pwa-push-notifications)
+12. [Multi-Tenant (Multiple Photographers)](#multi-tenant-multiple-photographers)
+13. [Integrations](#integrations)
+14. [Configuration Reference](#configuration-reference)
+15. [Android APK Build](#android-apk-build)
+16. [Troubleshooting](#troubleshooting)
 
 ---
 
-## ✨ App Pitch
+## What is PhotoFlow?
 
-Running a photography business means juggling bookings, galleries, invoices, client communication, and payments across a dozen different apps. PhotoFlow brings everything together in a single, beautiful, self-hosted platform that you own completely.
+PhotoFlow is designed for photographers who shoot cosplay conventions, events, and portrait sessions. It solves three core problems:
 
-- **No per-seat fees** — deploy once, use forever
-- **No third-party gallery hosting** — your photos, your server
-- **Fully watermarked previews** — clients see your work, not download it
-- **End-to-end workflow** — from the first enquiry to the final delivery
+**Taking bookings at events.** Clients scan a QR code to your booking page, pick a time slot, pay a deposit (or full amount) via Stripe or bank transfer, and get a confirmation email — all without you needing to manage a spreadsheet.
 
----
+**Delivering galleries.** After the shoot you upload photos, apply watermarks for proofing, let the client select favourites, then deliver the final gallery with one click. Watermarks are applied server-side using Sharp, so the originals stay pristine.
 
-## 🚀 Features
-
-### 📅 Booking System
-Create flexible event types with custom pricing, durations, and availability windows. Clients book directly on your public page — you choose whether bookings are instant or require confirmation.
-
-- Multiple session types (portraits, weddings, events, etc.)
-- Per-event questionnaires with custom fields
-- Recurring weekly availability + one-off specific dates
-- Blocked date management
-- Deposit collection (fixed or percentage) via Stripe or bank transfer
-- 15-minute booking hold timer to prevent double-bookings
-- Client self-service booking modification page
-
-### 📸 Photo Galleries & Albums
-Upload your photos and deliver them in beautifully organised, watermarked galleries.
-
-- Drag-and-drop batch upload (up to 100 photos at once)
-- Per-album access codes for private client galleries
-- Configurable watermark — text or image, 6 position options, opacity and size controls
-- Gallery expiry dates
-- Server-side watermarking (photos are never delivered clean without payment)
-- Multiple display sizes (small / medium / large / list)
-
-### 💳 Payment Processing
-Accept payments online without paying per-transaction platform fees beyond Stripe's standard rates.
-
-- **Stripe integration** — card payments for bookings, photo purchases, invoices
-- **Bank transfer** — BSB, account number, PayID support
-- Per-photo pricing + full-album bulk pricing
-- Deposit workflows linked to bookings
-- Automatic Stripe Checkout session generation
-
-### 📄 Invoicing
-Create, send, and track invoices — all from your admin panel.
-
-- Custom line items with quantity and unit price
-- Tax (GST/VAT) and discount support
-- Public share link — clients view and pay without an account
-- Stripe payment link on invoice
-- Email invoices and payment reminders directly from the app
-- Invoice status tracking: Draft → Sent → Paid → Overdue
-
-### ⏱️ Client Proofing
-Send galleries to clients for photo selection before final delivery.
-
-- Multi-round proofing workflow
-- Clients star/select photos and leave notes
-- Admin sees selections and responds
-- Proofing stage tracking (sent → selections submitted → approved)
-
-### 💌 Email Automation
-Automated transactional emails for every step of the client journey.
-
-- Booking confirmation and enquiry auto-replies
-- Gallery delivery notifications with access link
-- Invoice emails and payment reminders
-- Customisable email templates with rich text editor
-- SMTP configuration (works with Gmail, Zoho, Mailgun, etc.)
-
-### 📋 Enquiry Form
-Capture leads before they become bookings.
-
-- Public-facing enquiry form on your booking page
-- Custom label ("Make an Enquiry", "Get a Quote", etc.)
-- Admin accepts or declines enquiries
-- Accepting an enquiry automatically creates a booking
-
-### 👥 Contacts & CRM
-Keep track of all your clients in one place.
-
-- Contact profiles with name, email, phone, company, address, ABN
-- Link contacts to invoices and bookings
-- Notes per contact
-
-### 📊 Finance Dashboard
-Get a real-time view of your business performance.
-
-- Revenue charts by month
-- Unpaid vs paid invoice tracking
-- Booking revenue by event type
-- Outstanding balances
-
-### 🔔 Discord Notifications
-Get notified instantly for every business event.
-
-- New bookings
-- Booking status changes and payments
-- Photo download requests
-- Proofing submissions
-- Invoice events (created, sent, paid, overdue)
-- Test webhook button in settings
-
-### 🗓️ Google Calendar Integration
-Keep your schedule in sync without manual entry.
-
-- OAuth 2.0 Google Calendar connection
-- Auto-sync bookings to Google Calendar
-- Bulk sync all existing bookings
-- Calendar ID selection
-
-### 📊 Google Sheets Export
-Export your booking data to Google Sheets for reporting.
-
-- One-click sync of all bookings
-- Sheet ID configuration
-
-### 📱 Mobile Capture Mode
-Capture photos directly on set with your phone or tablet.
-
-- On-device camera integration (Android/iOS via Capacitor)
-- Photos upload directly to albums
-- Purpose-built on-set shooting interface
-
-### 🗂️ Admin Dashboard
-A comprehensive admin panel with everything you need to run your business.
-
-- 12-section navigation: Dashboard, Bookings, Events, Albums, Photos, Finance, Invoices, Contacts, Enquiries, Profile, Settings, Storage
-- Mobile-first responsive layout with bottom tab bar on phones
-- Booking and album search/filter
-- Bulk operations (delete, merge albums, etc.)
-- Storage usage monitoring with disk stats
-- Server image cache management
-
-### 🔑 License Key System
-Issue license keys to let other photographers deploy their own PhotoFlow instance.
-
-- Generate keys with optional expiry dates and notes
-- Keys are required for new deployments once any key exists
-- Track which keys have been used and by whom
-- Revoke keys at any time
-- `WV-XXXX-XXXX-XXXX-XXXX` format
+**Running the business.** Invoices, payment tracking, expenses, quotes, and source analytics are built in so you know where your revenue comes from (Instagram? TikTok? Repeat clients?) without needing separate accounting software.
 
 ---
 
-## 🏗️ Tech Stack
+## Quick Start (Docker)
 
-| Layer | Technology |
-|-------|-----------|
-| Frontend | React 18 + TypeScript + Vite |
-| UI | shadcn/ui + TailwindCSS + Framer Motion |
-| Backend | Node.js + Express |
-| Storage | JSON file on disk (`/data/db.json`) + localStorage sync |
-| Images | Sharp for server-side processing and watermarking |
-| Payments | Stripe Checkout |
-| Mobile | Capacitor (Android/iOS) |
-| Deployment | Docker + nginx on port 5066 |
-
----
-
-## 🐳 Deployment
-
-### Quick Start with Docker Compose
-
-```bash
-mkdir -p /your/data/path
-cd /your/data/path
-
-# Create docker-compose.yml:
-cat > docker-compose.yml << 'EOF'
-version: "3.9"
+```yaml
+# docker-compose.yml
 services:
-  watermark-vault:
-    image: ghcr.io/zzm6899/watermark-vault:latest
+  photoflow:
+    image: ghcr.io/yourhandle/photoflow:latest
     ports:
       - "5066:5066"
     volumes:
       - ./data:/data
-    restart: unless-stopped
-EOF
-
-docker compose up -d
+    environment:
+      - SUPER_ADMIN_USERNAME=admin
+      - SUPER_ADMIN_PASSWORD=your-secure-password
+      # Optional — skip the setup wizard:
+      # - SMTP_HOST=smtp.gmail.com
+      # - SMTP_PORT=587
+      # - SMTP_USER=you@gmail.com
+      # - SMTP_PASS=app-password
+      # - STRIPE_SECRET_KEY=sk_live_...
+      # - STRIPE_PUBLISHABLE_KEY=pk_live_...
+      # - STRIPE_WEBHOOK_SECRET=whsec_...
 ```
 
-App runs at **`http://your-server:5066`**
+```bash
+docker compose up -d
+# Visit http://localhost:5066
+```
 
-### Build from Source
+All data (database + uploaded photos) is stored in `./data`. Back up this folder to keep your data safe.
+
+---
+
+## First-Time Setup Wizard
+
+On first visit to `/admin` you'll see a four-step setup wizard:
+
+1. **Profile** — your display name, bio, and timezone. This appears on your public booking page.
+2. **Watermark** — upload a logo PNG or set a text watermark, position, and opacity.
+3. **Payments** — optionally connect Stripe (for card payments) and/or bank transfer details.
+4. **Password** — set your admin password.
+
+You can change any of these later from the Settings tab.
+
+---
+
+## Admin Panel Overview
+
+The admin panel has these tabs:
+
+| Tab | What it does |
+|-----|-------------|
+| **Dashboard** | At-a-glance stats: bookings today, pending payments, gallery counts, recent activity |
+| **Bookings** | All bookings — create, edit, confirm, cancel, send reminders, track tasks |
+| **Events** | Manage your event types (session packages) with pricing, availability, and questions |
+| **Albums** | Gallery management — upload photos, watermark, proof, deliver |
+| **Photos** | Cross-album photo library view |
+| **Finance** | Revenue summary, payment history, expense tracker, quotes/estimates |
+| **Invoices** | Create and send invoices with Stripe or bank transfer payment links |
+| **Contacts** | Address book for recurring clients |
+| **Enquiries** | Inbound enquiries from your booking page (when enquiry mode is enabled) |
+| **Profile** | Your public-facing name, bio, and avatar |
+| **Settings** | Watermark, booking settings, FTP, email automation, iCal feed, tags |
+| **Storage** | Disk usage, cache management, preview rendering status |
+| **Platform** | (Super admin only) Tenant management, license keys, platform stats |
+
+---
+
+## Bookings & Scheduling
+
+### Creating an Event Type
+
+Event types are your "session packages" — e.g. "15-Minute Cosplay Portrait" or "1-Hour Premium Session".
+
+Go to **Events** → **New Event Type**. Key fields:
+
+- **Title** — displayed on your booking page
+- **Durations** — available session lengths (e.g. 15, 30, 60 min)
+- **Price** — base price; you can set per-duration prices in the advanced settings
+- **Availability** — recurring weekly slots (e.g. Saturday 10am–6pm) plus specific dates and blocked dates
+- **Deposit** — optionally require a deposit (fixed or %) paid at booking time
+- **Questions** — custom intake form questions (text, dropdown, yes/no, image upload, Instagram handle)
+- **Requires Confirmation** — if enabled, bookings stay "pending" until you manually confirm them
+- **Buffer Time** — block X minutes after each session (for changeovers / travel)
+- **Max Attendees** — for group bookings (couples, groups — default 1)
+- **Task Template** — automatically attach a pre-defined checklist to each booking of this type
+
+### The Booking Page
+
+Your public booking page is at `/` (or `/book/your-slug` in multi-tenant mode). Clients:
+
+1. Choose a session type
+2. Pick a date and time (availability is enforced automatically)
+3. Fill in your custom questions
+4. Pay deposit or full amount (Stripe or bank transfer)
+5. Receive a confirmation email
+
+The page has a dark elegant theme using your brand colour. It works on mobile and desktop.
+
+### Managing Bookings
+
+In the **Bookings** tab, each booking card shows:
+
+- Client name, Instagram handle, session type, date/time
+- Status (pending / confirmed / completed / cancelled) — change via dropdown
+- Payment status — unpaid / deposit paid / paid / cash / bank transfer pending
+- Source — where the booking came from (convention, Instagram, referral, etc.)
+
+Click any booking to expand it and see:
+
+- Contact details and Q&A answers
+- Status change history timeline
+- Email history (when reminders were sent, whether they were opened)
+- **Task checklist** — add and tick off per-booking tasks (e.g. "Send proof gallery", "Chase payment")
+- Quick actions: send payment reminder, booking reminder, custom email
+- Link to create or view the associated gallery album
+
+### Booking Source Tracking
+
+When editing a booking, set the **Booking Source** field (Direct, Convention, Instagram, Facebook, TikTok, Referral, Returning Client, Email, Other). This feeds into the Finance analytics so you can see which channels bring the most revenue.
+
+### Waitlist
+
+If all slots are full, clients can join a waitlist. When a booking is cancelled you can notify waitlisted clients with a time-limited claim link from the Bookings tab.
+
+---
+
+## Gallery & Delivery
+
+### Uploading Photos
+
+In the **Albums** tab, open or create an album. Use the **Upload Photos** section to drag-and-drop or select files. Photos are stored server-side in `/data/uploads/`. Thumbnails and watermarked previews are generated automatically in the background.
+
+### Watermarking
+
+Configure your watermark in **Settings**:
+
+- **Text** — your business name or social handle
+- **Image** — upload a PNG logo (transparent background recommended)
+- **Position** — center, corner, or tiled across the image
+- **Opacity** — 5–80% (lower = subtle)
+- **Size** — 10–100% of image width
+
+Watermarks are applied on-the-fly for gallery views and baked-in for download previews.
+
+### Proofing Workflow
+
+Enable **Client Proofing** in Settings. Then for any album:
+
+1. Set album status to **Proofing** and click **Start Proofing Round**
+2. A link with a client token is generated — share it (or email it)
+3. Client views watermarked proofs and selects favourites
+4. You see their selections in the admin panel and can start editing
+5. Repeat rounds as needed, then deliver finals
+
+### Magic Link Gallery Access
+
+Clients access galleries via a PIN-free magic link using their `clientToken`. No account needed. Each gallery can optionally require a PIN as an extra layer.
+
+### Gallery Share Links (Expiring)
+
+In the album editor, create **Share Links** to share a gallery with third parties (e.g. event organisers, cosplay groups) without giving them the client's access code. Each link can:
+
+- Have a label (e.g. "For event organisers")
+- Expire after a set date
+- Allow or block downloads
+
+### Photo Comments / Annotations
+
+On the public gallery page, clients (or share link viewers) can leave comments on individual photos — useful for noting retouching requests. Comments appear in the admin panel where you can resolve them.
+
+### Download Cart
+
+Clients can add photos to a cart and download a ZIP of their selection. ZIP generation is handled server-side.
+
+### One-Click Gallery Delivery
+
+When you're ready to deliver, open the album editor and click **Deliver Gallery Now**. This:
+
+1. Disables watermarks on all photos
+2. Sets album status to "Delivered"
+3. Makes the album publicly accessible
+4. Sends a "Your gallery is ready" email to the client (if SMTP is configured)
+
+---
+
+## Finance & Payments
+
+### Invoices
+
+In the **Invoices** tab, create professional invoices with:
+
+- Line items (description, quantity, unit price)
+- Tax (GST or other percentage)
+- Discount
+- Payment methods: Stripe payment link or bank transfer instructions
+
+Send the invoice via email. The client gets a public link where they can pay. Invoice status auto-updates from `sent` → `overdue` when the due date passes (checked every 6 hours).
+
+### Quotes / Estimates
+
+In the **Finance** tab, use **Quotes & Estimates** to send cost estimates before a booking is confirmed:
+
+1. Create a quote with the client's name and line items
+2. Mark it as "Sent" when you've shared the link
+3. Client can accept or decline via the public share link
+4. Once accepted, click **→ Invoice** to convert it to a real invoice automatically
+
+### Expenses
+
+Track your business costs in the **Finance** tab → **Expenses**:
+
+- Description, amount, date, and category (equipment, travel, software, props, venue, etc.)
+- Linked optionally to a booking or album
+- Category breakdown shows where your money goes
+
+### Payment Plans / Instalments
+
+For large bookings, create an instalment plan from the booking detail view: add multiple payment milestones with due dates and amounts. The server automatically marks overdue instalments every 6 hours.
+
+### Revenue Analytics
+
+The Finance tab shows:
+
+- Monthly revenue bar chart (last 12 months)
+- Revenue by booking source (Instagram, convention, referral, etc.)
+- Average booking value
+- Booking conversion rate
+- Stripe vs bank transfer breakdown
+
+---
+
+## Workflow & Automation
+
+### Task Checklists
+
+Each booking has a task checklist. You can:
+
+- Add individual tasks directly on the booking card (click to expand)
+- Create **Task Templates** in Settings to auto-populate tasks for specific event types
+
+### Tags
+
+Create colour-coded tags in **Settings → Tags** and apply them to bookings and albums for quick filtering. Examples: `convention`, `urgent`, `cosplay`, `returning-client`.
+
+### Contracts
+
+Attach a PDF contract to a booking and send the client a signing link. They type their name to "sign" (with IP and timestamp recorded). The contract status (pending/signed) shows on the booking card.
+
+### Email Automation
+
+In Settings, set up automated reminder emails:
+
+- X hours after booking → send payment reminder
+- X hours before event → send "see you tomorrow" reminder
+- X hours after event → send thank-you / gallery delivery reminder
+
+All use configurable templates with `{{name}}`, `{{event}}`, `{{date}}`, `{{time}}` variables.
+
+---
+
+## Mobile Capture App
+
+The **Capture** mode (`/capture`) is designed for use on a phone or tablet at a convention. Features:
+
+- See all today's bookings in a scrollable list
+- Tap a booking to enter capture mode for that client
+- Upload photos directly from the camera roll or via USB camera (Capacitor/Android)
+- Photos appear immediately in the associated album
+- **Offline queue** — if you lose Wi-Fi at the venue, photos are saved to device storage (IndexedDB) and automatically uploaded when connectivity returns
+- **Network status indicator** — shows Online / Server Down / No Network / X queued
+
+### Offline Queue
+
+When offline, a "X queued" indicator appears in the header. Photos are stored in the browser's IndexedDB database and uploaded automatically when you come back online.
+
+---
+
+## iCal / Calendar Feed
+
+Subscribe to your bookings from any calendar app (Apple Calendar, Google Calendar, Outlook, Fantastical, etc.).
+
+**Setup:**
+1. Go to **Settings** → scroll to **iCal / Calendar Feed**
+2. Click **Generate iCal Feed URL**
+3. Copy the URL and subscribe to it in your calendar app:
+   - Apple Calendar: File → New Calendar Subscription → paste URL
+   - Google Calendar: Other Calendars → From URL → paste URL
+   - Outlook: Add Calendar → From Internet → paste URL
+
+**Notes:**
+- The URL contains a private token — keep it secret
+- Use **Rotate URL** to generate a new token if needed
+- Click the `webcal://` link to open directly in macOS/iOS Calendar
+- Cancelled bookings are excluded from the feed
+- Each booking shows client name, session type, duration, and payment status
+
+Multi-tenant photographers each get their own iCal token in their tenant admin settings.
+
+---
+
+## PWA Push Notifications
+
+PhotoFlow can send push notifications (new bookings, payments received, etc.) using the Web Push API.
+
+**Server setup:**
+1. Generate VAPID keys: `npx web-push generate-vapid-keys`
+2. Add to `docker-compose.yml`:
+   ```yaml
+   - VAPID_PUBLIC_KEY=your_public_key
+   - VAPID_PRIVATE_KEY=your_private_key
+   - VAPID_SUBJECT=mailto:you@example.com
+   ```
+3. Restart the server
+
+**Browser setup:**
+1. Visit your admin panel on the device you want notifications on
+2. Accept the notification permission prompt
+3. The service worker registers automatically
+
+The service worker also enables basic offline functionality — the app shell loads without internet.
+
+---
+
+## Multi-Tenant (Multiple Photographers)
+
+PhotoFlow supports running multiple photographers from a single deployment. Each tenant gets:
+
+- Their own booking page at `/book/their-slug`
+- Isolated bookings, albums, event types, and settings
+- Their own Stripe keys, SMTP, watermark, and Discord webhook
+- Optional custom domain (e.g. `bookings.theirsite.com`)
+
+**Super Admin setup:**
+1. Go to **Platform** tab (only visible to the super admin)
+2. Create a tenant: set their slug, display name, and email
+3. Generate a **Setup Token** and share the `/tenant-setup/:token` link with them
+4. They complete their own onboarding without seeing your data
+
+---
+
+## Integrations
+
+### Stripe
+
+Required for card payments. Set `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, and `STRIPE_WEBHOOK_SECRET` in environment variables. Stripe webhooks are handled at `/api/stripe/webhook`.
+
+### SMTP Email
+
+For booking confirmations, gallery delivery notifications, and automated reminders. Supports any SMTP provider (Gmail, Resend, Mailgun, etc.).
+
+```yaml
+- SMTP_HOST=smtp.gmail.com
+- SMTP_PORT=587
+- SMTP_USER=you@gmail.com
+- SMTP_PASS=your-app-password
+- SMTP_FROM=PhotoFlow <you@gmail.com>
+- SMTP_SECURE=false
+```
+
+For Gmail: create an App Password in your Google account security settings (not your account password).
+
+### Google Calendar Sync
+
+Bookings can be synced to a Google Calendar. Configure OAuth2 credentials from Google Cloud Console in Settings → Google Calendar.
+
+### Discord Webhooks
+
+Get Discord notifications for new bookings, payments, proofing submissions, and invoices. Set a webhook URL in Settings → Notifications.
+
+### FTP Upload
+
+Automatically upload delivered galleries to an FTP server. Configure in Settings → FTP Upload. Supports organising photos into sub-folders by album name and moving starred photos to a separate folder.
+
+---
+
+## Configuration Reference
+
+All configuration is done via environment variables in `docker-compose.yml`:
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `PORT` | Server port | `5066` |
+| `DATA_DIR` | Path to data directory | `/data` |
+| `SUPER_ADMIN_USERNAME` | Auto-create admin account | — |
+| `SUPER_ADMIN_PASSWORD` | Admin password | — |
+| `SMTP_HOST` | SMTP server hostname | — |
+| `SMTP_PORT` | SMTP port (587 or 465) | — |
+| `SMTP_USER` | SMTP username / email | — |
+| `SMTP_PASS` | SMTP password or app password | — |
+| `SMTP_FROM` | Sender name and email | — |
+| `SMTP_SECURE` | Use TLS (`true`/`false`) | `false` |
+| `STRIPE_SECRET_KEY` | Stripe secret key | — |
+| `STRIPE_PUBLISHABLE_KEY` | Stripe publishable key | — |
+| `STRIPE_WEBHOOK_SECRET` | Stripe webhook signing secret | — |
+| `STRIPE_CURRENCY` | ISO currency code | `aud` |
+| `VAPID_PUBLIC_KEY` | Web Push VAPID public key | — |
+| `VAPID_PRIVATE_KEY` | Web Push VAPID private key | — |
+| `VAPID_SUBJECT` | Web Push subject (mailto:) | — |
+
+---
+
+## Android APK Build
+
+PhotoFlow can be built as a native Android app using Capacitor, which unlocks USB camera support for convention shooting.
 
 ```bash
-git clone https://github.com/zzm6899/watermark-vault.git
-cd watermark-vault
 npm install
 npm run build
-node server/index.js
-```
-
-### Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PORT` | `5066` | Server port |
-| `DATA_DIR` | `/data` | Data directory for uploads and db.json |
-
----
-
-## 🔧 First-Time Setup
-
-1. Open the app in your browser
-2. The setup wizard will guide you through:
-   - Creating your admin username and password
-   - Setting up your profile (name, bio, avatar)
-   - Creating your first event type
-   - Configuring payment methods (Stripe / bank transfer)
-3. Once setup is complete, you're taken directly to the admin dashboard
-
-> **License key required?** If the app owner has issued license keys, you'll need to enter a valid `WV-XXXX-XXXX-XXXX-XXXX` key during setup.
-
----
-
-## 🔑 License Keys
-
-If you want to share PhotoFlow with other photographers:
-
-1. Log in to your admin panel → **Settings** → scroll down to **License Keys**
-2. Click to expand the License Keys panel
-3. Fill in "Issued To" (name or email), optional expiry date and notes
-4. Click **Generate Key** — a `WV-XXXX-XXXX-XXXX-XXXX` key is created
-5. Share the key with the recipient
-6. They enter it during setup on their own deployment
-
-Once any keys have been generated, **all new deployments require a valid key** to complete setup. Keys can be revoked at any time.
-
----
-
-## 📧 Email Configuration
-
-Go to **Admin → Settings → Email & Notifications** and configure your SMTP details:
-
-| Setting | Example |
-|---------|---------|
-| SMTP Host | `smtp.gmail.com` |
-| SMTP Port | `587` |
-| Username | `you@gmail.com` |
-| Password | App password (not your Google password) |
-
-For Gmail, generate an [App Password](https://myaccount.google.com/apppasswords).
-
----
-
-## 💳 Stripe Configuration
-
-1. Create a [Stripe account](https://stripe.com)
-2. Get your Secret Key from Stripe Dashboard → Developers → API keys
-3. In Admin → Settings → Payments, enter your Stripe Secret Key
-4. Enable Stripe and save
-
-Stripe handles all card payments for bookings, photo purchases, and invoices.
-
----
-
-## 🤖 Discord Notifications
-
-1. Create a Discord webhook in your server (Channel Settings → Integrations → Webhooks)
-2. Copy the webhook URL
-3. In Admin → Settings → Notifications, paste the webhook URL
-4. Toggle which events trigger notifications
-5. Test with the "Send Test" button
-
----
-
-## 🗓️ Google Calendar
-
-1. In Admin → Settings → Google Calendar, click **Connect Google Calendar**
-2. Authorise the app with your Google account
-3. Select which calendar to sync to
-4. New bookings will automatically appear in your calendar
-5. Use "Sync All Bookings" to back-fill existing bookings
-
----
-
-## 🔄 CI/CD & Updates
-
-The GitHub Actions workflow at `.github/workflows/docker-image.yml` automatically:
-
-1. Builds the Docker image on every push to `main`
-2. Pushes it to **GitHub Container Registry (GHCR)** as `ghcr.io/zzm6899/watermark-vault:latest`
-
-To update your deployment:
-
-```bash
-docker compose pull && docker compose up -d
-```
-
----
-
-## 📱 Android APK — When Do You Need to Rebuild?
-
-The Capacitor app is configured with a `server.url` pointing to the live server (`https://book.zacmclients.photos`). This means the WebView loads all React/web code **directly from the server at runtime** rather than from anything bundled inside the APK.
-
-### ✅ No APK rebuild needed
-
-For **web-only changes** (anything under `src/`):
-
-1. Push your changes to `main`
-2. CI automatically builds and pushes a new Docker image
-3. Pull the new image on your server: `docker compose pull && docker compose up -d`
-4. The next time the Android app opens it fetches the updated code automatically
-
-### ⚠️ APK rebuild required
-
-Rebuild and redistribute the APK when you change **native Android code**:
-
-| What changed | Needs new APK? |
-|---|---|
-| React / TypeScript (`src/`) | ❌ No — server push is enough |
-| `capacitor.config.ts` (e.g. `server.url`) | ✅ Yes |
-| `android/app/src/main/java/…` (MainActivity, plugins) | ✅ Yes |
-| `android-plugin/CameraUsbPlugin.kt` | ✅ Yes |
-| `android/app/src/main/AndroidManifest.xml` | ✅ Yes |
-| Gradle / build files in `android/` | ✅ Yes |
-
-### Building the APK
-
-```bash
-# 1. Build the web bundle (needed if you also changed web code)
-npm run build
-
-# 2. Sync web assets into the Android project
 npx cap sync android
-
-# 3. Open Android Studio and build / sign the release APK
-npx cap open android
+npx cap open android   # opens Android Studio
 ```
+
+In Android Studio: Build → Build Bundle(s)/APK(s) → Build APK. Transfer to your Android device (enable "Install unknown apps" in Settings if needed).
 
 ---
 
-## 🛡️ Data & Privacy
+## Troubleshooting
 
-- All data is stored on **your own server** — nothing leaves your machine
-- Photos are served through the Node.js backend (never directly from disk)
-- Watermarks are applied server-side so original files are never exposed
-- Admin auth uses SHA-256 password hashing
-- No analytics, no telemetry, no third-party data collection
+**Photos not uploading** — Check that `./data/uploads` exists and the Docker container has write permissions. Run `docker compose logs` for errors.
 
----
+**Emails not sending** — Verify SMTP settings in Settings tab. For Gmail, use an App Password (not your account password). Test SMTP by triggering a booking confirmation email.
 
-## 📁 Project Structure
+**Stripe webhooks failing** — Make sure `STRIPE_WEBHOOK_SECRET` matches the secret in your Stripe Dashboard → Webhooks. The endpoint is `https://yourdomain.com/api/stripe/webhook`.
 
-```
-watermark-vault/
-├── server/               # Node.js/Express backend
-│   ├── index.js          # Main server, REST API, photo serving
-│   ├── email.js          # SMTP email sending
-│   ├── discord.js        # Discord webhook helpers
-│   ├── stripe.js         # Stripe Checkout integration
-│   ├── google-calendar.js
-│   └── google-sheets.js
-├── src/
-│   ├── pages/
-│   │   ├── Admin.tsx     # Full admin dashboard
-│   │   ├── Booking.tsx   # Public booking page
-│   │   ├── Setup.tsx     # First-time setup wizard
-│   │   ├── Login.tsx     # Admin login
-│   │   ├── AlbumDetail.tsx
-│   │   ├── ClientPortal.tsx
-│   │   ├── InvoiceView.tsx
-│   │   └── MobileCapture.tsx
-│   ├── components/       # Reusable UI components
-│   ├── lib/
-│   │   ├── api.ts        # Backend API client
-│   │   ├── storage.ts    # localStorage helpers
-│   │   └── types.ts      # TypeScript types
-│   └── hooks/
-├── Dockerfile
-├── docker-compose.yml
-└── nginx.conf
-```
+**iCal feed not updating** — Calendar apps cache feeds aggressively. Force a manual refresh. Google Calendar updates external feeds every 24 hours maximum.
+
+**Watermarks not appearing** — Check Storage tab → Preview & Watermark Rendering. The background renderer processes large uploads over a few minutes.
+
+**"Server unavailable"** — The app is running in localStorage-only mode. Make sure the Docker container is running on port 5066. Check `docker compose logs` for errors.
+
+**Data backup** — The database is `./data/db.json`. Back up the entire `./data/` directory regularly (including uploads). The database uses debounced writes so a clean shutdown (`docker compose stop`) flushes any pending writes first.
 
 ---
 
-## 📜 License
-
-This project is private. All rights reserved.
-
+*PhotoFlow is built with React 18, TypeScript, Vite, Express, Sharp, and Tailwind CSS. Self-hosted. No external dependencies for core features.*
