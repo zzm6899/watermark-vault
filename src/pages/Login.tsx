@@ -65,12 +65,12 @@ export default function Login({ onLogin }: { onLogin: () => void }) {
         </div>
         <div className="glass-panel rounded-xl p-6 space-y-4">
           <div>
-            <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Username</label>
-            <Input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="admin" autoComplete="username" className="bg-secondary border-border text-foreground font-body" onKeyDown={(e) => e.key === "Enter" && handleLogin()} />
+            <label htmlFor="login-username" className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Username</label>
+            <Input id="login-username" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="admin" autoComplete="username" className="bg-secondary border-border text-foreground font-body" onKeyDown={(e) => e.key === "Enter" && handleLogin()} />
           </div>
           <div>
-            <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Password</label>
-            <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••" autoComplete="current-password" className="bg-secondary border-border text-foreground font-body" onKeyDown={(e) => e.key === "Enter" && handleLogin()} />
+            <label htmlFor="login-password" className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Password</label>
+            <Input id="login-password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••" autoComplete="current-password" className="bg-secondary border-border text-foreground font-body" onKeyDown={(e) => e.key === "Enter" && handleLogin()} />
           </div>
           <Button onClick={handleLogin} disabled={loading} className="w-full bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2">
             <LogIn className="w-4 h-4" /> {loading ? "Signing in..." : "Sign In"}

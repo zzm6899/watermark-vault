@@ -128,7 +128,6 @@ const App = () => {
                 <Route path="/capture" element={<MobileCapture />} />
                 <Route path="/admin" element={<AdminGuard />} />
                 <Route path="/admin/:tab" element={<AdminGuard />} />
-                <Route path="/admin/storage" element={<AdminGuard />} />
                 <Route path="/invoice/:token" element={<InvoiceView />} />
                 <Route path="/tenant-setup/:token" element={<TenantSetup />} />
                 <Route path="/tenant-admin/:slug" element={<TenantAdmin />} />

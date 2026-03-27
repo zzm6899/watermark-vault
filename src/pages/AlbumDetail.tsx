@@ -688,7 +688,9 @@ export default function AlbumDetail() {
   };
 
   const copyToClipboard = (text: string, field: string) => {
-    navigator.clipboard.writeText(text);
+    navigator.clipboard.writeText(text).catch(() => {
+      toast.error("Failed to copy to clipboard");
+    });
     setCopiedField(field);
     setTimeout(() => setCopiedField(null), 2000);
   };

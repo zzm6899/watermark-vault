@@ -7,6 +7,22 @@
 let serverAvailable: boolean | null = null;
 
 /**
+ * Returns Authorization header for admin-protected endpoints.
+ * Reads stored credentials synchronously so it can be used inline.
+ */
+function adminAuthHeaders(): Record<string, string> {
+  try {
+    // Read directly from localStorage using the same key as storage.ts (KEYS.ADMIN = "wv_admin")
+    // to avoid circular imports. Synchronous so it can be used inline in fetch headers.
+    const raw = localStorage.getItem("wv_admin");
+    if (!raw) return {};
+    const creds = JSON.parse(raw) as { username: string; passwordHash: string };
+    if (!creds?.username || !creds?.passwordHash) return {};
+    return { Authorization: "Basic " + btoa(`${creds.username}:${creds.passwordHash}`) };
+  } catch { return {}; }
+}
+
+/**
  * Wraps fetch with simple exponential-backoff retry logic.
  * Retries only on network errors (not on HTTP error statuses).
  * @param url      - URL to fetch
@@ -1992,7 +2008,7 @@ export async function deleteIcalToken(): Promise<boolean> {
 
 export async function getExpenses(): Promise<import("./types").Expense[]> {
   try {
-    const res = await fetch("/api/expenses");
+    const res = await fetch("/api/expenses", { headers: adminAuthHeaders() });
     if (!res.ok) return [];
     return res.json();
   } catch { return []; }
@@ -2000,7 +2016,7 @@ export async function getExpenses(): Promise<import("./types").Expense[]> {
 
 export async function createExpense(data: Partial<import("./types").Expense>): Promise<import("./types").Expense | null> {
   try {
-    const res = await fetch("/api/expenses", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
+    const res = await fetch("/api/expenses", { method: "POST", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify(data) });
     if (!res.ok) return null;
     return res.json();
   } catch { return null; }
@@ -2008,7 +2024,7 @@ export async function createExpense(data: Partial<import("./types").Expense>): P
 
 export async function updateExpense(id: string, data: Partial<import("./types").Expense>): Promise<import("./types").Expense | null> {
   try {
-    const res = await fetch(`/api/expenses/${encodeURIComponent(id)}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
+    const res = await fetch(`/api/expenses/${encodeURIComponent(id)}`, { method: "PUT", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify(data) });
     if (!res.ok) return null;
     return res.json();
   } catch { return null; }
@@ -2016,7 +2032,7 @@ export async function updateExpense(id: string, data: Partial<import("./types").
 
 export async function deleteExpense(id: string): Promise<boolean> {
   try {
-    const res = await fetch(`/api/expenses/${encodeURIComponent(id)}`, { method: "DELETE" });
+    const res = await fetch(`/api/expenses/${encodeURIComponent(id)}`, { method: "DELETE", headers: adminAuthHeaders() });
     return res.ok;
   } catch { return false; }
 }
@@ -2025,7 +2041,7 @@ export async function deleteExpense(id: string): Promise<boolean> {
 
 export async function getQuotes(): Promise<import("./types").Quote[]> {
   try {
-    const res = await fetch("/api/quotes");
+    const res = await fetch("/api/quotes", { headers: adminAuthHeaders() });
     if (!res.ok) return [];
     return res.json();
   } catch { return []; }
@@ -2033,7 +2049,7 @@ export async function getQuotes(): Promise<import("./types").Quote[]> {
 
 export async function createQuote(data: Partial<import("./types").Quote>): Promise<import("./types").Quote | null> {
   try {
-    const res = await fetch("/api/quotes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
+    const res = await fetch("/api/quotes", { method: "POST", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify(data) });
     if (!res.ok) return null;
     return res.json();
   } catch { return null; }
@@ -2041,7 +2057,7 @@ export async function createQuote(data: Partial<import("./types").Quote>): Promi
 
 export async function updateQuote(id: string, data: Partial<import("./types").Quote>): Promise<import("./types").Quote | null> {
   try {
-    const res = await fetch(`/api/quotes/${encodeURIComponent(id)}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
+    const res = await fetch(`/api/quotes/${encodeURIComponent(id)}`, { method: "PUT", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify(data) });
     if (!res.ok) return null;
     return res.json();
   } catch { return null; }
@@ -2049,7 +2065,7 @@ export async function updateQuote(id: string, data: Partial<import("./types").Qu
 
 export async function convertQuoteToInvoice(id: string, dueDate?: string): Promise<{ invoice: import("./types").Invoice; quote: import("./types").Quote } | null> {
   try {
-    const res = await fetch(`/api/quotes/${encodeURIComponent(id)}/convert`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ dueDate }) });
+    const res = await fetch(`/api/quotes/${encodeURIComponent(id)}/convert`, { method: "POST", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify({ dueDate }) });
     if (!res.ok) return null;
     return res.json();
   } catch { return null; }
@@ -2057,7 +2073,7 @@ export async function convertQuoteToInvoice(id: string, dueDate?: string): Promi
 
 export async function deleteQuote(id: string): Promise<boolean> {
   try {
-    const res = await fetch(`/api/quotes/${encodeURIComponent(id)}`, { method: "DELETE" });
+    const res = await fetch(`/api/quotes/${encodeURIComponent(id)}`, { method: "DELETE", headers: adminAuthHeaders() });
     return res.ok;
   } catch { return false; }
 }
@@ -2082,7 +2098,7 @@ export async function respondToQuote(token: string, action: "accept" | "decline"
 
 export async function getBookingTasks(bookingId: string): Promise<import("./types").BookingTask[]> {
   try {
-    const res = await fetch(`/api/bookings/${encodeURIComponent(bookingId)}/tasks`);
+    const res = await fetch(`/api/bookings/${encodeURIComponent(bookingId)}/tasks`, { headers: adminAuthHeaders() });
     if (!res.ok) return [];
     return res.json();
   } catch { return []; }
@@ -2090,7 +2106,7 @@ export async function getBookingTasks(bookingId: string): Promise<import("./type
 
 export async function updateBookingTasks(bookingId: string, tasks: import("./types").BookingTask[]): Promise<import("./types").BookingTask[]> {
   try {
-    const res = await fetch(`/api/bookings/${encodeURIComponent(bookingId)}/tasks`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tasks }) });
+    const res = await fetch(`/api/bookings/${encodeURIComponent(bookingId)}/tasks`, { method: "PUT", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify({ tasks }) });
     if (!res.ok) return tasks;
     return res.json();
   } catch { return tasks; }
@@ -2098,7 +2114,7 @@ export async function updateBookingTasks(bookingId: string, tasks: import("./typ
 
 export async function toggleBookingTask(bookingId: string, taskId: string): Promise<import("./types").BookingTask | null> {
   try {
-    const res = await fetch(`/api/bookings/${encodeURIComponent(bookingId)}/tasks/${encodeURIComponent(taskId)}/toggle`, { method: "PUT" });
+    const res = await fetch(`/api/bookings/${encodeURIComponent(bookingId)}/tasks/${encodeURIComponent(taskId)}/toggle`, { method: "PUT", headers: adminAuthHeaders() });
     if (!res.ok) return null;
     return res.json();
   } catch { return null; }
@@ -2106,7 +2122,7 @@ export async function toggleBookingTask(bookingId: string, taskId: string): Prom
 
 export async function getTaskTemplates(): Promise<import("./types").BookingTaskTemplate[]> {
   try {
-    const res = await fetch("/api/task-templates");
+    const res = await fetch("/api/task-templates", { headers: adminAuthHeaders() });
     if (!res.ok) return [];
     return res.json();
   } catch { return []; }
@@ -2114,7 +2130,7 @@ export async function getTaskTemplates(): Promise<import("./types").BookingTaskT
 
 export async function createTaskTemplate(data: Partial<import("./types").BookingTaskTemplate>): Promise<import("./types").BookingTaskTemplate | null> {
   try {
-    const res = await fetch("/api/task-templates", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
+    const res = await fetch("/api/task-templates", { method: "POST", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify(data) });
     if (!res.ok) return null;
     return res.json();
   } catch { return null; }
@@ -2122,7 +2138,7 @@ export async function createTaskTemplate(data: Partial<import("./types").Booking
 
 export async function updateTaskTemplate(id: string, data: Partial<import("./types").BookingTaskTemplate>): Promise<import("./types").BookingTaskTemplate | null> {
   try {
-    const res = await fetch(`/api/task-templates/${encodeURIComponent(id)}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
+    const res = await fetch(`/api/task-templates/${encodeURIComponent(id)}`, { method: "PUT", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify(data) });
     if (!res.ok) return null;
     return res.json();
   } catch { return null; }
@@ -2130,7 +2146,7 @@ export async function updateTaskTemplate(id: string, data: Partial<import("./typ
 
 export async function deleteTaskTemplate(id: string): Promise<boolean> {
   try {
-    const res = await fetch(`/api/task-templates/${encodeURIComponent(id)}`, { method: "DELETE" });
+    const res = await fetch(`/api/task-templates/${encodeURIComponent(id)}`, { method: "DELETE", headers: adminAuthHeaders() });
     return res.ok;
   } catch { return false; }
 }
@@ -2139,7 +2155,7 @@ export async function deleteTaskTemplate(id: string): Promise<boolean> {
 
 export async function getTags(): Promise<import("./types").Tag[]> {
   try {
-    const res = await fetch("/api/tags");
+    const res = await fetch("/api/tags", { headers: adminAuthHeaders() });
     if (!res.ok) return [];
     return res.json();
   } catch { return []; }
@@ -2147,7 +2163,7 @@ export async function getTags(): Promise<import("./types").Tag[]> {
 
 export async function createTag(data: Pick<import("./types").Tag, "label" | "color">): Promise<import("./types").Tag | null> {
   try {
-    const res = await fetch("/api/tags", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
+    const res = await fetch("/api/tags", { method: "POST", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify(data) });
     if (!res.ok) return null;
     return res.json();
   } catch { return null; }
@@ -2155,7 +2171,7 @@ export async function createTag(data: Pick<import("./types").Tag, "label" | "col
 
 export async function updateTag(id: string, data: Partial<import("./types").Tag>): Promise<import("./types").Tag | null> {
   try {
-    const res = await fetch(`/api/tags/${encodeURIComponent(id)}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
+    const res = await fetch(`/api/tags/${encodeURIComponent(id)}`, { method: "PUT", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify(data) });
     if (!res.ok) return null;
     return res.json();
   } catch { return null; }
@@ -2163,21 +2179,21 @@ export async function updateTag(id: string, data: Partial<import("./types").Tag>
 
 export async function deleteTag(id: string): Promise<boolean> {
   try {
-    const res = await fetch(`/api/tags/${encodeURIComponent(id)}`, { method: "DELETE" });
+    const res = await fetch(`/api/tags/${encodeURIComponent(id)}`, { method: "DELETE", headers: adminAuthHeaders() });
     return res.ok;
   } catch { return false; }
 }
 
 export async function setBookingTags(bookingId: string, tags: string[]): Promise<boolean> {
   try {
-    const res = await fetch(`/api/bookings/${encodeURIComponent(bookingId)}/tags`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tags }) });
+    const res = await fetch(`/api/bookings/${encodeURIComponent(bookingId)}/tags`, { method: "PATCH", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify({ tags }) });
     return res.ok;
   } catch { return false; }
 }
 
 export async function setAlbumTags(albumId: string, tags: string[]): Promise<boolean> {
   try {
-    const res = await fetch(`/api/albums/${encodeURIComponent(albumId)}/tags`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tags }) });
+    const res = await fetch(`/api/albums/${encodeURIComponent(albumId)}/tags`, { method: "PATCH", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify({ tags }) });
     return res.ok;
   } catch { return false; }
 }
@@ -2186,7 +2202,7 @@ export async function setAlbumTags(albumId: string, tags: string[]): Promise<boo
 
 export async function getAlbumShareLinks(albumId: string): Promise<import("./types").GalleryShareLink[]> {
   try {
-    const res = await fetch(`/api/albums/${encodeURIComponent(albumId)}/share-links`);
+    const res = await fetch(`/api/albums/${encodeURIComponent(albumId)}/share-links`, { headers: adminAuthHeaders() });
     if (!res.ok) return [];
     return res.json();
   } catch { return []; }
@@ -2194,7 +2210,7 @@ export async function getAlbumShareLinks(albumId: string): Promise<import("./typ
 
 export async function createAlbumShareLink(albumId: string, data: { label?: string; expiresAt?: string; allowDownload?: boolean }): Promise<import("./types").GalleryShareLink | null> {
   try {
-    const res = await fetch(`/api/albums/${encodeURIComponent(albumId)}/share-links`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
+    const res = await fetch(`/api/albums/${encodeURIComponent(albumId)}/share-links`, { method: "POST", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify(data) });
     if (!res.ok) return null;
     return res.json();
   } catch { return null; }
@@ -2202,7 +2218,7 @@ export async function createAlbumShareLink(albumId: string, data: { label?: stri
 
 export async function deleteAlbumShareLink(albumId: string, linkId: string): Promise<boolean> {
   try {
-    const res = await fetch(`/api/albums/${encodeURIComponent(albumId)}/share-links/${encodeURIComponent(linkId)}`, { method: "DELETE" });
+    const res = await fetch(`/api/albums/${encodeURIComponent(albumId)}/share-links/${encodeURIComponent(linkId)}`, { method: "DELETE", headers: adminAuthHeaders() });
     return res.ok;
   } catch { return false; }
 }
@@ -2219,7 +2235,7 @@ export async function getGalleryByShareToken(token: string): Promise<{ album: im
 
 export async function getPhotoComments(albumId: string, photoId: string): Promise<import("./types").PhotoComment[]> {
   try {
-    const res = await fetch(`/api/albums/${encodeURIComponent(albumId)}/photos/${encodeURIComponent(photoId)}/comments`);
+    const res = await fetch(`/api/albums/${encodeURIComponent(albumId)}/photos/${encodeURIComponent(photoId)}/comments`, { headers: adminAuthHeaders() });
     if (!res.ok) return [];
     return res.json();
   } catch { return []; }
@@ -2227,7 +2243,7 @@ export async function getPhotoComments(albumId: string, photoId: string): Promis
 
 export async function addPhotoComment(albumId: string, photoId: string, data: { authorName: string; authorEmail?: string; text: string; xPct?: number; yPct?: number }): Promise<import("./types").PhotoComment | null> {
   try {
-    const res = await fetch(`/api/albums/${encodeURIComponent(albumId)}/photos/${encodeURIComponent(photoId)}/comments`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
+    const res = await fetch(`/api/albums/${encodeURIComponent(albumId)}/photos/${encodeURIComponent(photoId)}/comments`, { method: "POST", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify(data) });
     if (!res.ok) return null;
     return res.json();
   } catch { return null; }
@@ -2235,14 +2251,14 @@ export async function addPhotoComment(albumId: string, photoId: string, data: { 
 
 export async function resolvePhotoComment(albumId: string, photoId: string, commentId: string): Promise<boolean> {
   try {
-    const res = await fetch(`/api/albums/${encodeURIComponent(albumId)}/photos/${encodeURIComponent(photoId)}/comments/${encodeURIComponent(commentId)}/resolve`, { method: "PUT" });
+    const res = await fetch(`/api/albums/${encodeURIComponent(albumId)}/photos/${encodeURIComponent(photoId)}/comments/${encodeURIComponent(commentId)}/resolve`, { method: "PUT", headers: adminAuthHeaders() });
     return res.ok;
   } catch { return false; }
 }
 
 export async function deletePhotoComment(albumId: string, photoId: string, commentId: string): Promise<boolean> {
   try {
-    const res = await fetch(`/api/albums/${encodeURIComponent(albumId)}/photos/${encodeURIComponent(photoId)}/comments/${encodeURIComponent(commentId)}`, { method: "DELETE" });
+    const res = await fetch(`/api/albums/${encodeURIComponent(albumId)}/photos/${encodeURIComponent(photoId)}/comments/${encodeURIComponent(commentId)}`, { method: "DELETE", headers: adminAuthHeaders() });
     return res.ok;
   } catch { return false; }
 }
@@ -2252,7 +2268,7 @@ export async function deletePhotoComment(albumId: string, photoId: string, comme
 export async function getContracts(bookingId?: string): Promise<import("./types").BookingContract[]> {
   try {
     const url = bookingId ? `/api/contracts?bookingId=${encodeURIComponent(bookingId)}` : "/api/contracts";
-    const res = await fetch(url);
+    const res = await fetch(url, { headers: adminAuthHeaders() });
     if (!res.ok) return [];
     return res.json();
   } catch { return []; }
@@ -2260,7 +2276,7 @@ export async function getContracts(bookingId?: string): Promise<import("./types"
 
 export async function createContract(formData: FormData): Promise<import("./types").BookingContract | null> {
   try {
-    const res = await fetch("/api/contracts", { method: "POST", body: formData });
+    const res = await fetch("/api/contracts", { method: "POST", body: formData, headers: adminAuthHeaders() });
     if (!res.ok) return null;
     return res.json();
   } catch { return null; }
@@ -2284,7 +2300,7 @@ export async function signContract(token: string, signedName: string): Promise<{
 
 export async function deleteContract(id: string): Promise<boolean> {
   try {
-    const res = await fetch(`/api/contracts/${encodeURIComponent(id)}`, { method: "DELETE" });
+    const res = await fetch(`/api/contracts/${encodeURIComponent(id)}`, { method: "DELETE", headers: adminAuthHeaders() });
     return res.ok;
   } catch { return false; }
 }
@@ -2293,7 +2309,7 @@ export async function deleteContract(id: string): Promise<boolean> {
 
 export async function getInstalments(bookingId: string): Promise<import("./types").PaymentInstalment[]> {
   try {
-    const res = await fetch(`/api/bookings/${encodeURIComponent(bookingId)}/instalments`);
+    const res = await fetch(`/api/bookings/${encodeURIComponent(bookingId)}/instalments`, { headers: adminAuthHeaders() });
     if (!res.ok) return [];
     return res.json();
   } catch { return []; }
@@ -2301,7 +2317,7 @@ export async function getInstalments(bookingId: string): Promise<import("./types
 
 export async function createInstalment(bookingId: string, data: Partial<import("./types").PaymentInstalment>): Promise<import("./types").PaymentInstalment | null> {
   try {
-    const res = await fetch(`/api/bookings/${encodeURIComponent(bookingId)}/instalments`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
+    const res = await fetch(`/api/bookings/${encodeURIComponent(bookingId)}/instalments`, { method: "POST", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify(data) });
     if (!res.ok) return null;
     return res.json();
   } catch { return null; }
@@ -2309,7 +2325,7 @@ export async function createInstalment(bookingId: string, data: Partial<import("
 
 export async function updateInstalment(id: string, data: Partial<import("./types").PaymentInstalment>): Promise<import("./types").PaymentInstalment | null> {
   try {
-    const res = await fetch(`/api/instalments/${encodeURIComponent(id)}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
+    const res = await fetch(`/api/instalments/${encodeURIComponent(id)}`, { method: "PUT", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify(data) });
     if (!res.ok) return null;
     return res.json();
   } catch { return null; }
@@ -2319,7 +2335,7 @@ export async function updateInstalment(id: string, data: Partial<import("./types
 
 export async function setBookingSource(bookingId: string, source: import("./types").BookingSource): Promise<boolean> {
   try {
-    const res = await fetch(`/api/bookings/${encodeURIComponent(bookingId)}/source`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source }) });
+    const res = await fetch(`/api/bookings/${encodeURIComponent(bookingId)}/source`, { method: "PATCH", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify({ source }) });
     return res.ok;
   } catch { return false; }
 }
@@ -2328,7 +2344,7 @@ export async function setBookingSource(bookingId: string, source: import("./type
 
 export async function deliverAlbum(albumId: string): Promise<{ ok: boolean; deliveredAt: string; emailSent?: boolean; emailError?: string } | null> {
   try {
-    const res = await fetch(`/api/albums/${encodeURIComponent(albumId)}/deliver`, { method: "POST" });
+    const res = await fetch(`/api/albums/${encodeURIComponent(albumId)}/deliver`, { method: "POST", headers: adminAuthHeaders() });
     if (!res.ok) return null;
     return res.json();
   } catch { return null; }

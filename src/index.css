@@ -141,6 +141,11 @@
     .masonry-grid-sm { column-count: 2; }
     .masonry-grid-lg { column-count: 1; }
   }
+
+  @media (max-width: 400px) {
+    .masonry-grid { column-count: 1; }
+    .masonry-grid-sm { column-count: 1; }
+  }
 }
 
 @layer utilities {

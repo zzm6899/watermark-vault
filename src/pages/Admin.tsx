@@ -8366,6 +8366,9 @@ function SettingsView() {
           <div className="lg:col-span-2">
             <IcalSettingsPanel />
           </div>
+          <div className="lg:col-span-2">
+            <TagsManagementPanel />
+          </div>
           {isServerMode() && ftpLoaded && (
             <div className="glass-panel rounded-xl p-6 space-y-4">
               <h3 className="font-display text-base text-foreground flex items-center gap-2">
@@ -8481,8 +8484,6 @@ function SettingsView() {
         </Button>
       </div>
 
-      {/* ── Tags Management ────────────────────────────────────── */}
-      <TagsManagementPanel />
     </motion.div>
   );
 }
