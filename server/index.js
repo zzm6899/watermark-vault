@@ -858,7 +858,8 @@ function getAvailableDiskBytes() {
   return null;
 }
 
-app.post("/api/upload", upload.array("photos", 100), async (req, res) => {
+const uploadLimiter = rateLimit({ windowMs: 60_000, max: 60, standardHeaders: true, legacyHeaders: false, message: { error: "Too many upload requests — please wait" } });
+app.post("/api/upload", uploadLimiter, upload.array("photos", 100), async (req, res) => {
   // ── Disk space guard ─────────────────────────────────────────────────────
   // Reject uploads early when the data volume is critically low to prevent
   // partial writes that could corrupt already-uploaded files or db.json.
@@ -996,7 +997,8 @@ app.delete("/api/upload/all", deleteAllLimiter, async (_req, res) => {
   }
 });
 
-app.delete("/api/upload/:filename", (req, res) => {
+const uploadDeleteLimiter = rateLimit({ windowMs: 60_000, max: 120, standardHeaders: true, legacyHeaders: false, message: { error: "Too many delete requests — please wait" } });
+app.delete("/api/upload/:filename", uploadDeleteLimiter, (req, res) => {
   const safeName = path.basename(req.params.filename);
   const filepath = path.join(UPLOADS_DIR, safeName);
   try {
@@ -1505,7 +1507,7 @@ app.get("/api/cache/stats", (_req, res) => {
 });
 
 // ── Bulk-delete specific files (orphan cleanup) ──────────────
-app.post("/api/upload/bulk-delete", async (req, res) => {
+app.post("/api/upload/bulk-delete", uploadDeleteLimiter, async (req, res) => {
   const { filenames } = req.body;
   if (!Array.isArray(filenames)) {
     return res.status(400).json({ error: "filenames array required" });
