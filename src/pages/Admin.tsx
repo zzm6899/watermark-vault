@@ -115,6 +115,7 @@ import {
   getBookingTasks,
   updateBookingTasks,
   toggleBookingTask,
+  aiEnhancePhoto,
 } from "@/lib/api";
 import type { CacheBreakdown } from "@/lib/api";
 import RichTextEditor, { RichTextDisplay } from "@/components/RichTextEditor";
@@ -4708,6 +4709,7 @@ function PhotosView() {
   const uploadOpenRef = useRef(uploadOpen);
   const [photoGridSize, setPhotoGridSize] = useState<"small" | "medium" | "large">("medium");
   const [lightboxPhoto, setLightboxPhoto] = useState<Photo | null>(null);
+  const [enhancingIds, setEnhancingIds] = useState<Set<string>>(new Set());
   const displayPhotosRef = useRef<(Photo & { source: string })[]>([]);
 
   useEffect(() => { uploadOpenRef.current = uploadOpen; }, [uploadOpen]);
@@ -5211,6 +5213,36 @@ function PhotosView() {
     }
   };
 
+  const handleAIEnhance = async (photo: Photo & { source: string }) => {
+    if (enhancingIds.has(photo.id)) return;
+    setEnhancingIds(prev => new Set(prev).add(photo.id));
+    try {
+      const enhancedUrl = await aiEnhancePhoto(photo.src);
+      const originalSrc = photo.src;
+      if (photo.source === "Library") {
+        const updated = libraryPhotos.map(p =>
+          p.id === photo.id ? { ...p, src: enhancedUrl, beforeSrc: originalSrc } : p
+        );
+        setPhotoLibrary(updated);
+        setLibraryPhotosState(updated);
+      } else {
+        const alb = albums.find(a => a.title === photo.source);
+        if (alb) {
+          const updated = { ...alb, photos: alb.photos.map(p =>
+            p.id === photo.id ? { ...p, src: enhancedUrl, beforeSrc: originalSrc } : p
+          ) };
+          updateAlbum(updated);
+          setAlbumsState(getAlbums());
+        }
+      }
+      toast.success("AI enhancement applied");
+    } catch {
+      toast.error("AI enhancement failed");
+    } finally {
+      setEnhancingIds(prev => { const next = new Set(prev); next.delete(photo.id); return next; });
+    }
+  };
+
   const handleDeletePhoto = (id: string, source: string) => {
     if (source === "Library") {
       const lp = libraryPhotos.find(p => p.id === id);
@@ -5685,6 +5717,18 @@ function PhotosView() {
                 title="View full size"
               >
                 <Maximize2 className="w-3 h-3" />
+              </button>
+              {/* AI Enhance button */}
+              <button
+                onClick={(e) => { e.stopPropagation(); handleAIEnhance(p); }}
+                className="absolute top-1 right-8 w-6 h-6 rounded-full bg-black/50 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity disabled:opacity-40"
+                title="AI Enhance"
+                disabled={enhancingIds.has(p.id)}
+              >
+                {enhancingIds.has(p.id)
+                  ? <div className="w-3 h-3 rounded-full border border-white border-t-transparent animate-spin" />
+                  : <Sparkles className="w-3 h-3" />
+                }
               </button>
               <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-background/80 to-transparent p-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
                 <p className="text-[9px] font-body text-foreground font-medium truncate">{p.title}</p>
