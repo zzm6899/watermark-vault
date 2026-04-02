@@ -239,6 +239,16 @@ export default function AlbumDetail() {
   const handleLightboxCacheUpdate = useCallback((cacheKey: string, url: string) => {
     setLightboxSrcCache(prev => ({ ...prev, [cacheKey]: url }));
   }, []);
+  // ── AI Enhancement before/after state ─────────────────────────────────────
+  // Map of photoId → enhanced blob URL (cached after first load)
+  const [aiEnhancedCache, setAiEnhancedCache] = useState<Record<string, string>>({});
+  // Which photos are currently loading AI enhancement
+  const [aiLoadingIds, setAiLoadingIds] = useState<Set<string>>(new Set());
+  // Whether the current lightbox photo is in "show enhanced" mode
+  const [showAiEnhanced, setShowAiEnhanced] = useState(false);
+  // Before/after slider position (0–100, percentage from left showing "before")
+  const [baSliderPos, setBaSliderPos] = useState(50);
+  const baSliderDragging = useRef(false);
   const [stripeAvailable, setStripeAvailable] = useState(false);
   const [processingStripe, setProcessingStripe] = useState(false);
   const [stripeSuccess, setStripeSuccess] = useState(() => searchParams.get("success") === "1");
@@ -463,9 +473,9 @@ export default function AlbumDetail() {
     const handler = (e: KeyboardEvent) => {
       const lbPhotos = displayedPhotosRef.current;
       const currentIdx = lbPhotos.findIndex((p: any) => p.id === lightboxPhotoId);
-      if (e.key === "Escape") { setLightboxPhotoId(null); setLbZoom(1); setLbPan({ x: 0, y: 0 }); }
-      if (e.key === "ArrowLeft" && currentIdx > 0) { setLightboxPhotoId(lbPhotos[currentIdx - 1].id); setLbZoom(1); setLbPan({ x: 0, y: 0 }); }
-      if (e.key === "ArrowRight" && currentIdx >= 0 && currentIdx < lbPhotos.length - 1) { setLightboxPhotoId(lbPhotos[currentIdx + 1].id); setLbZoom(1); setLbPan({ x: 0, y: 0 }); }
+      if (e.key === "Escape") { setLightboxPhotoId(null); setLbZoom(1); setLbPan({ x: 0, y: 0 }); setShowAiEnhanced(false); setBaSliderPos(50); }
+      if (e.key === "ArrowLeft" && currentIdx > 0) { setLightboxPhotoId(lbPhotos[currentIdx - 1].id); setLbZoom(1); setLbPan({ x: 0, y: 0 }); setShowAiEnhanced(false); setBaSliderPos(50); }
+      if (e.key === "ArrowRight" && currentIdx >= 0 && currentIdx < lbPhotos.length - 1) { setLightboxPhotoId(lbPhotos[currentIdx + 1].id); setLbZoom(1); setLbPan({ x: 0, y: 0 }); setShowAiEnhanced(false); setBaSliderPos(50); }
       if ((e.key === "+" || e.key === "=") && !e.ctrlKey) setLbZoom(z => Math.min(4, +(z + 0.5).toFixed(1)));
       if (e.key === "-" && !e.ctrlKey) setLbZoom(z => { const next = Math.max(1, +(z - 0.5).toFixed(1)); if (next === 1) setLbPan({ x: 0, y: 0 }); return next; });
       if (e.key === "0") { setLbZoom(1); setLbPan({ x: 0, y: 0 }); }
@@ -1950,48 +1960,71 @@ export default function AlbumDetail() {
             {/* Nav arrows — hidden when zoomed */}
             {lbZoom === 1 && lbIdx > 0 && (
               <button className="absolute left-2 sm:left-4 z-10 w-11 h-11 rounded-full bg-white/15 backdrop-blur-sm flex items-center justify-center text-white hover:bg-white/25 transition-colors"
-                onClick={(e) => { e.stopPropagation(); setLightboxPhotoId(displayedPhotos[lbIdx - 1].id); setLbZoom(1); setLbPan({ x: 0, y: 0 }); }}>
+                onClick={(e) => { e.stopPropagation(); setLightboxPhotoId(displayedPhotos[lbIdx - 1].id); setLbZoom(1); setLbPan({ x: 0, y: 0 }); setShowAiEnhanced(false); setBaSliderPos(50); }}>
                 <ChevronLeft className="w-5 h-5" />
               </button>
             )}
             {lbZoom === 1 && lbIdx < displayedPhotos.length - 1 && (
               <button className="absolute right-2 sm:right-4 z-10 w-11 h-11 rounded-full bg-white/15 backdrop-blur-sm flex items-center justify-center text-white hover:bg-white/25 transition-colors"
-                onClick={(e) => { e.stopPropagation(); setLightboxPhotoId(displayedPhotos[lbIdx + 1].id); setLbZoom(1); setLbPan({ x: 0, y: 0 }); }}>
+                onClick={(e) => { e.stopPropagation(); setLightboxPhotoId(displayedPhotos[lbIdx + 1].id); setLbZoom(1); setLbPan({ x: 0, y: 0 }); setShowAiEnhanced(false); setBaSliderPos(50); }}>
                 <ChevronRight className="w-5 h-5" />
               </button>
             )}
 
             {/* AI Enhance button */}
-            {tenantSlug && tenant?.subscribedToAI && lbZoom === 1 && lbIdx >= 0 && (
-              <button
-                onClick={async (e) => {
-                  e.stopPropagation();
-                  const safeName = lbPhoto.src.split("?")[0].split("/").pop() || "";
-                  try {
-                    const res = await fetch(`/api/photo/${encodeURIComponent(safeName)}/ai-enhanced?sessionKey=${sessionKey}&albumId=${album.id}&tenantSlug=${tenantSlug}`);
-                    if (res.ok) {
-                      const blob = await res.blob();
-                      const url = URL.createObjectURL(blob);
-                      const oldSrc = lbPhoto.src;
-                      // Temporarily replace source with AI-enhanced version
-                      lbPhoto.src = url;
-                      // Re-render lightbox
-                      setLightboxPhotoId(null);
-                      setLightboxPhotoId(lbPhoto.id);
-                      toast.success("AI enhancement applied!");
-                    } else {
-                      toast.error(`Enhancement failed: ${await res.json()}`);
+            {/* AI Enhancement button — available in server mode for any photo */}
+            {isServerMode() && lbZoom === 1 && lbIdx >= 0 && (
+              <div className="absolute top-12 right-2 flex flex-col items-end gap-1.5 z-20" onClick={e => e.stopPropagation()}>
+                {/* Enhance / toggle button */}
+                <button
+                  onClick={async () => {
+                    const photoId = lbPhoto.id;
+                    const safeName = lbPhoto.src.split("?")[0].split("/").pop() || "";
+                    // If already enhanced and cached, just toggle view
+                    if (aiEnhancedCache[photoId]) {
+                      setShowAiEnhanced(v => !v);
+                      setBaSliderPos(50);
+                      return;
                     }
-                  } catch (err) {
-                    toast.error(`AI enhancement error: ${err.message}`);
+                    // Load enhancement
+                    setAiLoadingIds(prev => new Set(prev).add(photoId));
+                    try {
+                      const res = await fetch(
+                        `/api/photo/${encodeURIComponent(safeName)}/ai-enhanced?sessionKey=${sessionKey || "admin"}&albumId=${album.id}${tenantSlug ? `&tenantSlug=${tenantSlug}` : ""}`
+                      );
+                      if (res.ok) {
+                        const blob = await res.blob();
+                        const url = URL.createObjectURL(blob);
+                        setAiEnhancedCache(prev => ({ ...prev, [photoId]: url }));
+                        setShowAiEnhanced(true);
+                        setBaSliderPos(50);
+                        toast.success("AI enhancement ready — drag the slider to compare");
+                      } else {
+                        const errJson = await res.json().catch(() => ({}));
+                        toast.error(errJson?.error || "AI enhancement failed");
+                      }
+                    } catch (err: any) {
+                      toast.error(`AI enhancement error: ${err?.message || "unknown"}`);
+                    } finally {
+                      setAiLoadingIds(prev => { const s = new Set(prev); s.delete(photoId); return s; });
+                    }
+                  }}
+                  className={`w-9 h-9 rounded-full backdrop-blur-sm flex items-center justify-center text-white transition-colors ${showAiEnhanced && aiEnhancedCache[lbPhoto.id] ? "bg-primary/80 hover:bg-primary" : "bg-white/15 hover:bg-white/25"} disabled:opacity-30 disabled:cursor-default`}
+                  title={showAiEnhanced && aiEnhancedCache[lbPhoto.id] ? "Showing AI enhanced — click to toggle" : aiEnhancedCache[lbPhoto.id] ? "Show before/after comparison" : "AI Auto-Enhance (compare before & after)"}
+                  disabled={aiLoadingIds.has(lbPhoto.id) || lbZoom > 1}
+                >
+                  {aiLoadingIds.has(lbPhoto.id)
+                    ? <div className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+                    : <Sparkles className="w-4 h-4" />
                   }
-                }}
-                className="absolute top-12 right-2 w-9 h-9 rounded-full bg-white/15 backdrop-blur-sm flex items-center justify-center text-white hover:bg-white/25 transition-colors disabled:opacity-30 disabled:cursor-default"
-                title="AI Enhancement (AI feature enabled)"
-                disabled={!tenantSlug || !tenant?.subscribedToAI || lbZoom > 1}
-              >
-                <Sparkles className="w-4 h-4" />
-              </button>
+                </button>
+                {/* Label */}
+                {showAiEnhanced && aiEnhancedCache[lbPhoto.id] && (
+                  <span className="text-[10px] font-body text-white/70 bg-black/40 px-1.5 py-0.5 rounded backdrop-blur-sm">
+                    Drag to compare
+                  </span>
+                )}
+              </div>
             )}
 
             {/* Photo */}
@@ -2014,6 +2047,67 @@ export default function AlbumDetail() {
               onMouseLeave={() => { lbPanStart.current = null; }}
               style={{ cursor: lbZoom > 1 ? (lbPanStart.current ? "grabbing" : "grab") : "default" }}
             >
+              {/* Before/After slider — shown when AI enhancement is loaded and active */}
+              {showAiEnhanced && aiEnhancedCache[lbPhoto.id] ? (
+                <div
+                  className="relative w-full h-full select-none"
+                  style={{ cursor: "ew-resize" }}
+                  onMouseDown={(e) => { e.preventDefault(); baSliderDragging.current = true; }}
+                  onMouseMove={(e) => {
+                    if (!baSliderDragging.current) return;
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    const pct = Math.min(100, Math.max(0, ((e.clientX - rect.left) / rect.width) * 100));
+                    setBaSliderPos(pct);
+                  }}
+                  onMouseUp={() => { baSliderDragging.current = false; }}
+                  onMouseLeave={() => { baSliderDragging.current = false; }}
+                  onTouchStart={() => { baSliderDragging.current = true; }}
+                  onTouchMove={(e) => {
+                    const t = e.touches[0];
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    const pct = Math.min(100, Math.max(0, ((t.clientX - rect.left) / rect.width) * 100));
+                    setBaSliderPos(pct);
+                  }}
+                  onTouchEnd={() => { baSliderDragging.current = false; }}
+                >
+                  {/* "After" (AI enhanced) — full width, behind */}
+                  <img
+                    src={aiEnhancedCache[lbPhoto.id]}
+                    alt="AI enhanced"
+                    className="absolute inset-0 w-full h-full object-contain"
+                    draggable={false}
+                  />
+                  {/* "Before" (original) — clipped to left side */}
+                  <div
+                    className="absolute inset-0 overflow-hidden"
+                    style={{ width: `${baSliderPos}%` }}
+                  >
+                    <LightboxImage
+                      photo={lbPhoto}
+                      cache={lightboxSrcCache}
+                      onCacheUpdate={handleLightboxCacheUpdate}
+                      wmDisabled={!!(album.watermarkDisabled || isPhotoPaid(lbPhoto.id))}
+                      watermarkVersion={(settings as any).watermarkVersion || (lbPhoto as any).watermarkVersion || 0}
+                    />
+                  </div>
+                  {/* Divider line */}
+                  <div
+                    className="absolute top-0 bottom-0 w-0.5 bg-white shadow-lg pointer-events-none"
+                    style={{ left: `${baSliderPos}%`, transform: "translateX(-50%)" }}
+                  >
+                    {/* Handle */}
+                    <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-white shadow-xl flex items-center justify-center">
+                      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" className="text-gray-700">
+                        <path d="M4 8L1 5M1 5L4 2M1 5H5M12 8L15 5M15 5L12 2M15 5H11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                        <line x1="8" y1="1" x2="8" y2="15" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                      </svg>
+                    </div>
+                  </div>
+                  {/* Labels */}
+                  <span className="absolute bottom-14 left-3 text-[10px] font-body text-white bg-black/50 px-2 py-0.5 rounded backdrop-blur-sm pointer-events-none">Before</span>
+                  <span className="absolute bottom-14 right-3 text-[10px] font-body text-white bg-black/50 px-2 py-0.5 rounded backdrop-blur-sm pointer-events-none">AI Enhanced</span>
+                </div>
+              ) : (
               <div
                 style={{ transform: `scale(${lbZoom}) translate(${lbPan.x / lbZoom}px, ${lbPan.y / lbZoom}px)`, transition: lbPanStart.current ? "none" : "transform 0.15s ease", transformOrigin: "center center", width: "100%", height: "100%" }}
                 className="flex items-center justify-center"
@@ -2026,6 +2120,7 @@ export default function AlbumDetail() {
                   watermarkVersion={(settings as any).watermarkVersion || (lbPhoto as any).watermarkVersion || 0}
                 />
               </div>
+              )}
 
               {/* Bottom bar with select/star/title */}
               <div className="absolute bottom-0 left-0 right-0 p-3 sm:p-4 bg-gradient-to-t from-black/80 to-transparent rounded-b-lg flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2" style={{ pointerEvents: lbZoom > 1 ? "none" : undefined }}>

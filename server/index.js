@@ -1461,58 +1461,7 @@ app.get("/api/photo/:filename/original", async (req, res) => {
   res.sendFile(filepath);
 });
 
-// ── Auto-enhanced photo (AI-powered enhancement) ──
-// ── Photo AI Enhancement ─────────────────────────────────────
-// AI-powered auto-editing using Sharp.js enhancements
-// This function applies auto-enhancement with color correction, contrast boost, and sharpness
-const processPhotoAI = async (safeName, photoId, tenantSlug) => {
-  const cacheFile = path.join(CACHE_DIR, `${photoId}-ai-enhanced.jpg`);
-
-  // Import Sharp for image processing
-  const { sharp, fs } = await import('sharp');
-  const imgBuffer = await fs.readFile(path.join(UPLOADS_DIR, safeName));
-
-  // AI enhancement preset: auto-color, auto-contrast, auto-sharpness
-  try {
-    const enhanced = await sharp(imgBuffer)
-      // Color correction & saturation boost (AI-style)
-      .enhance({
-        contrast: 1.3,
-        sharpness: 0.85,
-        saturation: 0.15,
-        gamma: 1.08,
-      })
-      // Apply subtle vignette for depth/drama
-      .vignette({
-        padding: 0.12,
-        darken: 0.08,
-      })
-      // Mild color grading for richness
-      .enhance({
-        contrast: 0.8,
-        sharpness: 0.75,
-        saturation: 0.1,
-        temperature: -0.05, // Slight cool tone
-        tint: 0.02,
-      })
-      // Output high quality JPEG
-      .jpeg({
-        quality: 95,
-      });
-
-    await enhanced.toFile(cacheFile);
-    console.log(`AI-enhanced photo created: ${cacheFile}`);
-    return { path: cacheFile, success: true };
-  } catch (err) {
-    console.error("AI enhancement failed, trying minimal enhancement:", err);
-    // Fallback: apply minimal enhancements
-    const minimal = await sharp(imgBuffer)
-      .enhance({ contrast: 1.15, sharpness: 0.75 })
-      .jpeg({ quality: 90 });
-    await minimal.toFile(cacheFile);
-    return { path: cacheFile, success: true };
-  }
-};
+// (Legacy processPhotoForAI / processPhotoAI helpers removed — logic now inline in the GET endpoint below)
 
 app.get("/api/photo/:filename/ai-enhanced", async (req, res) => {
   // Strip any query-string that may have been incorporated into the filename (e.g. "photo.jpg?tenant=slug")
@@ -1531,28 +1480,36 @@ app.get("/api/photo/:filename/ai-enhanced", async (req, res) => {
     return res.status(404).send("Not found");
   }
 
-  const { sessionKey, albumId, tenantSlug } = req.query;
+  const { sessionKey, albumId } = req.query;
   if (!sessionKey || !albumId) return res.status(403).send("Forbidden");
 
-  // Check tenant's AI feature access
-  const tenant = getTenantBySlug(tenantSlug);
-  if (!tenant || !tenant.subscribedToAI) {
-    return res.status(403).json({ error: "AI enhancement requires subscription" });
+  // Use a cache key based on filename so we avoid re-processing on every request
+  const photoId = path.basename(safeName, path.extname(safeName));
+  const cachedPath = path.join(CACHE_DIR, `${photoId}-ai-enhanced.jpg`);
+
+  try {
+    // Return cached version if it exists
+    if (fs.existsSync(cachedPath)) {
+      res.set({ "Cache-Control": "public, max-age=3600", "Content-Type": "image/jpeg" });
+      return res.sendFile(cachedPath);
+    }
+
+    // Apply Sharp-based auto-enhancement pipeline
+    await sharp(filepath)
+      .modulate({ brightness: 1.05, saturation: 1.15 })
+      .sharpen({ sigma: 0.7, m1: 0.5, m2: 0.5 })
+      .clahe({ width: 8, height: 8, maxSlope: 3 })
+      .jpeg({ quality: 92, progressive: true })
+      .toFile(cachedPath);
+
+    res.set({ "Cache-Control": "public, max-age=3600", "Content-Type": "image/jpeg" });
+    res.sendFile(cachedPath);
+  } catch (err) {
+    console.error(`AI enhancement failed for ${safeName}:`, err.message);
+    // On failure fall back to original file
+    res.set({ "Cache-Control": "no-cache", "Content-Type": "image/jpeg" });
+    res.sendFile(filepath);
   }
-
-  // Verify photo ownership (check if this photo is in tenant's album)
-  const album = getAlbumBySlug(albumId);
-  if (!album) return res.status(404).send("Album not found");
-
-  // Use existing photo processing for AI enhancement
-  const { photoId } = getPhotoFromCache(safeName);
-  const result = await processPhotoAI(safeName, photoId, tenant.slug);
-
-  res.set({
-    "Cache-Control": "no-cache",
-    "Content-Type": "image/jpeg",
-  });
-  res.sendFile(result.path);
 });
 
 // ── Clear image cache ──────────────────────────────────

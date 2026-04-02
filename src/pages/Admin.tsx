@@ -7117,6 +7117,213 @@ function FinanceView() {
         );
       })()}
 
+      {/* ── Advanced Analytics ─────────────────────────────────── */}
+      {payments.filter(p => p.status === "completed").length > 0 && (() => {
+        const bookings = getBookings();
+
+        // ── Revenue by booking source ──────────────────────────
+        const SOURCE_LABELS_ADV: Record<string, string> = {
+          direct: "Direct", instagram: "Instagram", referral: "Referral",
+          facebook: "Facebook", tiktok: "TikTok", convention: "Convention",
+          repeat: "Returning", email: "Email", other: "Other",
+        };
+        const SOURCE_COLORS_ADV: Record<string, string> = {
+          direct: "#6366f1", instagram: "#e1306c", referral: "#10b981",
+          facebook: "#1877f2", tiktok: "#69c9d0", convention: "#f59e0b",
+          repeat: "#8b5cf6", email: "#3b82f6", other: "#71717a",
+        };
+        const revenueBySource: Record<string, { count: number; rev: number }> = {};
+        for (const bk of bookings) {
+          if (!bk.paymentAmount || bk.status === "cancelled") continue;
+          const src = (bk.source as string) || "direct";
+          if (!revenueBySource[src]) revenueBySource[src] = { count: 0, rev: 0 };
+          revenueBySource[src].count++;
+          revenueBySource[src].rev += bk.paymentAmount;
+        }
+        const srcEntries = Object.entries(revenueBySource).sort((a, b) => b[1].rev - a[1].rev);
+        const maxSrcRev = srcEntries.length > 0 ? Math.max(...srcEntries.map(e => e[1].rev), 1) : 1;
+
+        // ── Quarterly trends (last 8 quarters) ────────────────
+        const now = new Date();
+        const quarters = Array.from({ length: 8 }, (_, i) => {
+          const offset = 7 - i;
+          const qIdx = now.getMonth() < 3 ? 0 : now.getMonth() < 6 ? 1 : now.getMonth() < 9 ? 2 : 3;
+          const totalQ = now.getFullYear() * 4 + qIdx - offset;
+          const yr = Math.floor(totalQ / 4);
+          const q = totalQ % 4;
+          const startMonth = q * 3;
+          const endMonth = startMonth + 2;
+          const qLabel = `Q${q + 1}'${String(yr).slice(-2)}`;
+          const rev = payments.filter(p => {
+            if (p.status !== "completed") return false;
+            const d = new Date(p.date);
+            return d.getFullYear() === yr && d.getMonth() >= startMonth && d.getMonth() <= endMonth;
+          }).reduce((s, p) => s + p.amount, 0);
+          const bkCount = bookings.filter(b => {
+            const d = new Date(b.date);
+            return d.getFullYear() === yr && d.getMonth() >= startMonth && d.getMonth() <= endMonth && b.status !== "cancelled";
+          }).length;
+          return { label: qLabel, rev, bkCount };
+        });
+        const maxQRev = Math.max(...quarters.map(q => q.rev), 1);
+
+        // ── Expenses vs revenue (monthly, last 6 months) ───────
+        const allExpenses = (() => { try { return getExpenses(); } catch { return []; } })();
+        const last6 = Array.from({ length: 6 }, (_, i) => {
+          const d = new Date(now.getFullYear(), now.getMonth() - (5 - i), 1);
+          const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+          const label = d.toLocaleDateString("en-AU", { month: "short", year: "2-digit" });
+          const rev = payments.filter(p => p.status === "completed" && p.date?.startsWith(key)).reduce((s, p) => s + p.amount, 0);
+          const exp = allExpenses.filter((e: Expense) => e.date?.startsWith(key)).reduce((s: number, e: Expense) => s + e.amount, 0);
+          return { label, rev, exp, net: rev - exp };
+        });
+        const maxRevExp = Math.max(...last6.map(m => Math.max(m.rev, m.exp)), 1);
+
+        // ── CSV export helper ──────────────────────────────────
+        const exportCSV = () => {
+          const rows = [
+            ["Date", "Client", "Album", "Method", "Amount", "Status", "Description"],
+            ...payments.map(p => [
+              p.date ? new Date(p.date).toLocaleDateString("en-AU") : "",
+              p.clientName || "",
+              p.albumTitle || "",
+              p.method || "",
+              p.amount.toFixed(2),
+              p.status || "",
+              p.description || "",
+            ])
+          ];
+          const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
+          const blob = new Blob([csv], { type: "text/csv" });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = `photoflow-payments-${new Date().toISOString().slice(0, 10)}.csv`;
+          a.click();
+          URL.revokeObjectURL(url);
+        };
+
+        // ── Bookings CSV export ────────────────────────────────
+        const exportBookingsCSV = () => {
+          const rows = [
+            ["Date", "Client", "Email", "Instagram", "Type", "Duration", "Status", "Payment", "Amount", "Source"],
+            ...bookings.map(b => [
+              b.date || "",
+              b.clientName || "",
+              b.clientEmail || "",
+              b.instagramHandle || "",
+              b.type || "",
+              String(b.duration || ""),
+              b.status || "",
+              b.paymentStatus || "",
+              b.paymentAmount ? b.paymentAmount.toFixed(2) : "0",
+              (b.source as string) || "direct",
+            ])
+          ];
+          const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
+          const blob = new Blob([csv], { type: "text/csv" });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = `photoflow-bookings-${new Date().toISOString().slice(0, 10)}.csv`;
+          a.click();
+          URL.revokeObjectURL(url);
+        };
+
+        return (
+          <div className="glass-panel rounded-xl p-5 space-y-6">
+            <div className="flex items-center justify-between flex-wrap gap-3">
+              <h3 className="font-display text-base text-foreground flex items-center gap-2">
+                <TrendingUp className="w-4 h-4 text-primary" /> Advanced Analytics
+              </h3>
+              <div className="flex items-center gap-2">
+                <Button size="sm" variant="outline" onClick={exportBookingsCSV} className="gap-1.5 font-body text-xs border-border text-foreground">
+                  <Download className="w-3.5 h-3.5" /> Bookings CSV
+                </Button>
+                <Button size="sm" variant="outline" onClick={exportCSV} className="gap-1.5 font-body text-xs border-border text-foreground">
+                  <Download className="w-3.5 h-3.5" /> Payments CSV
+                </Button>
+              </div>
+            </div>
+
+            {/* Revenue by booking source */}
+            {srcEntries.length > 0 && (
+              <div>
+                <p className="text-[10px] font-body text-muted-foreground tracking-wider uppercase mb-3">Revenue by Booking Source</p>
+                <div className="space-y-2.5">
+                  {srcEntries.map(([src, data]) => {
+                    const pct = Math.round((data.rev / maxSrcRev) * 100);
+                    const color = SOURCE_COLORS_ADV[src] || "#71717a";
+                    return (
+                      <div key={src} className="flex items-center gap-3">
+                        <span className="text-xs font-body text-muted-foreground w-24 shrink-0">{SOURCE_LABELS_ADV[src] || src}</span>
+                        <div className="flex-1 h-2 rounded-full bg-secondary overflow-hidden">
+                          <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, backgroundColor: color }} />
+                        </div>
+                        <span className="text-xs font-body text-foreground w-16 text-right shrink-0">${data.rev.toFixed(0)}</span>
+                        <span className="text-[10px] font-body text-muted-foreground/60 w-8 text-right shrink-0">{data.count}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+                <p className="text-[10px] font-body text-muted-foreground/50 mt-1.5">Revenue · Booking count per source</p>
+              </div>
+            )}
+
+            {/* Quarterly trends */}
+            <div>
+              <p className="text-[10px] font-body text-muted-foreground tracking-wider uppercase mb-3">Quarterly Revenue Trend</p>
+              <div className="flex items-end gap-1.5 h-24">
+                {quarters.map((q, i) => (
+                  <div key={i} className="flex-1 flex flex-col items-center gap-1 group relative">
+                    <div
+                      className="w-full rounded-t bg-primary/50 group-hover:bg-primary transition-colors"
+                      style={{ height: `${Math.max(2, Math.round((q.rev / maxQRev) * 100))}%` }}
+                    />
+                    {q.rev > 0 && (
+                      <div className="absolute -top-8 left-1/2 -translate-x-1/2 hidden group-hover:flex flex-col items-center whitespace-nowrap text-[9px] font-body bg-secondary border border-border rounded px-1.5 py-0.5 text-foreground z-10 pointer-events-none">
+                        <span>${q.rev.toFixed(0)}</span>
+                        <span className="text-muted-foreground">{q.bkCount} bk</span>
+                      </div>
+                    )}
+                    <span className="text-[8px] font-body text-muted-foreground/50">{q.label}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Expenses vs Revenue (last 6 months) */}
+            {allExpenses.length > 0 && (
+              <div>
+                <p className="text-[10px] font-body text-muted-foreground tracking-wider uppercase mb-3">Revenue vs Expenses — Last 6 Months</p>
+                <div className="flex items-end gap-2 h-24">
+                  {last6.map((m, i) => (
+                    <div key={i} className="flex-1 flex flex-col items-center gap-1 group relative">
+                      <div className="w-full flex items-end gap-0.5" style={{ height: "100%" }}>
+                        <div className="flex-1 rounded-t bg-green-500/50 group-hover:bg-green-500/70 transition-colors" style={{ height: `${Math.max(2, Math.round((m.rev / maxRevExp) * 100))}%`, alignSelf: "flex-end" }} />
+                        <div className="flex-1 rounded-t bg-red-500/40 group-hover:bg-red-500/60 transition-colors" style={{ height: `${Math.max(2, Math.round((m.exp / maxRevExp) * 100))}%`, alignSelf: "flex-end" }} />
+                      </div>
+                      {(m.rev > 0 || m.exp > 0) && (
+                        <div className="absolute -top-10 left-1/2 -translate-x-1/2 hidden group-hover:flex flex-col items-center whitespace-nowrap text-[9px] font-body bg-secondary border border-border rounded px-1.5 py-0.5 text-foreground z-10 pointer-events-none gap-0.5">
+                          <span className="text-green-400">Rev ${m.rev.toFixed(0)}</span>
+                          <span className="text-red-400">Exp ${m.exp.toFixed(0)}</span>
+                        </div>
+                      )}
+                      <span className="text-[8px] font-body text-muted-foreground/50">{m.label}</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="flex items-center gap-4 mt-2">
+                  <div className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-green-500/60" /><span className="text-[10px] font-body text-muted-foreground">Revenue</span></div>
+                  <div className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-red-500/50" /><span className="text-[10px] font-body text-muted-foreground">Expenses</span></div>
+                  <span className="text-[10px] font-body text-muted-foreground/50 ml-auto">Net last 6mo: <span className={last6.reduce((s, m) => s + m.net, 0) >= 0 ? "text-green-400" : "text-red-400"}>${last6.reduce((s, m) => s + m.net, 0).toFixed(0)}</span></span>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
       <div className="glass-panel rounded-xl overflow-hidden">
         <div className="p-4 border-b border-border">
           <h3 className="font-display text-base text-foreground">Payment History</h3>
