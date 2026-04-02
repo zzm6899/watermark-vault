@@ -656,4 +656,30 @@ async function sendInvoicePaidEmail(invoice, shareUrl) {
   }
 }
 
-module.exports = { registerRoutes, getTransporter, getFromAddress, buildTenantTransporter, getTenantFromAddress, sendBookingConfirmationEmail, sendInvoicePaidEmail, buildReminderEmailHtml };
+/**
+ * Send an email using the provided SMTP configuration.
+ * This is a low-level helper used by routes that need to send a one-off email
+ * with explicit SMTP credentials (e.g. tenant email send, album delivery).
+ *
+ * @param {{ host, port, user, pass, secure, from }} smtpConfig
+ * @param {{ to, subject, html, text }} message
+ */
+async function sendEmail(smtpConfig, message) {
+  const { host, port, user, pass, secure, from } = smtpConfig || {};
+  if (!host || !user || !pass) throw new Error("SMTP not configured");
+  const transporter = nodemailer.createTransport({
+    host,
+    port: Number(port) || 587,
+    secure: !!secure,
+    auth: { user, pass },
+  });
+  return transporter.sendMail({
+    from: from || user,
+    to: message.to,
+    subject: message.subject,
+    html: message.html,
+    text: message.text,
+  });
+}
+
+module.exports = { registerRoutes, getTransporter, getFromAddress, buildTenantTransporter, getTenantFromAddress, sendBookingConfirmationEmail, sendInvoicePaidEmail, buildReminderEmailHtml, sendEmail };
