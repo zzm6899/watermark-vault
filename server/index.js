@@ -1523,7 +1523,8 @@ app.get("/api/photo/:filename/original", async (req, res) => {
 
 // (Legacy processPhotoForAI / processPhotoAI helpers removed — logic now inline in the GET endpoint below)
 
-app.get("/api/photo/:filename/ai-enhanced", async (req, res) => {
+const aiEnhanceLimiter = rateLimit({ windowMs: 60_000, max: 30, standardHeaders: true, legacyHeaders: false, message: { error: "Too many enhancement requests — please wait" } });
+app.get("/api/photo/:filename/ai-enhanced", aiEnhanceLimiter, requireAuth, async (req, res) => {
   // Strip any query-string that may have been incorporated into the filename (e.g. "photo.jpg?tenant=slug")
   const safeName = path.basename(req.params.filename.split("?")[0]);
   const filepath = path.join(UPLOADS_DIR, safeName);
@@ -1540,9 +1541,6 @@ app.get("/api/photo/:filename/ai-enhanced", async (req, res) => {
     return res.status(404).send("Not found");
   }
 
-  const { sessionKey, albumId } = req.query;
-  if (!sessionKey || !albumId) return res.status(403).send("Forbidden");
-
   // Use a cache key based on filename so we avoid re-processing on every request
   const photoId = path.basename(safeName, path.extname(safeName));
   const cachedPath = path.join(CACHE_DIR, `${photoId}-ai-enhanced.jpg`);
@@ -1554,11 +1552,13 @@ app.get("/api/photo/:filename/ai-enhanced", async (req, res) => {
       return res.sendFile(cachedPath);
     }
 
-    // Apply Sharp-based auto-enhancement pipeline
+    // Apply Sharp-based auto-enhancement pipeline — gentle brightness/colour lift
+    // with a conservative CLAHE pass (large tiles, low clip) to avoid the
+    // over-processed "illustration" look caused by small tiles and high maxSlope.
     await sharp(filepath)
-      .modulate({ brightness: 1.05, saturation: 1.15 })
-      .sharpen({ sigma: 0.7, m1: 0.5, m2: 0.5 })
-      .clahe({ width: 8, height: 8, maxSlope: 3 })
+      .modulate({ brightness: 1.02, saturation: 1.08 })
+      .sharpen({ sigma: 0.5, m1: 0.3, m2: 0.3 })
+      .clahe({ width: 64, height: 64, maxSlope: 1.5 })
       .jpeg({ quality: 92, progressive: true })
       .toFile(cachedPath);
 

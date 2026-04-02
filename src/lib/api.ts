@@ -2010,7 +2010,8 @@ export async function getExpenses(): Promise<import("./types").Expense[]> {
   try {
     const res = await fetch("/api/expenses", { headers: adminAuthHeaders() });
     if (!res.ok) return [];
-    return res.json();
+    const data = await res.json();
+    return Array.isArray(data) ? data : [];
   } catch { return []; }
 }
 
