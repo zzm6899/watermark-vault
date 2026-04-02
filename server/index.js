@@ -93,7 +93,7 @@ async function seedSuperAdminIfNeeded() {
   console.log(`✅ Super admin '${username}' bootstrapped from SUPER_ADMIN_USERNAME env var`);
 }
 function readDbDirect() {
-  let dbData: any;
+  let dbData;
   try {
     dbData = JSON.parse(fs.readFileSync(DB_FILE, "utf-8"));
   } catch (err) {
