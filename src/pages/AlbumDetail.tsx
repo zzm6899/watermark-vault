@@ -588,23 +588,24 @@ export default function AlbumDetail() {
     const isExpired = nowMs >= expiresAtMs;
 
     if (isExpired || isRecentlyExpired) {
-    return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
-        <div className="glass-panel rounded-xl p-8 max-w-sm w-full text-center">
-          <Lock className="w-8 h-8 text-muted-foreground/40 mx-auto mb-4" />
-          <h2 className="font-display text-xl text-foreground mb-2">Gallery Expired</h2>
-          <p className="text-sm font-body text-muted-foreground">
-            This gallery was available until{" "}
-            <span className="text-foreground font-medium">
-              {expiresAtDate.toLocaleDateString("en-AU", { day: "numeric", month: "long", year: "numeric" })}
-              {isExpired && " at midnight"}
-            </span>
-            {" "}and is no longer accessible.
-          </p>
-          <p className="text-xs font-body text-muted-foreground/60 mt-3">Please contact your photographer if you believe this is an error.</p>
+      return (
+        <div className="min-h-screen bg-background flex items-center justify-center">
+          <div className="glass-panel rounded-xl p-8 max-w-sm w-full text-center">
+            <Lock className="w-8 h-8 text-muted-foreground/40 mx-auto mb-4" />
+            <h2 className="font-display text-xl text-foreground mb-2">Gallery Expired</h2>
+            <p className="text-sm font-body text-muted-foreground">
+              This gallery was available until{" "}
+              <span className="text-foreground font-medium">
+                {expiresAtDate.toLocaleDateString("en-AU", { day: "numeric", month: "long", year: "numeric" })}
+                {isExpired && " at midnight"}
+              </span>
+              {" "}and is no longer accessible.
+            </p>
+            <p className="text-xs font-body text-muted-foreground/60 mt-3">Please contact your photographer if you believe this is an error.</p>
+          </div>
         </div>
-      </div>
-    );
+      );
+    }
   }
 
   if (!accessGranted) {
