@@ -8,8 +8,17 @@ const sharp = require("sharp");
 const archiver = require("archiver");
 const rateLimit = require("express-rate-limit");
 const { uploadFilesToFtp, moveFileOnFtp, testFtpConnection, sanitizeFolderName, sanitizeRemoteFilename } = require("./ftp");
+const { Client: FtpClient } = require("basic-ftp");
 const { registerRoutes: registerGoogleCalendarRoutes } = require("./google-calendar");
-const { registerRoutes: registerEmailRoutes } = require("./email");
+const {
+  registerRoutes: registerEmailRoutes,
+  sendEmail,
+  buildReminderEmailHtml,
+  getTransporter,
+  getFromAddress,
+  buildTenantTransporter,
+  getTenantFromAddress,
+} = require("./email");
 const { registerRoutes: registerStripeRoutes, registerTenantStripeRoutes } = require("./stripe");
 const { registerRoutes: registerGoogleSheetsRoutes } = require("./google-sheets");
 const {
@@ -50,23 +59,27 @@ if (!fs.existsSync(DB_FILE)) fs.writeFileSync(DB_FILE, JSON.stringify({}));
 const crypto = require("crypto");
 let bcrypt;
 try { bcrypt = require("bcryptjs"); } catch { bcrypt = null; }
+if (!bcrypt) {
+  console.error("FATAL: bcryptjs is not installed. Password hashing is unavailable. Run: npm install bcryptjs");
+  process.exit(1);
+}
 const BCRYPT_ROUNDS = 12;
 function sha256(str) {
   return crypto.createHash("sha256").update(str, "utf8").digest("hex");
 }
-/** Hash a value with bcrypt (if available), storing it as "$2b$..." so we can detect the scheme. */
+/** Hash a value with bcrypt, storing it as "$2b$..." so we can detect the scheme. */
 async function bcryptHash(value) {
-  if (!bcrypt) return value; // bcryptjs not yet installed — fall back to plain sha256 hash
+  // bcrypt is guaranteed to be available — startup aborts if it's missing
   return bcrypt.hash(value, BCRYPT_ROUNDS);
 }
 /** Verify an incoming SHA-256 hash against a stored hash (bcrypt or legacy plain sha256). */
 async function verifyPasswordHash(incoming, stored) {
   if (!stored) return false;
-  if (bcrypt && stored.startsWith("$2")) {
+  if (stored.startsWith("$2")) {
     // bcrypt hash — use constant-time compare
     return bcrypt.compare(incoming, stored);
   }
-  // Legacy plain sha256 or "fb_" fallback hash — direct string compare
+  // Legacy plain sha256 — direct string compare
   try {
     const a = Buffer.from(incoming);
     const b = Buffer.from(stored);
@@ -176,7 +189,13 @@ process.on("SIGINT",  () => { _flushDbSync(); process.exit(0); });
 // Bootstrap super admin from env vars (runs after writeDb is available)
 seedSuperAdminIfNeeded().catch(err => console.error("seedSuperAdminIfNeeded error:", err));
 
-app.use(cors());
+// Restrict CORS to explicit origins when ALLOWED_ORIGINS is set (comma-separated list).
+// If unset, the server falls back to a closed policy (no cross-origin access),
+// which is safe for same-origin deployments behind a reverse proxy.
+const _corsOrigins = process.env.ALLOWED_ORIGINS
+  ? process.env.ALLOWED_ORIGINS.split(",").map(s => s.trim()).filter(Boolean)
+  : false;
+app.use(cors({ origin: _corsOrigins }));
 // Compress all responses (JSON, HTML, JS, CSS, etc.) — reduces transfer size by ~70-90%
 app.use(compression());
 // Skip JSON body parsing for the Stripe webhook route — it requires the raw Buffer for
@@ -240,28 +259,33 @@ function getStorageUsage() {
   };
 }
 
+// ── authenticateAdmin ────────────────────────────────────────────────────────
+// Shared helper that decodes the Basic auth header and validates the admin
+// credentials.  Returns true on success so it can be reused by both the
+// requireAuth middleware and any route that needs inline auth (e.g. /api/storage).
+async function authenticateAdmin(req) {
+  const authHeader = req.headers.authorization || "";
+  if (!authHeader.startsWith("Basic ")) return false;
+  try {
+    const decoded = Buffer.from(authHeader.slice(6), "base64").toString("utf-8");
+    const colonIdx = decoded.indexOf(":");
+    if (colonIdx === -1) return false;
+    const user = decoded.slice(0, colonIdx);
+    const hash = decoded.slice(colonIdx + 1);
+    const db = readDb();
+    const adminCreds = dbGet(db, DB_KEYS.ADMIN, null);
+    if (!adminCreds || adminCreds.username !== user) return false;
+    return verifyPasswordHash(hash, adminCreds.passwordHash);
+  } catch {
+    return false;
+  }
+}
+
 // /api/storage returns sensitive disk metadata (file names, sizes, paths).
 // Restrict it to callers that include the admin password hash so it cannot be
 // scraped by anonymous visitors who know the URL.
 app.get("/api/storage", async (req, res) => {
-  const authHeader = req.headers.authorization || "";
-  if (authHeader.startsWith("Basic ")) {
-    try {
-      const decoded = Buffer.from(authHeader.slice(6), "base64").toString("utf-8");
-      const colonIdx = decoded.indexOf(":");
-      if (colonIdx !== -1) {
-        const user = decoded.slice(0, colonIdx);
-        const hash = decoded.slice(colonIdx + 1);
-        const db = readDb();
-        const adminRaw = db["wv_admin"];
-        const adminCreds = adminRaw ? (typeof adminRaw === "string" ? JSON.parse(adminRaw) : adminRaw) : null;
-        const passwordOk = adminCreds ? await verifyPasswordHash(hash, adminCreds.passwordHash) : false;
-        if (adminCreds && adminCreds.username === user && passwordOk) {
-          return res.json(getStorageUsage());
-        }
-      }
-    } catch { /* fall through to 401 */ }
-  }
+  if (await authenticateAdmin(req)) return res.json(getStorageUsage());
   // Return a minimal response for unauthenticated callers — just enough for the
   // health indicator, without exposing filenames or disk paths.
   return res.status(401).json({ error: "Authentication required" });
@@ -280,6 +304,41 @@ const ALBUMS_KEY        = "wv_albums";
 const PHOTO_LIB_KEY     = "wv_photo_library";
 const TENANT_ALBUMS_SUFFIX   = "_wv_albums";
 const TENANT_PHOTO_LIB_SUFFIX = "_wv_photo_library";
+
+// ── Well-known DB key constants ──────────────────────────────────────────────
+// Centralise magic strings so they can be referenced consistently and checked
+// at a glance rather than scattered as opaque literals throughout the file.
+const DB_KEYS = {
+  ADMIN:        "wv_admin",
+  SETTINGS:     "wv_settings",
+  ALBUMS:       ALBUMS_KEY,
+  PHOTO_LIB:    PHOTO_LIB_KEY,
+  BOOKINGS:     "wv_bookings",
+  ENQUIRIES:    "wv_enquiries",
+  INVOICES:     "wv_invoices",
+  INSTALMENTS:  "wv_instalments",
+  FTP_SETTINGS: "wv_ftp_settings",
+  SETUP_COMPLETE: "wv_setup_complete",
+};
+
+// ── Generic DB value reader ──────────────────────────────────────────────────
+// Centralises the repeated pattern of reading a key that may be stored as a
+// JSON string or a plain object/array, and returning a safe fallback value.
+/**
+ * @param {object} db - The database object from readDb()
+ * @param {string} key - The DB key to read
+ * @param {*} [fallback=[]] - Value returned when the key is absent or falsy
+ * @returns {*} Parsed value or fallback
+ */
+function dbGet(db, key, fallback = []) {
+  const raw = db[key];
+  if (raw === undefined || raw === null || raw === "") return fallback;
+  if (typeof raw === "string") {
+    try { return JSON.parse(raw); } catch { return fallback; }
+  }
+  return raw;
+}
+
 
 function _stripBakedFromPhotos(photos) {
   if (!Array.isArray(photos)) return photos;
@@ -346,24 +405,7 @@ app.post("/api/auth/verify", authLimiter, async (req, res) => {
 // Validates Basic auth header containing base64(username:passwordHash).
 // Used to protect admin-only API routes.
 async function requireAuth(req, res, next) {
-  const authHeader = req.headers.authorization || "";
-  if (authHeader.startsWith("Basic ")) {
-    try {
-      const decoded = Buffer.from(authHeader.slice(6), "base64").toString("utf-8");
-      const colonIdx = decoded.indexOf(":");
-      if (colonIdx !== -1) {
-        const user = decoded.slice(0, colonIdx);
-        const hash = decoded.slice(colonIdx + 1);
-        const db = readDb();
-        const adminRaw = db["wv_admin"];
-        const adminCreds = adminRaw ? (typeof adminRaw === "string" ? JSON.parse(adminRaw) : adminRaw) : null;
-        if (adminCreds && adminCreds.username === user) {
-          const passwordOk = await verifyPasswordHash(hash, adminCreds.passwordHash);
-          if (passwordOk) return next();
-        }
-      }
-    } catch { /* fall through to 401 */ }
-  }
+  if (await authenticateAdmin(req)) return next();
   return res.status(401).json({ error: "Authentication required" });
 }
 
@@ -642,7 +684,6 @@ app.post("/api/ftp/upload-album/:albumSlug", ftpUploadAlbumLimiter, async (req, 
   const uploadedPhotoIndices = new Set();
 
   const { ftpHost, ftpPort = 21, ftpUser = "anonymous", ftpPassword = "", ftpRemotePath = "/" } = ftpSettings;
-  const { Client: FtpClient } = require("basic-ftp");
   const client = new FtpClient();
   client.ftp.verbose = false;
   // Force IPv4 passive mode (PASV) instead of EPSV so that FTP servers that
@@ -3156,7 +3197,6 @@ app.post("/api/tenant/:slug/email/send", tenantLimiter, async (req, res) => {
   const db = readDb();
   const raw = db[`t_${slug}_wv_tenant_settings`];
   const tenantSettings = raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : {};
-  const { buildTenantTransporter, getTenantFromAddress, getTransporter, getFromAddress } = require("./email");
   // Prefer tenant SMTP, fall back to global SMTP
   const t = buildTenantTransporter(tenantSettings) || getTransporter();
   const from = buildTenantTransporter(tenantSettings) ? getTenantFromAddress(tenantSettings) : getFromAddress();
@@ -3737,7 +3777,6 @@ app.get("*", (_req, res) => {
 // trigger values: "after_booking" | "before_event" | "after_event" | "payment_overdue"
 // reminderType: "payment" | "booking"
 
-const { getTransporter, getFromAddress, buildTenantTransporter, getTenantFromAddress } = require("./email");
 const { randomUUID: ruuid } = require("crypto");
 
 function readAutomationRules() {
@@ -3914,7 +3953,6 @@ async function runEmailAutomations() {
 </body></html>`;
       } else {
         // Fall back to the built-in reminder HTML builder from email.js
-        const { buildReminderEmailHtml } = require("./email");
         if (buildReminderEmailHtml) {
           html = buildReminderEmailHtml({
             clientName,
@@ -4697,8 +4735,17 @@ app.put("/api/instalments/:id", requireAuth, (req, res) => {
   const instalments = db["wv_instalments"] ? (typeof db["wv_instalments"] === "string" ? JSON.parse(db["wv_instalments"]) : db["wv_instalments"]) : [];
   const idx = instalments.findIndex(i => i.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: "Not found" });
-  instalments[idx] = { ...instalments[idx], ...req.body, id: instalments[idx].id };
-  if (req.body.status === "paid" && !instalments[idx].paidAt) {
+  // Only allow updating the fields a client is permitted to change — prevent
+  // injection of arbitrary fields (e.g. bookingId, paidAt, id) via req.body spread.
+  const { amount, dueDate, note, status, invoiceId } = req.body;
+  const allowedUpdate = {};
+  if (amount    !== undefined) allowedUpdate.amount    = Number(amount) || 0;
+  if (dueDate   !== undefined) allowedUpdate.dueDate   = String(dueDate);
+  if (note      !== undefined) allowedUpdate.note      = note;
+  if (status    !== undefined) allowedUpdate.status    = String(status);
+  if (invoiceId !== undefined) allowedUpdate.invoiceId = invoiceId;
+  instalments[idx] = { ...instalments[idx], ...allowedUpdate, id: instalments[idx].id };
+  if (allowedUpdate.status === "paid" && !instalments[idx].paidAt) {
     instalments[idx].paidAt = new Date().toISOString();
   }
   db["wv_instalments"] = instalments;
@@ -4785,7 +4832,6 @@ app.post("/api/albums/:id/deliver", requireAuth, async (req, res) => {
   const result = { ok: true, deliveredAt: now };
   if (album.clientEmail) {
     try {
-      const { sendEmail } = require("./email");
       const galleryUrl = `${req.headers.origin || ""}/gallery/${album.id}`;
       const accessCode = album.accessCode ? `\nAccess code: ${album.accessCode}` : "";
       await sendEmail(

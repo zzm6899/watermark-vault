@@ -656,4 +656,19 @@ async function sendInvoicePaidEmail(invoice, shareUrl) {
   }
 }
 
-module.exports = { registerRoutes, getTransporter, getFromAddress, buildTenantTransporter, getTenantFromAddress, sendBookingConfirmationEmail, sendInvoicePaidEmail, buildReminderEmailHtml };
+/**
+ * Send an email using an ad-hoc SMTP config object.
+ * @param {{ host: string, port: string|number, user: string, pass: string, secure: boolean, from: string }} config
+ * @param {{ to: string, subject: string, html?: string, text?: string }} message
+ */
+async function sendEmail({ host, port, user, pass, secure = false, from }, { to, subject, html, text }) {
+  const t = nodemailer.createTransport({
+    host,
+    port: Number(port) || 587,
+    secure,
+    auth: { user, pass },
+  });
+  return t.sendMail({ from: from || user, to, subject, html, text });
+}
+
+module.exports = { registerRoutes, getTransporter, getFromAddress, buildTenantTransporter, getTenantFromAddress, sendBookingConfirmationEmail, sendInvoicePaidEmail, buildReminderEmailHtml, sendEmail };
