@@ -6826,6 +6826,8 @@ function FinanceView() {
   const [invoicesState] = React.useState(() => getInvoices());
   const [deletingId, setDeletingId] = React.useState<string | null>(null);
   const [expandedDownloadKeys, setExpandedDownloadKeys] = React.useState<Set<string>>(new Set());
+  const [financeExpenses, setFinanceExpenses] = React.useState<Expense[]>([]);
+  React.useEffect(() => { getExpenses().then(setFinanceExpenses).catch(() => {}); }, []);
 
   const toggleDownloadThumbs = (key: string) => {
     setExpandedDownloadKeys(prev => {
@@ -7168,7 +7170,7 @@ function FinanceView() {
         const maxQRev = Math.max(...quarters.map(q => q.rev), 1);
 
         // ── Expenses vs revenue (monthly, last 6 months) ───────
-        const allExpenses = (() => { try { return getExpenses(); } catch { return []; } })();
+        const allExpenses = financeExpenses;
         const last6 = Array.from({ length: 6 }, (_, i) => {
           const d = new Date(now.getFullYear(), now.getMonth() - (5 - i), 1);
           const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
