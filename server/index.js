@@ -67,6 +67,16 @@ const BCRYPT_ROUNDS = 12;
 function sha256(str) {
   return crypto.createHash("sha256").update(str, "utf8").digest("hex");
 }
+/** Escape special HTML characters to prevent XSS when interpolating user-provided
+ *  strings into HTML email bodies or any other HTML content. */
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
 /** Hash a value with bcrypt, storing it as "$2b$..." so we can detect the scheme. */
 async function bcryptHash(value) {
   // bcrypt is guaranteed to be available — startup aborts if it's missing
@@ -190,12 +200,13 @@ process.on("SIGINT",  () => { _flushDbSync(); process.exit(0); });
 seedSuperAdminIfNeeded().catch(err => console.error("seedSuperAdminIfNeeded error:", err));
 
 // Restrict CORS to explicit origins when ALLOWED_ORIGINS is set (comma-separated list).
-// If unset, the server falls back to a closed policy (no cross-origin access),
-// which is safe for same-origin deployments behind a reverse proxy.
-const _corsOrigins = process.env.ALLOWED_ORIGINS
+// When unset, `origin: false` tells the cors middleware to omit CORS headers entirely,
+// which prevents all cross-origin access — safe for same-origin (reverse-proxy) deployments.
+// Cross-origin deployments (e.g. separate CDN frontend) must set ALLOWED_ORIGINS.
+const corsOrigins = process.env.ALLOWED_ORIGINS
   ? process.env.ALLOWED_ORIGINS.split(",").map(s => s.trim()).filter(Boolean)
   : false;
-app.use(cors({ origin: _corsOrigins }));
+app.use(cors({ origin: corsOrigins }));
 // Compress all responses (JSON, HTML, JS, CSS, etc.) — reduces transfer size by ~70-90%
 app.use(compression());
 // Skip JSON body parsing for the Stripe webhook route — it requires the raw Buffer for
@@ -4737,13 +4748,39 @@ app.put("/api/instalments/:id", requireAuth, (req, res) => {
   if (idx === -1) return res.status(404).json({ error: "Not found" });
   // Only allow updating the fields a client is permitted to change — prevent
   // injection of arbitrary fields (e.g. bookingId, paidAt, id) via req.body spread.
+  const VALID_STATUSES = ["pending", "paid", "overdue", "waived"];
   const { amount, dueDate, note, status, invoiceId } = req.body;
   const allowedUpdate = {};
-  if (amount    !== undefined) allowedUpdate.amount    = Number(amount) || 0;
-  if (dueDate   !== undefined) allowedUpdate.dueDate   = String(dueDate);
-  if (note      !== undefined) allowedUpdate.note      = note;
-  if (status    !== undefined) allowedUpdate.status    = String(status);
-  if (invoiceId !== undefined) allowedUpdate.invoiceId = invoiceId;
+  if (amount !== undefined) {
+    const parsed = Number(amount);
+    // Zero-value instalments are allowed (e.g. a waived instalment recorded at $0)
+    if (isNaN(parsed) || parsed < 0) return res.status(400).json({ error: "amount must be a non-negative number" });
+    allowedUpdate.amount = parsed;
+  }
+  if (dueDate !== undefined) {
+    if (typeof dueDate !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(dueDate) || isNaN(new Date(dueDate).getTime())) {
+      return res.status(400).json({ error: "dueDate must be a valid date string in YYYY-MM-DD format" });
+    }
+    allowedUpdate.dueDate = dueDate;
+  }
+  if (note !== undefined) {
+    if (note !== null && (typeof note !== "string" || note.length > 1000)) {
+      return res.status(400).json({ error: "note must be a string of at most 1000 characters" });
+    }
+    allowedUpdate.note = note;
+  }
+  if (status !== undefined) {
+    if (!VALID_STATUSES.includes(status)) {
+      return res.status(400).json({ error: `status must be one of: ${VALID_STATUSES.join(", ")}` });
+    }
+    allowedUpdate.status = status;
+  }
+  if (invoiceId !== undefined) {
+    if (invoiceId !== null && typeof invoiceId !== "string") {
+      return res.status(400).json({ error: "invoiceId must be a string or null" });
+    }
+    allowedUpdate.invoiceId = invoiceId;
+  }
   instalments[idx] = { ...instalments[idx], ...allowedUpdate, id: instalments[idx].id };
   if (allowedUpdate.status === "paid" && !instalments[idx].paidAt) {
     instalments[idx].paidAt = new Date().toISOString();
@@ -4832,14 +4869,20 @@ app.post("/api/albums/:id/deliver", requireAuth, async (req, res) => {
   const result = { ok: true, deliveredAt: now };
   if (album.clientEmail) {
     try {
-      const galleryUrl = `${req.headers.origin || ""}/gallery/${album.id}`;
+      // Validate the origin to prevent javascript: or data: URLs from being
+      // injected into the gallery link via a crafted Origin request header.
+      const rawOrigin = req.headers.origin || "";
+      const safeOrigin = /^https?:\/\//i.test(rawOrigin) ? rawOrigin : "";
+      const galleryUrl = `${safeOrigin}/gallery/${album.id}`;
       const accessCode = album.accessCode ? `\nAccess code: ${album.accessCode}` : "";
+      const clientNameSafe = escapeHtml(album.clientName || "there");
+      const titleSafe = escapeHtml(album.title);
       await sendEmail(
         { host: process.env.SMTP_HOST, port: process.env.SMTP_PORT, user: process.env.SMTP_USER, pass: process.env.SMTP_PASS, secure: process.env.SMTP_SECURE === "true", from: process.env.SMTP_FROM },
         {
           to: album.clientEmail,
           subject: `Your gallery is ready — ${album.title}`,
-          html: `<p>Hi ${album.clientName || "there"},</p><p>Your photo gallery "<strong>${album.title}</strong>" is ready for download.</p><p><a href="${galleryUrl}">View & Download Gallery</a>${accessCode}</p>`,
+          html: `<p>Hi ${clientNameSafe},</p><p>Your photo gallery "<strong>${titleSafe}</strong>" is ready for download.</p><p><a href="${galleryUrl}">View &amp; Download Gallery</a>${escapeHtml(accessCode)}</p>`,
           text: `Hi ${album.clientName || "there"},\n\nYour gallery "${album.title}" is ready!\n${galleryUrl}${accessCode}`,
         }
       );
