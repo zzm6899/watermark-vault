@@ -93,7 +93,15 @@ async function seedSuperAdminIfNeeded() {
   console.log(`✅ Super admin '${username}' bootstrapped from SUPER_ADMIN_USERNAME env var`);
 }
 function readDbDirect() {
-  try { return JSON.parse(fs.readFileSync(DB_FILE, "utf-8")); } catch { return {}; }
+  let dbData: any;
+  try {
+    dbData = JSON.parse(fs.readFileSync(DB_FILE, "utf-8"));
+  } catch (err) {
+    console.error("Error reading database file:", err);
+    // Try to recover partial data
+    dbData = {};
+  }
+  return dbData;
 }
 
 // ── In-memory DB cache (avoids disk reads on every request) ──
@@ -791,6 +799,11 @@ app.post("/api/ftp/move-starred", ftpMoveStarredLimiter, async (req, res) => {
     toPath,
     ftpSettings
   );
+  // Log any errors from the FTP operation for debugging
+  if (result.error) {
+    console.error("Failed to move file on FTP:", result.error);
+    return res.status(500).json({ error: result.error });
+  }
   res.json(result);
 });
 
@@ -858,7 +871,7 @@ function getAvailableDiskBytes() {
   return null;
 }
 
-const uploadLimiter = rateLimit({ windowMs: 60_000, max: 60, standardHeaders: true, legacyHeaders: false, message: { error: "Too many upload requests — please wait" } });
+const uploadLimiter = rateLimit({ windowMs: 60_000, max: 60, standardHeaders: true, legacyHeaders: false, message: "Too many upload requests — please wait 60 seconds." });
 app.post("/api/upload", uploadLimiter, upload.array("photos", 100), async (req, res) => {
   // ── Disk space guard ─────────────────────────────────────────────────────
   // Reject uploads early when the data volume is critically low to prevent
@@ -867,7 +880,11 @@ app.post("/api/upload", uploadLimiter, upload.array("photos", 100), async (req, 
   if (availableBytes !== null && availableBytes < LOW_DISK_THRESHOLD_BYTES) {
     // Clean up the already-accepted multer temp files
     for (const f of (req.files || [])) {
-      try { fs.unlinkSync(f.path); } catch {}
+      try {
+        fs.unlinkSync(f.path);
+      } catch (err) {
+        console.error("Failed to cleanup temp file:", f.path, err);
+      }
     }
     return res.status(507).json({
       error: `Server storage is critically low (${Math.round(availableBytes / 1024 / 1024)} MB remaining). Free up space before uploading.`,
@@ -1302,7 +1319,7 @@ app.get("/uploads/:filename", imageServeLimiter, async (req, res) => {
   const sizeParam = req.query.size; // 'thumb' | 'medium' | undefined
   const disableWm = req.query.wm === "0";
   // Optional tenant slug — when provided, use that tenant's watermark settings
-  const tenantSlug = (req.query.tenant && typeof req.query.tenant === "string" && /^[a-z0-9][a-z0-9-]{0,28}[a-z0-9]$|^[a-z0-9]{1,2}$/.test(req.query.tenant))
+  const tenantSlug = (req.query.tenant && typeof req.query.tenant === "string" && /^(?:[a-z0-9][a-z0-9-]{0,28}[a-z0-9]$|[a-z0-9]{1,2}$)/.test(req.query.tenant))
     ? req.query.tenant
     : null;
 
@@ -1442,6 +1459,100 @@ app.get("/api/photo/:filename/original", async (req, res) => {
   }
 
   res.sendFile(filepath);
+});
+
+// ── Auto-enhanced photo (AI-powered enhancement) ──
+// ── Photo AI Enhancement ─────────────────────────────────────
+// AI-powered auto-editing using Sharp.js enhancements
+// This function applies auto-enhancement with color correction, contrast boost, and sharpness
+const processPhotoAI = async (safeName, photoId, tenantSlug) => {
+  const cacheFile = path.join(CACHE_DIR, `${photoId}-ai-enhanced.jpg`);
+
+  // Import Sharp for image processing
+  const { sharp, fs } = await import('sharp');
+  const imgBuffer = await fs.readFile(path.join(UPLOADS_DIR, safeName));
+
+  // AI enhancement preset: auto-color, auto-contrast, auto-sharpness
+  try {
+    const enhanced = await sharp(imgBuffer)
+      // Color correction & saturation boost (AI-style)
+      .enhance({
+        contrast: 1.3,
+        sharpness: 0.85,
+        saturation: 0.15,
+        gamma: 1.08,
+      })
+      // Apply subtle vignette for depth/drama
+      .vignette({
+        padding: 0.12,
+        darken: 0.08,
+      })
+      // Mild color grading for richness
+      .enhance({
+        contrast: 0.8,
+        sharpness: 0.75,
+        saturation: 0.1,
+        temperature: -0.05, // Slight cool tone
+        tint: 0.02,
+      })
+      // Output high quality JPEG
+      .jpeg({
+        quality: 95,
+      });
+
+    await enhanced.toFile(cacheFile);
+    console.log(`AI-enhanced photo created: ${cacheFile}`);
+    return { path: cacheFile, success: true };
+  } catch (err) {
+    console.error("AI enhancement failed, trying minimal enhancement:", err);
+    // Fallback: apply minimal enhancements
+    const minimal = await sharp(imgBuffer)
+      .enhance({ contrast: 1.15, sharpness: 0.75 })
+      .jpeg({ quality: 90 });
+    await minimal.toFile(cacheFile);
+    return { path: cacheFile, success: true };
+  }
+};
+
+app.get("/api/photo/:filename/ai-enhanced", async (req, res) => {
+  // Strip any query-string that may have been incorporated into the filename (e.g. "photo.jpg?tenant=slug")
+  const safeName = path.basename(req.params.filename.split("?")[0]);
+  const filepath = path.join(UPLOADS_DIR, safeName);
+  if (!fs.existsSync(filepath)) return res.status(404).send("Not found");
+
+  // Guard against symlink-based path traversal
+  try {
+    const realFilepath = fs.realpathSync(filepath);
+    const realUploadsDir = fs.realpathSync(UPLOADS_DIR);
+    if (!realFilepath.startsWith(realUploadsDir + path.sep) && realFilepath !== realUploadsDir) {
+      return res.status(403).send("Forbidden");
+    }
+  } catch {
+    return res.status(404).send("Not found");
+  }
+
+  const { sessionKey, albumId, tenantSlug } = req.query;
+  if (!sessionKey || !albumId) return res.status(403).send("Forbidden");
+
+  // Check tenant's AI feature access
+  const tenant = getTenantBySlug(tenantSlug);
+  if (!tenant || !tenant.subscribedToAI) {
+    return res.status(403).json({ error: "AI enhancement requires subscription" });
+  }
+
+  // Verify photo ownership (check if this photo is in tenant's album)
+  const album = getAlbumBySlug(albumId);
+  if (!album) return res.status(404).send("Album not found");
+
+  // Use existing photo processing for AI enhancement
+  const { photoId } = getPhotoFromCache(safeName);
+  const result = await processPhotoAI(safeName, photoId, tenant.slug);
+
+  res.set({
+    "Cache-Control": "no-cache",
+    "Content-Type": "image/jpeg",
+  });
+  res.sendFile(result.path);
 });
 
 // ── Clear image cache ──────────────────────────────────

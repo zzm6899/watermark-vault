@@ -575,7 +575,19 @@ export default function AlbumDetail() {
   }
 
   // Gallery-level expiry check — block all access after expiresAt
-  if (album.expiresAt && new Date(album.expiresAt + "T23:59:59") < new Date()) {
+  // Use UTC timestamps for reliable timezone-independent comparison
+  if (album.expiresAt) {
+    const expiresAtDate = new Date(album.expiresAt);
+    const now = new Date();
+    // Convert to UTC milliseconds for proper comparison
+    const expiresAtMs = expiresAtDate.getTime();
+    const nowMs = now.getTime();
+    // Check if expiry was within last 24 hours (with some grace period)
+    const isRecentlyExpired = nowMs < expiresAtMs && nowMs > expiresAtMs - (24 * 60 * 60 * 1000);
+    // Or if already expired
+    const isExpired = nowMs >= expiresAtMs;
+
+    if (isExpired || isRecentlyExpired) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="glass-panel rounded-xl p-8 max-w-sm w-full text-center">
@@ -584,7 +596,8 @@ export default function AlbumDetail() {
           <p className="text-sm font-body text-muted-foreground">
             This gallery was available until{" "}
             <span className="text-foreground font-medium">
-              {new Date(album.expiresAt + "T23:59:59").toLocaleDateString("en-AU", { day: "numeric", month: "long", year: "numeric" })}
+              {expiresAtDate.toLocaleDateString("en-AU", { day: "numeric", month: "long", year: "numeric" })}
+              {isExpired && " at midnight"}
             </span>
             {" "}and is no longer accessible.
           </p>
@@ -1944,6 +1957,39 @@ export default function AlbumDetail() {
               <button className="absolute right-2 sm:right-4 z-10 w-11 h-11 rounded-full bg-white/15 backdrop-blur-sm flex items-center justify-center text-white hover:bg-white/25 transition-colors"
                 onClick={(e) => { e.stopPropagation(); setLightboxPhotoId(displayedPhotos[lbIdx + 1].id); setLbZoom(1); setLbPan({ x: 0, y: 0 }); }}>
                 <ChevronRight className="w-5 h-5" />
+              </button>
+            )}
+
+            {/* AI Enhance button */}
+            {tenantSlug && tenant?.subscribedToAI && lbZoom === 1 && lbIdx >= 0 && (
+              <button
+                onClick={async (e) => {
+                  e.stopPropagation();
+                  const safeName = lbPhoto.src.split("?")[0].split("/").pop() || "";
+                  try {
+                    const res = await fetch(`/api/photo/${encodeURIComponent(safeName)}/ai-enhanced?sessionKey=${sessionKey}&albumId=${album.id}&tenantSlug=${tenantSlug}`);
+                    if (res.ok) {
+                      const blob = await res.blob();
+                      const url = URL.createObjectURL(blob);
+                      const oldSrc = lbPhoto.src;
+                      // Temporarily replace source with AI-enhanced version
+                      lbPhoto.src = url;
+                      // Re-render lightbox
+                      setLightboxPhotoId(null);
+                      setLightboxPhotoId(lbPhoto.id);
+                      toast.success("AI enhancement applied!");
+                    } else {
+                      toast.error(`Enhancement failed: ${await res.json()}`);
+                    }
+                  } catch (err) {
+                    toast.error(`AI enhancement error: ${err.message}`);
+                  }
+                }}
+                className="absolute top-12 right-2 w-9 h-9 rounded-full bg-white/15 backdrop-blur-sm flex items-center justify-center text-white hover:bg-white/25 transition-colors disabled:opacity-30 disabled:cursor-default"
+                title="AI Enhancement (AI feature enabled)"
+                disabled={!tenantSlug || !tenant?.subscribedToAI || lbZoom > 1}
+              >
+                <Sparkles className="w-4 h-4" />
               </button>
             )}
 
