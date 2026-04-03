@@ -63,12 +63,27 @@ export function login() {
   set(KEYS.SESSION, true);
 }
 
+/**
+ * Store the sha256 password hash in sessionStorage after a successful admin login.
+ * This is used by adminAuthHeaders() in api.ts to construct the Basic Auth header
+ * for protected endpoints. SessionStorage is used (not localStorage) so the credential
+ * is cleared automatically when the browser tab closes.
+ */
+export function setAdminSessionHash(hash: string) {
+  try { sessionStorage.setItem("wv_admin_session_hash", hash); } catch { /* noop */ }
+}
+
+export function getAdminSessionHash(): string | null {
+  try { return sessionStorage.getItem("wv_admin_session_hash"); } catch { return null; }
+}
+
 export function logout() {
   // Only clear local session — server session key is ignored on sync anyway
   localStorage.removeItem(KEYS.SESSION);
   // Also clear super admin + mobile tenant sessions
   try {
     sessionStorage.removeItem("wv_super_admin");
+    sessionStorage.removeItem("wv_admin_session_hash");
     localStorage.removeItem("wv_mobile_tenant");
   } catch { /* session storage may be unavailable */ }
 }

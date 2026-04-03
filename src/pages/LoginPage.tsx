@@ -4,7 +4,7 @@ import { Camera, LogIn } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
-import { getAdminCredentials, hashPassword, login, setMobileTenantSession, getMobileTenantSession, isLoggedIn } from "@/lib/storage";
+import { getAdminCredentials, hashPassword, login, setAdminSessionHash, setMobileTenantSession, getMobileTenantSession, isLoggedIn } from "@/lib/storage";
 import { syncFromServer, tenantLogin, verifyAdminCredentials, isServerMode } from "@/lib/api";
 import { useNavigate } from "react-router-dom";
 
@@ -45,6 +45,9 @@ export default function LoginPage({ onLogin }: { onLogin?: () => void } = {}) {
         : (() => { const creds = getAdminCredentials(); return !!(creds && creds.username === normalized && creds.passwordHash === hash); })();
       if (adminOk) {
         login();
+        // Store the sha256 hash in sessionStorage so adminAuthHeaders() can
+        // build correct Basic Auth credentials for protected API endpoints.
+        setAdminSessionHash(hash);
         onLogin?.();
         navigate("/admin", { replace: true });
         return;

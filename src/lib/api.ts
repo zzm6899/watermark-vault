@@ -9,16 +9,27 @@ let serverAvailable: boolean | null = null;
 /**
  * Returns Authorization header for admin-protected endpoints.
  * Reads stored credentials synchronously so it can be used inline.
+ *
+ * The server expects Basic auth where the password field is the SHA-256 hash
+ * of the user's password (NOT the bcrypt hash stored in wv_admin). After login,
+ * LoginPage stores the sha256 hash in sessionStorage under "wv_admin_session_hash"
+ * so we can reconstruct the correct credential here.
  */
 function adminAuthHeaders(): Record<string, string> {
   try {
-    // Read directly from localStorage using the same key as storage.ts (KEYS.ADMIN = "wv_admin")
-    // to avoid circular imports. Synchronous so it can be used inline in fetch headers.
+    // Read username from localStorage (synced from server, always available after login)
     const raw = localStorage.getItem("wv_admin");
     if (!raw) return {};
     const creds = JSON.parse(raw) as { username: string; passwordHash: string };
-    if (!creds?.username || !creds?.passwordHash) return {};
-    return { Authorization: "Basic " + btoa(`${creds.username}:${creds.passwordHash}`) };
+    if (!creds?.username) return {};
+
+    // Prefer the sha256 hash stored in sessionStorage at login time — this is what
+    // the server's verifyPasswordHash() expects as the "incoming" value.
+    const sessionHash = sessionStorage.getItem("wv_admin_session_hash");
+    const passwordHash = sessionHash || creds.passwordHash;
+    if (!passwordHash) return {};
+
+    return { Authorization: "Basic " + btoa(`${creds.username}:${passwordHash}`) };
   } catch { return {}; }
 }
 

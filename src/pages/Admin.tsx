@@ -4709,6 +4709,7 @@ function PhotosView() {
   const uploadOpenRef = useRef(uploadOpen);
   const [photoGridSize, setPhotoGridSize] = useState<"small" | "medium" | "large">("medium");
   const [lightboxPhoto, setLightboxPhoto] = useState<Photo | null>(null);
+  const [lbShowBefore, setLbShowBefore] = useState(false);
   const [enhancingIds, setEnhancingIds] = useState<Set<string>>(new Set());
   const displayPhotosRef = useRef<(Photo & { source: string })[]>([]);
 
@@ -4721,8 +4722,8 @@ function PhotosView() {
       if (e.key === "Escape") { setLightboxPhoto(null); return; }
       const photos = displayPhotosRef.current;
       const idx = photos.findIndex(p => p.id === lightboxPhoto.id);
-      if (e.key === "ArrowLeft" && idx > 0) setLightboxPhoto(photos[idx - 1]);
-      else if (e.key === "ArrowRight" && idx < photos.length - 1) setLightboxPhoto(photos[idx + 1]);
+      if (e.key === "ArrowLeft" && idx > 0) { setLightboxPhoto(photos[idx - 1]); setLbShowBefore(false); }
+      else if (e.key === "ArrowRight" && idx < photos.length - 1) { setLightboxPhoto(photos[idx + 1]); setLbShowBefore(false); }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
@@ -5239,7 +5240,8 @@ function PhotosView() {
         }
       }
       // Also update the lightbox if this photo is currently open
-      setLightboxPhoto(prev => prev?.id === photo.id ? { ...prev, src: enhancedUrlBusted } : prev);
+      setLightboxPhoto(prev => prev?.id === photo.id ? { ...prev, src: enhancedUrlBusted, beforeSrc: originalSrc } : prev);
+      setLbShowBefore(false); // always show the enhanced result after processing
       toast.success("AI enhancement applied");
     } catch {
       toast.error("AI enhancement failed");
@@ -5411,7 +5413,7 @@ function PhotosView() {
             {lbIndex > 0 && (
               <button
                 className="absolute left-2 sm:left-4 top-1/2 -translate-y-1/2 w-11 h-11 rounded-full bg-white/10 hover:bg-white/20 active:bg-white/30 text-white flex items-center justify-center transition-colors z-10"
-                onClick={e => { e.stopPropagation(); setLightboxPhoto(displayPhotos[lbIndex - 1]); }}
+                onClick={e => { e.stopPropagation(); setLightboxPhoto(displayPhotos[lbIndex - 1]); setLbShowBefore(false); }}
                 aria-label="Previous photo"
               >
                 <ChevronLeft className="w-6 h-6" />
@@ -5421,22 +5423,40 @@ function PhotosView() {
             {lbIndex < displayPhotos.length - 1 && (
               <button
                 className="absolute right-2 sm:right-16 top-1/2 -translate-y-1/2 w-11 h-11 rounded-full bg-white/10 hover:bg-white/20 active:bg-white/30 text-white flex items-center justify-center transition-colors z-10"
-                onClick={e => { e.stopPropagation(); setLightboxPhoto(displayPhotos[lbIndex + 1]); }}
+                onClick={e => { e.stopPropagation(); setLightboxPhoto(displayPhotos[lbIndex + 1]); setLbShowBefore(false); }}
                 aria-label="Next photo"
               >
                 <ChevronRight className="w-6 h-6" />
               </button>
             )}
+            {/* Before/After label badge */}
+            {lightboxPhoto.beforeSrc && (
+              <div className="absolute top-4 left-4 z-10">
+                <span className={`text-[10px] font-body font-semibold tracking-wider uppercase px-2 py-0.5 rounded-full ${lbShowBefore ? "bg-white/20 text-white/70" : "bg-primary/80 text-white"}`}>
+                  {lbShowBefore ? "Before" : "After"}
+                </span>
+              </div>
+            )}
             <img
-              src={lightboxPhoto.src}
+              src={lbShowBefore && lightboxPhoto.beforeSrc ? lightboxPhoto.beforeSrc : lightboxPhoto.src}
               alt={lightboxPhoto.title}
-              className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
+              className="max-w-full max-h-full object-contain rounded-lg shadow-2xl transition-opacity duration-200"
               onClick={e => e.stopPropagation()}
             />
-            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 max-w-[90vw]">
-              <p className="text-xs font-body bg-black/40 px-3 py-1 rounded-full text-white/90 truncate max-w-[60vw] text-center">{lightboxPhoto.title}</p>
+            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 max-w-[90vw] flex-wrap justify-center">
+              <p className="text-xs font-body bg-black/40 px-3 py-1 rounded-full text-white/90 truncate max-w-[40vw] text-center">{lightboxPhoto.title}</p>
               {displayPhotos.length > 1 && (
                 <span className="text-xs font-body bg-black/40 px-2 py-1 rounded-full text-white/60 whitespace-nowrap shrink-0">{lbIndex + 1} / {displayPhotos.length}</span>
+              )}
+              {/* Before/After toggle — only shown when photo has been enhanced */}
+              {lightboxPhoto.beforeSrc && (
+                <button
+                  onClick={e => { e.stopPropagation(); setLbShowBefore(v => !v); }}
+                  className="flex items-center gap-1.5 bg-black/50 hover:bg-white/20 text-white px-3 py-1 rounded-full text-xs font-body transition-colors shrink-0"
+                  title={lbShowBefore ? "Show enhanced" : "Show original"}
+                >
+                  {lbShowBefore ? "Show Enhanced" : "Show Original"}
+                </button>
               )}
               {/* AI Enhance button in lightbox */}
               <button
@@ -5447,7 +5467,7 @@ function PhotosView() {
               >
                 {enhancingIds.has(lightboxPhoto.id)
                   ? <><div className="w-3 h-3 rounded-full border border-white border-t-transparent animate-spin" /><span>Enhancing…</span></>
-                  : <><Sparkles className="w-3 h-3" /><span>AI Enhance</span></>
+                  : <><Sparkles className="w-3 h-3" /><span>{lightboxPhoto.beforeSrc ? "Re-enhance" : "AI Enhance"}</span></>
                 }
               </button>
             </div>
