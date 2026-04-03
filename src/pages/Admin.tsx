@@ -5022,16 +5022,20 @@ function PhotosView() {
     else toast.success(`Removed ${totalRemoved} duplicate photo${totalRemoved !== 1 ? "s" : ""}`);
   };
 
-  // Build unified photo list — don't dedup across sources so album filters work
+  // Build unified photo list — dedup by id so a photo that lives in both the
+  // library and an album only appears once (as its album entry, which has richer context).
+  // Library-only photos (no album) are included from the library list.
   const allPhotos: (Photo & { source: string })[] = [];
   const seenInAll = new Set<string>();
-  for (const p of libraryPhotos) {
-    if (!seenInAll.has(p.src)) { allPhotos.push({ ...p, source: "Library" }); seenInAll.add(p.src); }
-  }
+  // Add album photos first so their source label takes priority in "all" view
   for (const alb of albums) {
     for (const p of alb.photos) {
-      if (!seenInAll.has(p.src)) { allPhotos.push({ ...p, source: alb.title }); seenInAll.add(p.src); }
+      if (!seenInAll.has(p.id)) { allPhotos.push({ ...p, source: alb.title }); seenInAll.add(p.id); }
     }
+  }
+  // Add library photos that aren't already represented by an album entry
+  for (const p of libraryPhotos) {
+    if (!seenInAll.has(p.id)) { allPhotos.push({ ...p, source: "Library" }); seenInAll.add(p.id); }
   }
 
   // For album-specific filters, pull directly from album.photos (not allPhotos) so added photos always appear
@@ -5040,9 +5044,9 @@ function PhotosView() {
     return alb ? alb.photos.map(p => ({ ...p, source: alb.title })) : [];
   };
 
-  // Compute library photos that aren't referenced by any album (orphans)
-  const albumPhotoSrcs = new Set(albums.flatMap(a => a.photos.map(p => p.src)));
-  const unassignedPhotos = libraryPhotos.filter(p => !albumPhotoSrcs.has(p.src));
+  // Compute library photos that aren't referenced by any album (orphans) — match by id
+  const albumPhotoIds = new Set(albums.flatMap(a => a.photos.map(p => p.id)));
+  const unassignedPhotos = libraryPhotos.filter(p => !albumPhotoIds.has(p.id));
 
   const starredPhotos = allPhotos.filter(p => (p as any).starred);
   const sourcePhotos = viewSource === "all" ? allPhotos
@@ -5256,18 +5260,24 @@ function PhotosView() {
 
       const patch = { src: newSrc, beforeSrc: originalSrc, thumbnail: newThumb };
 
-      if (photo.source === "Library") {
-        const updated = libraryPhotos.map(p => p.id === photo.id ? { ...p, ...patch } : p);
-        setPhotoLibrary(updated);
-        setLibraryPhotosState(updated);
-      } else {
-        const alb = albums.find(a => a.title === photo.source);
-        if (alb) {
+      // Always patch the library entry (whether the photo lives there or not —
+      // photos are often in both library AND albums simultaneously).
+      const updatedLib = libraryPhotos.map(p => p.id === photo.id ? { ...p, ...patch } : p);
+      setPhotoLibrary(updatedLib);
+      setLibraryPhotosState(updatedLib);
+
+      // Also patch every album that contains a photo with this id, so the "all"
+      // view and album-specific views both show the enhanced image.
+      const currentAlbums = getAlbums();
+      let anyAlbumPatched = false;
+      for (const alb of currentAlbums) {
+        if (alb.photos.some(p => p.id === photo.id)) {
           const updated = { ...alb, photos: alb.photos.map(p => p.id === photo.id ? { ...p, ...patch } : p) };
           updateAlbum(updated);
-          setAlbumsState(getAlbums());
+          anyAlbumPatched = true;
         }
       }
+      if (anyAlbumPatched) setAlbumsState(getAlbums());
       // Show blob in lightbox immediately — no second network request needed
       setLightboxPhoto(prev => prev?.id === photo.id ? { ...prev, src: blobUrl, beforeSrc: originalSrc } : prev);
       setLbShowBefore(false);
