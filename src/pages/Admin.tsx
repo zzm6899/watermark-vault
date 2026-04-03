@@ -5219,13 +5219,14 @@ function PhotosView() {
     setEnhancingIds(prev => new Set(prev).add(photo.id));
     try {
       // Use the original source (before any prior enhancement) so the filename extraction is always correct
-      const originalSrc = (photo as any).beforeSrc || photo.src;
-      const enhancedUrl = await aiEnhancePhoto(originalSrc);
-      // Add a cache-buster so the browser fetches the freshly enhanced version
-      const enhancedUrlBusted = `${enhancedUrl}?t=${Date.now()}`;
+      const originalSrc = photo.beforeSrc || photo.src;
+      // aiEnhancePhoto fetches with auth headers and returns a blob:// URL — no 401 when set as <img src>
+      const blobUrl = await aiEnhancePhoto(originalSrc);
+      // Revoke previous blob URL to free memory if this photo was already enhanced
+      if (photo.src.startsWith("blob:")) URL.revokeObjectURL(photo.src);
       if (photo.source === "Library") {
         const updated = libraryPhotos.map(p =>
-          p.id === photo.id ? { ...p, src: enhancedUrlBusted, beforeSrc: originalSrc } : p
+          p.id === photo.id ? { ...p, src: blobUrl, beforeSrc: originalSrc } : p
         );
         setPhotoLibrary(updated);
         setLibraryPhotosState(updated);
@@ -5233,14 +5234,14 @@ function PhotosView() {
         const alb = albums.find(a => a.title === photo.source);
         if (alb) {
           const updated = { ...alb, photos: alb.photos.map(p =>
-            p.id === photo.id ? { ...p, src: enhancedUrlBusted, beforeSrc: originalSrc } : p
+            p.id === photo.id ? { ...p, src: blobUrl, beforeSrc: originalSrc } : p
           ) };
           updateAlbum(updated);
           setAlbumsState(getAlbums());
         }
       }
       // Also update the lightbox if this photo is currently open
-      setLightboxPhoto(prev => prev?.id === photo.id ? { ...prev, src: enhancedUrlBusted, beforeSrc: originalSrc } : prev);
+      setLightboxPhoto(prev => prev?.id === photo.id ? { ...prev, src: blobUrl, beforeSrc: originalSrc } : prev);
       setLbShowBefore(false); // always show the enhanced result after processing
       toast.success("AI enhancement applied");
     } catch {

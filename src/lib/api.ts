@@ -371,14 +371,21 @@ export function deletePhotoFromServer(url: string): void {
   fetch(`/api/upload/${encodeURIComponent(filename)}`, { method: "DELETE" }).catch(() => {});
 }
 
-/** Trigger AI enhancement for a photo and return the enhanced image URL (cached server-side) */
+/** Trigger AI enhancement for a photo and return a blob URL of the enhanced image.
+ *
+ * The server endpoint requires admin auth, but <img src> tags cannot send custom
+ * headers. We therefore fetch the image data ourselves with the Authorization header
+ * and return a local blob:// URL so the browser can display it without hitting the
+ * protected endpoint again.
+ */
 export async function aiEnhancePhoto(photoSrc: string): Promise<string> {
   const filename = photoSrc.split("/").pop()?.split("?")[0]?.trim();
   if (!filename) throw new Error("Invalid photo URL");
   const url = `/api/photo/${encodeURIComponent(filename)}/ai-enhanced`;
   const res = await fetch(url, { headers: adminAuthHeaders() });
-  if (!res.ok) throw new Error("Enhancement failed");
-  return url;
+  if (!res.ok) throw new Error(`Enhancement failed (${res.status})`);
+  const blob = await res.blob();
+  return URL.createObjectURL(blob);
 }
 
 /** Check if the backend server is available */
