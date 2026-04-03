@@ -1556,19 +1556,48 @@ app.get("/api/photo/:filename/ai-enhanced", aiEnhanceLimiter, requireAuth, async
     // doesn't leave a corrupt file that gets served forever
     if (fs.existsSync(cachedPath)) try { fs.unlinkSync(cachedPath); } catch {}
 
-    // AI enhancement pipeline — visible, professional-grade adjustments:
-    //   • +12% brightness lift for exposure correction
-    //   • +25% saturation for vivid, punchy colours
-    //   • Linear contrast curve: shadows crushed slightly, highlights lifted
-    //   • CLAHE local contrast with medium tiles for detail pop without halos
-    //   • Sharpening pass to recover micro-detail lost in JPEG compression
+    // ── Adaptive AI enhancement pipeline ──────────────────────────────────
+    // Step 1: analyse the image to understand its actual tonal characteristics
+    const { channels } = await sharp(filepath).stats();
+
+    // Mean brightness 0-255 across all channels
+    const meanBrightness = (channels[0].mean + channels[1].mean + channels[2].mean) / 3;
+    // Std deviation across channels — low = flat/low contrast, high = already punchy
+    const meanStd = (channels[0].stdev + channels[1].stdev + channels[2].stdev) / 3;
+
+    // Step 2: derive adaptive correction amounts based on measured values
+    // Dark images need more lift; bright images need less — but every image gets
+    // a meaningful minimum boost so the enhancement is always visible
+    const brightnessFactor = meanBrightness < 80  ? 1.28   // dark: strong lift
+                           : meanBrightness < 120 ? 1.18   // under-exposed: solid lift
+                           : meanBrightness < 160 ? 1.10   // normal: noticeable lift
+                           :                        1.05;  // bright: gentle lift
+
+    // Flat images need more contrast; already-contrasty images get less but still some
+    const contrastGain   = meanStd < 30  ? 1.22   // very flat
+                         : meanStd < 50  ? 1.15   // flat
+                         : meanStd < 70  ? 1.10   // normal
+                         :                 1.06;  // already contrasty — still a visible pop
+    const contrastOffset = -(contrastGain - 1) * 55;
+
+    // Saturation always gets a visible boost — minimum 18%
+    const saturationFactor = meanStd < 40 ? 1.40 : meanStd < 65 ? 1.28 : 1.18;
+
+    // Sharpening scaled by image softness
+    const sharpenSigma = meanStd < 50 ? 1.2 : 0.9;
+    const sharpenFlat  = meanStd < 50 ? 1.5 : 1.0;
+    const sharpenJagged= meanStd < 50 ? 2.5 : 2.0;
+
+    // Step 3: apply the adaptive pipeline
     await sharp(filepath)
-      .modulate({ brightness: 1.12, saturation: 1.25 })
-      .linear(1.1, -10)
+      .modulate({ brightness: brightnessFactor, saturation: saturationFactor })
+      .linear(contrastGain, contrastOffset)
       .clahe({ width: 32, height: 32, maxSlope: 3 })
-      .sharpen({ sigma: 0.8, m1: 1.0, m2: 2.0 })
+      .sharpen({ sigma: sharpenSigma, m1: sharpenFlat, m2: sharpenJagged })
       .jpeg({ quality: 92, progressive: true })
       .toFile(cachedPath);
+
+    console.log(`[AI] Enhanced ${safeName}: brightness=${meanBrightness.toFixed(1)} std=${meanStd.toFixed(1)} → brighten×${brightnessFactor} contrast×${contrastGain} sat×${saturationFactor}`);
 
     res.set({ "Cache-Control": "public, max-age=3600", "Content-Type": "image/jpeg" });
     res.sendFile(cachedPath);
