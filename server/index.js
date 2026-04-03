@@ -1546,19 +1546,27 @@ app.get("/api/photo/:filename/ai-enhanced", aiEnhanceLimiter, requireAuth, async
   const cachedPath = path.join(CACHE_DIR, `${photoId}-ai-enhanced.jpg`);
 
   try {
-    // Return cached version if it exists
-    if (fs.existsSync(cachedPath)) {
+    // Return cached version if it exists and a fresh run isn't forced
+    const force = req.query.force === "1";
+    if (!force && fs.existsSync(cachedPath)) {
       res.set({ "Cache-Control": "public, max-age=3600", "Content-Type": "image/jpeg" });
       return res.sendFile(cachedPath);
     }
+    // Delete stale cache file before re-processing so a crashed previous run
+    // doesn't leave a corrupt file that gets served forever
+    if (fs.existsSync(cachedPath)) try { fs.unlinkSync(cachedPath); } catch {}
 
-    // Apply Sharp-based auto-enhancement pipeline — gentle brightness/colour lift
-    // with a conservative CLAHE pass (large tiles, low clip) to avoid the
-    // over-processed "illustration" look caused by small tiles and high maxSlope.
+    // AI enhancement pipeline — visible, professional-grade adjustments:
+    //   • +12% brightness lift for exposure correction
+    //   • +25% saturation for vivid, punchy colours
+    //   • Linear contrast curve: shadows crushed slightly, highlights lifted
+    //   • CLAHE local contrast with medium tiles for detail pop without halos
+    //   • Sharpening pass to recover micro-detail lost in JPEG compression
     await sharp(filepath)
-      .modulate({ brightness: 1.02, saturation: 1.08 })
-      .sharpen({ sigma: 0.5, m1: 0.3, m2: 0.3 })
-      .clahe({ width: 64, height: 64, maxSlope: 1.5 })
+      .modulate({ brightness: 1.12, saturation: 1.25 })
+      .linear(1.1, -10)
+      .clahe({ width: 32, height: 32, maxSlope: 3 })
+      .sharpen({ sigma: 0.8, m1: 1.0, m2: 2.0 })
       .jpeg({ quality: 92, progressive: true })
       .toFile(cachedPath);
 

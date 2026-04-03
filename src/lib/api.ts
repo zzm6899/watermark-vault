@@ -382,7 +382,8 @@ export function deletePhotoFromServer(url: string): void {
 export async function aiEnhancePhoto(photoSrc: string): Promise<string> {
   const filename = photoSrc.split("/").pop()?.split("?")[0]?.trim();
   if (!filename) throw new Error("Invalid photo URL");
-  const url = `/api/photo/${encodeURIComponent(filename)}/ai-enhanced`;
+  // force=1 bypasses any stale server-side cache so every click re-runs the pipeline
+  const url = `/api/photo/${encodeURIComponent(filename)}/ai-enhanced?force=1`;
   const res = await fetch(url, { headers: adminAuthHeaders() });
   if (!res.ok) throw new Error(`Enhancement failed (${res.status})`);
   const blob = await res.blob();
