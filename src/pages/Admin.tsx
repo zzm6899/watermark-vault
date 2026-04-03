@@ -116,7 +116,6 @@ import {
   updateBookingTasks,
   toggleBookingTask,
   aiEnhancePhoto,
-  applyAIEnhancement,
 } from "@/lib/api";
 import type { CacheBreakdown } from "@/lib/api";
 import RichTextEditor, { RichTextDisplay } from "@/components/RichTextEditor";
@@ -5222,38 +5221,41 @@ function PhotosView() {
       // Always use the true original file for enhancement — not a previous blob URL
       const originalSrc = photo.beforeSrc || photo.src;
 
-      // Step 1: fetch enhanced image with auth → blob URL for immediate preview display
+      // Step 1: fetch enhanced image data with auth headers → blob for display + upload
       const blobUrl = await aiEnhancePhoto(originalSrc);
 
-      // Step 2: commit the enhancement to disk so it survives page reload.
-      // The server copies _cache/{id}-ai-enhanced.jpg over the original file
-      // and purges all cached derivatives so they regenerate from the new base.
-      const applied = await applyAIEnhancement(originalSrc);
-      if (!applied) {
+      // Step 2: re-upload the enhanced blob as a new file so the edit is persisted
+      // on disk permanently. The /api/upload endpoint is already deployed and handles this.
+      const blob = await fetch(blobUrl).then(r => r.blob());
+      const originalFilename = originalSrc.split("/").pop()?.split("?")[0] ?? "enhanced.jpg";
+      const formData = new FormData();
+      formData.append("photos", blob, originalFilename);
+      const uploadRes = await fetch("/api/upload", {
+        method: "POST",
+        body: formData,
+      });
+      if (!uploadRes.ok) {
         URL.revokeObjectURL(blobUrl);
-        throw new Error("Could not save enhancement to disk");
+        throw new Error("Upload failed — could not save enhancement");
+      }
+      const { files } = await uploadRes.json() as { files: { id: string; url: string }[] };
+      const newFile = files?.[0];
+      if (!newFile?.url) {
+        URL.revokeObjectURL(blobUrl);
+        throw new Error("Upload returned no file");
       }
 
-      // Step 3: build a cache-busted URL pointing to the original filename on the
-      // server (which now contains the enhanced image). This is what gets persisted
-      // in state/DB so the edit survives page reloads.
-      // Photos are served at /uploads/:filename — use the same base path as originalSrc
-      // but strip any previous query string and append a cache-buster.
-      const originalFilename = originalSrc.split("/").pop()?.split("?")[0] ?? "";
-      // wm=0 keeps admin view watermark-free; t= busts the browser cache so the
-      // new enhanced file is fetched instead of the old cached version.
-      const persistedSrc = `/uploads/${encodeURIComponent(originalFilename)}?wm=0&t=${Date.now()}`;
+      // Step 3: update the photo record to point at the new server URL.
+      // Keep originalSrc as beforeSrc so before/after toggle still works.
+      const newSrc = `${newFile.url}?wm=0`;
+      const newId = newFile.id;
 
-      // Revoke previous blob URL to free memory if this photo was already enhanced
+      // Revoke previous blob URL to free memory
       if (photo.src.startsWith("blob:")) URL.revokeObjectURL(photo.src);
 
-      // Update state — keep blobUrl as the displayed src for instant feedback,
-      // but store persistedSrc as beforeSrc so it is used on next enhance/reload.
-      // Actually: store persistedSrc as src so it persists, and show blobUrl
-      // only in the lightbox for instant display (it will reload from server next open).
       if (photo.source === "Library") {
         const updated = libraryPhotos.map(p =>
-          p.id === photo.id ? { ...p, src: persistedSrc, beforeSrc: undefined, thumbnail: undefined } : p
+          p.id === photo.id ? { ...p, id: newId, src: newSrc, beforeSrc: originalSrc, thumbnail: undefined } : p
         );
         setPhotoLibrary(updated);
         setLibraryPhotosState(updated);
@@ -5261,14 +5263,14 @@ function PhotosView() {
         const alb = albums.find(a => a.title === photo.source);
         if (alb) {
           const updated = { ...alb, photos: alb.photos.map(p =>
-            p.id === photo.id ? { ...p, src: persistedSrc, beforeSrc: undefined, thumbnail: undefined } : p
+            p.id === photo.id ? { ...p, id: newId, src: newSrc, beforeSrc: originalSrc, thumbnail: undefined } : p
           ) };
           updateAlbum(updated);
           setAlbumsState(getAlbums());
         }
       }
-      // Show the blob in the lightbox immediately (no second network round-trip)
-      setLightboxPhoto(prev => prev?.id === photo.id ? { ...prev, src: blobUrl, beforeSrc: originalSrc } : prev);
+      // Show blob in lightbox for instant display (already in memory — no extra request)
+      setLightboxPhoto(prev => prev?.id === photo.id ? { ...prev, id: newId, src: blobUrl, beforeSrc: originalSrc } : prev);
       setLbShowBefore(false);
       toast.success("AI enhancement saved");
     } catch (err) {
