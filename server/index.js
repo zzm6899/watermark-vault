@@ -1524,6 +1524,162 @@ app.get("/api/photo/:filename/original", async (req, res) => {
 // (Legacy processPhotoForAI / processPhotoAI helpers removed — logic now inline in the GET endpoint below)
 
 const aiEnhanceLimiter = rateLimit({ windowMs: 60_000, max: 30, standardHeaders: true, legacyHeaders: false, message: { error: "Too many enhancement requests — please wait" } });
+// ── Photo edit param helpers ───────────────────────────────────────────────────
+
+// Parse a preset name into a canonical edit-params object.
+// All values use the same scale as the manual sliders below.
+function presetToEditParams(preset) {
+  const presets = {
+    // Moody: darker, high contrast, desaturated, cool
+    moody:      { exposure: -10, highlights: -25, shadows: 10, contrast: 35, vibrance: -15, saturation: -10, warmth: -15, clarity: 20, denoise: 0, sharpness: 80 },
+    // Bright & Airy: lifted, low contrast, warm, pastel
+    bright:     { exposure: 20,  highlights: -10, shadows: 30, contrast: -20, vibrance: 25, saturation: 5,  warmth: 20,  clarity: -10, denoise: 5, sharpness: 40 },
+    // Film: faded blacks, warm, slight grain
+    film:       { exposure: 5,   highlights: -15, shadows: 25, contrast: 10, vibrance: 15, saturation: -5,  warmth: 25,  clarity: 5,  denoise: 0, sharpness: 50 },
+    // Black & white: desaturate fully, boost contrast + clarity
+    bw:         { exposure: 0,   highlights: -10, shadows: 5,  contrast: 30, vibrance: -100, saturation: -100, warmth: 0, clarity: 30, denoise: 0, sharpness: 70 },
+    // Faded/matte: lifted blacks, low sat, slight warm
+    fade:       { exposure: 10,  highlights: -20, shadows: 35, contrast: -30, vibrance: -10, saturation: -20, warmth: 10, clarity: -5, denoise: 5, sharpness: 30 },
+    // Pop: vivid, punchy, saturated
+    pop:        { exposure: 5,   highlights: -5,  shadows: 5,  contrast: 25, vibrance: 40, saturation: 25,  warmth: 5,   clarity: 25, denoise: 0, sharpness: 90 },
+    // Golden hour: warm orange tones, lifted shadows
+    golden:     { exposure: 8,   highlights: -10, shadows: 20, contrast: 15, vibrance: 20, saturation: 10,  warmth: 45,  clarity: 10, denoise: 0, sharpness: 50 },
+    // Cool / blue-toned
+    cool:       { exposure: 0,   highlights: -10, shadows: 10, contrast: 20, vibrance: 10, saturation: 0,   warmth: -35, clarity: 15, denoise: 0, sharpness: 60 },
+  };
+  return presets[preset] || null;
+}
+
+// Parse a natural language prompt into edit params.
+// Maps common photography keywords to reasonable slider positions.
+function promptToEditParams(prompt) {
+  const p = prompt.toLowerCase();
+  const params = { exposure: 0, highlights: 0, shadows: 0, contrast: 0, vibrance: 0, saturation: 0, warmth: 0, clarity: 0, denoise: 0, sharpness: 60 };
+
+  // Exposure / brightness
+  if (/brighter|lighten|brighten|overexposed fix/.test(p))   params.exposure  += 20;
+  if (/darker|darken|moodier|underexposed fix/.test(p))      params.exposure  -= 15;
+  if (/very bright|much brighter/.test(p))                   params.exposure  += 35;
+
+  // Highlights
+  if (/recover highlight|pull highlight|blow/.test(p))       params.highlights -= 30;
+  if (/lift highlight|bright sky/.test(p))                   params.highlights += 20;
+
+  // Shadows
+  if (/lift shadow|open shadow|fill shadow|dark area/.test(p)) params.shadows += 30;
+  if (/crush shadow|deep shadow/.test(p))                    params.shadows   -= 20;
+
+  // Contrast
+  if (/more contrast|punchy|punchier|pop/.test(p))           params.contrast  += 30;
+  if (/less contrast|softer|flat|matte/.test(p))             params.contrast  -= 25;
+  if (/low contrast/.test(p))                                params.contrast  -= 35;
+
+  // Saturation / vibrance / color
+  if (/more color|vivid|vibrant|saturate/.test(p))           params.vibrance  += 35;
+  if (/less color|muted|desaturate/.test(p))                 params.saturation -= 30;
+  if (/black.and.white|b&w|bw|monochrome|grayscale/.test(p)) { params.saturation = -100; params.vibrance = -100; }
+  if (/pastel/.test(p))                                      { params.saturation -= 20; params.vibrance -= 10; }
+
+  // Warmth / temperature
+  if (/warmer|warm|golden|orange|sunset|cozy/.test(p))       params.warmth    += 30;
+  if (/cooler|cool|blue|cold|overcast/.test(p))              params.warmth    -= 30;
+
+  // Clarity / texture
+  if (/clarity|texture|detail|crisp/.test(p))                params.clarity   += 25;
+  if (/smooth|soft skin|dreamy/.test(p))                     params.clarity   -= 20;
+
+  // Denoise
+  if (/denoise|reduce noise|clean|grain/.test(p))            params.denoise   += 60;
+
+  // Sharpness
+  if (/sharpen|sharp|crisp/.test(p))                         params.sharpness += 30;
+  if (/softer|soft|blur|hazy/.test(p))                       params.sharpness -= 30;
+
+  // Preset-like keywords
+  if (/moody|cinematic|dark/.test(p))        Object.assign(params, { exposure: -10, highlights: -20, shadows: 10, contrast: 30, warmth: -10, clarity: 15, saturation: -10 });
+  if (/bright.airy|airy|fresh/.test(p))      Object.assign(params, { exposure: 20, shadows: 25, contrast: -20, vibrance: 20, warmth: 15, clarity: -10 });
+  if (/film|analogue|analog|vintage/.test(p)) Object.assign(params, { exposure: 5, shadows: 20, contrast: 10, warmth: 20, saturation: -5, clarity: 5 });
+
+  return params;
+}
+
+// Apply an edit-params object to a Sharp pipeline and return the processed pipeline.
+// params: { exposure, highlights, shadows, contrast, vibrance, saturation, warmth, clarity, denoise, sharpness }
+// All values are in a -100…+100 range (or 0–100 for denoise/sharpness).
+async function applyEditParams(filepath, params, outputPath) {
+  const { exposure=0, highlights=0, shadows=0, contrast=0,
+          vibrance=0, saturation=0, warmth=0, clarity=0,
+          denoise=0, sharpness=60 } = params;
+
+  // ── Translate human-scale params into Sharp operation values ──────────────
+
+  // Brightness factor: exposure ±100 maps to ×0.5…×2.0
+  const brightnessFactor = Math.max(0.3, 1 + (exposure / 100) * 0.8);
+
+  // Saturation multiplier: saturation ±100 maps to 0…2.5, vibrance adds on top
+  // vibrance is a gentler version (boosts muted colours more than already-vivid ones)
+  const satFactor = Math.max(0, 1 + (saturation / 100) * 1.2 + (vibrance / 100) * 0.6);
+
+  // Hue rotation for warmth: warmth +100 → +15° (orange), -100 → -15° (blue)
+  const hueShift = (warmth / 100) * 15;
+
+  // Contrast: linear gain + offset. contrast ±100 → gain 0.5…1.8
+  const contrastGain = Math.max(0.3, 1 + (contrast / 100) * 0.6);
+  const contrastOffset = -(contrastGain - 1) * 60;
+
+  // Highlights and shadows via gamma-like curves approximated with linear
+  // Sharp doesn't have direct HL/shadow controls — we approximate with a
+  // sequential lighten-only / darken-only linear op:
+  //   highlights < 0 → compress highlights (darken top end)
+  //   shadows > 0 → lift shadows (raise black floor)
+  const hlFactor = 1 + (highlights / 100) * 0.3;  // 0.7…1.3
+  const hlOffset = (highlights / 100) * -20;        // negative = pull down brights
+  const shFactor = 1;
+  const shOffset = Math.max(0, (shadows / 100) * 35); // lift floor 0–35
+
+  // Clarity ≈ unsharp mask (positive = local contrast boost, negative = blur)
+  const clarityAmount = clarity / 100;  // -1…1
+
+  // Denoise via median blur approximation (only if > 0)
+  const denoiseLevel = Math.max(0, Math.min(100, denoise));
+
+  // Sharpness
+  const sharpSigma = 0.8;
+  const sharpAmount = Math.max(0, sharpness / 100) * 2.5;
+
+  // ── Build the Sharp pipeline ──────────────────────────────────────────────
+  let pipeline = sharp(filepath);
+
+  // 1. Modulate (brightness, saturation, hue)
+  pipeline = pipeline.modulate({ brightness: brightnessFactor, saturation: Math.max(0.01, satFactor), hue: hueShift });
+
+  // 2. Global contrast
+  pipeline = pipeline.linear(contrastGain, contrastOffset);
+
+  // 3. Highlight recovery / shadow lift (two sequential linear passes)
+  if (Math.abs(highlights) > 2) pipeline = pipeline.linear(hlFactor, hlOffset);
+  if (shadows > 2)              pipeline = pipeline.linear(1, shOffset);
+
+  // 4. Clarity — positive = local contrast (CLAHE), negative = gentle blur
+  if (clarityAmount > 0.05) {
+    pipeline = pipeline.clahe({ width: 32, height: 32, maxSlope: Math.max(1, 3 * clarityAmount) });
+  } else if (clarityAmount < -0.05) {
+    pipeline = pipeline.blur(Math.abs(clarityAmount) * 2.5);
+  }
+
+  // 5. Denoise — median blur if requested
+  if (denoiseLevel > 10) {
+    pipeline = pipeline.median(denoiseLevel > 60 ? 3 : 2);
+  }
+
+  // 6. Sharpen
+  if (sharpAmount > 0.05) {
+    pipeline = pipeline.sharpen({ sigma: sharpSigma, m1: sharpAmount * 0.5, m2: sharpAmount });
+  }
+
+  await pipeline.jpeg({ quality: 92, progressive: true }).toFile(outputPath);
+}
+
 app.get("/api/photo/:filename/ai-enhanced", aiEnhanceLimiter, requireAuth, async (req, res) => {
   // Strip any query-string that may have been incorporated into the filename (e.g. "photo.jpg?tenant=slug")
   const safeName = path.basename(req.params.filename.split("?")[0]);
@@ -1541,69 +1697,107 @@ app.get("/api/photo/:filename/ai-enhanced", aiEnhanceLimiter, requireAuth, async
     return res.status(404).send("Not found");
   }
 
-  // Use a cache key based on filename so we avoid re-processing on every request
   const photoId = path.basename(safeName, path.extname(safeName));
-  const cachedPath = path.join(CACHE_DIR, `${photoId}-ai-enhanced.jpg`);
+  const force   = req.query.force === "1";
+
+  // ── Determine edit mode ───────────────────────────────────────────────────
+  // mode=preset  → preset name in req.query.preset
+  // mode=prompt  → natural language text in req.query.prompt
+  // mode=manual  → individual slider values in req.query.*
+  // mode=auto (default) → adaptive pipeline based on image stats + optional multipliers
+  const mode = req.query.mode || "auto";
 
   try {
-    // Return cached version if it exists and a fresh run isn't forced
-    const force = req.query.force === "1";
-    if (!force && fs.existsSync(cachedPath)) {
+    let editParams = null;
+    let cacheKey   = "auto";
+
+    if (mode === "preset") {
+      const presetName = (req.query.preset || "").toLowerCase().replace(/[^a-z]/g, "");
+      editParams = presetToEditParams(presetName);
+      if (!editParams) return res.status(400).json({ error: `Unknown preset: ${presetName}` });
+      cacheKey = `preset-${presetName}`;
+
+    } else if (mode === "prompt") {
+      const promptText = (req.query.prompt || "").slice(0, 200); // limit length
+      editParams = promptToEditParams(promptText);
+      // Cache key: sanitise prompt to safe filename chars
+      cacheKey = `prompt-${promptText.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 40)}`;
+
+    } else if (mode === "manual") {
+      const clamp = (v, min, max) => Math.max(min, Math.min(max, Number(v) || 0));
+      editParams = {
+        exposure:   clamp(req.query.exposure,   -100, 100),
+        highlights: clamp(req.query.highlights, -100, 100),
+        shadows:    clamp(req.query.shadows,    -100, 100),
+        contrast:   clamp(req.query.contrast,   -100, 100),
+        vibrance:   clamp(req.query.vibrance,   -100, 100),
+        saturation: clamp(req.query.saturation, -100, 100),
+        warmth:     clamp(req.query.warmth,     -100, 100),
+        clarity:    clamp(req.query.clarity,    -100, 100),
+        denoise:    clamp(req.query.denoise,       0, 100),
+        sharpness:  clamp(req.query.sharpness,     0, 100),
+      };
+      const vals = Object.values(editParams).map(v => Math.round(v));
+      cacheKey = `manual-${vals.join("_")}`;
+
+    } else {
+      // mode=auto — adaptive pipeline with optional multipliers (legacy behaviour)
+      const parseParam = (val, def = 100) => { const n = parseFloat(val); return (isFinite(n) && n >= 0 && n <= 200) ? n : def; };
+      const brightnessParam  = parseParam(req.query.brightness);
+      const saturationParam  = parseParam(req.query.saturation);
+      const contrastParam    = parseParam(req.query.contrast);
+      const sharpnessParam   = parseParam(req.query.sharpness);
+      cacheKey = `auto-b${brightnessParam}s${saturationParam}c${contrastParam}sh${sharpnessParam}`;
+
+      const cachedPathAuto = path.join(CACHE_DIR, `${photoId}-edit-${cacheKey}.jpg`);
+      if (!force && fs.existsSync(cachedPathAuto)) {
+        res.set({ "Cache-Control": "public, max-age=3600", "Content-Type": "image/jpeg" });
+        return res.sendFile(cachedPathAuto);
+      }
+      if (fs.existsSync(cachedPathAuto)) try { fs.unlinkSync(cachedPathAuto); } catch {}
+
+      const { channels } = await sharp(filepath).stats();
+      const meanBrightness = (channels[0].mean + channels[1].mean + channels[2].mean) / 3;
+      const meanStd        = (channels[0].stdev + channels[1].stdev + channels[2].stdev) / 3;
+      const applyMult = (base, mult) => 1 + (base - 1) * (mult / 100);
+      const baseBF = meanBrightness < 80 ? 1.28 : meanBrightness < 120 ? 1.18 : meanBrightness < 160 ? 1.10 : 1.05;
+      const baseCG = meanStd < 30 ? 1.22 : meanStd < 50 ? 1.15 : meanStd < 70 ? 1.10 : 1.06;
+      const baseSF = meanStd < 40 ? 1.40 : meanStd < 65 ? 1.28 : 1.18;
+      const bSigma = meanStd < 50 ? 1.2 : 0.9;
+      const bFlat  = meanStd < 50 ? 1.5 : 1.0;
+      const bJagged= meanStd < 50 ? 2.5 : 2.0;
+      const bf = applyMult(baseBF, brightnessParam);
+      const cg = applyMult(baseCG, contrastParam);
+      const co = -(cg - 1) * 55;
+      const sf = applyMult(baseSF, saturationParam);
+      const sm = sharpnessParam / 100;
+      await sharp(filepath)
+        .modulate({ brightness: bf, saturation: sf })
+        .linear(cg, co)
+        .clahe({ width: 32, height: 32, maxSlope: 3 })
+        .sharpen({ sigma: bSigma, m1: Math.max(0.01, bFlat * sm), m2: Math.max(0.01, bJagged * sm) })
+        .jpeg({ quality: 92, progressive: true })
+        .toFile(cachedPathAuto);
+      console.log(`[AI-auto] ${safeName}: brightness=${meanBrightness.toFixed(1)} std=${meanStd.toFixed(1)}`);
       res.set({ "Cache-Control": "public, max-age=3600", "Content-Type": "image/jpeg" });
-      return res.sendFile(cachedPath);
+      return res.sendFile(cachedPathAuto);
     }
-    // Delete stale cache file before re-processing so a crashed previous run
-    // doesn't leave a corrupt file that gets served forever
-    if (fs.existsSync(cachedPath)) try { fs.unlinkSync(cachedPath); } catch {}
 
-    // ── Adaptive AI enhancement pipeline ──────────────────────────────────
-    // Step 1: analyse the image to understand its actual tonal characteristics
-    const { channels } = await sharp(filepath).stats();
+    // ── Shared path for preset / prompt / manual ──────────────────────────
+    const cachedPathEdit = path.join(CACHE_DIR, `${photoId}-edit-${cacheKey}.jpg`);
+    if (!force && fs.existsSync(cachedPathEdit)) {
+      res.set({ "Cache-Control": "public, max-age=3600", "Content-Type": "image/jpeg" });
+      return res.sendFile(cachedPathEdit);
+    }
+    if (fs.existsSync(cachedPathEdit)) try { fs.unlinkSync(cachedPathEdit); } catch {}
 
-    // Mean brightness 0-255 across all channels
-    const meanBrightness = (channels[0].mean + channels[1].mean + channels[2].mean) / 3;
-    // Std deviation across channels — low = flat/low contrast, high = already punchy
-    const meanStd = (channels[0].stdev + channels[1].stdev + channels[2].stdev) / 3;
-
-    // Step 2: derive adaptive correction amounts based on measured values
-    // Dark images need more lift; bright images need less — but every image gets
-    // a meaningful minimum boost so the enhancement is always visible
-    const brightnessFactor = meanBrightness < 80  ? 1.28   // dark: strong lift
-                           : meanBrightness < 120 ? 1.18   // under-exposed: solid lift
-                           : meanBrightness < 160 ? 1.10   // normal: noticeable lift
-                           :                        1.05;  // bright: gentle lift
-
-    // Flat images need more contrast; already-contrasty images get less but still some
-    const contrastGain   = meanStd < 30  ? 1.22   // very flat
-                         : meanStd < 50  ? 1.15   // flat
-                         : meanStd < 70  ? 1.10   // normal
-                         :                 1.06;  // already contrasty — still a visible pop
-    const contrastOffset = -(contrastGain - 1) * 55;
-
-    // Saturation always gets a visible boost — minimum 18%
-    const saturationFactor = meanStd < 40 ? 1.40 : meanStd < 65 ? 1.28 : 1.18;
-
-    // Sharpening scaled by image softness
-    const sharpenSigma = meanStd < 50 ? 1.2 : 0.9;
-    const sharpenFlat  = meanStd < 50 ? 1.5 : 1.0;
-    const sharpenJagged= meanStd < 50 ? 2.5 : 2.0;
-
-    // Step 3: apply the adaptive pipeline
-    await sharp(filepath)
-      .modulate({ brightness: brightnessFactor, saturation: saturationFactor })
-      .linear(contrastGain, contrastOffset)
-      .clahe({ width: 32, height: 32, maxSlope: 3 })
-      .sharpen({ sigma: sharpenSigma, m1: sharpenFlat, m2: sharpenJagged })
-      .jpeg({ quality: 92, progressive: true })
-      .toFile(cachedPath);
-
-    console.log(`[AI] Enhanced ${safeName}: brightness=${meanBrightness.toFixed(1)} std=${meanStd.toFixed(1)} → brighten×${brightnessFactor} contrast×${contrastGain} sat×${saturationFactor}`);
-
+    await applyEditParams(filepath, editParams, cachedPathEdit);
+    console.log(`[AI-${mode}] ${safeName}: ${JSON.stringify(editParams)}`);
     res.set({ "Cache-Control": "public, max-age=3600", "Content-Type": "image/jpeg" });
-    res.sendFile(cachedPath);
+    res.sendFile(cachedPathEdit);
+
   } catch (err) {
-    console.error(`AI enhancement failed for ${safeName}:`, err.message);
-    // On failure fall back to original file
+    console.error(`AI edit failed for ${safeName}:`, err.message);
     res.set({ "Cache-Control": "no-cache", "Content-Type": "image/jpeg" });
     res.sendFile(filepath);
   }

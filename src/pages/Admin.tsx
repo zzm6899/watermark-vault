@@ -117,7 +117,7 @@ import {
   toggleBookingTask,
   aiEnhancePhoto,
 } from "@/lib/api";
-import type { CacheBreakdown } from "@/lib/api";
+import type { CacheBreakdown, ManualEditParams, PresetEditParams, PromptEditParams, PhotoEditRequest } from "@/lib/api";
 import RichTextEditor, { RichTextDisplay } from "@/components/RichTextEditor";
 import LoginPage from "@/pages/LoginPage";
 import type {
@@ -4710,6 +4710,21 @@ function PhotosView() {
   const [photoGridSize, setPhotoGridSize] = useState<"small" | "medium" | "large">("medium");
   const [lightboxPhoto, setLightboxPhoto] = useState<Photo | null>(null);
   const [lbShowBefore, setLbShowBefore] = useState(false);
+  const [lbEditOpen, setLbEditOpen] = useState(false);
+  const [lbEditTab, setLbEditTab] = useState<"auto" | "manual" | "presets" | "prompt">("auto");
+  // Auto tab sliders (multipliers 0–200, 100 = full adaptive)
+  const [lbAutoSliders, setLbAutoSliders] = useState({ brightness: 100, saturation: 100, contrast: 100, sharpness: 100 });
+  // Manual tab sliders (-100…+100, denoise/sharpness 0–100)
+  const [lbManualSliders, setLbManualSliders] = useState<Omit<ManualEditParams, "mode">>({
+    exposure: 0, highlights: 0, shadows: 0, contrast: 0,
+    vibrance: 0, saturation: 0, warmth: 0, clarity: 0, denoise: 0, sharpness: 60,
+  });
+  const [lbPromptText, setLbPromptText] = useState("");
+  // keep lbSliders alias for any legacy references
+  const lbSliders = lbAutoSliders;
+  const setLbSliders = setLbAutoSliders;
+  const lbSliderOpen = lbEditOpen;
+  const setLbSliderOpen = setLbEditOpen;
   const [enhancingIds, setEnhancingIds] = useState<Set<string>>(new Set());
   const displayPhotosRef = useRef<(Photo & { source: string })[]>([]);
 
@@ -4719,11 +4734,11 @@ function PhotosView() {
   useEffect(() => {
     if (!lightboxPhoto) return;
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") { setLightboxPhoto(null); return; }
+      if (e.key === "Escape") { setLightboxPhoto(null); setLbSliderOpen(false); return; }
       const photos = displayPhotosRef.current;
       const idx = photos.findIndex(p => p.id === lightboxPhoto.id);
-      if (e.key === "ArrowLeft" && idx > 0) { setLightboxPhoto(photos[idx - 1]); setLbShowBefore(false); }
-      else if (e.key === "ArrowRight" && idx < photos.length - 1) { setLightboxPhoto(photos[idx + 1]); setLbShowBefore(false); }
+      if (e.key === "ArrowLeft" && idx > 0) { setLightboxPhoto(photos[idx - 1]); setLbShowBefore(false); setLbSliderOpen(false); }
+      else if (e.key === "ArrowRight" && idx < photos.length - 1) { setLightboxPhoto(photos[idx + 1]); setLbShowBefore(false); setLbSliderOpen(false); }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
@@ -5218,9 +5233,10 @@ function PhotosView() {
     }
   };
 
-  const handleAIEnhance = async (photo: Photo & { source: string }) => {
+  const handleAIEnhance = async (photo: Photo & { source: string }, params?: PhotoEditRequest) => {
     if (enhancingIds.has(photo.id)) return;
     setEnhancingIds(prev => new Set(prev).add(photo.id));
+    setLbEditOpen(false);
     try {
       // Always use the true original file — strip any ?query so the filename is clean.
       // If the photo was previously enhanced, beforeSrc holds the real original.
@@ -5228,7 +5244,7 @@ function PhotosView() {
       const originalSrc = rawOriginalSrc.split("?")[0];
 
       // Step 1: fetch enhanced image data with auth headers → blob for display + upload
-      const blobUrl = await aiEnhancePhoto(originalSrc);
+      const blobUrl = await aiEnhancePhoto(originalSrc, params);
 
       // Step 2: re-upload the enhanced blob as a new server file so the edit persists
       // across page reloads. We keep the original filename so it's easy to identify.
@@ -5452,7 +5468,7 @@ function PhotosView() {
             {lbIndex > 0 && (
               <button
                 className="absolute left-2 sm:left-4 top-1/2 -translate-y-1/2 w-11 h-11 rounded-full bg-white/10 hover:bg-white/20 active:bg-white/30 text-white flex items-center justify-center transition-colors z-10"
-                onClick={e => { e.stopPropagation(); setLightboxPhoto(displayPhotos[lbIndex - 1]); setLbShowBefore(false); }}
+                onClick={e => { e.stopPropagation(); setLightboxPhoto(displayPhotos[lbIndex - 1]); setLbShowBefore(false); setLbSliderOpen(false); }}
                 aria-label="Previous photo"
               >
                 <ChevronLeft className="w-6 h-6" />
@@ -5462,7 +5478,7 @@ function PhotosView() {
             {lbIndex < displayPhotos.length - 1 && (
               <button
                 className="absolute right-2 sm:right-16 top-1/2 -translate-y-1/2 w-11 h-11 rounded-full bg-white/10 hover:bg-white/20 active:bg-white/30 text-white flex items-center justify-center transition-colors z-10"
-                onClick={e => { e.stopPropagation(); setLightboxPhoto(displayPhotos[lbIndex + 1]); setLbShowBefore(false); }}
+                onClick={e => { e.stopPropagation(); setLightboxPhoto(displayPhotos[lbIndex + 1]); setLbShowBefore(false); setLbSliderOpen(false); }}
                 aria-label="Next photo"
               >
                 <ChevronRight className="w-6 h-6" />
@@ -5497,19 +5513,185 @@ function PhotosView() {
                   {lbShowBefore ? "Show Enhanced" : "Show Original"}
                 </button>
               )}
-              {/* AI Enhance button in lightbox */}
+              {/* AI Edit button in lightbox */}
               <button
-                onClick={e => { e.stopPropagation(); handleAIEnhance(lightboxPhoto as Photo & { source: string }); }}
+                onClick={e => { e.stopPropagation(); if (!enhancingIds.has(lightboxPhoto.id)) setLbEditOpen(v => !v); }}
                 disabled={enhancingIds.has(lightboxPhoto.id)}
-                className="flex items-center gap-1.5 bg-black/50 hover:bg-white/20 text-white px-3 py-1 rounded-full text-xs font-body transition-colors disabled:opacity-50 shrink-0"
-                title="AI Enhance"
+                className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-body transition-colors disabled:opacity-50 shrink-0 ${lbEditOpen ? "bg-primary text-white" : "bg-black/50 hover:bg-white/20 text-white"}`}
+                title="AI Edit"
               >
                 {enhancingIds.has(lightboxPhoto.id)
-                  ? <><div className="w-3 h-3 rounded-full border border-white border-t-transparent animate-spin" /><span>Enhancing…</span></>
-                  : <><Sparkles className="w-3 h-3" /><span>{lightboxPhoto.beforeSrc ? "Re-enhance" : "AI Enhance"}</span></>
+                  ? <><div className="w-3 h-3 rounded-full border border-white border-t-transparent animate-spin" /><span>Processing…</span></>
+                  : <><Sparkles className="w-3 h-3" /><span>{lightboxPhoto.beforeSrc ? "Re-edit" : "AI Edit"}</span></>
                 }
               </button>
             </div>
+
+            {/* ── Full AI Editing Panel ─────────────────────────────────────── */}
+            {lbEditOpen && !enhancingIds.has(lightboxPhoto.id) && (() => {
+              const presets: { id: PresetEditParams["preset"]; label: string; emoji: string; desc: string }[] = [
+                { id: "moody",  label: "Moody",       emoji: "🌑", desc: "Dark & cinematic" },
+                { id: "bright", label: "Bright",      emoji: "☀️", desc: "Light & airy" },
+                { id: "film",   label: "Film",        emoji: "🎞️", desc: "Warm analogue" },
+                { id: "bw",     label: "B&W",         emoji: "⬛", desc: "Black & white" },
+                { id: "fade",   label: "Fade",        emoji: "🌫️", desc: "Matte & soft" },
+                { id: "pop",    label: "Pop",         emoji: "🎨", desc: "Vivid & punchy" },
+                { id: "golden", label: "Golden",      emoji: "🌅", desc: "Golden hour" },
+                { id: "cool",   label: "Cool",        emoji: "❄️",  desc: "Blue tones" },
+              ];
+              const manualGroups: { label: string; key: keyof Omit<ManualEditParams,"mode">; min: number; max: number; step: number }[][] = [
+                [
+                  { label: "Exposure",   key: "exposure",   min: -100, max: 100, step: 2 },
+                  { label: "Highlights", key: "highlights", min: -100, max: 100, step: 2 },
+                  { label: "Shadows",    key: "shadows",    min: -100, max: 100, step: 2 },
+                  { label: "Contrast",   key: "contrast",   min: -100, max: 100, step: 2 },
+                ],
+                [
+                  { label: "Vibrance",   key: "vibrance",   min: -100, max: 100, step: 2 },
+                  { label: "Saturation", key: "saturation", min: -100, max: 100, step: 2 },
+                  { label: "Warmth",     key: "warmth",     min: -100, max: 100, step: 2 },
+                  { label: "Clarity",    key: "clarity",    min: -100, max: 100, step: 2 },
+                ],
+                [
+                  { label: "Denoise",    key: "denoise",    min: 0, max: 100, step: 2 },
+                  { label: "Sharpness",  key: "sharpness",  min: 0, max: 100, step: 2 },
+                ],
+              ];
+              const tabs: { id: typeof lbEditTab; label: string }[] = [
+                { id: "auto",    label: "Auto" },
+                { id: "manual",  label: "Sliders" },
+                { id: "presets", label: "Presets" },
+                { id: "prompt",  label: "Prompt" },
+              ];
+              return (
+                <div
+                  className="absolute bottom-16 left-1/2 -translate-x-1/2 w-80 bg-black/85 backdrop-blur-md rounded-2xl z-20 border border-white/10 overflow-hidden shadow-2xl"
+                  onClick={e => e.stopPropagation()}
+                >
+                  {/* Tab bar */}
+                  <div className="flex border-b border-white/10">
+                    {tabs.map(t => (
+                      <button
+                        key={t.id}
+                        onClick={() => setLbEditTab(t.id)}
+                        className={`flex-1 py-2.5 text-[10px] font-body tracking-wider uppercase transition-colors ${lbEditTab === t.id ? "text-white bg-white/10" : "text-white/40 hover:text-white/70"}`}
+                      >
+                        {t.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="p-4 max-h-72 overflow-y-auto">
+                    {/* ── Auto tab ────────────────────────────────────────── */}
+                    {lbEditTab === "auto" && (
+                      <div>
+                        <p className="text-[10px] font-body text-white/40 mb-3 text-center">AI analyses each photo and sets the right amount automatically. Scale each axis here.</p>
+                        {(["brightness","saturation","contrast","sharpness"] as const).map(key => (
+                          <div key={key} className="mb-3">
+                            <div className="flex justify-between items-center mb-1">
+                              <span className="text-[10px] font-body tracking-wider uppercase text-white/70 capitalize">{key}</span>
+                              <span className="text-[10px] font-body text-white/50 tabular-nums w-8 text-right">{lbAutoSliders[key]}</span>
+                            </div>
+                            <input type="range" min={0} max={200} step={5} value={lbAutoSliders[key]}
+                              onChange={e => setLbAutoSliders(prev => ({ ...prev, [key]: Number(e.target.value) }))}
+                              className="w-full accent-primary h-1 cursor-pointer" />
+                            <div className="flex justify-between text-[9px] font-body text-white/25 mt-0.5"><span>Off</span><span>Auto</span><span>2×</span></div>
+                          </div>
+                        ))}
+                        <div className="flex gap-2 mt-4">
+                          <button onClick={() => setLbAutoSliders({ brightness: 100, saturation: 100, contrast: 100, sharpness: 100 })}
+                            className="flex-1 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 text-white text-[10px] font-body transition-colors">Reset</button>
+                          <button onClick={() => handleAIEnhance(lightboxPhoto as Photo & { source: string }, lbAutoSliders)}
+                            className="flex-1 py-1.5 rounded-lg bg-primary hover:bg-primary/90 text-white text-[10px] font-body font-semibold transition-colors flex items-center justify-center gap-1">
+                            <Sparkles className="w-3 h-3" /> Apply
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* ── Manual sliders tab ──────────────────────────────── */}
+                    {lbEditTab === "manual" && (
+                      <div>
+                        {manualGroups.map((group, gi) => (
+                          <div key={gi} className={gi > 0 ? "mt-1 pt-3 border-t border-white/10" : ""}>
+                            {group.map(({ label, key, min, max, step }) => (
+                              <div key={key} className="mb-3">
+                                <div className="flex justify-between items-center mb-1">
+                                  <span className="text-[10px] font-body tracking-wider uppercase text-white/70">{label}</span>
+                                  <span className="text-[10px] font-body text-white/50 tabular-nums w-8 text-right">{lbManualSliders[key] ?? 0}</span>
+                                </div>
+                                <input type="range" min={min} max={max} step={step} value={lbManualSliders[key] ?? 0}
+                                  onChange={e => setLbManualSliders(prev => ({ ...prev, [key]: Number(e.target.value) }))}
+                                  className="w-full accent-primary h-1 cursor-pointer" />
+                                {min < 0 && <div className="flex justify-between text-[9px] font-body text-white/25 mt-0.5"><span>−</span><span>0</span><span>+</span></div>}
+                              </div>
+                            ))}
+                          </div>
+                        ))}
+                        <div className="flex gap-2 mt-4">
+                          <button onClick={() => setLbManualSliders({ exposure:0, highlights:0, shadows:0, contrast:0, vibrance:0, saturation:0, warmth:0, clarity:0, denoise:0, sharpness:60 })}
+                            className="flex-1 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 text-white text-[10px] font-body transition-colors">Reset</button>
+                          <button onClick={() => handleAIEnhance(lightboxPhoto as Photo & { source: string }, { mode: "manual", ...lbManualSliders })}
+                            className="flex-1 py-1.5 rounded-lg bg-primary hover:bg-primary/90 text-white text-[10px] font-body font-semibold transition-colors flex items-center justify-center gap-1">
+                            <Sparkles className="w-3 h-3" /> Apply
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* ── Presets tab ─────────────────────────────────────── */}
+                    {lbEditTab === "presets" && (
+                      <div className="grid grid-cols-2 gap-2">
+                        {presets.map(preset => (
+                          <button
+                            key={preset.id}
+                            onClick={() => handleAIEnhance(lightboxPhoto as Photo & { source: string }, { mode: "preset", preset: preset.id })}
+                            className="flex flex-col items-center gap-1 p-3 rounded-xl bg-white/5 hover:bg-white/15 border border-white/10 hover:border-white/25 transition-all text-left group"
+                          >
+                            <span className="text-xl leading-none">{preset.emoji}</span>
+                            <span className="text-[11px] font-body font-semibold text-white mt-0.5">{preset.label}</span>
+                            <span className="text-[9px] font-body text-white/40 group-hover:text-white/60">{preset.desc}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* ── Prompt tab ──────────────────────────────────────── */}
+                    {lbEditTab === "prompt" && (
+                      <div>
+                        <p className="text-[10px] font-body text-white/40 mb-3">Describe how you want the photo to look. Examples: <em className="text-white/60">"warmer and brighter"</em>, <em className="text-white/60">"moody with crushed blacks"</em>, <em className="text-white/60">"reduce noise and soften skin"</em></p>
+                        <textarea
+                          value={lbPromptText}
+                          onChange={e => setLbPromptText(e.target.value)}
+                          placeholder="e.g. make it warmer and lift the shadows…"
+                          className="w-full bg-white/10 border border-white/15 rounded-lg px-3 py-2 text-xs font-body text-white placeholder:text-white/30 resize-none focus:outline-none focus:border-primary/60 transition-colors"
+                          rows={3}
+                          maxLength={200}
+                        />
+                        <div className="flex justify-between items-center mt-1 mb-3">
+                          <span className="text-[9px] font-body text-white/25">{lbPromptText.length}/200</span>
+                        </div>
+                        <div className="flex flex-wrap gap-1.5 mb-3">
+                          {["warmer & brighter", "moody & dark", "lift shadows", "vivid colors", "film look", "soft & dreamy", "black & white", "crisp & sharp"].map(suggestion => (
+                            <button key={suggestion} onClick={() => setLbPromptText(suggestion)}
+                              className="px-2 py-0.5 rounded-full bg-white/10 hover:bg-white/20 text-[9px] font-body text-white/60 hover:text-white transition-colors border border-white/10">
+                              {suggestion}
+                            </button>
+                          ))}
+                        </div>
+                        <button
+                          disabled={!lbPromptText.trim()}
+                          onClick={() => handleAIEnhance(lightboxPhoto as Photo & { source: string }, { mode: "prompt", prompt: lbPromptText.trim() })}
+                          className="w-full py-2 rounded-lg bg-primary hover:bg-primary/90 disabled:opacity-40 text-white text-[10px] font-body font-semibold transition-colors flex items-center justify-center gap-1.5"
+                        >
+                          <Sparkles className="w-3 h-3" /> Apply
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         );
       })()}

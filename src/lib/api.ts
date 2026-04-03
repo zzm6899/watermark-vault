@@ -372,20 +372,84 @@ export function deletePhotoFromServer(url: string): void {
   fetch(`/api/upload/${encodeURIComponent(filename)}`, { method: "DELETE" }).catch(() => {});
 }
 
-/** Trigger AI enhancement for a photo and return a blob URL of the enhanced image.
+/** Auto-enhance multipliers (legacy / "AI Enhance" button) */
+export interface AIEnhanceParams {
+  /** 0–200: scales adaptive brightness boost. 100 = full auto, 0 = no boost, 200 = double boost */
+  brightness?: number;
+  saturation?: number;
+  contrast?: number;
+  sharpness?: number;
+}
+
+/** Manual edit sliders — all values -100…+100 (denoise/sharpness 0–100) */
+export interface ManualEditParams {
+  mode: "manual";
+  exposure?: number;    // -100…+100
+  highlights?: number;  // -100…+100
+  shadows?: number;     // -100…+100
+  contrast?: number;    // -100…+100
+  vibrance?: number;    // -100…+100
+  saturation?: number;  // -100…+100
+  warmth?: number;      // -100…+100  (negative = cool)
+  clarity?: number;     // -100…+100
+  denoise?: number;     // 0…100
+  sharpness?: number;   // 0…100
+}
+
+/** Preset edit request */
+export interface PresetEditParams {
+  mode: "preset";
+  preset: "moody" | "bright" | "film" | "bw" | "fade" | "pop" | "golden" | "cool";
+}
+
+/** Natural language prompt edit */
+export interface PromptEditParams {
+  mode: "prompt";
+  prompt: string;
+}
+
+export type PhotoEditRequest = AIEnhanceParams | ManualEditParams | PresetEditParams | PromptEditParams;
+
+/** Fetch the edited version of a photo and return a local blob URL for display.
  *
- * The server endpoint requires admin auth, but <img src> tags cannot send custom
- * headers. We therefore fetch the image data ourselves with the Authorization header
- * and return a local blob:// URL so the browser can display it without hitting the
- * protected endpoint again.
+ * The server endpoint requires admin auth — we use fetch() + blob URL to bypass
+ * the <img src> header limitation.
+ *
+ * Pass one of:
+ *   - AIEnhanceParams (no mode) → adaptive auto enhancement with optional multipliers
+ *   - ManualEditParams          → direct slider values
+ *   - PresetEditParams          → named look
+ *   - PromptEditParams          → natural language description
  */
-export async function aiEnhancePhoto(photoSrc: string): Promise<string> {
+export async function aiEnhancePhoto(photoSrc: string, params?: PhotoEditRequest): Promise<string> {
   const filename = photoSrc.split("/").pop()?.split("?")[0]?.trim();
   if (!filename) throw new Error("Invalid photo URL");
-  // force=1 bypasses any stale server-side cache so every click re-runs the pipeline
-  const url = `/api/photo/${encodeURIComponent(filename)}/ai-enhanced?force=1`;
+
+  const qs = new URLSearchParams({ force: "1" });
+
+  if (!params || !("mode" in params)) {
+    // Legacy auto mode with optional multipliers
+    const p = params as AIEnhanceParams | undefined;
+    if (p?.brightness != null) qs.set("brightness", String(p.brightness));
+    if (p?.saturation != null) qs.set("saturation", String(p.saturation));
+    if (p?.contrast   != null) qs.set("contrast",   String(p.contrast));
+    if (p?.sharpness  != null) qs.set("sharpness",  String(p.sharpness));
+  } else if (params.mode === "preset") {
+    qs.set("mode", "preset");
+    qs.set("preset", params.preset);
+  } else if (params.mode === "prompt") {
+    qs.set("mode", "prompt");
+    qs.set("prompt", params.prompt.slice(0, 200));
+  } else if (params.mode === "manual") {
+    qs.set("mode", "manual");
+    const mp = params as ManualEditParams;
+    const keys = ["exposure","highlights","shadows","contrast","vibrance","saturation","warmth","clarity","denoise","sharpness"] as const;
+    for (const k of keys) { if (mp[k] != null) qs.set(k, String(mp[k])); }
+  }
+
+  const url = `/api/photo/${encodeURIComponent(filename)}/ai-enhanced?${qs.toString()}`;
   const res = await fetch(url, { headers: adminAuthHeaders() });
-  if (!res.ok) throw new Error(`Enhancement failed (${res.status})`);
+  if (!res.ok) throw new Error(`Edit failed (${res.status})`);
   const blob = await res.blob();
   return URL.createObjectURL(blob);
 }
