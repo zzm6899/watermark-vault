@@ -5217,11 +5217,14 @@ function PhotosView() {
     if (enhancingIds.has(photo.id)) return;
     setEnhancingIds(prev => new Set(prev).add(photo.id));
     try {
-      const enhancedUrl = await aiEnhancePhoto(photo.src);
-      const originalSrc = photo.src;
+      // Use the original source (before any prior enhancement) so the filename extraction is always correct
+      const originalSrc = (photo as any).beforeSrc || photo.src;
+      const enhancedUrl = await aiEnhancePhoto(originalSrc);
+      // Add a cache-buster so the browser fetches the freshly enhanced version
+      const enhancedUrlBusted = `${enhancedUrl}?t=${Date.now()}`;
       if (photo.source === "Library") {
         const updated = libraryPhotos.map(p =>
-          p.id === photo.id ? { ...p, src: enhancedUrl, beforeSrc: originalSrc } : p
+          p.id === photo.id ? { ...p, src: enhancedUrlBusted, beforeSrc: originalSrc } : p
         );
         setPhotoLibrary(updated);
         setLibraryPhotosState(updated);
@@ -5229,12 +5232,14 @@ function PhotosView() {
         const alb = albums.find(a => a.title === photo.source);
         if (alb) {
           const updated = { ...alb, photos: alb.photos.map(p =>
-            p.id === photo.id ? { ...p, src: enhancedUrl, beforeSrc: originalSrc } : p
+            p.id === photo.id ? { ...p, src: enhancedUrlBusted, beforeSrc: originalSrc } : p
           ) };
           updateAlbum(updated);
           setAlbumsState(getAlbums());
         }
       }
+      // Also update the lightbox if this photo is currently open
+      setLightboxPhoto(prev => prev?.id === photo.id ? { ...prev, src: enhancedUrlBusted } : prev);
       toast.success("AI enhancement applied");
     } catch {
       toast.error("AI enhancement failed");
@@ -5433,6 +5438,18 @@ function PhotosView() {
               {displayPhotos.length > 1 && (
                 <span className="text-xs font-body bg-black/40 px-2 py-1 rounded-full text-white/60 whitespace-nowrap shrink-0">{lbIndex + 1} / {displayPhotos.length}</span>
               )}
+              {/* AI Enhance button in lightbox */}
+              <button
+                onClick={e => { e.stopPropagation(); handleAIEnhance(lightboxPhoto as Photo & { source: string }); }}
+                disabled={enhancingIds.has(lightboxPhoto.id)}
+                className="flex items-center gap-1.5 bg-black/50 hover:bg-white/20 text-white px-3 py-1 rounded-full text-xs font-body transition-colors disabled:opacity-50 shrink-0"
+                title="AI Enhance"
+              >
+                {enhancingIds.has(lightboxPhoto.id)
+                  ? <><div className="w-3 h-3 rounded-full border border-white border-t-transparent animate-spin" /><span>Enhancing…</span></>
+                  : <><Sparkles className="w-3 h-3" /><span>AI Enhance</span></>
+                }
+              </button>
             </div>
           </div>
         );

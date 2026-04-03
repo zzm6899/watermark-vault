@@ -365,7 +365,7 @@ export async function aiEnhancePhoto(photoSrc: string): Promise<string> {
   const filename = photoSrc.split("/").pop()?.split("?")[0]?.trim();
   if (!filename) throw new Error("Invalid photo URL");
   const url = `/api/photo/${encodeURIComponent(filename)}/ai-enhanced`;
-  const res = await fetch(url);
+  const res = await fetch(url, { headers: adminAuthHeaders() });
   if (!res.ok) throw new Error("Enhancement failed");
   return url;
 }
