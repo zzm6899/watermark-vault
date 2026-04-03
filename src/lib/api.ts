@@ -402,24 +402,58 @@ export interface PresetEditParams {
   preset: "moody" | "bright" | "film" | "bw" | "fade" | "pop" | "golden" | "cool";
 }
 
+/** Uploaded XMP preset by server-assigned id */
+export interface XmpEditParams {
+  mode: "xmp";
+  xmpId: string;
+}
+
+/** Adobe-style Auto: server analyses image and picks optimal params */
+export interface AdobeAutoParams {
+  mode: "adobe-auto";
+}
+
 /** Natural language prompt edit */
 export interface PromptEditParams {
   mode: "prompt";
   prompt: string;
 }
 
-export type PhotoEditRequest = AIEnhanceParams | ManualEditParams | PresetEditParams | PromptEditParams;
+export type PhotoEditRequest = AIEnhanceParams | ManualEditParams | PresetEditParams | XmpEditParams | AdobeAutoParams | PromptEditParams;
+
+/** A stored XMP preset returned by the server */
+export interface XmpPreset {
+  id: string;
+  name: string;
+  params: Omit<ManualEditParams, "mode">;
+}
+
+/** List all uploaded XMP presets */
+export async function listXmpPresets(): Promise<XmpPreset[]> {
+  const res = await fetch("/api/xmp-presets", { headers: adminAuthHeaders() });
+  if (!res.ok) return [];
+  return res.json();
+}
+
+/** Upload XMP files and return the newly created presets */
+export async function uploadXmpPresets(files: File[]): Promise<XmpPreset[]> {
+  const formData = new FormData();
+  for (const f of files) formData.append("presets", f);
+  const res = await fetch("/api/xmp-presets", { method: "POST", headers: adminAuthHeaders(), body: formData });
+  if (!res.ok) throw new Error(`XMP upload failed (${res.status})`);
+  const { added } = await res.json();
+  return added;
+}
+
+/** Delete an uploaded XMP preset */
+export async function deleteXmpPreset(id: string): Promise<void> {
+  await fetch(`/api/xmp-presets/${encodeURIComponent(id)}`, { method: "DELETE", headers: adminAuthHeaders() });
+}
 
 /** Fetch the edited version of a photo and return a local blob URL for display.
  *
  * The server endpoint requires admin auth — we use fetch() + blob URL to bypass
  * the <img src> header limitation.
- *
- * Pass one of:
- *   - AIEnhanceParams (no mode) → adaptive auto enhancement with optional multipliers
- *   - ManualEditParams          → direct slider values
- *   - PresetEditParams          → named look
- *   - PromptEditParams          → natural language description
  */
 export async function aiEnhancePhoto(photoSrc: string, params?: PhotoEditRequest): Promise<string> {
   const filename = photoSrc.split("/").pop()?.split("?")[0]?.trim();
@@ -437,6 +471,11 @@ export async function aiEnhancePhoto(photoSrc: string, params?: PhotoEditRequest
   } else if (params.mode === "preset") {
     qs.set("mode", "preset");
     qs.set("preset", params.preset);
+  } else if (params.mode === "xmp") {
+    qs.set("mode", "xmp");
+    qs.set("xmpId", params.xmpId);
+  } else if (params.mode === "adobe-auto") {
+    qs.set("mode", "adobe-auto");
   } else if (params.mode === "prompt") {
     qs.set("mode", "prompt");
     qs.set("prompt", params.prompt.slice(0, 200));

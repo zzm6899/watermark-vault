@@ -116,8 +116,11 @@ import {
   updateBookingTasks,
   toggleBookingTask,
   aiEnhancePhoto,
+  listXmpPresets,
+  uploadXmpPresets,
+  deleteXmpPreset,
 } from "@/lib/api";
-import type { CacheBreakdown, ManualEditParams, PresetEditParams, PromptEditParams, PhotoEditRequest } from "@/lib/api";
+import type { CacheBreakdown, ManualEditParams, PresetEditParams, XmpPreset, PhotoEditRequest } from "@/lib/api";
 import RichTextEditor, { RichTextDisplay } from "@/components/RichTextEditor";
 import LoginPage from "@/pages/LoginPage";
 import type {
@@ -4711,7 +4714,9 @@ function PhotosView() {
   const [lightboxPhoto, setLightboxPhoto] = useState<Photo | null>(null);
   const [lbShowBefore, setLbShowBefore] = useState(false);
   const [lbEditOpen, setLbEditOpen] = useState(false);
-  const [lbEditTab, setLbEditTab] = useState<"auto" | "manual" | "presets" | "prompt">("auto");
+  const [lbEditTab, setLbEditTab] = useState<"auto" | "manual" | "presets" | "xmp" | "prompt">("auto");
+  const [xmpPresets, setXmpPresets] = useState<XmpPreset[]>([]);
+  const [xmpLoading, setXmpLoading] = useState(false);
   // Auto tab sliders (multipliers 0–200, 100 = full adaptive)
   const [lbAutoSliders, setLbAutoSliders] = useState({ brightness: 100, saturation: 100, contrast: 100, sharpness: 100 });
   // Manual tab sliders (-100…+100, denoise/sharpness 0–100)
@@ -4743,6 +4748,14 @@ function PhotosView() {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [lightboxPhoto]);
+
+  // Load XMP presets when the XMP tab is first opened
+  useEffect(() => {
+    if (lbEditOpen && lbEditTab === "xmp" && xmpPresets.length === 0 && !xmpLoading) {
+      setXmpLoading(true);
+      listXmpPresets().then(p => { setXmpPresets(p); setXmpLoading(false); }).catch(() => setXmpLoading(false));
+    }
+  }, [lbEditOpen, lbEditTab]);
 
   // Expand upload dropzone when files are dragged into the page
   useEffect(() => {
@@ -5561,6 +5574,7 @@ function PhotosView() {
                 { id: "auto",    label: "Auto" },
                 { id: "manual",  label: "Sliders" },
                 { id: "presets", label: "Presets" },
+                { id: "xmp",     label: "My XMPs" },
                 { id: "prompt",  label: "Prompt" },
               ];
               return (
@@ -5585,7 +5599,14 @@ function PhotosView() {
                     {/* ── Auto tab ────────────────────────────────────────── */}
                     {lbEditTab === "auto" && (
                       <div>
-                        <p className="text-[10px] font-body text-white/40 mb-3 text-center">AI analyses each photo and sets the right amount automatically. Scale each axis here.</p>
+                        {/* Adobe Auto button */}
+                        <button
+                          onClick={() => handleAIEnhance(lightboxPhoto as Photo & { source: string }, { mode: "adobe-auto" })}
+                          className="w-full mb-3 py-2 rounded-xl bg-gradient-to-r from-blue-600/80 to-violet-600/80 hover:from-blue-500/90 hover:to-violet-500/90 text-white text-[10px] font-body font-semibold tracking-wider transition-all flex items-center justify-center gap-1.5 border border-white/10"
+                        >
+                          <Sparkles className="w-3 h-3" /> Adobe Auto
+                        </button>
+                        <p className="text-[10px] font-body text-white/40 mb-3 text-center">Or manually scale each axis below.</p>
                         {(["brightness","saturation","contrast","sharpness"] as const).map(key => (
                           <div key={key} className="mb-3">
                             <div className="flex justify-between items-center mb-1">
@@ -5686,6 +5707,65 @@ function PhotosView() {
                         >
                           <Sparkles className="w-3 h-3" /> Apply
                         </button>
+                      </div>
+                    )}
+
+                    {/* ── My XMPs tab ─────────────────────────────────────── */}
+                    {lbEditTab === "xmp" && (
+                      <div>
+                        {/* Upload area */}
+                        <label className="block w-full mb-3 cursor-pointer">
+                          <div className="border border-dashed border-white/20 hover:border-primary/60 rounded-xl p-3 text-center transition-colors">
+                            <p className="text-[10px] font-body text-white/50">Drop .xmp files here or click to upload</p>
+                            <p className="text-[9px] font-body text-white/25 mt-0.5">Lightroom / ACR presets</p>
+                          </div>
+                          <input
+                            type="file"
+                            accept=".xmp"
+                            multiple
+                            className="hidden"
+                            onChange={async (e) => {
+                              const files = Array.from(e.target.files || []);
+                              if (!files.length) return;
+                              setXmpLoading(true);
+                              try {
+                                const added = await uploadXmpPresets(files);
+                                setXmpPresets(prev => [...prev, ...added]);
+                                toast.success(`${added.length} preset${added.length !== 1 ? "s" : ""} imported`);
+                              } catch { toast.error("Failed to import XMP files"); }
+                              finally { setXmpLoading(false); e.target.value = ""; }
+                            }}
+                          />
+                        </label>
+
+                        {/* Preset list */}
+                        {xmpLoading && <p className="text-[10px] font-body text-white/40 text-center py-4">Loading…</p>}
+                        {!xmpLoading && xmpPresets.length === 0 && (
+                          <p className="text-[10px] font-body text-white/30 text-center py-4">No XMP presets yet — upload some above</p>
+                        )}
+                        {!xmpLoading && xmpPresets.map(xp => (
+                          <div key={xp.id} className="flex items-center gap-2 mb-2 group">
+                            <button
+                              onClick={() => handleAIEnhance(lightboxPhoto as Photo & { source: string }, { mode: "xmp", xmpId: xp.id })}
+                              className="flex-1 text-left px-3 py-2 rounded-lg bg-white/5 hover:bg-white/15 border border-white/10 hover:border-primary/40 transition-all"
+                            >
+                              <p className="text-[11px] font-body text-white truncate">{xp.name}</p>
+                              <p className="text-[9px] font-body text-white/35 mt-0.5">
+                                exp {xp.params.exposure > 0 ? "+" : ""}{xp.params.exposure} · sat {xp.params.saturation > 0 ? "+" : ""}{xp.params.saturation} · warm {xp.params.warmth > 0 ? "+" : ""}{xp.params.warmth}
+                              </p>
+                            </button>
+                            <button
+                              onClick={async () => {
+                                await deleteXmpPreset(xp.id);
+                                setXmpPresets(prev => prev.filter(p => p.id !== xp.id));
+                              }}
+                              className="w-6 h-6 rounded-lg bg-white/5 hover:bg-red-500/30 text-white/30 hover:text-red-300 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all shrink-0"
+                              title="Remove preset"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          </div>
+                        ))}
                       </div>
                     )}
                   </div>

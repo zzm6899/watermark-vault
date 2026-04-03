@@ -1,0 +1,66 @@
+{
+  "xmp_preseeded_Epic_ah": {
+    "name": "Epic Ah",
+    "params": {
+      "exposure": 0,
+      "highlights": 0,
+      "shadows": 0,
+      "contrast": 0,
+      "vibrance": 0,
+      "saturation": 0,
+      "warmth": 0,
+      "clarity": 0,
+      "denoise": 0,
+      "sharpness": 0
+    },
+    "uploadedAt": "2026-04-03T15:14:22.103Z"
+  },
+  "xmp_preseeded_DETAILS__Face_Softening": {
+    "name": "DETAILS: Face Softening",
+    "params": {
+      "exposure": 0,
+      "highlights": 0,
+      "shadows": 0,
+      "contrast": 0,
+      "vibrance": 0,
+      "saturation": 0,
+      "warmth": 0,
+      "clarity": -21,
+      "denoise": 0,
+      "sharpness": 0
+    },
+    "uploadedAt": "2026-04-03T15:14:22.106Z"
+  },
+  "xmp_preseeded_DETAILS__Teeth_Whitening": {
+    "name": "DETAILS: Teeth Whitening",
+    "params": {
+      "exposure": 1,
+      "highlights": 0,
+      "shadows": 0,
+      "contrast": 0,
+      "vibrance": 0,
+      "saturation": -20,
+      "warmth": 0,
+      "clarity": 0,
+      "denoise": 0,
+      "sharpness": 0
+    },
+    "uploadedAt": "2026-04-03T15:14:22.106Z"
+  },
+  "xmp_preseeded_DETAILS__Eye_Whitening": {
+    "name": "DETAILS: Eye Whitening",
+    "params": {
+      "exposure": 2,
+      "highlights": 0,
+      "shadows": 0,
+      "contrast": 0,
+      "vibrance": 0,
+      "saturation": 0,
+      "warmth": 0,
+      "clarity": 0,
+      "denoise": 0,
+      "sharpness": 0
+    },
+    "uploadedAt": "2026-04-03T15:14:22.107Z"
+  }
+}

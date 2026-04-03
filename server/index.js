@@ -1680,6 +1680,210 @@ async function applyEditParams(filepath, params, outputPath) {
   await pipeline.jpeg({ quality: 92, progressive: true }).toFile(outputPath);
 }
 
+// ── XMP preset store ──────────────────────────────────────────────────────────
+// Uploaded XMP presets are stored as JSON in _cache/xmp-presets.json
+const XMP_PRESETS_FILE = path.join(CACHE_DIR, "xmp-presets.json");
+
+function loadXmpPresets() {
+  try { return JSON.parse(fs.readFileSync(XMP_PRESETS_FILE, "utf8")); } catch { return {}; }
+}
+function saveXmpPresets(presets) {
+  try { fs.writeFileSync(XMP_PRESETS_FILE, JSON.stringify(presets, null, 2)); } catch {}
+}
+
+// Parse an XMP file buffer into our edit-params format.
+// Handles both global CRS attributes and MaskGroupBasedCorrections (approximated globally).
+function parseXmpToEditParams(xmlText) {
+  // Helper: extract a CRS attribute value by name
+  const getAttr = (name) => {
+    const m = xmlText.match(new RegExp(`crs:${name}="([^"]*)"`, "i"));
+    return m ? parseFloat(m[1]) : null;
+  };
+  const getStrAttr = (name) => {
+    const m = xmlText.match(new RegExp(`crs:${name}="([^"]*)"`, "i"));
+    return m ? m[1] : null;
+  };
+
+  // Extract preset name from RDF Alt
+  const nameMatch = xmlText.match(/<crs:Name>[\s\S]*?x-default[^>]*>([^<]+)<\/rdf:li>/i);
+  const presetName = nameMatch ? nameMatch[1].trim() : "Imported Preset";
+
+  // ── Global CRS parameters (standard LR develop settings) ─────────────────
+  // These map 1:1 to our edit-params with appropriate scaling.
+  // Lightroom scale: exposure ±5 (stops), we use ±100
+  const lrToExp   = (v) => v != null ? Math.round(v * 20) : 0;   // LR ±5 → ours ±100
+  const lrToTone  = (v) => v != null ? Math.round(v * 100) : 0;  // LR 0…1 → ours 0…100
+  const lrToSigned= (v) => v != null ? Math.round(v * 100) : 0;  // LR -1…1 → ours -100…100
+
+  // Temperature: LR range ~2000–50000K, neutral ~5000K. We use warmth -100…+100
+  const lrTempToWarmth = (v) => {
+    if (v == null) return 0;
+    // Relative to neutral 5500K: positive = warmer, negative = cooler
+    const delta = v - 5500;
+    return Math.max(-100, Math.min(100, Math.round(delta / 45)));
+  };
+  const lrTintToWarmth = (v) => v != null ? Math.round(v / 1.5) : 0; // tint ±150 → ours ±100
+
+  const globalExposure   = lrToExp(getAttr("Exposure2012") ?? getAttr("Exposure"));
+  const globalHighlights = lrToSigned(getAttr("Highlights2012") ?? getAttr("Highlights"));
+  const globalShadows    = lrToSigned(getAttr("Shadows2012") ?? getAttr("Shadows"));
+  const globalContrast   = lrToSigned(getAttr("Contrast2012") ?? getAttr("Contrast"));
+  const globalWhites     = lrToSigned(getAttr("Whites2012"));
+  const globalBlacks     = lrToSigned(getAttr("Blacks2012"));
+  const globalClarity    = lrToSigned(getAttr("Clarity2012") ?? getAttr("Clarity"));
+  const globalVibrance   = lrToSigned(getAttr("Vibrance"));
+  const globalSaturation = lrToSigned(getAttr("Saturation"));
+  const globalSharpness  = lrToTone(getAttr("Sharpness")) ?? 60;
+  const globalDenoise    = lrToTone(getAttr("LuminanceSmoothing") ?? getAttr("LuminanceNoiseReductionDetail"));
+  const globalTemp       = lrTempToWarmth(getAttr("Temperature"));
+  const globalTint       = lrTintToWarmth(getAttr("Tint"));
+
+  // Combine whites/blacks into exposure adjustment (they shift the tone curve ends)
+  const effectiveExposure = Math.round(globalExposure + globalWhites * 0.3 - globalBlacks * 0.2);
+  const effectiveWarmth   = Math.round(globalTemp + globalTint * 0.3);
+
+  // ── Masked corrections (global approximations) ─────────────────────────────
+  // Extract all LocalX values from MaskGroupBasedCorrections and average them.
+  const localExps    = [...xmlText.matchAll(/crs:LocalExposure2012="([^"]+)"/g)].map(m => parseFloat(m[1]));
+  const localConts   = [...xmlText.matchAll(/crs:LocalContrast2012="([^"]+)"/g)].map(m => parseFloat(m[1]));
+  const localSats    = [...xmlText.matchAll(/crs:LocalSaturation="([^"]+)"/g)].map(m => parseFloat(m[1]));
+  const localClars   = [...xmlText.matchAll(/crs:LocalClarity2012="([^"]+)"/g)].map(m => parseFloat(m[1]));
+  const localTexts   = [...xmlText.matchAll(/crs:LocalTexture="([^"]+)"/g)].map(m => parseFloat(m[1]));
+  const localHighs   = [...xmlText.matchAll(/crs:LocalHighlights2012="([^"]+)"/g)].map(m => parseFloat(m[1]));
+  const localShads   = [...xmlText.matchAll(/crs:LocalShadows2012="([^"]+)"/g)].map(m => parseFloat(m[1]));
+  const localWhts    = [...xmlText.matchAll(/crs:LocalWhites2012="([^"]+)"/g)].map(m => parseFloat(m[1]));
+  const localBlks    = [...xmlText.matchAll(/crs:LocalBlacks2012="([^"]+)"/g)].map(m => parseFloat(m[1]));
+
+  const avgNonZero = (arr) => {
+    const nz = arr.filter(v => v !== 0);
+    return nz.length ? nz.reduce((a, b) => a + b, 0) / nz.length : 0;
+  };
+
+  const localExpAdj  = Math.round((avgNonZero(localExps) + avgNonZero(localWhts) * 0.3 - avgNonZero(localBlks) * 0.2) * 20);
+  const localContAdj = Math.round(avgNonZero(localConts) * 100);
+  const localSatAdj  = Math.round(avgNonZero(localSats) * 100);
+  const localClarAdj = Math.round((avgNonZero(localClars) + avgNonZero(localTexts) * 0.7) * 100);
+  const localHlAdj   = Math.round(avgNonZero(localHighs) * 100);
+  const localShAdj   = Math.round(avgNonZero(localShads) * 100);
+
+  // Merge global + local (local adds to global for approximation)
+  const params = {
+    exposure:   Math.max(-100, Math.min(100, effectiveExposure  + localExpAdj)),
+    highlights: Math.max(-100, Math.min(100, globalHighlights   + localHlAdj)),
+    shadows:    Math.max(-100, Math.min(100, globalShadows       + localShAdj)),
+    contrast:   Math.max(-100, Math.min(100, globalContrast      + localContAdj)),
+    vibrance:   Math.max(-100, Math.min(100, globalVibrance)),
+    saturation: Math.max(-100, Math.min(100, globalSaturation    + localSatAdj)),
+    warmth:     Math.max(-100, Math.min(100, effectiveWarmth)),
+    clarity:    Math.max(-100, Math.min(100, globalClarity       + localClarAdj)),
+    denoise:    Math.max(0,    Math.min(100, globalDenoise)),
+    sharpness:  Math.max(0,    Math.min(100, globalSharpness)),
+  };
+
+  return { name: presetName, params };
+}
+
+// GET — list all uploaded XMP presets
+app.get("/api/xmp-presets", requireAuth, (req, res) => {
+  const presets = loadXmpPresets();
+  // Return as array: [{ id, name, params }]
+  res.json(Object.entries(presets).map(([id, p]) => ({ id, name: p.name, params: p.params })));
+});
+
+// POST — upload one or more XMP files, parse and store them
+app.post("/api/xmp-presets", requireAuth, (req, res, next) => {
+  const uploadXmp = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 512 * 1024, files: 20 },
+    fileFilter: (_, file, cb) => cb(null, /\.xmp$/i.test(file.originalname)),
+  }).array("presets");
+  uploadXmp(req, res, async (err) => {
+    if (err) return res.status(400).json({ error: err.message });
+    if (!req.files?.length) return res.status(400).json({ error: "No XMP files received" });
+    const existing = loadXmpPresets();
+    const added = [];
+    for (const file of req.files) {
+      try {
+        const xmlText = file.buffer.toString("utf8");
+        const { name, params } = parseXmpToEditParams(xmlText);
+        const id = `xmp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+        existing[id] = { name, params, uploadedAt: new Date().toISOString() };
+        added.push({ id, name, params });
+      } catch (e) {
+        console.warn("Failed to parse XMP:", file.originalname, e.message);
+      }
+    }
+    saveXmpPresets(existing);
+    res.json({ added });
+  });
+});
+
+// DELETE — remove an XMP preset by id
+app.delete("/api/xmp-presets/:id", requireAuth, (req, res) => {
+  const existing = loadXmpPresets();
+  if (!existing[req.params.id]) return res.status(404).json({ error: "Not found" });
+  delete existing[req.params.id];
+  saveXmpPresets(existing);
+  res.json({ ok: true });
+});
+
+// ── Adobe-style Auto exposure analysis ───────────────────────────────────────
+// Replicates Lightroom's "Auto" button logic:
+// Analyses per-channel histograms and tonal statistics to set
+// exposure, highlights, shadows, whites, blacks, contrast, vibrance.
+async function computeAdobeAutoParams(filepath) {
+  const { channels, dominant } = await sharp(filepath).stats();
+
+  const meanBrightness = (channels[0].mean + channels[1].mean + channels[2].mean) / 3;
+  const meanStd        = (channels[0].stdev + channels[1].stdev + channels[2].stdev) / 3;
+
+  // Min/max give us the actual tonal range
+  const minVal = Math.min(channels[0].min, channels[1].min, channels[2].min);
+  const maxVal = Math.max(channels[0].max, channels[1].max, channels[2].max);
+  const tonalRange = maxVal - minVal;
+
+  // ── Exposure ──────────────────────────────────────────────────────────────
+  // Target: mean brightness around 115-125 (slightly above mid-gray 128)
+  // Each EV ≈ doubling, so we compute how many stops off from target we are
+  const targetBrightness = 118;
+  const evDiff = Math.log2(Math.max(1, targetBrightness) / Math.max(1, meanBrightness));
+  // Clamp: LR Auto rarely pushes more than ±2 stops
+  const exposure = Math.max(-60, Math.min(60, Math.round(evDiff * 25)));
+
+  // ── Highlights ────────────────────────────────────────────────────────────
+  // Pull highlights down if maxVal is very close to 255 (blown), lift if very low
+  const highlightClipping = (maxVal - 220) / 35;  // 0 = fine, 1 = blown
+  const highlights = Math.max(-80, Math.min(40, Math.round(-highlightClipping * 60)));
+
+  // ── Shadows ───────────────────────────────────────────────────────────────
+  // Lift shadows if minVal is very dark (crushed blacks), leave if already open
+  const shadowCrush = Math.max(0, (30 - minVal) / 30);  // 0 = fine, 1 = very dark
+  const shadows = Math.max(-30, Math.min(80, Math.round(shadowCrush * 55)));
+
+  // ── Contrast ─────────────────────────────────────────────────────────────
+  // Flat image (low std) → add contrast; high std → don't touch
+  const contrastBoost = meanStd < 30 ? 30 : meanStd < 50 ? 18 : meanStd < 70 ? 8 : 0;
+  const contrast = Math.max(-20, Math.min(40, contrastBoost));
+
+  // ── Vibrance ─────────────────────────────────────────────────────────────
+  // Desaturated image → boost vibrance; already vivid → gentle
+  const rg = Math.abs(channels[0].mean - channels[1].mean);
+  const rb = Math.abs(channels[0].mean - channels[2].mean);
+  const colorfulness = Math.min(100, (rg + rb) / 2);
+  const vibrance = Math.max(0, Math.min(40, Math.round((40 - colorfulness * 0.5))));
+
+  // ── Warmth (White Balance) ─────────────────────────────────────────────────
+  // If red >> blue → image is warm/orange, nudge cool. Blue >> red → warm it up.
+  const rbBalance = channels[0].mean - channels[2].mean;  // positive = warm cast
+  const warmth = Math.max(-30, Math.min(30, Math.round(-rbBalance * 0.4)));
+
+  // ── Clarity ───────────────────────────────────────────────────────────────
+  // Flat/hazy photos get a clarity boost
+  const clarity = meanStd < 40 ? 15 : meanStd < 60 ? 8 : 0;
+
+  return { exposure, highlights, shadows, contrast, vibrance, saturation: 0, warmth, clarity, denoise: 0, sharpness: 60 };
+}
+
 app.get("/api/photo/:filename/ai-enhanced", aiEnhanceLimiter, requireAuth, async (req, res) => {
   // Strip any query-string that may have been incorporated into the filename (e.g. "photo.jpg?tenant=slug")
   const safeName = path.basename(req.params.filename.split("?")[0]);
@@ -1701,9 +1905,11 @@ app.get("/api/photo/:filename/ai-enhanced", aiEnhanceLimiter, requireAuth, async
   const force   = req.query.force === "1";
 
   // ── Determine edit mode ───────────────────────────────────────────────────
-  // mode=preset  → preset name in req.query.preset
-  // mode=prompt  → natural language text in req.query.prompt
-  // mode=manual  → individual slider values in req.query.*
+  // mode=preset      → built-in preset name in req.query.preset
+  // mode=xmp         → uploaded XMP preset id in req.query.xmpId
+  // mode=adobe-auto  → per-image Adobe-style Auto analysis
+  // mode=prompt      → natural language text in req.query.prompt
+  // mode=manual      → individual slider values in req.query.*
   // mode=auto (default) → adaptive pipeline based on image stats + optional multipliers
   const mode = req.query.mode || "auto";
 
@@ -1716,6 +1922,23 @@ app.get("/api/photo/:filename/ai-enhanced", aiEnhanceLimiter, requireAuth, async
       editParams = presetToEditParams(presetName);
       if (!editParams) return res.status(400).json({ error: `Unknown preset: ${presetName}` });
       cacheKey = `preset-${presetName}`;
+
+    } else if (mode === "xmp") {
+      // Apply an uploaded XMP preset by id
+      const xmpId = (req.query.xmpId || "").replace(/[^a-z0-9_]/gi, "");
+      if (!xmpId) return res.status(400).json({ error: "Missing xmpId" });
+      const allXmp = loadXmpPresets();
+      if (!allXmp[xmpId]) return res.status(404).json({ error: "XMP preset not found" });
+      editParams = allXmp[xmpId].params;
+      cacheKey = `xmp-${xmpId}`;
+
+    } else if (mode === "adobe-auto") {
+      // Per-image Adobe-style Auto: analyse and compute optimal params
+      editParams = await computeAdobeAutoParams(filepath);
+      // Cache key incorporates a hash of the image stats so it's stable per file
+      const { channels } = await sharp(filepath).stats();
+      const statsKey = [channels[0].mean, channels[0].stdev, channels[1].mean, channels[2].mean].map(v => Math.round(v)).join("_");
+      cacheKey = `adobe-auto-${statsKey}`;
 
     } else if (mode === "prompt") {
       const promptText = (req.query.prompt || "").slice(0, 200); // limit length
