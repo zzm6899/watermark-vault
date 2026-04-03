@@ -5218,22 +5218,21 @@ function PhotosView() {
     if (enhancingIds.has(photo.id)) return;
     setEnhancingIds(prev => new Set(prev).add(photo.id));
     try {
-      // Always use the true original file for enhancement — not a previous blob URL
-      const originalSrc = photo.beforeSrc || photo.src;
+      // Always use the true original file — strip any ?query so the filename is clean.
+      // If the photo was previously enhanced, beforeSrc holds the real original.
+      const rawOriginalSrc = photo.beforeSrc || photo.src;
+      const originalSrc = rawOriginalSrc.split("?")[0];
 
       // Step 1: fetch enhanced image data with auth headers → blob for display + upload
       const blobUrl = await aiEnhancePhoto(originalSrc);
 
-      // Step 2: re-upload the enhanced blob as a new file so the edit is persisted
-      // on disk permanently. The /api/upload endpoint is already deployed and handles this.
+      // Step 2: re-upload the enhanced blob as a new server file so the edit persists
+      // across page reloads. We keep the original filename so it's easy to identify.
       const blob = await fetch(blobUrl).then(r => r.blob());
-      const originalFilename = originalSrc.split("/").pop()?.split("?")[0] ?? "enhanced.jpg";
+      const originalFilename = originalSrc.split("/").pop() ?? "enhanced.jpg";
       const formData = new FormData();
       formData.append("photos", blob, originalFilename);
-      const uploadRes = await fetch("/api/upload", {
-        method: "POST",
-        body: formData,
-      });
+      const uploadRes = await fetch("/api/upload", { method: "POST", body: formData });
       if (!uploadRes.ok) {
         URL.revokeObjectURL(blobUrl);
         throw new Error("Upload failed — could not save enhancement");
@@ -5245,32 +5244,32 @@ function PhotosView() {
         throw new Error("Upload returned no file");
       }
 
-      // Step 3: update the photo record to point at the new server URL.
-      // Keep originalSrc as beforeSrc so before/after toggle still works.
+      // Step 3: update the photo record in state.
+      // IMPORTANT: keep the ORIGINAL photo.id — changing it would corrupt proofing
+      // round selections, starred state, and any other id-keyed album data.
+      // The new server file id is intentionally discarded; only its URL matters.
       const newSrc = `${newFile.url}?wm=0`;
-      const newId = newFile.id;
+      const newThumb = `${newFile.url}?size=thumb&wm=0`;
 
-      // Revoke previous blob URL to free memory
+      // Revoke any previous blob URL to free memory
       if (photo.src.startsWith("blob:")) URL.revokeObjectURL(photo.src);
 
+      const patch = { src: newSrc, beforeSrc: originalSrc, thumbnail: newThumb };
+
       if (photo.source === "Library") {
-        const updated = libraryPhotos.map(p =>
-          p.id === photo.id ? { ...p, id: newId, src: newSrc, beforeSrc: originalSrc, thumbnail: undefined } : p
-        );
+        const updated = libraryPhotos.map(p => p.id === photo.id ? { ...p, ...patch } : p);
         setPhotoLibrary(updated);
         setLibraryPhotosState(updated);
       } else {
         const alb = albums.find(a => a.title === photo.source);
         if (alb) {
-          const updated = { ...alb, photos: alb.photos.map(p =>
-            p.id === photo.id ? { ...p, id: newId, src: newSrc, beforeSrc: originalSrc, thumbnail: undefined } : p
-          ) };
+          const updated = { ...alb, photos: alb.photos.map(p => p.id === photo.id ? { ...p, ...patch } : p) };
           updateAlbum(updated);
           setAlbumsState(getAlbums());
         }
       }
-      // Show blob in lightbox for instant display (already in memory — no extra request)
-      setLightboxPhoto(prev => prev?.id === photo.id ? { ...prev, id: newId, src: blobUrl, beforeSrc: originalSrc } : prev);
+      // Show blob in lightbox immediately — no second network request needed
+      setLightboxPhoto(prev => prev?.id === photo.id ? { ...prev, src: blobUrl, beforeSrc: originalSrc } : prev);
       setLbShowBefore(false);
       toast.success("AI enhancement saved");
     } catch (err) {

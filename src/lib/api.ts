@@ -23,9 +23,10 @@ function adminAuthHeaders(): Record<string, string> {
     const creds = JSON.parse(raw) as { username: string; passwordHash: string };
     if (!creds?.username) return {};
 
-    // Prefer the sha256 hash stored in sessionStorage at login time — this is what
+    // Prefer the sha256 hash stored in localStorage at login time — this is what
     // the server's verifyPasswordHash() expects as the "incoming" value.
-    const sessionHash = sessionStorage.getItem("wv_admin_session_hash");
+    // Falls back to creds.passwordHash only if the hash was never stored (pre-fix sessions).
+    const sessionHash = localStorage.getItem("wv_admin_session_hash");
     const passwordHash = sessionHash || creds.passwordHash;
     if (!passwordHash) return {};
 
