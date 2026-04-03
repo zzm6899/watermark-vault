@@ -388,6 +388,20 @@ export async function aiEnhancePhoto(photoSrc: string): Promise<string> {
   return URL.createObjectURL(blob);
 }
 
+/** Permanently apply the cached AI enhancement to the original file on disk.
+ *  Must be called after aiEnhancePhoto() so the server has a cached version to commit.
+ *  Returns true on success.
+ */
+export async function applyAIEnhancement(photoSrc: string): Promise<boolean> {
+  const filename = photoSrc.split("/").pop()?.split("?")[0]?.trim();
+  if (!filename) return false;
+  const res = await fetch(`/api/photo/${encodeURIComponent(filename)}/apply-enhancement`, {
+    method: "POST",
+    headers: adminAuthHeaders(),
+  });
+  return res.ok;
+}
+
 /** Check if the backend server is available */
 export function isServerMode(): boolean {
   return serverAvailable === true;

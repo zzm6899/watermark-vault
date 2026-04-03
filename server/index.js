@@ -1572,6 +1572,50 @@ app.get("/api/photo/:filename/ai-enhanced", aiEnhanceLimiter, requireAuth, async
   }
 });
 
+// ── Apply AI enhancement (overwrite original with the cached enhanced file) ────
+// Called after the user clicks "Apply" to permanently commit the enhancement.
+// Copies _cache/{photoId}-ai-enhanced.jpg over the original upload, then purges
+// all cached derivatives for that photo so they regenerate from the new base.
+app.post("/api/photo/:filename/apply-enhancement", requireAuth, async (req, res) => {
+  const safeName = path.basename(req.params.filename.split("?")[0]);
+  const originalPath = path.join(UPLOADS_DIR, safeName);
+
+  // Path traversal guard
+  try {
+    const real = fs.realpathSync(originalPath);
+    const realUploads = fs.realpathSync(UPLOADS_DIR);
+    if (!real.startsWith(realUploads + path.sep)) return res.status(403).send("Forbidden");
+  } catch { return res.status(404).json({ ok: false, error: "File not found" }); }
+
+  const photoId = path.basename(safeName, path.extname(safeName));
+  const cachedPath = path.join(CACHE_DIR, `${photoId}-ai-enhanced.jpg`);
+
+  if (!fs.existsSync(cachedPath)) {
+    return res.status(404).json({ ok: false, error: "No cached enhancement found — enhance first" });
+  }
+
+  try {
+    // Overwrite the original file with the enhanced version
+    fs.copyFileSync(cachedPath, originalPath);
+
+    // Purge all cache entries for this photo (thumbs, watermarked variants, etc.)
+    // so they are regenerated from the new enhanced base on next request.
+    const cacheFiles = fs.readdirSync(CACHE_DIR);
+    let purged = 0;
+    for (const f of cacheFiles) {
+      if (f.startsWith(photoId + "-") || f.startsWith(photoId + ".")) {
+        try { fs.unlinkSync(path.join(CACHE_DIR, f)); purged++; } catch { /* noop */ }
+      }
+    }
+
+    console.log(`[AI] Applied enhancement to ${safeName}, purged ${purged} cache entries`);
+    res.json({ ok: true, purged });
+  } catch (err) {
+    console.error(`[AI] apply-enhancement failed for ${safeName}:`, err.message);
+    res.status(500).json({ ok: false, error: "Failed to apply enhancement" });
+  }
+});
+
 // ── Clear image cache ──────────────────────────────────
 function countAndDeleteDir(dirPath) {
   let cleared = 0;

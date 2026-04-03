@@ -116,6 +116,7 @@ import {
   updateBookingTasks,
   toggleBookingTask,
   aiEnhancePhoto,
+  applyAIEnhancement,
 } from "@/lib/api";
 import type { CacheBreakdown } from "@/lib/api";
 import RichTextEditor, { RichTextDisplay } from "@/components/RichTextEditor";
@@ -5218,15 +5219,41 @@ function PhotosView() {
     if (enhancingIds.has(photo.id)) return;
     setEnhancingIds(prev => new Set(prev).add(photo.id));
     try {
-      // Use the original source (before any prior enhancement) so the filename extraction is always correct
+      // Always use the true original file for enhancement — not a previous blob URL
       const originalSrc = photo.beforeSrc || photo.src;
-      // aiEnhancePhoto fetches with auth headers and returns a blob:// URL — no 401 when set as <img src>
+
+      // Step 1: fetch enhanced image with auth → blob URL for immediate preview display
       const blobUrl = await aiEnhancePhoto(originalSrc);
+
+      // Step 2: commit the enhancement to disk so it survives page reload.
+      // The server copies _cache/{id}-ai-enhanced.jpg over the original file
+      // and purges all cached derivatives so they regenerate from the new base.
+      const applied = await applyAIEnhancement(originalSrc);
+      if (!applied) {
+        URL.revokeObjectURL(blobUrl);
+        throw new Error("Could not save enhancement to disk");
+      }
+
+      // Step 3: build a cache-busted URL pointing to the original filename on the
+      // server (which now contains the enhanced image). This is what gets persisted
+      // in state/DB so the edit survives page reloads.
+      // Photos are served at /uploads/:filename — use the same base path as originalSrc
+      // but strip any previous query string and append a cache-buster.
+      const originalFilename = originalSrc.split("/").pop()?.split("?")[0] ?? "";
+      // wm=0 keeps admin view watermark-free; t= busts the browser cache so the
+      // new enhanced file is fetched instead of the old cached version.
+      const persistedSrc = `/uploads/${encodeURIComponent(originalFilename)}?wm=0&t=${Date.now()}`;
+
       // Revoke previous blob URL to free memory if this photo was already enhanced
       if (photo.src.startsWith("blob:")) URL.revokeObjectURL(photo.src);
+
+      // Update state — keep blobUrl as the displayed src for instant feedback,
+      // but store persistedSrc as beforeSrc so it is used on next enhance/reload.
+      // Actually: store persistedSrc as src so it persists, and show blobUrl
+      // only in the lightbox for instant display (it will reload from server next open).
       if (photo.source === "Library") {
         const updated = libraryPhotos.map(p =>
-          p.id === photo.id ? { ...p, src: blobUrl, beforeSrc: originalSrc } : p
+          p.id === photo.id ? { ...p, src: persistedSrc, beforeSrc: undefined, thumbnail: undefined } : p
         );
         setPhotoLibrary(updated);
         setLibraryPhotosState(updated);
@@ -5234,18 +5261,18 @@ function PhotosView() {
         const alb = albums.find(a => a.title === photo.source);
         if (alb) {
           const updated = { ...alb, photos: alb.photos.map(p =>
-            p.id === photo.id ? { ...p, src: blobUrl, beforeSrc: originalSrc } : p
+            p.id === photo.id ? { ...p, src: persistedSrc, beforeSrc: undefined, thumbnail: undefined } : p
           ) };
           updateAlbum(updated);
           setAlbumsState(getAlbums());
         }
       }
-      // Also update the lightbox if this photo is currently open
+      // Show the blob in the lightbox immediately (no second network round-trip)
       setLightboxPhoto(prev => prev?.id === photo.id ? { ...prev, src: blobUrl, beforeSrc: originalSrc } : prev);
-      setLbShowBefore(false); // always show the enhanced result after processing
-      toast.success("AI enhancement applied");
-    } catch {
-      toast.error("AI enhancement failed");
+      setLbShowBefore(false);
+      toast.success("AI enhancement saved");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "AI enhancement failed");
     } finally {
       setEnhancingIds(prev => { const next = new Set(prev); next.delete(photo.id); return next; });
     }
