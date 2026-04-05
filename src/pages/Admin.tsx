@@ -757,19 +757,30 @@ export default function Admin() {
           </div>
           <p className="text-[10px] font-body tracking-[0.3em] uppercase text-muted-foreground mb-4 px-3">Admin Panel</p>
           <nav className="space-y-1 flex-1">
-            {tabs.map((tab) => (
-              <button key={tab.id} onClick={() => setActiveTab(tab.id)}
-                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-body transition-all ${
-                  activeTab === tab.id ? "bg-primary/10 text-primary" : "text-muted-foreground hover:text-foreground hover:bg-secondary"
-                }`}
-              >
-                <tab.icon className="w-4 h-4" />{tab.label}
-                {tab.id === "albums" && (() => {
-                  const pending = settings.proofingEnabled ? albums.filter(a => a.proofingEnabled && a.proofingStage === "selections-submitted").length : 0;
-                  return pending > 0 ? <span className="ml-auto bg-orange-500 text-white text-[10px] font-bold w-4 h-4 rounded-full flex items-center justify-center">{pending}</span> : null;
-                })()}
-              </button>
-            ))}
+            {tabs.map((tab) => {
+              const sidebarBadge =
+                tab.id === "albums" && settings.proofingEnabled
+                  ? albums.filter(a => a.proofingEnabled && a.proofingStage === "selections-submitted").length
+                  : tab.id === "invoices"
+                    ? getInvoices().filter(i => i.status === "overdue").length
+                    : tab.id === "enquiries"
+                      ? getEnquiries().filter(e => e.status === "pending").length
+                      : tab.id === "bookings"
+                        ? getBookings().filter(b => b.status === "pending").length
+                        : 0;
+              return (
+                <button key={tab.id} onClick={() => setActiveTab(tab.id)}
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-body transition-all ${
+                    activeTab === tab.id ? "bg-primary/10 text-primary" : "text-muted-foreground hover:text-foreground hover:bg-secondary"
+                  }`}
+                >
+                  <tab.icon className="w-4 h-4" />{tab.label}
+                  {sidebarBadge > 0 && (
+                    <span className="ml-auto bg-orange-500 text-white text-[10px] font-bold min-w-[16px] h-4 px-0.5 rounded-full flex items-center justify-center">{sidebarBadge}</span>
+                  )}
+                </button>
+              );
+            })}
           </nav>
           <div className="mt-auto space-y-1">
             <button onClick={() => navigate("/capture")} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-body text-primary hover:bg-primary/10 transition-all">
@@ -881,11 +892,12 @@ function DashboardView() {
   const settings = getSettings();
   const invoices = getInvoices();
 
-  const totalIncome = bookings.reduce((sum, b) => sum + (b.paymentAmount || 0), 0);
   const paidIncome = bookings.filter(b => b.paymentStatus === "paid").reduce((sum, b) => sum + (b.paymentAmount || 0), 0);
+  const cashIncome = bookings.filter(b => b.paymentStatus === "cash").reduce((sum, b) => sum + (b.paymentAmount || 0), 0);
   const depositPaidIncome = bookings.filter(b => b.paymentStatus === "deposit-paid").reduce((sum, b) => sum + (b.depositAmount || 0), 0);
+  const totalRevenue = paidIncome + cashIncome + depositPaidIncome;
   const unpaidIncome = bookings.filter(b => !b.paymentStatus || b.paymentStatus === "unpaid").reduce((sum, b) => sum + (b.paymentAmount || 0), 0);
-  const pendingIncome = bookings.filter(b => b.paymentStatus === "pending-confirmation" || b.paymentStatus === "cash").reduce((sum, b) => sum + (b.paymentAmount || 0), 0);
+  const pendingIncome = bookings.filter(b => b.paymentStatus === "pending-confirmation").reduce((sum, b) => sum + (b.paymentAmount || 0), 0);
 
   // Collect all pending download requests across albums
   const allPendingRequests: (AlbumDownloadRecord & { _albumId: string; _albumTitle: string; _reqIdx: number })[] = [];
@@ -937,9 +949,9 @@ function DashboardView() {
     .slice(0, 5); // last 5 past sessions
 
   const stats = [
-    { label: "Total Bookings", value: bookings.length, icon: Calendar, color: "text-primary" },
-    { label: "Paid", value: `$${paidIncome}`, icon: DollarSign, color: "text-green-400" },
-    { label: "Unpaid", value: `$${unpaidIncome}`, icon: DollarSign, color: "text-destructive" },
+    { label: "Total Bookings", value: bookings.filter(b => b.status !== "cancelled").length, icon: Calendar, color: "text-primary" },
+    { label: "Revenue", value: `$${totalRevenue.toLocaleString()}`, icon: DollarSign, color: "text-green-400" },
+    { label: "Unpaid", value: `$${unpaidIncome.toLocaleString()}`, icon: DollarSign, color: "text-destructive" },
     { label: "Pending Requests", value: allPendingRequests.length, icon: Download, color: "text-yellow-400" },
     { label: "Total Shoot Time", value: totalSessionLabel, icon: Clock, color: "text-blue-400" },
   ];

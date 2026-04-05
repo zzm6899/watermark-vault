@@ -507,7 +507,7 @@ export default function AlbumDetail() {
   /** Save the buyer's email, then resume any pending Stripe checkout.
    *  Defined here (before any conditional returns) to satisfy the Rules of Hooks. */
   const handleSaveEmail = useCallback(async () => {
-    if (!purchaserEmail.includes("@")) { toast.error("Please enter a valid email"); return; }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(purchaserEmail.trim())) { toast.error("Please enter a valid email address"); return; }
     setSavingEmail(true);
     try {
       const emailKey = `email-${purchaserEmail.toLowerCase().trim()}`;
@@ -579,15 +579,11 @@ export default function AlbumDetail() {
   if (album.expiresAt) {
     const expiresAtDate = new Date(album.expiresAt);
     const now = new Date();
-    // Convert to UTC milliseconds for proper comparison
     const expiresAtMs = expiresAtDate.getTime();
     const nowMs = now.getTime();
-    // Check if expiry was within last 24 hours (with some grace period)
-    const isRecentlyExpired = nowMs < expiresAtMs && nowMs > expiresAtMs - (24 * 60 * 60 * 1000);
-    // Or if already expired
     const isExpired = nowMs >= expiresAtMs;
 
-    if (isExpired || isRecentlyExpired) {
+    if (isExpired) {
       return (
         <div className="min-h-screen bg-background flex items-center justify-center">
           <div className="glass-panel rounded-xl p-8 max-w-sm w-full text-center">
@@ -597,7 +593,6 @@ export default function AlbumDetail() {
               This gallery was available until{" "}
               <span className="text-foreground font-medium">
                 {expiresAtDate.toLocaleDateString("en-AU", { day: "numeric", month: "long", year: "numeric" })}
-                {isExpired && " at midnight"}
               </span>
               {" "}and is no longer accessible.
             </p>
@@ -2030,6 +2025,20 @@ export default function AlbumDetail() {
               <p className="text-xs font-body text-white/50 bg-white/10 backdrop-blur-sm px-3 py-1.5 rounded-full">
                 {lbIdx + 1} / {displayedPhotos.length}
               </p>
+            </div>
+
+            {/* Keyboard hints — desktop only */}
+            <div className="hidden sm:flex absolute top-3 left-1/2 -translate-x-1/2 z-10 items-center gap-3 bg-black/40 backdrop-blur-sm rounded-full px-3 py-1.5 pointer-events-none">
+              {[
+                { key: "←→", label: "navigate" },
+                { key: "+−", label: "zoom" },
+                { key: "Esc", label: "close" },
+              ].map(({ key, label }) => (
+                <span key={key} className="flex items-center gap-1 text-[10px] font-body text-white/40">
+                  <kbd className="bg-white/10 text-white/60 rounded px-1 py-0.5 font-mono text-[9px]">{key}</kbd>
+                  {label}
+                </span>
+              ))}
             </div>
           </motion.div>
         ) : null}
