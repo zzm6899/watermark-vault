@@ -15,20 +15,20 @@ services:
       # Set these to bootstrap the super admin account on first run.
       # The super admin can view ALL tenant data, manage license plans, and issue keys.
       # Change the password immediately after first login.
-      - SUPER_ADMIN_USERNAME=admin
-      - SUPER_ADMIN_PASSWORD=changeme
+      - SUPER_ADMIN_USERNAME=${SUPER_ADMIN_USERNAME:-admin}
+      - SUPER_ADMIN_PASSWORD=${SUPER_ADMIN_PASSWORD:?Set SUPER_ADMIN_PASSWORD in .env before starting}
       # ── Email (SMTP) ─────────────────────────────────────────────────────────
-      - EMAIL_FROM=Zac <zacmorganphotography@gmail.com>
-      - EMAIL_SERVER_HOST=smtp.gmail.com
-      - EMAIL_SERVER_PORT=587
-      - EMAIL_SERVER_SECURE=false
-      - EMAIL_SERVER_USER=zacmorganphotography@gmail.com
-      - EMAIL_SERVER_PASSWORD=YOUR_APP_PASSWORD_HERE
+      - EMAIL_FROM=${EMAIL_FROM:-Zac <zacmorganphotography@gmail.com>}
+      - EMAIL_SERVER_HOST=${EMAIL_SERVER_HOST:-smtp.gmail.com}
+      - EMAIL_SERVER_PORT=${EMAIL_SERVER_PORT:-587}
+      - EMAIL_SERVER_SECURE=${EMAIL_SERVER_SECURE:-false}
+      - EMAIL_SERVER_USER=${EMAIL_SERVER_USER:-}
+      - EMAIL_SERVER_PASSWORD=${EMAIL_SERVER_PASSWORD:-}
       # ── Stripe ───────────────────────────────────────────────────────────────
-      - STRIPE_SECRET_KEY=sk_live_YOUR_KEY_HERE
-      - STRIPE_PUBLISHABLE_KEY=pk_live_YOUR_KEY_HERE
-      - STRIPE_WEBHOOK_SECRET=whsec_YOUR_WEBHOOK_SECRET_HERE
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY:-}
+      - STRIPE_PUBLISHABLE_KEY=${STRIPE_PUBLISHABLE_KEY:-}
+      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET:-}
       # ── Google Integrations ───────────────────────────────────────────────────
-      - GOOGLE_API_CREDENTIALS={"web":{"client_id":"YOUR_CLIENT_ID","client_secret":"YOUR_SECRET","redirect_uris":["https://book.zacmclients.photos/api/integrations/googlecalendar/callback"]}}
+      - GOOGLE_API_CREDENTIALS=${GOOGLE_API_CREDENTIALS:-}
     volumes:
       - /mnt/your-pool/apps/booking-gal/data:/data

@@ -1,0 +1,17 @@
+.git
+.github
+.lovable
+.cache
+_cache
+node_modules
+server/node_modules
+dist
+screenshots
+android
+android-plugin
+*.log
+*.local
+.env
+.env.*
+data
+coverage

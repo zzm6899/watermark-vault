@@ -5,7 +5,7 @@ WORKDIR /app
 
 # Copy package files first for better layer caching
 COPY package*.json ./
-RUN npm install
+RUN npm ci
 
 # Copy the rest of the source and build
 COPY . .
@@ -20,8 +20,8 @@ WORKDIR /app
 RUN apk add --no-cache vips-dev fftw-dev build-base python3
 
 # Install server dependencies (including sharp)
-COPY server/package.json server/
-RUN cd server && npm install --production
+COPY server/package*.json server/
+RUN cd server && npm ci --omit=dev
 
 # Copy server code and built frontend
 COPY server/ server/

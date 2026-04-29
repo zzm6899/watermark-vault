@@ -274,6 +274,16 @@ const corsOrigins = process.env.ALLOWED_ORIGINS
 app.use(cors({ origin: corsOrigins, credentials: true }));
 // Compress all responses (JSON, HTML, JS, CSS, etc.) — reduces transfer size by ~70-90%
 app.use(compression());
+app.use((req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "SAMEORIGIN");
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  res.setHeader("Permissions-Policy", "camera=(self), microphone=(), geolocation=()");
+  if (req.secure || req.headers["x-forwarded-proto"] === "https") {
+    res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+  }
+  next();
+});
 // Skip JSON body parsing for the Stripe webhook route — it requires the raw Buffer for
 // signature verification.  The route itself applies express.raw() instead.
 app.use((req, res, next) => {
@@ -876,12 +886,14 @@ const storage = multer.diskStorage({
     cb(null, name);
   },
 });
+const ALLOWED_IMAGE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif", ".tif", ".tiff", ".heic", ".heif"]);
 const upload = multer({
   storage,
   limits: { fileSize: 50 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
-    if (file.mimetype.startsWith("image/")) cb(null, true);
-    else cb(new Error("Only image files are allowed"));
+    const ext = path.extname(file.originalname || "").toLowerCase();
+    if (file.mimetype.startsWith("image/") && ALLOWED_IMAGE_EXTENSIONS.has(ext)) cb(null, true);
+    else cb(new Error("Only supported image files are allowed"));
   },
 });
 
@@ -952,17 +964,24 @@ app.post("/api/upload", uploadLimiter, upload.array("photos", 100), async (req, 
   }
 
   // ── Extract image metadata (dimensions + EXIF date) for each uploaded file ──
-  const uploadedFiles = await Promise.all(
+  const uploadedFiles = (await Promise.all(
     (req.files || []).map(async (f) => {
       let width = 800;
       let height = 600;
       let takenAt = null;
       try {
         const meta = await sharp(f.path).metadata();
+        if (!meta.format || !["jpeg", "png", "webp", "gif", "avif", "tiff", "heif"].includes(meta.format)) {
+          throw new Error(`Unsupported image format: ${meta.format || "unknown"}`);
+        }
         if (meta.width) width = meta.width;
         if (meta.height) height = meta.height;
         if (meta.exif) takenAt = parseExifDate(meta.exif);
-      } catch { /* non-critical — fallback values remain */ }
+      } catch (err) {
+        try { fs.unlinkSync(f.path); } catch {}
+        console.warn(`Rejected invalid image upload "${f.originalname}": ${err.message || err}`);
+        return null;
+      }
       return {
         id: path.basename(f.filename, path.extname(f.filename)),
         url: `/uploads/${f.filename}`,
@@ -974,7 +993,11 @@ app.post("/api/upload", uploadLimiter, upload.array("photos", 100), async (req, 
         takenAt,
       };
     })
-  );
+  )).filter(Boolean);
+
+  if ((req.files || []).length > 0 && uploadedFiles.length === 0) {
+    return res.status(400).json({ error: "No valid image files were uploaded" });
+  }
 
   // ── FTP Upload (if enabled) ──────────────────────────────────────────────
   // Determine FTP settings: use tenant-specific settings when ?tenant= is provided,

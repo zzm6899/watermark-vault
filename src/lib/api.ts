@@ -1203,7 +1203,7 @@ export async function sendInvoiceEmail(
 /** Fetch all license keys (admin only). */
 export async function getLicenseKeys(): Promise<import("./types").LicenseKey[]> {
   try {
-    const res = await fetch("/api/license-keys");
+    const res = await fetch("/api/license-keys", { headers: adminAuthHeaders() });
     if (!res.ok) return [];
     return await res.json();
   } catch {
@@ -1221,7 +1221,7 @@ export async function generateLicenseKey(
   try {
     const res = await fetch("/api/license-keys/generate", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
       body: JSON.stringify({ issuedTo, expiresAt, notes, ...options }),
     });
     const data = await res.json();
@@ -1274,6 +1274,7 @@ export async function revokeLicenseKey(
   try {
     const res = await fetch(`/api/license-keys/${encodeURIComponent(key)}`, {
       method: "DELETE",
+      headers: adminAuthHeaders(),
     });
     const data = await res.json();
     return { ok: !!data.ok, error: data.error };
@@ -1287,7 +1288,7 @@ export async function revokeLicenseKey(
 /** Fetch all tenants. */
 export async function getTenants(): Promise<import("./types").Tenant[]> {
   try {
-    const res = await fetch("/api/tenants");
+    const res = await fetch("/api/tenants", { headers: adminAuthHeaders() });
     if (!res.ok) return [];
     return await res.json();
   } catch { return []; }
@@ -1301,7 +1302,7 @@ export async function createTenant(data: {
   try {
     const res = await fetch("/api/tenants", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
       body: JSON.stringify(data),
     });
     const json = await res.json();
@@ -1315,7 +1316,7 @@ export async function updateTenant(slug: string, data: Partial<import("./types")
   try {
     const res = await fetch(`/api/tenants/${encodeURIComponent(slug)}`, {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
       body: JSON.stringify(data),
     });
     const json = await res.json();
@@ -1326,7 +1327,7 @@ export async function updateTenant(slug: string, data: Partial<import("./types")
 /** Delete a tenant. */
 export async function deleteTenant(slug: string): Promise<{ ok: boolean; error?: string }> {
   try {
-    const res = await fetch(`/api/tenants/${encodeURIComponent(slug)}`, { method: "DELETE" });
+    const res = await fetch(`/api/tenants/${encodeURIComponent(slug)}`, { method: "DELETE", headers: adminAuthHeaders() });
     const json = await res.json();
     return { ok: !!json.ok, error: json.error };
   } catch { return { ok: false, error: "Network error" }; }
@@ -1449,7 +1450,7 @@ export async function getSuperStats(): Promise<{
   tenants: (import("./types").Tenant & { bookingCount: number; pendingBookings: number })[];
 } | null> {
   try {
-    const res = await fetch("/api/super/stats");
+    const res = await fetch("/api/super/stats", { headers: adminAuthHeaders() });
     if (!res.ok) return null;
     return await res.json();
   } catch { return null; }
@@ -1458,7 +1459,7 @@ export async function getSuperStats(): Promise<{
 /** Get all bookings across all tenants (super admin only). */
 export async function getAllBookings(): Promise<import("./types").Booking[]> {
   try {
-    const res = await fetch("/api/super/all-bookings");
+    const res = await fetch("/api/super/all-bookings", { headers: adminAuthHeaders() });
     if (!res.ok) return [];
     return await res.json();
   } catch { return []; }
@@ -1537,7 +1538,7 @@ export async function getActiveLicensePlans(): Promise<import("./types").License
 /** Fetch all license plans (admin). */
 export async function getLicensePlans(): Promise<import("./types").LicensePlan[]> {
   try {
-    const res = await fetch("/api/license-plans/all");
+    const res = await fetch("/api/license-plans/all", { headers: adminAuthHeaders() });
     if (!res.ok) return [];
     return await res.json();
   } catch { return []; }
@@ -1551,7 +1552,7 @@ export async function createLicensePlan(data: {
   try {
     const res = await fetch("/api/license-plans", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
       body: JSON.stringify(data),
     });
     const json = await res.json();
@@ -1565,7 +1566,7 @@ export async function updateLicensePlan(id: string, data: Partial<import("./type
   try {
     const res = await fetch(`/api/license-plans/${encodeURIComponent(id)}`, {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
       body: JSON.stringify(data),
     });
     const json = await res.json();
@@ -1576,7 +1577,7 @@ export async function updateLicensePlan(id: string, data: Partial<import("./type
 /** Delete a license plan. */
 export async function deleteLicensePlan(id: string): Promise<{ ok: boolean; error?: string }> {
   try {
-    const res = await fetch(`/api/license-plans/${encodeURIComponent(id)}`, { method: "DELETE" });
+    const res = await fetch(`/api/license-plans/${encodeURIComponent(id)}`, { method: "DELETE", headers: adminAuthHeaders() });
     const json = await res.json();
     return { ok: !!json.ok, error: json.error };
   } catch { return { ok: false, error: "Network error" }; }
@@ -1599,7 +1600,7 @@ export async function getLicensePlanCheckout(planId: string, buyerEmail: string,
 /** Get all license plan purchases (admin only). */
 export async function getLicensePurchases(): Promise<import("./types").LicensePurchase[]> {
   try {
-    const res = await fetch("/api/license-plans/purchases");
+    const res = await fetch("/api/license-plans/purchases", { headers: adminAuthHeaders() });
     if (!res.ok) return [];
     return await res.json();
   } catch { return []; }
@@ -1610,6 +1611,7 @@ export async function activateBankPurchase(purchaseId: string): Promise<{ ok: bo
   try {
     const res = await fetch(`/api/license-plans/purchases/${encodeURIComponent(purchaseId)}/activate`, {
       method: "POST",
+      headers: adminAuthHeaders(),
     });
     const json = await res.json();
     return { ok: !!json.ok, key: json.key, error: json.error };

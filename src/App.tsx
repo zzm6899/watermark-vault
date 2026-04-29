@@ -20,6 +20,8 @@ const Setup = lazy(() => import("./pages/Setup"));
 const NotFound = lazy(() => import("./pages/NotFound"));
 const MobileCapture = lazy(() => import("./pages/MobileCapture"));
 const InvoiceView = lazy(() => import("./pages/InvoiceView"));
+const QuoteView = lazy(() => import("./pages/QuoteView"));
+const ContractSign = lazy(() => import("./pages/ContractSign"));
 const TenantSetup = lazy(() => import("./pages/TenantSetup"));
 const TenantAdmin = lazy(() => import("./pages/TenantAdmin"));
 const LoginPage = lazy(() => import("./pages/LoginPage"));
@@ -33,6 +35,8 @@ function isPublicRoute(): boolean {
     p.startsWith("/book/") ||
     p.startsWith("/gallery/") ||
     p.startsWith("/invoice/") ||
+    p.startsWith("/quote/") ||
+    p.startsWith("/contract/") ||
     p.startsWith("/tenant-setup/") ||
     p === "/login"
   );
@@ -128,6 +132,8 @@ const App = () => {
                 <Route path="/admin" element={<AdminGuard />} />
                 <Route path="/admin/:tab" element={<AdminGuard />} />
                 <Route path="/invoice/:token" element={<InvoiceView />} />
+                <Route path="/quote/:token" element={<QuoteView />} />
+                <Route path="/contract/:token" element={<ContractSign />} />
                 <Route path="/tenant-setup/:token" element={<TenantSetup />} />
                 <Route path="/tenant-admin/:slug" element={<TenantAdmin />} />
                 <Route path="*" element={<NotFound />} />

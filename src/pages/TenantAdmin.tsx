@@ -1737,7 +1737,11 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
     await updateLiveAlbum(updatedAlbum);
     setUploading(false);
     setUploadSpeed(null);
-    if (results.length > 0) toast.success(`${results.length} photos uploaded`);
+    if (results.length === fileArr.length) {
+      toast.success(`${results.length} photos uploaded`);
+    } else {
+      toast.warning(`${results.length} of ${fileArr.length} photos uploaded. ${fileArr.length - results.length} failed.`);
+    }
     if (e.target) e.target.value = "";
   };
 
@@ -2679,7 +2683,13 @@ function TenantPhotos({ slug }: { slug: string }) {
       }
       setUploadStats(prev => prev ? { ...prev, done: fileArr.length, errors: fileArr.length - results.length } : null);
       const target = selectedAlbum ? `"${selectedAlbum.title}"` : "library";
-      if (results.length > 0) toast.success(`${results.length} photos uploaded to ${target}`);
+      if (results.length === fileArr.length) {
+        toast.success(`${results.length} photos uploaded to ${target}`);
+      } else if (results.length > 0) {
+        toast.warning(`${results.length} of ${fileArr.length} photos uploaded to ${target}. ${fileArr.length - results.length} failed.`);
+      } else {
+        toast.error("Upload failed — no photos were saved");
+      }
     } else {
       for (const file of fileArr) {
         try {

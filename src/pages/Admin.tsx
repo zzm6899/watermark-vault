@@ -3813,8 +3813,14 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
       if (!coverImage && newPhotos.length > 0) setCoverImage(newPhotos[0].src);
       setUploadStats(prev => prev ? { ...prev, done: fileArr.length, errors: fileArr.length - results.length, savedBytes: 0 } : null);
       if (results.length > 0) {
-        toast.success(`${results.length} photos uploaded to server`);
+        if (results.length === fileArr.length) {
+          toast.success(`${results.length} photos uploaded to server`);
+        } else {
+          toast.warning(`${results.length} of ${fileArr.length} photos uploaded. ${fileArr.length - results.length} failed.`);
+        }
         window.dispatchEvent(new CustomEvent("storage-synced"));
+      } else {
+        toast.error("Upload failed — no photos were saved");
       }
     } else {
       // Fallback: compress to base64 for localStorage

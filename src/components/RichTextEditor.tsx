@@ -11,6 +11,11 @@ interface RichTextEditorProps {
   minHeight?: string;
 }
 
+const sanitizeRichText = (html: string) => DOMPurify.sanitize(html, {
+  ALLOWED_TAGS: ["p", "br", "strong", "b", "em", "i", "ul", "ol", "li", "h2", "h3"],
+  ALLOWED_ATTR: [],
+});
+
 /**
  * A lightweight rich-text editor that stores content as HTML.
  * Uses `contentEditable` with `execCommand` for formatting.
@@ -31,7 +36,7 @@ export default function RichTextEditor({
     (node: HTMLDivElement | null) => {
       (ref as React.MutableRefObject<HTMLDivElement | null>).current = node;
       if (node && !initialised.current) {
-        node.innerHTML = value || "";
+        node.innerHTML = sanitizeRichText(value || "");
         initialised.current = true;
       }
     },
@@ -42,11 +47,14 @@ export default function RichTextEditor({
   const exec = (cmd: string, val?: string) => {
     document.execCommand(cmd, false, val);
     ref.current?.focus();
-    onChange(ref.current?.innerHTML || "");
+    onChange(sanitizeRichText(ref.current?.innerHTML || ""));
   };
 
   const handleInput = () => {
-    onChange(ref.current?.innerHTML || "");
+    const raw = ref.current?.innerHTML || "";
+    const clean = sanitizeRichText(raw);
+    if (clean !== raw && ref.current) ref.current.innerHTML = clean;
+    onChange(clean);
   };
 
   const toolbarBtnClass =
@@ -170,7 +178,7 @@ export function RichTextDisplay({
         [&_ul]:list-disc [&_ul]:pl-4 [&_ul]:my-1.5
         [&_li]:text-sm [&_li]:font-body [&_li]:text-muted-foreground
         [&_p]:mb-1.5 ${className}`}
-      dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(html) }}
+      dangerouslySetInnerHTML={{ __html: sanitizeRichText(html) }}
     />
   );
 }
