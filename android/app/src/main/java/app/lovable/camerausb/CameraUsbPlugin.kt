@@ -198,7 +198,8 @@ class CameraUsbPlugin : Plugin() {
 
         // Android 14+ (API 34) forbids FLAG_MUTABLE with implicit intents — must use FLAG_IMMUTABLE
         val flags = PendingIntent.FLAG_IMMUTABLE
-        val pi = PendingIntent.getBroadcast(context, 0, Intent(ACTION_USB_PERMISSION), flags)
+        val permissionIntent = Intent(ACTION_USB_PERMISSION).setPackage(context.packageName)
+        val pi = PendingIntent.getBroadcast(context, 0, permissionIntent, flags)
 
         if (Build.VERSION.SDK_INT >= 33) {
             context.registerReceiver(receiver, IntentFilter(ACTION_USB_PERMISSION), Context.RECEIVER_NOT_EXPORTED)
@@ -530,7 +531,8 @@ class CameraUsbPlugin : Plugin() {
                 permissionReceiver = receiver
 
                 val flags = PendingIntent.FLAG_IMMUTABLE
-                val pi = PendingIntent.getBroadcast(context, 1, Intent(ACTION_USB_PERMISSION), flags)
+                val permissionIntent = Intent(ACTION_USB_PERMISSION).setPackage(context.packageName)
+                val pi = PendingIntent.getBroadcast(context, 1, permissionIntent, flags)
 
                 if (Build.VERSION.SDK_INT >= 33) {
                     context.registerReceiver(receiver, IntentFilter(ACTION_USB_PERMISSION), Context.RECEIVER_NOT_EXPORTED)
@@ -591,6 +593,7 @@ class CameraUsbPlugin : Plugin() {
             try { mtpDevice?.close() } catch (_: Exception) {}
             mtpDevice = null
             currentUsbDevice = null
+            mtpThread.quitSafely()
         }
         permissionReceiver?.let {
             try { context.unregisterReceiver(it) } catch (_: Exception) {}

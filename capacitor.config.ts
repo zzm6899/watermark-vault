@@ -24,7 +24,7 @@ const config: CapacitorConfig = {
   webDir: "dist",
   server: {
     url: "https://book.zacmclients.photos/login",
-    cleartext: true,
+    cleartext: false,
   },
 };
 

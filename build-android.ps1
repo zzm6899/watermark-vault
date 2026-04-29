@@ -68,9 +68,9 @@ if (-not (Test-Path $GRADLE_BAT)) {
 Write-Host "  Using: $GRADLE_BAT" -ForegroundColor Green
 
 # ---------- STEP 1: Install npm deps ----------
-Write-Host "`n=== Step 1: npm install ===" -ForegroundColor Cyan
-npm install --prefer-offline
-if ($LASTEXITCODE -ne 0) { throw "npm install failed" }
+Write-Host "`n=== Step 1: npm ci ===" -ForegroundColor Cyan
+npm ci --prefer-offline
+if ($LASTEXITCODE -ne 0) { throw "npm ci failed" }
 
 # ---------- STEP 2: Build web app ----------
 Write-Host "`n=== Step 2: Building web app ===" -ForegroundColor Cyan
