@@ -10,6 +10,11 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+artifacts/
+.jdk-local/
+.android-sdk/
+.gradle-local/
+.gradle-user-home/
 *.local
 
 # Editor directories and files
