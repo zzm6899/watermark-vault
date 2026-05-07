@@ -1681,8 +1681,9 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
 
   const updateLiveAlbum = async (updated: Album) => {
     const { ok, error } = await saveTenantAlbum(slug, updated);
-    if (!ok) { toast.error(error || "Failed to update album"); return; }
+    if (!ok) { toast.error(error || "Failed to update album"); return false; }
     setLiveAlbum(updated);
+    return true;
   };
 
   const handleFtpReupload = async () => {
@@ -1741,9 +1742,13 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
       photoCount: updatedPhotos.length,
       coverImage: liveAlbum.coverImage || newPhotos[0]?.src || "",
     };
-    await updateLiveAlbum(updatedAlbum);
+    const saved = await updateLiveAlbum(updatedAlbum);
     setUploading(false);
     setUploadSpeed(null);
+    if (!saved) {
+      if (e.target) e.target.value = "";
+      return;
+    }
     if (results.length === fileArr.length) {
       toast.success(`${results.length} photos uploaded`);
     } else {
@@ -1756,19 +1761,22 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
     if (!title.trim()) { toast.error("Title required"); return; }
     const finalSlug = albumSlug.trim() || slugify(title);
     const albumId = album?.id || generateId("alb");
+    const existingAlbum = liveAlbum || album;
+    const existingPhotos = existingAlbum?.photos || [];
     onSave({
+      ...(existingAlbum || {}),
       id: albumId,
       slug: finalSlug,
       title: title.trim(),
       description: description.trim(),
-      coverImage: album?.coverImage || (liveAlbum?.photos?.[0]?.src || ""),
-      date: album?.date || new Date().toISOString().split("T")[0],
-      photoCount: liveAlbum?.photos?.length || 0,
+      coverImage: existingAlbum?.coverImage || existingPhotos[0]?.src || "",
+      date: existingAlbum?.date || new Date().toISOString().split("T")[0],
+      photoCount: existingPhotos.length,
       freeDownloads,
       pricePerPhoto,
       priceFullAlbum,
       isPublic: true,
-      photos: liveAlbum?.photos || [],
+      photos: existingPhotos,
       clientName: clientName.trim(),
       clientEmail: clientEmail.trim(),
       accessCode: accessCode || undefined,
@@ -1780,14 +1788,7 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
       expiresAt: expiresAt || undefined,
       downloadExpiresAt: downloadExpiresAt || undefined,
       displaySize,
-      mergedFrom: album?.mergedFrom,
-      usedFreeDownloads: album?.usedFreeDownloads,
-      downloadRequests: liveAlbum?.downloadRequests ?? album?.downloadRequests,
-      proofingStage: liveAlbum?.proofingStage,
-      proofingRounds: liveAlbum?.proofingRounds,
-      clientToken: liveAlbum?.clientToken,
-      proofingExpiresAt: liveAlbum?.proofingExpiresAt,
-      proofingExpiryHours: liveAlbum?.proofingExpiryHours,
+      _photosStripped: false,
       // Preserve the enabled/disabled state so editing an album does not silently
       // re-enable a disabled one via the server-side merge.
       ...(album?.enabled !== undefined ? { enabled: album.enabled } : {}),
@@ -2683,7 +2684,13 @@ function TenantPhotos({ slug }: { slug: string }) {
             const updatedPhotos = [...(alb.photos || []), ...newPhotos];
             const updatedAlb = { ...alb, photos: updatedPhotos, photoCount: updatedPhotos.length };
             if (!updatedAlb.coverImage) updatedAlb.coverImage = newPhotos[0].src;
-            await saveTenantAlbum(slug, updatedAlb);
+            const { ok, error } = await saveTenantAlbum(slug, updatedAlb);
+            if (!ok) {
+              setUploadStats(prev => prev ? { ...prev, errors: fileArr.length - results.length + newPhotos.length } : null);
+              toast.error(error || "Upload finished, but the album update failed. Refresh before uploading again.");
+              if (e.target) e.target.value = "";
+              return;
+            }
             setAlbums(prev => prev.map(a => a.id === alb.id ? updatedAlb : a));
           }
         } else {
