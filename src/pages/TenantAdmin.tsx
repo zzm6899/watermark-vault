@@ -1731,9 +1731,16 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
       uploadedAt: new Date().toISOString(),
       ...(r.takenAt ? { takenAt: r.takenAt } : {}),
       originalName: r.originalName,
+      fileSize: r.size,
       ...(r.ftpUploaded ? { ftpUploaded: true } : {}),
     }));
-    const updatedAlbum = { ...liveAlbum, photos: [...(liveAlbum.photos || []), ...newPhotos] };
+    const updatedPhotos = [...(liveAlbum.photos || []), ...newPhotos];
+    const updatedAlbum = {
+      ...liveAlbum,
+      photos: updatedPhotos,
+      photoCount: updatedPhotos.length,
+      coverImage: liveAlbum.coverImage || newPhotos[0]?.src || "",
+    };
     await updateLiveAlbum(updatedAlbum);
     setUploading(false);
     setUploadSpeed(null);
@@ -2294,7 +2301,7 @@ function TenantPhotos({ slug }: { slug: string }) {
   const [searchQuery, setSearchQuery] = useState("");
   const [syncing, setSyncing] = useState(false);
   const [showAddToAlbum, setShowAddToAlbum] = useState(false);
-  const [uploadStats, setUploadStats] = useState<{ total: number; done: number; errors: number; savedBytes: number } | null>(null);
+  const [uploadStats, setUploadStats] = useState<{ total: number; done: number; errors: number; savedBytes: number; speed?: number } | null>(null);
   const [visibleCount, setVisibleCount] = useState(TENANT_LIBRARY_INITIAL_BATCH);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [filterDateFrom, setFilterDateFrom] = useState("");
@@ -2653,16 +2660,20 @@ function TenantPhotos({ slug }: { slug: string }) {
     if (!files || files.length === 0) return;
     const fileArr = Array.from(files);
     setUploadStats({ total: fileArr.length, done: 0, errors: 0, savedBytes: 0 });
+    let localTargetAlbum = selectedAlbum ? { ...selectedAlbum, photos: [...(selectedAlbum.photos || [])] } : null;
 
     if (isServerMode()) {
-      const results = await uploadPhotosToServer(fileArr, (done, total) => {
-        setUploadStats(prev => prev ? { ...prev, done, total } : null);
-      }, slug);
+      const results = await uploadPhotosToServer(fileArr, (done, total, bytesPerSecond) => {
+        setUploadStats(prev => prev ? { ...prev, done, total, speed: bytesPerSecond } : null);
+      }, slug, 3, selectedAlbum?.title);
       const newPhotos: Photo[] = results.map(r => ({
         id: r.id, src: r.url, thumbnail: r.url + "?size=thumb&wm=0",
-        title: r.originalName.replace(/\.[^.]+$/, "").replace(/^_+/, ""), width: 0, height: 0,
+        title: r.originalName.replace(/\.[^.]+$/, "").replace(/^_+/, ""),
+        width: r.width ?? 800, height: r.height ?? 600,
         uploadedAt: new Date().toISOString(),
+        ...(r.takenAt ? { takenAt: r.takenAt } : {}),
         originalName: r.originalName,
+        fileSize: r.size,
         ...(r.ftpUploaded ? { ftpUploaded: true } : {}),
       }));
       if (newPhotos.length > 0) {
@@ -2700,13 +2711,15 @@ function TenantPhotos({ slug }: { slug: string }) {
             title: file.name.replace(/\.[^.]+$/, "").replace(/^_+/, ""), width: result.width, height: result.height,
             uploadedAt: new Date().toISOString(),
           };
-          if (selectedAlbum) {
-            const alb = albums.find(a => a.id === selectedAlbum.id);
-            if (alb) {
-              const updatedAlb = { ...alb, photos: [...(alb.photos || []), photo], photoCount: (alb.photos || []).length + 1 };
-              await saveTenantAlbum(slug, updatedAlb);
-              setAlbums(prev => prev.map(a => a.id === alb.id ? updatedAlb : a));
-            }
+          if (localTargetAlbum) {
+            localTargetAlbum = {
+              ...localTargetAlbum,
+              photos: [...(localTargetAlbum.photos || []), photo],
+              photoCount: (localTargetAlbum.photos || []).length + 1,
+            };
+            if (!localTargetAlbum.coverImage) localTargetAlbum.coverImage = photo.src;
+            await saveTenantAlbum(slug, localTargetAlbum);
+            setAlbums(prev => prev.map(a => a.id === localTargetAlbum!.id ? localTargetAlbum! : a));
           } else {
             setLibraryPhotos(prev => {
               const u = [...prev, photo];
@@ -2932,7 +2945,12 @@ function TenantPhotos({ slug }: { slug: string }) {
             <div className="mt-3 p-3 rounded-lg bg-secondary/50 border border-border">
               <div className="flex items-center justify-between text-xs font-body text-muted-foreground">
                 <span>Processed {uploadStats.done}/{uploadStats.total} photos{uploadStats.errors > 0 ? ` (${uploadStats.errors} failed)` : ""}</span>
-                {uploadStats.savedBytes > 0 && <span className="text-green-500">Saved {formatBytes(uploadStats.savedBytes)}</span>}
+                <div className="flex items-center gap-2">
+                  {uploadStats.speed != null && uploadStats.done < uploadStats.total && (
+                    <span className="text-primary font-medium">{formatSpeed(uploadStats.speed)}</span>
+                  )}
+                  {uploadStats.savedBytes > 0 && <span className="text-green-500">Saved {formatBytes(uploadStats.savedBytes)}</span>}
+                </div>
               </div>
               {uploadStats.done < uploadStats.total && (
                 <div className="mt-1.5 h-1.5 rounded-full bg-border overflow-hidden">

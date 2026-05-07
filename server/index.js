@@ -379,6 +379,28 @@ function _stripBakedFromPhotos(photos) {
   });
 }
 
+function _mergePhotoArrays(existingPhotos, incomingPhotos) {
+  const merged = Array.isArray(existingPhotos) ? [...existingPhotos] : [];
+  const findIndex = (photo) => {
+    if (!photo || typeof photo !== "object") return -1;
+    if (photo.id) {
+      const byId = merged.findIndex(p => p?.id === photo.id);
+      if (byId >= 0) return byId;
+    }
+    if (photo.src) {
+      return merged.findIndex(p => p?.src === photo.src);
+    }
+    return -1;
+  };
+
+  for (const photo of _stripBakedFromPhotos(incomingPhotos) || []) {
+    const idx = findIndex(photo);
+    if (idx >= 0) merged[idx] = { ...merged[idx], ...photo };
+    else merged.push(photo);
+  }
+  return merged;
+}
+
 // Returns true when the db key may contain Photo objects with baked fields.
 function _isBulkyPhotoKey(key) {
   if (key === ALBUMS_KEY || key === PHOTO_LIB_KEY) return true;
@@ -537,7 +559,13 @@ app.put("/api/albums/:albumId", (req, res) => {
   // used for metadata-only updates (e.g. toggling the enabled flag from the albums list
   // when the full photo array hasn't been loaded into the client yet).
   if (incoming._photosStripped) {
-    delete incoming.photos;
+    if (Array.isArray(incoming.photos) && incoming.photos.length > 0) {
+      const existingPhotos = idx >= 0 && Array.isArray(albums[idx]?.photos) ? albums[idx].photos : [];
+      incoming.photos = _mergePhotoArrays(existingPhotos, incoming.photos);
+      incoming.photoCount = incoming.photos.length;
+    } else {
+      delete incoming.photos;
+    }
     delete incoming._photosStripped;
   } else if (incoming.photos) {
     incoming.photos = _stripBakedFromPhotos(incoming.photos);
@@ -3527,7 +3555,13 @@ app.put("/api/tenant/:slug/albums/:albumId", tenantLimiter, (req, res) => {
   // If the client is sending a bandwidth-saving stub (_photosStripped:true, photos:[])
   // don't overwrite the server's real photos array with the empty stub.
   if (incoming._photosStripped) {
-    delete incoming.photos;
+    if (Array.isArray(incoming.photos) && incoming.photos.length > 0) {
+      const existingPhotos = idx >= 0 && Array.isArray(albums[idx]?.photos) ? albums[idx].photos : [];
+      incoming.photos = _mergePhotoArrays(existingPhotos, incoming.photos);
+      incoming.photoCount = incoming.photos.length;
+    } else {
+      delete incoming.photos;
+    }
     delete incoming._photosStripped;
   } else if (incoming.photos) {
     incoming.photos = _stripBakedFromPhotos(incoming.photos);

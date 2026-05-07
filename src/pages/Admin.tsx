@@ -3760,6 +3760,26 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
   const [ftpUploadProgress, setFtpUploadProgress] = useState<{ done: number; total: number; failed: number } | null>(null);
   const [ftpUploading, setFtpUploading] = useState(false);
 
+  const loadEditorPhotosForAppend = async (): Promise<Photo[] | null> => {
+    if (!album?.id) return photos;
+    const needsHydrate = !!album._photosStripped || (photos.length === 0 && (album.photoCount || 0) > 0);
+    if (!needsHydrate || !isServerMode()) return photos;
+
+    const fetched = await fetchAlbumPhotos(album.id);
+    if (!fetched) {
+      toast.error("Could not load existing album photos. Refresh and try uploading again.");
+      return null;
+    }
+
+    setPhotos(fetched);
+    setLiveAlbum(prev => prev ? { ...prev, photos: fetched, _photosStripped: false } : prev);
+    const hydrated = getAlbums().map(a =>
+      a.id === album.id ? { ...a, photos: fetched, _photosStripped: false } : a
+    );
+    try { localStorage.setItem("wv_albums", JSON.stringify(hydrated)); } catch (e) { console.error("localStorage save failed:", e); }
+    return fetched;
+  };
+
   const handleFtpReupload = async () => {
     if (!album?.slug || ftpUploading) return;
     setFtpUploading(true);
@@ -3791,6 +3811,12 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
     if (!files || files.length === 0) return;
     const fileArr = Array.from(files);
     setUploadStats({ total: fileArr.length, done: 0, errors: 0, savedBytes: 0 });
+    const basePhotos = await loadEditorPhotosForAppend();
+    if (!basePhotos) {
+      setUploadStats(null);
+      if (e.target) e.target.value = "";
+      return;
+    }
 
     if (isServerMode()) {
       // Upload to server — files saved to TrueNAS disk
@@ -3805,9 +3831,10 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
         uploadedAt: new Date().toISOString(),
         ...(r.takenAt ? { takenAt: r.takenAt } : {}),
         originalName: r.originalName,
+        fileSize: r.size,
         ...(r.ftpUploaded ? { ftpUploaded: true } : {}),
       }));
-      const allPhotos = [...photos, ...newPhotos];
+      const allPhotos = [...basePhotos, ...newPhotos];
       setPhotos(allPhotos);
       const newCover = coverImage || (allPhotos[0]?.src ?? "");
       if (!coverImage && newPhotos.length > 0) setCoverImage(newPhotos[0].src);
@@ -3838,6 +3865,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
         }
       }
     }
+    if (e.target) e.target.value = "";
   };
 
   const handleBookingLink = (bkId: string) => {
@@ -5156,11 +5184,37 @@ function PhotosView() {
   // Determine if we're viewing a specific album (for upload-to-album)
   const selectedAlbum = viewSource !== "all" && viewSource !== "library" ? albums.find(a => a.title === viewSource) : null;
 
-  const addPhotoToTarget = (photo: Photo) => {
+  const loadAlbumForPhotoAppend = async (target: Album): Promise<Album | null> => {
+    const stored = getAlbums().find(a => a.id === target.id) || target;
+    const needsHydrate = !!stored._photosStripped || ((stored.photoCount || 0) > 0 && (!stored.photos || stored.photos.length === 0));
+    if (needsHydrate && isServerMode()) {
+      const fetched = await fetchAlbumPhotos(stored.id);
+      if (!fetched) {
+        toast.error(`Could not load existing photos for "${stored.title}". Refresh and try uploading again.`);
+        return null;
+      }
+      const hydrated = { ...stored, photos: fetched, _photosStripped: false };
+      const allAlbums = getAlbums();
+      try {
+        localStorage.setItem("wv_albums", JSON.stringify(allAlbums.map(a => a.id === hydrated.id ? hydrated : a)));
+      } catch (e) {
+        console.error("localStorage save failed:", e);
+      }
+      setAlbumsState(prev => prev.map(a => a.id === hydrated.id ? hydrated : a));
+      return hydrated;
+    }
+
+    if (stored._photosStripped) {
+      toast.error(`Could not safely append to "${stored.title}" because its photos are not loaded.`);
+      return null;
+    }
+
+    return { ...stored, photos: stored.photos || [], _photosStripped: false };
+  };
+
+  const addPhotoToTarget = async (photo: Photo) => {
     if (selectedAlbum) {
-      // Read fresh from persistent store to avoid stale-closure overwrite when adding multiple photos
-      const currentAlbums = getAlbums();
-      const alb = currentAlbums.find(a => a.id === selectedAlbum.id);
+      const alb = await loadAlbumForPhotoAppend(selectedAlbum);
       if (alb) {
         const updated = { ...alb, photos: [...alb.photos, photo], photoCount: alb.photos.length + 1 };
         if (!updated.coverImage) updated.coverImage = photo.src;
@@ -5182,11 +5236,17 @@ function PhotosView() {
     if (!files || files.length === 0) return;
     const fileArr = Array.from(files);
     setUploadStats({ total: fileArr.length, done: 0, errors: 0, savedBytes: 0 });
+    const targetAlbum = selectedAlbum ? await loadAlbumForPhotoAppend(selectedAlbum) : null;
+    if (selectedAlbum && !targetAlbum) {
+      setUploadStats(null);
+      if (e.target) e.target.value = "";
+      return;
+    }
 
     if (isServerMode()) {
       const results = await uploadPhotosToServer(fileArr, (done, total, bytesPerSecond) => {
         setUploadStats(prev => prev ? { ...prev, done, total, speed: bytesPerSecond } : null);
-      });
+      }, undefined, 3, targetAlbum?.title);
       // Add all photos in a single batch update to avoid stale-closure overwrite
       const newPhotos: Photo[] = results.map(r => ({
         id: r.id, src: r.url, thumbnail: r.url + "?size=thumb&wm=0",
@@ -5195,18 +5255,16 @@ function PhotosView() {
         uploadedAt: new Date().toISOString(),
         ...(r.takenAt ? { takenAt: r.takenAt } : {}),
         originalName: r.originalName,
+        fileSize: r.size,
         ...(r.ftpUploaded ? { ftpUploaded: true } : {}),
       }));
       if (newPhotos.length > 0) {
-        if (selectedAlbum) {
-          const alb = getAlbums().find(a => a.id === selectedAlbum.id);
-          if (alb) {
-            const updatedPhotos = [...alb.photos, ...newPhotos];
-            const updated = { ...alb, photos: updatedPhotos, photoCount: updatedPhotos.length };
-            if (!updated.coverImage) updated.coverImage = newPhotos[0].src;
-            updateAlbum(updated);
-            setAlbumsState(getAlbums());
-          }
+        if (targetAlbum) {
+          const updatedPhotos = [...(targetAlbum.photos || []), ...newPhotos];
+          const updated = { ...targetAlbum, photos: updatedPhotos, photoCount: updatedPhotos.length, _photosStripped: false };
+          if (!updated.coverImage) updated.coverImage = newPhotos[0].src;
+          updateAlbum(updated);
+          setAlbumsState(getAlbums());
         } else {
           setLibraryPhotosState(prev => {
             const updated = [...prev, ...newPhotos];
@@ -5227,7 +5285,7 @@ function PhotosView() {
           const result = await compressImage(file);
           const thumb = await generateThumbnail(result.src).catch(() => undefined);
           const photo: Photo = { id: generateId("ph"), src: result.src, thumbnail: thumb, title: file.name.replace(/\.[^.]+$/, "").replace(/^_+/, ""), width: result.width, height: result.height, uploadedAt: new Date().toISOString() };
-          addPhotoToTarget(photo);
+          await addPhotoToTarget(photo);
           setUploadStats(prev => prev ? { ...prev, done: prev.done + 1, savedBytes: prev.savedBytes + (result.originalSize - result.compressedSize) } : null);
         } catch {
           setUploadStats(prev => prev ? { ...prev, done: prev.done + 1, errors: prev.errors + 1 } : null);
@@ -5235,6 +5293,7 @@ function PhotosView() {
         }
       }
     }
+    if (e.target) e.target.value = "";
   };
 
   const toggleSelect = (id: string) => {

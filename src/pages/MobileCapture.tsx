@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { getBookings, getAlbums, getSettings, updateAlbum, addAlbum, updateBooking, getMobileTenantSession, setMobileTenantSession, isLoggedIn } from "@/lib/storage";
 import { uploadPhotosToServer, isServerMode, recheckServer, sendEmail, fetchTenantMobileData, saveTenantAlbum } from "@/lib/api";
-import { queueOfflineCapture, getOfflineQueue, removeOfflineItem, useOfflineUploadQueue, type OfflineCaptureItem } from "@/lib/usePwa";
+import { queueOfflineCapture, getOfflineQueue, useOfflineUploadQueue, type OfflineCaptureItem } from "@/lib/usePwa";
 import { generateThumbnail, formatSpeed } from "@/lib/image-utils";
 import CameraUsb from "@/plugins/camera-usb";
 import type { CameraFile } from "@/plugins/camera-usb";
@@ -382,17 +382,42 @@ function MobileCaptureInner() {
     if (!item.albumId) return false;
     const file = new File([item.file], item.fileName, { type: item.mimeType });
     try {
-      const results = await uploadPhotosToServer([file], () => {});
-      if (results?.[0]?.src) {
-        await removeOfflineItem(item.id);
-        setIdbQueue(prev => prev.filter(q => q.id !== item.id));
-        return true;
-      }
-      return false;
+      const album = albums.find(a => a.id === item.albumId);
+      if (!album) return false;
+      const results = await uploadPhotosToServer([file], () => {}, tenantSession?.slug, 1, album.title);
+      const uploaded = results?.[0];
+      if (!uploaded?.url) return false;
+
+      const photo: Photo = {
+        id: uploaded.id,
+        src: uploaded.url,
+        thumbnail: uploaded.url + "?size=thumb&wm=0",
+        title: uploaded.originalName.replace(/\.[^.]+$/, "").replace(/^_+/, ""),
+        width: uploaded.width ?? 800,
+        height: uploaded.height ?? 600,
+        uploadedAt: new Date().toISOString(),
+        ...(uploaded.takenAt ? { takenAt: uploaded.takenAt } : {}),
+        originalName: uploaded.originalName,
+        fileSize: uploaded.size,
+        proofing: true,
+      };
+      const fresh = albums.find(a => a.id === item.albumId) || album;
+      const updated: Album = {
+        ...fresh,
+        enabled: true,
+        photos: [...(fresh.photos || []), photo],
+        photoCount: (fresh.photos || []).length + 1,
+        coverImage: fresh.coverImage || photo.src,
+      };
+      await saveAlbum(updated);
+      setTargetAlbum(prev => prev?.id === updated.id ? updated : prev);
+      setAlbums(prev => prev.map(a => a.id === updated.id ? updated : a));
+      setIdbQueue(prev => prev.filter(q => q.id !== item.id));
+      return true;
     } catch {
       return false;
     }
-  }, []);
+  }, [albums, saveAlbum, tenantSession?.slug]);
 
   useOfflineUploadQueue(uploadOfflineItem);
 
@@ -701,7 +726,17 @@ function MobileCaptureInner() {
               const orderedResults = decodedFiles.map(f => resultByName.get(f.name)).filter(Boolean);
               for (const r of orderedResults) {
                 if (!r) continue;
-                newPhotos.push({ id: r.id, src: r.url, thumbnail: r.url + "?size=thumb&wm=0", title: r.originalName.replace(/\.[^.]+$/, "").replace(/^_+/, ""), originalName: r.originalName, width: 0, height: 0, proofing: true, uploadedAt });
+                newPhotos.push({
+                  id: r.id, src: r.url, thumbnail: r.url + "?size=thumb&wm=0",
+                  title: r.originalName.replace(/\.[^.]+$/, "").replace(/^_+/, ""),
+                  originalName: r.originalName,
+                  width: r.width ?? 800,
+                  height: r.height ?? 600,
+                  proofing: true,
+                  uploadedAt,
+                  ...(r.takenAt ? { takenAt: r.takenAt } : {}),
+                  fileSize: r.size,
+                });
               }
               // Delete local cached copies now that files are safely on the server.
               // Fire-and-forget: cleanup is best-effort and must not block the upload flow
@@ -890,8 +925,14 @@ function MobileCaptureInner() {
               const srcFile = fileInfoByName.get(r.originalName);
               newPhotos.push({
                 id: r.id, src: r.url, thumbnail: r.url + "?size=thumb&wm=0",
-                title: r.originalName.replace(/\.[^.]+$/, "").replace(/^_+/, ""), originalName: r.originalName, width: 0, height: 0, proofing: true,
+                title: r.originalName.replace(/\.[^.]+$/, "").replace(/^_+/, ""),
+                originalName: r.originalName,
+                width: r.width ?? 800,
+                height: r.height ?? 600,
+                proofing: true,
                 uploadedAt: srcFile ? new Date(srcFile.lastModified).toISOString() : new Date().toISOString(),
+                ...(r.takenAt ? { takenAt: r.takenAt } : {}),
+                fileSize: r.size,
               });
             }
             totalDone += chunk.length;
@@ -971,7 +1012,19 @@ function MobileCaptureInner() {
       const orderedResults = files.map(f => resultByName.get(f.name)).filter((r): r is NonNullable<typeof r> => !!r);
       const newPhotos: Photo[] = orderedResults.map(r => {
         const srcFile = fileInfoByName.get(r.originalName);
-        return { id: r.id, src: r.url, thumbnail: r.url + "?size=thumb&wm=0", title: r.originalName.replace(/\.[^.]+$/, "").replace(/^_+/, ""), originalName: r.originalName, width: 0, height: 0, proofing: true, uploadedAt: srcFile ? new Date(srcFile.lastModified).toISOString() : new Date().toISOString() };
+        return {
+          id: r.id,
+          src: r.url,
+          thumbnail: r.url + "?size=thumb&wm=0",
+          title: r.originalName.replace(/\.[^.]+$/, "").replace(/^_+/, ""),
+          originalName: r.originalName,
+          width: r.width ?? 800,
+          height: r.height ?? 600,
+          proofing: true,
+          uploadedAt: srcFile ? new Date(srcFile.lastModified).toISOString() : new Date().toISOString(),
+          ...(r.takenAt ? { takenAt: r.takenAt } : {}),
+          fileSize: r.size,
+        };
       });
       const fresh = albums.find(a => a.id === targetAlbum.id) || targetAlbum;
       const upd: Album = { ...fresh, photos: [...fresh.photos, ...newPhotos], photoCount: fresh.photos.length + newPhotos.length, coverImage: fresh.coverImage || newPhotos[0]?.src || "" };

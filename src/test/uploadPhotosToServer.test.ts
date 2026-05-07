@@ -19,11 +19,15 @@ async function uploadPhotosToServer(
   onProgress?: (done: number, total: number, bytesPerSecond?: number) => void,
   tenantSlug?: string,
   concurrency = 3,
+  albumFolder?: string,
   fetchFn: typeof fetch = fetch,
 ): Promise<UploadResult[]> {
-  const uploadUrl = tenantSlug
+  let uploadUrl = tenantSlug
     ? `/api/upload?tenant=${encodeURIComponent(tenantSlug)}`
     : "/api/upload";
+  if (albumFolder) {
+    uploadUrl += (uploadUrl.includes("?") ? "&" : "?") + `albumFolder=${encodeURIComponent(albumFolder)}`;
+  }
 
   const batchSize = 5;
   const batches: File[][] = [];
@@ -97,14 +101,14 @@ describe("uploadPhotosToServer (concurrent implementation)", () => {
   });
 
   it("returns empty array for zero files", async () => {
-    const result = await uploadPhotosToServer([], undefined, undefined, 3, mockFetch);
+    const result = await uploadPhotosToServer([], undefined, undefined, 3, undefined, mockFetch);
     expect(result).toEqual([]);
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
   it("uploads files in batches of 5", async () => {
     const files = Array.from({ length: 13 }, (_, i) => makeFile(`photo${i}.jpg`));
-    const result = await uploadPhotosToServer(files, undefined, undefined, 3, mockFetch);
+    const result = await uploadPhotosToServer(files, undefined, undefined, 3, undefined, mockFetch);
 
     // 13 files → 3 batches: 5 + 5 + 3
     expect(calls.sort((a, b) => b - a)).toEqual([5, 5, 3]);
@@ -140,7 +144,7 @@ describe("uploadPhotosToServer (concurrent implementation)", () => {
     const batch3 = Array.from({ length: 5 }, (_, i) => makeFile(`c${i}.jpg`));
     const files = [...batch1, ...batch2, ...batch3];
 
-    const uploadPromise = uploadPhotosToServer(files, undefined, undefined, 3, slowFetch);
+    const uploadPromise = uploadPhotosToServer(files, undefined, undefined, 3, undefined, slowFetch);
 
     // Give microtasks time to dispatch all three batches before resolving
     await new Promise((r) => setTimeout(r, 0));
@@ -164,6 +168,7 @@ describe("uploadPhotosToServer (concurrent implementation)", () => {
       (done, total, bps) => progressUpdates.push([done, total, bps]),
       undefined,
       3,
+      undefined,
       mockFetch,
     );
 
@@ -186,6 +191,7 @@ describe("uploadPhotosToServer (concurrent implementation)", () => {
       (_done, _total, bps) => { if (bps != null) speedValues.push(bps); },
       undefined,
       1,
+      undefined,
       mockFetch,
     );
     expect(speedValues).toHaveLength(1);
@@ -196,9 +202,18 @@ describe("uploadPhotosToServer (concurrent implementation)", () => {
 
   it("includes tenant slug in the upload URL", async () => {
     const files = [makeFile("img.jpg")];
-    await uploadPhotosToServer(files, undefined, "acme", 1, mockFetch);
+    await uploadPhotosToServer(files, undefined, "acme", 1, undefined, mockFetch);
     expect(mockFetch).toHaveBeenCalledWith(
       "/api/upload?tenant=acme",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("includes album folder in the upload URL", async () => {
+    const files = [makeFile("img.jpg")];
+    await uploadPhotosToServer(files, undefined, "acme", 1, "Menu Tasting", mockFetch);
+    expect(mockFetch).toHaveBeenCalledWith(
+      "/api/upload?tenant=acme&albumFolder=Menu%20Tasting",
       expect.objectContaining({ method: "POST" }),
     );
   });
@@ -219,7 +234,7 @@ describe("uploadPhotosToServer (concurrent implementation)", () => {
     });
 
     const files = Array.from({ length: 10 }, (_, i) => makeFile(`f${i}.jpg`));
-    const result = await uploadPhotosToServer(files, undefined, undefined, 1, partialFetch);
+    const result = await uploadPhotosToServer(files, undefined, undefined, 1, undefined, partialFetch);
 
     // First batch of 5 failed, second batch of 5 succeeded
     expect(result).toHaveLength(5);
@@ -227,7 +242,7 @@ describe("uploadPhotosToServer (concurrent implementation)", () => {
 
   it("limits concurrency to number of batches when fewer batches than workers", async () => {
     const files = [makeFile("only.jpg")]; // 1 file → 1 batch
-    const result = await uploadPhotosToServer(files, undefined, undefined, 10, mockFetch);
+    const result = await uploadPhotosToServer(files, undefined, undefined, 10, undefined, mockFetch);
     expect(mockFetch).toHaveBeenCalledTimes(1);
     expect(result).toHaveLength(1);
   });
