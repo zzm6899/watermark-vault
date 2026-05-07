@@ -7,7 +7,7 @@ import { Switch } from "@/components/ui/switch";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { getBookings, getAlbums, getSettings, updateAlbum, addAlbum, updateBooking, getMobileTenantSession, setMobileTenantSession, isLoggedIn } from "@/lib/storage";
-import { uploadPhotosToServer, isServerMode, recheckServer, sendEmail, fetchTenantMobileData, saveTenantAlbum } from "@/lib/api";
+import { uploadPhotosToServer, isSupportedUploadFile, isServerMode, recheckServer, sendEmail, fetchTenantMobileData, saveTenantAlbum } from "@/lib/api";
 import { queueOfflineCapture, getOfflineQueue, useOfflineUploadQueue, type OfflineCaptureItem } from "@/lib/usePwa";
 import { generateThumbnail, formatSpeed } from "@/lib/image-utils";
 import CameraUsb from "@/plugins/camera-usb";
@@ -862,7 +862,7 @@ function MobileCaptureInner() {
     if (!files || files.length === 0 || !targetAlbum) return;
     const rawExt = [".nef",".cr2",".cr3",".arw",".orf",".rw2",".dng",".raf"];
     const imageFiles = Array.from(files).filter(f => {
-      if (!f.type.startsWith("image/")) return false;
+      if (!isSupportedUploadFile(f)) return false;
       if (jpegOnly) return !rawExt.includes(f.name.toLowerCase().slice(f.name.lastIndexOf(".")));
       return true;
     });

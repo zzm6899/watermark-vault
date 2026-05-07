@@ -25,7 +25,7 @@ import {
   getTenantLicenseInfo, deleteTenantAlbum,
   getTenantStoreKey, saveTenantStoreKey, updateTenant,
   clearTenantImageCache, tenantPhotoSrc, saveTenantAlbum,
-  uploadPhotosToServer, isServerMode, notifyTenantDiscord,
+  uploadPhotosToServer, isSupportedUploadFile, isServerMode, notifyTenantDiscord,
   getSuperAdminWebhooks, sendTenantEmail,
   getServerStorageStats, bulkDeleteFiles, deletePhotoFromServer,
   getTenantGoogleCalendarStatus, startTenantGoogleCalendarAuth,
@@ -1710,10 +1710,18 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
     const files = e.target.files;
     if (!files || files.length === 0) return;
     if (!liveAlbum) { toast.error("Save the album first before uploading photos"); return; }
+    const fileArr = Array.from(files).filter(isSupportedUploadFile);
+    if (fileArr.length === 0) {
+      toast.error("No supported image files found");
+      if (e.target) e.target.value = "";
+      return;
+    }
+    if (fileArr.length < files.length) {
+      toast.info(`Skipped ${files.length - fileArr.length} unsupported file${files.length - fileArr.length === 1 ? "" : "s"}`);
+    }
     setUploading(true);
     setUploadProgress(0);
     setUploadSpeed(null);
-    const fileArr = Array.from(files);
     const results = await uploadPhotosToServer(fileArr, (done, total, bytesPerSecond) => {
       setUploadProgress(Math.round((done / total) * 100));
       if (bytesPerSecond != null) setUploadSpeed(bytesPerSecond);
@@ -2659,7 +2667,15 @@ function TenantPhotos({ slug }: { slug: string }) {
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
-    const fileArr = Array.from(files);
+    const fileArr = Array.from(files).filter(isSupportedUploadFile);
+    if (fileArr.length === 0) {
+      toast.error("No supported image files found");
+      if (e.target) e.target.value = "";
+      return;
+    }
+    if (fileArr.length < files.length) {
+      toast.info(`Skipped ${files.length - fileArr.length} unsupported file${files.length - fileArr.length === 1 ? "" : "s"}`);
+    }
     setUploadStats({ total: fileArr.length, done: 0, errors: 0, savedBytes: 0 });
     let localTargetAlbum = selectedAlbum ? { ...selectedAlbum, photos: [...(selectedAlbum.photos || [])] } : null;
 

@@ -4,11 +4,30 @@ import { formatSpeed } from "@/lib/image-utils";
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-function makeFile(name: string, sizeBytes = 100): File {
-  return new File([new Uint8Array(sizeBytes)], name, { type: "image/jpeg" });
+function makeFile(name: string, sizeBytes = 100, type = "image/jpeg"): File {
+  return new File([new Uint8Array(sizeBytes)], name, { type });
 }
 
 type UploadResult = { id: string; url: string; originalName: string; size: number; ftpUploaded?: boolean };
+
+const SUPPORTED_UPLOAD_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif", ".tif", ".tiff", ".heic", ".heif"]);
+const IGNORED_UPLOAD_FILENAMES = new Set(["thumbs.db", ".ds_store", "desktop.ini"]);
+
+function fileExtension(name: string): string {
+  const dot = name.lastIndexOf(".");
+  return dot >= 0 ? name.slice(dot).toLowerCase() : "";
+}
+
+function isIgnoredUploadFileName(name: string): boolean {
+  const base = (name || "").split(/[\\/]/).pop()?.toLowerCase() || "";
+  return !base || base.startsWith("._") || IGNORED_UPLOAD_FILENAMES.has(base);
+}
+
+function isSupportedUploadFile(file: File): boolean {
+  if (isIgnoredUploadFileName(file.name)) return false;
+  if (!SUPPORTED_UPLOAD_EXTENSIONS.has(fileExtension(file.name))) return false;
+  return !file.type || file.type.startsWith("image/") || file.type === "application/octet-stream";
+}
 
 // ---------------------------------------------------------------------------
 // Inline implementation under test (mirrors src/lib/api.ts logic)
@@ -23,6 +42,9 @@ async function uploadPhotosToServer(
   albumId?: string,
   fetchFn: typeof fetch = fetch,
 ): Promise<UploadResult[]> {
+  const uploadFiles = files.filter(isSupportedUploadFile);
+  if (uploadFiles.length === 0) return [];
+
   let uploadUrl = tenantSlug
     ? `/api/upload?tenant=${encodeURIComponent(tenantSlug)}`
     : "/api/upload";
@@ -35,8 +57,8 @@ async function uploadPhotosToServer(
 
   const batchSize = 5;
   const batches: File[][] = [];
-  for (let i = 0; i < files.length; i += batchSize) {
-    batches.push(files.slice(i, i + batchSize));
+  for (let i = 0; i < uploadFiles.length; i += batchSize) {
+    batches.push(uploadFiles.slice(i, i + batchSize));
   }
 
   const results: UploadResult[] = [];
@@ -65,7 +87,7 @@ async function uploadPhotosToServer(
       doneBytes += batchBytes;
       const elapsedSec = (Date.now() - startTime) / 1000;
       const bytesPerSecond = elapsedSec > 0 ? doneBytes / elapsedSec : 0;
-      onProgress?.(Math.min(done, files.length), files.length, bytesPerSecond);
+      onProgress?.(Math.min(done, uploadFiles.length), uploadFiles.length, bytesPerSecond);
     }
   };
 
@@ -108,6 +130,38 @@ describe("uploadPhotosToServer (concurrent implementation)", () => {
     const result = await uploadPhotosToServer([], undefined, undefined, 3, undefined, undefined, mockFetch);
     expect(result).toEqual([]);
     expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("skips system files without dispatching an upload", async () => {
+    const result = await uploadPhotosToServer([makeFile("Thumbs.db")], undefined, undefined, 3, undefined, undefined, mockFetch);
+    expect(result).toEqual([]);
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("filters junk files out of mixed upload batches", async () => {
+    const files = [
+      makeFile("photo-1.jpg"),
+      makeFile("Thumbs.db"),
+      makeFile("._photo-2.jpg"),
+      makeFile("photo-2.webp", 100, "image/webp"),
+      makeFile("notes.txt", 100, "text/plain"),
+    ];
+    const progressUpdates: [number, number][] = [];
+
+    const result = await uploadPhotosToServer(
+      files,
+      (done, total) => progressUpdates.push([done, total]),
+      undefined,
+      1,
+      undefined,
+      undefined,
+      mockFetch,
+    );
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(calls).toEqual([2]);
+    expect(result.map(r => r.originalName)).toEqual(["photo-1.jpg", "photo-2.webp"]);
+    expect(progressUpdates).toEqual([[2, 2]]);
   });
 
   it("uploads files in batches of 5", async () => {

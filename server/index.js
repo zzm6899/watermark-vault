@@ -97,6 +97,17 @@ const DB_FILE = path.join(DATA_DIR, "db.json");
 const MAX_ZIP_FILES = 1000; // Reasonable upper bound per request to prevent resource abuse
 // Shared Cache-Control header for short-lived public read endpoints (60 s fresh, 5 min stale)
 const SHORT_CACHE = "public, max-age=60, stale-while-revalidate=300";
+const ALLOWED_IMAGE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif", ".tif", ".tiff", ".heic", ".heif"]);
+const IGNORED_SYSTEM_FILENAMES = new Set(["thumbs.db", ".ds_store", "desktop.ini"]);
+
+function isIgnoredSystemFileName(filename) {
+  const base = path.basename(String(filename || "")).toLowerCase();
+  return !base || base === "_cache" || base.startsWith("._") || IGNORED_SYSTEM_FILENAMES.has(base);
+}
+
+function isSupportedImageFilename(filename) {
+  return ALLOWED_IMAGE_EXTENSIONS.has(path.extname(String(filename || "")).toLowerCase());
+}
 
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 // Pre-create the image cache directory once at startup so every image request
@@ -307,7 +318,7 @@ function getStorageUsage() {
     totalBytes += dbSize;
     const files = fs.readdirSync(UPLOADS_DIR);
     for (const f of files) {
-      if (f.startsWith("_")) continue; // skip _cache directory and other internal entries
+      if (isIgnoredSystemFileName(f) || !isSupportedImageFilename(f)) continue;
       try {
         const stat = fs.statSync(path.join(UPLOADS_DIR, f));
         if (stat.isDirectory()) continue; // skip subdirectories
@@ -981,14 +992,13 @@ const storage = multer.diskStorage({
     cb(null, name);
   },
 });
-const ALLOWED_IMAGE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif", ".tif", ".tiff", ".heic", ".heif"]);
 const upload = multer({
   storage,
   limits: { fileSize: 50 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
-    const ext = path.extname(file.originalname || "").toLowerCase();
-    if (file.mimetype.startsWith("image/") && ALLOWED_IMAGE_EXTENSIONS.has(ext)) cb(null, true);
-    else cb(new Error("Only supported image files are allowed"));
+    if (isIgnoredSystemFileName(file.originalname)) return cb(null, false);
+    if (file.mimetype.startsWith("image/") && isSupportedImageFilename(file.originalname)) return cb(null, true);
+    cb(new Error("Only supported image files are allowed"));
   },
 });
 
@@ -1499,6 +1509,10 @@ app.get("/uploads/:filename", imageServeLimiter, async (req, res) => {
   const safeName = path.basename(req.params.filename);
   const filepath = path.join(UPLOADS_DIR, safeName);
 
+  if (isIgnoredSystemFileName(safeName) || !isSupportedImageFilename(safeName)) {
+    return res.status(404).send("Not found");
+  }
+
   if (!fs.existsSync(filepath)) return res.status(404).send("Not found");
 
   // Guard against symlink-based path traversal: resolve the real path and confirm
@@ -1636,6 +1650,9 @@ app.get("/api/photo/:filename/original", async (req, res) => {
   // Strip any query-string that may have been incorporated into the filename (e.g. "photo.jpg?tenant=slug")
   const safeName = path.basename(req.params.filename.split("?")[0]);
   const filepath = path.join(UPLOADS_DIR, safeName);
+  if (isIgnoredSystemFileName(safeName) || !isSupportedImageFilename(safeName)) {
+    return res.status(404).send("Not found");
+  }
   if (!fs.existsSync(filepath)) return res.status(404).send("Not found");
 
   // Guard against symlink-based path traversal
@@ -2686,8 +2703,7 @@ app.post("/api/cache/warm", cacheWarmLimiter, async (req, res) => {
   let files;
   try {
     files = fs.readdirSync(UPLOADS_DIR).filter(f => {
-      const ext = path.extname(f).toLowerCase();
-      return [".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif"].includes(ext) && !f.startsWith("_");
+      return !isIgnoredSystemFileName(f) && isSupportedImageFilename(f);
     });
   } catch {
     res.end(JSON.stringify({ ok: false, error: "Cannot read uploads directory" }) + "\n");

@@ -298,6 +298,25 @@ export type UploadedPhotoResult = {
   takenAt?: string | null;
 };
 
+const SUPPORTED_UPLOAD_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif", ".tif", ".tiff", ".heic", ".heif"]);
+const IGNORED_UPLOAD_FILENAMES = new Set(["thumbs.db", ".ds_store", "desktop.ini"]);
+
+function fileExtension(name: string): string {
+  const dot = name.lastIndexOf(".");
+  return dot >= 0 ? name.slice(dot).toLowerCase() : "";
+}
+
+function isIgnoredUploadFileName(name: string): boolean {
+  const base = (name || "").split(/[\\/]/).pop()?.toLowerCase() || "";
+  return !base || base.startsWith("._") || IGNORED_UPLOAD_FILENAMES.has(base);
+}
+
+export function isSupportedUploadFile(file: File): boolean {
+  if (isIgnoredUploadFileName(file.name)) return false;
+  if (!SUPPORTED_UPLOAD_EXTENSIONS.has(fileExtension(file.name))) return false;
+  return !file.type || file.type.startsWith("image/") || file.type === "application/octet-stream";
+}
+
 /** Upload photo files to the server. Returns URLs, or empty array if server unavailable.
  *  Uploads are split into batches and sent concurrently to maximise throughput. */
 export async function uploadPhotosToServer(
@@ -309,6 +328,8 @@ export async function uploadPhotosToServer(
   albumId?: string,
 ): Promise<UploadedPhotoResult[]> {
   if (!(await checkServer())) return [];
+  const uploadFiles = files.filter(isSupportedUploadFile);
+  if (uploadFiles.length === 0) return [];
 
   let uploadUrl = tenantSlug
     ? `/api/upload?tenant=${encodeURIComponent(tenantSlug)}`
@@ -323,8 +344,8 @@ export async function uploadPhotosToServer(
   // Smaller batches improve granular progress feedback and concurrent throughput
   const batchSize = 5;
   const batches: File[][] = [];
-  for (let i = 0; i < files.length; i += batchSize) {
-    batches.push(files.slice(i, i + batchSize));
+  for (let i = 0; i < uploadFiles.length; i += batchSize) {
+    batches.push(uploadFiles.slice(i, i + batchSize));
   }
 
   const results: UploadedPhotoResult[] = [];
@@ -354,7 +375,7 @@ export async function uploadPhotosToServer(
       doneBytes += batchBytes;
       const elapsedSec = (Date.now() - startTime) / 1000;
       const bytesPerSecond = elapsedSec > 0 ? doneBytes / elapsedSec : 0;
-      onProgress?.(Math.min(done, files.length), files.length, bytesPerSecond);
+      onProgress?.(Math.min(done, uploadFiles.length), uploadFiles.length, bytesPerSecond);
     }
   };
 

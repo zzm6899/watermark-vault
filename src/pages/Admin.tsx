@@ -35,6 +35,7 @@ import {
 import { compressImage, formatBytes, formatSpeed, getLocalStorageUsage, generateThumbnail } from "@/lib/image-utils";
 import {
   uploadPhotosToServer,
+  isSupportedUploadFile,
   isServerMode,
   deletePhotoFromServer,
   getGoogleCalendarStatus,
@@ -3848,7 +3849,15 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
   const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
-    const fileArr = Array.from(files);
+    const fileArr = Array.from(files).filter(isSupportedUploadFile);
+    if (fileArr.length === 0) {
+      toast.error("No supported image files found");
+      if (e.target) e.target.value = "";
+      return;
+    }
+    if (fileArr.length < files.length) {
+      toast.info(`Skipped ${files.length - fileArr.length} unsupported file${files.length - fileArr.length === 1 ? "" : "s"}`);
+    }
     setUploadStats({ total: fileArr.length, done: 0, errors: 0, savedBytes: 0 });
     const basePhotos = await loadEditorPhotosForAppend();
     if (!basePhotos) {
@@ -5247,7 +5256,15 @@ function PhotosView() {
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
-    const fileArr = Array.from(files);
+    const fileArr = Array.from(files).filter(isSupportedUploadFile);
+    if (fileArr.length === 0) {
+      toast.error("No supported image files found");
+      if (e.target) e.target.value = "";
+      return;
+    }
+    if (fileArr.length < files.length) {
+      toast.info(`Skipped ${files.length - fileArr.length} unsupported file${files.length - fileArr.length === 1 ? "" : "s"}`);
+    }
     setUploadStats({ total: fileArr.length, done: 0, errors: 0, savedBytes: 0 });
     const targetAlbum = selectedAlbum ? await loadAlbumForPhotoAppend(selectedAlbum) : null;
     if (selectedAlbum && !targetAlbum) {
