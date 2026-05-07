@@ -10,7 +10,7 @@ import PurchasePanel from "@/components/PurchasePanel";
 import { getAlbumBySlug, getSettings, updateAlbum } from "@/lib/storage";
 import { useBackfillThumbnails } from "@/hooks/use-backfill-thumbnails";
 import { Badge } from "@/components/ui/badge";
-import { createAlbumCheckout, createTenantAlbumCheckout, getStripeStatus, getTenantStripeStatus, getTenantSettings, isServerMode, fetchPublicAlbum, tenantPhotoSrc, ftpMoveToStarred } from "@/lib/api";
+import { createAlbumCheckout, createTenantAlbumCheckout, getStripeStatus, getTenantStripeStatus, getTenantSettings, isServerMode, fetchPublicAlbum, tenantPhotoSrc, ftpMoveToStarred, saveTenantAlbum } from "@/lib/api";
 import { toast } from "sonner";
 import { resizeToTargetSize } from "@/lib/image-utils";
 import {
@@ -364,15 +364,25 @@ export default function AlbumDetail() {
   // Use tenant bank settings for tenant galleries, fall back to superuser settings
   const bankTransfer = tenantBankTransfer ?? settings.bankTransfer;
 
+  const persistCurrentAlbum = useCallback((updated: Album) => {
+    if (tenantSlug) {
+      saveTenantAlbum(tenantSlug, updated).then(result => {
+        if (!result.ok) console.warn("Failed to persist tenant album:", result.error);
+      }).catch(err => console.warn("Failed to persist tenant album:", err));
+      return;
+    }
+    updateAlbum(updated);
+  }, [tenantSlug]);
+
   const refreshAlbum = useCallback(() => {
-    if (albumId) {
+    if (albumId && !tenantSlug) {
       const fresh = getAlbumBySlug(albumId);
       // Only update state from localStorage for main (non-tenant) albums.
       // Tenant albums are not stored in the main wv_albums key, so fresh will be
-      // undefined — don't overwrite the in-memory album with undefined.
+      // undefined or a stale same-slug shadow; don't overwrite tenant state.
       if (fresh !== undefined) setAlbumState(fresh);
     }
-  }, [albumId]);
+  }, [albumId, tenantSlug]);
 
   // Poll until Stripe webhook updates album (runs on stripeSuccess/pollingCount changes).
   // We must fetch fresh data from the server because the webhook writes sessionPurchases
@@ -447,10 +457,10 @@ export default function AlbumDetail() {
     setAlbumState(prev => {
       if (!prev) return prev;
       const updated = { ...prev, photos: prev.photos.map(p => p.id === photoId ? { ...p, thumbnail: thumb } : p) };
-      updateAlbum(updated);
+      persistCurrentAlbum(updated);
       return updated;
     });
-  }, []));
+  }, [persistCurrentAlbum]));
 
   // Reset visible count when the photo list changes (filter / sort)
   useEffect(() => {
@@ -830,7 +840,7 @@ export default function AlbumDetail() {
       photos: album.photos.map((p: any) => p.id === photoId ? { ...p, starred: nowStarred } : p),
     };
     setAlbumState(updated);
-    updateAlbum(updated);
+    persistCurrentAlbum(updated);
     if (isServerMode() && photo) {
       ftpMoveToStarred({
         photoSrc: photo.src,
@@ -908,8 +918,8 @@ export default function AlbumDetail() {
       photoCount: toDownload.length,
     };
     updated.downloadHistory = [...(updated.downloadHistory || []), historyEntry];
-    updateAlbum(updated);
     setAlbumState(updated);
+    persistCurrentAlbum(updated);
     refreshAlbum();
     setSelectedIds(new Set());
     setShowDownloadOptions(false);
@@ -943,8 +953,8 @@ export default function AlbumDetail() {
       sessionKey,
     };
     updated.downloadHistory = [...(updated.downloadHistory || []), historyEntry];
-    updateAlbum(updated);
     setAlbumState(updated);
+    persistCurrentAlbum(updated);
     refreshAlbum();
     setSelectedIds(new Set());
     setShowDownloadOptions(false);
@@ -964,8 +974,8 @@ export default function AlbumDetail() {
     // If full album is free (or already unlocked), just unlock and download
     if (!album.priceFullAlbum || album.priceFullAlbum === 0) {
       const updated = { ...album, allUnlocked: true };
-      updateAlbum(updated);
       setAlbumState(updated);
+      persistCurrentAlbum(updated);
       toast.success("Album unlocked! You can now download all photos.");
       return;
     }
@@ -1031,8 +1041,8 @@ export default function AlbumDetail() {
     };
     const updated = { ...album };
     updated.downloadRequests = [...(updated.downloadRequests || []), record];
-    updateAlbum(updated);
     setAlbumState(updated);
+    persistCurrentAlbum(updated);
     refreshAlbum();
     setShowBankTransferRequest(false);
     setShowBankTransfer(true);

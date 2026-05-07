@@ -1503,13 +1503,49 @@ export async function fetchTenantMobileData(slug: string): Promise<{
   } catch { return null; }
 }
 
+/** Remove tenant routing query params before persisting tenant-owned photo URLs. */
+export function stripTenantQueryFromSrc(src: string, slug?: string): string {
+  if (!src || !src.startsWith("/uploads/") || !src.includes("?")) return src;
+
+  const [pathAndQuery, hash = ""] = src.split("#", 2);
+  const [pathname, query = ""] = pathAndQuery.split("?", 2);
+  const params = new URLSearchParams(query);
+  if (!params.has("tenant")) return src;
+
+  const tenantValue = params.get("tenant");
+  if (slug && tenantValue && tenantValue !== slug) return src;
+
+  params.delete("tenant");
+  const nextQuery = params.toString();
+  return `${pathname}${nextQuery ? `?${nextQuery}` : ""}${hash ? `#${hash}` : ""}`;
+}
+
+function normalizeTenantAlbumForSave(slug: string, album: import("./types").Album): import("./types").Album {
+  const stripRequired = (src: string) => stripTenantQueryFromSrc(src, slug);
+  const stripOptional = (src?: string) => src ? stripTenantQueryFromSrc(src, slug) : src;
+  return {
+    ...album,
+    coverImage: stripRequired(album.coverImage),
+    photos: (album.photos || []).map(photo => {
+      const normalized = { ...photo } as typeof photo & Record<string, any>;
+      normalized.src = stripRequired(photo.src);
+      normalized.thumbnail = stripOptional(photo.thumbnail);
+      normalized.thumbnailWatermarked = stripOptional(normalized.thumbnailWatermarked);
+      normalized.mediumWatermarked = stripOptional(normalized.mediumWatermarked);
+      normalized.fullWatermarked = stripOptional(normalized.fullWatermarked);
+      return normalized;
+    }),
+  };
+}
+
 /** Save (create or update) a tenant album from the mobile app. */
 export async function saveTenantAlbum(slug: string, album: import("./types").Album): Promise<{ ok: boolean; error?: string }> {
   try {
+    const payload = normalizeTenantAlbumForSave(slug, album);
     const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/albums/${encodeURIComponent(album.id)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(album),
+      body: JSON.stringify(payload),
     });
     const json = await res.json();
     return { ok: !!json.ok, error: json.error };

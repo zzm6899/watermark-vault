@@ -401,6 +401,28 @@ function _mergePhotoArrays(existingPhotos, incomingPhotos) {
   return merged;
 }
 
+function _albumPhotoCount(album) {
+  if (Array.isArray(album?.photos)) return album.photos.length;
+  const count = Number(album?.photoCount);
+  return Number.isFinite(count) ? count : 0;
+}
+
+function _chooseAlbumStoreMatch(mainMatch, tenantMatches) {
+  const bestTenant = (tenantMatches || []).reduce((best, match) => {
+    if (!best) return match;
+    return _albumPhotoCount(match.album) > _albumPhotoCount(best.album) ? match : best;
+  }, null);
+
+  if (mainMatch && bestTenant) {
+    const mainPhotoCount = _albumPhotoCount(mainMatch.album);
+    const tenantPhotoCount = _albumPhotoCount(bestTenant.album);
+    if (mainPhotoCount === 0 && tenantPhotoCount > 0) return bestTenant;
+    return mainMatch;
+  }
+
+  return mainMatch || bestTenant || null;
+}
+
 function uploadFilenameFromSrc(src) {
   return (src || "").split("?")[0].split("/").pop() || "";
 }
@@ -1280,14 +1302,16 @@ async function buildWatermarkOverlay(imgWidth, imgHeight, wm) {
 // ── Check if a photo is paid/free for a session ───────
 /** Find an album by ID across main and all tenant album stores. */
 function findAlbumById(db, albumId) {
-  // Check main store first
+  let mainMatch = null;
+  const tenantMatches = [];
+
   const mainRaw = db["wv_albums"];
   const main = mainRaw ? (typeof mainRaw === "string" ? JSON.parse(mainRaw) : mainRaw) : [];
   if (Array.isArray(main)) {
     const found = main.find(a => a.id === albumId);
-    if (found) return { album: found, tenantSlug: null };
+    if (found) mainMatch = { album: found, tenantSlug: null };
   }
-  // Check tenant stores
+
   for (const key of Object.keys(db)) {
     if (!key.startsWith("t_") || !key.endsWith("_wv_albums")) continue;
     const tSlug = key.slice(2, key.length - "_wv_albums".length);
@@ -1295,10 +1319,11 @@ function findAlbumById(db, albumId) {
     const parsed = raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : [];
     if (Array.isArray(parsed)) {
       const found = parsed.find(a => a.id === albumId);
-      if (found) return { album: found, tenantSlug: tSlug };
+      if (found) tenantMatches.push({ album: found, tenantSlug: tSlug });
     }
   }
-  return null;
+
+  return _chooseAlbumStoreMatch(mainMatch, tenantMatches);
 }
 
 function isPhotoAccessible(filename, sessionKey, albumId) {
@@ -4219,19 +4244,16 @@ app.get("/api/public-album/:albumSlug", (req, res) => {
   // Helper: find by slug or id in an array
   const findIn = (arr) => Array.isArray(arr) ? arr.find(a => a.slug === albumSlug || a.id === albumSlug) : null;
 
-  // Check main albums first
+  let mainMatch = null;
+  const tenantMatches = [];
+
   const mainRaw = db["wv_albums"];
   const main = mainRaw ? (typeof mainRaw === "string" ? JSON.parse(mainRaw) : mainRaw) : [];
   const mainAlbum = findIn(main);
   if (mainAlbum) {
-    const album = { ...mainAlbum, photos: _stripBakedFromPhotos(mainAlbum.photos || []) };
-    // Must not cache: photo additions/deletions in the admin must be
-    // reflected immediately when clients open the gallery link.
-    res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-    return res.json({ album, tenantSlug: null });
+    mainMatch = { album: mainAlbum, tenantSlug: null };
   }
 
-  // Check all tenant album stores
   for (const key of Object.keys(db)) {
     if (!key.startsWith("t_") || !key.endsWith("_wv_albums")) continue;
     const tSlug = key.slice(2, key.length - "_wv_albums".length);
@@ -4239,12 +4261,17 @@ app.get("/api/public-album/:albumSlug", (req, res) => {
     const parsed = raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : [];
     const found = findIn(parsed);
     if (found) {
-      const album = { ...found, photos: _stripBakedFromPhotos(found.photos || []) };
-      // Must not cache: photo additions/deletions in the admin must be
-      // reflected immediately when clients open the gallery link.
-      res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-      return res.json({ album, tenantSlug: tSlug });
+      tenantMatches.push({ album: found, tenantSlug: tSlug });
     }
+  }
+
+  const chosen = _chooseAlbumStoreMatch(mainMatch, tenantMatches);
+  if (chosen) {
+    const album = { ...chosen.album, photos: _stripBakedFromPhotos(chosen.album.photos || []) };
+    // Must not cache: photo additions/deletions in the admin must be
+    // reflected immediately when clients open the gallery link.
+    res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+    return res.json({ album, tenantSlug: chosen.tenantSlug });
   }
 
   return res.status(404).json({ error: "Album not found" });
