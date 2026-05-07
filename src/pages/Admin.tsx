@@ -3742,6 +3742,45 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
   const [albumStatus, setAlbumStatus] = useState<"editing" | "proofing" | "delivered" | "archived">(album?.status || "editing");
   const [editorGridSize, setEditorGridSize] = useState<"small" | "medium" | "large">("medium");
   const [editorLightboxPhoto, setEditorLightboxPhoto] = useState<Photo | null>(null);
+  const existingAlbums = getAlbums();
+
+  const buildAlbumDraft = (nextPhotos: Photo[], nextCoverImage = coverImage): Album | null => {
+    if (!title.trim()) return null;
+    const finalSlug = slug.trim() || slugify(title);
+    const albumId = album?.id || generateId("alb");
+    return {
+      ...(album || {}),
+      id: albumId,
+      slug: finalSlug,
+      title: title.trim(),
+      description: description.trim(),
+      coverImage: nextCoverImage || (nextPhotos[0]?.src || ""),
+      date: album?.date || new Date().toISOString().split("T")[0],
+      photoCount: nextPhotos.length,
+      freeDownloads,
+      pricePerPhoto,
+      priceFullAlbum,
+      isPublic: true,
+      photos: nextPhotos,
+      clientName: clientName.trim(),
+      clientEmail: clientEmail.trim(),
+      instagramHandle: instagramHandle.trim() || undefined,
+      bookingId: bookingId || undefined,
+      accessCode: accessCode || undefined,
+      mergedFrom: album?.mergedFrom,
+      allUnlocked,
+      expiresAt: expiresAt || undefined,
+      downloadExpiresAt: downloadExpiresAt || undefined,
+      proofingEnabled: albumProofingEnabled,
+      lockDownloadsDuringProofing: lockDownloadsDuringProofing ? true : undefined,
+      watermarkDisabled,
+      purchasingDisabled,
+      displaySize,
+      status: albumStatus,
+      _photosStripped: false,
+      ...(album?.enabled !== undefined ? { enabled: album.enabled } : {}),
+    };
+  };
 
   // Keyboard navigation for editor lightbox
   useEffect(() => {
@@ -3838,6 +3877,10 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
       setPhotos(allPhotos);
       const newCover = coverImage || (allPhotos[0]?.src ?? "");
       if (!coverImage && newPhotos.length > 0) setCoverImage(newPhotos[0].src);
+      if (album && newPhotos.length > 0) {
+        const updated = buildAlbumDraft(allPhotos, newCover);
+        if (updated) onUpdate?.(updated);
+      }
       setUploadStats(prev => prev ? { ...prev, done: fileArr.length, errors: fileArr.length - results.length, savedBytes: 0 } : null);
       if (results.length > 0) {
         if (results.length === fileArr.length) {
@@ -3880,49 +3923,15 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
     }
   };
 
-  const existingAlbums = getAlbums();
   const handleSave = () => {
     if (!title.trim()) { toast.error("Title required"); return; }
     const finalSlug = slug.trim() || slugify(title);
     const slugTaken = existingAlbums.some(a => a.slug === finalSlug && a.id !== album?.id);
     if (slugTaken) { toast.error("URL slug already exists — choose a different one"); return; }
     const albumId = album?.id || generateId("alb");
-    onSave({
-      id: albumId,
-      slug: finalSlug,
-      title: title.trim(),
-      description: description.trim(),
-      coverImage: coverImage || (photos[0]?.src || ""),
-      date: new Date().toISOString().split("T")[0],
-      photoCount: photos.length,
-      freeDownloads,
-      pricePerPhoto,
-      priceFullAlbum,
-      isPublic: true,
-      photos,
-      clientName: clientName.trim(),
-      clientEmail: clientEmail.trim(),
-      instagramHandle: instagramHandle.trim() || undefined,
-      bookingId: bookingId || undefined,
-      accessCode: accessCode || undefined,
-      mergedFrom: album?.mergedFrom,
-      allUnlocked,
-      expiresAt: expiresAt || undefined,
-      downloadExpiresAt: downloadExpiresAt || undefined,
-      proofingEnabled: albumProofingEnabled,
-      lockDownloadsDuringProofing: lockDownloadsDuringProofing ? true : undefined,
-      watermarkDisabled,
-      purchasingDisabled,
-      displaySize,
-      status: albumStatus,
-      usedFreeDownloads: album?.usedFreeDownloads,
-      downloadRequests: album?.downloadRequests,
-      // Preserve the enabled/disabled state so that editing an album does not
-      // silently re-enable a disabled album on the server (the server-side merge
-      // keeps the existing value when the field is absent, causing a mismatch
-      // between localStorage and the server that shows "Album Not Found").
-      ...(album?.enabled !== undefined ? { enabled: album.enabled } : {}),
-    });
+    const draft = buildAlbumDraft(photos);
+    if (!draft) return;
+    onSave({ ...draft, id: albumId });
     if (bookingId) {
       const bk = bookings.find(b => b.id === bookingId);
       if (bk) {
