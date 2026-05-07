@@ -306,6 +306,7 @@ export async function uploadPhotosToServer(
   tenantSlug?: string,
   concurrency = 3,
   albumFolder?: string,
+  albumId?: string,
 ): Promise<UploadedPhotoResult[]> {
   if (!(await checkServer())) return [];
 
@@ -314,6 +315,9 @@ export async function uploadPhotosToServer(
     : "/api/upload";
   if (albumFolder) {
     uploadUrl += (uploadUrl.includes("?") ? "&" : "?") + `albumFolder=${encodeURIComponent(albumFolder)}`;
+  }
+  if (albumId) {
+    uploadUrl += (uploadUrl.includes("?") ? "&" : "?") + `albumId=${encodeURIComponent(albumId)}`;
   }
 
   // Smaller batches improve granular progress feedback and concurrent throughput

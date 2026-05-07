@@ -1717,7 +1717,7 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
     const results = await uploadPhotosToServer(fileArr, (done, total, bytesPerSecond) => {
       setUploadProgress(Math.round((done / total) * 100));
       if (bytesPerSecond != null) setUploadSpeed(bytesPerSecond);
-    }, slug, 3, title || undefined);
+    }, slug, 3, title || undefined, liveAlbum.id);
     if (results.length === 0) {
       setUploading(false);
       setUploadSpeed(null);
@@ -2666,7 +2666,7 @@ function TenantPhotos({ slug }: { slug: string }) {
     if (isServerMode()) {
       const results = await uploadPhotosToServer(fileArr, (done, total, bytesPerSecond) => {
         setUploadStats(prev => prev ? { ...prev, done, total, speed: bytesPerSecond } : null);
-      }, slug, 3, selectedAlbum?.title);
+      }, slug, 3, selectedAlbum?.title, selectedAlbum?.id);
       const newPhotos: Photo[] = results.map(r => ({
         id: r.id, src: r.url, thumbnail: r.url + "?size=thumb&wm=0",
         title: r.originalName.replace(/\.[^.]+$/, "").replace(/^_+/, ""),

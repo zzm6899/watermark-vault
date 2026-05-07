@@ -384,7 +384,7 @@ function MobileCaptureInner() {
     try {
       const album = albums.find(a => a.id === item.albumId);
       if (!album) return false;
-      const results = await uploadPhotosToServer([file], () => {}, tenantSession?.slug, 1, album.title);
+      const results = await uploadPhotosToServer([file], () => {}, tenantSession?.slug, 1, album.title, album.id);
       const uploaded = results?.[0];
       if (!uploaded?.url) return false;
 
@@ -720,7 +720,7 @@ function MobileCaptureInner() {
               const chunkResults = await uploadPhotosToServer(decodedFiles, (done, _total, bytesPerSecond) => {
                 setImportProgress(Math.round((chunkStart + done) / freshHandles.length * 100));
                 if (bytesPerSecond != null) setImportSpeed(bytesPerSecond);
-              }, tenantSession?.slug, 3, album?.title || undefined);
+              }, tenantSession?.slug, 3, album?.title || undefined, album?.id);
               // Re-order results to match the sorted decodedFiles order
               const resultByName = new Map(chunkResults.map(r => [r.originalName, r]));
               const orderedResults = decodedFiles.map(f => resultByName.get(f.name)).filter(Boolean);
@@ -916,7 +916,7 @@ function MobileCaptureInner() {
             const chunkResults = await uploadPhotosToServer(chunk, (done, _total, bytesPerSecond) => {
               setUploadProgress(Math.round((totalDone + done) / sortedFiles.length * 100));
               if (bytesPerSecond != null) setUploadSpeed(bytesPerSecond);
-            }, tenantSession?.slug, 3, targetAlbum?.title || undefined);
+            }, tenantSession?.slug, 3, targetAlbum?.title || undefined, targetAlbum?.id);
             // Re-order results to match the sorted input file order
             const resultByName = new Map(chunkResults.map(r => [r.originalName, r]));
             const succeededNames = new Set(chunkResults.map(r => r.originalName));
@@ -1006,7 +1006,7 @@ function MobileCaptureInner() {
       const results = await uploadPhotosToServer(files, (done, total, bytesPerSecond) => {
         setUploadProgress(Math.round(done / total * 100));
         if (bytesPerSecond != null) setUploadSpeed(bytesPerSecond);
-      }, tenantSession?.slug, 3, targetAlbum?.title || undefined);
+      }, tenantSession?.slug, 3, targetAlbum?.title || undefined, targetAlbum?.id);
       const fileInfoByName = new Map(files.map(f => [f.name, f]));
       const resultByName = new Map(results.map(r => [r.originalName, r]));
       const orderedResults = files.map(f => resultByName.get(f.name)).filter((r): r is NonNullable<typeof r> => !!r);

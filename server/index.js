@@ -423,6 +423,47 @@ function _chooseAlbumStoreMatch(mainMatch, tenantMatches) {
   return mainMatch || bestTenant || null;
 }
 
+function _photoRecordFromUpload(file, ftpUploaded) {
+  return {
+    id: file.id,
+    src: file.url,
+    thumbnail: `${file.url}?size=thumb&wm=0`,
+    title: (file.originalName || file.id).replace(/\.[^.]+$/, "").replace(/^_+/, ""),
+    width: file.width || 800,
+    height: file.height || 600,
+    uploadedAt: new Date().toISOString(),
+    ...(file.takenAt ? { takenAt: file.takenAt } : {}),
+    originalName: file.originalName,
+    fileSize: file.size,
+    ...(ftpUploaded ? { ftpUploaded: true } : {}),
+  };
+}
+
+function _appendUploadedFilesToAlbum(db, tenantSlug, albumId, uploadedFiles, ftpUploaded) {
+  if (!albumId || !uploadedFiles?.length) return { ok: true, skipped: true };
+
+  const storeKey = tenantSlug ? `t_${tenantSlug}_wv_albums` : ALBUMS_KEY;
+  const raw = db[storeKey];
+  const albums = raw ? (typeof raw === "string" ? JSON.parse(raw) : (Array.isArray(raw) ? raw : [])) : [];
+  const idx = albums.findIndex(a => a.id === albumId || a.slug === albumId);
+  if (idx < 0) return { ok: false, error: "Album not found" };
+
+  const photos = _mergePhotoArrays(
+    albums[idx].photos || [],
+    uploadedFiles.map(file => _photoRecordFromUpload(file, ftpUploaded)),
+  );
+
+  albums[idx] = {
+    ...albums[idx],
+    photos,
+    photoCount: photos.length,
+    coverImage: albums[idx].coverImage || photos[0]?.src || "",
+    _photosStripped: false,
+  };
+  db[storeKey] = JSON.stringify(albums);
+  return { ok: true, album: albums[idx] };
+}
+
 function uploadFilenameFromSrc(src) {
   return (src || "").split("?")[0].split("/").pop() || "";
 }
@@ -1060,6 +1101,7 @@ app.post("/api/upload", uploadLimiter, upload.array("photos", 100), async (req, 
   const tenantSlug = req.query.tenant;
   // albumFolder: optional sub-directory name (album title or booking type)
   const albumFolder = req.query.albumFolder ? String(req.query.albumFolder) : null;
+  const albumId = req.query.albumId ? String(req.query.albumId) : null;
   const db = readDb();
 
   if (tenantSlug) {
@@ -1085,7 +1127,23 @@ app.post("/api/upload", uploadLimiter, upload.array("photos", 100), async (req, 
   }
 
   const files = uploadedFiles.map(({ localPath: _lp, ...rest }) => ({ ...rest, ftpUploaded }));
-  res.json({ files });
+  let albumPersisted = false;
+  let albumPersistError = null;
+  if (albumId && files.length > 0) {
+    try {
+      const result = _appendUploadedFilesToAlbum(db, tenantSlug || null, albumId, files, ftpUploaded);
+      if (result.ok) {
+        writeDb(db);
+        albumPersisted = true;
+      } else {
+        albumPersistError = result.error || "Album update failed";
+      }
+    } catch (err) {
+      albumPersistError = err.message || "Album update failed";
+    }
+  }
+
+  res.json({ files, albumPersisted, albumPersistError });
 
   // ── Pre-generate thumbnails asynchronously ───────────────────────────────
   // Fire-and-forget: warm the thumb cache for every uploaded file so the

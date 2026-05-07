@@ -3861,7 +3861,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
       // Upload to server — files saved to TrueNAS disk
       const results = await uploadPhotosToServer(fileArr, (done, total, bytesPerSecond) => {
         setUploadStats(prev => prev ? { ...prev, done, total, speed: bytesPerSecond } : null);
-      }, undefined, 3, title || undefined);
+      }, undefined, 3, title || undefined, album?.id);
       // Add all photos immediately — use server-side thumbnails (no heavy client-side canvas work)
       const newPhotos: Photo[] = results.map(r => ({
         id: r.id, src: r.url, thumbnail: r.url + "?size=thumb&wm=0",
@@ -5259,7 +5259,7 @@ function PhotosView() {
     if (isServerMode()) {
       const results = await uploadPhotosToServer(fileArr, (done, total, bytesPerSecond) => {
         setUploadStats(prev => prev ? { ...prev, done, total, speed: bytesPerSecond } : null);
-      }, undefined, 3, targetAlbum?.title);
+      }, undefined, 3, targetAlbum?.title, targetAlbum?.id);
       // Add all photos in a single batch update to avoid stale-closure overwrite
       const newPhotos: Photo[] = results.map(r => ({
         id: r.id, src: r.url, thumbnail: r.url + "?size=thumb&wm=0",
