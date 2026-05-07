@@ -12,7 +12,7 @@ let serverAvailable: boolean | null = null;
  *
  * The server expects Basic auth where the password field is the SHA-256 hash
  * of the user's password (NOT the bcrypt hash stored in wv_admin). After login,
- * LoginPage stores the sha256 hash in sessionStorage under "wv_admin_session_hash"
+ * LoginPage stores the sha256 hash in localStorage under "wv_admin_session_hash"
  * so we can reconstruct the correct credential here.
  */
 function adminAuthHeaders(): Record<string, string> {
@@ -536,11 +536,8 @@ export async function getServerStorageStats(): Promise<{
 } | null> {
   if (!(await checkServer())) return null;
   try {
-    const { getAdminCredentials } = await import("./storage");
-    const creds = getAdminCredentials();
-    const authHeader = creds ? "Basic " + btoa(`${creds.username}:${creds.passwordHash}`) : "";
     const res = await fetch("/api/storage", {
-      headers: authHeader ? { Authorization: authHeader } : {},
+      headers: adminAuthHeaders(),
     });
     if (!res.ok) return null;
     return await res.json();
@@ -1136,14 +1133,9 @@ export async function getSuperAdminWebhooks(): Promise<{
   error?: string;
 }> {
   try {
-    // Send admin credentials via Basic auth so the server can verify the caller is super admin
-    const { getAdminCredentials } = await import("./storage");
-    const creds = getAdminCredentials();
-    const authHeader = creds
-      ? "Basic " + btoa(`${creds.username}:${creds.passwordHash}`)
-      : "";
+    // Send the session password hash via Basic auth so the server can verify the caller is super admin.
     const res = await fetch("/api/super-admin/webhooks", {
-      headers: authHeader ? { Authorization: authHeader } : {},
+      headers: adminAuthHeaders(),
     });
     if (!res.ok) return { ok: false, error: "Failed to fetch webhooks" };
     return await res.json();
@@ -2128,12 +2120,9 @@ export async function fetchAlbumPhotos(albumId: string): Promise<import("./types
 
 export async function generateIcalToken(): Promise<{ icalToken: string } | null> {
   try {
-    const { getAdminCredentials } = await import("./storage");
-    const creds = getAdminCredentials();
-    const authHeader = creds ? "Basic " + btoa(`${creds.username}:${creds.passwordHash}`) : "";
     const res = await fetch("/api/ical/generate", {
       method: "POST",
-      headers: authHeader ? { Authorization: authHeader } : {},
+      headers: adminAuthHeaders(),
     });
     if (!res.ok) return null;
     return res.json();
@@ -2142,12 +2131,9 @@ export async function generateIcalToken(): Promise<{ icalToken: string } | null>
 
 export async function deleteIcalToken(): Promise<boolean> {
   try {
-    const { getAdminCredentials } = await import("./storage");
-    const creds = getAdminCredentials();
-    const authHeader = creds ? "Basic " + btoa(`${creds.username}:${creds.passwordHash}`) : "";
     const res = await fetch("/api/ical/token", {
       method: "DELETE",
-      headers: authHeader ? { Authorization: authHeader } : {},
+      headers: adminAuthHeaders(),
     });
     return res.ok;
   } catch { return false; }
