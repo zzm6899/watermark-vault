@@ -995,10 +995,21 @@ const storage = multer.diskStorage({
 const upload = multer({
   storage,
   limits: { fileSize: 50 * 1024 * 1024 },
-  fileFilter: (_req, file, cb) => {
-    if (isIgnoredSystemFileName(file.originalname)) return cb(null, false);
-    if (file.mimetype.startsWith("image/") && isSupportedImageFilename(file.originalname)) return cb(null, true);
-    cb(new Error("Only supported image files are allowed"));
+  fileFilter: (req, file, cb) => {
+    const ignoredFiles = req.ignoredUploadFiles || [];
+    req.ignoredUploadFiles = ignoredFiles;
+    const originalName = file.originalname || "";
+    const mimeType = file.mimetype || "";
+    if (isIgnoredSystemFileName(originalName)) {
+      ignoredFiles.push({ name: originalName, reason: "system-file" });
+      return cb(null, false);
+    }
+    const hasSupportedExtension = isSupportedImageFilename(originalName);
+    const hasImageMime = mimeType.startsWith("image/");
+    const hasGenericMime = !mimeType || mimeType === "application/octet-stream";
+    if (hasSupportedExtension && (hasImageMime || hasGenericMime)) return cb(null, true);
+    ignoredFiles.push({ name: originalName, reason: "unsupported-file" });
+    return cb(null, false);
   },
 });
 
@@ -1050,6 +1061,15 @@ function getAvailableDiskBytes() {
 
 const uploadLimiter = rateLimit({ windowMs: 60_000, max: 60, standardHeaders: true, legacyHeaders: false, message: "Too many upload requests — please wait 60 seconds." });
 app.post("/api/upload", uploadLimiter, upload.array("photos", 100), async (req, res) => {
+  const ignoredUploadFiles = Array.isArray(req.ignoredUploadFiles) ? req.ignoredUploadFiles : [];
+  if ((req.files || []).length === 0) {
+    return res.status(400).json({
+      files: [],
+      error: ignoredUploadFiles.length > 0 ? "No supported image files were uploaded" : "No files were uploaded",
+      ignoredFileCount: ignoredUploadFiles.length,
+    });
+  }
+
   // ── Disk space guard ─────────────────────────────────────────────────────
   // Reject uploads early when the data volume is critically low to prevent
   // partial writes that could corrupt already-uploaded files or db.json.
@@ -1100,8 +1120,14 @@ app.post("/api/upload", uploadLimiter, upload.array("photos", 100), async (req, 
     })
   )).filter(Boolean);
 
+  const rejectedInvalidCount = (req.files || []).length - uploadedFiles.length;
   if ((req.files || []).length > 0 && uploadedFiles.length === 0) {
-    return res.status(400).json({ error: "No valid image files were uploaded" });
+    return res.status(400).json({
+      files: [],
+      error: "No valid image files were uploaded",
+      ignoredFileCount: ignoredUploadFiles.length,
+      rejectedInvalidCount,
+    });
   }
 
   // ── FTP Upload (if enabled) ──────────────────────────────────────────────
@@ -1153,7 +1179,7 @@ app.post("/api/upload", uploadLimiter, upload.array("photos", 100), async (req, 
     }
   }
 
-  res.json({ files, albumPersisted, albumPersistError });
+  res.json({ files, albumPersisted, albumPersistError, ignoredFileCount: ignoredUploadFiles.length, rejectedInvalidCount });
 
   // ── Pre-generate thumbnails asynchronously ───────────────────────────────
   // Fire-and-forget: warm the thumb cache for every uploaded file so the
