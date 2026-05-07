@@ -367,7 +367,7 @@ export async function uploadPhotosToServer(
 /** Delete a photo file from the server */
 export function deletePhotoFromServer(url: string): void {
   if (serverAvailable !== true) return;
-  const filename = url.split("/").pop();
+  const filename = url.split("?")[0].split("/").pop();
   if (!filename) return;
   fetch(`/api/upload/${encodeURIComponent(filename)}`, { method: "DELETE" }).catch(() => {});
 }

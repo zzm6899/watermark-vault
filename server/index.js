@@ -401,6 +401,10 @@ function _mergePhotoArrays(existingPhotos, incomingPhotos) {
   return merged;
 }
 
+function uploadFilenameFromSrc(src) {
+  return (src || "").split("?")[0].split("/").pop() || "";
+}
+
 // Returns true when the db key may contain Photo objects with baked fields.
 function _isBulkyPhotoKey(key) {
   if (key === ALBUMS_KEY || key === PHOTO_LIB_KEY) return true;
@@ -710,7 +714,7 @@ app.post("/api/ftp/upload-album/:albumSlug", ftpUploadAlbumLimiter, async (req, 
     .map((p, photoIdx) => {
       const src = typeof p === "string" ? p : p.src;
       if (!src) return null;
-      const filename = src.split("/").pop();
+      const filename = uploadFilenameFromSrc(src);
       if (!filename || filename.startsWith("_cache")) return null;
       const localPath = path.join(UPLOADS_DIR, filename);
       if (!fs.existsSync(localPath)) return null;
@@ -867,7 +871,7 @@ app.post("/api/ftp/move-starred", ftpMoveStarredLimiter, async (req, res) => {
   }
 
   // Derive local file path from photoSrc
-  const localFilename = photoSrc.split("/").pop();
+  const localFilename = uploadFilenameFromSrc(photoSrc);
   if (!localFilename) return res.json({ ok: false, error: "Could not determine filename from photoSrc." });
   const localFilePath = path.join(UPLOADS_DIR, localFilename);
 
@@ -2542,7 +2546,7 @@ app.post("/api/proofing/submit", async (req, res) => {
         const starredFolder = path.posix.join(remotePath, `${folderBase}-starred`);
 
         for (const p of updatedPhotos.filter(p => p.starred)) {
-          const filename = (p.src || "").split("/").pop();
+          const filename = uploadFilenameFromSrc(p.src);
           if (!filename) continue;
           const localFilePath = path.join(UPLOADS_DIR, filename);
           const fromPath = path.posix.join(sourceFolder, filename);

@@ -4746,6 +4746,10 @@ function adminThumbSrc(src?: string): string | undefined {
   return src;
 }
 
+function uploadFileName(src?: string): string {
+  return (src || "").split("?")[0].split("/").pop() || "";
+}
+
 function PhotosView() {
   const [libraryPhotos, setLibraryPhotosState] = useState<Photo[]>(getPhotoLibrary());
   const [albums, setAlbumsState] = useState<Album[]>(getAlbums());
@@ -4983,7 +4987,7 @@ function PhotosView() {
       // Step 1: Check albums for broken photo references and repair them
       for (const alb of serverAlbums) {
         const brokenPhotos = (alb.photos || []).filter(p => {
-          const filename = p.src.split("/").pop();
+          const filename = uploadFileName(p.src);
           return filename && !serverFileNames.has(filename) && p.src.startsWith("/uploads/");
         });
         if (brokenPhotos.length > 0) {
@@ -4997,7 +5001,7 @@ function PhotosView() {
       // Step 1b: Check library photos for broken file references and remove them
       let removedLibraryCount = 0;
       const brokenLibrarySet = new Set(libraryPhotos.filter(p => {
-        const filename = p.src.split("/").pop();
+        const filename = uploadFileName(p.src);
         return filename && !serverFileNames.has(filename) && p.src.startsWith("/uploads/");
       }));
       let currentLibrary = libraryPhotos;
@@ -5014,12 +5018,12 @@ function PhotosView() {
       // in the database are never incorrectly classified as orphaned.
       const knownFilenames = new Set<string>();
       for (const p of currentLibrary) {
-        const fn = p.src.split("/").pop();
+        const fn = uploadFileName(p.src);
         if (fn) knownFilenames.add(fn);
       }
       for (const alb of serverAlbums) {
         for (const p of alb.photos || []) {
-          const fn = p.src.split("/").pop();
+          const fn = uploadFileName(p.src);
           if (fn) knownFilenames.add(fn);
         }
       }
@@ -11459,7 +11463,7 @@ function StorageView() {
       // Remove album photos whose files don't exist on disk
       for (const alb of serverAlbums) {
         const missingSet = new Set((alb.photos || []).filter(p => {
-          const filename = p.src.split("/").pop();
+          const filename = uploadFileName(p.src);
           return filename && !serverFileNames.has(filename) && p.src.startsWith("/uploads/");
         }));
         if (missingSet.size > 0) {
@@ -11472,7 +11476,7 @@ function StorageView() {
       // Remove library photos whose files don't exist on disk
       const freshLibrary = getPhotoLibrary();
       const missingLibrarySet = new Set(freshLibrary.filter(p => {
-        const filename = p.src.split("/").pop();
+        const filename = uploadFileName(p.src);
         return filename && !serverFileNames.has(filename) && p.src.startsWith("/uploads/");
       }));
       let removedLibraryPhotos = 0;
@@ -11960,9 +11964,9 @@ function StorageView() {
                 <div className="space-y-1 max-h-48 overflow-y-auto">
                   {serverStats.photoFiles.slice(0, 20).map((f) => {
                     const isExpanded = expandedFileName === f.name;
-                    const matchingAlbum = albums.find(a => a.photos.some(p => p.src.split("/").pop() === f.name || p.originalName === f.name));
-                    const matchingLibraryPhoto = !matchingAlbum ? libraryPhotos.find(p => p.src.split("/").pop() === f.name || p.originalName === f.name) : null;
-                    const albumPhoto = matchingAlbum?.photos.find(p => p.src.split("/").pop() === f.name || p.originalName === f.name);
+                    const matchingAlbum = albums.find(a => a.photos.some(p => uploadFileName(p.src) === f.name || p.originalName === f.name));
+                    const matchingLibraryPhoto = !matchingAlbum ? libraryPhotos.find(p => uploadFileName(p.src) === f.name || p.originalName === f.name) : null;
+                    const albumPhoto = matchingAlbum?.photos.find(p => uploadFileName(p.src) === f.name || p.originalName === f.name);
                     return (
                       <div key={f.name} className="rounded-lg overflow-hidden">
                         <div className="flex items-center justify-between p-2 hover:bg-secondary/30 transition-colors">
