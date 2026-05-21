@@ -121,12 +121,63 @@ export interface Photo {
   ftpUploaded?: boolean; // true when this photo was successfully sent to an FTP server
   originalName?: string; // original filename as uploaded by the user (e.g. "IMG_1234.jpg")
   fileSize?: number; // file size in bytes
+  cull?: PhotoCull;
+  cullMetadata?: PhotoCullMetadata;
+  blurScore?: number;
+  duplicateGroupId?: string | null;
+  duplicateRank?: number | null;
   /** true while the photo is only stored as a local blob URL (upload in progress) — never persisted to the server */
   localPreview?: boolean;
   // ── New feature fields (PhotoExtensions) ───────────────────
   beforeSrc?: string;
   afterSrc?: string;
   comments?: PhotoComment[];
+}
+
+export type CullStatus = "pick" | "review" | "reject" | "unscored";
+
+export interface PhotoCull {
+  status: CullStatus;
+  score?: number;
+  scoreRaw?: number;
+  reasons?: string[];
+  blurScore?: number;
+  blur?: number;
+  blurRisk?: "low" | "medium" | "high" | "unknown";
+  reviewScore?: number;
+  bestShotScore?: number;
+  sharpnessScore?: number;
+  subjectSharpnessScore?: number;
+  exposure?: number;
+  exposureScore?: number;
+  contrast?: number;
+  contrastScore?: number;
+  luminanceMean?: number;
+  luminanceStdDev?: number;
+  clippedRatio?: number;
+  perceptualHash?: string;
+  visualHash?: string;
+  confidence?: "low" | "medium" | "high";
+  recommendedAction?: "keep" | "hold-back" | "cull";
+  analysedAt?: string;
+  duplicateGroupId?: string | null;
+  duplicateRank?: number | null;
+  duplicateOf?: string | null;
+  visualGroupSize?: number;
+  bucket?: "best-of" | "review" | "held-back";
+  bucketLabel?: string;
+}
+
+export interface PhotoCullMetadata {
+  status: CullStatus;
+  score?: number;
+  reasons?: string[];
+  blurScore?: number;
+  duplicateGroupId?: string | null;
+  duplicateRank?: number | null;
+  bucket?: string;
+  bucketLabel?: string;
+  analysedAt?: string;
 }
 
 export type AlbumDisplaySize = "small" | "medium" | "large" | "list";
@@ -194,6 +245,24 @@ export interface Album {
   sessionPurchases?: Record<string, { fullAlbum?: boolean; photoIds?: string[]; purchaserEmail?: string; paidAt?: string; stripeSessionId?: string }>;
   /** When true, all downloads are blocked while proofing is in progress (any stage except not-started/finals-delivered). Unlocks when proofing is reset or finals are delivered. */
   lockDownloadsDuringProofing?: boolean;
+  showCullRejectsToClient?: boolean;
+  autoCull?: {
+    analysedAt?: string;
+    engine?: string;
+    labels?: Record<string, string>;
+    minScore?: number;
+    duplicateDistance?: number;
+    bestPickRatio?: number;
+    total?: number;
+    analysed?: number;
+    kept?: number;
+    heldBack?: number;
+    culled?: number;
+    counts?: Record<string, number>;
+    rankedPaths?: string[];
+    errorCount?: number;
+    duplicateGroupCount?: number;
+  };
   instagramHandle?: string;
   /**
    * Set to `true` when an album is returned as a stub (photos array omitted to

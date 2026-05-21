@@ -225,7 +225,8 @@ export default function AlbumDetail() {
   }, []);
   const [galleryVisibleCount, setGalleryVisibleCount] = useState(GALLERY_INITIAL_BATCH);
   const [showStarredOnly, setShowStarredOnly] = useState(false);
-  const [sortOrder, setSortOrder] = useState<"default" | "asc" | "desc">("desc");
+  const [clientCullFilter, setClientCullFilter] = useState<"all" | "best">("all");
+  const [sortOrder, setSortOrder] = useState<"default" | "asc" | "desc">("default");
   // Local display size — defaults to admin-set album size (or "medium" fallback)
   const [localDisplaySize, setLocalDisplaySize] = useState<string>(
     () => (albumId ? getAlbumBySlug(albumId) : undefined)?.displaySize ?? "medium"
@@ -465,7 +466,7 @@ export default function AlbumDetail() {
   // Reset visible count when the photo list changes (filter / sort)
   useEffect(() => {
     setGalleryVisibleCount(GALLERY_INITIAL_BATCH);
-  }, [showStarredOnly, sortOrder]);
+  }, [showStarredOnly, clientCullFilter, sortOrder]);
 
   // Keyboard navigation for lightbox
   useEffect(() => {
@@ -675,14 +676,26 @@ export default function AlbumDetail() {
   const isPhotoPaid = (id: string) => canDownload || paidPhotoIdSet.has(id);
   const latestRound = album.proofingRounds?.[album.proofingRounds.length - 1];
   const adminNote = latestRound?.adminNote;
-  // Visible photos: hide photos marked hidden (non-selected after round approval)
-  const visiblePhotos = album.photos.filter((p: any) => !p.hidden);
+  // Visible photos: hide photos marked hidden and auto-cull rejects unless the
+  // photographer has explicitly allowed reject visibility for this album.
+  const visiblePhotos = album.photos.filter((p: any) =>
+    !p.hidden && (album.showCullRejectsToClient || p.cull?.status !== "reject")
+  );
+  const bestOfPhotos = visiblePhotos.filter((p: any) => p.starred || p.cull?.status === "pick");
+  const clientFilteredPhotos = clientCullFilter === "best" ? bestOfPhotos : visiblePhotos;
   const hasStarred = visiblePhotos.some((p: any) => p.starred);
-  const _dpBase = showStarredOnly ? visiblePhotos.filter((p: any) => p.starred) : visiblePhotos;
-  const displayedPhotos = sortOrder === "default" ? _dpBase : [..._dpBase].sort((a: any, b: any) => {
+  const cullSortRank = (p: any) => p.starred || p.cull?.status === "pick"
+    ? 0
+    : !p.cull?.status || p.cull?.status === "review" || p.cull?.status === "unscored"
+      ? 1
+      : 2;
+  const _dpBase = showStarredOnly ? clientFilteredPhotos.filter((p: any) => p.starred) : clientFilteredPhotos;
+  const displayedPhotos = [..._dpBase].sort((a: any, b: any) => {
     const _dA = new Date((a as any).takenAt || (a as any).uploadedAt || 0).getTime();
     const _dB = new Date((b as any).takenAt || (b as any).uploadedAt || 0).getTime();
     const _tCmp = a.title.localeCompare(b.title, undefined, { numeric: true });
+    const _bestCmp = cullSortRank(a) - cullSortRank(b);
+    if (sortOrder === "default") return _bestCmp || (_dB - _dA) || _tCmp;
     const _timeCmp = _dA !== _dB ? _dA - _dB : _tCmp;
     return sortOrder === "asc" ? _timeCmp : -_timeCmp;
   });
@@ -1351,6 +1364,19 @@ export default function AlbumDetail() {
           {/* ── Filter / Sort toolbar ──────────────────────────────── */}
           {visiblePhotos.length > 0 && (
             <div className="flex items-center gap-2 flex-wrap mb-2">
+              {bestOfPhotos.length > 0 && (
+                <button
+                  onClick={() => setClientCullFilter(v => v === "best" ? "all" : "best")}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-body border transition-all ${
+                    clientCullFilter === "best"
+                      ? "bg-primary/15 border-primary/40 text-primary"
+                      : "bg-secondary/50 border-border/50 text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  <Sparkles className="w-3 h-3" />
+                  {clientCullFilter === "best" ? `Best of (${bestOfPhotos.length})` : `Best of first (${bestOfPhotos.length})`}
+                </button>
+              )}
               {/* Starred filter — only shown when at least one photo is starred */}
               {hasStarred && (
                 <button
@@ -1367,7 +1393,7 @@ export default function AlbumDetail() {
               )}
               {/* Sort by time */}
               <button
-                onClick={() => setSortOrder(s => s === "desc" ? "asc" : s === "asc" ? "default" : "desc")}
+                onClick={() => setSortOrder(s => s === "default" ? "desc" : s === "desc" ? "asc" : "default")}
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-body border transition-all ${
                   sortOrder !== "default"
                     ? "bg-primary/10 border-primary/30 text-primary"
@@ -1375,12 +1401,11 @@ export default function AlbumDetail() {
                 }`}
               >
                 <ArrowUpDown className="w-3 h-3" />
-                {sortOrder === "desc" ? "Newest first" : sortOrder === "asc" ? "Oldest first" : "Manual order"}
+                {sortOrder === "default" ? "Best first" : sortOrder === "desc" ? "Newest first" : "Oldest first"}
               </button>
-              {/* Active filter summary — only show "Clear" when not on the default (newest-first) sort */}
-              {(showStarredOnly || sortOrder !== "desc") && (
+              {(showStarredOnly || clientCullFilter !== "all" || sortOrder !== "default") && (
                 <button
-                  onClick={() => { setShowStarredOnly(false); setSortOrder("desc"); }}
+                  onClick={() => { setShowStarredOnly(false); setClientCullFilter("all"); setSortOrder("default"); }}
                   className="flex items-center gap-1 px-2 py-1.5 rounded-full text-xs font-body text-muted-foreground/60 hover:text-muted-foreground transition-colors"
                 >
                   <X className="w-3 h-3" /> Clear
@@ -1417,7 +1442,7 @@ export default function AlbumDetail() {
             </div>
           ) : displayedPhotos.length === 0 ? (
             <div className="glass-panel rounded-xl p-12 text-center">
-              <p className="text-sm font-body text-muted-foreground">No starred photos yet.</p>
+              <p className="text-sm font-body text-muted-foreground">{clientCullFilter === "best" ? "No best-of photos yet." : "No starred photos yet."}</p>
             </div>
           ) : (
             <>

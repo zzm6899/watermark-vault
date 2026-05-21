@@ -4,8 +4,9 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { useState, useCallback, useEffect, lazy, Suspense } from "react";
+import { Capacitor } from "@capacitor/core";
 import { isSetupComplete, isLoggedIn } from "./lib/storage";
-import { syncFromServer, getTenantByDomain } from "./lib/api";
+import { syncFromServer, getTenantByDomain, NATIVE_API_ORIGIN } from "./lib/api";
 import { CustomDomainContext } from "./lib/custom-domain-context";
 
 // Eagerly load the public-facing booking page so it renders with zero extra round-trips.
@@ -27,6 +28,22 @@ const TenantAdmin = lazy(() => import("./pages/TenantAdmin"));
 const LoginPage = lazy(() => import("./pages/LoginPage"));
 
 const queryClient = new QueryClient();
+
+function installNativeApiFetchPrefix() {
+  if (!(window as any).__wvNativeFetchPrefixInstalled) {
+    const originalFetch = window.fetch.bind(window);
+    window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      if (typeof input === "string" && input.startsWith("/api/")) {
+        return originalFetch(`${NATIVE_API_ORIGIN}${input}`, init);
+      }
+      if (typeof input === "string" && input.startsWith("/uploads/")) {
+        return originalFetch(`${NATIVE_API_ORIGIN}${input}`, init);
+      }
+      return originalFetch(input, init);
+    }) as typeof window.fetch;
+    (window as any).__wvNativeFetchPrefixInstalled = true;
+  }
+}
 
 /** Routes that don't need the server sync before rendering */
 function isPublicRoute(): boolean {
@@ -62,10 +79,16 @@ const PageFallback = (
 );
 
 const App = () => {
-  const [ready, setReady] = useState(isPublicRoute());
+  const isNativeApp = Capacitor.isNativePlatform();
+  if (isNativeApp) installNativeApiFetchPrefix();
+  const [ready, setReady] = useState(isNativeApp || isPublicRoute());
   const [customDomainSlug, setCustomDomainSlug] = useState<string | null>(null);
 
   useEffect(() => {
+    if (isNativeApp) {
+      installNativeApiFetchPrefix();
+      return;
+    }
     // Public booking/gallery pages can render immediately without waiting for the
     // server sync (they fetch their own data directly via API calls).
     if (isPublicRoute()) return;
@@ -89,7 +112,7 @@ const App = () => {
       );
     }
     Promise.allSettled(tasks).finally(() => setReady(true));
-  }, []);
+  }, [isNativeApp]);
 
   // Re-sync from the server whenever the app is brought back to the foreground
   // (e.g. Android/iOS app resume or switching back to this browser tab).  This
@@ -122,7 +145,7 @@ const App = () => {
                 {/* When the app is served from a tenant's custom domain, show their booking page at root */}
                 <Route
                   path="/"
-                  element={customDomainSlug ? <TenantBookingPage overrideSlug={customDomainSlug} /> : <Booking />}
+                  element={isNativeApp ? <MobileCapture /> : customDomainSlug ? <TenantBookingPage overrideSlug={customDomainSlug} /> : <Booking />}
                 />
                 <Route path="/book/:tenantSlug" element={<TenantBookingPage />} />
                 <Route path="/gallery/:albumId" element={<AlbumDetail />} />

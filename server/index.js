@@ -9,6 +9,12 @@ const archiver = require("archiver");
 const rateLimit = require("express-rate-limit");
 const { Client: FtpClient } = require("basic-ftp");
 const { uploadFilesToFtp, moveFileOnFtp, testFtpConnection, sanitizeFolderName, sanitizeRemoteFilename } = require("./ftp");
+const {
+  autoCullGroup,
+  bestShotScore,
+  rankBestShots,
+  scoreReview,
+} = require("./auto-cull-engine");
 const { registerRoutes: registerGoogleCalendarRoutes } = require("./google-calendar");
 const {
   registerRoutes: registerEmailRoutes,
@@ -169,7 +175,7 @@ async function authenticateAdmin(req) {
     const hash = decoded.slice(colonIdx + 1);
     const db = readDb();
     const adminCreds = dbGet(db, DB_KEYS.ADMIN);
-    if (!adminCreds || adminCreds.username !== user) return false;
+    if (!adminCreds || String(adminCreds.username || "").toLowerCase() !== String(user || "").toLowerCase()) return false;
     return verifyPasswordHash(hash, adminCreds.passwordHash);
   } catch {
     return false;
@@ -446,6 +452,11 @@ function _photoRecordFromUpload(file, ftpUploaded) {
     ...(file.takenAt ? { takenAt: file.takenAt } : {}),
     originalName: file.originalName,
     fileSize: file.size,
+    ...(file.cull ? { cull: file.cull } : {}),
+    ...(file.cullMetadata ? { cullMetadata: file.cullMetadata } : {}),
+    ...(file.blurScore != null ? { blurScore: file.blurScore } : {}),
+    ...(file.duplicateGroupId ? { duplicateGroupId: file.duplicateGroupId } : {}),
+    ...(file.duplicateRank != null ? { duplicateRank: file.duplicateRank } : {}),
     ...(ftpUploaded ? { ftpUploaded: true } : {}),
   };
 }
@@ -477,6 +488,192 @@ function _appendUploadedFilesToAlbum(db, tenantSlug, albumId, uploadedFiles, ftp
 
 function uploadFilenameFromSrc(src) {
   return (src || "").split("?")[0].split("/").pop() || "";
+}
+
+function _resolveAlbumStore(db, tenantSlug, albumId) {
+  const storeKey = tenantSlug ? `t_${tenantSlug}_wv_albums` : ALBUMS_KEY;
+  const albums = _parseAlbumsFromDb(db[storeKey]);
+  const idx = albums.findIndex(a => a.id === albumId || a.slug === albumId);
+  return { storeKey, albums, idx, album: idx >= 0 ? albums[idx] : null };
+}
+
+function _clamp01(n) {
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.min(1, n));
+}
+
+function _mean(values) {
+  if (!values.length) return 0;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function _variance(values, meanValue = _mean(values)) {
+  if (!values.length) return 0;
+  return values.reduce((sum, value) => {
+    const delta = value - meanValue;
+    return sum + delta * delta;
+  }, 0) / values.length;
+}
+
+function _hammingHex(a, b) {
+  const aa = String(a || "");
+  const bb = String(b || "");
+  const len = Math.min(aa.length, bb.length);
+  let distance = Math.abs(aa.length - bb.length) * 4;
+  for (let i = 0; i < len; i += 1) {
+    const xor = parseInt(aa[i], 16) ^ parseInt(bb[i], 16);
+    distance += xor.toString(2).replace(/0/g, "").length;
+  }
+  return distance;
+}
+
+function _averageHashHex(pixels) {
+  const avg = _mean(pixels);
+  let bits = "";
+  let hex = "";
+  for (const px of pixels) bits += px >= avg ? "1" : "0";
+  for (let i = 0; i < bits.length; i += 4) {
+    hex += parseInt(bits.slice(i, i + 4), 2).toString(16);
+  }
+  return hex;
+}
+
+async function _analysePhotoForCull(photo) {
+  const filename = path.basename(uploadFilenameFromSrc(photo?.src || photo?.url || ""));
+  if (!filename || isIgnoredSystemFileName(filename) || !isSupportedImageFilename(filename)) {
+    return { ok: false, error: "Unsupported or missing image source" };
+  }
+
+  const filePath = path.join(UPLOADS_DIR, filename);
+  if (!fs.existsSync(filePath)) return { ok: false, error: "Image file not found" };
+
+  const analysis = await sharp(filePath)
+    .rotate()
+    .resize(64, 64, { fit: "inside", withoutEnlargement: true })
+    .greyscale()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  const { width, height } = analysis.info;
+  const pixels = Array.from(analysis.data);
+  const luminanceMean = _mean(pixels);
+  const luminanceStdDev = Math.sqrt(_variance(pixels, luminanceMean));
+  const clippedRatio = pixels.filter(v => v <= 8 || v >= 247).length / Math.max(1, pixels.length);
+  const exposureScore = _clamp01((1 - Math.abs(luminanceMean - 128) / 118) * (1 - clippedRatio * 0.8));
+  const contrastScore = _clamp01(luminanceStdDev / 64);
+
+  const laplacian = [];
+  for (let y = 1; y < height - 1; y += 1) {
+    for (let x = 1; x < width - 1; x += 1) {
+      const i = y * width + x;
+      laplacian.push(Math.abs(
+        pixels[i] * 4 -
+        pixels[i - 1] -
+        pixels[i + 1] -
+        pixels[i - width] -
+        pixels[i + width]
+      ));
+    }
+  }
+  const lapMean = _mean(laplacian);
+  const blurVariance = _variance(laplacian, lapMean);
+  const blurScore = _clamp01(blurVariance / 950);
+  const sharpnessScore = Math.round(blurScore * 220);
+  const subjectSharpnessScore = sharpnessScore;
+
+  const hashData = await sharp(filePath)
+    .rotate()
+    .resize(8, 8, { fit: "fill" })
+    .greyscale()
+    .raw()
+    .toBuffer();
+  const perceptualHash = _averageHashHex(Array.from(hashData));
+  const score = _clamp01((blurScore * 0.45) + (exposureScore * 0.3) + (contrastScore * 0.25));
+
+  return {
+    ok: true,
+    filename,
+    cull: {
+      score: Number(score.toFixed(4)),
+      blur: Number(blurScore.toFixed(4)),
+      blurScore: Number(blurScore.toFixed(4)),
+      sharpnessScore,
+      subjectSharpnessScore,
+      exposure: Number(exposureScore.toFixed(4)),
+      contrast: Number(contrastScore.toFixed(4)),
+      luminanceMean: Number(luminanceMean.toFixed(2)),
+      luminanceStdDev: Number(luminanceStdDev.toFixed(2)),
+      clippedRatio: Number(clippedRatio.toFixed(4)),
+      perceptualHash,
+      visualHash: perceptualHash,
+    },
+  };
+}
+
+function _groupCullDuplicates(results, maxDistance) {
+  const groups = [];
+  for (const result of results) {
+    const hash = result.cull?.perceptualHash;
+    if (!hash) continue;
+    let group = groups.find(g => _hammingHex(hash, g.hash) <= maxDistance);
+    if (!group) {
+      group = { id: `dup-${groups.length + 1}`, hash, items: [] };
+      groups.push(group);
+    }
+    group.items.push(result);
+  }
+  return groups.filter(group => group.items.length > 1);
+}
+
+function _photoCullPath(photo, index) {
+  return String(photo?.id || photo?.src || photo?.originalName || index);
+}
+
+function _mediaFileFromCullResult(photo, result, visualGroupSize = 1) {
+  const filename = photo?.originalName || photo?.title || result?.filename || `photo-${result?.index ?? 0}.jpg`;
+  const extension = path.extname(filename || "").toLowerCase().replace(/^\./, "");
+  const derivedSharpness = Number(result?.cull?.sharpnessScore);
+  const fallbackSharpness = Number(result?.cull?.blurScore ?? result?.cull?.blur ?? 0) * 220;
+  const sharpnessScore = Number.isFinite(derivedSharpness) ? derivedSharpness : Math.round(fallbackSharpness);
+  const derivedSubjectSharpness = Number(result?.cull?.subjectSharpnessScore);
+  const subjectSharpnessScore = Number.isFinite(derivedSubjectSharpness) ? derivedSubjectSharpness : sharpnessScore;
+  const baseInput = {
+    sharpnessScore,
+    subjectSharpnessScore,
+    faceCount: photo?.faceCount,
+    faceBoxes: photo?.faceBoxes,
+    faceDetection: photo?.faceDetection,
+    personCount: photo?.personCount,
+    personBoxes: photo?.personBoxes,
+    rating: photo?.starred ? 5 : photo?.rating,
+    isProtected: !!photo?.starred || !!photo?.isProtected,
+    exposureValue: result?.cull?.exposure,
+    visualGroupSize,
+  };
+  const review = scoreReview(baseInput);
+  return {
+    path: _photoCullPath(photo, result?.index ?? 0),
+    name: filename,
+    size: Number(photo?.fileSize || 0),
+    type: "photo",
+    extension,
+    rating: baseInput.rating,
+    isProtected: baseInput.isProtected,
+    pick: photo?.cull?.status === "reject" && !photo?.starred ? "rejected" : photo?.starred ? "selected" : undefined,
+    sharpnessScore,
+    subjectSharpnessScore,
+    faceCount: photo?.faceCount,
+    faceBoxes: photo?.faceBoxes,
+    faceDetection: photo?.faceDetection,
+    personCount: photo?.personCount,
+    personBoxes: photo?.personBoxes,
+    exposureValue: result?.cull?.exposure,
+    blurRisk: review.blurRisk,
+    visualHash: result?.cull?.visualHash || result?.cull?.perceptualHash,
+    visualGroupSize,
+    reviewScore: review.score,
+    reviewReasons: review.reasons,
+  };
 }
 
 // Returns true when the db key may contain Photo objects with baked fields.
@@ -523,7 +720,7 @@ app.post("/api/auth/verify", authLimiter, async (req, res) => {
   const db = readDb();
   const adminRaw = db["wv_admin"];
   const adminCreds = adminRaw ? (typeof adminRaw === "string" ? JSON.parse(adminRaw) : adminRaw) : null;
-  if (!adminCreds || adminCreds.username !== username.toLowerCase()) {
+  if (!adminCreds || String(adminCreds.username || "").toLowerCase() !== String(username || "").toLowerCase()) {
     return res.json({ ok: false });
   }
   const ok = await verifyPasswordHash(passwordHash, adminCreds.passwordHash);
@@ -621,6 +818,315 @@ app.get("/api/albums/:albumId/photos", (req, res) => {
   if (!album) return res.status(404).json({ photos: [] });
   // Apply baked-field stripping so the response stays lean.
   res.json({ photos: _stripBakedFromPhotos(album.photos || []) });
+});
+
+// POST /api/albums/:id/auto-cull?tenant=<slug>
+// Server-side analysis only: scores blur/exposure/contrast, groups near-duplicates,
+// and writes cull metadata back to the album photo records without deleting files.
+app.post("/api/albums/:id/auto-cull", async (req, res) => {
+  const tenantSlug = req.query.tenant ? String(req.query.tenant).trim() : null;
+  if (tenantSlug && !SLUG_RE.test(tenantSlug)) {
+    return res.status(400).json({ error: "Invalid tenant slug" });
+  }
+
+  const requestedDuplicateDistance = Number(req.body?.duplicateDistance ?? 6);
+  const duplicateDistance = Number.isFinite(requestedDuplicateDistance)
+    ? Math.max(0, Math.min(16, requestedDuplicateDistance))
+    : 6;
+  const minScore = _clamp01(Number(req.body?.minScore ?? 0.42));
+  const requestedBestPickRatio = Number(req.body?.bestPickRatio ?? 0.25);
+  const bestPickRatio = Number.isFinite(requestedBestPickRatio)
+    ? Math.max(0.05, Math.min(0.75, requestedBestPickRatio))
+    : 0.25;
+  const analysedAt = new Date().toISOString();
+  const cullLabels = { pick: "Best picks", bestOf: "Best of", review: "Review", reject: "Held back", unscored: "Unscored" };
+  const db = readDb();
+  const { storeKey, albums, idx, album } = _resolveAlbumStore(db, tenantSlug, req.params.id);
+
+  if (tenantSlug && !readTenants().find(t => t.slug === tenantSlug)) {
+    return res.status(404).json({ error: "Tenant not found" });
+  }
+  if (idx < 0) return res.status(404).json({ error: "Album not found" });
+
+  const photos = Array.isArray(album.photos) ? album.photos : [];
+  if (photos.length === 0) {
+    return res.json({
+      ok: true,
+      albumId: album.id,
+      tenant: tenantSlug,
+      analysedAt,
+      total: 0,
+      analysed: 0,
+      kept: 0,
+      heldBack: 0,
+      culled: 0,
+      counts: { pick: 0, bestOf: 0, review: 0, reject: 0, unscored: 0 },
+      labels: cullLabels,
+      duplicateGroups: [],
+      errors: [],
+      photos: [],
+    });
+  }
+
+  const analysed = await Promise.all(photos.map(async (photo, index) => {
+    try {
+      const result = await _analysePhotoForCull(photo);
+      return { index, photoId: photo?.id || null, ...result };
+    } catch (err) {
+      return { index, photoId: photo?.id || null, ok: false, error: err.message || "Analysis failed" };
+    }
+  }));
+
+  const successful = analysed.filter(result => result.ok);
+  const errorsByIndex = new Map(analysed
+    .filter(result => !result.ok)
+    .map(result => [result.index, result]));
+  const duplicateGroups = _groupCullDuplicates(successful, duplicateDistance);
+  const byIndex = new Map(successful.map(result => [result.index, result]));
+
+  for (const group of duplicateGroups) {
+    group.items.sort((a, b) => {
+      const aScore = bestShotScore(_mediaFileFromCullResult(photos[a.index], a, group.items.length));
+      const bScore = bestShotScore(_mediaFileFromCullResult(photos[b.index], b, group.items.length));
+      return bScore - aScore;
+    });
+    group.items.forEach((item, rank) => {
+      item.duplicateGroupId = group.id;
+      item.duplicateRank = rank + 1;
+      item.duplicateOf = rank === 0 ? null : (group.items[0].photoId || photos[group.items[0].index]?.id || null);
+      item.visualGroupSize = group.items.length;
+    });
+  }
+
+  const duplicateDecisionByPath = new Map();
+  const allMediaFiles = successful.map(result => _mediaFileFromCullResult(
+    photos[result.index],
+    result,
+    result.visualGroupSize || 1,
+  ));
+  const mediaByPath = new Map(allMediaFiles.map(file => [file.path, file]));
+
+  for (const group of duplicateGroups) {
+    const groupMedia = group.items
+      .map(item => mediaByPath.get(_photoCullPath(photos[item.index], item.index)))
+      .filter(Boolean);
+    if (groupMedia.length < 2) continue;
+    const decision = autoCullGroup(groupMedia, {
+      confidence: req.body?.confidence || "balanced",
+      keeperQuota: req.body?.keeperQuota || "best-1",
+      groupPhotoEveryoneGood: true,
+    });
+    const rejectSet = new Set(decision.reject || []);
+    const keepSet = new Set(decision.keep || []);
+    for (const file of groupMedia) {
+      duplicateDecisionByPath.set(file.path, {
+        decision,
+        isBest: decision.best?.path === file.path,
+        isKeep: keepSet.has(file.path),
+        isReject: rejectSet.has(file.path),
+        reasons: decision.reasons?.[file.path] || [],
+      });
+    }
+  }
+
+  const bestRank = rankBestShots(allMediaFiles);
+  const bestPathSet = new Set(bestRank.slice(0, Math.max(1, Math.ceil(bestRank.length * bestPickRatio))).map(file => file.path));
+  const reviewScoreFloor = Math.round(minScore * 100);
+
+  const updatedPhotos = photos.map((photo, index) => {
+    const result = byIndex.get(index);
+    if (!result) {
+      const error = errorsByIndex.get(index);
+      const cull = {
+        status: "unscored",
+        analysedAt,
+        recommendedAction: "keep",
+        reasons: ["unscored", error?.error || "analysis failed"],
+        score: 0,
+        reviewScore: 0,
+        bestShotScore: 0,
+        blurScore: 0,
+        blurRisk: "unknown",
+        confidence: "low",
+        duplicateGroupId: null,
+        duplicateRank: null,
+        duplicateOf: null,
+        visualGroupSize: 1,
+        bucket: "review",
+        bucketLabel: cullLabels.review,
+      };
+      return {
+        ...photo,
+        blurScore: 0,
+        duplicateGroupId: undefined,
+        duplicateRank: undefined,
+        cull,
+        cullMetadata: {
+          status: cull.status,
+          score: cull.score,
+          reasons: cull.reasons,
+          blurScore: cull.blurScore,
+          duplicateGroupId: cull.duplicateGroupId,
+          duplicateRank: cull.duplicateRank,
+          bucket: cull.bucket,
+          bucketLabel: cull.bucketLabel,
+          analysedAt,
+        },
+      };
+    }
+
+    const file = mediaByPath.get(_photoCullPath(photo, index)) || _mediaFileFromCullResult(photo, result, result.visualGroupSize || 1);
+    const duplicateDecision = duplicateDecisionByPath.get(file.path);
+    const review = scoreReview(file);
+    const bestScore = bestShotScore(file);
+    const manualPick = !!photo.starred || photo.cull?.status === "pick";
+    const manualReject = !manualPick && photo.cull?.status === "reject";
+    const reasons = new Set(review.reasons || []);
+    const qualityReasons = [];
+
+    if (result.cull?.blur < 0.28 || review.blurRisk === "high") qualityReasons.push("blur");
+    if (result.cull?.exposure < 0.35) qualityReasons.push("exposure");
+    if (result.cull?.contrast < 0.25) qualityReasons.push("contrast");
+    if (review.score < reviewScoreFloor) qualityReasons.push("low-quality-score");
+    if (result.duplicateRank && result.duplicateRank > 1) qualityReasons.push("similar-frame");
+    for (const reason of qualityReasons) reasons.add(reason);
+    for (const reason of duplicateDecision?.reasons || []) reasons.add(reason);
+
+    let status = "review";
+    if (manualPick) {
+      status = "pick";
+      reasons.add("manual pick");
+    } else if (manualReject || duplicateDecision?.isReject || review.blurRisk === "high" || review.score < 24) {
+      status = "reject";
+    } else if (duplicateDecision?.isBest) {
+      status = "pick";
+      reasons.add("best of similar set");
+    } else if (!duplicateDecision && bestPathSet.has(file.path) && review.blurRisk === "low" && review.score >= 52) {
+      status = "pick";
+      reasons.add("best pick");
+    } else if (duplicateDecision?.isKeep) {
+      status = "review";
+      reasons.add("near-best keeper");
+    }
+
+    if (status === "reject" && manualPick) status = "pick";
+    const recommendedAction = status === "reject" ? "hold-back" : "keep";
+    const bucket = status === "pick" ? "best-of" : status === "reject" ? "held-back" : "review";
+    const bucketLabel = status === "pick" ? cullLabels.pick : status === "reject" ? cullLabels.reject : cullLabels.review;
+    const cull = {
+      ...result.cull,
+      status,
+      analysedAt,
+      recommendedAction,
+      reasons: Array.from(reasons),
+      score: Number((review.score / 100).toFixed(4)),
+      reviewScore: review.score,
+      bestShotScore: bestScore,
+      blurRisk: review.blurRisk,
+      confidence: duplicateDecision?.decision?.confidence || (status === "pick" ? "medium" : "low"),
+      duplicateGroupId: result.duplicateGroupId || null,
+      duplicateRank: result.duplicateRank || null,
+      duplicateOf: result.duplicateOf || null,
+      visualGroupSize: result.visualGroupSize || 1,
+      bucket,
+      bucketLabel,
+    };
+    return {
+      ...photo,
+      blurScore: result.cull?.blur,
+      duplicateGroupId: result.duplicateGroupId || undefined,
+      duplicateRank: result.duplicateRank || undefined,
+      cull,
+      cullMetadata: {
+        status: cull.status,
+        score: cull.score,
+        reasons: cull.reasons,
+        blurScore: cull.blurScore,
+        duplicateGroupId: cull.duplicateGroupId,
+        duplicateRank: cull.duplicateRank,
+        bucket: cull.bucket,
+        bucketLabel: cull.bucketLabel,
+        analysedAt,
+      },
+    };
+  });
+
+  const counts = {
+    pick: updatedPhotos.filter(photo => photo?.cull?.status === "pick").length,
+    bestOf: updatedPhotos.filter(photo => photo?.cull?.bucket === "best-of").length,
+    review: updatedPhotos.filter(photo => photo?.cull?.status === "review").length,
+    reject: updatedPhotos.filter(photo => photo?.cull?.status === "reject").length,
+    unscored: updatedPhotos.filter(photo => photo?.cull?.status === "unscored" || !photo?.cull?.status).length,
+  };
+  const kept = counts.pick + counts.review + counts.unscored;
+  const heldBack = counts.reject;
+  const culled = heldBack;
+  const errors = analysed
+    .filter(result => !result.ok)
+    .map(result => ({ index: result.index, photoId: result.photoId, filename: result.filename, error: result.error }));
+  const responseGroups = duplicateGroups.map(group => ({
+    id: group.id,
+    size: group.items.length,
+    keepPhotoId: group.items[0]?.photoId || photos[group.items[0]?.index]?.id || null,
+    photoIds: group.items.map(item => item.photoId || photos[item.index]?.id || null).filter(Boolean),
+  }));
+
+  albums[idx] = {
+    ...album,
+    photos: updatedPhotos,
+    photoCount: updatedPhotos.length,
+    _photosStripped: false,
+    autoCull: {
+      analysedAt,
+      engine: "autophotoimporter-style",
+      labels: cullLabels,
+      minScore,
+      duplicateDistance,
+      bestPickRatio,
+      total: photos.length,
+      analysed: successful.length,
+      kept,
+      heldBack,
+      culled,
+      counts,
+      rankedPaths: bestRank.map(file => file.path),
+      errorCount: errors.length,
+      duplicateGroupCount: responseGroups.length,
+    },
+  };
+
+  db[storeKey] = JSON.stringify(albums);
+  writeDb(db);
+
+  res.json({
+    ok: true,
+    albumId: album.id,
+    tenant: tenantSlug,
+    analysedAt,
+    engine: "autophotoimporter-style",
+    labels: cullLabels,
+    total: photos.length,
+    analysed: successful.length,
+    kept,
+    heldBack,
+    culled,
+    counts,
+    album: albums[idx],
+    duplicateGroups: responseGroups,
+    errors,
+    photos: updatedPhotos.map(photo => ({
+      id: photo.id,
+      src: photo.src,
+      status: photo.cull?.status || "unscored",
+      score: photo.cull?.score ?? 0,
+      reasons: photo.cull?.reasons || [],
+      blurScore: photo.blurScore ?? photo.cull?.blurScore ?? 0,
+      duplicateGroupId: photo.duplicateGroupId || photo.cull?.duplicateGroupId || null,
+      duplicateRank: photo.duplicateRank || photo.cull?.duplicateRank || null,
+      cull: photo.cull,
+      cullMetadata: photo.cullMetadata,
+    })),
+  });
 });
 
 // PUT /api/albums/:albumId — update a single album without touching other albums.
@@ -3639,7 +4145,12 @@ app.get("/api/tenant/:slug/event-slot-request/pending", tenantLimiter, (req, res
 // ── Tenant Login (for mobile app) ─────────────────────
 app.post("/api/tenant/:slug/login", tenantLimiter, async (req, res) => {
   const tenants = readTenants();
-  const tenant = tenants.find(t => t.slug === req.params.slug && t.active !== false);
+  const identifier = String(req.params.slug || "").trim().toLowerCase();
+  const tenant = tenants.find(t => t.active !== false && (
+    String(t.slug || "").toLowerCase() === identifier ||
+    String(t.email || "").toLowerCase() === identifier ||
+    String(t.displayName || "").toLowerCase() === identifier
+  ));
   if (!tenant) return res.status(404).json({ ok: false, error: "Tenant not found" });
   if (!tenant.passwordHash) return res.status(400).json({ ok: false, error: "No password set for this tenant — ask the admin to set one" });
   const { passwordHash } = req.body || {};

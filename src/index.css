@@ -156,4 +156,409 @@
   .scrollbar-hide::-webkit-scrollbar {
     display: none;
   }
+
+  .capture-app-shell {
+    background:
+      radial-gradient(circle at 16% -8%, rgb(20 184 166 / 0.12), transparent 25rem),
+      radial-gradient(circle at 100% 12%, rgb(245 158 11 / 0.08), transparent 22rem),
+      linear-gradient(180deg, #080b0d 0%, #10110f 48%, #090a0b 100%);
+    color: rgb(255 255 255 / 0.92);
+  }
+
+  .capture-dashboard-header {
+    border-bottom: 1px solid rgb(255 255 255 / 0.09);
+    background: rgb(8 11 13 / 0.94);
+    box-shadow: 0 16px 38px rgb(0 0 0 / 0.28);
+    backdrop-filter: blur(22px);
+  }
+
+  .capture-session-shell .glass-panel,
+  .capture-app-shell .glass-panel {
+    background: rgb(255 255 255 / 0.055);
+    border: 1px solid rgb(255 255 255 / 0.1);
+    box-shadow: 0 14px 34px rgb(0 0 0 / 0.24);
+    backdrop-filter: blur(18px);
+  }
+
+  .capture-card,
+  .capture-review-panel,
+  .capture-control-tile {
+    border-radius: 0.75rem;
+    border: 1px solid rgb(255 255 255 / 0.1);
+    background: rgb(255 255 255 / 0.055);
+    box-shadow: 0 14px 34px rgb(0 0 0 / 0.22);
+    backdrop-filter: blur(18px);
+  }
+
+  .capture-icon-button {
+    display: inline-flex;
+    height: 2.25rem;
+    width: 2.25rem;
+    align-items: center;
+    justify-content: center;
+    border-radius: 0.75rem;
+    border: 1px solid rgb(255 255 255 / 0.1);
+    background: rgb(255 255 255 / 0.055);
+    color: rgb(255 255 255 / 0.7);
+    transition: background-color 160ms ease, color 160ms ease, transform 160ms ease;
+  }
+
+  .capture-icon-button:active {
+    transform: scale(0.96);
+  }
+
+  .capture-icon-button:hover {
+    background: rgb(255 255 255 / 0.09);
+    color: white;
+  }
+
+  .native-status-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    border-radius: 999px;
+    border: 1px solid rgb(255 255 255 / 0.12);
+    background: rgb(255 255 255 / 0.055);
+    color: rgb(255 255 255 / 0.55);
+    padding: 0.25rem 0.5rem;
+    font: 500 0.625rem/1 Inter, sans-serif;
+  }
+
+  .native-status-pill-ok {
+    border-color: rgb(103 232 249 / 0.34);
+    background: rgb(34 211 238 / 0.1);
+    color: rgb(165 243 252);
+  }
+
+  .native-status-pill-warn {
+    border-color: rgb(251 113 133 / 0.34);
+    background: rgb(244 63 94 / 0.1);
+    color: rgb(253 164 175);
+  }
+
+  .capture-hero-panel {
+    border-radius: 0.9rem;
+    border: 1px solid rgb(94 234 212 / 0.16);
+    background:
+      linear-gradient(135deg, rgb(20 184 166 / 0.15), rgb(245 158 11 / 0.07)),
+      rgb(255 255 255 / 0.055);
+    box-shadow: 0 18px 44px rgb(0 0 0 / 0.3);
+    padding: 1rem;
+  }
+
+  .capture-live-indicator {
+    display: flex;
+    height: 2.75rem;
+    width: 2.75rem;
+    align-items: center;
+    justify-content: center;
+    border-radius: 1rem;
+    border: 1px solid rgb(255 255 255 / 0.1);
+    background: rgb(255 255 255 / 0.06);
+    color: rgb(255 255 255 / 0.55);
+  }
+
+  .capture-live-indicator-on {
+    border-color: rgb(103 232 249 / 0.36);
+    background: rgb(34 211 238 / 0.13);
+    color: rgb(165 243 252);
+    box-shadow: 0 0 0 5px rgb(34 211 238 / 0.05);
+  }
+
+  .capture-status-strip {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 0.55rem;
+    margin-top: 0.85rem;
+    border-radius: 0.65rem;
+    border: 1px solid rgb(255 255 255 / 0.08);
+    background: rgb(0 0 0 / 0.2);
+    padding: 0.65rem 0.7rem;
+  }
+
+  .capture-status-strip p {
+    overflow: hidden;
+    color: white;
+    font: 650 0.78rem/1.2 Inter, sans-serif;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .capture-status-strip small {
+    display: block;
+    overflow: hidden;
+    margin-top: 0.12rem;
+    color: rgb(255 255 255 / 0.52);
+    font: 500 0.66rem/1.2 Inter, sans-serif;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .capture-status-dot {
+    height: 0.55rem;
+    width: 0.55rem;
+    border-radius: 999px;
+    background: rgb(148 163 184);
+    box-shadow: 0 0 0 4px rgb(148 163 184 / 0.08);
+  }
+
+  .capture-status-active .capture-status-dot {
+    background: rgb(45 212 191);
+    box-shadow: 0 0 0 4px rgb(45 212 191 / 0.12);
+  }
+
+  .capture-status-success .capture-status-dot {
+    background: rgb(52 211 153);
+    box-shadow: 0 0 0 4px rgb(52 211 153 / 0.12);
+  }
+
+  .capture-status-warning .capture-status-dot {
+    background: rgb(251 191 36);
+    box-shadow: 0 0 0 4px rgb(251 191 36 / 0.12);
+  }
+
+  .capture-mini-metric {
+    min-width: 0;
+    border-radius: 0.65rem;
+    border: 1px solid rgb(255 255 255 / 0.09);
+    background: rgb(0 0 0 / 0.18);
+    padding: 0.65rem 0.55rem;
+    text-align: center;
+  }
+
+  .capture-mini-metric span {
+    display: block;
+    color: white;
+    font: 650 1rem/1 Inter, sans-serif;
+  }
+
+  .capture-mini-metric small {
+    display: block;
+    margin-top: 0.2rem;
+    color: rgb(255 255 255 / 0.45);
+    font: 600 0.56rem/1 Inter, sans-serif;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+  }
+
+  .capture-session-digest {
+    border-radius: 0.75rem;
+    border: 1px solid rgb(255 255 255 / 0.08);
+    background: rgb(255 255 255 / 0.045);
+    padding: 0.75rem;
+  }
+
+  .capture-session-digest div > div {
+    min-width: 0;
+    border-radius: 0.55rem;
+    background: rgb(0 0 0 / 0.16);
+    padding: 0.55rem 0.35rem;
+  }
+
+  .capture-session-digest p {
+    overflow: hidden;
+    color: rgb(255 255 255 / 0.92);
+    font: 650 1rem/1.05 Inter, sans-serif;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .capture-session-digest small {
+    display: block;
+    margin-top: 0.22rem;
+    color: rgb(255 255 255 / 0.42);
+    font: 650 0.55rem/1 Inter, sans-serif;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+
+  .capture-control-tile {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    min-height: 3.25rem;
+    padding: 0.75rem;
+  }
+
+  .capture-transport-option {
+    min-height: 4rem;
+    border-radius: 0.7rem;
+    border: 1px solid rgb(255 255 255 / 0.1);
+    background: rgb(255 255 255 / 0.045);
+    color: rgb(255 255 255 / 0.54);
+    padding: 0.6rem;
+    text-align: left;
+    transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease, transform 160ms ease;
+  }
+
+  .capture-transport-option:active,
+  .capture-action-tile:active {
+    transform: scale(0.98);
+  }
+
+  .capture-transport-option-active {
+    border-color: rgb(94 234 212 / 0.34);
+    background: rgb(20 184 166 / 0.13);
+    color: rgb(153 246 228);
+  }
+
+  .capture-action-tile {
+    display: flex;
+    min-height: 6.1rem;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.45rem;
+    border-radius: 0.75rem;
+    border: 1px solid rgb(255 255 255 / 0.1);
+    background: rgb(255 255 255 / 0.055);
+    box-shadow: 0 14px 34px rgb(0 0 0 / 0.2);
+    transition: background-color 160ms ease, opacity 160ms ease, transform 160ms ease;
+  }
+
+  .capture-action-tile:disabled {
+    opacity: 0.5;
+  }
+
+  .capture-action-tile:not(:disabled):hover {
+    background: rgb(255 255 255 / 0.08);
+  }
+
+  .capture-review-panel {
+    padding: 1rem;
+  }
+
+  .capture-review-filter {
+    min-width: 0;
+    border-radius: 0.65rem;
+    border: 1px solid rgb(255 255 255 / 0.1);
+    background: rgb(255 255 255 / 0.045);
+    color: rgb(255 255 255 / 0.54);
+    padding: 0.65rem 0.3rem;
+    text-align: center;
+    transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease;
+  }
+
+  .capture-review-filter span {
+    display: block;
+    color: currentColor;
+    font: 700 0.95rem/1 Inter, sans-serif;
+  }
+
+  .capture-review-filter small {
+    display: block;
+    margin-top: 0.2rem;
+    font: 650 0.55rem/1 Inter, sans-serif;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+
+  .capture-review-filter-active {
+    border-color: rgb(94 234 212 / 0.34);
+    background: rgb(20 184 166 / 0.13);
+    color: rgb(153 246 228);
+  }
+
+  .capture-top-tab,
+  .capture-bottom-tab {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    border: 1px solid rgb(255 255 255 / 0.1);
+    background: rgb(255 255 255 / 0.045);
+    color: rgb(255 255 255 / 0.52);
+    transition: background-color 160ms ease, color 160ms ease, border-color 160ms ease;
+  }
+
+  .capture-top-tab {
+    min-height: 2.65rem;
+    border-radius: 0.75rem;
+    font: 650 0.72rem/1 Inter, sans-serif;
+  }
+
+  .capture-top-tab em {
+    position: absolute;
+    right: 0.38rem;
+    top: 0.32rem;
+    min-width: 1rem;
+    border-radius: 999px;
+    background: rgb(34 211 238 / 0.18);
+    color: rgb(165 243 252);
+    font: 700 0.56rem/1 Inter, sans-serif;
+    padding: 0.18rem 0.3rem;
+    font-style: normal;
+  }
+
+  .capture-top-tab-active,
+  .capture-bottom-tab-active {
+    border-color: rgb(103 232 249 / 0.3);
+    background: rgb(34 211 238 / 0.13);
+    color: rgb(165 243 252);
+  }
+
+  .capture-bottom-bar {
+    position: fixed;
+    z-index: 45;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.5rem;
+    border-top: 1px solid rgb(255 255 255 / 0.1);
+    background: rgb(10 13 18 / 0.94);
+    padding: 0.7rem 0.85rem max(0.85rem, env(safe-area-inset-bottom));
+    backdrop-filter: blur(22px);
+  }
+
+  .capture-bottom-tab {
+    min-height: 3.1rem;
+    flex-direction: column;
+    border-radius: 0.8rem;
+    font: 650 0.64rem/1 Inter, sans-serif;
+  }
+
+  .capture-session-card {
+    border-radius: 1rem;
+    border: 1px solid rgb(255 255 255 / 0.09);
+    background: rgb(255 255 255 / 0.055);
+    box-shadow: 0 12px 26px rgb(0 0 0 / 0.18);
+    overflow: hidden;
+  }
+
+  .capture-session-card-active {
+    border-color: rgb(103 232 249 / 0.3);
+    background: linear-gradient(135deg, rgb(34 211 238 / 0.12), rgb(255 255 255 / 0.055));
+  }
+
+  .capture-primary-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    border-radius: 0.95rem;
+    background: rgb(34 211 238 / 0.16);
+    color: rgb(165 243 252);
+    border: 1px solid rgb(103 232 249 / 0.3);
+    min-height: 2.65rem;
+    padding: 0 1rem;
+    font: 650 0.75rem/1 Inter, sans-serif;
+  }
+
+  .capture-empty-state {
+    display: flex;
+    min-height: 18rem;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.65rem;
+    border-radius: 1rem;
+    border: 1px dashed rgb(255 255 255 / 0.14);
+    background: rgb(255 255 255 / 0.035);
+    padding: 1.5rem;
+    text-align: center;
+  }
 }

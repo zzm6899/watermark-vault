@@ -969,6 +969,19 @@ function DashboardView() {
     { label: "Overdue",              value: invOverdue.length,               sub: invOverdue.length > 0 ? "requires attention" : "all on time",         icon: TrendingDown, color: invOverdue.length > 0 ? "text-red-400" : "text-muted-foreground" },
   ] : [];
 
+  const allAlbumPhotos = albums.flatMap(album => album.photos || []);
+  const capturedToday = allAlbumPhotos.filter(photo => (photo.uploadedAt || photo.takenAt || "").startsWith(todayDateStr)).length;
+  const bestOfCount = allAlbumPhotos.filter(photo => photo.starred || photo.cull?.status === "pick").length;
+  const reviewCount = allAlbumPhotos.filter(photo => !photo.cull?.status || photo.cull?.status === "review" || photo.cull?.status === "unscored").length;
+  const rejectCount = allAlbumPhotos.filter(photo => photo.cull?.status === "reject").length;
+  const activeCaptureAlbum = albums
+    .filter(album => (album.photos?.length || 0) > 0)
+    .sort((a, b) => {
+      const aLatest = Math.max(...(a.photos || []).map(photo => new Date(photo.uploadedAt || photo.takenAt || 0).getTime()), 0);
+      const bLatest = Math.max(...(b.photos || []).map(photo => new Date(photo.uploadedAt || photo.takenAt || 0).getTime()), 0);
+      return bLatest - aLatest;
+    })[0];
+
   // ── Booking Calendar ────────────────────────────────────────
   const [calView, setCalView] = useState<"month" | "week">("month");
   const [calDate, setCalDate] = useState(() => new Date());
@@ -1104,6 +1117,65 @@ function DashboardView() {
             </div>
           );
         })}
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-[1.25fr_0.75fr] gap-3 mb-6">
+        <div className="glass-panel rounded-xl p-4 sm:p-5 overflow-hidden">
+          <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="w-8 h-8 rounded-lg bg-primary/10 text-primary flex items-center justify-center">
+                  <Wifi className="w-4 h-4" />
+                </span>
+                <div>
+                  <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground">Wireless Capture</p>
+                  <h3 className="font-display text-lg text-foreground">Hotspot, ingest, cull, publish</h3>
+                </div>
+              </div>
+              <p className="text-xs font-body text-muted-foreground max-w-2xl">
+                Android capture receives camera FTP uploads, uploads to the selected client album, then ranks a Best of set while keeping review and reject frames recoverable.
+              </p>
+            </div>
+            <Button onClick={() => window.location.href = "/capture"} className="gap-2 font-body shrink-0">
+              <Upload className="w-4 h-4" /> Open Capture
+            </Button>
+          </div>
+          <div className="grid grid-cols-4 gap-2 mt-4">
+            {[
+              { label: "Today", value: capturedToday, tone: "text-primary" },
+              { label: "Best of", value: bestOfCount, tone: "text-green-400" },
+              { label: "Review", value: reviewCount, tone: "text-yellow-400" },
+              { label: "Rejects", value: rejectCount, tone: "text-red-400" },
+            ].map(item => (
+              <div key={item.label} className="rounded-lg bg-secondary/40 border border-border/40 p-3">
+                <p className={`font-display text-xl ${item.tone}`}>{item.value}</p>
+                <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground">{item.label}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="glass-panel rounded-xl p-4 sm:p-5">
+          <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-2">Latest Album</p>
+          {activeCaptureAlbum ? (
+            <>
+              <h3 className="font-display text-base text-foreground truncate">{activeCaptureAlbum.title}</h3>
+              <p className="text-xs font-body text-muted-foreground truncate mt-1">{activeCaptureAlbum.clientName || activeCaptureAlbum.clientEmail || "No client assigned"}</p>
+              <div className="flex items-center gap-2 mt-4">
+                <Button size="sm" variant="outline" onClick={() => window.open(`/gallery/${activeCaptureAlbum.slug || activeCaptureAlbum.id}`, "_blank")} className="gap-2 text-xs font-body">
+                  <Eye className="w-3.5 h-3.5" /> Client View
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => window.location.href = "/capture"} className="gap-2 text-xs font-body">
+                  <Camera className="w-3.5 h-3.5" /> Add Photos
+                </Button>
+              </div>
+            </>
+          ) : (
+            <div className="py-4 text-center">
+              <Image className="w-8 h-8 text-muted-foreground/25 mx-auto mb-2" />
+              <p className="text-xs font-body text-muted-foreground">No captured albums yet</p>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* ── Invoice stats row (only when invoices exist) ── */}

@@ -1,19 +1,20 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Switch } from "@/components/ui/switch";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { getBookings, getAlbums, getSettings, updateAlbum, addAlbum, updateBooking, getMobileTenantSession, setMobileTenantSession, isLoggedIn } from "@/lib/storage";
-import { uploadPhotosToServer, isSupportedUploadFile, isServerMode, recheckServer, sendEmail, fetchTenantMobileData, saveTenantAlbum } from "@/lib/api";
+import { uploadPhotosToServer, isSupportedUploadFile, recheckServer, sendEmail, fetchTenantMobileData, saveTenantAlbum, autoCullAlbum, NATIVE_API_ORIGIN } from "@/lib/api";
 import { queueOfflineCapture, getOfflineQueue, useOfflineUploadQueue, type OfflineCaptureItem } from "@/lib/usePwa";
 import { generateThumbnail, formatSpeed } from "@/lib/image-utils";
 import CameraUsb from "@/plugins/camera-usb";
 import type { CameraFile } from "@/plugins/camera-usb";
+import CameraFtp from "@/plugins/camera-ftp";
+import type { CameraFtpCandidate, CameraFtpFile, CameraFtpStatus } from "@/plugins/camera-ftp";
 import { Capacitor } from "@capacitor/core";
-import type { Booking, Album, Photo } from "@/lib/types";
+import type { Booking, Album, Photo, CullStatus } from "@/lib/types";
 import {
   Camera, ArrowLeft,
   Wifi, WifiOff, Zap, Image as ImageIcon, RefreshCw,
@@ -22,6 +23,7 @@ import {
   Star, CalendarDays, ChevronLeft, ChevronRight,
   AlertTriangle, RotateCcw, Settings2, LogOut,
   Pause, Play,
+  Activity, CircleDot, FolderOpen, ListFilter, RadioTower, ShieldCheck, UploadCloud,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
@@ -33,6 +35,45 @@ function toMinutes(time: string): number {
 function todayStr(): string {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+const FTP_SETTINGS_KEY = "cameraFtpSettings:v1";
+const FTP_JPEG_EXTENSIONS = new Set([".jpg", ".jpeg"]);
+const FTP_PROOF_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif", ".tif", ".tiff"]);
+const FTP_RAW_EXTENSIONS = new Set([".nef", ".nrw", ".raw", ".cr2", ".cr3", ".arw", ".dng", ".raf", ".orf", ".rw2"]);
+
+function loadFtpSettings(): { username: string; password: string; port: number } {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(FTP_SETTINGS_KEY) || "{}");
+    const port = Number(parsed.port);
+    return {
+      username: typeof parsed.username === "string" && parsed.username.trim() ? parsed.username : "camera",
+      password: typeof parsed.password === "string" && parsed.password.trim() ? parsed.password : "camera",
+      port: Number.isFinite(port) && port > 0 && port <= 65535 ? port : 2121,
+    };
+  } catch {
+    return { username: "camera", password: "camera", port: 2121 };
+  }
+}
+function saveFtpSettings(settings: { username: string; password: string; port: number }) {
+  localStorage.setItem(FTP_SETTINGS_KEY, JSON.stringify(settings));
+}
+
+function extensionForName(name: string): string {
+  const dot = name.lastIndexOf(".");
+  return dot >= 0 ? name.slice(dot).toLowerCase() : "";
+}
+
+function filenameFromFtpPath(path: string): string {
+  return path.split(/[\\/]/).pop() || path;
+}
+
+function isProofableFtpName(name: string, jpegOnly: boolean): boolean {
+  const ext = extensionForName(name);
+  return jpegOnly ? FTP_JPEG_EXTENSIONS.has(ext) : FTP_PROOF_EXTENSIONS.has(ext);
+}
+
+function isRawFtpName(name: string): boolean {
+  return FTP_RAW_EXTENSIONS.has(extensionForName(name));
 }
 function formatTime12(t: string): string {
   const [h, m] = (t || "00:00").split(":").map(Number);
@@ -55,18 +96,20 @@ function formatDuration(mins: number) {
 /** Returns the best thumbnail URL for a photo, optionally scoped to a tenant watermark. */
 function getThumbSrc(photo: Photo, tenantSlug?: string | null): string {
   const base = photo.thumbnail || (photo.src.startsWith("/uploads/") ? photo.src + "?size=thumb" : photo.src);
-  if (tenantSlug && base.startsWith("/uploads/")) {
-    return base + (base.includes("?") ? "&" : "?") + `tenant=${encodeURIComponent(tenantSlug)}`;
+  let url = base;
+  if (tenantSlug && url.startsWith("/uploads/")) {
+    url = url + (url.includes("?") ? "&" : "?") + `tenant=${encodeURIComponent(tenantSlug)}`;
   }
-  return base;
+  return Capacitor.isNativePlatform() && url.startsWith("/uploads/") ? `${NATIVE_API_ORIGIN}${url}` : url;
 }
 /** Returns a medium-resolution URL suitable for the lightbox, optionally scoped to a tenant watermark. */
 function getMediumSrc(photo: Photo, tenantSlug?: string | null): string {
   const base = photo.src.startsWith("/uploads/") ? photo.src + "?size=medium" : photo.src;
-  if (tenantSlug && base.startsWith("/uploads/")) {
-    return base + (base.includes("?") ? "&" : "?") + `tenant=${encodeURIComponent(tenantSlug)}`;
+  let url = base;
+  if (tenantSlug && url.startsWith("/uploads/")) {
+    url = url + (url.includes("?") ? "&" : "?") + `tenant=${encodeURIComponent(tenantSlug)}`;
   }
-  return base;
+  return Capacitor.isNativePlatform() && url.startsWith("/uploads/") ? `${NATIVE_API_ORIGIN}${url}` : url;
 }
 type SessionStatus = "next-up" | "in-progress" | "upcoming" | "done" | "past";
 function getSessionStatus(bk: Booking, albums: Album[]): SessionStatus {
@@ -94,6 +137,139 @@ type UploadQueueItem = {
   preview: string;   // object URL — revoked after upload completes
   status: "pending" | "uploading" | "done" | "failed";
 };
+
+type CaptureTransport = "usb" | "ftp" | "wifi-control";
+type CullFilter = "best" | "review" | "reject" | "all";
+type CaptureTab = "capture" | "review" | "publish";
+type CaptureStatusTone = "idle" | "active" | "success" | "warning";
+type CaptureStatus = {
+  label: string;
+  detail: string;
+  tone: CaptureStatusTone;
+  updatedAt: number;
+};
+type CullCountSummary = Partial<Record<"all" | "pick" | "review" | "reject" | "unscored", number>>;
+type CaptureBatchSummary = {
+  added: number;
+  queued: number;
+  held: number;
+  cullCounts: CullCountSummary | null;
+};
+
+function emptyCaptureBatch(): CaptureBatchSummary {
+  return { added: 0, queued: 0, held: 0, cullCounts: null };
+}
+
+function countLabel(count: number, singular: string, plural = `${singular}s`): string {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function numericCount(value: unknown): number {
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) ? numberValue : 0;
+}
+
+function normalizeCullCounts(counts: CullCountSummary) {
+  const pick = numericCount(counts.pick);
+  const review = numericCount(counts.review) + numericCount(counts.unscored);
+  const reject = numericCount(counts.reject);
+  return {
+    pick,
+    review,
+    reject,
+    bestOf: pick + review,
+  };
+}
+
+function formatCullSummary(counts: CullCountSummary): string {
+  const normalized = normalizeCullCounts(counts);
+  return `${normalized.bestOf} Best of · ${normalized.review} review · ${normalized.reject} reject${normalized.reject === 1 ? "" : "s"}`;
+}
+
+function photoFromUploadResult(r: any, uploadedAt: string): Photo {
+  return {
+    id: r.id,
+    src: r.url,
+    thumbnail: r.url + "?size=thumb&wm=0",
+    title: r.originalName.replace(/\.[^.]+$/, "").replace(/^_+/, ""),
+    originalName: r.originalName,
+    width: r.width ?? 800,
+    height: r.height ?? 600,
+    proofing: true,
+    uploadedAt,
+    ...(r.takenAt ? { takenAt: r.takenAt } : {}),
+    fileSize: r.size,
+    ...(r.cull ? { cull: r.cull } : {}),
+    ...(r.blurScore != null ? { blurScore: r.blurScore } : {}),
+    ...(r.duplicateGroupId ? { duplicateGroupId: r.duplicateGroupId } : {}),
+    ...(r.duplicateRank != null ? { duplicateRank: r.duplicateRank } : {}),
+  };
+}
+
+function isBestOfCull(photo: Photo): boolean {
+  const status = photo.cull?.status;
+  return !status || status === "pick" || status === "review" || status === "unscored";
+}
+
+function buildMobileCullFallback(album: Album): { album: Album; counts: Record<string, number> } {
+  const analysedAt = new Date().toISOString();
+  const duplicateSignatures = new Map<string, { groupId: string; count: number }>();
+  const photos = (album.photos || []).map((photo, index) => {
+    const manualPick = !!photo.starred || photo.cull?.status === "pick";
+    const signature = [
+      (photo.originalName || photo.title || "").toLowerCase(),
+      photo.fileSize ? String(photo.fileSize) : "",
+      photo.width && photo.height ? `${photo.width}x${photo.height}` : "",
+    ].filter(Boolean).join("|");
+    let status: CullStatus = manualPick ? "pick" : "review";
+    let score = manualPick ? 0.95 : 0.62;
+    let duplicateGroupId = photo.duplicateGroupId;
+    let duplicateRank = photo.duplicateRank;
+    const reasons = new Set(photo.cull?.reasons || []);
+    reasons.add("server-analyzer-unavailable");
+
+    if (signature && photo.fileSize) {
+      const existing = duplicateSignatures.get(signature);
+      if (existing) {
+        existing.count += 1;
+        duplicateGroupId = existing.groupId;
+        duplicateRank = existing.count;
+        reasons.add("duplicate");
+        if (!manualPick) {
+          status = "reject";
+          score = 0.25;
+        }
+      } else {
+        duplicateSignatures.set(signature, { groupId: `mobile-dupe-${album.id}-${index}`, count: 1 });
+      }
+    }
+
+    return {
+      ...photo,
+      duplicateGroupId,
+      duplicateRank,
+      cull: {
+        ...photo.cull,
+        status,
+        score,
+        reasons: Array.from(reasons),
+        duplicateGroupId,
+        duplicateRank,
+        analysedAt,
+      },
+    };
+  });
+
+  return {
+    album: { ...album, photos, photoCount: photos.length },
+    counts: {
+      pick: photos.filter(photo => photo.cull?.status === "pick").length,
+      review: photos.filter(photo => photo.cull?.status === "review").length,
+      reject: photos.filter(photo => photo.cull?.status === "reject").length,
+      unscored: photos.filter(photo => !photo.cull?.status || photo.cull?.status === "unscored").length,
+    },
+  };
+}
 
 /**
  * Create a temporary Photo backed by a local blob URL for immediate display
@@ -275,6 +451,8 @@ function MobileCaptureInner() {
   const [albums, setAlbums] = useState<Album[]>([]);
   const [selectedBooking, setSelectedBooking] = useState<Booking | null>(null);
   const [targetAlbum, setTargetAlbum] = useState<Album | null>(null);
+  // Event listeners and queued imports need the latest album without re-subscribing.
+  const targetAlbumRef = useRef<Album | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadSpeed, setUploadSpeed] = useState<number | null>(null);
@@ -297,11 +475,28 @@ function MobileCaptureInner() {
   const [search, setSearch] = useState("");
   const [activeFilter, setActiveFilter] = useState<"all" | "today" | "upcoming" | "done">("all");
   const [showDone, setShowDone] = useState(false);
+  const [captureTab, setCaptureTab] = useState<CaptureTab>("capture");
 
   // USB camera
+  const [captureTransport, setCaptureTransport] = useState<CaptureTransport>("ftp");
   const [cameraConnected, setCameraConnected] = useState(false);
   const [cameraName, setCameraName] = useState("");
   const [cameraFiles, setCameraFiles] = useState<CameraFile[]>([]);
+  const [ftpStatus, setFtpStatus] = useState<CameraFtpStatus | null>(null);
+  const [ftpAddresses, setFtpAddresses] = useState<string[]>([]);
+  const [ftpHotspotAddress, setFtpHotspotAddress] = useState<string>("");
+  const [ftpUsername, setFtpUsername] = useState(() => loadFtpSettings().username);
+  const [ftpPassword, setFtpPassword] = useState(() => loadFtpSettings().password);
+  const [ftpPort, setFtpPort] = useState(() => String(loadFtpSettings().port));
+  const [cameraScanBusy, setCameraScanBusy] = useState(false);
+  const [cameraScanCandidates, setCameraScanCandidates] = useState<CameraFtpCandidate[]>([]);
+  const [selectedCameraCandidate, setSelectedCameraCandidate] = useState<CameraFtpCandidate | null>(null);
+  const [heldRawCount, setHeldRawCount] = useState(0);
+  const [lastHeldRawName, setLastHeldRawName] = useState("");
+  const [ftpQueueSize, setFtpQueueSize] = useState(0);
+  const [culling, setCulling] = useState(false);
+  const [cullFilter, setCullFilter] = useState<CullFilter>("best");
+  const [showRejectsToClient, setShowRejectsToClient] = useState(false);
   const [importing, setImporting] = useState(false);
   const [importProgress, setImportProgress] = useState(0);
   const [liveQueueSize, setLiveQueueSize] = useState(0);
@@ -328,6 +523,15 @@ function MobileCaptureInner() {
   const [sendingProofing, setSendingProofing] = useState(false);
   const emailSentRef = useRef(false);
   const sessionUploadedRef = useRef(false);
+  const [captureStatus, setCaptureStatus] = useState<CaptureStatus>(() => ({
+    label: "Ready",
+    detail: "Choose an intake mode or import photos.",
+    tone: "idle",
+    updatedAt: Date.now(),
+  }));
+  const [lastCullSummary, setLastCullSummary] = useState("No review pass yet");
+  const captureBatchRef = useRef<CaptureBatchSummary>(emptyCaptureBatch());
+  const captureBatchTimerRef = useRef<number | null>(null);
 
   // Local-preview photos — shown immediately from blob URLs while server upload is in-flight.
   // Never persisted; cleared and blob URLs revoked once server upload completes.
@@ -337,14 +541,147 @@ function MobileCaptureInner() {
   // Camera check loading state — used for the manual "Scan" button in the disconnected panel
   const [cameraChecking, setCameraChecking] = useState(false);
 
+  const setQuietCaptureStatus = useCallback((label: string, detail: string, tone: CaptureStatusTone = "idle") => {
+    setCaptureStatus({ label, detail, tone, updatedAt: Date.now() });
+  }, []);
+
+  const flushCaptureSummary = useCallback(() => {
+    captureBatchTimerRef.current = null;
+    const batch = captureBatchRef.current;
+    captureBatchRef.current = emptyCaptureBatch();
+
+    const parts: string[] = [];
+    if (batch.added > 0) parts.push(`${countLabel(batch.added, "photo")} added`);
+    if (batch.queued > 0) parts.push(`${countLabel(batch.queued, "file")} queued`);
+    if (batch.held > 0) parts.push(`${countLabel(batch.held, "file")} held`);
+    if (batch.cullCounts) {
+      const summary = formatCullSummary(batch.cullCounts);
+      setLastCullSummary(summary);
+      parts.push(summary);
+    }
+    if (parts.length === 0) return;
+
+    const detail = parts.join(" · ");
+    const label = batch.added > 0
+      ? "Capture synced"
+      : batch.cullCounts
+        ? "Review updated"
+        : batch.queued > 0
+          ? "Queued offline"
+          : "Capture notice";
+    const tone: CaptureStatusTone = batch.queued > 0 || batch.held > 0 ? "warning" : "success";
+    setQuietCaptureStatus(label, detail, tone);
+
+    if (batch.queued > 0 && batch.added === 0) {
+      toast.info(detail, { id: "capture-batch-summary" });
+    } else {
+      toast.success(detail, { id: "capture-batch-summary" });
+    }
+  }, [setQuietCaptureStatus]);
+
+  const queueCaptureSummary = useCallback((summary: Partial<CaptureBatchSummary>) => {
+    const current = captureBatchRef.current;
+    current.added += summary.added || 0;
+    current.queued += summary.queued || 0;
+    current.held += summary.held || 0;
+    if (summary.cullCounts) current.cullCounts = summary.cullCounts;
+
+    if (captureBatchTimerRef.current != null) window.clearTimeout(captureBatchTimerRef.current);
+    captureBatchTimerRef.current = window.setTimeout(flushCaptureSummary, 2600);
+  }, [flushCaptureSummary]);
+
+  useEffect(() => () => {
+    if (captureBatchTimerRef.current != null) window.clearTimeout(captureBatchTimerRef.current);
+  }, []);
+
   /** Persist an album — uses tenant API in tenant mode, localStorage otherwise. */
   const saveAlbum = useCallback(async (album: Album) => {
     if (tenantSession) {
-      await saveTenantAlbum(tenantSession.slug, album);
-    } else {
-      updateAlbum(album);
+      const result = await saveTenantAlbum(tenantSession.slug, album);
+      if (!result.ok) throw new Error(result.error || "Failed to save tenant album");
+      return;
     }
+
+    updateAlbum(album);
+    const response = await fetch(`/api/albums/${encodeURIComponent(album.id)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(album),
+    });
+    if (!response.ok) throw new Error(`Failed to save album (${response.status})`);
   }, [tenantSession]);
+
+  const autoCullRouteMissingRef = useRef(false);
+  const cullInFlightRef = useRef(false);
+  const queuedCullAlbumRef = useRef<Album | null>(null);
+  const runAutoCullRef = useRef<((albumId: string, albumForRetry?: Album) => Promise<void>) | null>(null);
+
+  const runAutoCull = useCallback(async (albumId: string, albumForRetry?: Album) => {
+    if (!albumId) return;
+    if (cullInFlightRef.current) {
+      if (albumForRetry) queuedCullAlbumRef.current = albumForRetry;
+      setQuietCaptureStatus("Review queued", "Waiting for the current Best of pass to finish.", "active");
+      return;
+    }
+    cullInFlightRef.current = true;
+    setCulling(true);
+    setQuietCaptureStatus("Updating review", "Scoring latest uploads quietly.", "active");
+    try {
+      const fallbackAlbum = albumForRetry
+        || (targetAlbumRef.current?.id === albumId
+          ? targetAlbumRef.current
+          : albums.find(album => album.id === albumId));
+      const applyFallback = async (sourceAlbum: Album) => {
+        const fallback = buildMobileCullFallback(sourceAlbum);
+        await saveAlbum(fallback.album);
+        setTargetAlbum(fallback.album);
+        targetAlbumRef.current = fallback.album;
+        setAlbums(prev => prev.map(a => a.id === fallback.album.id ? fallback.album : a));
+        queueCaptureSummary({ cullCounts: fallback.counts });
+      };
+
+      if (autoCullRouteMissingRef.current && fallbackAlbum) {
+        await applyFallback(fallbackAlbum);
+        return;
+      }
+
+      let result = await autoCullAlbum(albumId, tenantSession?.slug);
+      if (!result.ok && result.error?.includes("(404)")) {
+        const currentAlbum = fallbackAlbum;
+        if (currentAlbum) {
+          await saveAlbum(currentAlbum);
+          result = await autoCullAlbum(albumId, tenantSession?.slug);
+          if (!result.ok && result.error?.includes("(404)")) {
+            autoCullRouteMissingRef.current = true;
+            await applyFallback(currentAlbum);
+            return;
+          }
+        }
+      }
+      if (result.ok && result.album) {
+        setTargetAlbum(result.album);
+        targetAlbumRef.current = result.album;
+        setAlbums(prev => prev.map(a => a.id === result.album!.id ? result.album! : a));
+        queueCaptureSummary({ cullCounts: result.counts || {} });
+      } else if (result.error) {
+        toast.warning(result.error);
+      }
+    } catch (err) {
+      console.warn("Auto review failed:", err);
+      toast.warning(err instanceof Error ? err.message : "Review update failed");
+    } finally {
+      setCulling(false);
+      cullInFlightRef.current = false;
+      const queued = queuedCullAlbumRef.current;
+      queuedCullAlbumRef.current = null;
+      if (queued) {
+        window.setTimeout(() => {
+          runAutoCullRef.current?.(queued.id, queued);
+        }, 250);
+      }
+    }
+  }, [albums, queueCaptureSummary, saveAlbum, setQuietCaptureStatus, tenantSession?.slug]);
+  runAutoCullRef.current = runAutoCull;
 
   /** Clear all local-preview photos and revoke their blob URLs to free device memory. */
   const clearLocalPreviews = useCallback(() => {
@@ -411,6 +748,7 @@ function MobileCaptureInner() {
       };
       await saveAlbum(updated);
       setTargetAlbum(prev => prev?.id === updated.id ? updated : prev);
+      if (targetAlbumRef.current?.id === updated.id) targetAlbumRef.current = updated;
       setAlbums(prev => prev.map(a => a.id === updated.id ? updated : a));
       setIdbQueue(prev => prev.filter(q => q.id !== item.id));
       return true;
@@ -551,15 +889,32 @@ function MobileCaptureInner() {
     return () => clearInterval(interval);
   }, [isNative, checkCamera]);
 
-  // Use a ref for targetAlbum so the listener always has latest value without re-subscribing
-  const targetAlbumRef = useRef<Album | null>(null);
+  // Keep targetAlbumRef current for native listeners and queued imports.
   useEffect(() => { targetAlbumRef.current = targetAlbum; }, [targetAlbum]);
+  useEffect(() => { setShowRejectsToClient(!!targetAlbum?.showCullRejectsToClient); }, [targetAlbum?.id, targetAlbum?.showCullRejectsToClient]);
+  const pendingCullAlbumRef = useRef<Album | null>(null);
+  const cullTimerRef = useRef<number | null>(null);
+  const scheduleAutoCull = useCallback((album: Album, delayMs = 4200) => {
+    pendingCullAlbumRef.current = album;
+    if (cullTimerRef.current != null) window.clearTimeout(cullTimerRef.current);
+    cullTimerRef.current = window.setTimeout(() => {
+      const pending = pendingCullAlbumRef.current;
+      pendingCullAlbumRef.current = null;
+      cullTimerRef.current = null;
+      if (pending) runAutoCull(pending.id, pending);
+    }, delayMs);
+  }, [runAutoCull]);
+  useEffect(() => () => {
+    if (cullTimerRef.current != null) window.clearTimeout(cullTimerRef.current);
+  }, []);
 
   // Serial import queue — prevents concurrent imports from burst shooting causing OOM
   const importQueueRef = useRef<number[][]>([]);
+  const ftpImportQueueRef = useRef<string[][]>([]);
   const importBusyRef = useRef(false);
   // ref so drainImportQueue never closes over importCameraFiles before it's defined
   const importCameraFilesRef = useRef<((handles: number[]) => Promise<void>) | null>(null);
+  const importFtpFilesRef = useRef<((paths: string[]) => Promise<void>) | null>(null);
   // tracks imported filenames — prevents duplicates when "On Camera" count lags behind
   const importedNamesRef = useRef<Set<string>>(new Set());
   const drainImportQueue = useCallback(async () => {
@@ -577,6 +932,20 @@ function MobileCaptureInner() {
       importBusyRef.current = true;
       try { await importCameraFilesRef.current(handles); }
       catch (e) { console.error("Queue import error:", e); }
+      finally { importBusyRef.current = false; }
+    }
+  }, []);
+
+  const drainFtpImportQueue = useCallback(async () => {
+    if (importBusyRef.current || liveCapturePausedRef.current) return;
+    while (ftpImportQueueRef.current.length > 0) {
+      if (liveCapturePausedRef.current) break;
+      const paths = ftpImportQueueRef.current.splice(0).flat();
+      setFtpQueueSize(0);
+      if (!importFtpFilesRef.current) break;
+      importBusyRef.current = true;
+      try { await importFtpFilesRef.current(paths); }
+      catch (e) { console.error("FTP queue import error:", e); }
       finally { importBusyRef.current = false; }
     }
   }, []);
@@ -611,6 +980,80 @@ function MobileCaptureInner() {
     };
   }, [isNative, watching, drainImportQueue]); // drainImportQueue is stable (no deps)
 
+  useEffect(() => {
+    if (!isNative) return;
+    CameraFtp.getNetworkInfo()
+      .then(info => {
+        setFtpHotspotAddress(info.hotspotLikelyAddress || "");
+        setFtpAddresses(info.addresses?.length ? info.addresses : [info.hotspotLikelyAddress || info.ipAddress || "192.168.43.1"]);
+      })
+      .catch(() => setFtpAddresses(["192.168.43.1"]));
+    CameraFtp.status().then(setFtpStatus).catch(() => {});
+  }, [isNative]);
+
+  useEffect(() => {
+    if (!isNative || !ftpStatus?.running) return;
+    let listenerHandle: any = null;
+    let statusHandle: any = null;
+    const poll = window.setInterval(() => {
+      CameraFtp.status().then(setFtpStatus).catch(() => {});
+    }, 2000);
+    const setup = async () => {
+      listenerHandle = await CameraFtp.addListener("newFiles", async (event) => {
+        const files: CameraFtpFile[] = event?.files || [];
+        if (!files.length || !targetAlbumRef.current) return;
+        const proofFiles = files.filter(file => {
+          const name = file.name || filenameFromFtpPath(file.localPath || file.path || "");
+          return isProofableFtpName(name, jpegOnly);
+        });
+        const heldFiles = files.filter(file => !proofFiles.includes(file));
+        if (heldFiles.length > 0) {
+          const lastName = heldFiles[heldFiles.length - 1]?.name || filenameFromFtpPath(heldFiles[heldFiles.length - 1]?.localPath || heldFiles[heldFiles.length - 1]?.path || "");
+          setHeldRawCount(count => count + heldFiles.length);
+          setLastHeldRawName(lastName);
+          const rawCount = heldFiles.filter(file => isRawFtpName(file.name || filenameFromFtpPath(file.localPath || file.path || ""))).length;
+          queueCaptureSummary({ held: heldFiles.length });
+          setQuietCaptureStatus(
+            "Files held locally",
+            rawCount > 0
+              ? `${countLabel(rawCount, "RAW file")} held. Use JPEG for live proofing.`
+              : `${countLabel(heldFiles.length, "unsupported file")} held on phone.`,
+            "warning"
+          );
+        }
+        const paths = proofFiles.map(f => f.localPath || f.path).filter((path): path is string => Boolean(path));
+        if (paths.length === 0) return;
+        ftpImportQueueRef.current.push(paths);
+        setFtpQueueSize(ftpImportQueueRef.current.reduce((sum, batch) => sum + batch.length, 0));
+        drainFtpImportQueue();
+      });
+      statusHandle = await CameraFtp.addListener("statusChanged", (status) => {
+        setFtpStatus(status);
+        if (status.clients?.length) {
+          const candidates = status.clients.map(client => ({
+            ipAddress: client.ipAddress,
+            interfaceName: "ftp",
+            label: client.connected ? "Connected camera" : "Recent camera",
+          }));
+          setCameraScanCandidates(prev => {
+            const merged = new Map<string, CameraFtpCandidate>();
+            [...candidates, ...prev].forEach(candidate => merged.set(candidate.ipAddress, candidate));
+            return Array.from(merged.values());
+          });
+        }
+      });
+    };
+    setup().catch(err => {
+      console.error("Failed to attach FTP listener:", err);
+      setFtpStatus(prev => prev ? { ...prev, running: false } : prev);
+    });
+    return () => {
+      window.clearInterval(poll);
+      try { listenerHandle?.remove?.(); } catch {}
+      try { statusHandle?.remove?.(); } catch {}
+    };
+  }, [isNative, ftpStatus?.running, drainFtpImportQueue, jpegOnly, queueCaptureSummary, setQuietCaptureStatus]);
+
   const getOrCreateAlbum = useCallback((booking: Booking): Album => {
     const existing = albums.find(a => a.bookingId === booking.id);
     if (existing) return existing;
@@ -627,6 +1070,11 @@ function MobileCaptureInner() {
       saveTenantAlbum(tenantSession.slug, newAlbum).catch(() => toast.error("Failed to save album"));
     } else {
       addAlbum(newAlbum);
+      fetch(`/api/albums/${encodeURIComponent(newAlbum.id)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(newAlbum),
+      }).catch(() => {});
     }
     setAlbums(prev => [...prev, newAlbum]);
     return newAlbum;
@@ -634,11 +1082,14 @@ function MobileCaptureInner() {
 
   const selectBooking = (booking: Booking) => {
     setSelectedBooking(booking);
+    setCaptureTab("capture");
     const existing = albums.find(a => a.bookingId === booking.id);
     const album = getOrCreateAlbum(booking);
     setTargetAlbum(album);
+    targetAlbumRef.current = album;
     setUploadedCount(0);
     setImportSpeed(null);
+    setQuietCaptureStatus("Session ready", `${booking.clientName} · ${formatDate(booking.date)}`, "idle");
     emailSentRef.current = false;
     sessionUploadedRef.current = false;
     // Seed with "name:0" — album photos lack size data; name match alone blocks re-import from same session
@@ -667,12 +1118,14 @@ function MobileCaptureInner() {
     if (freshHandles.length < handles.length)
       toast.info(`Skipping ${handles.length - freshHandles.length} already-imported photo(s)`);
     setImporting(true); setImportProgress(0); setImportSpeed(null);
+    setQuietCaptureStatus("Receiving from USB", `${countLabel(freshHandles.length, "photo")} in this batch`, "active");
     const isOnline = await recheckServer();
     setServerOnline(isOnline);
     // Process freshHandles in chunks to bound peak memory — only IMPORT_CHUNK_SIZE photos'
     // base64 payloads reside in JS memory at once.  Prevents OOM on burst shots (>~15 photos).
     const IMPORT_CHUNK_SIZE = 10;
     const newPhotos: Photo[] = [];
+    let queuedOfflineCount = 0;
     try {
       for (let chunkStart = 0; chunkStart < freshHandles.length; chunkStart += IMPORT_CHUNK_SIZE) {
         const chunkHandles = freshHandles.slice(chunkStart, chunkStart + IMPORT_CHUNK_SIZE);
@@ -726,17 +1179,7 @@ function MobileCaptureInner() {
               const orderedResults = decodedFiles.map(f => resultByName.get(f.name)).filter(Boolean);
               for (const r of orderedResults) {
                 if (!r) continue;
-                newPhotos.push({
-                  id: r.id, src: r.url, thumbnail: r.url + "?size=thumb&wm=0",
-                  title: r.originalName.replace(/\.[^.]+$/, "").replace(/^_+/, ""),
-                  originalName: r.originalName,
-                  width: r.width ?? 800,
-                  height: r.height ?? 600,
-                  proofing: true,
-                  uploadedAt,
-                  ...(r.takenAt ? { takenAt: r.takenAt } : {}),
-                  fileSize: r.size,
-                });
+                newPhotos.push(photoFromUploadResult(r, uploadedAt));
               }
               // Delete local cached copies now that files are safely on the server.
               // Fire-and-forget: cleanup is best-effort and must not block the upload flow
@@ -751,6 +1194,7 @@ function MobileCaptureInner() {
               console.error("Upload error:", e);
               // Queue decoded files for retry when connection is restored
               setOfflineQueue(q => [...q, ...decodedFiles]);
+              queuedOfflineCount += decodedFiles.length;
             }
           }
         } else {
@@ -775,6 +1219,7 @@ function MobileCaptureInner() {
           }
           if (offlineFiles.length > 0) {
             setOfflineQueue(q => [...q, ...offlineFiles]);
+            queuedOfflineCount += offlineFiles.length;
           }
           setImportProgress(Math.round((chunkStart + chunkHandles.length) / freshHandles.length * 100));
         }
@@ -791,7 +1236,8 @@ function MobileCaptureInner() {
       if (newPhotos.length > 0) {
         const fresh = albums.find(a => a.id === album.id) || album;
         const updated: Album = { ...fresh, enabled: true, photos: [...fresh.photos, ...newPhotos], photoCount: fresh.photos.length + newPhotos.length, coverImage: fresh.coverImage || newPhotos[0]?.src || "" };
-        await saveAlbum(updated); setTargetAlbum(updated); setAlbums(prev => prev.map(a => a.id === updated.id ? updated : a));
+        await saveAlbum(updated); setTargetAlbum(updated); targetAlbumRef.current = updated; setAlbums(prev => prev.map(a => a.id === updated.id ? updated : a));
+        if (isOnline) scheduleAutoCull(updated);
         // Sync album record to server so admin panel / recent uploads reflects new photos
         if (isOnline) {
           try {
@@ -805,8 +1251,9 @@ function MobileCaptureInner() {
         setUploadedCount(p => p + newPhotos.length);
         sessionUploadedRef.current = true;
         setImportLabel("");
-        toast.success(`${newPhotos.length} photos imported`);
+        queueCaptureSummary({ added: newPhotos.length });
       }
+      if (queuedOfflineCount > 0) queueCaptureSummary({ queued: queuedOfflineCount });
       setCameraFiles(prev => prev.filter(f => {
         const n = f.name || '';
         const key = `${n}:${(f as any).size ?? 0}`;
@@ -822,6 +1269,133 @@ function MobileCaptureInner() {
 
   // Keep ref in sync so drainImportQueue can call it without stale closure
   importCameraFilesRef.current = importCameraFiles;
+
+  const importFtpFiles = async (paths: string[]) => {
+    const album = targetAlbumRef.current;
+    if (!album || paths.length === 0) return;
+    const freshPaths = paths.filter(path => {
+      const name = filenameFromFtpPath(path);
+      return !importedNamesRef.current.has(`${name}:0`);
+    });
+    if (freshPaths.length === 0) return;
+    const proofPaths = freshPaths.filter(path => isProofableFtpName(filenameFromFtpPath(path), jpegOnly));
+    const heldPaths = freshPaths.filter(path => !proofPaths.includes(path));
+    if (heldPaths.length > 0) {
+      setHeldRawCount(count => count + heldPaths.length);
+      setLastHeldRawName(filenameFromFtpPath(heldPaths[heldPaths.length - 1]));
+      queueCaptureSummary({ held: heldPaths.length });
+      setQuietCaptureStatus("Files held locally", `${countLabel(heldPaths.length, "RAW/unsupported file")} held. Use JPEG for live proofing.`, "warning");
+    }
+    if (proofPaths.length === 0) return;
+
+    setImporting(true);
+    setImportProgress(0);
+    setImportSpeed(null);
+    setImportLabel(`Receiving ${proofPaths.length} Wi-Fi file${proofPaths.length !== 1 ? "s" : ""}…`);
+    setQuietCaptureStatus("Receiving over Wi-Fi", `${countLabel(proofPaths.length, "photo")} in this batch`, "active");
+
+    const isOnline = await recheckServer();
+    setServerOnline(isOnline);
+    const newPhotos: Photo[] = [];
+    let queuedOfflineCount = 0;
+    try {
+      for (let start = 0; start < proofPaths.length; start += 5) {
+        const chunkPaths = proofPaths.slice(start, start + 5);
+        const importResult = await CameraFtp.importFiles({ paths: chunkPaths });
+        const imported = importResult?.files ?? [];
+        const decodedFiles: File[] = [];
+
+        for (const f of imported) {
+          if (!f.base64) continue;
+          try {
+            const byteChars = atob(f.base64);
+            const byteArr = new Uint8Array(byteChars.length);
+            for (let b = 0; b < byteChars.length; b++) byteArr[b] = byteChars.charCodeAt(b);
+            const blob = new Blob([byteArr], { type: f.mimeType || "image/jpeg" });
+            decodedFiles.push(new File([blob], f.name || f.localPath?.split(/[\\/]/).pop() || `ftp_${Date.now()}.jpg`, {
+              type: f.mimeType || "image/jpeg",
+              lastModified: f.dateModified || Date.now(),
+            }));
+          } catch (err) {
+            console.error("FTP decode error:", err);
+          }
+        }
+
+        if (decodedFiles.length === 0) continue;
+        decodedFiles.sort((a, b) => a.name.localeCompare(b.name));
+
+        if (!isOnline) {
+          setOfflineQueue(q => [...q, ...decodedFiles]);
+          queuedOfflineCount += decodedFiles.length;
+          setImportProgress(Math.round((start + chunkPaths.length) / proofPaths.length * 100));
+          continue;
+        }
+
+        const previews = decodedFiles.map(file => {
+          const { photo, blobUrl } = createLocalPreviewPhoto(file);
+          localPreviewUrlsRef.current.push(blobUrl);
+          return photo;
+        });
+        setLocalPreviewPhotos(prev => [...prev, ...previews]);
+        setImportLabel(`Uploading ${decodedFiles.length} Wi-Fi file${decodedFiles.length !== 1 ? "s" : ""}…`);
+
+        const fileInfoByName = new Map(decodedFiles.map(f => [f.name, f]));
+        const results = await uploadPhotosToServer(decodedFiles, (done, _total, bytesPerSecond) => {
+          setImportProgress(Math.round((start + done) / proofPaths.length * 100));
+          if (bytesPerSecond != null) setImportSpeed(bytesPerSecond);
+        }, tenantSession?.slug, 3, album.title, album.id);
+        const resultByName = new Map(results.map(r => [r.originalName, r]));
+        for (const file of decodedFiles) {
+          const result = resultByName.get(file.name);
+          if (!result) {
+            setOfflineQueue(q => [...q, file]);
+            queuedOfflineCount += 1;
+            continue;
+          }
+          newPhotos.push(photoFromUploadResult(result, new Date(fileInfoByName.get(result.originalName)?.lastModified || Date.now()).toISOString()));
+        }
+
+        const localPaths = imported.map(f => f.localPath || f.path).filter((p): p is string => Boolean(p));
+        if (localPaths.length > 0) {
+          CameraFtp.deleteLocalFiles({ paths: localPaths }).catch(err => console.warn("FTP cleanup failed:", err));
+        }
+        imported.forEach(f => {
+          const name = f.name || f.localPath?.split(/[\\/]/).pop();
+          if (name) importedNamesRef.current.add(`${name}:${f.size ?? 0}`);
+        });
+      }
+
+      if (newPhotos.length > 0) {
+        const fresh = albums.find(a => a.id === album.id) || album;
+        const updated: Album = {
+          ...fresh,
+          enabled: true,
+          photos: [...fresh.photos, ...newPhotos],
+          photoCount: fresh.photos.length + newPhotos.length,
+          coverImage: fresh.coverImage || newPhotos[0]?.src || "",
+        };
+        await saveAlbum(updated);
+        setTargetAlbum(updated);
+        targetAlbumRef.current = updated;
+        setAlbums(prev => prev.map(a => a.id === updated.id ? updated : a));
+        scheduleAutoCull(updated);
+        setUploadedCount(p => p + newPhotos.length);
+        sessionUploadedRef.current = true;
+        queueCaptureSummary({ added: newPhotos.length });
+      }
+      if (queuedOfflineCount > 0) queueCaptureSummary({ queued: queuedOfflineCount });
+    } catch (err) {
+      console.error("FTP import error:", err);
+      toast.error("Wi-Fi import error");
+    } finally {
+      setImporting(false);
+      setImportLabel("");
+      setFtpQueueSize(0);
+      clearLocalPreviews();
+    }
+  };
+
+  importFtpFilesRef.current = importFtpFiles;
 
   const toggleLiveWatch = async () => {
     if (watching) {
@@ -844,6 +1418,92 @@ function MobileCaptureInner() {
         console.error("startWatching failed:", err);
         toast.error(`Live capture failed: ${err?.message || "Unknown error"}`);
       }
+    }
+  };
+
+  const toggleFtpReceiver = async () => {
+    if (!isNative) return;
+    if (ftpStatus?.running) {
+      await CameraFtp.stop();
+      setFtpStatus(prev => prev ? { ...prev, running: false, paused: false } : prev);
+      setFtpQueueSize(0);
+      ftpImportQueueRef.current = [];
+      toast.info("Wi-Fi FTP receiver stopped");
+      return;
+    }
+    if (!targetAlbumRef.current) {
+      toast.error("Select a session first");
+      return;
+    }
+    try {
+      const username = ftpUsername.trim() || "camera";
+      const password = ftpPassword.trim() || "camera";
+      const parsedPort = Number(ftpPort);
+      const port = Number.isFinite(parsedPort) && parsedPort > 0 && parsedPort <= 65535 ? Math.round(parsedPort) : 2121;
+      saveFtpSettings({ username, password, port });
+      setFtpUsername(username);
+      setFtpPassword(password);
+      setFtpPort(String(port));
+      const status = await CameraFtp.start({ port, username, password });
+      setFtpStatus(status);
+      const info = await CameraFtp.getNetworkInfo().catch(() => null);
+      if (info) {
+        setFtpHotspotAddress(info.hotspotLikelyAddress || "");
+        setFtpAddresses(info.addresses?.length ? info.addresses : [info.hotspotLikelyAddress || info.ipAddress || "192.168.43.1"]);
+      }
+      toast.success("Wi-Fi FTP receiver active");
+    } catch (err: any) {
+      console.error("FTP receiver failed:", err);
+      toast.error(`Wi-Fi FTP failed: ${err?.message || "Unknown error"}`);
+    }
+  };
+
+  const toggleFtpPause = async () => {
+    const running = !!ftpStatus?.running;
+    if (!running) return;
+    const willPause = !ftpStatus?.paused;
+    if (willPause) {
+      await CameraFtp.pause();
+      liveCapturePausedRef.current = true;
+      setLiveCapturePaused(true);
+      setFtpStatus(prev => prev ? { ...prev, paused: true } : prev);
+      toast.info("Wi-Fi capture paused — incoming files held");
+    } else {
+      await CameraFtp.resume();
+      liveCapturePausedRef.current = false;
+      setLiveCapturePaused(false);
+      setFtpStatus(prev => prev ? { ...prev, paused: false } : prev);
+      drainFtpImportQueue();
+      toast.info("Wi-Fi capture resumed");
+    }
+  };
+
+  const scanForCamera = async () => {
+    if (!isNative) return;
+    setCameraScanBusy(true);
+    setCameraScanCandidates([]);
+    setSelectedCameraCandidate(null);
+    try {
+      const result = await CameraFtp.scanNetwork({ timeoutMs: 4500 });
+      const candidates = result.candidates || [];
+      setCameraScanCandidates(candidates);
+      if (result.serverHost) {
+        setFtpHotspotAddress(result.serverHost);
+        setFtpAddresses(prev => Array.from(new Set([result.serverHost!, ...prev])));
+      }
+      if (candidates.length === 0) {
+        toast.warning("No camera found on this Wi-Fi/hotspot yet");
+      } else if (candidates.length === 1) {
+        setSelectedCameraCandidate(candidates[0]);
+        toast.success(`Found one device: ${candidates[0].ipAddress}`);
+      } else {
+        toast.success(`Found ${candidates.length} devices on this network`);
+      }
+    } catch (err: any) {
+      console.error("Camera scan failed:", err);
+      toast.error(`Camera scan failed: ${err?.message || "Unknown error"}`);
+    } finally {
+      setCameraScanBusy(false);
     }
   };
 
@@ -893,9 +1553,11 @@ function MobileCaptureInner() {
     setUploadPaused(false);
     uploadPausedRef.current = false;
     setUploading(true); setUploadProgress(0); setUploadSpeed(null);
+    setQuietCaptureStatus("Uploading from device", `${countLabel(sortedFiles.length, "photo")} selected`, "active");
 
     const newPhotos: Photo[] = [];
     const fileInfoByName = new Map(sortedFiles.map(f => [f.name, f]));
+    let queuedOfflineCount = 0;
 
     try {
       if (serverOnline) {
@@ -923,17 +1585,7 @@ function MobileCaptureInner() {
             const orderedResults = chunk.map(f => resultByName.get(f.name)).filter((r): r is NonNullable<typeof r> => !!r);
             for (const r of orderedResults) {
               const srcFile = fileInfoByName.get(r.originalName);
-              newPhotos.push({
-                id: r.id, src: r.url, thumbnail: r.url + "?size=thumb&wm=0",
-                title: r.originalName.replace(/\.[^.]+$/, "").replace(/^_+/, ""),
-                originalName: r.originalName,
-                width: r.width ?? 800,
-                height: r.height ?? 600,
-                proofing: true,
-                uploadedAt: srcFile ? new Date(srcFile.lastModified).toISOString() : new Date().toISOString(),
-                ...(r.takenAt ? { takenAt: r.takenAt } : {}),
-                fileSize: r.size,
-              });
+              newPhotos.push(photoFromUploadResult(r, srcFile ? new Date(srcFile.lastModified).toISOString() : new Date().toISOString()));
             }
             totalDone += chunk.length;
             // Mark each item individually — files missing from results were silently dropped
@@ -942,29 +1594,36 @@ function MobileCaptureInner() {
               if (!chunkIds.includes(item.id)) return item;
               return { ...item, status: succeededNames.has(item.file.name) ? "done" : "failed" };
             }));
-            if (failedFiles.length > 0) setOfflineQueue(q => [...q, ...failedFiles]);
+            if (failedFiles.length > 0) {
+              setOfflineQueue(q => [...q, ...failedFiles]);
+              queuedOfflineCount += failedFiles.length;
+            }
           } catch {
             // Failed chunk — mark as failed and add to offline queue for retry
             setUploadQueue(prev => prev.map(item =>
               chunkIds.includes(item.id) ? { ...item, status: "failed" } : item
             ));
             setOfflineQueue(q => [...q, ...chunk]);
+            queuedOfflineCount += chunk.length;
             totalDone += chunk.length;
           }
         }
       } else {
         setOfflineQueue(q => [...q, ...sortedFiles]);
         setUploadQueue(prev => prev.map(item => ({ ...item, status: "failed" })));
-        toast.info(`${sortedFiles.length} file${sortedFiles.length !== 1 ? "s" : ""} queued — will upload when server is back`);
+        queuedOfflineCount += sortedFiles.length;
+        setQuietCaptureStatus("Queued offline", `${countLabel(sortedFiles.length, "file")} will upload when the server is back.`, "warning");
       }
       if (newPhotos.length > 0) {
         const fresh = albums.find(a => a.id === targetAlbum.id) || targetAlbum;
         const updated: Album = { ...fresh, enabled: true, photos: [...fresh.photos, ...newPhotos], photoCount: fresh.photos.length + newPhotos.length, coverImage: fresh.coverImage || newPhotos[0]?.src || "" };
-        await saveAlbum(updated); setTargetAlbum(updated); setAlbums(prev => prev.map(a => a.id === updated.id ? updated : a));
+        await saveAlbum(updated); setTargetAlbum(updated); targetAlbumRef.current = updated; setAlbums(prev => prev.map(a => a.id === updated.id ? updated : a));
+        scheduleAutoCull(updated);
         setUploadedCount(p => p + newPhotos.length);
         sessionUploadedRef.current = true;
-        toast.success(`${newPhotos.length} photos uploaded`);
+        queueCaptureSummary({ added: newPhotos.length });
       }
+      if (queuedOfflineCount > 0) queueCaptureSummary({ queued: queuedOfflineCount });
     } catch { toast.error("Upload error"); }
     finally {
       setUploading(false); setUploadSpeed(null);
@@ -989,6 +1648,17 @@ function MobileCaptureInner() {
     };
     saveAlbum(updated).catch(() => {});
     setTargetAlbum(updated);
+    targetAlbumRef.current = updated;
+    setAlbums(prev => prev.map(a => a.id === updated.id ? updated : a));
+  };
+
+  const setClientRejectVisibility = (visible: boolean) => {
+    setShowRejectsToClient(visible);
+    if (!targetAlbum) return;
+    const updated = { ...targetAlbum, showCullRejectsToClient: visible };
+    saveAlbum(updated).catch(() => {});
+    setTargetAlbum(updated);
+    targetAlbumRef.current = updated;
     setAlbums(prev => prev.map(a => a.id === updated.id ? updated : a));
   };
 
@@ -1002,6 +1672,7 @@ function MobileCaptureInner() {
     const files = [...offlineQueue].sort((a, b) => a.lastModified - b.lastModified);
     setOfflineQueue([]);
     setUploading(true); setUploadProgress(0); setUploadSpeed(null);
+    setQuietCaptureStatus("Syncing queue", `${countLabel(files.length, "queued photo")} uploading now`, "active");
     try {
       const results = await uploadPhotosToServer(files, (done, total, bytesPerSecond) => {
         setUploadProgress(Math.round(done / total * 100));
@@ -1012,26 +1683,15 @@ function MobileCaptureInner() {
       const orderedResults = files.map(f => resultByName.get(f.name)).filter((r): r is NonNullable<typeof r> => !!r);
       const newPhotos: Photo[] = orderedResults.map(r => {
         const srcFile = fileInfoByName.get(r.originalName);
-        return {
-          id: r.id,
-          src: r.url,
-          thumbnail: r.url + "?size=thumb&wm=0",
-          title: r.originalName.replace(/\.[^.]+$/, "").replace(/^_+/, ""),
-          originalName: r.originalName,
-          width: r.width ?? 800,
-          height: r.height ?? 600,
-          proofing: true,
-          uploadedAt: srcFile ? new Date(srcFile.lastModified).toISOString() : new Date().toISOString(),
-          ...(r.takenAt ? { takenAt: r.takenAt } : {}),
-          fileSize: r.size,
-        };
+        return photoFromUploadResult(r, srcFile ? new Date(srcFile.lastModified).toISOString() : new Date().toISOString());
       });
       const fresh = albums.find(a => a.id === targetAlbum.id) || targetAlbum;
       const upd: Album = { ...fresh, photos: [...fresh.photos, ...newPhotos], photoCount: fresh.photos.length + newPhotos.length, coverImage: fresh.coverImage || newPhotos[0]?.src || "" };
-      await saveAlbum(upd); setTargetAlbum(upd); setAlbums(prev => prev.map(a => a.id === upd.id ? upd : a));
+      await saveAlbum(upd); setTargetAlbum(upd); targetAlbumRef.current = upd; setAlbums(prev => prev.map(a => a.id === upd.id ? upd : a));
+      scheduleAutoCull(upd);
       setUploadedCount(p => p + newPhotos.length);
       sessionUploadedRef.current = true;
-      toast.success(`${results.length} queued photo${results.length !== 1 ? "s" : ""} uploaded`);
+      queueCaptureSummary({ added: results.length });
     } catch { toast.error("Failed to flush offline queue"); }
     finally { setUploading(false); setUploadSpeed(null); }
   };
@@ -1056,6 +1716,7 @@ function MobileCaptureInner() {
       };
       await saveAlbum(updatedAlbum);
       setTargetAlbum(updatedAlbum);
+      targetAlbumRef.current = updatedAlbum;
       setAlbums(prev => prev.map(a => a.id === updatedAlbum.id ? updatedAlbum : a));
       if (selectedBooking?.clientEmail && serverOnline) {
         const galleryUrl = `${window.location.origin}/gallery/${targetAlbum.slug}?token=${clientToken}`;
@@ -1092,6 +1753,28 @@ function MobileCaptureInner() {
     return [...pendingPreviews, ...uploaded];
   }, [targetAlbum, localPreviewPhotos]);
 
+  const cullCounts = useMemo(() => {
+    const photos = targetAlbum?.photos || [];
+    const bestOf = photos.filter(p => p.starred || isBestOfCull(p)).length;
+    return {
+      all: photos.length,
+      review: photos.filter(p => p.cull?.status === "review" || p.cull?.status === "unscored" || !p.cull?.status).length,
+      reject: photos.filter(p => p.cull?.status === "reject").length,
+      bestOf,
+    };
+  }, [targetAlbum]);
+  const reviewSummary = useMemo(() => {
+    if (!targetAlbum?.photos.length) return lastCullSummary;
+    return `${cullCounts.bestOf} Best of · ${cullCounts.review} review · ${cullCounts.reject} reject${cullCounts.reject === 1 ? "" : "s"}`;
+  }, [cullCounts.bestOf, cullCounts.reject, cullCounts.review, lastCullSummary, targetAlbum?.photos.length]);
+
+  const applyCullFilter = useCallback((photos: Photo[]) => {
+    if (cullFilter === "best") return photos.filter(p => p.localPreview || p.starred || isBestOfCull(p));
+    if (cullFilter === "review") return photos.filter(p => !p.cull?.status || p.cull?.status === "review" || p.cull?.status === "unscored");
+    if (cullFilter === "reject") return photos.filter(p => p.cull?.status === "reject");
+    return photos;
+  }, [cullFilter]);
+
   // ── Booking card ────────────────────────────────────────────
   const BookingCard = ({ bk }: { bk: Booking }) => {
     const status = getSessionStatus(bk, albums);
@@ -1101,35 +1784,35 @@ function MobileCaptureInner() {
 
     return (
       <div
-        className={`glass-panel rounded-xl overflow-hidden cursor-pointer transition-all active:scale-[0.99] ${isNextUp ? "ring-1 ring-primary/40" : ""}`}
+        className={`capture-session-card cursor-pointer transition-all active:scale-[0.99] ${isNextUp ? "capture-session-card-active" : ""}`}
         onClick={() => selectBooking(bk)}
       >
         <div className="px-4 py-3">
           <div className="flex items-center gap-3">
-            <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${isNextUp ? "bg-primary/20" : "bg-secondary"}`}>
+            <div className={`w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 ${isNextUp ? "bg-cyan-400/15 text-cyan-200" : "bg-white/[0.06] text-white/55"}`}>
               {isNextUp
-                ? <Star className="w-3.5 h-3.5 text-primary fill-primary/50" />
-                : status === "done" ? <CheckCircle2 className="w-3.5 h-3.5 text-green-400" />
-                : <Users className="w-3.5 h-3.5 text-muted-foreground" />
+                ? <CircleDot className="w-4 h-4 text-cyan-200" />
+                : status === "done" ? <CheckCircle2 className="w-4 h-4 text-emerald-300" />
+                : <Users className="w-4 h-4 text-white/55" />
               }
             </div>
             <div className="flex-1 min-w-0">
               {/* Name row */}
               <div className="flex items-center gap-2 mb-0.5">
-                <h3 className="text-sm font-body text-foreground font-medium truncate">{bk.clientName}</h3>
-                {isNextUp && <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse flex-shrink-0" />}
+                <h3 className="text-sm font-body text-white font-semibold truncate">{bk.clientName}</h3>
+                {isNextUp && <span className="w-1.5 h-1.5 rounded-full bg-cyan-300 animate-pulse flex-shrink-0" />}
               </div>
               {/* Time row — full width, never truncated by badge */}
-              <p className="text-xs font-body text-muted-foreground">
+              <p className="text-xs font-body text-white/55">
                 {formatDate(bk.date)}{bk.time ? ` · ${formatTime12(bk.time)}` : ""}{bk.duration ? ` · ${formatDuration(bk.duration)}` : ""}
               </p>
               {/* Type + status row */}
               <div className="flex items-center gap-2 mt-1.5 flex-wrap">
                 <span className="text-[10px] font-body text-muted-foreground/60 truncate">{bk.type}</span>
                 <span className={`text-[9px] font-body tracking-wider uppercase px-1.5 py-0.5 rounded-full border ${
-                  bk.status === "confirmed" ? "border-primary/40 text-primary bg-primary/10"
-                  : bk.status === "completed" ? "border-green-500/40 text-green-400 bg-green-500/10"
-                  : "border-border text-muted-foreground/70 bg-secondary"
+                  bk.status === "confirmed" ? "border-cyan-300/30 text-cyan-200 bg-cyan-400/10"
+                  : bk.status === "completed" ? "border-emerald-400/30 text-emerald-300 bg-emerald-400/10"
+                  : "border-white/10 text-white/50 bg-white/[0.05]"
                 }`}>
                   {bk.status}
                 </span>
@@ -1173,31 +1856,49 @@ function MobileCaptureInner() {
     { id: "done", label: "Done" },
   ];
 
+  const ftpCameraClient = ftpStatus?.clients?.find(client => client.connected) || ftpStatus?.clients?.[0];
+  const ftpCameraSeen = !!ftpCameraClient;
+  const connectionState = ftpStatus?.running
+    ? ftpStatus.paused ? "Paused" : ftpCameraSeen ? "Camera linked" : "Receiving"
+    : watching
+      ? liveCapturePaused ? "USB Paused" : "USB Live"
+      : "Ready";
+  const captureBusy = uploading || importing || !!ftpStatus?.running || watching;
+  const captureTabs: { id: CaptureTab; label: string; icon: any; count?: number }[] = [
+    { id: "capture", label: "Capture", icon: RadioTower, count: ftpQueueSize + liveQueueSize + uploadPendingCount },
+    { id: "review", label: "Review", icon: ListFilter, count: cullCounts.review },
+    { id: "publish", label: "Publish", icon: UploadCloud, count: offlineQueue.length },
+  ];
+  const ftpPrimaryHost = ftpHotspotAddress || ftpStatus?.network?.hotspotLikelyAddress || ftpStatus?.host || ftpStatus?.ipAddress || ftpAddresses[0] || "192.168.43.1";
+
   // ═══════════════════════════════════════════════════════════
   // ── SESSION PICKER ─────────────────────────────────────────
   // ═══════════════════════════════════════════════════════════
   if (!selectedBooking) {
     return (
-      <div className="min-h-screen bg-background" style={{ paddingTop: "env(safe-area-inset-top)" }}>
+      <div className="capture-app-shell min-h-screen" style={{ paddingTop: "env(safe-area-inset-top)" }}>
         {/* Sticky header */}
-        <div className="sticky top-0 z-10 bg-background/95 backdrop-blur-sm border-b border-border/50" style={{ paddingTop: "env(safe-area-inset-top)" }}>
+        <div className="sticky top-0 z-10 border-b border-white/10 bg-[#0a0d12]/95 backdrop-blur-xl" style={{ paddingTop: "env(safe-area-inset-top)" }}>
           <div className="p-4 space-y-3">
             {/* Top row — compact so system time doesn't overlap pills */}
             <div className="flex items-center gap-2">
-              <button onClick={() => navigate(tenantSession ? `/tenant-admin/${tenantSession.slug}` : "/admin")} className="p-1.5 rounded-lg hover:bg-secondary transition-colors text-muted-foreground hover:text-foreground flex-shrink-0">
+              <button onClick={() => navigate(tenantSession ? `/tenant-admin/${tenantSession.slug}` : "/admin")} className="capture-icon-button flex-shrink-0">
                 <ArrowLeft className="w-4 h-4" />
               </button>
-              <span className="font-display text-sm text-foreground flex-1 min-w-0 truncate">
+              <div className="flex-1 min-w-0">
+                <span className="block text-[10px] font-body uppercase tracking-[0.18em] text-white/40">Zuploader Capture</span>
+                <span className="block text-base font-body font-semibold text-white truncate">
                 {tenantSession ? tenantSession.displayName : "Capture"}
-              </span>
+                </span>
+              </div>
               <div className="flex items-center gap-1.5 flex-shrink-0">
                 {isNative && (
-                  <span className={`inline-flex items-center gap-0.5 text-[10px] font-body px-2 py-0.5 rounded-full border ${cameraConnected ? "border-primary/50 text-primary bg-primary/10" : "border-border text-muted-foreground/60"}`}>
+                  <span className={`native-status-pill ${cameraConnected ? "native-status-pill-ok" : ""}`}>
                     <Usb className="w-2.5 h-2.5" />
                     {cameraConnected ? (cameraName || "Z6III").split(" ")[0] : "No Cam"}
                   </span>
                 )}
-                <span className={`inline-flex items-center gap-0.5 text-[10px] font-body px-2 py-0.5 rounded-full border ${serverOnline ? "border-primary/50 text-primary bg-primary/10" : "border-destructive/50 text-destructive bg-destructive/10"}`}>
+                <span className={`native-status-pill ${serverOnline ? "native-status-pill-ok" : "native-status-pill-warn"}`}>
                   {serverOnline ? <Wifi className="w-2.5 h-2.5" /> : <WifiOff className="w-2.5 h-2.5" />}
                   {serverOnline ? "Online" : networkOnline ? "Server down" : "No network"}
                 </span>
@@ -1214,7 +1915,7 @@ function MobileCaptureInner() {
                 {tenantSession && (
                   <button
                     onClick={() => { setMobileTenantSession(null); navigate("/login", { replace: true }); }}
-                    className="p-1.5 rounded-lg hover:bg-secondary transition-colors text-muted-foreground hover:text-foreground"
+                    className="capture-icon-button"
                     title="Sign out"
                   >
                     <LogOut className="w-3.5 h-3.5" />
@@ -1230,7 +1931,7 @@ function MobileCaptureInner() {
                 value={search}
                 onChange={e => setSearch(e.target.value)}
                 placeholder="Search client, type, date…"
-                className="pl-9 bg-secondary border-border text-foreground placeholder:text-muted-foreground/50 font-body text-sm h-9"
+                className="pl-9 bg-white/[0.06] border-white/10 text-white placeholder:text-white/35 font-body text-sm h-10 rounded-xl"
               />
             </div>
 
@@ -1242,8 +1943,8 @@ function MobileCaptureInner() {
                   onClick={() => setActiveFilter(f.id)}
                   className={`flex-shrink-0 text-xs font-body tracking-wider uppercase px-3.5 py-1.5 rounded-full border transition-all ${
                     activeFilter === f.id
-                      ? "bg-primary/10 text-primary border-primary/30"
-                      : "border-border text-muted-foreground hover:text-foreground hover:bg-secondary"
+                      ? "bg-cyan-400/15 text-cyan-200 border-cyan-300/30"
+                      : "border-white/10 text-white/55 hover:text-white hover:bg-white/[0.06]"
                   }`}
                 >
                   {f.label}
@@ -1323,47 +2024,100 @@ function MobileCaptureInner() {
   // ── CAPTURE VIEW ───────────────────────────────────────────
   // ═══════════════════════════════════════════════════════════
   return (
-    <div className="min-h-screen bg-background p-4" style={{ paddingTop: "calc(env(safe-area-inset-top) + 1rem)" }}>
+    <div className="capture-app-shell capture-session-shell min-h-screen pb-28" style={{ paddingTop: "calc(env(safe-area-inset-top) + 0.75rem)" }}>
       {/* Header */}
-      <div className="flex items-center gap-3 mb-4">
+      <div className="capture-dashboard-header sticky top-0 z-30 px-4 pb-3" style={{ paddingTop: "calc(env(safe-area-inset-top) + 0.75rem)" }}>
+      <div className="flex items-center gap-3">
         <button
           onClick={() => {
             if (sessionUploadedRef.current && notifyClient) sendClientNotification("photos-uploaded", uploadedCount);
             sessionUploadedRef.current = false;
             setSelectedBooking(null); setTargetAlbum(null); setUploadedCount(0);
+            setHeldRawCount(0); setLastHeldRawName("");
             if (watching) { setWatching(false); CameraUsb.stopWatching().catch(() => {}); }
           }}
-          className="p-1.5 rounded-lg hover:bg-secondary transition-colors text-muted-foreground hover:text-foreground"
+          className="capture-icon-button"
         >
           <ArrowLeft className="w-5 h-5" />
         </button>
         <div className="flex-1 min-w-0">
-          <h1 className="font-display text-lg text-foreground truncate">{selectedBooking.clientName}</h1>
-          <p className="text-xs font-body text-muted-foreground truncate">
+          <h1 className="text-lg font-body font-semibold text-white truncate">{selectedBooking.clientName}</h1>
+          <p className="text-xs font-body text-white/50 truncate">
             {selectedBooking.type} · {formatDate(selectedBooking.date)} · {formatTime12(selectedBooking.time)}
           </p>
         </div>
         <div className="flex items-center gap-1.5">
           {isNative && (
-            <span className={`inline-flex items-center gap-1 text-xs font-body px-2 py-1 rounded-full border ${cameraConnected ? "border-primary/50 text-primary bg-primary/10" : "border-border text-muted-foreground"}`}>
+            <span className={`native-status-pill ${cameraConnected ? "native-status-pill-ok" : ""}`}>
               <Usb className="w-3 h-3" />
             </span>
           )}
-          <span className={`inline-flex items-center gap-1 text-xs font-body px-2 py-1 rounded-full border ${serverOnline ? "border-primary/50 text-primary bg-primary/10" : "border-destructive/50 text-destructive"}`}>
+          <span className={`native-status-pill ${serverOnline ? "native-status-pill-ok" : "native-status-pill-warn"}`}>
             {serverOnline ? <Wifi className="w-3 h-3" /> : <WifiOff className="w-3 h-3" />}
           </span>
           <button
             onClick={() => setShowAlbumEdit(true)}
-            className="p-1.5 rounded-lg hover:bg-secondary transition-colors text-muted-foreground hover:text-foreground"
+            className="capture-icon-button"
           >
             <Settings2 className="w-4 h-4" />
           </button>
         </div>
       </div>
 
+      <div className="mt-4 capture-hero-panel">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className={`capture-live-indicator ${captureBusy ? "capture-live-indicator-on" : ""}`}>
+              <Activity className="w-4 h-4" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-[10px] font-body uppercase tracking-[0.18em] text-white/40">Live Intake</p>
+              <p className="text-base font-body font-semibold text-white truncate">{connectionState}</p>
+            </div>
+          </div>
+          <div className="text-right">
+            <p className="text-2xl font-body font-semibold text-white leading-none">{targetAlbum?.photoCount || 0}</p>
+            <p className="text-[10px] font-body uppercase tracking-[0.16em] text-white/40 mt-1">Album</p>
+          </div>
+        </div>
+        <div className={`capture-status-strip capture-status-${captureStatus.tone}`}>
+          <span className="capture-status-dot" />
+          <div className="min-w-0">
+            <p>{captureStatus.label}</p>
+            <small>{captureStatus.detail}</small>
+          </div>
+        </div>
+        <div className="grid grid-cols-3 gap-2 mt-4">
+          <div className="capture-mini-metric"><span>{uploadedCount}</span><small>Added</small></div>
+          <div className="capture-mini-metric"><span>{cullCounts.bestOf}</span><small>Best of</small></div>
+          <div className="capture-mini-metric"><span>{cullCounts.reject + heldRawCount}</span><small>Held</small></div>
+        </div>
+      </div>
+
+      <div className="mt-3 grid grid-cols-3 gap-2">
+        {captureTabs.map(tab => {
+          const Icon = tab.icon;
+          const active = captureTab === tab.id;
+          return (
+            <button
+              key={tab.id}
+              onClick={() => setCaptureTab(tab.id)}
+              className={`capture-top-tab ${active ? "capture-top-tab-active" : ""}`}
+            >
+              <Icon className="w-4 h-4" />
+              <span>{tab.label}</span>
+              {!!tab.count && <em>{tab.count}</em>}
+            </button>
+          );
+        })}
+      </div>
+      </div>
+
+      <div className="px-4 pt-4">
+
       {/* Offline queue banner */}
       {offlineQueue.length > 0 && (
-        <div className="glass-panel rounded-xl p-3 mb-4 border border-amber-500/30 bg-amber-500/5 flex items-center gap-3">
+        <div className={`${captureTab === "publish" ? "" : "hidden"} glass-panel rounded-xl p-3 mb-4 border border-amber-500/30 bg-amber-500/5 flex items-center gap-3`}>
           <AlertTriangle className="w-4 h-4 text-amber-400 flex-shrink-0" />
           <div className="flex-1 min-w-0">
             <p className="text-xs font-body text-amber-300">{offlineQueue.length} file{offlineQueue.length !== 1 ? "s" : ""} queued offline</p>
@@ -1376,7 +2130,7 @@ function MobileCaptureInner() {
 
       {/* Failed imports retry */}
       {failedHandles.length > 0 && (
-        <div className="glass-panel rounded-xl p-3 mb-4 border border-destructive/30 bg-destructive/5 flex items-center gap-3">
+        <div className={`${captureTab === "capture" ? "" : "hidden"} glass-panel rounded-xl p-3 mb-4 border border-destructive/30 bg-destructive/5 flex items-center gap-3`}>
           <AlertTriangle className="w-4 h-4 text-destructive flex-shrink-0" />
           <div className="flex-1 min-w-0">
             <p className="text-xs font-body text-destructive/80">{failedHandles.length} import{failedHandles.length !== 1 ? "s" : ""} failed</p>
@@ -1396,7 +2150,7 @@ function MobileCaptureInner() {
       )}
 
       {/* Stats */}
-      <div className="glass-panel rounded-xl p-4 mb-4">
+      <div className={`${captureTab === "capture" ? "" : "hidden"} capture-session-digest mb-4`}>
         {(() => {
           const clientAlbums = selectedBooking?.clientEmail ? albums.filter(a => a.clientEmail === selectedBooking.clientEmail) : [];
           const totalMins = clientAlbums.reduce((s, a) => {
@@ -1407,11 +2161,11 @@ function MobileCaptureInner() {
           const tM = totalMins % 60;
           const timeLabel = tH > 0 ? (tM > 0 ? `${tH}h ${tM}m` : `${tH}h`) : (totalMins > 0 ? `${totalMins}m` : "—");
           return (
-            <div className="grid grid-cols-4 gap-2 text-center divide-x divide-border/50">
-              <div><p className="text-2xl font-display text-foreground">{targetAlbum?.photoCount || 0}</p><p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mt-0.5">In Album</p></div>
-              <div><p className="text-2xl font-display text-foreground">{uploadedCount}</p><p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mt-0.5">This Session</p></div>
-              <div><p className="text-2xl font-display text-foreground">{clientAlbums.length || 1}</p><p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mt-0.5">All Sessions</p></div>
-              <div><p className="text-xl font-display text-foreground">{timeLabel}</p><p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mt-0.5">Total Time</p></div>
+            <div className="grid grid-cols-4 gap-2 text-center">
+              <div><p>{targetAlbum?.photoCount || 0}</p><small>Album</small></div>
+              <div><p>{uploadedCount}</p><small>Added</small></div>
+              <div><p>{clientAlbums.length || 1}</p><small>Sessions</small></div>
+              <div><p>{timeLabel}</p><small>Total</small></div>
             </div>
           );
         })()}
@@ -1419,7 +2173,7 @@ function MobileCaptureInner() {
 
       {/* Progress / Live capture stats */}
       {(uploading || importing || watching) && (
-        <div className="glass-panel rounded-xl p-4 mb-4">
+        <div className={`${captureTab === "capture" ? "" : "hidden"} glass-panel rounded-xl p-4 mb-4`}>
           <div className="flex items-center gap-2 mb-2">
             {importing || uploading ? (
               <RefreshCw className="w-4 h-4 animate-spin text-primary flex-shrink-0" />
@@ -1480,7 +2234,7 @@ function MobileCaptureInner() {
 
       {/* Upload queue — thumbnail previews for file picker bulk uploads */}
       {uploadQueue.length > 0 && (
-        <div className="glass-panel rounded-xl p-4 mb-4">
+        <div className={`${captureTab === "capture" ? "" : "hidden"} glass-panel rounded-xl p-4 mb-4`}>
           <div className="flex items-center justify-between mb-2">
             <p className="text-xs font-body tracking-wider uppercase text-muted-foreground">
               Upload Queue · {uploadQueue.filter(q => q.status === "done").length}/{uploadQueue.length}
@@ -1522,15 +2276,15 @@ function MobileCaptureInner() {
       )}
 
       {/* Toggles */}
-      <div className="grid grid-cols-2 gap-3 mb-4">
-        <div className="glass-panel rounded-xl p-3 flex items-center justify-between">
+      <div className={`${captureTab === "capture" ? "grid" : "hidden"} grid-cols-2 gap-3 mb-4`}>
+        <div className="capture-control-tile">
           <div className="flex items-center gap-2">
             <Mail className={`w-4 h-4 ${notifyClient ? "text-primary" : "text-muted-foreground"}`} />
             <span className="text-xs font-body text-foreground">Notify</span>
           </div>
           <Switch checked={notifyClient} onCheckedChange={setNotifyClient} disabled={!selectedBooking?.clientEmail || !serverOnline} />
         </div>
-        <div className="glass-panel rounded-xl p-3 flex items-center justify-between">
+        <div className="capture-control-tile">
           <div className="flex items-center gap-2">
             <FileImage className={`w-4 h-4 ${jpegOnly ? "text-primary" : "text-muted-foreground"}`} />
             <span className="text-xs font-body text-foreground">JPEG Only</span>
@@ -1539,9 +2293,51 @@ function MobileCaptureInner() {
         </div>
       </div>
 
-      {/* Camera panel */}
+      {/* Capture transport */}
       {isNative && (
-        <div className="glass-panel rounded-xl p-4 mb-4">
+        <div className={`${captureTab === "capture" ? "" : "hidden"} capture-card p-4 mb-4 space-y-4`}>
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-xs font-body tracking-wider uppercase text-muted-foreground">Intake mode</p>
+              <p className="text-sm font-body text-foreground mt-0.5">Receive, upload, then build Best of and review sets.</p>
+            </div>
+            <button
+              onClick={() => CameraFtp.openHotspotSettings().catch(() => {})}
+              className="inline-flex items-center gap-1.5 text-[10px] font-body tracking-wider uppercase px-2.5 py-1.5 rounded-full border border-border text-muted-foreground hover:text-foreground hover:bg-secondary transition-all"
+            >
+              <Wifi className="w-3 h-3" /> Hotspot
+            </button>
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            {([
+              ["ftp", "Wi-Fi FTP", Wifi],
+              ["usb", "USB", Usb],
+              ["wifi-control", "Pairing", Zap],
+            ] as const).map(([id, label, Icon]) => (
+              <button
+                key={id}
+                onClick={() => setCaptureTransport(id)}
+                disabled={id === "wifi-control"}
+                className={`capture-transport-option ${
+                  captureTransport === id
+                    ? "capture-transport-option-active"
+                    : ""
+                } ${id === "wifi-control" ? "opacity-50" : ""}`}
+              >
+                <Icon className="w-4 h-4 mb-1" />
+                <span className="block text-xs font-body font-medium">{label}</span>
+                <span className="block text-[9px] font-body uppercase tracking-wider opacity-70">
+                  {id === "ftp" ? "Live" : id === "usb" ? "Cable" : "Next"}
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Camera panel */}
+      {isNative && captureTransport === "usb" && (
+        <div className={`${captureTab === "capture" ? "" : "hidden"} glass-panel rounded-xl p-4 mb-4`}>
           {cameraConnected ? (
             <div className="space-y-4">
               <div className="flex items-center justify-between">
@@ -1643,12 +2439,261 @@ function MobileCaptureInner() {
         </div>
       )}
 
+      {isNative && captureTransport === "ftp" && (
+        <div className={`${captureTab === "capture" ? "" : "hidden"} glass-panel rounded-xl p-4 mb-4 space-y-4`}>
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-start gap-3 min-w-0">
+              <Wifi className={`w-5 h-5 mt-0.5 ${ftpStatus?.running ? "text-primary" : "text-muted-foreground/60"}`} />
+              <div className="min-w-0">
+                <p className="text-sm font-body text-foreground">Wi-Fi FTP Receiver</p>
+                <p className="text-xs font-body text-muted-foreground">
+                  {ftpStatus?.running
+                    ? `${ftpStatus.paused ? "Paused" : "Listening"} on ${ftpPrimaryHost}:${ftpStatus.port}`
+                    : "Start this, then set Nikon Connect to FTP Server > Auto Upload ON"}
+                </p>
+              </div>
+            </div>
+            <Switch checked={!!ftpStatus?.running} onCheckedChange={toggleFtpReceiver} />
+          </div>
+
+          <div className="grid grid-cols-2 gap-2 text-xs font-body">
+            <div className="rounded-lg bg-secondary/50 border border-border/50 p-3">
+              <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">Host</p>
+              <p className="text-foreground truncate">{ftpPrimaryHost}</p>
+            </div>
+            <div className="rounded-lg bg-secondary/50 border border-border/50 p-3">
+              <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">Port</p>
+              <Input
+                value={ftpPort}
+                disabled={!!ftpStatus?.running}
+                inputMode="numeric"
+                onChange={e => {
+                  const next = e.target.value.replace(/[^\d]/g, "").slice(0, 5);
+                  setFtpPort(next);
+                  saveFtpSettings({ username: ftpUsername, password: ftpPassword, port: Number(next) || 2121 });
+                }}
+                className="h-8 border-white/10 bg-white/[0.04] px-2 text-sm text-foreground"
+              />
+            </div>
+            <div className="rounded-lg bg-secondary/50 border border-border/50 p-3">
+              <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">User</p>
+              <Input
+                value={ftpUsername}
+                disabled={!!ftpStatus?.running}
+                onChange={e => {
+                  setFtpUsername(e.target.value);
+                  saveFtpSettings({ username: e.target.value, password: ftpPassword, port: Number(ftpPort) || 2121 });
+                }}
+                autoCapitalize="none"
+                autoCorrect="off"
+                className="h-8 border-white/10 bg-white/[0.04] px-2 text-sm text-foreground"
+              />
+            </div>
+            <div className="rounded-lg bg-secondary/50 border border-border/50 p-3">
+              <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">Password</p>
+              <Input
+                value={ftpPassword}
+                disabled={!!ftpStatus?.running}
+                onChange={e => {
+                  setFtpPassword(e.target.value);
+                  saveFtpSettings({ username: ftpUsername, password: e.target.value, port: Number(ftpPort) || 2121 });
+                }}
+                autoCapitalize="none"
+                autoCorrect="off"
+                className="h-8 border-white/10 bg-white/[0.04] px-2 text-sm text-foreground"
+              />
+            </div>
+          </div>
+
+          {ftpStatus?.running && (
+            <p className="text-[10px] font-body text-white/45">
+              Stop the receiver before changing FTP username or password. Nikon must match these exactly.
+            </p>
+          )}
+
+          {ftpCameraClient && (
+            <div className={`rounded-lg border p-3 space-y-1.5 ${ftpCameraClient.lastError ? "border-amber-400/25 bg-amber-400/5" : "border-emerald-300/20 bg-emerald-400/5"}`}>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-[10px] font-body tracking-wider uppercase text-white/55">
+                    {ftpCameraClient.connected ? "Camera connected" : "Last camera seen"}
+                  </p>
+                  <p className="text-sm font-body text-white">{ftpCameraClient.ipAddress}</p>
+                </div>
+                <span className={`rounded-full border px-2 py-1 text-[10px] font-body uppercase tracking-wider ${ftpCameraClient.authState === "logged-in" || ftpCameraClient.authState === "transferring" ? "border-emerald-300/30 text-emerald-100 bg-emerald-400/10" : ftpCameraClient.lastError ? "border-amber-300/30 text-amber-100 bg-amber-400/10" : "border-white/10 text-white/60 bg-white/[0.04]"}`}>
+                  {ftpCameraClient.authState || "connected"}
+                </span>
+              </div>
+              <p className="text-xs font-body text-white/58">
+                {ftpCameraClient.lastError
+                  ? ftpCameraClient.lastError
+                  : ftpCameraClient.filesReceived
+                    ? `${ftpCameraClient.filesReceived} file${ftpCameraClient.filesReceived === 1 ? "" : "s"} received${ftpCameraClient.lastTransferName ? ` · ${ftpCameraClient.lastTransferName}` : ""}`
+                    : "Server reached. If no files arrive, turn Auto Upload ON and shoot/copy a JPEG."}
+              </p>
+            </div>
+          )}
+
+          {heldRawCount > 0 && (
+            <div className="rounded-lg border border-amber-400/25 bg-amber-400/5 p-3 space-y-1.5">
+              <p className="text-[10px] font-body tracking-wider uppercase text-amber-100/80">RAW held locally</p>
+              <p className="text-xs font-body text-white/65">
+                {heldRawCount} RAW/unsupported file{heldRawCount === 1 ? "" : "s"} received but not sent to client proofing. Switch Nikon image quality to JPEG or RAW+JPEG with JPEG auto upload for live galleries.
+              </p>
+              {lastHeldRawName && <p className="text-[10px] font-body text-white/42 truncate">Latest: {lastHeldRawName}</p>}
+            </div>
+          )}
+
+          <div className="rounded-lg border border-cyan-300/20 bg-cyan-400/5 p-3 space-y-3">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-[10px] font-body tracking-wider uppercase text-cyan-100/80">Find camera on Wi-Fi</p>
+                <p className="text-xs font-body text-white/60 mt-1">
+                  The app scans the phone hotspot subnet. If your Nikon appears here, it is on the right network; use this phone server address in the FTP profile.
+                </p>
+              </div>
+              <button
+                onClick={scanForCamera}
+                disabled={cameraScanBusy}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-300/25 bg-cyan-400/10 px-3 py-2 text-[10px] font-body uppercase tracking-wider text-cyan-100 disabled:opacity-50"
+              >
+                <Search className={`w-3 h-3 ${cameraScanBusy ? "animate-pulse" : ""}`} />
+                {cameraScanBusy ? "Scanning" : "Scan"}
+              </button>
+            </div>
+            {cameraScanCandidates.length > 0 && (
+              <div className="space-y-2">
+                <p className="text-[10px] font-body uppercase tracking-wider text-white/45">Is this your camera?</p>
+                {cameraScanCandidates.slice(0, 6).map(candidate => {
+                  const selected = selectedCameraCandidate?.ipAddress === candidate.ipAddress;
+                  return (
+                    <button
+                      key={`${candidate.ipAddress}-${candidate.macAddress || ""}`}
+                      onClick={() => setSelectedCameraCandidate(candidate)}
+                      className={`w-full rounded-lg border px-3 py-2 text-left transition-colors ${selected ? "border-cyan-300/40 bg-cyan-400/12" : "border-white/10 bg-white/[0.04]"}`}
+                    >
+                      <span className="block text-sm font-body text-white">{candidate.ipAddress}</span>
+                      <span className="block text-[10px] font-body text-white/42">
+                        {candidate.macAddress || "network device"}{candidate.interfaceName ? ` · ${candidate.interfaceName}` : ""}
+                      </span>
+                    </button>
+                  );
+                })}
+                {selectedCameraCandidate && (
+                  <p className="text-xs font-body text-cyan-100/70">
+                    Camera selected. On Nikon, keep the FTP server host as {ftpPrimaryHost}; the camera device IP is only used to confirm it joined this hotspot.
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+
+          {ftpAddresses.length > 1 && (
+            <div className="rounded-lg border border-amber-400/20 bg-amber-400/5 p-3 space-y-2">
+              <p className="text-[10px] font-body tracking-wider uppercase text-amber-200/80">Unable to locate server?</p>
+              <p className="text-xs font-body text-white/65">
+                The camera must use the phone IP on the same network. If the camera is joined to this phone hotspot, try the hotspot address first.
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {ftpAddresses.slice(0, 5).map((address) => (
+                  <span key={address} className={`rounded-full border px-2.5 py-1 text-[11px] font-body ${address === ftpPrimaryHost ? "border-cyan-300/35 bg-cyan-400/10 text-cyan-100" : "border-white/10 bg-white/[0.04] text-white/60"}`}>
+                    {address}{address === ftpHotspotAddress ? " hotspot" : ""}{address === ftpPrimaryHost ? " use this" : ""}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="rounded-lg border border-border/50 bg-background/40 p-3 space-y-1.5">
+            <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground">Nikon Z6III / ZR setup</p>
+            <p className="text-xs font-body text-muted-foreground">Network Menu &gt; Connect to FTP Server &gt; Network Settings &gt; Create Profile &gt; Connection Wizard. Choose FTP, enter the host/port/user/password above, set PASV mode ON, then Auto Upload ON.</p>
+            <p className="text-[10px] font-body text-muted-foreground/70">If the phone hotspot is active, use the host shown above. If the camera creates Wi-Fi, join it in Android Wi-Fi settings first.</p>
+          </div>
+
+          <div className="rounded-lg border border-cyan-300/20 bg-cyan-400/5 p-3 space-y-2">
+            <div className="flex items-start gap-2">
+              <AlertCircle className="w-4 h-4 text-cyan-200 mt-0.5 flex-shrink-0" />
+              <div>
+                <p className="text-[10px] font-body tracking-wider uppercase text-cyan-100/80">Camera says “Start Wireless Transmitter Utility”?</p>
+                <p className="text-xs font-body text-white/65 mt-1">
+                  That is Nikon pairing for Connect to Computer. Back out and use Connect to FTP Server for this app. FTP does not need Wireless Transmitter Utility pairing.
+                </p>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                onClick={() => CameraFtp.openHotspotSettings().catch(() => {})}
+                className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-[10px] font-body uppercase tracking-wider text-white/65"
+              >
+                <Wifi className="w-3 h-3" /> Wi-Fi Settings
+              </button>
+              <button
+                onClick={() => setCaptureTransport("wifi-control")}
+                className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-[10px] font-body uppercase tracking-wider text-white/65"
+              >
+                <Zap className="w-3 h-3" /> Pairing Info
+              </button>
+            </div>
+          </div>
+
+          {(ftpStatus?.running || ftpQueueSize > 0) && (
+            <div className="flex items-center justify-between pt-2 border-t border-border/40">
+              <div>
+                <p className="text-xs font-body text-foreground">{ftpQueueSize > 0 ? `${ftpQueueSize} photo${ftpQueueSize !== 1 ? "s" : ""} queued` : "Waiting for camera uploads"}</p>
+                <p className="text-[10px] font-body text-muted-foreground">{culling ? "Updating Best of…" : "Uploads update Best of quietly"}</p>
+              </div>
+              <button
+                onClick={toggleFtpPause}
+                className={`inline-flex items-center gap-1 text-[10px] font-body tracking-wider uppercase px-2.5 py-1.5 rounded-full border transition-all ${
+                  ftpStatus?.paused
+                    ? "border-amber-500/50 text-amber-400 bg-amber-500/10"
+                    : "border-border text-muted-foreground hover:text-foreground hover:bg-secondary"
+                }`}
+              >
+                {ftpStatus?.paused ? <Play className="w-3 h-3" /> : <Pause className="w-3 h-3" />}
+                {ftpStatus?.paused ? "Resume" : "Pause"}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {isNative && captureTransport === "wifi-control" && (
+        <div className={`${captureTab === "capture" ? "" : "hidden"} glass-panel rounded-xl p-4 mb-4 space-y-4`}>
+          <div className="flex items-start gap-3">
+            <Zap className="w-5 h-5 text-white/45 mt-0.5" />
+            <div>
+              <p className="text-sm font-body text-foreground">Nikon pairing mode</p>
+              <p className="text-xs font-body text-muted-foreground">
+                Planned for camera control and Nikon image-transfer pairing. Use Wi-Fi FTP for live client proofing today.
+              </p>
+            </div>
+          </div>
+          <div className="rounded-lg border border-white/10 bg-white/[0.04] p-3 space-y-2">
+            <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground">What the camera message means</p>
+            <p className="text-xs font-body text-muted-foreground">
+              “Start Wireless Transmitter Utility and select camera” appears when the camera is waiting for Nikon’s desktop utility to pair. That is not the FTP receiver path.
+            </p>
+            <p className="text-xs font-body text-muted-foreground">
+              For this APK: Network Menu &gt; Connect to FTP Server &gt; Create Profile &gt; FTP. Then use the app’s FTP host, port 2121, user camera, password camera.
+            </p>
+          </div>
+          <Button
+            className="w-full font-body text-xs tracking-wider uppercase gap-2 h-11"
+            onClick={() => setCaptureTransport("ftp")}
+          >
+            <Wifi className="w-4 h-4" />
+            Use Wi-Fi FTP Receiver
+          </Button>
+        </div>
+      )}
+
       {/* Manual pickers */}
-      <div className="grid grid-cols-2 gap-3 mb-4">
+      <div className={`${captureTab === "capture" ? "grid" : "hidden"} grid-cols-2 gap-3 mb-4`}>
         <button
           onClick={() => fileInputRef.current?.click()}
           disabled={uploading || importing}
-          className="glass-panel rounded-xl p-4 flex flex-col items-center gap-2 hover:bg-secondary/30 transition-colors disabled:opacity-50 active:scale-[0.98]"
+          className="capture-action-tile"
         >
           <ImageIcon className="w-5 h-5 text-muted-foreground" />
           <span className="text-xs font-body tracking-wider uppercase text-muted-foreground">Pick Photos</span>
@@ -1657,7 +2702,7 @@ function MobileCaptureInner() {
         <button
           onClick={() => watchInputRef.current?.click()}
           disabled={uploading || importing}
-          className="glass-panel rounded-xl p-4 flex flex-col items-center gap-2 hover:bg-secondary/30 transition-colors disabled:opacity-50 active:scale-[0.98]"
+          className="capture-action-tile"
         >
           <Camera className="w-5 h-5 text-muted-foreground" />
           <span className="text-xs font-body tracking-wider uppercase text-muted-foreground">Take a Photo</span>
@@ -1665,17 +2710,62 @@ function MobileCaptureInner() {
         </button>
       </div>
 
+      {targetAlbum && targetAlbum.photos.length > 0 && (
+        <div className={`${captureTab === "review" ? "" : "hidden"} capture-review-panel mb-4 space-y-3`}>
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-xs font-body tracking-wider uppercase text-muted-foreground">Best of review</p>
+              <p className="text-xs font-body text-muted-foreground/70">{reviewSummary}</p>
+            </div>
+            <button
+              onClick={() => runAutoCull(targetAlbum.id, targetAlbum)}
+              disabled={culling || !serverOnline}
+              className="inline-flex items-center gap-1.5 text-[10px] font-body tracking-wider uppercase px-2.5 py-1.5 rounded-full border border-border text-muted-foreground hover:text-foreground hover:bg-secondary disabled:opacity-50 transition-all"
+            >
+              <RefreshCw className={`w-3 h-3 ${culling ? "animate-spin" : ""}`} />
+              {culling ? "Reviewing" : "Review again"}
+            </button>
+          </div>
+          <div className="grid grid-cols-4 gap-1.5">
+            {([
+              ["best", "Best of", cullCounts.bestOf],
+              ["review", "Review", cullCounts.review],
+              ["reject", "Rejects", cullCounts.reject],
+              ["all", "All", cullCounts.all],
+            ] as const).map(([id, label, count]) => (
+              <button
+                key={id}
+                onClick={() => setCullFilter(id)}
+                className={`capture-review-filter ${
+                  cullFilter === id
+                    ? "capture-review-filter-active"
+                    : ""
+                }`}
+              >
+                <span>{count}</span>
+                <small>{label}</small>
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center justify-between pt-1">
+            <p className="text-[10px] font-body text-muted-foreground/70">Rejects stay recoverable and off the client view unless enabled.</p>
+            <Switch checked={showRejectsToClient} onCheckedChange={setClientRejectVisibility} />
+          </div>
+        </div>
+      )}
+
       {/* Recent uploads */}
       {targetAlbum && (targetAlbum.photos.length > 0 || localPreviewPhotos.length > 0) && (() => {
-        const allPhotos = sessionPhotosWithPreviews;
+        const allPhotos = applyCullFilter(sessionPhotosWithPreviews);
         const filteredByStars = starFilter ? allPhotos.filter(p => (p as any).starred) : allPhotos;
         const previewPhotos = filteredByStars.slice(0, 12);
         const hasMore = filteredByStars.length > 12;
         const serverPhotoCount = targetAlbum.photos.length;
+        const filterLabel = cullFilter === "best" ? "Best of" : cullFilter === "reject" ? "Rejects" : cullFilter === "review" ? "Review" : "All";
         return (
-          <div className="glass-panel rounded-xl p-4">
+          <div className={`${captureTab === "review" ? "" : "hidden"} glass-panel rounded-xl p-4`}>
             <div className="flex items-center justify-between mb-3">
-              <p className="text-xs font-body tracking-wider uppercase text-muted-foreground">Recent Uploads</p>
+              <p className="text-xs font-body tracking-wider uppercase text-muted-foreground">Review Tray</p>
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => setStarFilter(v => !v)}
@@ -1683,7 +2773,7 @@ function MobileCaptureInner() {
                 >
                   <Star className={`w-2.5 h-2.5 ${starFilter ? "fill-yellow-400" : ""}`} /> Starred
                 </button>
-                <p className="text-xs font-body text-muted-foreground/60">{serverPhotoCount} total</p>
+                <p className="text-xs font-body text-muted-foreground/60">{filteredByStars.length} {filterLabel}</p>
                 {hasMore && (
                   <button
                     onClick={() => setViewAllMode(true)}
@@ -1733,9 +2823,47 @@ function MobileCaptureInner() {
         );
       })()}
 
+      {captureTab === "review" && targetAlbum && targetAlbum.photos.length === 0 && localPreviewPhotos.length === 0 && (
+        <div className="capture-empty-state">
+          <FolderOpen className="w-8 h-8 text-white/35" />
+          <p className="text-sm font-body font-medium text-white">No photos in review yet</p>
+          <p className="text-xs font-body text-white/45">Start the Wi-Fi receiver or import photos to fill Best of and review.</p>
+          <button onClick={() => setCaptureTab("capture")} className="capture-primary-action mt-2">
+            <RadioTower className="w-4 h-4" />
+            Go to Capture
+          </button>
+        </div>
+      )}
+
+      {captureTab === "publish" && targetAlbum && (
+        <div className="glass-panel rounded-xl p-4 mb-4 space-y-3">
+          <div className="flex items-start gap-3">
+            <ShieldCheck className="w-5 h-5 text-cyan-200 mt-0.5" />
+            <div className="min-w-0">
+              <p className="text-sm font-body font-semibold text-white">Client visibility</p>
+              <p className="text-xs font-body text-white/50">
+                Clients see Best of and review photos by default. Rejects stay uploaded and recoverable.
+              </p>
+            </div>
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            <div className="capture-mini-metric"><span>{cullCounts.bestOf}</span><small>Best of</small></div>
+            <div className="capture-mini-metric"><span>{cullCounts.review}</span><small>Review</small></div>
+            <div className="capture-mini-metric"><span>{showRejectsToClient ? cullCounts.reject : 0}</span><small>Rejects shown</small></div>
+          </div>
+          <div className="flex items-center justify-between rounded-xl border border-white/10 bg-white/[0.04] p-3">
+            <div>
+              <p className="text-xs font-body text-white">Show rejects to client</p>
+              <p className="text-[10px] font-body text-white/40">Use only when the client needs the full capture set.</p>
+            </div>
+            <Switch checked={showRejectsToClient} onCheckedChange={setClientRejectVisibility} />
+          </div>
+        </div>
+      )}
+
       {/* View All Gallery */}
       {viewAllMode && targetAlbum && (() => {
-        const allPhotos = sessionPhotosWithPreviews;
+        const allPhotos = applyCullFilter(sessionPhotosWithPreviews);
         const displayPhotos = viewAllStarFilter ? allPhotos.filter(p => (p as any).starred) : allPhotos;
         const starredCount = allPhotos.filter(p => (p as any).starred).length;
         const serverPhotoCount = targetAlbum.photos.length;
@@ -1813,9 +2941,10 @@ function MobileCaptureInner() {
 
       {/* Lightbox with prev/next arrows, touch swipe, pinch & double-tap zoom */}
       {lightboxIndex !== null && targetAlbum && (() => {
+        const reviewPhotos = applyCullFilter(sessionPhotosWithPreviews);
         const allPhotos = viewAllMode
-          ? (viewAllStarFilter ? sessionPhotosWithPreviews.filter(p => (p as any).starred) : sessionPhotosWithPreviews)
-          : sessionPhotosWithPreviews;
+          ? (viewAllStarFilter ? reviewPhotos.filter(p => (p as any).starred) : reviewPhotos)
+          : (starFilter ? reviewPhotos.filter(p => (p as any).starred) : reviewPhotos);
         const photo = allPhotos[lightboxIndex];
         if (!photo) return null;
         const hasPrev = lightboxIndex > 0;
@@ -1948,7 +3077,7 @@ function MobileCaptureInner() {
 
       {/* Send for Proofing */}
       {getSettings().proofingEnabled && targetAlbum && targetAlbum.photos.length > 0 && (
-        <div className="mt-4">
+        <div className={`${captureTab === "publish" ? "" : "hidden"} mt-4`}>
           {(!targetAlbum.proofingStage || targetAlbum.proofingStage === "not-started") ? (
             <button
               onClick={handleSendForProofing}
@@ -1983,7 +3112,7 @@ function MobileCaptureInner() {
 
       {/* Mark Complete */}
       {selectedBooking && selectedBooking.status !== "completed" && (
-        <div className="mt-4">
+        <div className={`${captureTab === "publish" ? "" : "hidden"} mt-4`}>
           <button
             onClick={async () => {
               if (tenantSession) {
@@ -2007,6 +3136,21 @@ function MobileCaptureInner() {
         </div>
       )}
 
+      </div>
+
+      <div className="capture-bottom-bar">
+        {captureTabs.map(tab => {
+          const Icon = tab.icon;
+          const active = captureTab === tab.id;
+          return (
+            <button key={tab.id} onClick={() => setCaptureTab(tab.id)} className={`capture-bottom-tab ${active ? "capture-bottom-tab-active" : ""}`}>
+              <Icon className="w-5 h-5" />
+              <span>{tab.label}</span>
+            </button>
+          );
+        })}
+      </div>
+
       <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden" onChange={(e) => handleFilePick(e.target.files)} />
       <input ref={watchInputRef} type="file" accept="image/*" capture="environment" multiple className="hidden" onChange={(e) => { handleFilePick(e.target.files); if (e.target) e.target.value = ""; }} />
 
@@ -2018,6 +3162,7 @@ function MobileCaptureInner() {
           onSave={(updated) => {
             saveAlbum(updated);
             setTargetAlbum(updated);
+            targetAlbumRef.current = updated;
             setAlbums(prev => prev.map(a => a.id === updated.id ? updated : a));
             setShowAlbumEdit(false);
             toast.success("Album updated");

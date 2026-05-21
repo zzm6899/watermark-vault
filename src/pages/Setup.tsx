@@ -115,7 +115,7 @@ export default function Setup({ onComplete }: { onComplete: () => void }) {
     }
     try {
       const hash = await hashPassword(password);
-      setAdminCredentials({ username: username.trim(), passwordHash: hash });
+      setAdminCredentials({ username: username.trim().toLowerCase(), passwordHash: hash });
       setStep("profile");
     } catch (err) {
       console.error("Setup hash error:", err);

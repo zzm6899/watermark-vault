@@ -6,6 +6,8 @@
 
 let serverAvailable: boolean | null = null;
 
+export const NATIVE_API_ORIGIN = "https://book.zacmclients.photos";
+
 /**
  * Returns Authorization header for admin-protected endpoints.
  * Reads stored credentials synchronously so it can be used inline.
@@ -27,7 +29,7 @@ function adminAuthHeaders(): Record<string, string> {
     // the server's verifyPasswordHash() expects as the "incoming" value.
     // Falls back to creds.passwordHash only if the hash was never stored (pre-fix sessions).
     const sessionHash = localStorage.getItem("wv_admin_session_hash");
-    const passwordHash = sessionHash || creds.passwordHash;
+    const passwordHash = sessionHash || (creds.passwordHash?.startsWith("$2") ? "" : creds.passwordHash);
     if (!passwordHash) return {};
 
     return { Authorization: "Basic " + btoa(`${creds.username}:${passwordHash}`) };
@@ -296,6 +298,49 @@ export type UploadedPhotoResult = {
   height?: number;
   /** EXIF DateTimeOriginal as ISO-8601 string, when available. */
   takenAt?: string | null;
+  cull?: import("./types").PhotoCull;
+  cullMetadata?: import("./types").PhotoCullMetadata;
+  blurScore?: number;
+  duplicateGroupId?: string;
+  duplicateRank?: number;
+};
+
+export type AutoCullPhotoResult = {
+  id: string;
+  src: string;
+  status: import("./types").CullStatus;
+  score: number;
+  reasons: string[];
+  blurScore: number;
+  duplicateGroupId: string | null;
+  duplicateRank: number | null;
+  cull: import("./types").PhotoCull;
+  cullMetadata?: import("./types").PhotoCullMetadata;
+};
+
+export type AutoCullAlbumResult = {
+  ok: boolean;
+  album?: import("./types").Album;
+  albumId?: string;
+  tenant?: string | null;
+  analysedAt?: string;
+  engine?: string;
+  labels?: Record<string, string>;
+  total?: number;
+  analysed?: number;
+  kept?: number;
+  heldBack?: number;
+  culled?: number;
+  counts?: Record<string, number>;
+  duplicateGroups?: Array<{
+    id: string;
+    size: number;
+    keepPhotoId?: string | null;
+    photoIds?: string[];
+  }>;
+  errors?: Array<{ index: number; photoId?: string | null; filename?: string; error: string }>;
+  photos?: AutoCullPhotoResult[];
+  error?: string;
 };
 
 const SUPPORTED_UPLOAD_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif", ".tif", ".tiff", ".heic", ".heif"]);
@@ -395,6 +440,22 @@ export function deletePhotoFromServer(url: string): void {
   const filename = url.split("?")[0].split("/").pop();
   if (!filename) return;
   fetch(`/api/upload/${encodeURIComponent(filename)}`, { method: "DELETE" }).catch(() => {});
+}
+
+export async function autoCullAlbum(
+  albumId: string,
+  tenantSlug?: string,
+): Promise<AutoCullAlbumResult> {
+  try {
+    const url = tenantSlug
+      ? `/api/albums/${encodeURIComponent(albumId)}/auto-cull?tenant=${encodeURIComponent(tenantSlug)}`
+      : `/api/albums/${encodeURIComponent(albumId)}/auto-cull`;
+    const res = await fetch(url, { method: "POST", headers: adminAuthHeaders() });
+    if (!res.ok) return { ok: false, error: `Auto cull failed (${res.status})` };
+    return res.json();
+  } catch (err: any) {
+    return { ok: false, error: err?.message || "Auto cull failed" };
+  }
 }
 
 /** Auto-enhance multipliers (legacy / "AI Enhance" button) */
@@ -1510,9 +1571,9 @@ export async function tenantLogin(slug: string, passwordHash: string): Promise<{
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ passwordHash }),
     });
-    const json = await res.json();
-    return { ok: !!json.ok, tenant: json.tenant, error: json.error };
-  } catch { return { ok: false, error: "Network error" }; }
+    const json = await res.json().catch(() => ({}));
+    return { ok: !!res.ok && !!json.ok, tenant: json.tenant, error: json.error || (res.ok ? undefined : `Login failed (${res.status})`) };
+  } catch (err: any) { return { ok: false, error: err?.message || "Network error" }; }
 }
 
 /** Fetch bookings + albums for a tenant (mobile app use). */
