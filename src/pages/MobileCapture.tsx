@@ -178,13 +178,13 @@ function normalizeCullCounts(counts: CullCountSummary) {
     pick,
     review,
     reject,
-    bestOf: pick + review,
+    bestOf: pick,
   };
 }
 
 function formatCullSummary(counts: CullCountSummary): string {
   const normalized = normalizeCullCounts(counts);
-  return `${normalized.bestOf} Best of · ${normalized.review} review · ${normalized.reject} reject${normalized.reject === 1 ? "" : "s"}`;
+  return `${normalized.bestOf} Best of · ${normalized.review} needs review · ${normalized.reject} reject${normalized.reject === 1 ? "" : "s"}`;
 }
 
 type CaptureUploadResult = UploadedPhotoResult & {
@@ -234,7 +234,7 @@ function matchUploadResultsToFiles(files: File[], results: UploadedPhotoResult[]
 
 function isBestOfCull(photo: Photo): boolean {
   const status = photo.cull?.status;
-  return !status || status === "pick" || status === "review" || status === "unscored";
+  return status === "pick";
 }
 
 function buildMobileCullFallback(album: Album): { album: Album; counts: Record<string, number> } {

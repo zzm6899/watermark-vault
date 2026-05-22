@@ -761,6 +761,74 @@ function _groupCullDuplicates(results, maxDistance) {
   return groups.filter(group => group.items.length > 1);
 }
 
+function _filenameBurstKey(value) {
+  const stem = path.basename(String(value || ""), path.extname(String(value || ""))).toLowerCase();
+  const match = stem.match(/^(.*?)(\d{3,})$/);
+  if (!match) return null;
+  const prefix = match[1].replace(/[-_\s.]+$/, "");
+  const number = Number(match[2]);
+  if (!Number.isFinite(number)) return null;
+  return { prefix, number };
+}
+
+function _photoTimeMs(photo) {
+  const raw = photo?.takenAt || photo?.capturedAt || null;
+  if (!raw) return null;
+  const ms = new Date(raw).getTime();
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function _sameBurstSequence(a, b, photos, options) {
+  const aPhoto = photos[a.index] || {};
+  const bPhoto = photos[b.index] || {};
+  const aName = aPhoto.originalName || aPhoto.title || a.filename;
+  const bName = bPhoto.originalName || bPhoto.title || b.filename;
+  const aKey = _filenameBurstKey(aName);
+  const bKey = _filenameBurstKey(bName);
+  const sameOrientation = !!aPhoto.width && !!aPhoto.height && !!bPhoto.width && !!bPhoto.height
+    ? (aPhoto.width >= aPhoto.height) === (bPhoto.width >= bPhoto.height)
+    : true;
+  if (!sameOrientation) return false;
+
+  const timeGapMs = (() => {
+    const aTime = _photoTimeMs(aPhoto);
+    const bTime = _photoTimeMs(bPhoto);
+    return aTime != null && bTime != null ? Math.abs(bTime - aTime) : null;
+  })();
+  if (timeGapMs != null && timeGapMs <= options.maxTimeGapMs) return true;
+
+  if (!aKey || !bKey || aKey.prefix !== bKey.prefix) return false;
+  const numberGap = Math.abs(bKey.number - aKey.number);
+  if (numberGap <= options.maxNumberGap) return true;
+  // Phone/camera filenames are sometimes millisecond timestamps with no prefix.
+  return !aKey.prefix && !bKey.prefix && numberGap <= options.maxTimestampGap;
+}
+
+function _groupCullBursts(results, photos, options = {}) {
+  const opts = {
+    maxTimeGapMs: Number.isFinite(Number(options.maxTimeGapMs)) ? Number(options.maxTimeGapMs) : 2500,
+    maxNumberGap: Number.isFinite(Number(options.maxNumberGap)) ? Number(options.maxNumberGap) : 2,
+    maxTimestampGap: Number.isFinite(Number(options.maxTimestampGap)) ? Number(options.maxTimestampGap) : 4000,
+    maxGroupSize: Number.isFinite(Number(options.maxGroupSize)) ? Math.max(2, Number(options.maxGroupSize)) : 12,
+  };
+  const ordered = results.slice().sort((a, b) => a.index - b.index);
+  const groups = [];
+  let current = [];
+
+  for (const item of ordered) {
+    const previous = current[current.length - 1];
+    const continues = previous && current.length < opts.maxGroupSize && _sameBurstSequence(previous, item, photos, opts);
+    if (!continues) {
+      if (current.length > 1) groups.push({ id: `burst-${groups.length + 1}`, type: "burst", items: current });
+      current = [item];
+    } else {
+      current.push(item);
+    }
+  }
+  if (current.length > 1) groups.push({ id: `burst-${groups.length + 1}`, type: "burst", items: current });
+  return groups;
+}
+
 function _photoCullPath(photo, index) {
   return String(photo?.id || photo?.src || photo?.originalName || index);
 }
@@ -969,6 +1037,10 @@ app.post("/api/albums/:id/auto-cull", async (req, res) => {
   const duplicateDistance = Number.isFinite(requestedDuplicateDistance)
     ? Math.max(0, Math.min(16, requestedDuplicateDistance))
     : 6;
+  const requestedBurstGroupSize = Number(req.body?.burstGroupSize ?? 12);
+  const burstGroupSize = Number.isFinite(requestedBurstGroupSize)
+    ? Math.max(2, Math.min(24, requestedBurstGroupSize))
+    : 12;
   const minScore = _clamp01(Number(req.body?.minScore ?? 0.42));
   const requestedBestPickRatio = Number(req.body?.bestPickRatio ?? 0.25);
   const bestPickRatio = Number.isFinite(requestedBestPickRatio)
@@ -1018,9 +1090,16 @@ app.post("/api/albums/:id/auto-cull", async (req, res) => {
     .filter(result => !result.ok)
     .map(result => [result.index, result]));
   const duplicateGroups = _groupCullDuplicates(successful, duplicateDistance);
+  const duplicateGroupedIndexes = new Set(duplicateGroups.flatMap(group => group.items.map(item => item.index)));
+  const burstGroups = _groupCullBursts(
+    successful.filter(result => !duplicateGroupedIndexes.has(result.index)),
+    photos,
+    { maxGroupSize: burstGroupSize },
+  );
+  const visualGroups = [...duplicateGroups, ...burstGroups];
   const byIndex = new Map(successful.map(result => [result.index, result]));
 
-  for (const group of duplicateGroups) {
+  for (const group of visualGroups) {
     group.items.sort((a, b) => {
       const aScore = bestShotScore(_mediaFileFromCullResult(photos[a.index], a, group.items.length));
       const bScore = bestShotScore(_mediaFileFromCullResult(photos[b.index], b, group.items.length));
@@ -1042,7 +1121,7 @@ app.post("/api/albums/:id/auto-cull", async (req, res) => {
   ));
   const mediaByPath = new Map(allMediaFiles.map(file => [file.path, file]));
 
-  for (const group of duplicateGroups) {
+  for (const group of visualGroups) {
     const groupMedia = group.items
       .map(item => mediaByPath.get(_photoCullPath(photos[item.index], item.index)))
       .filter(Boolean);
@@ -1200,8 +1279,9 @@ app.post("/api/albums/:id/auto-cull", async (req, res) => {
   const errors = analysed
     .filter(result => !result.ok)
     .map(result => ({ index: result.index, photoId: result.photoId, filename: result.filename, error: result.error }));
-  const responseGroups = duplicateGroups.map(group => ({
+  const responseGroups = visualGroups.map(group => ({
     id: group.id,
+    type: group.type || "duplicate",
     size: group.items.length,
     keepPhotoId: group.items[0]?.photoId || photos[group.items[0]?.index]?.id || null,
     photoIds: group.items.map(item => item.photoId || photos[item.index]?.id || null).filter(Boolean),
@@ -1218,6 +1298,7 @@ app.post("/api/albums/:id/auto-cull", async (req, res) => {
       labels: cullLabels,
       minScore,
       duplicateDistance,
+      burstGroupSize,
       bestPickRatio,
       total: photos.length,
       analysed: successful.length,
@@ -1228,6 +1309,7 @@ app.post("/api/albums/:id/auto-cull", async (req, res) => {
       rankedPaths: bestRank.map(file => file.path),
       errorCount: errors.length,
       duplicateGroupCount: responseGroups.length,
+      burstGroupCount: responseGroups.filter(group => group.type === "burst").length,
     },
   };
 
