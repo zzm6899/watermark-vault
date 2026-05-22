@@ -5,6 +5,7 @@ const require = createRequire(import.meta.url);
 const {
   buildAutomationPreview,
   getAutomationDecision,
+  getStarterAutomationRules,
   normalizeAutomationRule,
   renderAutomationSubject,
 } = require("../../server/email-automation-core.js");
@@ -106,5 +107,19 @@ describe("email automation core", () => {
   it("renders default payment and booking subjects", () => {
     expect(renderAutomationSubject({ reminderType: "payment" }, baseBooking)).toBe("Payment Reminder — Portrait");
     expect(renderAutomationSubject({ reminderType: "booking" }, baseBooking)).toBe("Upcoming Portrait Reminder");
+  });
+
+  it("provides disabled starter automation drafts", () => {
+    const starters = getStarterAutomationRules();
+    expect(starters).toHaveLength(3);
+    expect(starters.every((rule: any) => rule.enabled === false)).toBe(true);
+    expect(starters.map((rule: any) => rule.id)).toEqual([
+      "starter-before-event-24h",
+      "starter-payment-overdue-48h",
+      "starter-after-event-24h",
+    ]);
+
+    starters[0].enabled = true;
+    expect(getStarterAutomationRules()[0].enabled).toBe(false);
   });
 });
