@@ -1634,6 +1634,7 @@ function ShootDayCommandCenterView() {
 
 // ─── Dashboard ───────────────────────────────────────
 function DashboardView() {
+  const navigate = useNavigate();
   const bookings = getBookings();
   const albums = getAlbums();
   const settings = getSettings();
@@ -1734,6 +1735,40 @@ function DashboardView() {
       const bLatest = Math.max(...(b.photos || []).map(photo => new Date(photo.uploadedAt || photo.takenAt || 0).getTime()), 0);
       return bLatest - aLatest;
     })[0];
+  const captureFeatureTiles = [
+    {
+      label: "Live capture",
+      detail: "Phone FTP intake, camera queue, Best of review, and proofing send-off.",
+      icon: Wifi,
+      action: "Open",
+      onClick: () => navigate("/capture"),
+      tone: "text-cyan-300",
+    },
+    {
+      label: "Shoot day",
+      detail: "Run sheet, readiness warnings, album links, status updates, and CSV export.",
+      icon: RadioTower,
+      action: "Manage",
+      onClick: () => navigate("/admin/shoot-day"),
+      tone: "text-primary",
+    },
+    {
+      label: "Automations",
+      detail: "Default reminder rules for upcoming shoots, overdue payments, and follow-ups.",
+      icon: Bell,
+      action: "Rules",
+      onClick: () => navigate("/admin/automations"),
+      tone: "text-amber-300",
+    },
+    {
+      label: "Cleanup",
+      detail: "Find stale upload records, unsupported files, cache state, and backups.",
+      icon: HardDrive,
+      action: "Storage",
+      onClick: () => navigate("/admin/storage"),
+      tone: "text-emerald-300",
+    },
+  ];
 
   // ── Booking Calendar ────────────────────────────────────────
   const [calView, setCalView] = useState<"month" | "week">("month");
@@ -1889,11 +1924,11 @@ function DashboardView() {
                 </span>
                 <div>
                   <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground">Wireless Capture</p>
-                  <h3 className="font-display text-2xl leading-none text-foreground">Capture command center</h3>
+                  <h3 className="font-display text-2xl leading-none text-foreground">New capture suite</h3>
                 </div>
               </div>
               <p className="text-xs font-body text-muted-foreground max-w-2xl">
-                Camera uploads land in the selected album, build a client-ready Best of set, and keep review and reject frames recoverable for the photographer.
+                Live FTP intake, shoot-day operations, server automations, and upload cleanup are now linked from here. Rejects are hidden from clients by default but stay recoverable for the photographer.
               </p>
               {latestCaptureTime && (
                 <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground/70 mt-2">
@@ -1905,17 +1940,37 @@ function DashboardView() {
               <Upload className="w-4 h-4" /> Open Capture
             </Button>
           </div>
-          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 mt-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-2 mt-4">
+            {captureFeatureTiles.map(tile => (
+              <button
+                key={tile.label}
+                type="button"
+                onClick={tile.onClick}
+                className="group rounded-lg bg-white/[0.045] border border-white/10 p-3 text-left transition-all hover:border-primary/35 hover:bg-primary/[0.06]"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-white/[0.055] ring-1 ring-white/10">
+                    <tile.icon className={`w-4 h-4 ${tile.tone}`} />
+                  </span>
+                  <span className="text-[10px] font-body tracking-wider uppercase text-primary opacity-0 transition-opacity group-hover:opacity-100">{tile.action}</span>
+                </div>
+                <p className="mt-3 text-sm font-body font-medium text-foreground">{tile.label}</p>
+                <p className="mt-1 text-[11px] font-body leading-relaxed text-muted-foreground">{tile.detail}</p>
+              </button>
+            ))}
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 mt-3">
             {[
-              { label: "Today", value: capturedToday, tone: "text-primary" },
-              { label: "Client ready", value: clientReadyCount, tone: "text-cyan-300" },
-              { label: "Picks", value: bestOfCount, tone: "text-green-400" },
-              { label: "Review", value: reviewCount, tone: "text-yellow-400" },
-              { label: "Rejects", value: rejectCount, tone: "text-red-400" },
+              { label: "Today", value: capturedToday, sub: "Captured today", tone: "text-primary" },
+              { label: "Client ready", value: clientReadyCount, sub: "Visible by default", tone: "text-cyan-300" },
+              { label: "Best of", value: bestOfCount, sub: "Picks / starred", tone: "text-green-400" },
+              { label: "Needs review", value: reviewCount, sub: "Unscored or hold", tone: "text-yellow-400" },
+              { label: "Hidden rejects", value: rejectCount, sub: "Recoverable only", tone: "text-red-400" },
             ].map(item => (
               <div key={item.label} className="rounded-lg bg-white/[0.045] border border-white/10 p-3">
                 <p className={`font-sans text-xl font-semibold ${item.tone}`}>{item.value}</p>
                 <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground">{item.label}</p>
+                <p className="mt-1 text-[10px] font-body text-muted-foreground/60 leading-tight">{item.sub}</p>
               </div>
             ))}
           </div>
