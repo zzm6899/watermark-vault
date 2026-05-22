@@ -665,6 +665,7 @@ export default function AlbumDetail() {
   // and be in the active "proofing" stage. Having a valid client token does NOT enable
   // interactive proofing on its own — it only grants gallery access.
   const isProofing = proofingStage === "proofing" && !!album.proofingEnabled && !isProofingWindowExpired;
+  const showProofingGalleryControls = isProofing;
   // lockDownloadsDuringProofing: block all downloads while any proofing stage is active (except
   // not-started and finals-delivered). Unlocks automatically once finals are delivered or proofing is reset.
   const isDownloadLockedForProofing = !!(album.lockDownloadsDuringProofing &&
@@ -682,25 +683,27 @@ export default function AlbumDetail() {
     !p.hidden && (album.showCullRejectsToClient || p.cull?.status !== "reject")
   );
   const bestOfPhotos = visiblePhotos.filter((p: any) =>
-    p.starred || !p.cull?.status || p.cull?.status === "pick" || p.cull?.status === "review" || p.cull?.status === "unscored"
+    p.starred || p.cull?.status === "pick"
   );
   const pickCount = visiblePhotos.filter((p: any) => p.starred || p.cull?.status === "pick").length;
   const reviewCount = visiblePhotos.filter((p: any) => !p.cull?.status || p.cull?.status === "review" || p.cull?.status === "unscored").length;
   const visibleRejectCount = visiblePhotos.filter((p: any) => p.cull?.status === "reject").length;
-  const clientFilteredPhotos = clientCullFilter === "best" ? bestOfPhotos : visiblePhotos;
+  const clientFilteredPhotos = showProofingGalleryControls && clientCullFilter === "best" ? bestOfPhotos : visiblePhotos;
   const hasStarred = visiblePhotos.some((p: any) => p.starred);
   const cullSortRank = (p: any) => p.starred || p.cull?.status === "pick"
     ? 0
     : !p.cull?.status || p.cull?.status === "review" || p.cull?.status === "unscored"
       ? 1
       : 2;
-  const _dpBase = showStarredOnly ? clientFilteredPhotos.filter((p: any) => p.starred) : clientFilteredPhotos;
+  const _dpBase = showProofingGalleryControls && showStarredOnly ? clientFilteredPhotos.filter((p: any) => p.starred) : clientFilteredPhotos;
   const displayedPhotos = [..._dpBase].sort((a: any, b: any) => {
     const _dA = new Date((a as any).takenAt || (a as any).uploadedAt || 0).getTime();
     const _dB = new Date((b as any).takenAt || (b as any).uploadedAt || 0).getTime();
     const _tCmp = a.title.localeCompare(b.title, undefined, { numeric: true });
     const _bestCmp = cullSortRank(a) - cullSortRank(b);
-    if (sortOrder === "default") return _bestCmp || (_dB - _dA) || _tCmp;
+    if (sortOrder === "default") {
+      return showProofingGalleryControls ? (_bestCmp || (_dB - _dA) || _tCmp) : ((_dB - _dA) || _tCmp);
+    }
     const _timeCmp = _dA !== _dB ? _dA - _dB : _tCmp;
     return sortOrder === "asc" ? _timeCmp : -_timeCmp;
   });
@@ -1366,7 +1369,7 @@ export default function AlbumDetail() {
               </div>
             )}
 
-          {visiblePhotos.length > 0 && (
+          {showProofingGalleryControls && visiblePhotos.length > 0 && (
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
               <div className="glass-panel rounded-lg p-3 border border-primary/15 bg-primary/5">
                 <Sparkles className="w-4 h-4 text-primary mb-2" />
@@ -1394,7 +1397,7 @@ export default function AlbumDetail() {
           {/* ── Filter / Sort toolbar ──────────────────────────────── */}
           {visiblePhotos.length > 0 && (
             <div className="flex items-center gap-2 flex-wrap mb-2">
-              {bestOfPhotos.length > 0 && (
+              {showProofingGalleryControls && bestOfPhotos.length > 0 && (
                 <button
                   onClick={() => setClientCullFilter(v => v === "best" ? "all" : "best")}
                   className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-body border transition-all ${
@@ -1408,7 +1411,7 @@ export default function AlbumDetail() {
                 </button>
               )}
               {/* Starred filter — only shown when at least one photo is starred */}
-              {hasStarred && (
+              {showProofingGalleryControls && hasStarred && (
                 <button
                   onClick={() => setShowStarredOnly(v => !v)}
                   className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-body border transition-all ${
@@ -1422,18 +1425,20 @@ export default function AlbumDetail() {
                 </button>
               )}
               {/* Sort by time */}
-              <button
-                onClick={() => setSortOrder(s => s === "default" ? "desc" : s === "desc" ? "asc" : "default")}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-body border transition-all ${
-                  sortOrder !== "default"
-                    ? "bg-primary/10 border-primary/30 text-primary"
-                    : "bg-secondary/50 border-border/50 text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                <ArrowUpDown className="w-3 h-3" />
-                {sortOrder === "default" ? "Best first" : sortOrder === "desc" ? "Newest first" : "Oldest first"}
-              </button>
-              {(showStarredOnly || clientCullFilter !== "best" || sortOrder !== "default") && (
+              {showProofingGalleryControls && (
+                <button
+                  onClick={() => setSortOrder(s => s === "default" ? "desc" : s === "desc" ? "asc" : "default")}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-body border transition-all ${
+                    sortOrder !== "default"
+                      ? "bg-primary/10 border-primary/30 text-primary"
+                      : "bg-secondary/50 border-border/50 text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  <ArrowUpDown className="w-3 h-3" />
+                  {sortOrder === "default" ? "Best first" : sortOrder === "desc" ? "Newest first" : "Oldest first"}
+                </button>
+              )}
+              {showProofingGalleryControls && (showStarredOnly || clientCullFilter !== "best" || sortOrder !== "default") && (
                 <button
                   onClick={() => { setShowStarredOnly(false); setClientCullFilter("best"); setSortOrder("default"); }}
                   className="flex items-center gap-1 px-2 py-1.5 rounded-full text-xs font-body text-muted-foreground/60 hover:text-muted-foreground transition-colors"
