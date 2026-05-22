@@ -33,15 +33,17 @@ export default function Header({ tenantSlug, tenantName }: { tenantSlug?: string
   ];
 
   return (
-    <header className="fixed top-0 left-0 right-0 z-50 glass-panel">
+    <header className="fixed top-0 left-0 right-0 z-50 border-b border-white/10 bg-background/72 backdrop-blur-2xl">
       <div className="container mx-auto flex items-center justify-between h-16 px-4">
         <Link to={bookingPath} onClick={handleLogoClick} className="flex items-center gap-2.5 group">
           {!tenantSlug && profile.avatar ? (
-            <img src={profile.avatar} alt="Logo" className="w-6 h-6 rounded-full object-cover" />
+            <img src={profile.avatar} alt="Logo" className="w-8 h-8 rounded-xl object-cover ring-1 ring-white/10" />
           ) : (
-            <Camera className="w-5 h-5 text-primary transition-transform group-hover:rotate-12" />
+            <span className="flex size-8 items-center justify-center rounded-xl bg-primary/15 text-primary ring-1 ring-primary/25">
+              <Camera className="w-4 h-4 transition-transform group-hover:rotate-12" />
+            </span>
           )}
-          <span className="font-display text-lg tracking-wide text-foreground">
+          <span className="font-display text-xl leading-none text-foreground">
             {displayName}
           </span>
         </Link>

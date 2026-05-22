@@ -666,29 +666,29 @@ export default function Booking() {
   };
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen app-shell">
       <section className="min-h-screen" style={{ paddingTop: "calc(env(safe-area-inset-top) + 2rem)", paddingBottom: "calc(env(safe-area-inset-bottom) + 6rem)" }}>
-        <div className="container mx-auto px-4">
+        <div className="mx-auto w-full max-w-5xl px-4 sm:px-6 lg:px-8">
           <BookingSteps currentStep={step} />
           <AnimatePresence mode="wait">
 
             {/* ─── Step 1: Event List ─── */}
             {step === "event-select" && (
-              <motion.div key="event-select" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} className="max-w-2xl mx-auto">
+              <motion.div key="event-select" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} className="mx-auto w-full max-w-3xl">
                 {/* Profile Card */}
-                <div className="glass-panel rounded-xl p-6 mb-6">
-                  <div className="flex items-start gap-4">
-                    <div className="w-16 h-16 rounded-xl bg-primary/15 flex items-center justify-center overflow-hidden shrink-0 ring-1 ring-primary/20">
+                <div className="glass-panel rounded-2xl p-6 sm:p-8 mb-5">
+                  <div className="flex flex-col sm:flex-row sm:items-center gap-5">
+                    <div className="w-20 h-20 rounded-2xl bg-primary/15 flex items-center justify-center overflow-hidden shrink-0 ring-1 ring-primary/25 shadow-lg shadow-primary/10">
                       {profile.avatar ? (
                         <img src={profile.avatar} alt="Avatar" className="w-full h-full object-cover" />
                       ) : (
-                        <Camera className="w-7 h-7 text-primary" />
+                        <Camera className="w-8 h-8 text-primary" />
                       )}
                     </div>
                     <div className="flex-1 min-w-0 pt-0.5">
-                      <h1 className="font-display text-2xl text-foreground">{profile.name}</h1>
+                      <h1 className="font-display text-4xl sm:text-5xl leading-none text-foreground">{profile.name}</h1>
                       {profile.bio && (
-                        <RichTextDisplay html={profile.bio} className="mt-1 text-sm text-muted-foreground" />
+                        <RichTextDisplay html={profile.bio} className="mt-3 text-sm sm:text-base text-muted-foreground max-w-2xl" />
                       )}
                     </div>
                   </div>
@@ -700,24 +700,31 @@ export default function Booking() {
                     <p className="text-sm font-body text-muted-foreground">No event types available yet.</p>
                   </div>
                 ) : (
-                  <div className="space-y-2">
+                  <div className="flex flex-col gap-3">
                     {eventTypes.map((ev) => {
                       const minPrice = ev.durations.length > 0
                         ? Math.min(...ev.durations.map(d => getPriceForDuration(ev, d)))
                         : (ev.price ?? 0);
                       const isExpanded = !!expandedDescriptions[ev.id];
                       return (
-                        <button key={ev.id} onClick={() => handleSelectEvent(ev)} className="w-full text-left glass-panel rounded-xl p-5 hover:border-amber-500 hover:shadow-lg transition-all cursor-pointer group">
-                          <div className="flex items-start gap-3">
-                            <div className="w-8 h-8 rounded-lg bg-primary/15 flex items-center justify-center flex-shrink-0 mt-0.5 group-hover:bg-primary/25 transition-colors">
+                        <button key={ev.id} onClick={() => handleSelectEvent(ev)} className="booking-service-card w-full text-left glass-panel rounded-2xl p-5 sm:p-6 hover:border-primary/50 hover:-translate-y-0.5 transition-all cursor-pointer group">
+                          <div className="flex items-start gap-4">
+                            <div className="w-11 h-11 rounded-xl bg-primary/15 flex items-center justify-center flex-shrink-0 mt-0.5 group-hover:bg-primary/25 transition-colors ring-1 ring-primary/20">
                               <Camera className="w-4 h-4 text-primary" />
                             </div>
                             <div className="flex-1 min-w-0">
-                              <h3 className="font-display text-base text-foreground mb-1">{ev.title}</h3>
+                              <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+                                <h3 className="font-display text-2xl leading-tight text-foreground">{ev.title}</h3>
+                                {(ev.price ?? 0) > 0 && (
+                                  <span className="text-sm font-body font-semibold text-primary bg-primary/10 rounded-full px-3 py-1 border border-primary/20 shrink-0">
+                                    from ${minPrice}
+                                  </span>
+                                )}
+                              </div>
                               {ev.description && (
                                 <div>
                                   <div className={isExpanded ? "" : "line-clamp-4"}>
-                                    <RichTextDisplay html={ev.description} className="text-xs font-body text-muted-foreground" />
+                                    <RichTextDisplay html={ev.description} className="text-sm font-body text-muted-foreground" />
                                   </div>
                                   <button
                                     onClick={(e) => { e.stopPropagation(); setExpandedDescriptions(prev => ({ ...prev, [ev.id]: !prev[ev.id] })); }}
@@ -732,11 +739,6 @@ export default function Booking() {
                                   <Clock className="w-3 h-3" />
                                   {ev.durations.map((d) => formatDuration(d)).join(" / ")}
                                 </span>
-                                {(ev.price ?? 0) > 0 && (
-                                  <span className="text-xs font-body text-primary bg-primary/10 rounded-full px-2.5 py-0.5 border border-primary/20">
-                                    from ${minPrice}
-                                  </span>
-                                )}
                                 {ev.requiresConfirmation && (
                                   <span className="inline-flex items-center gap-1 text-xs font-body text-muted-foreground border border-border rounded-full px-2.5 py-1">
                                     <AlertCircle className="w-3 h-3" />Requires confirmation
@@ -749,8 +751,8 @@ export default function Booking() {
                                 )}
                               </div>
                               <div className="flex justify-end mt-3">
-                                <span className="text-xs font-body bg-amber-500/10 text-amber-500 border border-amber-500/30 px-3 py-1 rounded-full">
-                                  Book →
+                                <span className="inline-flex items-center gap-1.5 text-xs font-body font-semibold bg-primary text-primary-foreground px-3.5 py-1.5 rounded-full">
+                                  Book <ArrowRight className="w-3 h-3" />
                                 </span>
                               </div>
                             </div>

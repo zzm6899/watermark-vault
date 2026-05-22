@@ -771,15 +771,20 @@ export default function Admin() {
   ];
 
   return (
-    <div className="min-h-screen bg-background overflow-x-hidden">
+    <div className="min-h-screen app-shell overflow-x-hidden">
       <div className="flex w-full">
-        <aside className="w-56 fixed left-0 top-0 bottom-0 border-r border-border bg-card/50 p-4 hidden lg:flex flex-col" style={{ paddingTop: "calc(env(safe-area-inset-top, 0px) + 1rem)" }}>
-          <div className="flex items-center gap-2.5 px-3 mb-6 pt-2">
-            <Camera className="w-5 h-5 text-primary" />
-            <span className="font-display text-base text-foreground truncate">{profile.name || "Admin"}</span>
+        <aside className="w-60 fixed left-0 top-0 bottom-0 border-r border-white/10 admin-sidebar p-4 hidden lg:flex flex-col" style={{ paddingTop: "calc(env(safe-area-inset-top, 0px) + 1rem)" }}>
+          <div className="flex items-center gap-3 px-2 mb-7 pt-2">
+            <span className="flex size-9 items-center justify-center rounded-xl bg-primary/15 text-primary ring-1 ring-primary/25">
+              <Camera className="w-4 h-4" />
+            </span>
+            <div className="min-w-0">
+              <span className="block font-display text-lg leading-none text-foreground truncate">{profile.name || "Admin"}</span>
+              <span className="mt-1 block text-[10px] font-body tracking-[0.18em] uppercase text-muted-foreground truncate">Studio cockpit</span>
+            </div>
           </div>
-          <p className="text-[10px] font-body tracking-[0.3em] uppercase text-muted-foreground mb-4 px-3">Admin Panel</p>
-          <nav className="space-y-1 flex-1">
+          <p className="text-[10px] font-body tracking-[0.26em] uppercase text-muted-foreground mb-3 px-3">Workspace</p>
+          <nav className="flex flex-col gap-1 flex-1">
             {tabs.map((tab) => {
               const sidebarBadge =
                 tab.id === "albums" && settings.proofingEnabled
@@ -793,8 +798,8 @@ export default function Admin() {
                         : 0;
               return (
                 <button key={tab.id} onClick={() => setActiveTab(tab.id)}
-                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-body transition-all ${
-                    activeTab === tab.id ? "bg-primary/10 text-primary" : "text-muted-foreground hover:text-foreground hover:bg-secondary"
+                  className={`admin-nav-item w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-body transition-all ${
+                    activeTab === tab.id ? "admin-nav-item-active text-primary" : "text-muted-foreground hover:text-foreground hover:bg-white/[0.055]"
                   }`}
                 >
                   <tab.icon className="w-4 h-4" />{tab.label}
@@ -806,17 +811,17 @@ export default function Admin() {
             })}
           </nav>
           <div className="mt-auto space-y-1">
-            <button onClick={() => navigate("/capture")} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-body text-primary hover:bg-primary/10 transition-all">
+            <button onClick={() => navigate("/capture")} className="admin-nav-item w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-body text-primary hover:bg-primary/10 transition-all">
               <Upload className="w-4 h-4" />Capture
             </button>
-            <button onClick={handleLogout} className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-body text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-all">
+            <button onClick={handleLogout} className="admin-nav-item flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-body text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-all">
               <LogOut className="w-4 h-4" />Logout
             </button>
           </div>
         </aside>
 
         {/* ── Mobile: top title bar (shows active tab name) ── */}
-        <div className="lg:hidden fixed top-0 left-0 right-0 z-30 bg-card/95 backdrop-blur-sm border-b border-border flex items-center justify-between px-4" style={{ height: "calc(env(safe-area-inset-top, 0px) + 3rem)", paddingTop: "env(safe-area-inset-top, 0px)" }}>
+        <div className="lg:hidden fixed top-0 left-0 right-0 z-30 bg-card/95 backdrop-blur-xl border-b border-white/10 flex items-center justify-between px-4" style={{ height: "calc(env(safe-area-inset-top, 0px) + 3rem)", paddingTop: "env(safe-area-inset-top, 0px)" }}>
           <div className="flex items-center gap-2">
             <Camera className="w-4 h-4 text-primary" />
             <span className="font-display text-sm text-foreground capitalize">{tabs.find(t => t.id === activeTab)?.label ?? "Admin"}</span>
@@ -832,7 +837,7 @@ export default function Admin() {
         </div>
 
         {/* ── Mobile: bottom tab bar ── */}
-        <div className="lg:hidden fixed bottom-0 left-0 right-0 z-30 bg-card/95 backdrop-blur-sm border-t border-border" style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}>
+        <div className="lg:hidden fixed bottom-0 left-0 right-0 z-30 bg-card/95 backdrop-blur-xl border-t border-white/10" style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}>
           <div className="flex overflow-x-auto scrollbar-hide">
             {tabs.map((tab) => {
               const isActive = activeTab === tab.id;
@@ -864,7 +869,7 @@ export default function Admin() {
         </div>
 
         <main
-          className="flex-1 min-w-0 overflow-x-hidden lg:ml-56 p-4 sm:p-6 lg:p-8 lg:pt-8"
+          className="flex-1 min-w-0 overflow-x-hidden lg:ml-60 p-4 sm:p-6 lg:p-8 lg:pt-8"
           style={{ paddingTop: "calc(env(safe-area-inset-top, 0px) + 3.5rem)", paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 4rem)" }}
           id="admin-main"
         >
@@ -1831,9 +1836,12 @@ function DashboardView() {
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="font-display text-lg sm:text-2xl text-foreground">Dashboard</h2>
-        <Button onClick={() => window.location.href = "/capture"} className="gap-2 font-body text-sm h-9 px-3">
+      <div className="admin-page-header">
+        <div>
+          <h2 className="font-display text-3xl sm:text-4xl leading-none text-foreground">Dashboard</h2>
+          <p className="mt-2 text-sm font-body text-muted-foreground">Bookings, capture activity, and delivery health in one view.</p>
+        </div>
+        <Button onClick={() => window.location.href = "/capture"} className="gap-2 font-body text-sm h-10 px-4 shadow-lg shadow-primary/10">
           <Upload className="w-4 h-4" /><span className="hidden sm:inline">Capture</span>
         </Button>
       </div>
@@ -1846,10 +1854,12 @@ function DashboardView() {
               <TooltipProvider key={stat.label}>
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <div className="glass-panel rounded-xl p-3 sm:p-5 cursor-default">
-                      <stat.icon className={`w-4 h-4 ${stat.color} mb-2`} />
-                      <p className="font-display text-xl sm:text-2xl text-foreground">{stat.value}</p>
-                      <p className="text-[10px] font-body text-muted-foreground tracking-wider uppercase mt-0.5 leading-tight">{stat.label}</p>
+                    <div className="glass-panel metric-card rounded-xl p-4 sm:p-5 cursor-default">
+                      <span className="mb-3 flex size-9 items-center justify-center rounded-lg bg-white/[0.055] ring-1 ring-white/10">
+                        <stat.icon className={`w-4 h-4 ${stat.color}`} />
+                      </span>
+                      <p className="font-sans text-2xl sm:text-3xl font-semibold text-foreground">{stat.value}</p>
+                      <p className="text-[10px] font-body text-muted-foreground tracking-wider uppercase mt-1 leading-tight">{stat.label}</p>
                     </div>
                   </TooltipTrigger>
                   <TooltipContent><p className="text-xs font-body">Total combined duration of all confirmed and completed bookings</p></TooltipContent>
@@ -1858,17 +1868,19 @@ function DashboardView() {
             );
           }
           return (
-            <div key={stat.label} className="glass-panel rounded-xl p-3 sm:p-5">
-              <stat.icon className={`w-4 h-4 ${stat.color} mb-2`} />
-              <p className="font-display text-xl sm:text-2xl text-foreground">{stat.value}</p>
-              <p className="text-[10px] font-body text-muted-foreground tracking-wider uppercase mt-0.5 leading-tight">{stat.label}</p>
+            <div key={stat.label} className="glass-panel metric-card rounded-xl p-4 sm:p-5">
+              <span className="mb-3 flex size-9 items-center justify-center rounded-lg bg-white/[0.055] ring-1 ring-white/10">
+                <stat.icon className={`w-4 h-4 ${stat.color}`} />
+              </span>
+              <p className="font-sans text-2xl sm:text-3xl font-semibold text-foreground">{stat.value}</p>
+              <p className="text-[10px] font-body text-muted-foreground tracking-wider uppercase mt-1 leading-tight">{stat.label}</p>
             </div>
           );
         })}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-[1.25fr_0.75fr] gap-3 mb-6">
-        <div className="glass-panel rounded-xl p-4 sm:p-5 overflow-hidden">
+        <div className="glass-panel rounded-xl p-5 sm:p-6 overflow-hidden">
           <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
             <div className="min-w-0">
               <div className="flex items-center gap-2 mb-2">
@@ -1877,7 +1889,7 @@ function DashboardView() {
                 </span>
                 <div>
                   <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground">Wireless Capture</p>
-                  <h3 className="font-display text-lg text-foreground">Capture command center</h3>
+                  <h3 className="font-display text-2xl leading-none text-foreground">Capture command center</h3>
                 </div>
               </div>
               <p className="text-xs font-body text-muted-foreground max-w-2xl">
@@ -1901,14 +1913,14 @@ function DashboardView() {
               { label: "Review", value: reviewCount, tone: "text-yellow-400" },
               { label: "Rejects", value: rejectCount, tone: "text-red-400" },
             ].map(item => (
-              <div key={item.label} className="rounded-lg bg-secondary/40 border border-border/40 p-3">
-                <p className={`font-display text-xl ${item.tone}`}>{item.value}</p>
+              <div key={item.label} className="rounded-lg bg-white/[0.045] border border-white/10 p-3">
+                <p className={`font-sans text-xl font-semibold ${item.tone}`}>{item.value}</p>
                 <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground">{item.label}</p>
               </div>
             ))}
           </div>
         </div>
-        <div className="glass-panel rounded-xl p-4 sm:p-5">
+        <div className="glass-panel rounded-xl p-5 sm:p-6">
           <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-2">Latest Album</p>
           {activeCaptureAlbum ? (
             <>
@@ -4162,8 +4174,11 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
-        <h2 className="font-display text-2xl text-foreground">Albums</h2>
+      <div className="admin-page-header">
+        <div>
+          <h2 className="font-display text-3xl sm:text-4xl leading-none text-foreground">Albums</h2>
+          <p className="mt-2 text-sm font-body text-muted-foreground">Manage galleries, proofing state, sharing, and client delivery.</p>
+        </div>
         <div className="flex gap-2 flex-wrap">
           {albums.length >= 2 && (
             <Button variant="outline" size="sm" onClick={() => { setMergeMode(!mergeMode); setMergeSelection(new Set()); }} className="gap-2 font-body text-xs border-border text-foreground">
@@ -4244,10 +4259,10 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
         </div>
       ) : (
         <>
-           <div className="flex flex-col sm:flex-row sm:items-center gap-2 mb-3">
-            <div className="relative flex-1 sm:max-w-xs">
+           <div className="glass-panel rounded-xl p-3 mb-4 flex flex-col sm:flex-row sm:items-center gap-3">
+            <div className="relative flex-1 sm:max-w-sm">
               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
-              <Input value={albumSearch} onChange={e => setAlbumSearch(e.target.value)} placeholder="Search albums…" className="pl-8 h-8 text-xs font-body" />
+              <Input value={albumSearch} onChange={e => setAlbumSearch(e.target.value)} placeholder="Search albums…" className="soft-input pl-8 h-9 text-xs font-body" />
             </div>
             <div className="flex items-center gap-1 flex-wrap overflow-x-auto">
               <span className="text-[10px] font-body text-muted-foreground/50 mr-1">Sort:</span>
@@ -4258,9 +4273,9 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
             </div>
           </div>
           <TooltipProvider delayDuration={300}>
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-2 sm:gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-3">
           {sortedAlbums.map((alb) => (
-            <div key={alb.id} className={`glass-panel rounded-xl overflow-hidden transition-all ${mergeMode ? "cursor-pointer" : ""} ${mergeSelection.has(alb.id) ? "ring-2 ring-primary" : ""} ${alb.enabled === false ? "opacity-50" : ""}`}
+            <div key={alb.id} className={`glass-panel album-admin-card rounded-xl overflow-hidden transition-all hover:-translate-y-0.5 hover:border-primary/30 ${mergeMode ? "cursor-pointer" : ""} ${mergeSelection.has(alb.id) ? "ring-2 ring-primary" : ""} ${alb.enabled === false ? "opacity-50" : ""}`}
               onClick={() => {
                 if (mergeMode) {
                   setMergeSelection(prev => {
@@ -4273,16 +4288,16 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
             >
               {alb.coverImage && !alb.coverImage.startsWith("file://") && !brokenCovers.has(alb.id) && (
                 <div className="aspect-[16/9] bg-secondary overflow-hidden">
-                  <img src={alb.coverImage} alt={alb.title} className="w-full h-full object-cover" loading="lazy"
+                  <img src={alb.coverImage} alt={alb.title} className="w-full h-full object-cover transition-transform duration-700 hover:scale-105" loading="lazy"
                     onError={() => setBrokenCovers(prev => { const n = new Set(prev); n.add(alb.id); return n; })} />
                 </div>
               )}
-              <div className="p-2 sm:p-3 space-y-1">
-                <h3 className="font-display text-sm sm:text-base text-foreground truncate">{alb.title}</h3>
+              <div className="p-4 space-y-2">
+                <h3 className="font-display text-xl leading-tight text-foreground truncate">{alb.title}</h3>
                 <p className="text-xs font-body text-muted-foreground">
                   {alb._photosStripped ? (alb.photoCount ?? 0) : alb.photos.length} photos · {alb.freeDownloads} free · ${alb.pricePerPhoto}/photo
                 </p>
-                {alb.clientName && <p className="text-xs font-body text-primary">{alb.clientName}</p>}
+                {alb.clientName && <p className="text-xs font-body font-medium text-primary">{alb.clientName}</p>}
                 {(() => {
                   const handle = alb.instagramHandle || bookingMap.get(alb.bookingId || "")?.instagramHandle;
                   return handle ? <p className="text-xs font-body text-muted-foreground">@{handle.replace("@", "")}</p> : null;
@@ -4307,7 +4322,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                     "bg-secondary text-muted-foreground";
 
                   const handleChange = (val: string) => {
-                    let updated = { ...alb };
+                    const updated = { ...alb };
                     if (useProofing) {
                       updated.proofingStage = val as Album["proofingStage"];
                       // Mirror proofing stage into album status
@@ -4421,7 +4436,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                 })()}
                 {alb.mergedFrom && <p className="text-[10px] font-body text-muted-foreground/50">Merged from {alb.mergedFrom.length} albums</p>}
                 {!mergeMode && (
-                  <div className="flex items-center gap-2 pt-2 border-t border-border/50">
+                  <div className="flex items-center gap-1.5 pt-3 mt-2 border-t border-white/10">
                     <Tooltip>
                         <TooltipTrigger asChild>
                           <div>

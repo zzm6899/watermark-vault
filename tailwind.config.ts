@@ -69,7 +69,7 @@ export default {
         },
       },
       fontFamily: {
-        display: ['"Playfair Display"', 'serif'],
+        display: ['"Instrument Serif"', 'serif'],
         sans: ['Inter', 'sans-serif'],
       },
       borderRadius: {
