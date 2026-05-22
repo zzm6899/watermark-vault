@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { generateThumbnail } from "@/lib/image-utils";
-import { isServerMode } from "@/lib/api";
+import { isServerMode, isSupportedPhotoSource } from "@/lib/api";
 import type { Photo } from "@/lib/types";
 
 /**
@@ -28,6 +28,7 @@ export function useBackfillThumbnails(
             (p.thumbnail.startsWith("/uploads/") && !/[?&]wm=0(&|$)/.test(p.thumbnail))
           ) &&
           p.src &&
+          isSupportedPhotoSource(p.src) &&
           !p.src.startsWith("data:") &&
           !processedRef.current.has(p.id)
       );

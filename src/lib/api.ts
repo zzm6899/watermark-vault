@@ -60,6 +60,16 @@ async function fetchWithRetry(url: string, options?: RequestInit, maxRetries = 2
   throw lastError;
 }
 
+async function readJson<T = unknown>(res: Response, fallback: T): Promise<T> {
+  const contentType = res.headers.get("content-type") || "";
+  if (!res.ok || !contentType.toLowerCase().includes("application/json")) return fallback;
+  try {
+    return await res.json();
+  } catch {
+    return fallback;
+  }
+}
+
 async function checkServer(): Promise<boolean> {
   if (serverAvailable !== null) return serverAvailable;
   try {
@@ -145,7 +155,7 @@ async function _fetchStoreKeys(keys: string[]): Promise<boolean> {
     const param = keys.map(encodeURIComponent).join(",");
     const res = await fetch(`/api/store?keys=${param}`);
     if (!res.ok) return false;
-    const data = await res.json();
+    const data = await readJson<Record<string, unknown> | null>(res, null);
     if (!data || typeof data !== "object" || Array.isArray(data)) return false;
     _applyStoreData(data as Record<string, unknown>);
     return true;
@@ -357,6 +367,19 @@ function isIgnoredUploadFileName(name: string): boolean {
   return !base || base.startsWith("._") || IGNORED_UPLOAD_FILENAMES.has(base);
 }
 
+export function isSupportedPhotoSource(src: string | undefined | null): boolean {
+  if (!src) return false;
+  if (src.startsWith("data:")) return true;
+  try {
+    const pathname = src.startsWith("http") ? new URL(src).pathname : src.split("?")[0];
+    const filename = pathname.split(/[\\/]/).pop() || "";
+    if (isIgnoredUploadFileName(filename)) return false;
+    return SUPPORTED_UPLOAD_EXTENSIONS.has(fileExtension(filename));
+  } catch {
+    return false;
+  }
+}
+
 export function isSupportedUploadFile(file: File): boolean {
   if (isIgnoredUploadFileName(file.name)) return false;
   if (!SUPPORTED_UPLOAD_EXTENSIONS.has(fileExtension(file.name))) return false;
@@ -411,7 +434,7 @@ export async function uploadPhotosToServer(
           const body = await res.json().catch(() => ({}));
           throw new Error(body?.error || `Upload failed (${res.status})`);
         }
-        const data = await res.json().catch(() => ({}));
+        const data = await readJson<{ files?: UploadedPhotoResult[] }>(res, {});
         return Array.isArray(data.files) ? data.files : [];
       } catch (err) {
         lastError = err;
@@ -1246,7 +1269,7 @@ export async function syncBookingsToSheet(bookings: unknown[], eventTypes?: unkn
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ bookings, eventTypes: eventTypes || [] }),
     });
-    return await res.json();
+    return await readJson(res, { ok: false, error: res.ok ? "Invalid server response" : `Request failed (${res.status})` });
   } catch { return { ok: false, error: "Network error" }; }
 }
 // ── Waitlist ────────────────────────────────────────────────
@@ -1264,21 +1287,21 @@ export async function joinWaitlist(entry: {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(entry),
     });
-    return await res.json();
+    return await readJson(res, { ok: false, error: res.ok ? "Invalid server response" : `Request failed (${res.status})` });
   } catch { return { ok: false, error: "Network error" }; }
 }
 
 export async function getWaitlistEntries(): Promise<{ entries: import("./types").WaitlistEntry[] }> {
   try {
-    const res = await fetch("/api/waitlist");
-    return await res.json();
+    const res = await fetch("/api/waitlist", { headers: adminAuthHeaders() });
+    return await readJson(res, { entries: [] });
   } catch { return { entries: [] }; }
 }
 
 export async function deleteWaitlistEntry(id: string): Promise<{ ok: boolean }> {
   try {
-    const res = await fetch(`/api/waitlist/${id}`, { method: "DELETE" });
-    return await res.json();
+    const res = await fetch(`/api/waitlist/${id}`, { method: "DELETE", headers: adminAuthHeaders() });
+    return await readJson(res, { ok: false });
   } catch { return { ok: false }; }
 }
 
@@ -1286,10 +1309,10 @@ export async function notifyWaitlistOnCancel(booking: unknown): Promise<{ ok: bo
   try {
     const res = await fetch("/api/booking/cancel-notify", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
       body: JSON.stringify({ booking }),
     });
-    return await res.json();
+    return await readJson(res, { ok: false });
   } catch { return { ok: false }; }
 }
 
@@ -2323,8 +2346,7 @@ export async function fetchAlbumStubs(): Promise<import("./types").Album[] | nul
   if (serverAvailable !== true) return null;
   try {
     const res = await fetch("/api/albums/stubs");
-    if (!res.ok) return null;
-    return await res.json();
+    return await readJson<import("./types").Album[] | null>(res, null);
   } catch {
     return null;
   }
@@ -2341,8 +2363,7 @@ export async function fetchAlbumPhotos(albumId: string): Promise<import("./types
   if (serverAvailable !== true) return null;
   try {
     const res = await fetch(`/api/albums/${encodeURIComponent(albumId)}/photos`);
-    if (!res.ok) return null;
-    const data = await res.json();
+    const data = await readJson<{ photos?: import("./types").Photo[] } | null>(res, null);
     return Array.isArray(data?.photos) ? data.photos : null;
   } catch {
     return null;

@@ -44,7 +44,6 @@ const {
   notifyBookingUpdate,
   notifyAlbumPurchase,
   notifyProofingSubmission,
-  notifyWaitlistNotified,
   notifyInvoice,
 } = require("./discord");
 
@@ -443,6 +442,52 @@ app.get("/api/backup/download", requireAuth, (req, res) => {
     console.error("backup download error:", err);
     if (!res.headersSent) res.status(500).json({ error: "Backup failed" });
   }
+});
+
+// ── Waitlist ────────────────────────────────────────────────────────────────
+app.get("/api/waitlist", requireAuth, (_req, res) => {
+  const db = readDb();
+  const entries = dbGet(db, DB_KEYS.WAITLIST, []);
+  res.json({ entries: Array.isArray(entries) ? entries : [] });
+});
+
+app.post("/api/waitlist/join", (req, res) => {
+  const { eventTypeId, eventTypeTitle, date, clientName, clientEmail, note } = req.body || {};
+  if (!eventTypeId || !date || !clientName || !clientEmail) {
+    return res.status(400).json({ ok: false, error: "eventTypeId, date, clientName and clientEmail are required" });
+  }
+  const db = readDb();
+  const entries = dbGet(db, DB_KEYS.WAITLIST, []);
+  const email = String(clientEmail).trim().toLowerCase();
+  const duplicate = Array.isArray(entries) && entries.some(e =>
+    String(e.eventTypeId || "") === String(eventTypeId) &&
+    String(e.date || "") === String(date) &&
+    String(e.clientEmail || "").trim().toLowerCase() === email
+  );
+  if (duplicate) return res.json({ ok: true, duplicate: true });
+
+  const entry = {
+    id: crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString("hex"),
+    eventTypeId: String(eventTypeId),
+    eventTypeTitle: String(eventTypeTitle || ""),
+    date: String(date),
+    clientName: String(clientName).trim(),
+    clientEmail: String(clientEmail).trim(),
+    note: note ? String(note).slice(0, 1000) : undefined,
+    createdAt: new Date().toISOString(),
+  };
+  db[DB_KEYS.WAITLIST] = [...(Array.isArray(entries) ? entries : []), entry];
+  writeDb(db);
+  res.json({ ok: true, entry });
+});
+
+app.delete("/api/waitlist/:id", requireAuth, (req, res) => {
+  const db = readDb();
+  const entries = dbGet(db, DB_KEYS.WAITLIST, []);
+  if (!Array.isArray(entries)) return res.json({ ok: true });
+  db[DB_KEYS.WAITLIST] = entries.filter(e => e.id !== req.params.id);
+  writeDb(db);
+  res.json({ ok: true });
 });
 
 // ── Baked-asset stripping ─────────────────────────────────────────────────
@@ -6162,6 +6207,45 @@ app.post("/api/push/unsubscribe", (req, res) => {
   res.json({ ok: true });
 });
 
+app.post("/api/booking/cancel-notify", requireAuth, async (req, res) => {
+  const booking = req.body?.booking || {};
+  if (!booking.date) return res.status(400).json({ ok: false, error: "booking.date is required" });
+  const db = readDb();
+  const entries = dbGet(db, DB_KEYS.WAITLIST, []);
+  if (!Array.isArray(entries) || entries.length === 0) return res.json({ ok: true, notified: 0 });
+
+  const candidates = entries.filter(e =>
+    String(e.date || "") === String(booking.date || "") &&
+    !e.notifiedAt &&
+    (!booking.eventTypeId || !e.eventTypeId || String(e.eventTypeId) === String(booking.eventTypeId))
+  );
+  if (candidates.length === 0) return res.json({ ok: true, notified: 0 });
+
+  const transporter = getTransporter();
+  const safeOrigin = /^https?:\/\//.test(req.headers.origin || "") ? req.headers.origin : "";
+  const bookingUrl = safeOrigin ? `${safeOrigin}/booking` : "";
+  let notified = 0;
+  for (const entry of candidates) {
+    if (transporter && entry.clientEmail) {
+      const safeName = escapeHtml(entry.clientName || "there");
+      const safeEvent = escapeHtml(entry.eventTypeTitle || booking.type || "your requested session");
+      const safeDate = escapeHtml(entry.date || booking.date);
+      await transporter.sendMail({
+        from: getFromAddress(),
+        to: entry.clientEmail,
+        subject: `A spot opened up for ${entry.eventTypeTitle || booking.type || "your session"}`,
+        html: `<p>Hi ${safeName},</p><p>A spot opened up for <strong>${safeEvent}</strong> on ${safeDate}.</p>${bookingUrl ? `<p><a href="${bookingUrl}">Book this spot</a></p>` : ""}`,
+        text: `Hi ${entry.clientName || "there"},\n\nA spot opened up for ${entry.eventTypeTitle || booking.type || "your requested session"} on ${entry.date || booking.date}.${bookingUrl ? `\n\nBook here: ${bookingUrl}` : ""}`,
+      });
+    }
+    entry.notifiedAt = new Date().toISOString();
+    notified++;
+  }
+  db[DB_KEYS.WAITLIST] = entries;
+  writeDb(db);
+  res.json({ ok: true, notified });
+});
+
 // Get VAPID public key
 app.get("/api/push/vapid-public-key", (req, res) => {
   const key = process.env.VAPID_PUBLIC_KEY || null;
@@ -6195,6 +6279,10 @@ app.patch("/api/albums/:id/tags", requireAuth, (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
+
+app.use("/api", (req, res) => {
+  res.status(404).json({ error: "API route not found", path: req.path });
+});
 
 app.get("*", (_req, res) => {
   res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");

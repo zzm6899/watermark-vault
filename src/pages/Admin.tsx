@@ -32,6 +32,7 @@ import {
   getContacts, addContact, updateContact, deleteContact,
   getEnquiries, updateEnquiry, deleteEnquiry,
   isSuperAdmin, setSuperAdmin, getAdminCredentials, hashPassword,
+  isSlotBooked,
 } from "@/lib/storage";
 import { compressImage, formatBytes, formatSpeed, getLocalStorageUsage, generateThumbnail } from "@/lib/image-utils";
 import {
@@ -45,6 +46,7 @@ import {
 import {
   uploadPhotosToServer,
   isSupportedUploadFile,
+  isSupportedPhotoSource,
   isServerMode,
   deletePhotoFromServer,
   getGoogleCalendarStatus,
@@ -156,12 +158,13 @@ import sampleWedding from "@/assets/sample-wedding.jpg";
 import sampleEvent from "@/assets/sample-event.jpg";
 import sampleFood from "@/assets/sample-food.jpg";
 
-type Tab = "dashboard" | "shoot-day" | "bookings" | "events" | "albums" | "photos" | "finance" | "invoices" | "contacts" | "enquiries" | "profile" | "settings" | "storage" | "platform";
+type Tab = "dashboard" | "shoot-day" | "bookings" | "automations" | "events" | "albums" | "photos" | "finance" | "invoices" | "contacts" | "enquiries" | "profile" | "settings" | "storage" | "platform";
 
 const TAB_ROUTE_MAP: Record<string, Tab> = {
   dashboard: "dashboard",
   "shoot-day": "shoot-day",
   bookings: "bookings",
+  automations: "automations",
   events: "events",
   albums: "albums",
   photos: "photos",
@@ -179,6 +182,7 @@ const ADMIN_TAB_LABELS: Record<Tab, string> = {
   dashboard: "Dashboard",
   "shoot-day": "Shoot Day",
   bookings: "Bookings",
+  automations: "Automations",
   events: "Events",
   albums: "Albums",
   photos: "Photos",
@@ -752,6 +756,7 @@ export default function Admin() {
     { id: "dashboard" as Tab, label: "Dashboard", icon: LayoutDashboard },
     { id: "shoot-day" as Tab, label: "Shoot Day", icon: RadioTower },
     { id: "bookings" as Tab, label: "Bookings", icon: Calendar },
+    { id: "automations" as Tab, label: "Automations", icon: Bell },
     { id: "events" as Tab, label: "Events", icon: Clock },
     { id: "albums" as Tab, label: "Albums", icon: Image },
     { id: "photos" as Tab, label: "Photos", icon: Upload },
@@ -887,6 +892,7 @@ export default function Admin() {
           {activeTab === "dashboard" && <DashboardView />}
           {activeTab === "shoot-day" && <ShootDayCommandCenterView />}
           {activeTab === "bookings" && <BookingsView onCreateAlbum={handleCreateAlbumForBooking} />}
+          {activeTab === "automations" && <AutomationsView />}
           {activeTab === "events" && <EventTypesView />}
           {activeTab === "albums" && <AlbumsView prefillBookingId={prefillBookingId} onClearPrefill={() => setPrefillBookingId(null)} />}
           {activeTab === "photos" && <PhotosView />}
@@ -902,6 +908,16 @@ export default function Admin() {
       </div>
     </div>
   );
+}
+
+function formatBookingTimeRange(time: string | undefined, duration: number | undefined) {
+  if (!time) return "";
+  const [h = 0, m = 0] = time.split(":").map(Number);
+  const start = h * 60 + m;
+  const end = start + (duration || DEFAULT_BOOKING_DURATION);
+  const endH = Math.floor(end / 60) % 24;
+  const endM = end % 60;
+  return `${time}-${String(endH).padStart(2, "0")}:${String(endM).padStart(2, "0")}`;
 }
 
 // ─── Shoot Day Command Center ─────────────────────────
@@ -2334,23 +2350,38 @@ function BookingEditor({ booking, onSave, onCancel }: {
   const [time, setTime] = useState(booking?.time || "");
   const [duration, setDuration] = useState(String(booking?.duration || DEFAULT_BOOKING_DURATION));
   const [type, setType] = useState(booking?.type || "");
+  const eventTypes = getEventTypes();
+  const [eventTypeId, setEventTypeId] = useState(booking?.eventTypeId || "");
   const [notes, setNotes] = useState(booking?.notes || "");
   const [status, setStatus] = useState<Booking["status"]>(booking?.status || "pending");
   const [paymentStatus, setPaymentStatus] = useState(booking?.paymentStatus || "unpaid");
   const [paymentAmount, setPaymentAmount] = useState(String(booking?.paymentAmount || ""));
   const [instagramHandle, setInstagramHandle] = useState(booking?.instagramHandle || "");
   const [source, setSource] = useState<BookingSource>(booking?.source || "direct");
+  const durationMinutes = parseInt(duration) || DEFAULT_BOOKING_DURATION;
+  const hasConflict = Boolean(date && time && isSlotBooked(date, time, durationMinutes, bookingId));
+
+  const applyEventType = (id: string) => {
+    setEventTypeId(id);
+    const selected = eventTypes.find(e => e.id === id);
+    if (!selected) return;
+    setType(selected.title);
+    const firstDuration = selected.durations?.[0];
+    if (firstDuration) setDuration(String(firstDuration));
+    if (selected.price !== undefined) setPaymentAmount(String(selected.price));
+  };
 
   const handleSave = () => {
     if (!clientName.trim()) { toast.error("Client name is required"); return; }
     if (!date) { toast.error("Date is required"); return; }
     const bk: Booking = {
+      ...(booking || {}),
       id: bookingId,
       clientName: clientName.trim(),
       clientEmail: clientEmail.trim(),
       date,
       time,
-      duration: parseInt(duration) || DEFAULT_BOOKING_DURATION,
+      duration: durationMinutes,
       type: type.trim(),
       notes: notes.trim(),
       status,
@@ -2362,7 +2393,7 @@ function BookingEditor({ booking, onSave, onCancel }: {
       answerLabels: booking?.answerLabels,
       albumId: booking?.albumId,
       gcalEventId: booking?.gcalEventId,
-      eventTypeId: booking?.eventTypeId || "",
+      eventTypeId,
       modifyToken: booking?.modifyToken,
       source,
       tasks: booking?.tasks,
@@ -2437,6 +2468,13 @@ function BookingEditor({ booking, onSave, onCancel }: {
           <Input type="number" value={duration} onChange={e => setDuration(e.target.value)} className="bg-secondary border-border text-foreground font-body" />
         </div>
         <div>
+          <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Event Template</label>
+          <select value={eventTypeId} onChange={e => applyEventType(e.target.value)} className="w-full bg-secondary border border-border text-foreground font-body text-sm rounded-md px-3 py-2">
+            <option value="">Custom booking</option>
+            {eventTypes.map(et => <option key={et.id} value={et.id}>{et.title}</option>)}
+          </select>
+        </div>
+        <div className="md:col-span-2">
           <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Type / Event</label>
           <Input value={type} onChange={e => setType(e.target.value)} placeholder="e.g. Portrait Session" className="bg-secondary border-border text-foreground font-body" />
         </div>
@@ -2453,6 +2491,12 @@ function BookingEditor({ booking, onSave, onCancel }: {
         <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Notes</label>
         <Textarea value={notes} onChange={e => setNotes(e.target.value)} rows={3} className="bg-secondary border-border text-foreground font-body resize-none" />
       </div>
+      {hasConflict && (
+        <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-3 py-2 flex items-start gap-2">
+          <AlertCircle className="w-4 h-4 text-yellow-400 mt-0.5 shrink-0" />
+          <p className="text-xs font-body text-yellow-200">This time overlaps another non-cancelled booking. You can still save it, but check the calendar first.</p>
+        </div>
+      )}
       <div className="grid grid-cols-2 gap-4">
         <div>
           <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Status</label>
@@ -2536,6 +2580,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [bookingSearch, setBookingSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "pending" | "confirmed" | "completed" | "cancelled">("all");
+  const [paymentFilter, setPaymentFilter] = useState<"all" | PaymentStatus>("all");
   const [showCancelled, setShowCancelled] = useState(false);
   const albums = getAlbums();
   const [emailLogs, setEmailLogs] = useState<Record<string, { id: string; type: string; sentAt: string; openedAt?: string; subject: string; to: string }[]>>({});
@@ -2674,6 +2719,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
   const filteredBookings = bookings.filter(bk => {
     if (statusFilter !== "all" && bk.status !== statusFilter) return false;
     if (statusFilter === "all" && bk.status === "cancelled" && !showCancelled) return false;
+    if (paymentFilter !== "all" && (bk.paymentStatus || "unpaid") !== paymentFilter) return false;
     if (!bookingSearch) return true;
     const q = bookingSearch.toLowerCase();
     return (bk.clientName || "").toLowerCase().includes(q)
@@ -2685,6 +2731,17 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
       || (bk.notes || "").toLowerCase().includes(q)
       || (bk.createdAt ? new Date(bk.createdAt).toLocaleDateString("en-AU") : "").includes(q);
   });
+
+  const today = localDateString(new Date());
+  const nextWeek = new Date();
+  nextWeek.setDate(nextWeek.getDate() + 7);
+  const nextWeekStr = localDateString(nextWeek);
+  const bookingSummary = {
+    pending: bookings.filter(b => b.status === "pending").length,
+    today: bookings.filter(b => b.date === today && b.status !== "cancelled").length,
+    next7: bookings.filter(b => b.date >= today && b.date <= nextWeekStr && b.status !== "cancelled").length,
+    needsPayment: bookings.filter(b => b.status !== "cancelled" && !["paid", "cash"].includes(b.paymentStatus || "unpaid")).length,
+  };
 
   const sortedBookings = [...filteredBookings].sort((a, b) => {
     const dir = sortDir === "asc" ? 1 : -1;
@@ -2806,6 +2863,20 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
             </Button>
           )}
         </div>
+      </div>
+
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
+        {[
+          { label: "Pending", value: bookingSummary.pending, tone: "text-yellow-400" },
+          { label: "Today", value: bookingSummary.today, tone: "text-primary" },
+          { label: "Next 7 Days", value: bookingSummary.next7, tone: "text-blue-400" },
+          { label: "Needs Payment", value: bookingSummary.needsPayment, tone: "text-red-400" },
+        ].map(item => (
+          <div key={item.label} className="glass-panel rounded-xl p-3">
+            <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground">{item.label}</p>
+            <p className={`font-display text-2xl mt-1 ${item.tone}`}>{item.value}</p>
+          </div>
+        ))}
       </div>
 
       {/* Inline booking create/edit form */}
@@ -2961,6 +3032,14 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
               )}
             </div>
             <div className="flex items-center gap-1 flex-wrap overflow-x-auto">
+              <span className="text-[10px] font-body text-muted-foreground/50 mr-1">Payment:</span>
+              {(["all", "unpaid", "deposit-paid", "pending-confirmation", "paid", "cash"] as const).map(s => (
+                <button key={s} onClick={() => setPaymentFilter(s)} className={`text-[10px] font-body tracking-wider uppercase px-2 py-1 rounded transition-colors capitalize ${paymentFilter === s ? "bg-primary/15 text-primary" : "text-muted-foreground hover:text-foreground"}`}>
+                  {s.replace("-", " ")}
+                </button>
+              ))}
+            </div>
+            <div className="flex items-center gap-1 flex-wrap overflow-x-auto">
               <span className="text-[10px] font-body text-muted-foreground/50 mr-1">Sort:</span>
               <SortBtn k="date" label="Session Date" />
               <SortBtn k="booked" label="Booked On" />
@@ -2972,9 +3051,16 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
             </div>
           </div>
           <div className="space-y-3">
-          {sortedBookings.map((bk) => {
+          {sortedBookings.length === 0 ? (
+            <div className="glass-panel rounded-xl p-8 text-center">
+              <Search className="w-8 h-8 text-muted-foreground/30 mx-auto mb-3" />
+              <p className="text-sm font-body text-muted-foreground">No bookings match the current filters.</p>
+            </div>
+          ) : sortedBookings.map((bk) => {
             const isExpanded = expandedId === bk.id;
             const et = eventTypes.find(e => e.id === bk.eventTypeId);
+            const remaining = Math.max(0, (bk.paymentAmount || 0) - (bk.depositAmount || 0));
+            const showBalance = remaining > 0 && !["paid", "cash"].includes(bk.paymentStatus || "unpaid");
             return (
               <div key={bk.id} className={`glass-panel rounded-xl overflow-hidden${bk.status === "cancelled" ? " opacity-50" : ""}`}>
                 <div className="p-4 cursor-pointer hover:bg-secondary/20 transition-colors" onClick={() => {
@@ -3014,7 +3100,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                             <span className="text-[10px] font-body px-2 py-0.5 rounded-full border border-green-500/30 bg-green-500/10 text-green-400">📷 Gallery sent</span>
                           )}
                         </div>
-                        <p className={`text-xs font-body text-muted-foreground${bk.status === "cancelled" ? " line-through" : ""}`}>{bk.type} · {bk.date} at {bk.time} · {formatDuration(bk.duration)}</p>
+                        <p className={`text-xs font-body text-muted-foreground${bk.status === "cancelled" ? " line-through" : ""}`}>{bk.type} · {bk.date} {formatBookingTimeRange(bk.time, bk.duration) || "Time TBC"} · {formatDuration(bk.duration)}</p>
                         {bk.createdAt && (
                           <p className="text-[10px] font-body text-muted-foreground/50">Booked {new Date(bk.createdAt).toLocaleDateString("en-AU", { day: "numeric", month: "short", year: "numeric" })}</p>
                         )}
@@ -3045,6 +3131,11 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                         <option value="cash">Cash</option>
                         <option value="pending-confirmation">Bank Transfer Pending</option>
                       </select>
+                      {showBalance && (
+                        <span className="text-[10px] font-body px-2 py-0.5 rounded-full border border-red-500/30 bg-red-500/10 text-red-300">
+                          ${remaining.toFixed(0)} due
+                        </span>
+                      )}
                       <Button variant="ghost" size="icon" aria-label="Edit booking" className="h-8 w-8 text-muted-foreground hover:text-foreground" onClick={() => { setEditingBooking(bk); setShowCreateBooking(false); setExpandedId(null); }}>
                         <Edit className="w-4 h-4" />
                       </Button>
@@ -4754,7 +4845,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
         setUploadStats(prev => prev ? { ...prev, done, total, speed: bytesPerSecond } : null);
       }, undefined, 3, title || undefined, album?.id);
       // Add all photos immediately — use server-side thumbnails (no heavy client-side canvas work)
-      const newPhotos: Photo[] = results.map(r => ({
+      const newPhotos: Photo[] = results.filter(r => isSupportedPhotoSource(r.url)).map(r => ({
         id: r.id, src: r.url, thumbnail: r.url + "?size=thumb&wm=0",
         title: r.originalName.replace(/\.[^.]+$/, "").replace(/^_+/, ""),
         width: r.width ?? 800, height: r.height ?? 600,
@@ -5933,7 +6024,7 @@ function PhotosView() {
       for (const alb of serverAlbums) {
         const brokenPhotos = (alb.photos || []).filter(p => {
           const filename = uploadFileName(p.src);
-          return filename && !serverFileNames.has(filename) && p.src.startsWith("/uploads/");
+          return (p.src.startsWith("/uploads/") && !isSupportedPhotoSource(p.src)) || (filename && !serverFileNames.has(filename) && p.src.startsWith("/uploads/"));
         });
         if (brokenPhotos.length > 0) {
           // Remove broken references
@@ -5947,7 +6038,7 @@ function PhotosView() {
       let removedLibraryCount = 0;
       const brokenLibrarySet = new Set(libraryPhotos.filter(p => {
         const filename = uploadFileName(p.src);
-        return filename && !serverFileNames.has(filename) && p.src.startsWith("/uploads/");
+        return (p.src.startsWith("/uploads/") && !isSupportedPhotoSource(p.src)) || (filename && !serverFileNames.has(filename) && p.src.startsWith("/uploads/"));
       }));
       let currentLibrary = libraryPhotos;
       if (brokenLibrarySet.size > 0) {
@@ -5973,8 +6064,8 @@ function PhotosView() {
         }
       }
 
-      // Step 3: Find orphaned files on disk not tracked anywhere
-      const orphanedFileNames = stats.allFileNames.filter(f => !knownFilenames.has(f));
+      // Step 3: Find orphaned image files on disk not tracked anywhere.
+      const orphanedFileNames = stats.allFileNames.filter(f => isSupportedPhotoSource(`/uploads/${f}`) && !knownFilenames.has(f));
 
       const messages: string[] = [];
       if (repairedAlbums > 0) messages.push(`Repaired ${repairedAlbums} album(s) with missing file references`);
@@ -6214,7 +6305,7 @@ function PhotosView() {
         setUploadStats(prev => prev ? { ...prev, done, total, speed: bytesPerSecond } : null);
       }, undefined, 3, targetAlbum?.title, targetAlbum?.id);
       // Add all photos in a single batch update to avoid stale-closure overwrite
-      const newPhotos: Photo[] = results.map(r => ({
+      const newPhotos: Photo[] = results.filter(r => isSupportedPhotoSource(r.url)).map(r => ({
         id: r.id, src: r.url, thumbnail: r.url + "?size=thumb&wm=0",
         title: r.originalName.replace(/\.[^.]+$/, "").replace(/^_+/, ""),
         width: r.width ?? 800, height: r.height ?? 600,
@@ -12000,6 +12091,20 @@ const STARTER_EMAIL_AUTOMATIONS: EmailAutomationRule[] = [
     templateBody: "Hi {name}, thanks again for your {event} session on {date}.\n\nI will be in touch as soon as your gallery is ready.",
   },
 ];
+
+function AutomationsView() {
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-4">
+      <div>
+        <h2 className="font-display text-2xl text-foreground">Automations</h2>
+        <p className="text-xs font-body text-muted-foreground mt-1">
+          Default rules and reminder emails for bookings, payments, and gallery delivery.
+        </p>
+      </div>
+      <EmailAutomationsManager />
+    </motion.div>
+  );
+}
 
 function EmailAutomationsManager() {
   const [rules, setRules] = useState<EmailAutomationRule[]>([]);

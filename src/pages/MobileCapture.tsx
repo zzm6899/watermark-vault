@@ -6,7 +6,7 @@ import { Switch } from "@/components/ui/switch";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { getBookings, getAlbums, getSettings, updateAlbum, addAlbum, updateBooking, getMobileTenantSession, setMobileTenantSession, isLoggedIn } from "@/lib/storage";
-import { uploadPhotosToServer, isSupportedUploadFile, recheckServer, sendEmail, fetchTenantMobileData, saveTenantAlbum, autoCullAlbum, NATIVE_API_ORIGIN, type UploadedPhotoResult } from "@/lib/api";
+import { uploadPhotosToServer, isSupportedUploadFile, isSupportedPhotoSource, recheckServer, sendEmail, fetchTenantMobileData, saveTenantAlbum, autoCullAlbum, NATIVE_API_ORIGIN, type UploadedPhotoResult } from "@/lib/api";
 import { queueOfflineCapture, getOfflineQueue, useOfflineUploadQueue, type OfflineCaptureItem } from "@/lib/usePwa";
 import { generateThumbnail, formatSpeed } from "@/lib/image-utils";
 import CameraUsb from "@/plugins/camera-usb";
@@ -95,6 +95,7 @@ function formatDuration(mins: number) {
 }
 /** Returns the best thumbnail URL for a photo, optionally scoped to a tenant watermark. */
 function getThumbSrc(photo: Photo, tenantSlug?: string | null): string {
+  if (!isSupportedPhotoSource(photo.src)) return "";
   const base = photo.thumbnail || (photo.src.startsWith("/uploads/") ? photo.src + "?size=thumb" : photo.src);
   let url = base;
   if (tenantSlug && url.startsWith("/uploads/")) {
@@ -186,7 +187,15 @@ function formatCullSummary(counts: CullCountSummary): string {
   return `${normalized.bestOf} Best of · ${normalized.review} review · ${normalized.reject} reject${normalized.reject === 1 ? "" : "s"}`;
 }
 
-function photoFromUploadResult(r: any, uploadedAt: string): Photo {
+type CaptureUploadResult = UploadedPhotoResult & {
+  cull?: Photo["cull"];
+  blurScore?: number;
+  duplicateGroupId?: string;
+  duplicateRank?: number;
+};
+
+function photoFromUploadResult(r: CaptureUploadResult, uploadedAt: string): Photo {
+  if (!isSupportedPhotoSource(r.url)) throw new Error(`Unsupported uploaded photo source: ${r.url}`);
   return {
     id: r.id,
     src: r.url,

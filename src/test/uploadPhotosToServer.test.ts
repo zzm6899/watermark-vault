@@ -30,6 +30,19 @@ function isSupportedUploadFile(file: File): boolean {
   return !file.type || file.type.startsWith("image/") || file.type === "application/octet-stream";
 }
 
+function isSupportedPhotoSource(src: string | undefined | null): boolean {
+  if (!src) return false;
+  if (src.startsWith("data:")) return true;
+  try {
+    const pathname = src.startsWith("http") ? new URL(src).pathname : src.split("?")[0];
+    const filename = pathname.split(/[\\/]/).pop() || "";
+    if (isIgnoredUploadFileName(filename)) return false;
+    return SUPPORTED_UPLOAD_EXTENSIONS.has(fileExtension(filename));
+  } catch {
+    return false;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Inline implementation under test (mirrors src/lib/api.ts logic)
 // so the test doesn't need a DOM or real fetch.
@@ -169,6 +182,14 @@ describe("uploadPhotosToServer (concurrent implementation)", () => {
     expect(calls).toEqual([2]);
     expect(result.map(r => r.originalName)).toEqual(["photo-1.jpg", "photo-2.webp"]);
     expect(progressUpdates).toEqual([[2, 2]]);
+  });
+
+  it("rejects unsupported persisted upload URLs before thumbnail backfill", () => {
+    expect(isSupportedPhotoSource("/uploads/portrait.jpg?size=thumb&wm=0")).toBe(true);
+    expect(isSupportedPhotoSource("https://book.zacmclients.photos/uploads/hero.webp?size=thumb")).toBe(true);
+    expect(isSupportedPhotoSource("/uploads/Thumbs.db?size=thumb&wm=0")).toBe(false);
+    expect(isSupportedPhotoSource("/uploads/._portrait.jpg")).toBe(false);
+    expect(isSupportedPhotoSource("/uploads/notes.txt")).toBe(false);
   });
 
   it("uploads files in batches of 5", async () => {

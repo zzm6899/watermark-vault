@@ -25,7 +25,7 @@ import {
   getTenantLicenseInfo, deleteTenantAlbum,
   getTenantStoreKey, saveTenantStoreKey, updateTenant,
   clearTenantImageCache, tenantPhotoSrc, saveTenantAlbum,
-  uploadPhotosToServer, isSupportedUploadFile, isServerMode, notifyTenantDiscord,
+  uploadPhotosToServer, isSupportedUploadFile, isSupportedPhotoSource, isServerMode, notifyTenantDiscord,
   getSuperAdminWebhooks, sendTenantEmail,
   getServerStorageStats, bulkDeleteFiles, deletePhotoFromServer,
   getTenantGoogleCalendarStatus, startTenantGoogleCalendarAuth,
@@ -1733,7 +1733,7 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
       if (e.target) e.target.value = "";
       return;
     }
-    const newPhotos: Photo[] = results.map(r => ({
+    const newPhotos: Photo[] = results.filter(r => isSupportedPhotoSource(r.url)).map(r => ({
       id: r.id, src: r.url, thumbnail: r.url + "?size=thumb&wm=0",
       title: r.originalName.replace(/\.[^.]+$/, "").replace(/^_+/, ""),
       width: r.width ?? 800, height: r.height ?? 600,
@@ -2473,7 +2473,7 @@ function TenantPhotos({ slug }: { slug: string }) {
       for (const alb of albums) {
         const brokenPhotos = (alb.photos || []).filter(p => {
           const fn = p.src.split("/").pop()?.split("?")[0];
-          return fn && !serverFileNames.has(fn) && p.src.startsWith("/uploads/");
+          return (p.src.startsWith("/uploads/") && !isSupportedPhotoSource(p.src)) || (fn && !serverFileNames.has(fn) && p.src.startsWith("/uploads/"));
         });
         if (brokenPhotos.length > 0) {
           const repaired = (alb.photos || []).filter(p => !brokenPhotos.includes(p));
@@ -2683,7 +2683,7 @@ function TenantPhotos({ slug }: { slug: string }) {
       const results = await uploadPhotosToServer(fileArr, (done, total, bytesPerSecond) => {
         setUploadStats(prev => prev ? { ...prev, done, total, speed: bytesPerSecond } : null);
       }, slug, 3, selectedAlbum?.title, selectedAlbum?.id);
-      const newPhotos: Photo[] = results.map(r => ({
+      const newPhotos: Photo[] = results.filter(r => isSupportedPhotoSource(r.url)).map(r => ({
         id: r.id, src: r.url, thumbnail: r.url + "?size=thumb&wm=0",
         title: r.originalName.replace(/\.[^.]+$/, "").replace(/^_+/, ""),
         width: r.width ?? 800, height: r.height ?? 600,
