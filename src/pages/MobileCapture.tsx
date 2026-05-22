@@ -1118,6 +1118,14 @@ function MobileCaptureInner() {
     if (isNative) checkCamera();
   };
 
+  useEffect(() => {
+    if (selectedBooking || bookings.length === 0) return;
+    const bookingId = new URLSearchParams(window.location.search).get("bookingId");
+    if (!bookingId) return;
+    const booking = bookings.find((bk) => bk.id === bookingId);
+    if (booking) selectBooking(booking);
+  }, [bookings, selectedBooking, selectBooking]);
+
   const importCameraFiles = async (handles: number[]) => {
     const album = targetAlbumRef.current;
     if (!album || handles.length === 0) return;

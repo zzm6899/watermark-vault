@@ -12,6 +12,7 @@ import {
   Star, CheckCircle2, Sparkles, ChevronLeft, ChevronRight, Flag, FileText, Receipt, Printer, AlertCircle, BookOpen,
   ArrowUpDown, MoreHorizontal, TrendingUp, TrendingDown, Key, Globe, Wifi,
   Maximize2, Check, PlusCircle, Pencil, Tags, CalendarDays, Share2, ClipboardList,
+  RadioTower,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -34,6 +35,14 @@ import {
 } from "@/lib/storage";
 import { compressImage, formatBytes, formatSpeed, getLocalStorageUsage, generateThumbnail } from "@/lib/image-utils";
 import {
+  getAlbumCaptureStats,
+  getBookingAlbum,
+  getReadinessWarnings,
+  getSessionStatus,
+  getShootDayBookings,
+  localDateString,
+} from "@/lib/shoot-day";
+import {
   uploadPhotosToServer,
   isSupportedUploadFile,
   isServerMode,
@@ -46,8 +55,13 @@ import {
   syncBookingToCalendar,
   syncTenantBookingToCalendar,
   getServerStorageStats,
+  downloadServerBackup,
   syncFromServer,
   sendEmail,
+  getEmailStatus,
+  getEmailAutomations,
+  saveEmailAutomations,
+  previewEmailAutomation,
   syncBookingsToSheet,
   getBookingEmailLog,
   sendBookingReminder,
@@ -121,7 +135,7 @@ import {
   uploadXmpPresets,
   deleteXmpPreset,
 } from "@/lib/api";
-import type { CacheBreakdown, ManualEditParams, PresetEditParams, XmpPreset, PhotoEditRequest } from "@/lib/api";
+import type { CacheBreakdown, EmailAutomationPreview, ManualEditParams, PresetEditParams, XmpPreset, PhotoEditRequest } from "@/lib/api";
 import RichTextEditor, { RichTextDisplay } from "@/components/RichTextEditor";
 import LoginPage from "@/pages/LoginPage";
 import type {
@@ -130,7 +144,7 @@ import type {
   Album, Photo, PaymentStatus, AlbumDisplaySize, AlbumDownloadRecord, DownloadHistoryEntry,
   EmailTemplate, WaitlistEntry, Invoice, InvoiceItem, InvoiceParty, InvoiceStatus, Contact,
   Enquiry, EnquiryStatus, LicenseKey, Tenant, LicensePlan, LicensePurchase, TenantSettings, EventSlotRequest,
-  Expense, Quote, Tag, BookingTask, BookingSource,
+  Expense, Quote, Tag, BookingTask, BookingSource, EmailAutomationRule, EmailAutomationReminderType, EmailAutomationTrigger,
 } from "@/lib/types";
 import WatermarkedImage from "@/components/WatermarkedImage";
 import ProgressiveImg from "@/components/ProgressiveImg";
@@ -142,10 +156,11 @@ import sampleWedding from "@/assets/sample-wedding.jpg";
 import sampleEvent from "@/assets/sample-event.jpg";
 import sampleFood from "@/assets/sample-food.jpg";
 
-type Tab = "dashboard" | "bookings" | "events" | "albums" | "photos" | "finance" | "invoices" | "contacts" | "enquiries" | "profile" | "settings" | "storage" | "platform";
+type Tab = "dashboard" | "shoot-day" | "bookings" | "events" | "albums" | "photos" | "finance" | "invoices" | "contacts" | "enquiries" | "profile" | "settings" | "storage" | "platform";
 
 const TAB_ROUTE_MAP: Record<string, Tab> = {
   dashboard: "dashboard",
+  "shoot-day": "shoot-day",
   bookings: "bookings",
   events: "events",
   albums: "albums",
@@ -162,6 +177,7 @@ const TAB_ROUTE_MAP: Record<string, Tab> = {
 
 const ADMIN_TAB_LABELS: Record<Tab, string> = {
   dashboard: "Dashboard",
+  "shoot-day": "Shoot Day",
   bookings: "Bookings",
   events: "Events",
   albums: "Albums",
@@ -734,6 +750,7 @@ export default function Admin() {
 
   const tabs = [
     { id: "dashboard" as Tab, label: "Dashboard", icon: LayoutDashboard },
+    { id: "shoot-day" as Tab, label: "Shoot Day", icon: RadioTower },
     { id: "bookings" as Tab, label: "Bookings", icon: Calendar },
     { id: "events" as Tab, label: "Events", icon: Clock },
     { id: "albums" as Tab, label: "Albums", icon: Image },
@@ -868,6 +885,7 @@ export default function Admin() {
             </div>
           )}
           {activeTab === "dashboard" && <DashboardView />}
+          {activeTab === "shoot-day" && <ShootDayCommandCenterView />}
           {activeTab === "bookings" && <BookingsView onCreateAlbum={handleCreateAlbumForBooking} />}
           {activeTab === "events" && <EventTypesView />}
           {activeTab === "albums" && <AlbumsView prefillBookingId={prefillBookingId} onClearPrefill={() => setPrefillBookingId(null)} />}
@@ -883,6 +901,713 @@ export default function Admin() {
         </main>
       </div>
     </div>
+  );
+}
+
+// ─── Shoot Day Command Center ─────────────────────────
+function escapeRunSheetHtml(value: unknown): string {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function runSheetCsvCell(value: unknown): string {
+  const text = String(value ?? "");
+  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+function uniqueAlbumSlug(base: string, albums: Album[]): string {
+  const fallback = `album-${Date.now()}`;
+  const root = slugify(base) || fallback;
+  const existing = new Set(albums.map((album) => album.slug).filter(Boolean));
+  if (!existing.has(root)) return root;
+  let i = 2;
+  while (existing.has(`${root}-${i}`)) i++;
+  return `${root}-${i}`;
+}
+
+function findShootDayAlbumCandidate(booking: Booking, albums: Album[]): Album | null {
+  const bookingDate = booking.date || "";
+  const clientName = (booking.clientName || "").trim().toLowerCase();
+  const clientEmail = (booking.clientEmail || "").trim().toLowerCase();
+  const candidates = albums.filter((album) => {
+    if (album.bookingId || album.id === booking.albumId) return false;
+    const albumClient = (album.clientName || "").trim().toLowerCase();
+    const albumEmail = (album.clientEmail || "").trim().toLowerCase();
+    const albumTitle = (album.title || "").trim().toLowerCase();
+    const emailMatch = !!clientEmail && albumEmail === clientEmail;
+    const nameMatch = !!clientName && (albumClient === clientName || albumTitle.includes(clientName));
+    const dateMatch = !album.date || !bookingDate || album.date === bookingDate || albumTitle.includes(bookingDate);
+    return (emailMatch || nameMatch) && dateMatch;
+  });
+  return candidates.length === 1 ? candidates[0] : null;
+}
+
+function ShootDayCommandCenterView() {
+  const navigate = useNavigate();
+  const [selectedDate, setSelectedDate] = useState(localDateString());
+  const [refreshTick, setRefreshTick] = useState(0);
+  const [messageSubject, setMessageSubject] = useState("Quick update for your {{eventTitle}} session");
+  const [messageBody, setMessageBody] = useState("Hi {{firstName}},\n\nJust a quick update about your {{eventTitle}} session today at {{timeFormatted}}.\n\nThanks!");
+  const [sendingShootDayMessage, setSendingShootDayMessage] = useState(false);
+  const bookings = getBookings();
+  const albums = getAlbums();
+  const eventTypes = getEventTypes();
+  const settings = getSettings();
+  const eventTypeMap = new Map(eventTypes.map((eventType) => [eventType.id, eventType]));
+  const dayBookings = getShootDayBookings(bookings, selectedDate);
+  const sessions = dayBookings.map((booking) => {
+    const album = getBookingAlbum(booking, albums);
+    const stats = getAlbumCaptureStats(album);
+    const eventType = eventTypeMap.get(booking.eventTypeId);
+    const readiness = getReadinessWarnings(booking, album, eventType);
+    return {
+      booking,
+      album,
+      stats,
+      eventType,
+      readiness,
+      status: getSessionStatus(booking, album),
+    };
+  });
+  const activeSession = sessions.find((session) => session.status === "next-up" || session.status === "in-progress") || sessions[0] || null;
+  const totals = sessions.reduce((acc, session) => {
+    acc.photos += session.stats.total;
+    acc.picks += session.stats.picks;
+    acc.review += session.stats.review;
+    acc.rejects += session.stats.rejects;
+    acc.openWarnings += session.readiness.warnings.length + session.readiness.blockers.length;
+    return acc;
+  }, { photos: 0, picks: 0, review: 0, rejects: 0, openWarnings: 0 });
+
+  useEffect(() => {
+    const handler = () => setRefreshTick((tick) => tick + 1);
+    window.addEventListener("storage-synced", handler);
+    return () => window.removeEventListener("storage-synced", handler);
+  }, []);
+
+  useEffect(() => {
+    void refreshTick;
+  }, [refreshTick]);
+
+  const setBookingStatus = (booking: Booking, status: Booking["status"]) => {
+    const statusHistory = [
+      ...(booking.statusHistory || []),
+      { status, changedAt: new Date().toISOString(), note: "Updated from Shoot Day" },
+    ];
+    updateBooking({ ...booking, status, statusHistory });
+    setRefreshTick((tick) => tick + 1);
+    window.dispatchEvent(new CustomEvent("storage-synced"));
+    toast.success(`Marked ${booking.clientName || "booking"} ${status}`);
+  };
+
+  const toggleShootDayTask = async (booking: Booking, taskId: string) => {
+    const tasks = (booking.tasks || []).map((task) => {
+      if (task.id !== taskId) return task;
+      const completed = !task.completed;
+      return { ...task, completed, completedAt: completed ? new Date().toISOString() : undefined };
+    });
+    updateBooking({ ...booking, tasks });
+    setRefreshTick((tick) => tick + 1);
+    window.dispatchEvent(new CustomEvent("storage-synced"));
+    if (isServerMode()) {
+      const savedTasks = await updateBookingTasks(booking.id, tasks);
+      updateBooking({ ...booking, tasks: savedTasks });
+      setRefreshTick((tick) => tick + 1);
+      window.dispatchEvent(new CustomEvent("storage-synced"));
+    }
+  };
+
+  const copyShootDayContact = async (booking: Booking) => {
+    const phone = (booking as any).phone || "";
+    const text = [
+      booking.clientName,
+      booking.clientEmail,
+      phone,
+      booking.instagramHandle ? `@${booking.instagramHandle.replace("@", "")}` : "",
+    ].filter(Boolean).join("\n");
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      toast.success("Contact copied");
+    } catch {
+      toast.error("Failed to copy contact");
+    }
+  };
+
+  const createShootDayAlbum = (booking: Booking, eventType?: EventType) => {
+    if (getBookingAlbum(booking, getAlbums())) {
+      toast.info("This booking already has a linked album");
+      setRefreshTick((tick) => tick + 1);
+      return;
+    }
+    const albumTitle = `${booking.clientName || "Client"} - ${eventType?.title || booking.type || "Session"}`;
+    const album: Album = {
+      id: generateId("alb"),
+      slug: uniqueAlbumSlug(`${booking.clientName || booking.type || "album"}-${booking.date}`, getAlbums()),
+      title: albumTitle,
+      description: booking.notes || "",
+      coverImage: "",
+      date: booking.date || localDateString(),
+      photoCount: 0,
+      freeDownloads: settings.defaultFreeDownloads,
+      pricePerPhoto: settings.defaultPricePerPhoto,
+      priceFullAlbum: settings.defaultPriceFullAlbum,
+      isPublic: true,
+      photos: [],
+      clientName: booking.clientName,
+      clientEmail: booking.clientEmail,
+      instagramHandle: booking.instagramHandle,
+      bookingId: booking.id,
+      clientToken: `ct-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+      status: "editing",
+      proofingEnabled: !!settings.proofingEnabled,
+      proofingStage: "not-started",
+      _photosStripped: false,
+    };
+    addAlbum(album);
+    updateBooking({ ...booking, albumId: album.id });
+    setRefreshTick((tick) => tick + 1);
+    window.dispatchEvent(new CustomEvent("storage-synced"));
+    toast.success(`Album created for ${booking.clientName || "session"}`);
+    return album;
+  };
+
+  const ensureShootDayClientToken = (album: Album): Album => {
+    if (album.clientToken) return album;
+    const updated = { ...album, clientToken: `ct-${Date.now()}-${Math.random().toString(36).slice(2, 10)}` };
+    updateAlbum(updated);
+    setRefreshTick((tick) => tick + 1);
+    window.dispatchEvent(new CustomEvent("storage-synced"));
+    return updated;
+  };
+
+  const shootDayGalleryPath = (album: Album, absolute = false): string => {
+    const target = album.slug || album.id;
+    const path = `/gallery/${target}${album.clientToken ? `?token=${encodeURIComponent(album.clientToken)}` : ""}`;
+    return absolute ? `${window.location.origin}${path}` : path;
+  };
+
+  const openShootDayGallery = (album: Album) => {
+    const linkedAlbum = ensureShootDayClientToken(album);
+    window.open(shootDayGalleryPath(linkedAlbum), "_blank");
+  };
+
+  const copyShootDayGalleryLink = async (album: Album) => {
+    const linkedAlbum = ensureShootDayClientToken(album);
+    try {
+      await navigator.clipboard.writeText(shootDayGalleryPath(linkedAlbum, true));
+      toast.success("Gallery link copied");
+    } catch {
+      toast.error("Failed to copy gallery link");
+    }
+  };
+
+  const linkShootDayAlbum = (booking: Booking, album: Album) => {
+    const updatedAlbum = { ...album, bookingId: booking.id };
+    const updatedBooking = { ...booking, albumId: album.id };
+    updateAlbum(updatedAlbum);
+    updateBooking(updatedBooking);
+    setRefreshTick((tick) => tick + 1);
+    window.dispatchEvent(new CustomEvent("storage-synced"));
+    toast.success(`Linked ${album.title} to ${booking.clientName || "booking"}`);
+  };
+
+  const autoLinkShootDayAlbums = () => {
+    let linked = 0;
+    for (const session of sessions) {
+      if (session.album) continue;
+      const candidate = findShootDayAlbumCandidate(session.booking, getAlbums());
+      if (!candidate) continue;
+      updateAlbum({ ...candidate, bookingId: session.booking.id });
+      updateBooking({ ...session.booking, albumId: candidate.id });
+      linked++;
+    }
+    setRefreshTick((tick) => tick + 1);
+    window.dispatchEvent(new CustomEvent("storage-synced"));
+    if (linked > 0) toast.success(`Linked ${linked} album${linked !== 1 ? "s" : ""}`);
+    else toast.info("No clear album matches found");
+  };
+
+  const wrapShootDaySession = async (booking: Booking, album: Album | null, eventType?: EventType) => {
+    const linkedAlbum = album || createShootDayAlbum(booking, eventType) || getBookingAlbum(booking, getAlbums());
+    const statusHistory = [
+      ...(booking.statusHistory || []),
+      { status: "completed" as const, changedAt: new Date().toISOString(), note: "Wrapped from Shoot Day" },
+    ];
+    updateBooking({ ...booking, status: "completed", albumId: linkedAlbum?.id || booking.albumId, statusHistory });
+    if (linkedAlbum) {
+      const tokenAlbum = ensureShootDayClientToken(linkedAlbum);
+      try {
+        await navigator.clipboard.writeText(shootDayGalleryPath(tokenAlbum, true));
+        toast.success(`Session wrapped. Gallery link copied.`);
+      } catch {
+        toast.success("Session wrapped");
+      }
+    } else {
+      toast.success("Session wrapped");
+    }
+    setRefreshTick((tick) => tick + 1);
+    window.dispatchEvent(new CustomEvent("storage-synced"));
+  };
+
+  const applyShootDayMessageTemplate = (kind: "ready" | "late" | "gallery") => {
+    if (kind === "ready") {
+      setMessageSubject("Ready for your {{eventTitle}} session");
+      setMessageBody("Hi {{firstName}},\n\nWe are ready for your {{eventTitle}} session. You can head over when you are ready.\n\nSee you soon!");
+    } else if (kind === "late") {
+      setMessageSubject("Quick timing update for {{eventTitle}}");
+      setMessageBody("Hi {{firstName}},\n\nWe are running a few minutes behind for your {{eventTitle}} session today. Thanks for your patience - I will let you know as soon as we are ready.\n\nThank you!");
+    } else {
+      setMessageSubject("Your gallery link for {{eventTitle}}");
+      setMessageBody("Hi {{firstName}},\n\nYour gallery link is ready:\n\n{{galleryLink}}\n\nThanks again!");
+    }
+  };
+
+  const sendShootDayMessage = async (session: typeof activeSession) => {
+    if (!session || !session.booking.clientEmail) {
+      toast.error("This booking has no client email");
+      return;
+    }
+    if (!isServerMode()) {
+      toast.error("Email sending requires the server backend");
+      return;
+    }
+    const albumForLink = session.album ? ensureShootDayClientToken(session.album) : null;
+    const galleryLink = albumForLink ? shootDayGalleryPath(albumForLink, true) : "";
+    const varsBooking = { ...session.booking, galleryLink } as Booking & { galleryLink?: string };
+    const subject = replaceBookingVars(messageSubject, varsBooking, eventTypes).replace(/\{\{galleryLink\}\}/g, galleryLink);
+    const text = replaceBookingVars(messageBody, varsBooking, eventTypes).replace(/\{\{galleryLink\}\}/g, galleryLink);
+    const html = `<div style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:32px;background:#0a0a0a;color:#f5f5f5;border-radius:12px;"><p style="color:#ccc;line-height:1.8;white-space:pre-wrap;">${escapeRunSheetHtml(text)}</p></div>`;
+    setSendingShootDayMessage(true);
+    const result = await sendCustomEmail(session.booking.clientEmail, subject, html, text, session.booking.id);
+    setSendingShootDayMessage(false);
+    if (result.ok) toast.success(`Message sent to ${session.booking.clientName || session.booking.clientEmail}`);
+    else toast.error(result.error || "Failed to send message");
+  };
+
+  const buildRunSheetRows = () => sessions.map((session) => {
+    const taskTotal = session.booking.tasks?.length || 0;
+    const taskDone = (session.booking.tasks || []).filter((task) => task.completed).length;
+    return {
+      time: session.booking.time || "",
+      client: session.booking.clientName || "Unnamed client",
+      email: session.booking.clientEmail || "",
+      event: session.eventType?.title || session.booking.type || "",
+      duration: formatDuration(session.booking.duration || session.eventType?.durations?.[0] || 0),
+      status: session.status.replace("-", " "),
+      payment: session.booking.paymentStatus || "",
+      album: session.album?.title || "Not linked",
+      photos: session.stats.total,
+      picks: session.stats.picks,
+      review: session.stats.review,
+      tasks: taskTotal > 0 ? `${taskDone}/${taskTotal}` : "No checklist",
+      warnings: [...session.readiness.blockers, ...session.readiness.warnings].join("; "),
+      notes: session.booking.notes || "",
+    };
+  });
+
+  const exportRunSheetCsv = () => {
+    const rows = buildRunSheetRows();
+    const headers = ["Time", "Client", "Email", "Event", "Duration", "Status", "Payment", "Album", "Photos", "Picks", "Review", "Tasks", "Warnings", "Notes"];
+    const body = rows.map(row => [
+      row.time,
+      row.client,
+      row.email,
+      row.event,
+      row.duration,
+      row.status,
+      row.payment,
+      row.album,
+      row.photos,
+      row.picks,
+      row.review,
+      row.tasks,
+      row.warnings,
+      row.notes,
+    ].map(runSheetCsvCell).join(","));
+    const csv = [headers.map(runSheetCsvCell).join(","), ...body].join("\r\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `shoot-day-${selectedDate}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast.success(`Exported ${rows.length} session${rows.length !== 1 ? "s" : ""}`);
+  };
+
+  const printRunSheet = () => {
+    const rows = buildRunSheetRows();
+    const html = `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Shoot Day Run Sheet ${escapeRunSheetHtml(selectedDate)}</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 32px; color: #111827; font-family: Arial, sans-serif; }
+    header { display: flex; justify-content: space-between; gap: 24px; align-items: flex-start; border-bottom: 2px solid #111827; padding-bottom: 16px; margin-bottom: 20px; }
+    h1 { font-size: 24px; margin: 0 0 6px; }
+    .meta { color: #4b5563; font-size: 12px; }
+    .stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin-bottom: 18px; }
+    .stat { border: 1px solid #d1d5db; border-radius: 8px; padding: 8px; }
+    .stat strong { display: block; font-size: 18px; }
+    .stat span { color: #6b7280; font-size: 10px; text-transform: uppercase; letter-spacing: .06em; }
+    table { width: 100%; border-collapse: collapse; font-size: 11px; }
+    th { text-align: left; background: #f3f4f6; border: 1px solid #d1d5db; padding: 7px; text-transform: uppercase; font-size: 9px; letter-spacing: .05em; }
+    td { vertical-align: top; border: 1px solid #d1d5db; padding: 7px; }
+    .client { font-weight: 700; }
+    .muted { color: #6b7280; font-size: 10px; }
+    .warnings { color: #b45309; }
+    @media print { body { margin: 18mm; } button { display: none; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Shoot Day Run Sheet</h1>
+      <div class="meta">${escapeRunSheetHtml(selectedDate)} · ${rows.length} session${rows.length !== 1 ? "s" : ""}</div>
+    </div>
+    <div class="meta">Generated ${escapeRunSheetHtml(new Date().toLocaleString())}</div>
+  </header>
+  <section class="stats">
+    <div class="stat"><strong>${sessions.length}</strong><span>Sessions</span></div>
+    <div class="stat"><strong>${totals.photos}</strong><span>Photos</span></div>
+    <div class="stat"><strong>${totals.picks}</strong><span>Picks</span></div>
+    <div class="stat"><strong>${totals.review}</strong><span>Review</span></div>
+    <div class="stat"><strong>${totals.openWarnings}</strong><span>Warnings</span></div>
+  </section>
+  <table>
+    <thead><tr><th>Time</th><th>Client</th><th>Session</th><th>Capture</th><th>Readiness</th><th>Notes</th></tr></thead>
+    <tbody>
+      ${rows.map(row => `<tr>
+        <td>${escapeRunSheetHtml(row.time)}<div class="muted">${escapeRunSheetHtml(row.status)}</div></td>
+        <td><div class="client">${escapeRunSheetHtml(row.client)}</div><div class="muted">${escapeRunSheetHtml(row.email)}</div></td>
+        <td>${escapeRunSheetHtml(row.event)}<div class="muted">${escapeRunSheetHtml(row.duration)} · ${escapeRunSheetHtml(row.payment)}</div></td>
+        <td>${escapeRunSheetHtml(row.album)}<div class="muted">${row.photos} photos · ${row.picks} picks · ${row.tasks} tasks</div></td>
+        <td class="warnings">${escapeRunSheetHtml(row.warnings || "Ready")}</td>
+        <td>${escapeRunSheetHtml(row.notes)}</td>
+      </tr>`).join("")}
+    </tbody>
+  </table>
+  <script>window.addEventListener("load", () => { window.print(); });</script>
+</body>
+</html>`;
+    const win = window.open("", "_blank");
+    if (!win) {
+      toast.error("Popup blocked. Allow popups to print the run sheet.");
+      return;
+    }
+    win.document.write(html);
+    win.document.close();
+  };
+
+  const statusClasses: Record<string, string> = {
+    "next-up": "bg-primary/15 text-primary border-primary/30",
+    "in-progress": "bg-green-500/15 text-green-400 border-green-500/30",
+    upcoming: "bg-secondary text-muted-foreground border-border",
+    done: "bg-blue-500/15 text-blue-300 border-blue-500/30",
+    past: "bg-muted text-muted-foreground border-border",
+  };
+
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-5">
+        <div>
+          <h2 className="font-display text-lg sm:text-2xl text-foreground">Shoot Day</h2>
+          <p className="text-xs font-body text-muted-foreground mt-1">Run sheet, capture state, client readiness, and gallery handoff for the selected day.</p>
+        </div>
+        <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-2">
+          <Input
+            type="date"
+            value={selectedDate}
+            onChange={(event) => setSelectedDate(event.target.value)}
+            className="bg-secondary border-border text-foreground font-body h-9 w-full sm:w-[150px]"
+          />
+          <Button size="sm" variant="outline" onClick={() => setSelectedDate(localDateString())} className="gap-2 font-body text-xs border-border text-foreground">
+            <CalendarDays className="w-4 h-4" /> Today
+          </Button>
+          <Button size="sm" variant="outline" onClick={autoLinkShootDayAlbums} disabled={sessions.length === 0} className="gap-2 font-body text-xs border-border text-foreground">
+            <Merge className="w-4 h-4" /> Auto-link
+          </Button>
+          <Button size="sm" variant="outline" onClick={exportRunSheetCsv} disabled={sessions.length === 0} className="gap-2 font-body text-xs border-border text-foreground">
+            <Download className="w-4 h-4" /> CSV
+          </Button>
+          <Button size="sm" variant="outline" onClick={printRunSheet} disabled={sessions.length === 0} className="gap-2 font-body text-xs border-border text-foreground">
+            <Printer className="w-4 h-4" /> Print
+          </Button>
+          <Button size="sm" onClick={() => navigate("/capture")} className="gap-2 font-body text-xs">
+            <Upload className="w-4 h-4" /> Capture
+          </Button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-5">
+        {[
+          { label: "Sessions", value: sessions.length, tone: "text-foreground" },
+          { label: "Photos", value: totals.photos, tone: "text-primary" },
+          { label: "Picks", value: totals.picks, tone: "text-green-400" },
+          { label: "Review", value: totals.review, tone: "text-yellow-400" },
+          { label: "Warnings", value: totals.openWarnings, tone: totals.openWarnings > 0 ? "text-orange-400" : "text-muted-foreground" },
+        ].map((item) => (
+          <div key={item.label} className="glass-panel rounded-xl p-4">
+            <p className={`font-display text-2xl ${item.tone}`}>{item.value}</p>
+            <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground">{item.label}</p>
+          </div>
+        ))}
+      </div>
+
+      <div className="grid lg:grid-cols-[1fr_360px] gap-5">
+        <div className="glass-panel rounded-xl p-4 sm:p-5">
+          <div className="flex items-center justify-between gap-3 mb-4">
+            <h3 className="font-display text-base text-foreground">Run Sheet</h3>
+            <span className="text-[10px] font-body tracking-wider uppercase text-muted-foreground">{selectedDate}</span>
+          </div>
+          {sessions.length === 0 ? (
+            <div className="py-12 text-center">
+              <Calendar className="w-10 h-10 text-muted-foreground/30 mx-auto mb-3" />
+              <p className="text-sm font-body text-muted-foreground">No bookings for this day.</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {sessions.map(({ booking, album, stats, eventType, readiness, status }) => {
+                const taskTotal = booking.tasks?.length || 0;
+                const taskDone = (booking.tasks || []).filter((task) => task.completed).length;
+                const phone = (booking as any).phone || "";
+                const location = eventType?.location || "";
+                const candidateAlbum = !album ? findShootDayAlbumCandidate(booking, albums) : null;
+                return (
+                  <div key={booking.id} className="rounded-xl border border-border/60 bg-secondary/25 p-4">
+                    <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap mb-1">
+                          <span className="font-display text-lg text-foreground">{booking.time}</span>
+                          <span className={`text-[10px] font-body px-2 py-0.5 rounded-full border ${statusClasses[status]}`}>{status.replace("-", " ")}</span>
+                          {booking.paymentStatus && <span className="text-[10px] font-body px-2 py-0.5 rounded-full bg-background text-muted-foreground border border-border">{booking.paymentStatus.replace("-", " ")}</span>}
+                        </div>
+                        <p className="text-sm font-body text-foreground truncate">{booking.clientName || "Unnamed client"}</p>
+                        <p className="text-xs font-body text-muted-foreground truncate">{eventType?.title || booking.type} · {formatDuration(booking.duration || eventType?.durations?.[0] || 0)}</p>
+                      </div>
+                      <div className="grid grid-cols-2 sm:flex sm:flex-wrap gap-2">
+                        <Button size="sm" variant="outline" onClick={() => navigate(`/capture?bookingId=${encodeURIComponent(booking.id)}`)} className="gap-1.5 text-xs font-body border-border text-foreground">
+                          <Camera className="w-3.5 h-3.5" /> Capture
+                        </Button>
+                        {album && (
+                          <Button size="sm" variant="outline" onClick={() => openShootDayGallery(album)} className="gap-1.5 text-xs font-body border-border text-foreground">
+                            <Eye className="w-3.5 h-3.5" /> Gallery
+                          </Button>
+                        )}
+                        {album && (
+                          <Button size="sm" variant="outline" onClick={() => copyShootDayGalleryLink(album)} className="gap-1.5 text-xs font-body border-border text-foreground">
+                            <Copy className="w-3.5 h-3.5" /> Link
+                          </Button>
+                        )}
+                        {booking.status !== "completed" && (
+                          <Button size="sm" variant="outline" onClick={() => setBookingStatus(booking, "completed")} className="gap-1.5 text-xs font-body border-green-500/40 text-green-400">
+                            <CheckCircle2 className="w-3.5 h-3.5" /> Complete
+                          </Button>
+                        )}
+                        <Button size="sm" variant="outline" onClick={() => wrapShootDaySession(booking, album, eventType)} className="gap-1.5 text-xs font-body border-blue-500/40 text-blue-300">
+                          <Check className="w-3.5 h-3.5" /> Wrap
+                        </Button>
+                        {!album && candidateAlbum && (
+                          <Button size="sm" variant="outline" onClick={() => linkShootDayAlbum(booking, candidateAlbum)} className="gap-1.5 text-xs font-body border-green-500/40 text-green-400">
+                            <Merge className="w-3.5 h-3.5" /> Link Album
+                          </Button>
+                        )}
+                        {!album && (
+                          <Button size="sm" variant="outline" onClick={() => createShootDayAlbum(booking, eventType)} className="gap-1.5 text-xs font-body border-primary/40 text-primary">
+                            <PlusCircle className="w-3.5 h-3.5" /> Create Album
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="mt-4 grid md:grid-cols-3 gap-2">
+                      <div className="rounded-lg bg-background/40 border border-border/40 p-2 min-w-0">
+                        <p className="text-[10px] font-body text-muted-foreground">Contact</p>
+                        <div className="flex items-center gap-2 min-w-0">
+                          <p className="text-xs font-body text-foreground truncate">
+                            {[booking.clientEmail, phone].filter(Boolean).join(" · ") || "No contact saved"}
+                          </p>
+                          {(booking.clientEmail || phone || booking.instagramHandle) && (
+                            <button type="button" onClick={() => copyShootDayContact(booking)} className="text-muted-foreground hover:text-foreground shrink-0" title="Copy contact">
+                              <Copy className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
+                        {booking.instagramHandle && (
+                          <p className="text-[10px] font-body text-primary truncate">@{booking.instagramHandle.replace("@", "")}</p>
+                        )}
+                      </div>
+                      <div className="rounded-lg bg-background/40 border border-border/40 p-2 min-w-0">
+                        <p className="text-[10px] font-body text-muted-foreground">Location</p>
+                        <p className="text-xs font-body text-foreground truncate">{location || "No location set"}</p>
+                      </div>
+                      <div className="rounded-lg bg-background/40 border border-border/40 p-2 min-w-0">
+                        <p className="text-[10px] font-body text-muted-foreground">Notes</p>
+                        <p className="text-xs font-body text-foreground truncate">{booking.notes || "No notes"}</p>
+                      </div>
+                    </div>
+
+                    <div className="grid sm:grid-cols-4 gap-2 mt-4">
+                      <div className="rounded-lg bg-background/50 border border-border/40 p-2">
+                        <p className="text-[10px] font-body text-muted-foreground">Album</p>
+                        <p className="text-xs font-body text-foreground truncate">{album ? album.title : "Not linked"}</p>
+                      </div>
+                      <div className="rounded-lg bg-background/50 border border-border/40 p-2">
+                        <p className="text-[10px] font-body text-muted-foreground">Photos</p>
+                        <p className="text-xs font-body text-foreground">{stats.total} total · {stats.picks} picks</p>
+                      </div>
+                      <div className="rounded-lg bg-background/50 border border-border/40 p-2">
+                        <p className="text-[10px] font-body text-muted-foreground">Proofing</p>
+                        <p className="text-xs font-body text-foreground truncate">{album?.proofingStage || album?.status || "Not started"}</p>
+                      </div>
+                      <div className="rounded-lg bg-background/50 border border-border/40 p-2">
+                        <p className="text-[10px] font-body text-muted-foreground">Tasks</p>
+                        <p className="text-xs font-body text-foreground">{taskTotal > 0 ? `${taskDone}/${taskTotal} done` : "No checklist"}</p>
+                      </div>
+                    </div>
+
+                    {(readiness.blockers.length > 0 || readiness.warnings.length > 0) && (
+                      <div className="mt-3 flex flex-wrap gap-1.5">
+                        {readiness.blockers.map((warning) => (
+                          <span key={warning} className="text-[10px] font-body px-2 py-1 rounded-full bg-destructive/10 text-destructive border border-destructive/30">{warning}</span>
+                        ))}
+                        {readiness.warnings.map((warning) => (
+                          <span key={warning} className="text-[10px] font-body px-2 py-1 rounded-full bg-orange-500/10 text-orange-300 border border-orange-500/25">{warning}</span>
+                        ))}
+                      </div>
+                    )}
+
+                    {(booking.tasks || []).length > 0 && (
+                      <div className="mt-3 border-t border-border/30 pt-3">
+                        <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-2">Checklist</p>
+                        <div className="grid sm:grid-cols-2 gap-2">
+                          {(booking.tasks || []).map((task) => (
+                            <button
+                              key={task.id}
+                              type="button"
+                              onClick={() => toggleShootDayTask(booking, task.id)}
+                              className={`flex items-start gap-2 text-left rounded-lg border px-2.5 py-2 transition-colors ${
+                                task.completed
+                                  ? "bg-green-500/10 border-green-500/25 text-green-300"
+                                  : "bg-background/40 border-border/40 text-foreground hover:border-primary/40"
+                              }`}
+                            >
+                              {task.completed ? <CheckSquare className="w-3.5 h-3.5 mt-0.5 shrink-0" /> : <Check className="w-3.5 h-3.5 mt-0.5 shrink-0 opacity-40" />}
+                              <span className="min-w-0">
+                                <span className={`block text-xs font-body ${task.completed ? "line-through" : ""}`}>{task.label}</span>
+                                {task.note && <span className="block text-[10px] font-body text-muted-foreground truncate">{task.note}</span>}
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <div className="glass-panel rounded-xl p-4 sm:p-5 h-fit">
+          <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-2">Current Focus</p>
+          {activeSession ? (
+            <>
+              <h3 className="font-display text-lg text-foreground truncate">{activeSession.booking.clientName || "Unnamed client"}</h3>
+              <p className="text-xs font-body text-muted-foreground mt-1">
+                {activeSession.booking.time} · {activeSession.eventType?.title || activeSession.booking.type}
+              </p>
+              <div className="grid grid-cols-2 gap-2 mt-4">
+                <div className="rounded-lg bg-secondary/40 border border-border/40 p-3">
+                  <p className="font-display text-xl text-primary">{activeSession.stats.total}</p>
+                  <p className="text-[10px] font-body text-muted-foreground uppercase">Photos</p>
+                </div>
+                <div className="rounded-lg bg-secondary/40 border border-border/40 p-3">
+                  <p className="font-display text-xl text-green-400">{activeSession.stats.picks}</p>
+                  <p className="text-[10px] font-body text-muted-foreground uppercase">Picks</p>
+                </div>
+                <div className="rounded-lg bg-secondary/40 border border-border/40 p-3">
+                  <p className="font-display text-xl text-yellow-400">{activeSession.stats.review}</p>
+                  <p className="text-[10px] font-body text-muted-foreground uppercase">Review</p>
+                </div>
+                <div className="rounded-lg bg-secondary/40 border border-border/40 p-3">
+                  <p className="font-display text-xl text-red-400">{activeSession.stats.rejects}</p>
+                  <p className="text-[10px] font-body text-muted-foreground uppercase">Rejects</p>
+                </div>
+              </div>
+              {activeSession.stats.latestCaptureAt && (
+                <p className="text-[10px] font-body text-muted-foreground mt-3">
+                  Latest capture {new Date(activeSession.stats.latestCaptureAt).toLocaleString("en-AU", { hour: "numeric", minute: "2-digit", day: "numeric", month: "short" })}
+                </p>
+              )}
+              <div className="flex flex-col gap-2 mt-4">
+                <Button onClick={() => navigate(`/capture?bookingId=${encodeURIComponent(activeSession.booking.id)}`)} className="gap-2 font-body text-xs">
+                  <Upload className="w-4 h-4" /> Open Capture
+                </Button>
+                {activeSession.album && (
+                  <Button variant="outline" onClick={() => openShootDayGallery(activeSession.album!)} className="gap-2 font-body text-xs border-border text-foreground">
+                    <ExternalLink className="w-4 h-4" /> Open Client Gallery
+                  </Button>
+                )}
+                {activeSession.album && (
+                  <Button variant="outline" onClick={() => copyShootDayGalleryLink(activeSession.album!)} className="gap-2 font-body text-xs border-border text-foreground">
+                    <Copy className="w-4 h-4" /> Copy Gallery Link
+                  </Button>
+                )}
+                <Button variant="outline" onClick={() => wrapShootDaySession(activeSession.booking, activeSession.album, activeSession.eventType)} className="gap-2 font-body text-xs border-blue-500/40 text-blue-300">
+                  <Check className="w-4 h-4" /> Wrap Session
+                </Button>
+              </div>
+
+              <div className="mt-5 border-t border-border/40 pt-4 space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground">Quick Message</p>
+                  <div className="flex flex-wrap gap-1">
+                    <button type="button" onClick={() => applyShootDayMessageTemplate("ready")} className="text-[10px] font-body px-2 py-1 rounded-md bg-secondary text-muted-foreground hover:text-foreground">Ready</button>
+                    <button type="button" onClick={() => applyShootDayMessageTemplate("late")} className="text-[10px] font-body px-2 py-1 rounded-md bg-secondary text-muted-foreground hover:text-foreground">Late</button>
+                    <button type="button" onClick={() => applyShootDayMessageTemplate("gallery")} className="text-[10px] font-body px-2 py-1 rounded-md bg-secondary text-muted-foreground hover:text-foreground">Gallery</button>
+                  </div>
+                </div>
+                <Input
+                  value={messageSubject}
+                  onChange={(event) => setMessageSubject(event.target.value)}
+                  className="bg-secondary border-border text-foreground font-body text-xs"
+                  placeholder="Subject"
+                />
+                <Textarea
+                  value={messageBody}
+                  onChange={(event) => setMessageBody(event.target.value)}
+                  className="bg-secondary border-border text-foreground font-body text-xs min-h-[96px]"
+                  placeholder="Message"
+                />
+                <p className="text-[10px] font-body text-muted-foreground/60">
+                  Variables: {"{{firstName}}"}, {"{{eventTitle}}"}, {"{{timeFormatted}}"}, {"{{galleryLink}}"}.
+                </p>
+                <Button
+                  size="sm"
+                  onClick={() => sendShootDayMessage(activeSession)}
+                  disabled={sendingShootDayMessage || !activeSession.booking.clientEmail || !messageSubject.trim() || !messageBody.trim()}
+                  className="w-full gap-2 font-body text-xs"
+                >
+                  <Send className="w-4 h-4" /> {sendingShootDayMessage ? "Sending..." : "Send Message"}
+                </Button>
+              </div>
+            </>
+          ) : (
+            <div className="py-10 text-center">
+              <RadioTower className="w-10 h-10 text-muted-foreground/30 mx-auto mb-3" />
+              <p className="text-sm font-body text-muted-foreground">Select a day with bookings to see the active session.</p>
+            </div>
+          )}
+        </div>
+      </div>
+    </motion.div>
   );
 }
 
@@ -3740,6 +4465,74 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
 }
 
 // ─── Album Editor ────────────────────────────────────
+type DeliveryChecklistItem = {
+  id: string;
+  label: string;
+  detail: string;
+  status: "ok" | "warning" | "blocker";
+};
+
+function buildDeliveryChecklist(album: Album, linkedBooking?: Booking, linkedInvoices: Invoice[] = []): DeliveryChecklistItem[] {
+  const photoCount = album.photos?.length || album.photoCount || 0;
+  const pendingRequests = (album.downloadRequests || []).filter((request) => request.status === "pending").length;
+  const outstandingInvoices = linkedInvoices.filter((invoice) => !["paid", "cancelled"].includes(invoice.status));
+  const proofingStage = album.proofingStage || "not-started";
+  const proofingInProgress = !!album.proofingEnabled && ["proofing", "selections-submitted", "editing"].includes(proofingStage);
+
+  return [
+    {
+      id: "photos",
+      label: "Photos ready",
+      detail: photoCount > 0 ? `${photoCount} photo${photoCount !== 1 ? "s" : ""} in this album` : "Add photos before delivery",
+      status: photoCount > 0 ? "ok" : "blocker",
+    },
+    {
+      id: "client-email",
+      label: "Client email",
+      detail: album.clientEmail ? album.clientEmail : "Delivery can continue, but no email will be sent",
+      status: album.clientEmail ? "ok" : "warning",
+    },
+    {
+      id: "proofing",
+      label: "Proofing state",
+      detail: !album.proofingEnabled
+        ? "Proofing is not enabled for this album"
+        : proofingStage === "finals-delivered"
+          ? "Finals already marked delivered"
+          : proofingInProgress
+            ? `Current stage: ${proofingStage.replace("-", " ")}`
+            : "No active proofing round",
+      status: proofingInProgress && proofingStage !== "finals-delivered" ? "warning" : "ok",
+    },
+    {
+      id: "payment",
+      label: "Payment",
+      detail: outstandingInvoices.length > 0
+        ? `${outstandingInvoices.length} linked invoice${outstandingInvoices.length !== 1 ? "s" : ""} still outstanding`
+        : linkedBooking?.paymentStatus && !["paid", "cash"].includes(linkedBooking.paymentStatus)
+          ? `Booking payment is ${linkedBooking.paymentStatus.replace("-", " ")}`
+          : "No outstanding linked payment found",
+      status: outstandingInvoices.length > 0 || (linkedBooking?.paymentStatus && !["paid", "cash"].includes(linkedBooking.paymentStatus)) ? "warning" : "ok",
+    },
+    {
+      id: "downloads",
+      label: "Download requests",
+      detail: pendingRequests > 0
+        ? `${pendingRequests} pending request${pendingRequests !== 1 ? "s" : ""}`
+        : album.lockDownloadsDuringProofing
+          ? "Downloads will unlock when finals are delivered"
+          : "No pending download requests",
+      status: pendingRequests > 0 ? "warning" : "ok",
+    },
+    {
+      id: "gallery-link",
+      label: "Gallery link",
+      detail: album.slug ? `/gallery/${album.slug}` : "A slug is required for a clean gallery link",
+      status: album.slug ? "ok" : "blocker",
+    },
+  ];
+}
+
 function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUpdate, onCancel }: {
   album: Album | null;
   bookings: Booking[];
@@ -3829,6 +4622,10 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
   const [editorGridSize, setEditorGridSize] = useState<"small" | "medium" | "large">("medium");
   const [editorLightboxPhoto, setEditorLightboxPhoto] = useState<Photo | null>(null);
   const existingAlbums = getAlbums();
+  const linkedBooking = bookingId ? bookings.find(b => b.id === bookingId) : undefined;
+  const linkedInvoices = !album ? [] : getInvoices().filter(invoice =>
+    invoice.albumId === album.id || (!!bookingId && invoice.bookingId === bookingId)
+  );
 
   const buildAlbumDraft = (nextPhotos: Photo[], nextCoverImage = coverImage): Album | null => {
     if (!title.trim()) return null;
@@ -4033,6 +4830,11 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
       }
     }
   };
+
+  const deliveryDraft = album ? buildAlbumDraft(photos) : null;
+  const deliveryChecklist = deliveryDraft ? buildDeliveryChecklist(deliveryDraft, linkedBooking, linkedInvoices) : [];
+  const deliveryBlockers = deliveryChecklist.filter(item => item.status === "blocker");
+  const deliveryWarnings = deliveryChecklist.filter(item => item.status === "warning");
 
   return (
     <div className="glass-panel rounded-xl p-6 mb-6 space-y-5">
@@ -4789,15 +5591,63 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
 
       {/* One-click delivery */}
       {!isNew && album && album.status !== "delivered" && (
-        <div className="p-4 rounded-lg bg-green-500/5 border border-green-500/20 space-y-2">
-          <div className="flex items-center gap-2">
-            <CheckCircle2 className="w-4 h-4 text-green-400" />
-            <p className="text-xs font-body text-green-400 font-medium">One-Click Delivery</p>
+        <div className="p-4 rounded-lg bg-green-500/5 border border-green-500/20 space-y-3">
+          <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 text-green-400" />
+                <p className="text-xs font-body text-green-400 font-medium">Smart Delivery Checklist</p>
+              </div>
+              <p className="text-[10px] font-body text-muted-foreground mt-1">Checks client, proofing, payment, downloads, and gallery link before one-click delivery.</p>
+            </div>
+            <span className={`text-[10px] font-body px-2 py-1 rounded-full border shrink-0 ${
+              deliveryBlockers.length > 0
+                ? "bg-destructive/10 text-destructive border-destructive/30"
+                : deliveryWarnings.length > 0
+                  ? "bg-orange-500/10 text-orange-300 border-orange-500/30"
+                  : "bg-green-500/10 text-green-400 border-green-500/30"
+            }`}>
+              {deliveryBlockers.length > 0
+                ? `${deliveryBlockers.length} blocker${deliveryBlockers.length !== 1 ? "s" : ""}`
+                : deliveryWarnings.length > 0
+                  ? `${deliveryWarnings.length} warning${deliveryWarnings.length !== 1 ? "s" : ""}`
+                  : "Ready"}
+            </span>
           </div>
-          <p className="text-[10px] font-body text-muted-foreground">Instantly: removes watermarks, marks as delivered, makes public, and emails client if email is set.</p>
+          <div className="grid md:grid-cols-2 gap-2">
+            {deliveryChecklist.map((item) => (
+              <div key={item.id} className={`p-2.5 rounded-lg border flex gap-2 ${
+                item.status === "ok"
+                  ? "bg-secondary/30 border-border/40"
+                  : item.status === "warning"
+                    ? "bg-orange-500/5 border-orange-500/20"
+                    : "bg-destructive/5 border-destructive/25"
+              }`}>
+                {item.status === "ok" ? (
+                  <CheckCircle2 className="w-4 h-4 text-green-400 shrink-0 mt-0.5" />
+                ) : item.status === "warning" ? (
+                  <AlertTriangle className="w-4 h-4 text-orange-300 shrink-0 mt-0.5" />
+                ) : (
+                  <AlertCircle className="w-4 h-4 text-destructive shrink-0 mt-0.5" />
+                )}
+                <div className="min-w-0">
+                  <p className="text-xs font-body text-foreground">{item.label}</p>
+                  <p className="text-[10px] font-body text-muted-foreground truncate">{item.detail}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+          <p className="text-[10px] font-body text-muted-foreground">Delivery removes watermarks, marks the album delivered, makes it public, and emails the client when an email is set.</p>
           <button
             onClick={async () => {
-              if (!confirm("Deliver this gallery to the client? This will disable watermarks and make the album public.")) return;
+              if (deliveryBlockers.length > 0) {
+                toast.error(`Resolve ${deliveryBlockers.length} delivery blocker${deliveryBlockers.length !== 1 ? "s" : ""} first`);
+                return;
+              }
+              const warningText = deliveryWarnings.length > 0
+                ? `\n\nWarnings:\n${deliveryWarnings.map(item => `- ${item.label}: ${item.detail}`).join("\n")}`
+                : "";
+              if (!confirm(`Deliver this gallery to the client? This will disable watermarks and make the album public.${warningText}`)) return;
               const result = await deliverAlbum(album.id);
               if (result?.ok) {
                 toast.success(`Gallery delivered!${result.emailSent ? " Client notified by email." : ""}`);
@@ -4806,7 +5656,8 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
                 toast.error("Delivery failed — check server connection");
               }
             }}
-            className="inline-flex items-center gap-1.5 text-xs font-body px-3 py-1.5 rounded-lg bg-green-500/15 text-green-400 hover:bg-green-500/25 border border-green-500/30 transition-colors"
+            disabled={deliveryBlockers.length > 0}
+            className="inline-flex items-center gap-1.5 text-xs font-body px-3 py-1.5 rounded-lg bg-green-500/15 text-green-400 hover:bg-green-500/25 border border-green-500/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <Send className="w-3.5 h-3.5" /> Deliver Gallery Now
           </button>
@@ -8448,6 +9299,85 @@ function ProfileView() {
 }
 
 // ─── Contacts ────────────────────────────────────────
+type ClientTimelineItem = {
+  id: string;
+  at: string;
+  type: "booking" | "invoice" | "album" | "download" | "email";
+  title: string;
+  detail: string;
+};
+
+function contactMatchesClient(contact: Contact, name?: string, email?: string): boolean {
+  const contactEmail = contact.email.trim().toLowerCase();
+  const candidateEmail = (email || "").trim().toLowerCase();
+  if (contactEmail && candidateEmail && contactEmail === candidateEmail) return true;
+  return !!contact.name && !!name && contact.name.trim().toLowerCase() === name.trim().toLowerCase();
+}
+
+function buildClientTimeline(contact: Contact, bookings: Booking[], invoices: Invoice[], albums: Album[]): ClientTimelineItem[] {
+  const items: ClientTimelineItem[] = [];
+  const matchedBookings = bookings.filter(booking => contactMatchesClient(contact, booking.clientName, booking.clientEmail));
+  const matchedInvoices = invoices.filter(invoice => contactMatchesClient(contact, invoice.to?.name, invoice.to?.email));
+  const matchedAlbums = albums.filter(album => contactMatchesClient(contact, album.clientName, album.clientEmail));
+
+  for (const booking of matchedBookings) {
+    items.push({
+      id: `booking-${booking.id}`,
+      at: `${booking.date || booking.createdAt}T${booking.time || "00:00"}`,
+      type: "booking",
+      title: `${booking.type || "Booking"} ${booking.status}`,
+      detail: `${booking.date}${booking.time ? ` at ${booking.time}` : ""}${booking.paymentStatus ? ` · ${booking.paymentStatus.replace("-", " ")}` : ""}`,
+    });
+    for (const entry of booking.emailLog || []) {
+      const sentAt = entry.sentAt || entry.at || entry.createdAt;
+      if (!sentAt) continue;
+      items.push({
+        id: `email-${booking.id}-${sentAt}`,
+        at: sentAt,
+        type: "email",
+        title: entry.subject || entry.type || "Email sent",
+        detail: `Booking email${entry.to ? ` to ${entry.to}` : ""}`,
+      });
+    }
+  }
+
+  for (const invoice of matchedInvoices) {
+    items.push({
+      id: `invoice-${invoice.id}`,
+      at: invoice.paidAt || invoice.sentAt || invoice.createdAt,
+      type: "invoice",
+      title: `${invoice.number} ${invoice.status}`,
+      detail: `$${calcInvTotal(invoice).toFixed(2)} · due ${invoice.dueDate || "not set"}`,
+    });
+  }
+
+  for (const album of matchedAlbums) {
+    const count = album.photoCount || album.photos?.length || 0;
+    items.push({
+      id: `album-${album.id}`,
+      at: album.deliveredAt || album.date || new Date().toISOString(),
+      type: "album",
+      title: `${album.title} ${album.status || "album"}`,
+      detail: `${count} photo${count !== 1 ? "s" : ""}`,
+    });
+    for (const entry of album.downloadHistory || []) {
+      const downloadCount = entry.photoCount ?? entry.photoIds?.length ?? 0;
+      items.push({
+        id: `download-${album.id}-${entry.downloadedAt}`,
+        at: entry.downloadedAt,
+        type: "download",
+        title: "Gallery downloaded",
+        detail: `${downloadCount} photo${downloadCount !== 1 ? "s" : ""} · ${entry.quality || "original"}`,
+      });
+    }
+  }
+
+  return items
+    .filter(item => item.at)
+    .sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime())
+    .slice(0, 12);
+}
+
 function ContactsView() {
   const [contacts, setContactsState] = useState<Contact[]>(() => getContacts());
   const [editing, setEditing] = useState<Contact | null>(null);
@@ -8455,6 +9385,7 @@ function ContactsView() {
   const [expandedContactId, setExpandedContactId] = useState<string | null>(null);
   const bookings = getBookings();
   const invoices = getInvoices();
+  const albums = getAlbums();
 
   const emptyContact = (): Contact => ({
     id: generateId("contact"),
@@ -8573,11 +9504,12 @@ function ContactsView() {
       ) : (
         <div className="space-y-2">
           {filtered.map(c => {
-            const cBookings = bookings.filter(b => b.clientEmail === c.email || b.clientName === c.name);
-            const cInvoices = invoices.filter(i => i.to.email === c.email || i.to.name === c.name);
+            const cBookings = bookings.filter(b => contactMatchesClient(c, b.clientName, b.clientEmail));
+            const cInvoices = invoices.filter(i => contactMatchesClient(c, i.to?.name, i.to?.email));
             const cTotal = cInvoices.reduce((s, i) => s + calcInvTotal(i), 0);
             const isExpanded = expandedContactId === c.id;
             const sortedBookings = [...cBookings].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+            const timeline = buildClientTimeline(c, bookings, invoices, albums);
             return (
             <div key={c.id} className="glass-panel rounded-xl overflow-hidden">
               {/* ── Header row ── */}
@@ -8639,6 +9571,38 @@ function ContactsView() {
                   {c.notes && (
                     <p className="font-body text-[10px] text-muted-foreground/70 mt-2 pt-2 border-t border-border/20 italic">{c.notes}</p>
                   )}
+                  <div className="mt-3 pt-3 border-t border-border/20">
+                    <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-2">Client Timeline</p>
+                    {timeline.length === 0 ? (
+                      <p className="text-[11px] font-body text-muted-foreground/60">No timeline activity found yet.</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {timeline.map(item => {
+                          const Icon =
+                            item.type === "booking" ? Calendar :
+                            item.type === "invoice" ? Receipt :
+                            item.type === "album" ? Image :
+                            item.type === "download" ? Download :
+                            Mail;
+                          const dateLabel = new Date(item.at).toLocaleDateString("en-AU", { day: "numeric", month: "short", year: "numeric" });
+                          return (
+                            <div key={item.id} className="flex gap-2">
+                              <span className="w-7 h-7 rounded-full bg-secondary border border-border/50 flex items-center justify-center shrink-0">
+                                <Icon className="w-3.5 h-3.5 text-muted-foreground" />
+                              </span>
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center justify-between gap-2">
+                                  <p className="text-xs font-body text-foreground truncate">{item.title}</p>
+                                  <span className="text-[10px] font-body text-muted-foreground/60 shrink-0">{dateLabel}</span>
+                                </div>
+                                <p className="text-[10px] font-body text-muted-foreground truncate">{item.detail}</p>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
@@ -8797,7 +9761,8 @@ function SettingsView() {
     }
   };
 
-  const [activeSettingsTab, setActiveSettingsTab] = React.useState<"watermark" | "general" | "email" | "payments" | "notifications" | "integrations">("watermark");
+  type SettingsTab = "watermark" | "general" | "email" | "automations" | "payments" | "notifications" | "integrations";
+  const [activeSettingsTab, setActiveSettingsTab] = React.useState<SettingsTab>("watermark");
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
@@ -8808,10 +9773,11 @@ function SettingsView() {
           { id: "watermark", label: "Watermark" },
           { id: "general", label: "General" },
           { id: "email", label: "Email Templates" },
+          { id: "automations", label: "Automations" },
           { id: "payments", label: "Payments" },
           { id: "notifications", label: "Notifications" },
           { id: "integrations", label: "Integrations" },
-        ]) as { id: "watermark" | "general" | "email" | "payments" | "notifications" | "integrations"; label: string }[]).map(({ id, label }) => (
+        ]) as { id: SettingsTab; label: string }[]).map(({ id, label }) => (
           <button
             key={id}
             onClick={() => setActiveSettingsTab(id)}
@@ -9028,6 +9994,13 @@ function SettingsView() {
         {activeSettingsTab === "email" && (
           <div id="settings-email-templates" className="lg:col-span-2">
             <EmailTemplatesManager />
+          </div>
+        )}
+
+        {/* ── Automations tab ── */}
+        {activeSettingsTab === "automations" && (
+          <div id="settings-email-automations" className="lg:col-span-2">
+            <EmailAutomationsManager />
           </div>
         )}
 
@@ -10990,6 +11963,353 @@ function WatermarkPreviewWithSamples({ settings }: { settings: AppSettings }) {
   );
 }
 
+// ─── Email Automations Manager ───────────────────────
+const EMAIL_AUTOMATION_TRIGGER_LABELS: Record<EmailAutomationTrigger, string> = {
+  after_booking: "After booking",
+  before_event: "Before event",
+  after_event: "After event",
+  payment_overdue: "Payment overdue",
+};
+
+const STARTER_EMAIL_AUTOMATIONS: EmailAutomationRule[] = [
+  {
+    id: "starter-before-event-24h",
+    enabled: false,
+    trigger: "before_event",
+    delayHours: 24,
+    reminderType: "booking",
+    templateSubject: "Reminder: {event} is tomorrow",
+    templateBody: "Hi {name}, this is a quick reminder for your {event} session on {date} at {time}.\n\nSee you soon!",
+  },
+  {
+    id: "starter-payment-overdue-48h",
+    enabled: false,
+    trigger: "payment_overdue",
+    delayHours: 48,
+    reminderType: "payment",
+    templateSubject: "Payment reminder for {event}",
+    templateBody: "Hi {name}, this is a friendly reminder that payment is still pending for your {event} booking on {date}.\n\nPlease reply if you have any questions.",
+  },
+  {
+    id: "starter-after-event-24h",
+    enabled: false,
+    trigger: "after_event",
+    delayHours: 24,
+    reminderType: "booking",
+    templateSubject: "Thanks for your {event} session",
+    templateBody: "Hi {name}, thanks again for your {event} session on {date}.\n\nI will be in touch as soon as your gallery is ready.",
+  },
+];
+
+function EmailAutomationsManager() {
+  const [rules, setRules] = useState<EmailAutomationRule[]>([]);
+  const [emailStatus, setEmailStatus] = useState<{ configured: boolean; host: string | null; user: string | null; from: string | null } | null>(null);
+  const [previews, setPreviews] = useState<Record<string, EmailAutomationPreview>>({});
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [previewingId, setPreviewingId] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    Promise.all([getEmailAutomations(), getEmailStatus()]).then(([loaded, status]) => {
+      if (cancelled) return;
+      setRules(loaded);
+      setEmailStatus(status);
+      setLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  const updateRule = (id: string, patch: Partial<EmailAutomationRule>) => {
+    setRules(prev => prev.map(rule => rule.id === id ? { ...rule, ...patch } : rule));
+  };
+
+  const addRule = () => {
+    const nextRule: EmailAutomationRule = {
+      id: generateId("auto"),
+      enabled: true,
+      trigger: "before_event",
+      delayHours: 24,
+      reminderType: "booking",
+      templateSubject: "Reminder: {event} is coming up",
+      templateBody: "Hi {name}, this is a reminder for {event} on {date} at {time}.",
+    };
+    setRules(prev => [nextRule, ...prev]);
+  };
+
+  const addStarterRules = () => {
+    setRules(prev => {
+      const existing = new Set(prev.map(rule => rule.id));
+      const missing = STARTER_EMAIL_AUTOMATIONS.filter(rule => !existing.has(rule.id));
+      if (missing.length === 0) {
+        toast.info("Starter automations are already present");
+        return prev;
+      }
+      toast.success(`Added ${missing.length} starter automation${missing.length !== 1 ? "s" : ""}`);
+      return [...prev, ...missing.map(rule => ({ ...rule }))];
+    });
+  };
+
+  const deleteRule = (id: string) => {
+    setRules(prev => prev.filter(rule => rule.id !== id));
+    setPreviews(prev => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+  };
+
+  const handlePreview = async (rule: EmailAutomationRule) => {
+    setPreviewingId(rule.id);
+    const preview = await previewEmailAutomation(rule);
+    setPreviewingId(null);
+    if (!preview) {
+      toast.error("Failed to preview automation");
+      return;
+    }
+    setPreviews(prev => ({ ...prev, [rule.id]: preview }));
+  };
+
+  const handleSave = async () => {
+    const enabledRules = rules.filter(rule => rule.enabled);
+    if (enabledRules.length > 0) {
+      const previews = await Promise.all(enabledRules.map(rule => previewEmailAutomation(rule)));
+      const dueCount = previews.reduce((sum, preview) => sum + (preview?.summary?.due || 0), 0);
+      if (dueCount > 0 && !confirm(`${dueCount} automation email${dueCount !== 1 ? "s are" : " is"} due now and may send within the next scheduler run. Save enabled rules anyway?`)) {
+        return;
+      }
+    }
+    setSaving(true);
+    const saved = await saveEmailAutomations(rules);
+    setSaving(false);
+    if (!saved) {
+      toast.error("Failed to save automations");
+      return;
+    }
+    setRules(saved);
+    toast.success("Email automations saved");
+  };
+
+  return (
+    <div className="glass-panel rounded-xl p-6 space-y-4">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <div>
+          <h3 className="font-display text-base text-foreground">Email Automations</h3>
+          <p className="text-[10px] font-body text-muted-foreground/60 mt-1">
+            Send booking and payment reminders from the server scheduler. Variables: {"{name}"}, {"{event}"}, {"{date}"}, {"{time}"}.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant="outline" onClick={addStarterRules} className="gap-1.5 font-body text-xs">
+            <Sparkles className="w-3 h-3" /> Starters
+          </Button>
+          <Button size="sm" variant="outline" onClick={addRule} className="gap-1.5 font-body text-xs">
+            <Plus className="w-3 h-3" /> New Rule
+          </Button>
+          <Button size="sm" onClick={handleSave} disabled={saving || loading} className="gap-1.5 bg-primary text-primary-foreground font-body text-xs">
+            <Save className="w-3 h-3" /> {saving ? "Saving..." : "Save"}
+          </Button>
+        </div>
+      </div>
+
+      {!isServerMode() && (
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 flex items-start gap-2">
+          <AlertCircle className="w-4 h-4 text-amber-500 mt-0.5 shrink-0" />
+          <p className="text-xs font-body text-muted-foreground">
+            Automations run on the Node server. Start the server backend to load and save rules.
+          </p>
+        </div>
+      )}
+
+      {isServerMode() && emailStatus && (
+        <div className={`rounded-lg border p-3 flex items-start gap-2 ${
+          emailStatus.configured ? "border-emerald-500/30 bg-emerald-500/10" : "border-amber-500/30 bg-amber-500/10"
+        }`}>
+          {emailStatus.configured ? (
+            <CheckCircle2 className="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" />
+          ) : (
+            <AlertCircle className="w-4 h-4 text-amber-500 mt-0.5 shrink-0" />
+          )}
+          <div>
+            <p className="text-xs font-body text-foreground">
+              {emailStatus.configured ? "SMTP is configured" : "SMTP is not configured"}
+            </p>
+            <p className="text-[10px] font-body text-muted-foreground/60 mt-0.5">
+              {emailStatus.configured
+                ? `Sending from ${emailStatus.from || emailStatus.user || "configured sender"} via ${emailStatus.host || "SMTP"}.`
+                : "Rules can be saved, but automated emails will not send until SMTP settings are configured on the server."}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {loading ? (
+        <p className="text-xs font-body text-muted-foreground/60 py-4">Loading automations...</p>
+      ) : rules.length === 0 ? (
+        <div className="rounded-lg border border-dashed border-border/60 p-6 text-center">
+          <Mail className="w-6 h-6 text-muted-foreground/40 mx-auto mb-2" />
+          <p className="text-sm font-body text-foreground">No automation rules yet</p>
+          <p className="text-xs font-body text-muted-foreground/60 mt-1">Create one to schedule reminders around bookings, events, and overdue payments.</p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {rules.map((rule) => (
+            <div key={rule.id} className="rounded-lg border border-border/40 bg-secondary/25 p-4 space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <Switch checked={rule.enabled} onCheckedChange={(enabled) => updateRule(rule.id, { enabled })} />
+                  <div>
+                    <p className="text-sm font-body text-foreground font-medium">
+                      {EMAIL_AUTOMATION_TRIGGER_LABELS[rule.trigger]} · {rule.delayHours || 0}h
+                    </p>
+                    <p className="text-[10px] font-body text-muted-foreground/60">
+                      {rule.reminderType === "payment" ? "Payment reminder" : "Booking reminder"}
+                    </p>
+                  </div>
+                </div>
+                <Button size="icon" variant="ghost" className="h-8 w-8 text-muted-foreground hover:text-destructive self-start sm:self-center" onClick={() => deleteRule(rule.id)}>
+                  <Trash2 className="w-4 h-4" />
+                </Button>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div>
+                  <label className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-1 block">Trigger</label>
+                  <select
+                    value={rule.trigger}
+                    onChange={(e) => updateRule(rule.id, { trigger: e.target.value as EmailAutomationTrigger })}
+                    className="w-full h-9 rounded-md border border-border bg-secondary px-3 text-xs font-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                  >
+                    {(Object.keys(EMAIL_AUTOMATION_TRIGGER_LABELS) as EmailAutomationTrigger[]).map(trigger => (
+                      <option key={trigger} value={trigger}>{EMAIL_AUTOMATION_TRIGGER_LABELS[trigger]}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-1 block">Delay Hours</label>
+                  <Input
+                    type="number"
+                    min={1}
+                    value={rule.delayHours}
+                    onChange={(e) => updateRule(rule.id, { delayHours: Math.max(1, Number(e.target.value) || 1) })}
+                    className="bg-secondary border-border text-foreground font-body text-xs"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-1 block">Message Type</label>
+                  <select
+                    value={rule.reminderType}
+                    onChange={(e) => updateRule(rule.id, { reminderType: e.target.value as EmailAutomationReminderType })}
+                    className="w-full h-9 rounded-md border border-border bg-secondary px-3 text-xs font-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                  >
+                    <option value="booking">Booking reminder</option>
+                    <option value="payment">Payment reminder</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <div>
+                  <label className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-1 block">Subject Override</label>
+                  <Input
+                    value={rule.templateSubject || ""}
+                    onChange={(e) => updateRule(rule.id, { templateSubject: e.target.value })}
+                    placeholder="Leave blank to use the server default"
+                    maxLength={200}
+                    className="bg-secondary border-border text-foreground font-body text-xs"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-1 block">Body Override</label>
+                  <Textarea
+                    value={rule.templateBody || ""}
+                    onChange={(e) => updateRule(rule.id, { templateBody: e.target.value })}
+                    placeholder="Leave blank to use the server default"
+                    maxLength={2000}
+                    className="bg-secondary border-border text-foreground font-body text-xs min-h-[90px]"
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between gap-3 border-t border-border/30 pt-3">
+                <p className="text-[10px] font-body text-muted-foreground/60">
+                  Preview uses the same scheduler window and dedupe checks as the server.
+                </p>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => handlePreview(rule)}
+                  disabled={previewingId === rule.id}
+                  className="gap-1.5 font-body text-xs shrink-0"
+                >
+                  <Eye className="w-3 h-3" /> {previewingId === rule.id ? "Checking..." : "Preview"}
+                </Button>
+              </div>
+
+              {previews[rule.id] && (
+                <div className="rounded-lg border border-border/40 bg-background/30 p-3 space-y-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                    <div className="flex flex-wrap gap-2">
+                      {(["due", "upcoming", "missed", "sent", "skipped"] as const).map(status => (
+                        <span key={status} className={`text-[10px] font-body px-2 py-1 rounded-full border ${
+                          status === "due"
+                            ? "bg-emerald-500/10 text-emerald-500 border-emerald-500/25"
+                            : "bg-secondary text-muted-foreground border-border/50"
+                        }`}>
+                          {status}: {previews[rule.id].summary[status] || 0}
+                        </span>
+                      ))}
+                    </div>
+                    <p className="text-[10px] font-body text-muted-foreground/50">
+                      Grace: {previews[rule.id].windowMinutes >= 120 ? `${Math.round(previews[rule.id].windowMinutes / 60)}h` : `${previews[rule.id].windowMinutes} min`}
+                    </p>
+                  </div>
+
+                  {previews[rule.id].matches.length === 0 ? (
+                    <p className="text-xs font-body text-muted-foreground/60">No bookings found for preview.</p>
+                  ) : (
+                    <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                      {previews[rule.id].matches.slice(0, 8).map(match => (
+                        <div key={`${match.bookingId}-${match.status}`} className="rounded-md border border-border/30 bg-secondary/25 p-2">
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="text-xs font-body text-foreground font-medium truncate">
+                                {match.clientName || "Unnamed client"} · {match.eventTitle}
+                              </p>
+                              <p className="text-[10px] font-body text-muted-foreground/60 truncate">
+                                {match.clientEmail || "No email"} · {match.date || "No date"} {match.time || ""}
+                              </p>
+                            </div>
+                            <span className={`text-[10px] font-body px-2 py-0.5 rounded-full shrink-0 ${
+                              match.status === "due" ? "bg-emerald-500/15 text-emerald-500" : "bg-secondary text-muted-foreground"
+                            }`}>
+                              {match.status}
+                            </span>
+                          </div>
+                          <p className="text-[10px] font-body text-muted-foreground/70 mt-1">
+                            {match.reason}{match.sendAt ? ` · ${new Date(match.sendAt).toLocaleString()}` : ""}
+                          </p>
+                          {match.subject && (
+                            <p className="text-[10px] font-body text-foreground/80 mt-1 truncate">Subject: {match.subject}</p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {previews[rule.id].matches.length > 8 && (
+                    <p className="text-[10px] font-body text-muted-foreground/50">Showing 8 of {previews[rule.id].matches.length} preview rows.</p>
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Email Templates Manager ─────────────────────────
 function EmailTemplatesManager() {
   const [templates, setTemplates] = useState<EmailTemplate[]>(getEmailTemplates());
@@ -11425,6 +12745,7 @@ function StorageView() {
   const [loading, setLoading] = useState(true);
   const [deleteAllState, setDeleteAllState] = useState<"idle" | "confirming" | "deleting">("idle");
   const [purgeMissingState, setPurgeMissingState] = useState<"idle" | "running">("idle");
+  const [backupState, setBackupState] = useState<"idle" | "running">("idle");
   const [ftpEnabled, setFtpEnabled] = useState<boolean | null>(null);
   const [ftpSyncJob, setFtpSyncJob] = useState<{
     running: boolean;
@@ -11602,6 +12923,15 @@ function StorageView() {
       toast.error("Failed to purge missing photo records");
     }
     setPurgeMissingState("idle");
+  };
+
+  const handleDownloadBackup = async () => {
+    if (!isServerMode()) { toast.error("Server not available"); return; }
+    setBackupState("running");
+    const result = await downloadServerBackup();
+    setBackupState("idle");
+    if (result.ok) toast.success(`Backup downloaded${result.filename ? ` — ${result.filename}` : ""}`);
+    else toast.error(result.error || "Backup failed");
   };
 
   // Backfill thumbnails and track progress
@@ -12010,6 +13340,29 @@ function StorageView() {
                 <p className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1">Total App Data</p>
                 <p className="font-display text-xl text-primary">{formatBytes(serverStats.totalBytes)}</p>
               </div>
+            </div>
+
+            <div className="mt-4 pt-4 border-t border-border/30">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                <div>
+                  <p className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1">Backup</p>
+                  <p className="text-xs font-body text-muted-foreground">
+                    Download a ZIP containing the current database and uploaded photos.
+                  </p>
+                </div>
+                <Button
+                  size="sm"
+                  onClick={handleDownloadBackup}
+                  disabled={backupState === "running" || !isServerMode()}
+                  className="gap-2 font-body text-xs w-full sm:w-auto"
+                >
+                  <Download className={`w-4 h-4 ${backupState === "running" ? "animate-pulse" : ""}`} />
+                  {backupState === "running" ? "Preparing Backup…" : "Download Backup"}
+                </Button>
+              </div>
+              <p className="text-[10px] font-body text-muted-foreground/50 mt-2">
+                Includes db.json and uploads/. Keep this ZIP somewhere outside the server volume.
+              </p>
             </div>
 
             {/* Danger zone: Delete all photos */}

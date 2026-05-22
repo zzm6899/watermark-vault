@@ -25,6 +25,15 @@ const {
   buildReminderEmailHtml,
   sendEmail,
 } = require("./email");
+const {
+  DEFAULT_AUTOMATION_GRACE_MS,
+  DEFAULT_AUTOMATION_INTERVAL_MS,
+  buildAutomationPreview: buildAutomationPreviewCore,
+  getAutomationDecision,
+  getStarterAutomationRules,
+  normalizeAutomationRule: normalizeAutomationRuleCore,
+  renderAutomationSubject,
+} = require("./email-automation-core");
 const { registerRoutes: registerStripeRoutes, registerTenantStripeRoutes } = require("./stripe");
 const { registerRoutes: registerGoogleSheetsRoutes } = require("./google-sheets");
 const {
@@ -370,6 +379,70 @@ app.get("/api/storage", async (req, res) => {
     return res.json(getStorageUsage());
   }
   return res.status(401).json({ error: "Authentication required" });
+});
+
+app.get("/api/backup/download", requireAuth, (req, res) => {
+  try {
+    _flushDbSync();
+
+    const now = new Date();
+    const stamp = now.toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    const filename = `photoflow-backup-${stamp}.zip`;
+
+    res.setHeader("Content-Type", "application/zip");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.setHeader("Cache-Control", "no-store");
+
+    const archive = archiver("zip", { zlib: { level: 6 } });
+    archive.on("warning", (err) => {
+      console.warn("backup archive warning:", err);
+    });
+    archive.on("error", (err) => {
+      console.error("backup archive error:", err);
+      if (!res.headersSent) res.status(500).json({ error: "Backup failed" });
+      else res.destroy(err);
+    });
+
+    archive.pipe(res);
+    const addFileIfExists = (filePath, archiveName) => {
+      if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
+        archive.file(filePath, { name: archiveName });
+      }
+    };
+    const addDir = (dirPath, archivePrefix) => {
+      if (!fs.existsSync(dirPath)) return;
+      for (const entry of fs.readdirSync(dirPath, { withFileTypes: true })) {
+        const fullPath = path.join(dirPath, entry.name);
+        const archiveName = path.posix.join(archivePrefix, entry.name);
+        if (entry.isDirectory()) {
+          if (fullPath === CACHE_DIR) continue;
+          addDir(fullPath, archiveName);
+        } else if (entry.isFile()) {
+          archive.file(fullPath, { name: archiveName });
+        }
+      }
+    };
+
+    addFileIfExists(DB_FILE, "db.json");
+    addFileIfExists(path.join(DATA_DIR, "tenants.json"), "tenants.json");
+    addFileIfExists(path.join(DATA_DIR, "license_keys.json"), "license_keys.json");
+    addFileIfExists(path.join(DATA_DIR, "event_slot_requests.json"), "event_slot_requests.json");
+    addFileIfExists(path.join(DATA_DIR, "google-tokens.json"), "google-tokens.json");
+    addFileIfExists(path.join(DATA_DIR, "gcal-settings.json"), "gcal-settings.json");
+    addDir(UPLOADS_DIR, "uploads");
+    addFileIfExists(path.join(CACHE_DIR, "xmp-presets.json"), "uploads/_cache/xmp-presets.json");
+    archive.append(JSON.stringify({
+      createdAt: now.toISOString(),
+      dataDir: DATA_DIR,
+      includes: ["db.json", "uploads/", "sidecar JSON files when present"],
+      excluded: ["uploads/_cache generated image variants"],
+      app: "PhotoFlow",
+    }, null, 2), { name: "backup-manifest.json" });
+    archive.finalize();
+  } catch (err) {
+    console.error("backup download error:", err);
+    if (!res.headersSent) res.status(500).json({ error: "Backup failed" });
+  }
 });
 
 // ── Baked-asset stripping ─────────────────────────────────────────────────
@@ -4939,10 +5012,6 @@ app.use(
     },
   })
 );
-app.get("*", (_req, res) => {
-  res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-  res.sendFile(path.join(distPath, "index.html"));
-});
 
 // ── Email Automation Rules ─────────────────────────────────────────────────
 // Rules are stored in DB under "wv_email_automations" as an array of objects:
@@ -4951,9 +5020,26 @@ app.get("*", (_req, res) => {
 // reminderType: "payment" | "booking"
 
 const { randomUUID: ruuid } = require("crypto");
+const AUTOMATION_INTERVAL_MS = DEFAULT_AUTOMATION_INTERVAL_MS;
+const AUTOMATION_GRACE_MS = Number(process.env.EMAIL_AUTOMATION_GRACE_HOURS || 168) * 60 * 60 * 1000;
+const AUTOMATION_MAX_SENDS_PER_RUN = Math.max(1, Number(process.env.EMAIL_AUTOMATION_MAX_SENDS_PER_RUN || 25));
+
+function getAutomationOptions() {
+  return {
+    intervalMs: AUTOMATION_INTERVAL_MS,
+    graceMs: Number.isFinite(AUTOMATION_GRACE_MS) && AUTOMATION_GRACE_MS > 0
+      ? AUTOMATION_GRACE_MS
+      : DEFAULT_AUTOMATION_GRACE_MS,
+    sentSet: _automationSentSet,
+    makeId: ruuid,
+  };
+}
 
 function readAutomationRules() {
   const db = readDb();
+  if (!Object.prototype.hasOwnProperty.call(db, "wv_email_automations")) {
+    return getStarterAutomationRules();
+  }
   const raw = db["wv_email_automations"];
   if (!raw) return [];
   try { return typeof raw === "string" ? JSON.parse(raw) : raw; } catch { return []; }
@@ -4963,6 +5049,22 @@ function writeAutomationRules(rules) {
   const db = readDb();
   db["wv_email_automations"] = rules;
   writeDb(db);
+}
+
+function normalizeAutomationRule(rule = {}) {
+  return normalizeAutomationRuleCore(rule, ruuid);
+}
+
+function readAutomationBookings() {
+  const db = readDb();
+  const bookingsRaw = db["wv_bookings"];
+  return bookingsRaw
+    ? (typeof bookingsRaw === "string" ? JSON.parse(bookingsRaw) : bookingsRaw)
+    : [];
+}
+
+function buildAutomationPreview(rule, now = Date.now()) {
+  return buildAutomationPreviewCore(rule, readAutomationBookings(), now, getAutomationOptions());
 }
 
 // Inline Basic auth check helper (reused for automation endpoints)
@@ -4990,32 +5092,31 @@ app.get("/api/email-automations", async (req, res) => {
   res.json({ rules: readAutomationRules() });
 });
 
+// POST automation dry-run preview
+app.post("/api/email-automations/preview", async (req, res) => {
+  if (!(await checkAdminBasicAuth(req))) return res.status(401).json({ error: "Authentication required" });
+  const rule = req.body?.rule;
+  if (!rule || typeof rule !== "object") return res.status(400).json({ error: "rule is required" });
+  res.json({ ok: true, ...buildAutomationPreview(rule) });
+});
+
 // PUT (replace all) automation rules
 app.put("/api/email-automations", async (req, res) => {
   if (!(await checkAdminBasicAuth(req))) return res.status(401).json({ error: "Authentication required" });
   const { rules } = req.body;
   if (!Array.isArray(rules)) return res.status(400).json({ error: "rules must be an array" });
   // Ensure each rule has an id
-  const sanitised = rules.map(r => ({
-    id: r.id || ruuid(),
-    enabled: r.enabled !== false,
-    trigger: r.trigger || "after_booking",
-    delayHours: Number(r.delayHours) || 24,
-    reminderType: r.reminderType || "payment",
-    templateSubject: (r.templateSubject || "").slice(0, 200),
-    templateBody: (r.templateBody || "").slice(0, 2000),
-  }));
+  const sanitised = rules.map(normalizeAutomationRule);
   writeAutomationRules(sanitised);
   res.json({ ok: true, rules: sanitised });
 });
 
 // ── Automation Scheduler ───────────────────────────────────────────────────
 // Runs every 5 minutes and fires reminder emails for bookings that match
-// enabled automation rules.  Each rule specifies a trigger + delay; the
-// scheduler checks whether the booking crossed that threshold since the last
-// run and that a reminder hasn't already been sent for that rule+booking combo.
+// enabled automation rules. Each rule specifies a trigger + delay; once due,
+// the scheduler sends during the configured grace period unless the rule has
+// already been sent for that booking.
 
-const AUTOMATION_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 // Track which (ruleId, bookingId) pairs we've already sent so we never double-send
 // within the same server process lifetime.  Persistent dedup is handled by
 // checking the booking's emailLog for an entry with type "auto-<ruleId>".
@@ -5028,17 +5129,16 @@ async function runEmailAutomations() {
   const t = getTransporter();
   if (!t) return; // SMTP not configured — skip silently
 
-  const db = readDb();
-  const bookingsRaw = db["wv_bookings"];
-  const bookings = bookingsRaw
-    ? (typeof bookingsRaw === "string" ? JSON.parse(bookingsRaw) : bookingsRaw)
-    : [];
+  const bookings = readAutomationBookings();
 
   const now = Date.now();
   let anyChange = false;
+  let sentThisRun = 0;
 
   for (const rule of rules) {
+    if (sentThisRun >= AUTOMATION_MAX_SENDS_PER_RUN) break;
     for (const booking of bookings) {
+      if (sentThisRun >= AUTOMATION_MAX_SENDS_PER_RUN) break;
       // Skip cancelled bookings and bookings without email
       if (!booking.clientEmail || booking.status === "cancelled") continue;
       // Respect unsubscribe flag
@@ -5050,62 +5150,13 @@ async function runEmailAutomations() {
       const alreadySent = (booking.emailLog || []).some(e => e.type === `auto-${rule.id}`);
       if (alreadySent) { _automationSentSet.add(dedupeKey); continue; }
 
-      let shouldSend = false;
-      const delayMs = rule.delayHours * 3600 * 1000;
-
-      switch (rule.trigger) {
-        case "after_booking": {
-          // Send X hours after booking was created
-          const createdAt = booking.createdAt ? new Date(booking.createdAt).getTime() : 0;
-          shouldSend = createdAt > 0 && now >= createdAt + delayMs && now < createdAt + delayMs + AUTOMATION_INTERVAL_MS * 2;
-          break;
-        }
-        case "before_event": {
-          // Send X hours before the event date/time
-          if (booking.date && booking.time) {
-            const [y, mo, d] = booking.date.split("-").map(Number);
-            const [h, m] = booking.time.split(":").map(Number);
-            const eventTs = new Date(y, mo - 1, d, h, m).getTime();
-            const sendAt = eventTs - delayMs;
-            shouldSend = now >= sendAt && now < sendAt + AUTOMATION_INTERVAL_MS * 2;
-          }
-          break;
-        }
-        case "after_event": {
-          // Send X hours after the event date/time ends
-          if (booking.date && booking.time) {
-            const [y, mo, d] = booking.date.split("-").map(Number);
-            const [h, m] = booking.time.split(":").map(Number);
-            const eventTs = new Date(y, mo - 1, d, h, m).getTime();
-            const duration = (booking.duration || 60) * 60 * 1000;
-            const endTs = eventTs + duration;
-            shouldSend = now >= endTs + delayMs && now < endTs + delayMs + AUTOMATION_INTERVAL_MS * 2;
-          }
-          break;
-        }
-        case "payment_overdue": {
-          // Send X hours after booking creation when payment status is still "unpaid" or "pending"
-          const unpaid = !booking.paymentStatus || booking.paymentStatus === "unpaid" || booking.paymentStatus === "pending";
-          if (unpaid && booking.paymentAmount > 0) {
-            const createdAt = booking.createdAt ? new Date(booking.createdAt).getTime() : 0;
-            shouldSend = createdAt > 0 && now >= createdAt + delayMs && now < createdAt + delayMs + AUTOMATION_INTERVAL_MS * 2;
-          }
-          break;
-        }
-      }
-
-      if (!shouldSend) continue;
+      if (getAutomationDecision(rule, booking, now, getAutomationOptions()).status !== "due") continue;
 
       // Build the email — use custom template if provided, otherwise a standard reminder
       const isPaymentReminder = rule.reminderType === "payment";
       const clientName = booking.clientName || "there";
       const eventTitle = booking.type || "Booking";
-      const subject = rule.templateSubject
-        ? rule.templateSubject
-            .replace(/\{name\}/gi, clientName)
-            .replace(/\{event\}/gi, eventTitle)
-            .replace(/\{date\}/gi, booking.date || "")
-        : (isPaymentReminder ? `Payment Reminder — ${eventTitle}` : `Upcoming ${eventTitle} Reminder`);
+      const subject = renderAutomationSubject(rule, booking);
 
       let html;
       if (rule.templateBody) {
@@ -5150,6 +5201,7 @@ async function runEmailAutomations() {
       try {
         const info = await t.sendMail({ from: getFromAddress(), to: booking.clientEmail, subject, html });
         console.log(`📧 [Automation ${rule.id}] Sent to ${booking.clientEmail}: ${info.messageId}`);
+        sentThisRun++;
 
         // Persist log entry to booking
         const trackingId = ruuid();
@@ -6143,6 +6195,11 @@ app.patch("/api/albums/:id/tags", requireAuth, (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
+
+app.get("*", (_req, res) => {
+  res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+  res.sendFile(path.join(distPath, "index.html"));
+});
 
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 PhotoFlow running on port ${PORT}`);

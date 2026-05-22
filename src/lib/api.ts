@@ -648,6 +648,32 @@ export async function getServerStorageStats(): Promise<{
   }
 }
 
+export async function downloadServerBackup(): Promise<{ ok: boolean; filename?: string; error?: string }> {
+  if (!(await checkServer())) return { ok: false, error: "Server unavailable" };
+  try {
+    const res = await fetch("/api/backup/download", {
+      headers: adminAuthHeaders(),
+    });
+    if (!res.ok) return { ok: false, error: `Backup failed (${res.status})` };
+
+    const disposition = res.headers.get("content-disposition") || "";
+    const match = disposition.match(/filename="?([^"]+)"?/i);
+    const filename = match?.[1] || `photoflow-backup-${new Date().toISOString().slice(0, 10)}.zip`;
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    return { ok: true, filename };
+  } catch (err: any) {
+    return { ok: false, error: err?.message || "Backup failed" };
+  }
+}
+
 export type CacheBreakdown = {
   thumb_wm: number; thumb_clean: number;
   medium_wm: number; medium_clean: number;
@@ -806,6 +832,75 @@ export async function sendEmail(to: string, subject: string, html?: string, text
     return await res.json();
   } catch {
     return { ok: false, error: "Network error" };
+  }
+}
+
+export async function getEmailAutomations(): Promise<import("./types").EmailAutomationRule[]> {
+  if (!(await checkServer())) return [];
+  try {
+    const res = await fetch("/api/email-automations", { headers: adminAuthHeaders() });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return Array.isArray(data.rules) ? data.rules : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function saveEmailAutomations(rules: import("./types").EmailAutomationRule[]): Promise<import("./types").EmailAutomationRule[] | null> {
+  if (!(await checkServer())) return null;
+  try {
+    const res = await fetch("/api/email-automations", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
+      body: JSON.stringify({ rules }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return Array.isArray(data.rules) ? data.rules : null;
+  } catch {
+    return null;
+  }
+}
+
+export interface EmailAutomationPreview {
+  ok: boolean;
+  generatedAt: string;
+  windowMinutes: number;
+  schedulerWindowMinutes?: number;
+  total: number;
+  summary: Record<"due" | "upcoming" | "missed" | "sent" | "skipped", number>;
+  matches: Array<{
+    ruleId: string;
+    trigger: string;
+    bookingId: string;
+    clientName: string;
+    clientEmail: string;
+    eventTitle: string;
+    date: string;
+    time: string;
+    paymentStatus: string;
+    status: "due" | "upcoming" | "missed" | "sent" | "skipped";
+    reason: string;
+    sendAt: string | null;
+    windowEndsAt: string | null;
+    graceWindowEndsAt?: string | null;
+    subject: string;
+  }>;
+}
+
+export async function previewEmailAutomation(rule: import("./types").EmailAutomationRule): Promise<EmailAutomationPreview | null> {
+  if (!(await checkServer())) return null;
+  try {
+    const res = await fetch("/api/email-automations/preview", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
+      body: JSON.stringify({ rule }),
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
   }
 }
 
