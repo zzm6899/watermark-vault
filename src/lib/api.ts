@@ -116,6 +116,7 @@ function _applyStoreData(data: Record<string, unknown>): void {
   for (const [key, value] of Object.entries(data)) {
     // Never restore session from server — auth must always be re-done per browser
     if (key === SESSION_KEY) continue;
+    const cleanValue = sanitizePersistedStoreValue(key, value);
 
     // For the photo library, merge server data with any locally-added photos that
     // haven't been persisted to the server yet (e.g. uploaded just before the lazy
@@ -125,10 +126,10 @@ function _applyStoreData(data: Record<string, unknown>): void {
     // in the brief window between page load and the lazy-sync response arriving.
     if (key === "wv_photo_library") {
       try {
-        const serverPhotos = (typeof value === "string" ? JSON.parse(value) : value) as Array<{ id: string }>;
+        const serverPhotos = (typeof cleanValue === "string" ? JSON.parse(cleanValue) : cleanValue) as Array<{ id: string }>;
         if (Array.isArray(serverPhotos)) {
           const localRaw = localStorage.getItem(key);
-          const localPhotos = localRaw ? (JSON.parse(localRaw) as Array<{ id: string }>) : [];
+          const localPhotos = sanitizePersistedPhotos(localRaw ? (JSON.parse(localRaw) as Array<{ id: string }>) : []);
           if (Array.isArray(localPhotos) && localPhotos.length > 0) {
             const serverIds = new Set(serverPhotos.map(p => p.id));
             const localOnly = localPhotos.filter(p => !serverIds.has(p.id));
@@ -142,7 +143,7 @@ function _applyStoreData(data: Record<string, unknown>): void {
     }
 
     // Server store values are often already JSON strings
-    localStorage.setItem(key, typeof value === "string" ? value : JSON.stringify(value));
+    localStorage.setItem(key, typeof cleanValue === "string" ? cleanValue : JSON.stringify(cleanValue));
   }
 }
 
@@ -378,6 +379,45 @@ export function isSupportedPhotoSource(src: string | undefined | null): boolean 
   } catch {
     return false;
   }
+}
+
+function isUploadPhotoSource(src: string | undefined | null): boolean {
+  if (!src) return false;
+  try {
+    const pathname = src.startsWith("http") ? new URL(src).pathname : src.split("?")[0];
+    return pathname.startsWith("/uploads/");
+  } catch {
+    return false;
+  }
+}
+
+function shouldKeepPersistedPhotoRecord(photo: unknown): photo is { id?: string; src?: string; url?: string } {
+  if (!photo || typeof photo !== "object") return false;
+  const src = String((photo as { src?: unknown; url?: unknown }).src || (photo as { src?: unknown; url?: unknown }).url || "");
+  if (!src) return false;
+  if (!isUploadPhotoSource(src)) return true;
+  return isSupportedPhotoSource(src);
+}
+
+function sanitizePersistedPhotos<T>(photos: T): T {
+  if (!Array.isArray(photos)) return photos;
+  return photos.filter(shouldKeepPersistedPhotoRecord) as T;
+}
+
+function sanitizePersistedStoreValue(key: string, value: unknown): unknown {
+  const parsed = typeof value === "string" ? (() => { try { return JSON.parse(value); } catch { return value; } })() : value;
+  const isAlbumKey = key === "wv_albums" || (key.startsWith("t_") && key.endsWith("_wv_albums"));
+  const isPhotoLibraryKey = key === "wv_photo_library" || (key.startsWith("t_") && key.endsWith("_wv_photo_library"));
+  if (isAlbumKey && Array.isArray(parsed)) {
+    return parsed.map(album => {
+      if (!album || typeof album !== "object") return album;
+      const rawPhotos = (album as { photos?: unknown }).photos;
+      const photos = sanitizePersistedPhotos(Array.isArray(rawPhotos) ? rawPhotos : []);
+      return { ...album, photos, photoCount: photos.length };
+    });
+  }
+  if (isPhotoLibraryKey) return sanitizePersistedPhotos(parsed);
+  return value;
 }
 
 export function isSupportedUploadFile(file: File): boolean {
@@ -862,8 +902,7 @@ export async function getEmailAutomations(): Promise<import("./types").EmailAuto
   if (!(await checkServer())) return [];
   try {
     const res = await fetch("/api/email-automations", { headers: adminAuthHeaders() });
-    if (!res.ok) return [];
-    const data = await res.json();
+    const data = await readJson<{ rules?: import("./types").EmailAutomationRule[] }>(res, {});
     return Array.isArray(data.rules) ? data.rules : [];
   } catch {
     return [];
@@ -878,8 +917,7 @@ export async function saveEmailAutomations(rules: import("./types").EmailAutomat
       headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
       body: JSON.stringify({ rules }),
     });
-    if (!res.ok) return null;
-    const data = await res.json();
+    const data = await readJson<{ rules?: import("./types").EmailAutomationRule[] } | null>(res, null);
     return Array.isArray(data.rules) ? data.rules : null;
   } catch {
     return null;
@@ -920,8 +958,7 @@ export async function previewEmailAutomation(rule: import("./types").EmailAutoma
       headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
       body: JSON.stringify({ rule }),
     });
-    if (!res.ok) return null;
-    return await res.json();
+    return await readJson<EmailAutomationPreview | null>(res, null);
   } catch {
     return null;
   }
@@ -2364,7 +2401,7 @@ export async function fetchAlbumPhotos(albumId: string): Promise<import("./types
   try {
     const res = await fetch(`/api/albums/${encodeURIComponent(albumId)}/photos`);
     const data = await readJson<{ photos?: import("./types").Photo[] } | null>(res, null);
-    return Array.isArray(data?.photos) ? data.photos : null;
+    return Array.isArray(data?.photos) ? sanitizePersistedPhotos(data.photos) : null;
   } catch {
     return null;
   }

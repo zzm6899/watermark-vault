@@ -12196,6 +12196,9 @@ function EmailAutomationsManager() {
     toast.success("Email automations saved");
   };
 
+  const enabledCount = rules.filter(rule => rule.enabled).length;
+  const disabledCount = rules.length - enabledCount;
+
   return (
     <div className="glass-panel rounded-xl p-6 space-y-4">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
@@ -12217,6 +12220,23 @@ function EmailAutomationsManager() {
           </Button>
         </div>
       </div>
+
+      {!loading && (
+        <div className="grid grid-cols-3 gap-2">
+          <div className="rounded-lg bg-secondary/40 border border-border/40 p-3">
+            <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground">Rules</p>
+            <p className="font-display text-xl text-foreground mt-1">{rules.length}</p>
+          </div>
+          <div className="rounded-lg bg-secondary/40 border border-border/40 p-3">
+            <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground">Active</p>
+            <p className="font-display text-xl text-emerald-400 mt-1">{enabledCount}</p>
+          </div>
+          <div className="rounded-lg bg-secondary/40 border border-border/40 p-3">
+            <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground">Paused</p>
+            <p className="font-display text-xl text-muted-foreground mt-1">{disabledCount}</p>
+          </div>
+        </div>
+      )}
 
       {!isServerMode() && (
         <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 flex items-start gap-2">
@@ -12256,6 +12276,14 @@ function EmailAutomationsManager() {
           <Mail className="w-6 h-6 text-muted-foreground/40 mx-auto mb-2" />
           <p className="text-sm font-body text-foreground">No automation rules yet</p>
           <p className="text-xs font-body text-muted-foreground/60 mt-1">Create one to schedule reminders around bookings, events, and overdue payments.</p>
+          <div className="flex items-center justify-center gap-2 mt-4">
+            <Button size="sm" variant="outline" onClick={addStarterRules} className="gap-1.5 font-body text-xs">
+              <Sparkles className="w-3 h-3" /> Restore Defaults
+            </Button>
+            <Button size="sm" onClick={addRule} className="gap-1.5 bg-primary text-primary-foreground font-body text-xs">
+              <Plus className="w-3 h-3" /> New Rule
+            </Button>
+          </div>
         </div>
       ) : (
         <div className="space-y-3">

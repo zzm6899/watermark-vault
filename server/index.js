@@ -506,12 +506,30 @@ const TENANT_PHOTO_LIB_SUFFIX = "_wv_photo_library";
 
 function _stripBakedFromPhotos(photos) {
   if (!Array.isArray(photos)) return photos;
-  return photos.map(p => {
+  return photos.filter(_isSupportedPersistedPhotoRecord).map(p => {
     if (!p || typeof p !== "object") return p;
     const out = { ...p };
     for (const f of BAKED_PHOTO_FIELDS) delete out[f];
     return out;
   });
+}
+
+function _isUploadPhotoSource(src) {
+  if (!src || typeof src !== "string") return false;
+  try {
+    const pathname = /^https?:\/\//i.test(src) ? new URL(src).pathname : src.split("?")[0];
+    return pathname.startsWith("/uploads/");
+  } catch {
+    return false;
+  }
+}
+
+function _isSupportedPersistedPhotoRecord(photo) {
+  if (!photo || typeof photo !== "object") return false;
+  const src = photo.src || photo.url || "";
+  if (!_isUploadPhotoSource(src)) return true;
+  const filename = uploadFilenameFromSrc(src);
+  return !!filename && !isIgnoredSystemFileName(filename) && isSupportedImageFilename(filename);
 }
 
 function _mergePhotoArrays(existingPhotos, incomingPhotos) {
