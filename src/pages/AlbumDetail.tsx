@@ -225,7 +225,7 @@ export default function AlbumDetail() {
   }, []);
   const [galleryVisibleCount, setGalleryVisibleCount] = useState(GALLERY_INITIAL_BATCH);
   const [showStarredOnly, setShowStarredOnly] = useState(false);
-  const [clientCullFilter, setClientCullFilter] = useState<"all" | "best">("all");
+  const [clientCullFilter, setClientCullFilter] = useState<"all" | "best">("best");
   const [sortOrder, setSortOrder] = useState<"default" | "asc" | "desc">("default");
   // Local display size — defaults to admin-set album size (or "medium" fallback)
   const [localDisplaySize, setLocalDisplaySize] = useState<string>(
@@ -681,7 +681,12 @@ export default function AlbumDetail() {
   const visiblePhotos = album.photos.filter((p: any) =>
     !p.hidden && (album.showCullRejectsToClient || p.cull?.status !== "reject")
   );
-  const bestOfPhotos = visiblePhotos.filter((p: any) => p.starred || p.cull?.status === "pick");
+  const bestOfPhotos = visiblePhotos.filter((p: any) =>
+    p.starred || !p.cull?.status || p.cull?.status === "pick" || p.cull?.status === "review" || p.cull?.status === "unscored"
+  );
+  const pickCount = visiblePhotos.filter((p: any) => p.starred || p.cull?.status === "pick").length;
+  const reviewCount = visiblePhotos.filter((p: any) => !p.cull?.status || p.cull?.status === "review" || p.cull?.status === "unscored").length;
+  const visibleRejectCount = visiblePhotos.filter((p: any) => p.cull?.status === "reject").length;
   const clientFilteredPhotos = clientCullFilter === "best" ? bestOfPhotos : visiblePhotos;
   const hasStarred = visiblePhotos.some((p: any) => p.starred);
   const cullSortRank = (p: any) => p.starred || p.cull?.status === "pick"
@@ -1361,6 +1366,31 @@ export default function AlbumDetail() {
               </div>
             )}
 
+          {visiblePhotos.length > 0 && (
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
+              <div className="glass-panel rounded-lg p-3 border border-primary/15 bg-primary/5">
+                <Sparkles className="w-4 h-4 text-primary mb-2" />
+                <p className="font-display text-xl text-foreground">{bestOfPhotos.length}</p>
+                <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Best of</p>
+              </div>
+              <div className="glass-panel rounded-lg p-3">
+                <Star className="w-4 h-4 text-yellow-400 mb-2" />
+                <p className="font-display text-xl text-foreground">{pickCount}</p>
+                <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Picks</p>
+              </div>
+              <div className="glass-panel rounded-lg p-3">
+                <Clock className="w-4 h-4 text-cyan-300 mb-2" />
+                <p className="font-display text-xl text-foreground">{reviewCount}</p>
+                <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Review</p>
+              </div>
+              <div className="glass-panel rounded-lg p-3">
+                <Images className="w-4 h-4 text-muted-foreground mb-2" />
+                <p className="font-display text-xl text-foreground">{visiblePhotos.length}</p>
+                <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">{visibleRejectCount > 0 ? "All visible" : "Client set"}</p>
+              </div>
+            </div>
+          )}
+
           {/* ── Filter / Sort toolbar ──────────────────────────────── */}
           {visiblePhotos.length > 0 && (
             <div className="flex items-center gap-2 flex-wrap mb-2">
@@ -1403,9 +1433,9 @@ export default function AlbumDetail() {
                 <ArrowUpDown className="w-3 h-3" />
                 {sortOrder === "default" ? "Best first" : sortOrder === "desc" ? "Newest first" : "Oldest first"}
               </button>
-              {(showStarredOnly || clientCullFilter !== "all" || sortOrder !== "default") && (
+              {(showStarredOnly || clientCullFilter !== "best" || sortOrder !== "default") && (
                 <button
-                  onClick={() => { setShowStarredOnly(false); setClientCullFilter("all"); setSortOrder("default"); }}
+                  onClick={() => { setShowStarredOnly(false); setClientCullFilter("best"); setSortOrder("default"); }}
                   className="flex items-center gap-1 px-2 py-1.5 rounded-full text-xs font-body text-muted-foreground/60 hover:text-muted-foreground transition-colors"
                 >
                   <X className="w-3 h-3" /> Clear
@@ -1442,7 +1472,7 @@ export default function AlbumDetail() {
             </div>
           ) : displayedPhotos.length === 0 ? (
             <div className="glass-panel rounded-xl p-12 text-center">
-              <p className="text-sm font-body text-muted-foreground">{clientCullFilter === "best" ? "No best-of photos yet." : "No starred photos yet."}</p>
+              <p className="text-sm font-body text-muted-foreground">{clientCullFilter === "best" ? "No client-ready photos yet." : "No starred photos yet."}</p>
             </div>
           ) : (
             <>

@@ -12,6 +12,7 @@ type UploadResult = { id: string; url: string; originalName: string; size: numbe
 
 const SUPPORTED_UPLOAD_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif", ".tif", ".tiff", ".heic", ".heif"]);
 const IGNORED_UPLOAD_FILENAMES = new Set(["thumbs.db", ".ds_store", "desktop.ini"]);
+const UPLOAD_BATCH_RETRIES = 2;
 
 function fileExtension(name: string): string {
   const dot = name.lastIndexOf(".");
@@ -67,22 +68,28 @@ async function uploadPhotosToServer(
   let batchIndex = 0;
   const startTime = Date.now();
 
+  const uploadBatchWithRetry = async (batch: File[]): Promise<UploadResult[]> => {
+    for (let attempt = 0; attempt <= UPLOAD_BATCH_RETRIES; attempt += 1) {
+      const form = new FormData();
+      batch.forEach((f) => form.append("photos", f));
+      try {
+        const res = await fetchFn(uploadUrl, { method: "POST", body: form });
+        if (!res.ok) throw new Error(`Upload failed (${res.status})`);
+        const data = await (res as any).json().catch(() => ({}));
+        return Array.isArray(data.files) ? data.files : [];
+      } catch {
+        // retry below
+      }
+    }
+    return [];
+  };
+
   const runWorker = async () => {
     while (batchIndex < batches.length) {
       const idx = batchIndex++;
       const batch = batches[idx];
       const batchBytes = batch.reduce((sum, f) => sum + f.size, 0);
-      const form = new FormData();
-      batch.forEach((f) => form.append("photos", f));
-      try {
-        const res = await fetchFn(uploadUrl, { method: "POST", body: form });
-        if (res.ok) {
-          const data = await (res as any).json();
-          results.push(...data.files);
-        }
-      } catch {
-        // skip failed batch
-      }
+      results.push(...await uploadBatchWithRetry(batch));
       done += batch.length;
       doneBytes += batchBytes;
       const elapsedSec = (Date.now() - startTime) / 1000;
@@ -287,7 +294,7 @@ describe("uploadPhotosToServer (concurrent implementation)", () => {
     );
   });
 
-  it("skips failed batches and still returns successful results", async () => {
+  it("retries failed batches before continuing", async () => {
     let callCount = 0;
     const partialFetch = vi.fn(async (_url: string, opts: any) => {
       callCount++;
@@ -305,7 +312,29 @@ describe("uploadPhotosToServer (concurrent implementation)", () => {
     const files = Array.from({ length: 10 }, (_, i) => makeFile(`f${i}.jpg`));
     const result = await uploadPhotosToServer(files, undefined, undefined, 1, undefined, undefined, partialFetch);
 
-    // First batch of 5 failed, second batch of 5 succeeded
+    expect(partialFetch).toHaveBeenCalledTimes(3);
+    expect(result).toHaveLength(10);
+  });
+
+  it("returns successful batches when one batch keeps failing after retries", async () => {
+    let callCount = 0;
+    const partialFetch = vi.fn(async (_url: string, opts: any) => {
+      callCount++;
+      const form: FormData = opts.body;
+      const files = form.getAll("photos") as File[];
+      if (callCount <= 3) throw new Error("network error");
+      return {
+        ok: true,
+        json: async () => ({
+          files: files.map((f, i) => ({ id: `id-${i}`, url: `/uploads/${f.name}`, originalName: f.name, size: f.size })),
+        }),
+      } as unknown as Response;
+    });
+
+    const files = Array.from({ length: 10 }, (_, i) => makeFile(`f${i}.jpg`));
+    const result = await uploadPhotosToServer(files, undefined, undefined, 1, undefined, undefined, partialFetch);
+
+    expect(partialFetch).toHaveBeenCalledTimes(4);
     expect(result).toHaveLength(5);
   });
 

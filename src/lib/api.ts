@@ -345,6 +345,7 @@ export type AutoCullAlbumResult = {
 
 const SUPPORTED_UPLOAD_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif", ".tif", ".tiff", ".heic", ".heif"]);
 const IGNORED_UPLOAD_FILENAMES = new Set(["thumbs.db", ".ds_store", "desktop.ini"]);
+const UPLOAD_BATCH_RETRIES = 2;
 
 function fileExtension(name: string): string {
   const dot = name.lastIndexOf(".");
@@ -399,23 +400,38 @@ export async function uploadPhotosToServer(
   let batchIndex = 0;
   const startTime = Date.now();
 
+  const uploadBatchWithRetry = async (batch: File[]): Promise<UploadedPhotoResult[]> => {
+    let lastError: unknown = null;
+    for (let attempt = 0; attempt <= UPLOAD_BATCH_RETRIES; attempt += 1) {
+      const form = new FormData();
+      batch.forEach((f) => form.append("photos", f));
+      try {
+        const res = await fetch(uploadUrl, { method: "POST", body: form });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body?.error || `Upload failed (${res.status})`);
+        }
+        const data = await res.json().catch(() => ({}));
+        return Array.isArray(data.files) ? data.files : [];
+      } catch (err) {
+        lastError = err;
+        if (attempt < UPLOAD_BATCH_RETRIES) {
+          await new Promise(resolve => setTimeout(resolve, 250 * (attempt + 1)));
+        }
+      }
+    }
+    console.warn("Photo upload batch failed after retries:", lastError);
+    return [];
+  };
+
   // Worker that keeps consuming batches until they're all dispatched
   const runWorker = async () => {
     while (batchIndex < batches.length) {
       const idx = batchIndex++;
       const batch = batches[idx];
       const batchBytes = batch.reduce((sum, f) => sum + f.size, 0);
-      const form = new FormData();
-      batch.forEach((f) => form.append("photos", f));
-      try {
-        const res = await fetch(uploadUrl, { method: "POST", body: form });
-        if (res.ok) {
-          const data = await res.json();
-          results.push(...data.files);
-        }
-      } catch {
-        // skip failed batch
-      }
+      const uploaded = await uploadBatchWithRetry(batch);
+      results.push(...uploaded);
       done += batch.length;
       doneBytes += batchBytes;
       const elapsedSec = (Date.now() - startTime) / 1000;

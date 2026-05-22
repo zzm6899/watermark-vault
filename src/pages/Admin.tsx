@@ -974,6 +974,13 @@ function DashboardView() {
   const bestOfCount = allAlbumPhotos.filter(photo => photo.starred || photo.cull?.status === "pick").length;
   const reviewCount = allAlbumPhotos.filter(photo => !photo.cull?.status || photo.cull?.status === "review" || photo.cull?.status === "unscored").length;
   const rejectCount = allAlbumPhotos.filter(photo => photo.cull?.status === "reject").length;
+  const clientReadyCount = allAlbumPhotos.filter(photo =>
+    photo.starred || !photo.cull?.status || photo.cull?.status === "pick" || photo.cull?.status === "review" || photo.cull?.status === "unscored"
+  ).length;
+  const latestCaptureTime = allAlbumPhotos
+    .map(photo => new Date(photo.uploadedAt || photo.takenAt || 0).getTime())
+    .filter(Number.isFinite)
+    .sort((a, b) => b - a)[0] || null;
   const activeCaptureAlbum = albums
     .filter(album => (album.photos?.length || 0) > 0)
     .sort((a, b) => {
@@ -1129,21 +1136,27 @@ function DashboardView() {
                 </span>
                 <div>
                   <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground">Wireless Capture</p>
-                  <h3 className="font-display text-lg text-foreground">Hotspot, ingest, cull, publish</h3>
+                  <h3 className="font-display text-lg text-foreground">Capture command center</h3>
                 </div>
               </div>
               <p className="text-xs font-body text-muted-foreground max-w-2xl">
-                Android capture receives camera FTP uploads, uploads to the selected client album, then ranks a Best of set while keeping review and reject frames recoverable.
+                Camera uploads land in the selected album, build a client-ready Best of set, and keep review and reject frames recoverable for the photographer.
               </p>
+              {latestCaptureTime && (
+                <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground/70 mt-2">
+                  Latest capture {new Date(latestCaptureTime).toLocaleString("en-AU", { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" })}
+                </p>
+              )}
             </div>
             <Button onClick={() => window.location.href = "/capture"} className="gap-2 font-body shrink-0">
               <Upload className="w-4 h-4" /> Open Capture
             </Button>
           </div>
-          <div className="grid grid-cols-4 gap-2 mt-4">
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 mt-4">
             {[
               { label: "Today", value: capturedToday, tone: "text-primary" },
-              { label: "Best of", value: bestOfCount, tone: "text-green-400" },
+              { label: "Client ready", value: clientReadyCount, tone: "text-cyan-300" },
+              { label: "Picks", value: bestOfCount, tone: "text-green-400" },
               { label: "Review", value: reviewCount, tone: "text-yellow-400" },
               { label: "Rejects", value: rejectCount, tone: "text-red-400" },
             ].map(item => (

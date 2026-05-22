@@ -6,7 +6,7 @@ import { Switch } from "@/components/ui/switch";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { getBookings, getAlbums, getSettings, updateAlbum, addAlbum, updateBooking, getMobileTenantSession, setMobileTenantSession, isLoggedIn } from "@/lib/storage";
-import { uploadPhotosToServer, isSupportedUploadFile, recheckServer, sendEmail, fetchTenantMobileData, saveTenantAlbum, autoCullAlbum, NATIVE_API_ORIGIN } from "@/lib/api";
+import { uploadPhotosToServer, isSupportedUploadFile, recheckServer, sendEmail, fetchTenantMobileData, saveTenantAlbum, autoCullAlbum, NATIVE_API_ORIGIN, type UploadedPhotoResult } from "@/lib/api";
 import { queueOfflineCapture, getOfflineQueue, useOfflineUploadQueue, type OfflineCaptureItem } from "@/lib/usePwa";
 import { generateThumbnail, formatSpeed } from "@/lib/image-utils";
 import CameraUsb from "@/plugins/camera-usb";
@@ -204,6 +204,23 @@ function photoFromUploadResult(r: any, uploadedAt: string): Photo {
     ...(r.duplicateGroupId ? { duplicateGroupId: r.duplicateGroupId } : {}),
     ...(r.duplicateRank != null ? { duplicateRank: r.duplicateRank } : {}),
   };
+}
+
+function matchUploadResultsToFiles(files: File[], results: UploadedPhotoResult[]) {
+  const buckets = new Map<string, UploadedPhotoResult[]>();
+  for (const result of results) {
+    const key = result.originalName || "";
+    const list = buckets.get(key) || [];
+    list.push(result);
+    buckets.set(key, list);
+  }
+  return files
+    .map(file => {
+      const list = buckets.get(file.name);
+      const result = list?.shift();
+      return result ? { file, result } : null;
+    })
+    .filter((pair): pair is { file: File; result: UploadedPhotoResult } => Boolean(pair));
 }
 
 function isBestOfCull(photo: Photo): boolean {
@@ -491,6 +508,7 @@ function MobileCaptureInner() {
   const [cameraScanBusy, setCameraScanBusy] = useState(false);
   const [cameraScanCandidates, setCameraScanCandidates] = useState<CameraFtpCandidate[]>([]);
   const [selectedCameraCandidate, setSelectedCameraCandidate] = useState<CameraFtpCandidate | null>(null);
+  const [ftpSetupOpen, setFtpSetupOpen] = useState(false);
   const [heldRawCount, setHeldRawCount] = useState(0);
   const [lastHeldRawName, setLastHeldRawName] = useState("");
   const [ftpQueueSize, setFtpQueueSize] = useState(0);
@@ -1174,12 +1192,8 @@ function MobileCaptureInner() {
                 setImportProgress(Math.round((chunkStart + done) / freshHandles.length * 100));
                 if (bytesPerSecond != null) setImportSpeed(bytesPerSecond);
               }, tenantSession?.slug, 3, album?.title || undefined, album?.id);
-              // Re-order results to match the sorted decodedFiles order
-              const resultByName = new Map(chunkResults.map(r => [r.originalName, r]));
-              const orderedResults = decodedFiles.map(f => resultByName.get(f.name)).filter(Boolean);
-              for (const r of orderedResults) {
-                if (!r) continue;
-                newPhotos.push(photoFromUploadResult(r, uploadedAt));
+              for (const { result } of matchUploadResultsToFiles(decodedFiles, chunkResults)) {
+                newPhotos.push(photoFromUploadResult(result, uploadedAt));
               }
               // Delete local cached copies now that files are safely on the server.
               // Fire-and-forget: cleanup is best-effort and must not block the upload flow
@@ -1339,20 +1353,19 @@ function MobileCaptureInner() {
         setLocalPreviewPhotos(prev => [...prev, ...previews]);
         setImportLabel(`Uploading ${decodedFiles.length} Wi-Fi file${decodedFiles.length !== 1 ? "s" : ""}…`);
 
-        const fileInfoByName = new Map(decodedFiles.map(f => [f.name, f]));
         const results = await uploadPhotosToServer(decodedFiles, (done, _total, bytesPerSecond) => {
           setImportProgress(Math.round((start + done) / proofPaths.length * 100));
           if (bytesPerSecond != null) setImportSpeed(bytesPerSecond);
         }, tenantSession?.slug, 3, album.title, album.id);
-        const resultByName = new Map(results.map(r => [r.originalName, r]));
-        for (const file of decodedFiles) {
-          const result = resultByName.get(file.name);
-          if (!result) {
-            setOfflineQueue(q => [...q, file]);
-            queuedOfflineCount += 1;
-            continue;
-          }
-          newPhotos.push(photoFromUploadResult(result, new Date(fileInfoByName.get(result.originalName)?.lastModified || Date.now()).toISOString()));
+        const matched = matchUploadResultsToFiles(decodedFiles, results);
+        const uploadedFiles = new Set(matched.map(pair => pair.file));
+        for (const { file, result } of matched) {
+          newPhotos.push(photoFromUploadResult(result, new Date(file.lastModified || Date.now()).toISOString()));
+        }
+        const failedFiles = decodedFiles.filter(file => !uploadedFiles.has(file));
+        if (failedFiles.length > 0) {
+          setOfflineQueue(q => [...q, ...failedFiles]);
+          queuedOfflineCount += failedFiles.length;
         }
 
         const localPaths = imported.map(f => f.localPath || f.path).filter((p): p is string => Boolean(p));
@@ -1556,7 +1569,6 @@ function MobileCaptureInner() {
     setQuietCaptureStatus("Uploading from device", `${countLabel(sortedFiles.length, "photo")} selected`, "active");
 
     const newPhotos: Photo[] = [];
-    const fileInfoByName = new Map(sortedFiles.map(f => [f.name, f]));
     let queuedOfflineCount = 0;
 
     try {
@@ -1579,20 +1591,16 @@ function MobileCaptureInner() {
               setUploadProgress(Math.round((totalDone + done) / sortedFiles.length * 100));
               if (bytesPerSecond != null) setUploadSpeed(bytesPerSecond);
             }, tenantSession?.slug, 3, targetAlbum?.title || undefined, targetAlbum?.id);
-            // Re-order results to match the sorted input file order
-            const resultByName = new Map(chunkResults.map(r => [r.originalName, r]));
-            const succeededNames = new Set(chunkResults.map(r => r.originalName));
-            const orderedResults = chunk.map(f => resultByName.get(f.name)).filter((r): r is NonNullable<typeof r> => !!r);
-            for (const r of orderedResults) {
-              const srcFile = fileInfoByName.get(r.originalName);
-              newPhotos.push(photoFromUploadResult(r, srcFile ? new Date(srcFile.lastModified).toISOString() : new Date().toISOString()));
+            const matched = matchUploadResultsToFiles(chunk, chunkResults);
+            const succeededFiles = new Set(matched.map(pair => pair.file));
+            for (const { file, result } of matched) {
+              newPhotos.push(photoFromUploadResult(result, new Date(file.lastModified || Date.now()).toISOString()));
             }
             totalDone += chunk.length;
-            // Mark each item individually — files missing from results were silently dropped
-            const failedFiles = chunk.filter(f => !succeededNames.has(f.name));
+            const failedFiles = chunk.filter(file => !succeededFiles.has(file));
             setUploadQueue(prev => prev.map(item => {
               if (!chunkIds.includes(item.id)) return item;
-              return { ...item, status: succeededNames.has(item.file.name) ? "done" : "failed" };
+              return { ...item, status: succeededFiles.has(item.file) ? "done" : "failed" };
             }));
             if (failedFiles.length > 0) {
               setOfflineQueue(q => [...q, ...failedFiles]);
@@ -1678,13 +1686,16 @@ function MobileCaptureInner() {
         setUploadProgress(Math.round(done / total * 100));
         if (bytesPerSecond != null) setUploadSpeed(bytesPerSecond);
       }, tenantSession?.slug, 3, targetAlbum?.title || undefined, targetAlbum?.id);
-      const fileInfoByName = new Map(files.map(f => [f.name, f]));
-      const resultByName = new Map(results.map(r => [r.originalName, r]));
-      const orderedResults = files.map(f => resultByName.get(f.name)).filter((r): r is NonNullable<typeof r> => !!r);
-      const newPhotos: Photo[] = orderedResults.map(r => {
-        const srcFile = fileInfoByName.get(r.originalName);
-        return photoFromUploadResult(r, srcFile ? new Date(srcFile.lastModified).toISOString() : new Date().toISOString());
-      });
+      const matched = matchUploadResultsToFiles(files, results);
+      const uploadedFiles = new Set(matched.map(pair => pair.file));
+      const failedFiles = files.filter(file => !uploadedFiles.has(file));
+      const newPhotos: Photo[] = matched.map(({ file, result }) =>
+        photoFromUploadResult(result, new Date(file.lastModified || Date.now()).toISOString())
+      );
+      if (failedFiles.length > 0) {
+        setOfflineQueue(q => [...q, ...failedFiles]);
+        queueCaptureSummary({ queued: failedFiles.length });
+      }
       const fresh = albums.find(a => a.id === targetAlbum.id) || targetAlbum;
       const upd: Album = { ...fresh, photos: [...fresh.photos, ...newPhotos], photoCount: fresh.photos.length + newPhotos.length, coverImage: fresh.coverImage || newPhotos[0]?.src || "" };
       await saveAlbum(upd); setTargetAlbum(upd); targetAlbumRef.current = upd; setAlbums(prev => prev.map(a => a.id === upd.id ? upd : a));
@@ -1857,9 +1868,16 @@ function MobileCaptureInner() {
   ];
 
   const ftpCameraClient = ftpStatus?.clients?.find(client => client.connected) || ftpStatus?.clients?.[0];
+  const ftpCameraAuthState = ftpCameraClient?.authState || "";
+  const ftpCameraLinked = !!(ftpStatus?.running && ftpCameraClient && (
+    ftpCameraClient.connected ||
+    (ftpCameraClient.filesReceived || 0) > 0 ||
+    ftpCameraAuthState === "logged-in" ||
+    ftpCameraAuthState === "transferring"
+  ));
   const ftpCameraSeen = !!ftpCameraClient;
   const connectionState = ftpStatus?.running
-    ? ftpStatus.paused ? "Paused" : ftpCameraSeen ? "Camera linked" : "Receiving"
+    ? ftpStatus.paused ? "Paused" : ftpCameraLinked ? "Camera linked" : "Receiving"
     : watching
       ? liveCapturePaused ? "USB Paused" : "USB Live"
       : "Ready";
@@ -1870,6 +1888,7 @@ function MobileCaptureInner() {
     { id: "publish", label: "Publish", icon: UploadCloud, count: offlineQueue.length },
   ];
   const ftpPrimaryHost = ftpHotspotAddress || ftpStatus?.network?.hotspotLikelyAddress || ftpStatus?.host || ftpStatus?.ipAddress || ftpAddresses[0] || "192.168.43.1";
+  const showFtpSetupHelp = !ftpCameraLinked || ftpSetupOpen || !!ftpCameraClient?.lastError;
 
   // ═══════════════════════════════════════════════════════════
   // ── SESSION PICKER ─────────────────────────────────────────
@@ -2026,7 +2045,7 @@ function MobileCaptureInner() {
   return (
     <div className="capture-app-shell capture-session-shell min-h-screen pb-28" style={{ paddingTop: "calc(env(safe-area-inset-top) + 0.75rem)" }}>
       {/* Header */}
-      <div className="capture-dashboard-header sticky top-0 z-30 px-4 pb-3" style={{ paddingTop: "calc(env(safe-area-inset-top) + 0.75rem)" }}>
+      <div className="capture-dashboard-header z-30 px-4 pb-3" style={{ paddingTop: "calc(env(safe-area-inset-top) + 0.75rem)" }}>
       <div className="flex items-center gap-3">
         <button
           onClick={() => {
@@ -2094,26 +2113,9 @@ function MobileCaptureInner() {
         </div>
       </div>
 
-      <div className="mt-3 grid grid-cols-3 gap-2">
-        {captureTabs.map(tab => {
-          const Icon = tab.icon;
-          const active = captureTab === tab.id;
-          return (
-            <button
-              key={tab.id}
-              onClick={() => setCaptureTab(tab.id)}
-              className={`capture-top-tab ${active ? "capture-top-tab-active" : ""}`}
-            >
-              <Icon className="w-4 h-4" />
-              <span>{tab.label}</span>
-              {!!tab.count && <em>{tab.count}</em>}
-            </button>
-          );
-        })}
-      </div>
       </div>
 
-      <div className="px-4 pt-4">
+      <div className="px-4 pt-3">
 
       {/* Offline queue banner */}
       {offlineQueue.length > 0 && (
@@ -2544,97 +2546,121 @@ function MobileCaptureInner() {
             </div>
           )}
 
-          <div className="rounded-lg border border-cyan-300/20 bg-cyan-400/5 p-3 space-y-3">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <p className="text-[10px] font-body tracking-wider uppercase text-cyan-100/80">Find camera on Wi-Fi</p>
-                <p className="text-xs font-body text-white/60 mt-1">
-                  The app scans the phone hotspot subnet. If your Nikon appears here, it is on the right network; use this phone server address in the FTP profile.
-                </p>
-              </div>
-              <button
-                onClick={scanForCamera}
-                disabled={cameraScanBusy}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-300/25 bg-cyan-400/10 px-3 py-2 text-[10px] font-body uppercase tracking-wider text-cyan-100 disabled:opacity-50"
-              >
-                <Search className={`w-3 h-3 ${cameraScanBusy ? "animate-pulse" : ""}`} />
-                {cameraScanBusy ? "Scanning" : "Scan"}
-              </button>
-            </div>
-            {cameraScanCandidates.length > 0 && (
-              <div className="space-y-2">
-                <p className="text-[10px] font-body uppercase tracking-wider text-white/45">Is this your camera?</p>
-                {cameraScanCandidates.slice(0, 6).map(candidate => {
-                  const selected = selectedCameraCandidate?.ipAddress === candidate.ipAddress;
-                  return (
-                    <button
-                      key={`${candidate.ipAddress}-${candidate.macAddress || ""}`}
-                      onClick={() => setSelectedCameraCandidate(candidate)}
-                      className={`w-full rounded-lg border px-3 py-2 text-left transition-colors ${selected ? "border-cyan-300/40 bg-cyan-400/12" : "border-white/10 bg-white/[0.04]"}`}
-                    >
-                      <span className="block text-sm font-body text-white">{candidate.ipAddress}</span>
-                      <span className="block text-[10px] font-body text-white/42">
-                        {candidate.macAddress || "network device"}{candidate.interfaceName ? ` · ${candidate.interfaceName}` : ""}
-                      </span>
-                    </button>
-                  );
-                })}
-                {selectedCameraCandidate && (
-                  <p className="text-xs font-body text-cyan-100/70">
-                    Camera selected. On Nikon, keep the FTP server host as {ftpPrimaryHost}; the camera device IP is only used to confirm it joined this hotspot.
+          {ftpCameraLinked && (
+            <div className="rounded-lg border border-emerald-300/20 bg-emerald-400/5 p-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-[10px] font-body tracking-wider uppercase text-emerald-100/75">Camera linked</p>
+                  <p className="text-xs font-body text-white/58 truncate">
+                    Setup help is hidden while the camera is connected. Files will appear in the queue as Nikon uploads them.
                   </p>
-                )}
-              </div>
-            )}
-          </div>
-
-          {ftpAddresses.length > 1 && (
-            <div className="rounded-lg border border-amber-400/20 bg-amber-400/5 p-3 space-y-2">
-              <p className="text-[10px] font-body tracking-wider uppercase text-amber-200/80">Unable to locate server?</p>
-              <p className="text-xs font-body text-white/65">
-                The camera must use the phone IP on the same network. If the camera is joined to this phone hotspot, try the hotspot address first.
-              </p>
-              <div className="flex flex-wrap gap-2">
-                {ftpAddresses.slice(0, 5).map((address) => (
-                  <span key={address} className={`rounded-full border px-2.5 py-1 text-[11px] font-body ${address === ftpPrimaryHost ? "border-cyan-300/35 bg-cyan-400/10 text-cyan-100" : "border-white/10 bg-white/[0.04] text-white/60"}`}>
-                    {address}{address === ftpHotspotAddress ? " hotspot" : ""}{address === ftpPrimaryHost ? " use this" : ""}
-                  </span>
-                ))}
+                </div>
+                <button
+                  onClick={() => setFtpSetupOpen(v => !v)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-300/25 bg-emerald-400/10 px-3 py-2 text-[10px] font-body uppercase tracking-wider text-emerald-100"
+                >
+                  {ftpSetupOpen ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                  Setup
+                </button>
               </div>
             </div>
           )}
 
-          <div className="rounded-lg border border-border/50 bg-background/40 p-3 space-y-1.5">
-            <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground">Nikon Z6III / ZR setup</p>
-            <p className="text-xs font-body text-muted-foreground">Network Menu &gt; Connect to FTP Server &gt; Network Settings &gt; Create Profile &gt; Connection Wizard. Choose FTP, enter the host/port/user/password above, set PASV mode ON, then Auto Upload ON.</p>
-            <p className="text-[10px] font-body text-muted-foreground/70">If the phone hotspot is active, use the host shown above. If the camera creates Wi-Fi, join it in Android Wi-Fi settings first.</p>
-          </div>
-
-          <div className="rounded-lg border border-cyan-300/20 bg-cyan-400/5 p-3 space-y-2">
-            <div className="flex items-start gap-2">
-              <AlertCircle className="w-4 h-4 text-cyan-200 mt-0.5 flex-shrink-0" />
-              <div>
-                <p className="text-[10px] font-body tracking-wider uppercase text-cyan-100/80">Camera says “Start Wireless Transmitter Utility”?</p>
-                <p className="text-xs font-body text-white/65 mt-1">
-                  That is Nikon pairing for Connect to Computer. Back out and use Connect to FTP Server for this app. FTP does not need Wireless Transmitter Utility pairing.
-                </p>
+          {showFtpSetupHelp && (
+            <>
+              <div className="rounded-lg border border-cyan-300/20 bg-cyan-400/5 p-3 space-y-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-[10px] font-body tracking-wider uppercase text-cyan-100/80">Find camera on Wi-Fi</p>
+                    <p className="text-xs font-body text-white/60 mt-1">
+                      The app scans the phone hotspot subnet. If your Nikon appears here, it is on the right network; use this phone server address in the FTP profile.
+                    </p>
+                  </div>
+                  <button
+                    onClick={scanForCamera}
+                    disabled={cameraScanBusy}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-300/25 bg-cyan-400/10 px-3 py-2 text-[10px] font-body uppercase tracking-wider text-cyan-100 disabled:opacity-50"
+                  >
+                    <Search className={`w-3 h-3 ${cameraScanBusy ? "animate-pulse" : ""}`} />
+                    {cameraScanBusy ? "Scanning" : "Scan"}
+                  </button>
+                </div>
+                {cameraScanCandidates.length > 0 && (
+                  <div className="space-y-2">
+                    <p className="text-[10px] font-body uppercase tracking-wider text-white/45">Is this your camera?</p>
+                    {cameraScanCandidates.slice(0, 6).map(candidate => {
+                      const selected = selectedCameraCandidate?.ipAddress === candidate.ipAddress;
+                      return (
+                        <button
+                          key={`${candidate.ipAddress}-${candidate.macAddress || ""}`}
+                          onClick={() => setSelectedCameraCandidate(candidate)}
+                          className={`w-full rounded-lg border px-3 py-2 text-left transition-colors ${selected ? "border-cyan-300/40 bg-cyan-400/12" : "border-white/10 bg-white/[0.04]"}`}
+                        >
+                          <span className="block text-sm font-body text-white">{candidate.ipAddress}</span>
+                          <span className="block text-[10px] font-body text-white/42">
+                            {candidate.macAddress || "network device"}{candidate.interfaceName ? ` · ${candidate.interfaceName}` : ""}
+                          </span>
+                        </button>
+                      );
+                    })}
+                    {selectedCameraCandidate && (
+                      <p className="text-xs font-body text-cyan-100/70">
+                        Camera selected. On Nikon, keep the FTP server host as {ftpPrimaryHost}; the camera device IP is only used to confirm it joined this hotspot.
+                      </p>
+                    )}
+                  </div>
+                )}
               </div>
-            </div>
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                onClick={() => CameraFtp.openHotspotSettings().catch(() => {})}
-                className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-[10px] font-body uppercase tracking-wider text-white/65"
-              >
-                <Wifi className="w-3 h-3" /> Wi-Fi Settings
-              </button>
-              <button
-                onClick={() => setCaptureTransport("wifi-control")}
-                className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-[10px] font-body uppercase tracking-wider text-white/65"
-              >
-                <Zap className="w-3 h-3" /> Pairing Info
-              </button>
-            </div>
-          </div>
+
+              {!ftpCameraLinked && ftpAddresses.length > 1 && (
+                <div className="rounded-lg border border-amber-400/20 bg-amber-400/5 p-3 space-y-2">
+                  <p className="text-[10px] font-body tracking-wider uppercase text-amber-200/80">Unable to locate server?</p>
+                  <p className="text-xs font-body text-white/65">
+                    The camera must use the phone IP on the same network. If the camera is joined to this phone hotspot, try the hotspot address first.
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    {ftpAddresses.slice(0, 5).map((address) => (
+                      <span key={address} className={`rounded-full border px-2.5 py-1 text-[11px] font-body ${address === ftpPrimaryHost ? "border-cyan-300/35 bg-cyan-400/10 text-cyan-100" : "border-white/10 bg-white/[0.04] text-white/60"}`}>
+                        {address}{address === ftpHotspotAddress ? " hotspot" : ""}{address === ftpPrimaryHost ? " use this" : ""}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="rounded-lg border border-border/50 bg-background/40 p-3 space-y-1.5">
+                <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground">Nikon Z6III / ZR setup</p>
+                <p className="text-xs font-body text-muted-foreground">Network Menu &gt; Connect to FTP Server &gt; Network Settings &gt; Create Profile &gt; Connection Wizard. Choose FTP, enter the host/port/user/password above, set PASV mode ON, then Auto Upload ON.</p>
+                <p className="text-[10px] font-body text-muted-foreground/70">If the phone hotspot is active, use the host shown above. If the camera creates Wi-Fi, join it in Android Wi-Fi settings first.</p>
+              </div>
+
+              <div className="rounded-lg border border-cyan-300/20 bg-cyan-400/5 p-3 space-y-2">
+                <div className="flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 text-cyan-200 mt-0.5 flex-shrink-0" />
+                  <div>
+                    <p className="text-[10px] font-body tracking-wider uppercase text-cyan-100/80">Camera says “Start Wireless Transmitter Utility”?</p>
+                    <p className="text-xs font-body text-white/65 mt-1">
+                      That is Nikon pairing for Connect to Computer. Back out and use Connect to FTP Server for this app. FTP does not need Wireless Transmitter Utility pairing.
+                    </p>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    onClick={() => CameraFtp.openHotspotSettings().catch(() => {})}
+                    className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-[10px] font-body uppercase tracking-wider text-white/65"
+                  >
+                    <Wifi className="w-3 h-3" /> Wi-Fi Settings
+                  </button>
+                  <button
+                    onClick={() => setCaptureTransport("wifi-control")}
+                    className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-[10px] font-body uppercase tracking-wider text-white/65"
+                  >
+                    <Zap className="w-3 h-3" /> Pairing Info
+                  </button>
+                </div>
+              </div>
+            </>
+          )}
 
           {(ftpStatus?.running || ftpQueueSize > 0) && (
             <div className="flex items-center justify-between pt-2 border-t border-border/40">
