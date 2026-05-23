@@ -11,7 +11,6 @@ node_modules
 dist
 dist-ssr
 artifacts/
-public/downloads/android/
 .jdk-local/
 .android-sdk/
 .gradle-local/

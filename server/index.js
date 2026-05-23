@@ -5142,23 +5142,6 @@ app.get("/api/tenant/:slug/storage-stats", tenantLimiter, (req, res) => {
   res.json({ ok: true, totalBytes, fileCount, albumCount: Array.isArray(albums) ? albums.length : 0 });
 });
 
-// ── Deployed Android APK downloads ─────────────────────
-// GitHub Actions publishes the current phone app into persistent DATA_DIR so
-// APK updates do not require committing binaries or rebuilding the web image.
-const ANDROID_DOWNLOADS_DIR = path.join(DATA_DIR, "downloads", "android");
-fs.mkdirSync(ANDROID_DOWNLOADS_DIR, { recursive: true });
-app.use(
-  "/downloads/android",
-  express.static(ANDROID_DOWNLOADS_DIR, {
-    fallthrough: true,
-    setHeaders(res, filePath) {
-      if (/latest\.(apk|json)$/.test(filePath)) {
-        res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-      }
-    },
-  })
-);
-
 // ── Serve React app ───────────────────────────────────
 const distPath = path.join(__dirname, "../dist");
 // Hashed assets (JS/CSS chunks) are immutable — cache aggressively.
