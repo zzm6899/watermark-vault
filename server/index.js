@@ -5151,6 +5151,8 @@ app.use(
     setHeaders(res, filePath) {
       if (filePath.endsWith("index.html")) {
         res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+      } else if (/downloads[\\/]+android[\\/]+latest\.(apk|json)$/.test(filePath)) {
+        res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
       } else if (/\.(js|css|woff2?|ttf|eot|svg|png|jpg|jpeg|gif|ico|webp)$/.test(filePath)) {
         res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
       }

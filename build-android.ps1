@@ -150,16 +150,62 @@ Write-Host "`n=== Step 4: Gradle assembleDebug ===" -ForegroundColor Cyan
 & $GRADLE_BAT -g $projectGradleHome -p android assembleDebug --no-daemon --refresh-dependencies
 if ($LASTEXITCODE -ne 0) { throw "Gradle build failed" }
 
-# ---------- STEP 5: Copy APK to easy-access folder ----------
+# ---------- STEP 5: Publish latest APK ----------
 $apk = "android\app\build\outputs\apk\debug\app-debug.apk"
 if (Test-Path $apk) {
     $outDir = "artifacts\android"
     New-Item -ItemType Directory -Force -Path $outDir | Out-Null
     $outApk = Join-Path $outDir "PhotoFlow-debug.apk"
     Copy-Item -Path $apk -Destination $outApk -Force
+
+    $publicDir = "public\downloads\android"
+    New-Item -ItemType Directory -Force -Path $publicDir | Out-Null
+    Get-ChildItem -Path $publicDir -Filter "*.apk" -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -ne "latest.apk" } |
+        Remove-Item -Force -ErrorAction SilentlyContinue
+    $publicApk = Join-Path $publicDir "latest.apk"
+    Copy-Item -Path $apk -Destination $publicApk -Force
+
+    $apkItem = Get-Item $publicApk
+    $sha256 = (Get-FileHash -Path $publicApk -Algorithm SHA256).Hash.ToLowerInvariant()
+    $commit = "local"
+    try {
+        $gitCommit = git rev-parse --short HEAD 2>$null
+        if ($LASTEXITCODE -eq 0 -and $gitCommit) { $commit = $gitCommit.Trim() }
+    } catch {}
+    $manifest = [ordered]@{
+        appName = "Zuploader Capture"
+        packageName = "conn.uploader.capture"
+        versionName = "1.0"
+        versionCode = 1
+        buildType = "debug"
+        builtAt = (Get-Date).ToUniversalTime().ToString("o")
+        commit = $commit
+        apk = [ordered]@{
+            fileName = "zuploader-capture-latest.apk"
+            url = "/downloads/android/latest.apk"
+            sizeBytes = $apkItem.Length
+            sha256 = $sha256
+        }
+        notes = @(
+            "Built from the current web bundle and synced into the Android shell.",
+            "Latest APK only; older public APK versions are removed by the build script.",
+            "Use the Admin APK tab to download or copy the install link."
+        )
+    }
+    $manifest | ConvertTo-Json -Depth 6 | Set-Content -Path (Join-Path $publicDir "latest.json") -Encoding UTF8
+    if (Test-Path "dist") {
+        $distDownloadDir = "dist\downloads\android"
+        New-Item -ItemType Directory -Force -Path $distDownloadDir | Out-Null
+        Copy-Item -Path $publicApk -Destination (Join-Path $distDownloadDir "latest.apk") -Force
+        Copy-Item -Path (Join-Path $publicDir "latest.json") -Destination (Join-Path $distDownloadDir "latest.json") -Force
+    }
+
     $size = [math]::Round((Get-Item $apk).Length / 1MB, 2)
     Write-Host "`n=== SUCCESS ===" -ForegroundColor Green
     Write-Host "  APK: $outApk ($size MB)"
+    Write-Host "  Public APK: $publicApk"
+    Write-Host "  Public manifest: $(Join-Path $publicDir "latest.json")"
 } else {
     Write-Host "`n=== Build completed but APK not found at expected path ===" -ForegroundColor Yellow
     Write-Host "  Check: android\app\build\outputs\"

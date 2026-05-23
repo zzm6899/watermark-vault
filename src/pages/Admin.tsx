@@ -12,7 +12,7 @@ import {
   Star, CheckCircle2, Sparkles, ChevronLeft, ChevronRight, Flag, FileText, Receipt, Printer, AlertCircle, BookOpen,
   ArrowUpDown, MoreHorizontal, TrendingUp, TrendingDown, Key, Globe, Wifi,
   Maximize2, Check, PlusCircle, Pencil, Tags, CalendarDays, Share2, ClipboardList,
-  RadioTower,
+  RadioTower, Smartphone,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -158,7 +158,7 @@ import sampleWedding from "@/assets/sample-wedding.jpg";
 import sampleEvent from "@/assets/sample-event.jpg";
 import sampleFood from "@/assets/sample-food.jpg";
 
-type Tab = "dashboard" | "shoot-day" | "bookings" | "automations" | "events" | "albums" | "photos" | "finance" | "invoices" | "contacts" | "enquiries" | "profile" | "settings" | "storage" | "platform";
+type Tab = "dashboard" | "shoot-day" | "bookings" | "automations" | "events" | "albums" | "photos" | "finance" | "invoices" | "contacts" | "enquiries" | "profile" | "settings" | "storage" | "apk" | "platform";
 
 const TAB_ROUTE_MAP: Record<string, Tab> = {
   dashboard: "dashboard",
@@ -175,6 +175,7 @@ const TAB_ROUTE_MAP: Record<string, Tab> = {
   profile: "profile",
   settings: "settings",
   storage: "storage",
+  apk: "apk",
   platform: "platform",
 };
 
@@ -193,6 +194,7 @@ const ADMIN_TAB_LABELS: Record<Tab, string> = {
   profile: "Profile",
   settings: "Settings",
   storage: "Storage",
+  apk: "APK",
   platform: "Platform",
 };
 
@@ -767,6 +769,7 @@ export default function Admin() {
     { id: "profile" as Tab, label: "Profile", icon: Camera },
     { id: "settings" as Tab, label: "Settings", icon: Settings },
     { id: "storage" as Tab, label: "Storage", icon: HardDrive },
+    { id: "apk" as Tab, label: "APK", icon: Smartphone },
     ...(superAdminFlag ? [{ id: "platform" as Tab, label: "Platform", icon: Globe }] : []),
   ];
 
@@ -908,6 +911,7 @@ export default function Admin() {
           {activeTab === "profile" && <ProfileView />}
           {activeTab === "settings" && <SettingsView />}
           {activeTab === "storage" && <StorageView />}
+          {activeTab === "apk" && <ApkManagerView />}
           {activeTab === "platform" && superAdminFlag && <PlatformView />}
         </main>
       </div>
@@ -12121,6 +12125,172 @@ function WatermarkPreviewWithSamples({ settings }: { settings: AppSettings }) {
         />
       </div>
     </div>
+  );
+}
+
+type ApkManifest = {
+  appName?: string;
+  packageName?: string;
+  versionName?: string;
+  versionCode?: number;
+  buildType?: string;
+  builtAt?: string;
+  commit?: string;
+  apk?: {
+    fileName?: string;
+    url?: string;
+    sizeBytes?: number;
+    sha256?: string;
+  };
+  notes?: string[];
+};
+
+function ApkManagerView() {
+  const [manifest, setManifest] = useState<ApkManifest | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [missing, setMissing] = useState(false);
+
+  const loadManifest = useCallback(async () => {
+    setLoading(true);
+    setMissing(false);
+    try {
+      const res = await fetch(`/downloads/android/latest.json?t=${Date.now()}`, { cache: "no-store" });
+      if (!res.ok) {
+        setManifest(null);
+        setMissing(true);
+        return;
+      }
+      setManifest(await res.json());
+    } catch {
+      setManifest(null);
+      setMissing(true);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadManifest();
+  }, [loadManifest]);
+
+  const apkUrl = manifest?.apk?.url || "/downloads/android/latest.apk";
+  const absoluteApkUrl = typeof window !== "undefined" ? new URL(apkUrl, window.location.origin).toString() : apkUrl;
+  const builtAt = manifest?.builtAt ? new Date(manifest.builtAt) : null;
+
+  const copyLink = async () => {
+    try {
+      await navigator.clipboard.writeText(absoluteApkUrl);
+      toast.success("APK link copied");
+    } catch {
+      toast.error("Could not copy APK link");
+    }
+  };
+
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-4">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <div>
+          <h2 className="font-display text-2xl text-foreground">Android APK</h2>
+          <p className="text-xs font-body text-muted-foreground mt-1">
+            Download and install the latest Zuploader Capture Android build.
+          </p>
+        </div>
+        <Button variant="outline" size="sm" onClick={loadManifest} disabled={loading} className="gap-2 font-body text-xs">
+          <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} /> Refresh
+        </Button>
+      </div>
+
+      <div className="glass-panel rounded-xl p-5 sm:p-6">
+        {loading ? (
+          <p className="text-xs font-body text-muted-foreground">Checking APK build...</p>
+        ) : missing ? (
+          <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 flex items-start gap-3">
+            <AlertCircle className="w-5 h-5 text-amber-400 shrink-0" />
+            <div>
+              <p className="text-sm font-body font-medium text-foreground">No downloadable APK has been published yet</p>
+              <p className="text-xs font-body text-muted-foreground mt-1">
+                Run the Android build script to publish <code>public/downloads/android/latest.apk</code>, then deploy the updated build.
+              </p>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-5">
+            <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4">
+              <div className="flex items-start gap-3">
+                <span className="flex size-11 items-center justify-center rounded-xl bg-primary/10 text-primary ring-1 ring-primary/25">
+                  <Smartphone className="w-5 h-5" />
+                </span>
+                <div>
+                  <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Latest build</p>
+                  <h3 className="font-display text-xl text-foreground">{manifest?.appName || "Zuploader Capture"}</h3>
+                  <p className="text-xs font-body text-muted-foreground mt-1">
+                    {manifest?.packageName || "conn.uploader.capture"} · {manifest?.buildType || "debug"} · v{manifest?.versionName || "1.0"} ({manifest?.versionCode || 1})
+                  </p>
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button asChild className="gap-2 font-body">
+                  <a href={apkUrl} download={manifest?.apk?.fileName || "zuploader-capture-latest.apk"}>
+                    <Download className="w-4 h-4" /> Download APK
+                  </a>
+                </Button>
+                <Button variant="outline" onClick={copyLink} className="gap-2 font-body">
+                  <Copy className="w-4 h-4" /> Copy Link
+                </Button>
+                <Button variant="outline" asChild className="gap-2 font-body">
+                  <a href={apkUrl} target="_blank" rel="noreferrer">
+                    <ExternalLink className="w-4 h-4" /> Open
+                  </a>
+                </Button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
+              <div className="rounded-lg border border-border/40 bg-secondary/30 p-3">
+                <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Size</p>
+                <p className="font-display text-lg text-foreground mt-1">{formatBytes(manifest?.apk?.sizeBytes || 0)}</p>
+              </div>
+              <div className="rounded-lg border border-border/40 bg-secondary/30 p-3">
+                <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Built</p>
+                <p className="font-display text-sm text-foreground mt-1">{builtAt ? builtAt.toLocaleString("en-AU", { dateStyle: "medium", timeStyle: "short" }) : "Unknown"}</p>
+              </div>
+              <div className="rounded-lg border border-border/40 bg-secondary/30 p-3">
+                <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Commit</p>
+                <p className="font-mono text-xs text-foreground mt-1 truncate">{manifest?.commit || "local"}</p>
+              </div>
+              <div className="rounded-lg border border-border/40 bg-secondary/30 p-3">
+                <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Install</p>
+                <p className="font-display text-sm text-emerald-300 mt-1">ADB or browser</p>
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-cyan-400/20 bg-cyan-400/10 p-4">
+              <p className="text-sm font-body font-medium text-foreground">Phone install steps</p>
+              <p className="text-xs font-body text-muted-foreground mt-1">
+                Open this admin page on the phone, download the APK, then allow installs from the browser if Android asks. For USB installs, use the current APK from the build output.
+              </p>
+            </div>
+
+            {manifest?.notes?.length ? (
+              <div className="space-y-2">
+                <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Build notes</p>
+                <div className="space-y-1">
+                  {manifest.notes.map((note, index) => (
+                    <p key={`${note}-${index}`} className="text-xs font-body text-muted-foreground flex gap-2">
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" /> {note}
+                    </p>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
+            {manifest?.apk?.sha256 && (
+              <p className="text-[10px] font-mono text-muted-foreground/70 break-all">SHA-256: {manifest.apk.sha256}</p>
+            )}
+          </div>
+        )}
+      </div>
+    </motion.div>
   );
 }
 
