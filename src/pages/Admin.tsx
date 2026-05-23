@@ -1772,6 +1772,14 @@ function DashboardView() {
       onClick: () => navigate("/admin/storage"),
       tone: "text-emerald-300",
     },
+    {
+      label: "Android APK",
+      detail: "Download the latest phone capture app, copy the install link, and verify build details.",
+      icon: Smartphone,
+      action: "APK",
+      onClick: () => navigate("/admin/apk"),
+      tone: "text-violet-300",
+    },
   ];
 
   // ── Booking Calendar ────────────────────────────────────────
@@ -1944,7 +1952,7 @@ function DashboardView() {
               <Upload className="w-4 h-4" /> Open Capture
             </Button>
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-2 mt-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-2 mt-4">
             {captureFeatureTiles.map(tile => (
               <button
                 key={tile.label}
