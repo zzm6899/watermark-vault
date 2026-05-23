@@ -12217,7 +12217,7 @@ function ApkManagerView() {
             <div>
               <p className="text-sm font-body font-medium text-foreground">No downloadable APK has been published yet</p>
               <p className="text-xs font-body text-muted-foreground mt-1">
-                Run the Android build script to publish <code>public/downloads/android/latest.apk</code>, then deploy the updated build.
+                Run the Android APK GitHub Action. It builds the app, uploads <code>latest.apk</code> to the server, and writes the manifest used here.
               </p>
             </div>
           </div>

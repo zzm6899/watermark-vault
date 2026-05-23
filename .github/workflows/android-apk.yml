@@ -1,4 +1,4 @@
-name: Build Android APK
+name: Build & Publish Android APK
 
 on:
   workflow_dispatch:
@@ -9,6 +9,7 @@ on:
       - "android/**"
       - "src/**"
       - "public/**"
+      - "server/**"
       - "capacitor.config.ts"
       - "package.json"
       - "package-lock.json"
@@ -19,6 +20,15 @@ jobs:
   build-apk:
     name: Build debug APK
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    env:
+      APK_DEPLOY_HOST: ${{ secrets.APK_DEPLOY_HOST }}
+      APK_DEPLOY_PORT: ${{ secrets.APK_DEPLOY_PORT }}
+      APK_DEPLOY_USER: ${{ secrets.APK_DEPLOY_USER }}
+      APK_DEPLOY_KEY: ${{ secrets.APK_DEPLOY_KEY }}
+      APK_DEPLOY_DIR: ${{ secrets.APK_DEPLOY_DIR }}
 
     steps:
       - name: Checkout
@@ -39,6 +49,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Test
+        run: npm run test -- --run
+
       - name: Build web app
         run: npm run build
 
@@ -51,14 +64,71 @@ jobs:
           chmod +x ./gradlew
           ./gradlew assembleDebug --no-daemon
 
-      - name: Collect APK
+      - name: Collect latest APK and manifest
         run: |
+          set -euo pipefail
           mkdir -p artifacts/android
-          cp android/app/build/outputs/apk/debug/app-debug.apk artifacts/android/PhotoFlow-debug.apk
+          cp android/app/build/outputs/apk/debug/app-debug.apk artifacts/android/latest.apk
+          node <<'NODE'
+          const fs = require("fs");
+          const crypto = require("crypto");
+          const apkPath = "artifacts/android/latest.apk";
+          const stat = fs.statSync(apkPath);
+          const sha256 = crypto.createHash("sha256").update(fs.readFileSync(apkPath)).digest("hex");
+          const manifest = {
+            appName: "Zuploader Capture",
+            packageName: "conn.uploader.capture",
+            versionName: "1.0",
+            versionCode: 1,
+            buildType: "debug",
+            builtAt: new Date().toISOString(),
+            commit: process.env.GITHUB_SHA.slice(0, 7),
+            apk: {
+              fileName: "zuploader-capture-latest.apk",
+              url: "/downloads/android/latest.apk",
+              sizeBytes: stat.size,
+              sha256,
+            },
+            notes: [
+              "Built by GitHub Actions from the current main branch.",
+              "Uploaded to the server as the single latest Android APK.",
+              "Older public APK versions are deleted during deploy.",
+            ],
+          };
+          fs.writeFileSync("artifacts/android/latest.json", `${JSON.stringify(manifest, null, 2)}\n`);
+          NODE
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PhotoFlow-debug-apk
-          path: artifacts/android/PhotoFlow-debug.apk
+          name: zuploader-capture-latest
+          path: |
+            artifacts/android/latest.apk
+            artifacts/android/latest.json
           if-no-files-found: error
+
+      - name: Publish latest APK to server
+        if: ${{ env.APK_DEPLOY_HOST != '' && env.APK_DEPLOY_USER != '' && env.APK_DEPLOY_KEY != '' && env.APK_DEPLOY_DIR != '' }}
+        run: |
+          set -euo pipefail
+          port="${APK_DEPLOY_PORT:-22}"
+          mkdir -p ~/.ssh
+          printf '%s\n' "$APK_DEPLOY_KEY" > ~/.ssh/apk_deploy_key
+          chmod 600 ~/.ssh/apk_deploy_key
+          ssh-keyscan -p "$port" -H "$APK_DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+          ssh -i ~/.ssh/apk_deploy_key -p "$port" "$APK_DEPLOY_USER@$APK_DEPLOY_HOST" \
+            "mkdir -p '$APK_DEPLOY_DIR' && find '$APK_DEPLOY_DIR' -maxdepth 1 -type f -name '*.apk' ! -name 'latest.apk' -delete"
+
+          scp -i ~/.ssh/apk_deploy_key -P "$port" artifacts/android/latest.apk \
+            "$APK_DEPLOY_USER@$APK_DEPLOY_HOST:$APK_DEPLOY_DIR/latest.apk.tmp"
+          scp -i ~/.ssh/apk_deploy_key -P "$port" artifacts/android/latest.json \
+            "$APK_DEPLOY_USER@$APK_DEPLOY_HOST:$APK_DEPLOY_DIR/latest.json.tmp"
+
+          ssh -i ~/.ssh/apk_deploy_key -p "$port" "$APK_DEPLOY_USER@$APK_DEPLOY_HOST" \
+            "mv '$APK_DEPLOY_DIR/latest.apk.tmp' '$APK_DEPLOY_DIR/latest.apk' && mv '$APK_DEPLOY_DIR/latest.json.tmp' '$APK_DEPLOY_DIR/latest.json'"
+
+      - name: Deployment skipped
+        if: ${{ env.APK_DEPLOY_HOST == '' || env.APK_DEPLOY_USER == '' || env.APK_DEPLOY_KEY == '' || env.APK_DEPLOY_DIR == '' }}
+        run: |
+          echo "APK deploy skipped. Set APK_DEPLOY_HOST, APK_DEPLOY_USER, APK_DEPLOY_KEY, and APK_DEPLOY_DIR repository secrets to publish to the server."
