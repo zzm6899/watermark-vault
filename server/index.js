@@ -3744,7 +3744,17 @@ app.get("/api/invoice/share/:token", invoiceShareLimiter, (req, res) => {
   const invoices = raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : [];
   const invoice = invoices.find(inv => inv.shareToken === req.params.token);
   if (!invoice) return res.status(404).json({ error: "Invoice not found" });
-  res.json(invoice);
+  const enriched = { ...invoice };
+  if (enriched.albumId && (!enriched.albumSlug || !enriched.albumTitle)) {
+    const albumsRaw = db["wv_albums"];
+    const albums = albumsRaw ? (typeof albumsRaw === "string" ? JSON.parse(albumsRaw) : albumsRaw) : [];
+    const album = Array.isArray(albums) ? albums.find(a => a.id === enriched.albumId) : null;
+    if (album) {
+      enriched.albumSlug = enriched.albumSlug || album.slug || album.id;
+      enriched.albumTitle = enriched.albumTitle || album.title || "Client gallery";
+    }
+  }
+  res.json(enriched);
 });
 
 // ── Tenants ──────────────────────────────────────────

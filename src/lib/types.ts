@@ -407,6 +407,7 @@ export interface Contact {
   abn?: string;
   phone?: string;
   company?: string;
+  albumIds?: string[];
   notes?: string;
   createdAt: string;
 }
@@ -427,6 +428,9 @@ export interface Invoice {
   emailLog: InvoiceEmailLogEntry[];
   bookingId?: string;       // optional link to a booking
   albumId?: string;         // optional link to an album
+  albumSlug?: string;       // cached gallery slug for public invoice links
+  albumTitle?: string;      // cached gallery title for display
+  showAlbumLinkAfterPayment?: boolean; // reveal gallery CTA only after invoice is paid
   tax?: number;             // tax rate percent (e.g. 10 for 10% GST)
   discount?: number;        // discount amount in dollars
   paymentMethods?: ("stripe" | "bank")[];  // which payment methods are available for this invoice

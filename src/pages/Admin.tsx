@@ -8173,10 +8173,16 @@ function InvoiceForm({
   // Auto-fill "To" from linked album
   const handleAlbumLink = (albumId: string) => {
     setInv(p => {
-      if (!albumId) return { ...p, albumId: undefined };
+      if (!albumId) return { ...p, albumId: undefined, albumSlug: undefined, albumTitle: undefined, showAlbumLinkAfterPayment: false };
       const alb = albums.find(a => a.id === albumId);
       if (!alb) return { ...p, albumId };
-      return { ...p, albumId, to: { ...p.to, name: alb.clientName || p.to.name, email: alb.clientEmail || p.to.email } };
+      return {
+        ...p,
+        albumId,
+        albumSlug: alb.slug || alb.id,
+        albumTitle: alb.title,
+        to: { ...p.to, name: alb.clientName || p.to.name, email: alb.clientEmail || p.to.email },
+      };
     });
   };
 
@@ -8244,6 +8250,20 @@ function InvoiceForm({
           </select>
         </div>
       </div>
+      {inv.albumId && (
+        <div className="glass-panel rounded-xl p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div>
+            <p className="text-xs font-body text-foreground font-medium">Reveal album link after payment</p>
+            <p className="text-[11px] font-body text-muted-foreground mt-0.5">
+              Shows an "Open album" button on the online invoice only after the invoice is paid. Hidden from PDF export.
+            </p>
+          </div>
+          <Switch
+            checked={!!inv.showAlbumLinkAfterPayment}
+            onCheckedChange={checked => setInv(p => ({ ...p, showAlbumLinkAfterPayment: checked }))}
+          />
+        </div>
+      )}
       {inv.status === "partial" && (
         <div className="glass-panel rounded-xl p-4">
           <label className={labelClass}>Amount Already Paid ($)</label>
@@ -9491,7 +9511,8 @@ function buildClientTimeline(contact: Contact, bookings: Booking[], invoices: In
   const items: ClientTimelineItem[] = [];
   const matchedBookings = bookings.filter(booking => contactMatchesClient(contact, booking.clientName, booking.clientEmail));
   const matchedInvoices = invoices.filter(invoice => contactMatchesClient(contact, invoice.to?.name, invoice.to?.email));
-  const matchedAlbums = albums.filter(album => contactMatchesClient(contact, album.clientName, album.clientEmail));
+  const linkedAlbumIds = new Set(contact.albumIds || []);
+  const matchedAlbums = albums.filter(album => linkedAlbumIds.has(album.id) || contactMatchesClient(contact, album.clientName, album.clientEmail));
 
   for (const booking of matchedBookings) {
     items.push({
@@ -9568,6 +9589,7 @@ function ContactsView() {
     abn: "",
     phone: "",
     company: "",
+    albumIds: [],
     notes: "",
     createdAt: new Date().toISOString(),
   });
@@ -9639,6 +9661,39 @@ function ContactsView() {
               <label className={labelClass}>Address</label>
               <textarea className={fieldClass} rows={2} value={editing.address} onChange={e => setEditing({ ...editing, address: e.target.value })} placeholder="Street address" />
             </div>
+            {albums.length > 0 && (
+              <div className="sm:col-span-2">
+                <label className={labelClass}>Linked Albums</label>
+                <div className="max-h-40 overflow-y-auto rounded-lg border border-border bg-secondary/40 divide-y divide-border/50">
+                  {albums.map(album => {
+                    const linked = (editing.albumIds || []).includes(album.id);
+                    return (
+                      <label key={album.id} className="flex items-center gap-3 px-3 py-2 cursor-pointer hover:bg-secondary/70">
+                        <input
+                          type="checkbox"
+                          checked={linked}
+                          onChange={event => {
+                            const current = editing.albumIds || [];
+                            setEditing({
+                              ...editing,
+                              albumIds: event.target.checked
+                                ? Array.from(new Set([...current, album.id]))
+                                : current.filter(id => id !== album.id),
+                            });
+                          }}
+                          className="accent-primary"
+                        />
+                        <span className="min-w-0">
+                          <span className="block text-xs font-body text-foreground truncate">{album.title}</span>
+                          <span className="block text-[10px] font-body text-muted-foreground truncate">{album.clientName || album.clientEmail || `${album.photoCount || album.photos?.length || 0} photos`}</span>
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+                <p className="text-[10px] font-body text-muted-foreground/60 mt-1">Explicit links appear in the client timeline even when names or emails do not match.</p>
+              </div>
+            )}
             <div className="sm:col-span-2">
               <label className={labelClass}>Notes</label>
               <textarea className={fieldClass} rows={2} value={editing.notes || ""} onChange={e => setEditing({ ...editing, notes: e.target.value })} placeholder="Internal notes" />
@@ -9679,6 +9734,8 @@ function ContactsView() {
           {filtered.map(c => {
             const cBookings = bookings.filter(b => contactMatchesClient(c, b.clientName, b.clientEmail));
             const cInvoices = invoices.filter(i => contactMatchesClient(c, i.to?.name, i.to?.email));
+            const cAlbumIds = new Set(c.albumIds || []);
+            const cAlbums = albums.filter(a => cAlbumIds.has(a.id) || contactMatchesClient(c, a.clientName, a.clientEmail));
             const cTotal = cInvoices.reduce((s, i) => s + calcInvTotal(i), 0);
             const isExpanded = expandedContactId === c.id;
             const sortedBookings = [...cBookings].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
@@ -9699,6 +9756,7 @@ function ContactsView() {
                   <div className="flex items-center gap-1 text-[10px] font-body text-muted-foreground">
                     <span className="px-2 py-0.5 rounded-full bg-secondary/60 border border-border/60">{cBookings.length} booking{cBookings.length !== 1 ? "s" : ""}</span>
                     <span className="px-2 py-0.5 rounded-full bg-secondary/60 border border-border/60">{cInvoices.length} invoice{cInvoices.length !== 1 ? "s" : ""}</span>
+                    <span className="px-2 py-0.5 rounded-full bg-secondary/60 border border-border/60">{cAlbums.length} album{cAlbums.length !== 1 ? "s" : ""}</span>
                     <span className="px-2 py-0.5 rounded-full bg-secondary/60 border border-border/60">${cTotal.toFixed(2)}</span>
                   </div>
                   <div className="flex gap-1 shrink-0" onClick={e => e.stopPropagation()}>
@@ -9743,6 +9801,25 @@ function ContactsView() {
                   )}
                   {c.notes && (
                     <p className="font-body text-[10px] text-muted-foreground/70 mt-2 pt-2 border-t border-border/20 italic">{c.notes}</p>
+                  )}
+                  {cAlbums.length > 0 && (
+                    <div className="mt-3 pt-3 border-t border-border/20">
+                      <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-2">Albums</p>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        {cAlbums.map(album => (
+                          <a
+                            key={album.id}
+                            href={`/gallery/${album.slug || album.id}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="rounded-lg border border-border/50 bg-secondary/30 px-3 py-2 hover:border-primary/40 transition-colors"
+                          >
+                            <p className="text-xs font-body text-foreground truncate">{album.title}</p>
+                            <p className="text-[10px] font-body text-muted-foreground truncate">{album.photoCount || album.photos?.length || 0} photo{(album.photoCount || album.photos?.length || 0) !== 1 ? "s" : ""} · open gallery</p>
+                          </a>
+                        ))}
+                      </div>
+                    </div>
                   )}
                   <div className="mt-3 pt-3 border-t border-border/20">
                     <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-2">Client Timeline</p>

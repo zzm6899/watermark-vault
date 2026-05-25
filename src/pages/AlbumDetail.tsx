@@ -665,7 +665,6 @@ export default function AlbumDetail() {
   // and be in the active "proofing" stage. Having a valid client token does NOT enable
   // interactive proofing on its own — it only grants gallery access.
   const isProofing = proofingStage === "proofing" && !!album.proofingEnabled && !isProofingWindowExpired;
-  const showProofingGalleryControls = isProofing;
   // lockDownloadsDuringProofing: block all downloads while any proofing stage is active (except
   // not-started and finals-delivered). Unlocks automatically once finals are delivered or proofing is reset.
   const isDownloadLockedForProofing = !!(album.lockDownloadsDuringProofing &&
@@ -673,7 +672,8 @@ export default function AlbumDetail() {
     proofingStage !== "not-started" &&
     proofingStage !== "finals-delivered");
 
-  const canDownload = (isFullyUnlocked || sessionFullAlbum) && !isExpired && !album.purchasingDisabled && !isDownloadLockedForProofing;
+  const canDownload = (isFullyUnlocked || sessionFullAlbum) && !isExpired && !isDownloadLockedForProofing;
+  const showProofingGalleryControls = isProofing && !canDownload;
   const isPhotoPaid = (id: string) => canDownload || paidPhotoIdSet.has(id);
   const latestRound = album.proofingRounds?.[album.proofingRounds.length - 1];
   const adminNote = latestRound?.adminNote;

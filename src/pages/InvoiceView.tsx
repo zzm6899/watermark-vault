@@ -152,6 +152,9 @@ export default function InvoiceView() {
     ? { ...STATUS_STYLES.sent, label: "Sent" }
     : STATUS_STYLES[invoice.status];
   const canPay = !justPaid && invoice.status !== "paid" && invoice.status !== "cancelled" && methods.length > 0;
+  const paidAlbumUrl = invoice.showAlbumLinkAfterPayment && invoice.status === "paid" && (invoice.albumSlug || invoice.albumId)
+    ? `/gallery/${invoice.albumSlug || invoice.albumId}`
+    : "";
 
   return (
     <>
@@ -159,8 +162,24 @@ export default function InvoiceView() {
       <style>{`
         @media print {
           .no-print { display: none !important; }
-          body { background: white !important; color: black !important; }
-          .print-page { box-shadow: none !important; border: none !important; }
+          @page { margin: 16mm; size: A4; }
+          html, body, #root { background: #fff !important; color: #111827 !important; }
+          body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+          .print-page {
+            background: #fff !important;
+            color: #111827 !important;
+            box-shadow: none !important;
+            border: none !important;
+            padding: 0 !important;
+          }
+          .print-page * {
+            color: #111827 !important;
+            border-color: #d1d5db !important;
+            box-shadow: none !important;
+          }
+          .print-muted { color: #4b5563 !important; }
+          table { page-break-inside: auto; }
+          tr { page-break-inside: avoid; page-break-after: auto; }
         }
       `}</style>
 
@@ -203,6 +222,22 @@ export default function InvoiceView() {
                   </p>
                 )}
               </div>
+            </div>
+          )}
+
+          {paidAlbumUrl && (
+            <div className="no-print mb-6 rounded-xl border border-primary/25 bg-primary/10 p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+              <div>
+                <p className="text-sm font-body text-foreground font-medium">Your gallery is ready</p>
+                <p className="text-xs font-body text-muted-foreground mt-0.5">
+                  {invoice.albumTitle || "Client gallery"} is linked to this paid invoice.
+                </p>
+              </div>
+              <Button asChild className="gap-2 font-body text-sm shrink-0">
+                <a href={paidAlbumUrl} target="_blank" rel="noreferrer">
+                  <ExternalLink className="w-4 h-4" /> Open Album
+                </a>
+              </Button>
             </div>
           )}
 
