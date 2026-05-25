@@ -4794,10 +4794,20 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
   const [albumStatus, setAlbumStatus] = useState<"editing" | "proofing" | "delivered" | "archived">(album?.status || "editing");
   const [editorGridSize, setEditorGridSize] = useState<"small" | "medium" | "large">("medium");
   const [editorLightboxPhoto, setEditorLightboxPhoto] = useState<Photo | null>(null);
+  const [photoSortDir, setPhotoSortDir] = useState<"asc" | "desc">("asc");
   const existingAlbums = getAlbums();
   const linkedBooking = bookingId ? bookings.find(b => b.id === bookingId) : undefined;
-  const linkedInvoices = !album ? [] : getInvoices().filter(invoice =>
+  const allInvoices = getInvoices();
+  const linkedInvoices = !album ? [] : allInvoices.filter(invoice =>
     invoice.albumId === album.id || (!!bookingId && invoice.bookingId === bookingId)
+  );
+  const attachableInvoices = !album ? [] : allInvoices.filter(invoice =>
+    invoice.albumId !== album.id &&
+    (!invoice.albumId || invoice.bookingId === bookingId || contactMatchesClient(
+      { id: "album-client", name: clientName, email: clientEmail, address: "", createdAt: "" },
+      invoice.to?.name,
+      invoice.to?.email,
+    ))
   );
 
   const buildAlbumDraft = (nextPhotos: Photo[], nextCoverImage = coverImage): Album | null => {
@@ -4985,6 +4995,107 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
       if (!slug) setSlug(slugify(`${bk.clientName}-${bk.date}`));
       if (!instagramHandle && bk.instagramHandle) setInstagramHandle(bk.instagramHandle);
     }
+  };
+
+  const persistPhotoOrder = (ordered: Photo[]) => {
+    setPhotos(ordered);
+    if (!isNew && album?.id && onUpdate) {
+      onUpdate({ ...album, photos: ordered, photoCount: ordered.length, _photosStripped: false });
+    }
+  };
+
+  const photoLabel = (photo: Photo) =>
+    ((photo as any).originalName || photo.title || photo.src?.split("/").pop() || photo.id || "").trim();
+
+  const photoNumber = (photo: Photo) => {
+    const label = photoLabel(photo);
+    const matches = label.match(/\d+/g);
+    return matches?.length ? Number(matches[matches.length - 1]) : Number.MAX_SAFE_INTEGER;
+  };
+
+  const sortPhotos = (mode: "name" | "file-number" | "uploaded" | "captured") => {
+    const dir = photoSortDir === "asc" ? 1 : -1;
+    const ordered = [...photos].sort((a, b) => {
+      if (mode === "file-number") {
+        const diff = photoNumber(a) - photoNumber(b);
+        if (diff !== 0) return diff * dir;
+      } else if (mode === "uploaded") {
+        const diff = new Date(a.uploadedAt || 0).getTime() - new Date(b.uploadedAt || 0).getTime();
+        if (diff !== 0) return diff * dir;
+      } else if (mode === "captured") {
+        const diff = new Date((a as any).takenAt || a.uploadedAt || 0).getTime() - new Date((b as any).takenAt || b.uploadedAt || 0).getTime();
+        if (diff !== 0) return diff * dir;
+      }
+      return photoLabel(a).localeCompare(photoLabel(b), undefined, { numeric: true, sensitivity: "base" }) * dir;
+    });
+    persistPhotoOrder(ordered);
+    toast.success("Album photo order updated");
+  };
+
+  const attachInvoiceToAlbum = (invoiceId: string) => {
+    if (!album?.id) return;
+    const invoice = allInvoices.find(inv => inv.id === invoiceId);
+    if (!invoice) return;
+    updateInvoice({
+      ...invoice,
+      albumId: album.id,
+      albumSlug: slug || album.slug || album.id,
+      albumTitle: title || album.title,
+      showAlbumLinkAfterPayment: invoice.showAlbumLinkAfterPayment ?? true,
+    });
+    toast.success(`Linked ${invoice.number} to this album`);
+  };
+
+  const createInvoiceForAlbum = () => {
+    if (!album?.id) {
+      toast.error("Save the album before creating an invoice");
+      return;
+    }
+    const now = new Date();
+    const due = new Date(now);
+    due.setDate(due.getDate() + 14);
+    const invFrom = settings.invoiceFrom || emptyParty();
+    const amount = priceFullAlbum || linkedBooking?.paymentAmount || 0;
+    const invoice: Invoice = {
+      id: generateId("inv"),
+      number: getNextInvoiceNumber(),
+      status: "draft",
+      from: {
+        name: invFrom.name || "",
+        email: invFrom.email || "",
+        address: invFrom.address || "",
+        abn: invFrom.abn || "",
+      },
+      to: {
+        name: clientName || album.clientName || "",
+        email: clientEmail || album.clientEmail || "",
+        address: "",
+        abn: "",
+      },
+      items: [{
+        ...emptyItem(),
+        description: `${title || album.title} gallery`,
+        subdescription: `${photos.length} photo${photos.length !== 1 ? "s" : ""}${allUnlocked ? " · downloads unlocked" : ""}`,
+        quantity: 1,
+        unitPrice: amount,
+      }],
+      notes: settings.invoiceNotes || "",
+      dueDate: due.toISOString().slice(0, 10),
+      createdAt: now.toISOString(),
+      shareToken: Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2),
+      emailLog: [],
+      bookingId: bookingId || undefined,
+      albumId: album.id,
+      albumSlug: slug || album.slug || album.id,
+      albumTitle: title || album.title,
+      showAlbumLinkAfterPayment: true,
+      paymentMethods: [
+        ...(settings.stripeEnabled ? ["stripe" as const] : []),
+        ...(settings.bankTransfer?.enabled ? ["bank" as const] : []),
+      ],
+    };
+    addInvoice(invoice);
+    toast.success(`Invoice ${invoice.number} created and linked`);
   };
 
   const handleSave = () => {
@@ -5534,6 +5645,57 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
         </div>
       )}
 
+      {!isNew && album && (
+        <div className="rounded-lg border border-border/50 bg-secondary/20 p-4 space-y-3">
+          <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+            <div>
+              <p className="text-xs font-body text-foreground font-medium flex items-center gap-1.5">
+                <Receipt className="w-3.5 h-3.5 text-primary" /> Linked Invoices
+              </p>
+              <p className="text-[10px] font-body text-muted-foreground mt-0.5">
+                Connect invoices to this gallery so paid invoices can open the album from the online invoice.
+              </p>
+            </div>
+            <Button type="button" size="sm" variant="outline" onClick={createInvoiceForAlbum} className="gap-1.5 font-body text-xs shrink-0">
+              <Plus className="w-3.5 h-3.5" /> Create Invoice
+            </Button>
+          </div>
+          {linkedInvoices.length > 0 ? (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {linkedInvoices.map(invoice => (
+                <div key={invoice.id} className="rounded-lg border border-border/50 bg-background/40 p-3 flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-xs font-body text-foreground truncate">{invoice.number} · {invoice.status}</p>
+                    <p className="text-[10px] font-body text-muted-foreground truncate">
+                      ${calcInvTotal(invoice).toFixed(2)} · {invoice.showAlbumLinkAfterPayment ? "album shown after payment" : "album hidden from invoice"}
+                    </p>
+                  </div>
+                  <a href={`/invoice/${invoice.shareToken}`} target="_blank" rel="noreferrer" className="text-primary hover:text-primary/80 shrink-0" title="Open invoice">
+                    <ExternalLink className="w-4 h-4" />
+                  </a>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-[11px] font-body text-muted-foreground">No invoices are linked to this album yet.</p>
+          )}
+          {attachableInvoices.length > 0 && (
+            <select
+              value=""
+              onChange={event => attachInvoiceToAlbum(event.target.value)}
+              className="w-full bg-background border border-border text-foreground font-body text-xs rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50"
+            >
+              <option value="">Link existing invoice...</option>
+              {attachableInvoices.map(invoice => (
+                <option key={invoice.id} value={invoice.id}>
+                  {invoice.number} - {invoice.to?.name || "Client"} - ${calcInvTotal(invoice).toFixed(2)}
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
+      )}
+
       {/* Photo Upload */}
       <div>
         <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-3 block">Photos ({photos.length})</label>
@@ -5668,23 +5830,39 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
               </div>
             );
           })()}
-          <div className="flex items-center justify-between mb-1">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-2">
             <span className="text-xs font-body text-muted-foreground">{photos.length} photo{photos.length !== 1 ? "s" : ""}</span>
-            <div className="flex items-center gap-0.5 p-0.5 bg-secondary rounded-lg border border-border/50">
-              {([
-                { size: "small" as const, icon: <LayoutGrid className="w-3 h-3" />, label: "Small" },
-                { size: "medium" as const, icon: <Grid className="w-3 h-3" />, label: "Medium" },
-                { size: "large" as const, icon: <Image className="w-3 h-3" />, label: "Large" },
-              ]).map(({ size, icon, label }) => (
+            <div className="flex items-center gap-2 flex-wrap sm:justify-end">
+              <div className="flex items-center gap-1 rounded-lg border border-border/50 bg-secondary px-1 py-1">
                 <button
-                  key={size}
-                  onClick={() => setEditorGridSize(size)}
-                  title={label}
-                  className={`p-1 rounded-md transition-all ${editorGridSize === size ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+                  type="button"
+                  onClick={() => setPhotoSortDir(dir => dir === "asc" ? "desc" : "asc")}
+                  className="px-2 py-1 rounded-md text-[10px] font-body uppercase tracking-wider text-muted-foreground hover:text-foreground hover:bg-background transition-colors"
+                  title="Toggle sort direction"
                 >
-                  {icon}
+                  {photoSortDir === "asc" ? "Asc" : "Desc"}
                 </button>
-              ))}
+                <button type="button" onClick={() => sortPhotos("name")} className="px-2 py-1 rounded-md text-[10px] font-body uppercase tracking-wider text-muted-foreground hover:text-foreground hover:bg-background transition-colors">Name</button>
+                <button type="button" onClick={() => sortPhotos("file-number")} className="px-2 py-1 rounded-md text-[10px] font-body uppercase tracking-wider text-muted-foreground hover:text-foreground hover:bg-background transition-colors">File #</button>
+                <button type="button" onClick={() => sortPhotos("captured")} className="px-2 py-1 rounded-md text-[10px] font-body uppercase tracking-wider text-muted-foreground hover:text-foreground hover:bg-background transition-colors">Captured</button>
+                <button type="button" onClick={() => sortPhotos("uploaded")} className="px-2 py-1 rounded-md text-[10px] font-body uppercase tracking-wider text-muted-foreground hover:text-foreground hover:bg-background transition-colors">Uploaded</button>
+              </div>
+              <div className="flex items-center gap-0.5 p-0.5 bg-secondary rounded-lg border border-border/50">
+                {([
+                  { size: "small" as const, icon: <LayoutGrid className="w-3 h-3" />, label: "Small" },
+                  { size: "medium" as const, icon: <Grid className="w-3 h-3" />, label: "Medium" },
+                  { size: "large" as const, icon: <Image className="w-3 h-3" />, label: "Large" },
+                ]).map(({ size, icon, label }) => (
+                  <button
+                    key={size}
+                    onClick={() => setEditorGridSize(size)}
+                    title={label}
+                    className={`p-1 rounded-md transition-all ${editorGridSize === size ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+                  >
+                    {icon}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
           <div className={`grid gap-1.5 max-h-64 overflow-y-auto ${
@@ -5708,10 +5886,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
                   const reordered = [...photos];
                   const [moved] = reordered.splice(fromIdx, 1);
                   reordered.splice(idx, 0, moved);
-                  setPhotos(reordered);
-                  if (!isNew && album?.id && onUpdate) {
-                    onUpdate({ ...album, photos: reordered, photoCount: reordered.length });
-                  }
+                  persistPhotoOrder(reordered);
                 }}
                 onDragEnd={e => { (e.currentTarget as HTMLElement).style.opacity = ""; }}
                 title="Drag to reorder"
