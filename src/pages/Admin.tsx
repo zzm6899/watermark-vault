@@ -8276,25 +8276,81 @@ function InvoicesView() {
                       </div>
                       {/* Desktop actions */}
                       <TooltipProvider delayDuration={300}>
-                        <div className="hidden sm:flex items-center gap-1 shrink-0">
-                          <Tooltip><TooltipTrigger asChild><button onClick={() => openEdit(inv)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground"><Edit className="w-3.5 h-3.5" /></button></TooltipTrigger><TooltipContent>Edit</TooltipContent></Tooltip>
-                          <Tooltip><TooltipTrigger asChild><button onClick={() => handleCopyLink(inv)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground"><Link2 className="w-3.5 h-3.5" /></button></TooltipTrigger><TooltipContent>Copy Link</TooltipContent></Tooltip>
-                          <Tooltip><TooltipTrigger asChild><button onClick={() => handleExportPDF(inv)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground"><Printer className="w-3.5 h-3.5" /></button></TooltipTrigger><TooltipContent>Print</TooltipContent></Tooltip>
-                          <Tooltip><TooltipTrigger asChild><button onClick={() => setExpandedEmailLog(logOpen ? null : inv.id)} className={`p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground ${logOpen ? "text-primary" : ""}`}><Mail className="w-3.5 h-3.5" /></button></TooltipTrigger><TooltipContent>Email Client</TooltipContent></Tooltip>
-                          <div className="w-px h-4 bg-border mx-0.5" />
+                        <div className="hidden sm:flex items-center gap-1.5 shrink-0 relative">
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <button
+                                type="button"
+                                onClick={() => openEdit(inv)}
+                                aria-label={`Edit ${inv.number}`}
+                                className="h-8 px-2 rounded-md bg-secondary/70 hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors"
+                              >
+                                <Edit className="w-3.5 h-3.5" />
+                              </button>
+                            </TooltipTrigger>
+                            <TooltipContent>Edit invoice</TooltipContent>
+                          </Tooltip>
                           {canAct && (
                             <>
-                              <Tooltip><TooltipTrigger asChild><button onClick={() => handleSendInvoice(inv)} disabled={sendingEmail} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-blue-400"><Send className="w-3.5 h-3.5" /></button></TooltipTrigger><TooltipContent>Email Client</TooltipContent></Tooltip>
-                              <Tooltip><TooltipTrigger asChild><button onClick={() => handleSendReminder(inv)} disabled={sendingEmail} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-yellow-400"><Bell className="w-3.5 h-3.5" /></button></TooltipTrigger><TooltipContent>Send Reminder</TooltipContent></Tooltip>
+                              <button
+                                type="button"
+                                onClick={() => handleSendInvoice(inv)}
+                                disabled={sendingEmail}
+                                className="h-8 inline-flex items-center gap-1.5 rounded-md bg-blue-500/10 px-2.5 text-[10px] font-body uppercase tracking-wider text-blue-300 hover:bg-blue-500/20 disabled:opacity-50"
+                              >
+                                <Send className="w-3.5 h-3.5" /> Send
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleSendReminder(inv)}
+                                disabled={sendingEmail}
+                                className="h-8 inline-flex items-center gap-1.5 rounded-md bg-yellow-500/10 px-2.5 text-[10px] font-body uppercase tracking-wider text-yellow-300 hover:bg-yellow-500/20 disabled:opacity-50"
+                              >
+                                <Bell className="w-3.5 h-3.5" /> Reminder
+                              </button>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleMarkPaid(inv)}
+                                    aria-label={`Mark ${inv.number} paid`}
+                                    className="h-8 px-2 rounded-md bg-green-500/10 text-green-300 hover:bg-green-500/20 transition-colors"
+                                  >
+                                    <CheckCircle2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </TooltipTrigger>
+                                <TooltipContent>Mark paid</TooltipContent>
+                              </Tooltip>
                             </>
                           )}
-                          {canAct && <Tooltip><TooltipTrigger asChild><button onClick={() => handleMarkPaid(inv)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-green-400"><CheckCircle2 className="w-3.5 h-3.5" /></button></TooltipTrigger><TooltipContent>Mark Paid</TooltipContent></Tooltip>}
-                          {inv.status === "sent" && <Tooltip><TooltipTrigger asChild><button onClick={() => handleMarkOverdue(inv)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-red-400"><AlertCircle className="w-3.5 h-3.5" /></button></TooltipTrigger><TooltipContent>Set Due Date</TooltipContent></Tooltip>}
-                          {stripeAvailable && canAct && (inv.paymentMethods || []).includes("stripe") && (
-                            <Tooltip><TooltipTrigger asChild><button onClick={() => handleStripeCheckout(inv)} disabled={processingPay} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-purple-400"><CreditCard className="w-3.5 h-3.5" /></button></TooltipTrigger><TooltipContent>Stripe Checkout</TooltipContent></Tooltip>
+                          <button
+                            type="button"
+                            onClick={() => setOverflowMenuId(menuOpen ? null : inv.id)}
+                            onKeyDown={e => { if (e.key === "Escape") setOverflowMenuId(null); }}
+                            aria-label={`More actions for ${inv.number}`}
+                            aria-haspopup="menu"
+                            aria-expanded={menuOpen}
+                            className="h-8 inline-flex items-center gap-1 rounded-md bg-secondary/70 px-2 text-[10px] font-body uppercase tracking-wider text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
+                          >
+                            <MoreHorizontal className="w-3.5 h-3.5" /> More
+                          </button>
+                          {menuOpen && (
+                            <div
+                              role="menu"
+                              className="absolute right-0 top-full mt-1 z-50 bg-card border border-border rounded-xl shadow-xl p-1 min-w-[180px] space-y-0.5"
+                              onClick={e => e.stopPropagation()}
+                              onKeyDown={e => { if (e.key === "Escape") setOverflowMenuId(null); }}
+                            >
+                              <button role="menuitem" onClick={() => { handleCopyLink(inv); setOverflowMenuId(null); }} className="w-full flex items-center gap-2 px-3 py-2 text-xs font-body text-muted-foreground hover:text-foreground hover:bg-secondary rounded-lg"><Link2 className="w-3.5 h-3.5" />Copy share link</button>
+                              <button role="menuitem" onClick={() => { handleExportPDF(inv); setOverflowMenuId(null); }} className="w-full flex items-center gap-2 px-3 py-2 text-xs font-body text-muted-foreground hover:text-foreground hover:bg-secondary rounded-lg"><Printer className="w-3.5 h-3.5" />Export PDF</button>
+                              <button role="menuitem" onClick={() => { setExpandedEmailLog(logOpen ? null : inv.id); setOverflowMenuId(null); }} className="w-full flex items-center gap-2 px-3 py-2 text-xs font-body text-muted-foreground hover:text-foreground hover:bg-secondary rounded-lg"><Mail className="w-3.5 h-3.5" />Email history</button>
+                              {inv.status === "sent" && <button role="menuitem" onClick={() => { handleMarkOverdue(inv); setOverflowMenuId(null); }} className="w-full flex items-center gap-2 px-3 py-2 text-xs font-body text-muted-foreground hover:text-red-400 hover:bg-secondary rounded-lg"><AlertCircle className="w-3.5 h-3.5" />Mark overdue</button>}
+                              {stripeAvailable && canAct && (inv.paymentMethods || []).includes("stripe") && <button role="menuitem" onClick={() => { handleStripeCheckout(inv); setOverflowMenuId(null); }} disabled={processingPay} className="w-full flex items-center gap-2 px-3 py-2 text-xs font-body text-muted-foreground hover:text-purple-400 hover:bg-secondary rounded-lg"><CreditCard className="w-3.5 h-3.5" />Stripe checkout</button>}
+                              <button role="menuitem" onClick={() => { handleClone(inv); setOverflowMenuId(null); }} className="w-full flex items-center gap-2 px-3 py-2 text-xs font-body text-muted-foreground hover:text-foreground hover:bg-secondary rounded-lg"><Copy className="w-3.5 h-3.5" />Duplicate</button>
+                              <div className="h-px bg-border my-0.5" />
+                              <button role="menuitem" onClick={() => { handleDelete(inv); setOverflowMenuId(null); }} className="w-full flex items-center gap-2 px-3 py-2 text-xs font-body text-red-400 hover:bg-red-500/10 rounded-lg"><Trash2 className="w-3.5 h-3.5" />Delete</button>
+                            </div>
                           )}
-                          <Tooltip><TooltipTrigger asChild><button onClick={() => handleClone(inv)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground"><Copy className="w-3.5 h-3.5" /></button></TooltipTrigger><TooltipContent>Duplicate</TooltipContent></Tooltip>
-                          <Tooltip><TooltipTrigger asChild><button onClick={() => handleDelete(inv)} className="opacity-0 group-hover:opacity-100 transition-opacity p-1.5 rounded hover:bg-red-500/10 text-muted-foreground/40 hover:text-red-400"><Trash2 className="w-3.5 h-3.5" /></button></TooltipTrigger><TooltipContent>Delete</TooltipContent></Tooltip>
                         </div>
                       </TooltipProvider>
                     </div>
