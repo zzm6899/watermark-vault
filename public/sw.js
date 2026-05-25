@@ -3,7 +3,7 @@
  * Handles offline caching + Web Push notifications
  */
 
-const CACHE_NAME = "photoflow-v1";
+const CACHE_NAME = "photoflow-v2";
 const OFFLINE_URLS = ["/", "/index.html"];
 
 // ─── Install ──────────────────────────────────────────────────────────────────

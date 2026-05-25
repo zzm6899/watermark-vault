@@ -664,6 +664,8 @@ export default function Admin() {
   const [authed, setAuthed] = useState(() => isLoggedIn());
   const [prefillBookingId, setPrefillBookingId] = useState<string | null>(null);
   const [superAdminFlag, setSuperAdminFlag] = useState(() => isSuperAdmin());
+  // Per-tab scroll position memory: save before leaving, restore after switching.
+  const scrollPositions = useRef<Partial<Record<Tab, number>>>({});
 
   // Detect if the logged-in user is the super admin (configured via SUPER_ADMIN_USERNAME env var)
   useEffect(() => {
@@ -682,13 +684,20 @@ export default function Admin() {
     if (!isSetupComplete()) navigate("/setup", { replace: true });
   }, [navigate]);
 
+  useEffect(() => {
+    if (activeTab === resolvedTab) return;
+    setActiveTabState(resolvedTab);
+    requestAnimationFrame(() => {
+      const main = document.getElementById("admin-main");
+      if (main) main.scrollTop = scrollPositions.current[resolvedTab] ?? 0;
+    });
+  }, [activeTab, resolvedTab]);
+
   usePageTitle(authed ? `${getProfile().name || "Admin"} — ${ADMIN_TAB_LABELS[activeTab]}` : "Admin Login");
 
   if (!isSetupComplete()) return null;
   if (!authed) return <LoginPage onLogin={() => setAuthed(true)} />;
   
-  // Per-tab scroll position memory: save before leaving, restore after switching.
-  const scrollPositions = useRef<Partial<Record<Tab, number>>>({});
   const setActiveTab = (tab: Tab) => {
     // Save current tab's scroll position
     const main = document.getElementById("admin-main");
@@ -1720,10 +1729,16 @@ function DashboardView() {
     { label: "Overdue",              value: invOverdue.length,               sub: invOverdue.length > 0 ? "requires attention" : "all on time",         icon: TrendingDown, color: invOverdue.length > 0 ? "text-red-400" : "text-muted-foreground" },
   ] : [];
 
-  const allAlbumPhotos = albums.flatMap(album => album.photos || []);
+  const allAlbumPhotoRecords = albums.flatMap(album => (album.photos || []).map(photo => ({ album, photo })));
+  const allAlbumPhotos = allAlbumPhotoRecords.map(({ photo }) => photo);
   const capturedToday = allAlbumPhotos.filter(photo => (photo.uploadedAt || photo.takenAt || "").startsWith(todayDateStr)).length;
   const bestOfCount = allAlbumPhotos.filter(photo => photo.starred || photo.cull?.status === "pick").length;
-  const reviewCount = allAlbumPhotos.filter(photo => !photo.cull?.status || photo.cull?.status === "review" || photo.cull?.status === "unscored").length;
+  const reviewCount = allAlbumPhotoRecords.filter(({ album, photo }) => {
+    const proofingStage = album.proofingStage || "not-started";
+    const closedAlbum = proofingStage === "finals-delivered" || album.status === "delivered";
+    if (closedAlbum || photo.starred || photo.cull?.status === "pick" || photo.cull?.status === "reject") return false;
+    return photo.cull?.status === "review" || photo.cull?.status === "unscored";
+  }).length;
   const rejectCount = allAlbumPhotos.filter(photo => photo.cull?.status === "reject").length;
   const clientReadyCount = allAlbumPhotos.filter(photo =>
     photo.starred || !photo.cull?.status || photo.cull?.status === "pick" || photo.cull?.status === "review" || photo.cull?.status === "unscored"
@@ -1976,7 +1991,7 @@ function DashboardView() {
               { label: "Today", value: capturedToday, sub: "Captured today", tone: "text-primary" },
               { label: "Client ready", value: clientReadyCount, sub: "Visible by default", tone: "text-cyan-300" },
               { label: "Best of", value: bestOfCount, sub: "Picks / starred", tone: "text-green-400" },
-              { label: "Needs review", value: reviewCount, sub: "Unscored or hold", tone: "text-yellow-400" },
+              { label: "Needs review", value: reviewCount, sub: "Active cull queue", tone: "text-yellow-400" },
               { label: "Hidden rejects", value: rejectCount, sub: "Recoverable only", tone: "text-red-400" },
             ].map(item => (
               <div key={item.label} className="rounded-lg bg-white/[0.045] border border-white/10 p-3">

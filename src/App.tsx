@@ -4,6 +4,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { useState, useCallback, useEffect, lazy, Suspense } from "react";
+import type { ComponentType } from "react";
 import { Capacitor } from "@capacitor/core";
 import { isSetupComplete, isLoggedIn } from "./lib/storage";
 import { syncFromServer, getTenantByDomain, NATIVE_API_ORIGIN } from "./lib/api";
@@ -12,20 +13,45 @@ import { CustomDomainContext } from "./lib/custom-domain-context";
 // Eagerly load the public-facing booking page so it renders with zero extra round-trips.
 import TenantBookingPage from "./pages/TenantBookingPage";
 
+const LAZY_RELOAD_KEY = "wv_lazy_reload_attempted";
+
+function isLazyChunkError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error || "");
+  return /Failed to fetch dynamically imported module|Importing a module script failed|Loading chunk|ChunkLoadError/i.test(message);
+}
+
+function lazyWithReload<T extends ComponentType<any>>(loader: () => Promise<{ default: T }>) {
+  return lazy(() =>
+    loader()
+      .then((module) => {
+        sessionStorage.removeItem(LAZY_RELOAD_KEY);
+        return module;
+      })
+      .catch((error) => {
+        if (typeof window !== "undefined" && isLazyChunkError(error) && sessionStorage.getItem(LAZY_RELOAD_KEY) !== "1") {
+          sessionStorage.setItem(LAZY_RELOAD_KEY, "1");
+          window.location.reload();
+          return new Promise<{ default: T }>(() => {});
+        }
+        throw error;
+      })
+  );
+}
+
 // Lazily load everything else — these are only needed by admin / gallery users.
-const Booking = lazy(() => import("./pages/Booking"));
-const AlbumDetail = lazy(() => import("./pages/AlbumDetail"));
-const BookingModify = lazy(() => import("./pages/BookingModify"));
-const Admin = lazy(() => import("./pages/Admin"));
-const Setup = lazy(() => import("./pages/Setup"));
-const NotFound = lazy(() => import("./pages/NotFound"));
-const MobileCapture = lazy(() => import("./pages/MobileCapture"));
-const InvoiceView = lazy(() => import("./pages/InvoiceView"));
-const QuoteView = lazy(() => import("./pages/QuoteView"));
-const ContractSign = lazy(() => import("./pages/ContractSign"));
-const TenantSetup = lazy(() => import("./pages/TenantSetup"));
-const TenantAdmin = lazy(() => import("./pages/TenantAdmin"));
-const LoginPage = lazy(() => import("./pages/LoginPage"));
+const Booking = lazyWithReload(() => import("./pages/Booking"));
+const AlbumDetail = lazyWithReload(() => import("./pages/AlbumDetail"));
+const BookingModify = lazyWithReload(() => import("./pages/BookingModify"));
+const Admin = lazyWithReload(() => import("./pages/Admin"));
+const Setup = lazyWithReload(() => import("./pages/Setup"));
+const NotFound = lazyWithReload(() => import("./pages/NotFound"));
+const MobileCapture = lazyWithReload(() => import("./pages/MobileCapture"));
+const InvoiceView = lazyWithReload(() => import("./pages/InvoiceView"));
+const QuoteView = lazyWithReload(() => import("./pages/QuoteView"));
+const ContractSign = lazyWithReload(() => import("./pages/ContractSign"));
+const TenantSetup = lazyWithReload(() => import("./pages/TenantSetup"));
+const TenantAdmin = lazyWithReload(() => import("./pages/TenantAdmin"));
+const LoginPage = lazyWithReload(() => import("./pages/LoginPage"));
 
 const queryClient = new QueryClient();
 
