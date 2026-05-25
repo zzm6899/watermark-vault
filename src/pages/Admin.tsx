@@ -1653,12 +1653,21 @@ function DashboardView() {
   const settings = getSettings();
   const invoices = getInvoices();
 
-  const paidIncome = bookings.filter(b => b.paymentStatus === "paid").reduce((sum, b) => sum + (b.paymentAmount || 0), 0);
-  const cashIncome = bookings.filter(b => b.paymentStatus === "cash").reduce((sum, b) => sum + (b.paymentAmount || 0), 0);
-  const depositPaidIncome = bookings.filter(b => b.paymentStatus === "deposit-paid").reduce((sum, b) => sum + (b.depositAmount || 0), 0);
-  const totalRevenue = paidIncome + cashIncome + depositPaidIncome;
-  const unpaidIncome = bookings.filter(b => !b.paymentStatus || b.paymentStatus === "unpaid").reduce((sum, b) => sum + (b.paymentAmount || 0), 0);
-  const pendingIncome = bookings.filter(b => b.paymentStatus === "pending-confirmation").reduce((sum, b) => sum + (b.paymentAmount || 0), 0);
+  let totalRevenue = 0;
+  let unpaidIncome = 0;
+  let totalSessionMins = 0;
+  let totalBookingCount = 0;
+  for (const booking of bookings) {
+    if (booking.status !== "cancelled") totalBookingCount += 1;
+    totalSessionMins += booking.duration || 0;
+    if (booking.paymentStatus === "paid" || booking.paymentStatus === "cash") {
+      totalRevenue += booking.paymentAmount || 0;
+    } else if (booking.paymentStatus === "deposit-paid") {
+      totalRevenue += booking.depositAmount || 0;
+    } else if (!booking.paymentStatus || booking.paymentStatus === "unpaid") {
+      unpaidIncome += booking.paymentAmount || 0;
+    }
+  }
 
   // Collect all pending download requests across albums
   const allPendingRequests: (AlbumDownloadRecord & { _albumId: string; _albumTitle: string; _reqIdx: number })[] = [];
@@ -1693,7 +1702,6 @@ function DashboardView() {
     toast.success("Download request approved — client can now download");
   };
 
-  const totalSessionMins = bookings.reduce((sum, b) => sum + (b.duration || 0), 0);
   const totalSessionHours = Math.floor(totalSessionMins / 60);
   const totalSessionRemMins = totalSessionMins % 60;
   const totalSessionLabel = totalSessionHours > 0
@@ -1710,11 +1718,11 @@ function DashboardView() {
     .slice(0, 5); // last 5 past sessions
 
   const stats = [
-    { label: "Total Bookings", value: bookings.filter(b => b.status !== "cancelled").length, icon: Calendar, color: "text-primary" },
-    { label: "Revenue", value: `$${totalRevenue.toLocaleString()}`, icon: DollarSign, color: "text-green-400" },
-    { label: "Unpaid", value: `$${unpaidIncome.toLocaleString()}`, icon: DollarSign, color: "text-destructive" },
-    { label: "Pending Requests", value: allPendingRequests.length, icon: Download, color: "text-yellow-400" },
-    { label: "Total Shoot Time", value: totalSessionLabel, icon: Clock, color: "text-blue-400" },
+    { label: "Total Bookings", value: totalBookingCount, icon: Calendar, color: "text-primary", action: "Open", onClick: () => navigate("/admin/bookings") },
+    { label: "Revenue", value: `$${totalRevenue.toLocaleString()}`, icon: DollarSign, color: "text-green-400", action: "Finance", onClick: () => navigate("/admin/finance") },
+    { label: "Unpaid", value: `$${unpaidIncome.toLocaleString()}`, icon: DollarSign, color: "text-destructive", action: "Invoices", onClick: () => navigate("/admin/invoices") },
+    { label: "Pending Requests", value: allPendingRequests.length, icon: Download, color: "text-yellow-400", action: "Review", onClick: () => navigate("/admin/albums") },
+    { label: "Total Shoot Time", value: totalSessionLabel, icon: Clock, color: "text-blue-400", action: "Schedule", onClick: () => navigate("/admin/shoot-day") },
   ];
 
   // Invoice stats for dashboard
@@ -1724,36 +1732,51 @@ function DashboardView() {
   const invPaidTotal  = invPaid.reduce((s, i) => s + calcInvTotal(i), 0);
   const invOutTotal   = invOutstanding.reduce((s, i) => s + calcInvTotal(i), 0);
   const invoiceStats = invoices.length > 0 ? [
-    { label: "Invoices Paid",        value: `$${invPaidTotal.toFixed(2)}`,  sub: `${invPaid.length} invoice${invPaid.length !== 1 ? "s" : ""}`,        icon: Receipt,      color: "text-green-400" },
-    { label: "Outstanding",          value: `$${invOutTotal.toFixed(2)}`,   sub: `${invOutstanding.length} awaiting payment`,                           icon: TrendingUp,   color: "text-yellow-400" },
-    { label: "Overdue",              value: invOverdue.length,               sub: invOverdue.length > 0 ? "requires attention" : "all on time",         icon: TrendingDown, color: invOverdue.length > 0 ? "text-red-400" : "text-muted-foreground" },
+    { label: "Invoices Paid",        value: `$${invPaidTotal.toFixed(2)}`,  sub: `${invPaid.length} invoice${invPaid.length !== 1 ? "s" : ""}`,        icon: Receipt,      color: "text-green-400", onClick: () => navigate("/admin/invoices") },
+    { label: "Outstanding",          value: `$${invOutTotal.toFixed(2)}`,   sub: `${invOutstanding.length} awaiting payment`,                           icon: TrendingUp,   color: "text-yellow-400", onClick: () => navigate("/admin/invoices") },
+    { label: "Overdue",              value: invOverdue.length,               sub: invOverdue.length > 0 ? "requires attention" : "all on time",         icon: TrendingDown, color: invOverdue.length > 0 ? "text-red-400" : "text-muted-foreground", onClick: () => navigate("/admin/invoices") },
   ] : [];
 
-  const allAlbumPhotoRecords = albums.flatMap(album => (album.photos || []).map(photo => ({ album, photo })));
-  const allAlbumPhotos = allAlbumPhotoRecords.map(({ photo }) => photo);
-  const capturedToday = allAlbumPhotos.filter(photo => (photo.uploadedAt || photo.takenAt || "").startsWith(todayDateStr)).length;
-  const bestOfCount = allAlbumPhotos.filter(photo => photo.starred || photo.cull?.status === "pick").length;
-  const reviewCount = allAlbumPhotoRecords.filter(({ album, photo }) => {
+  let capturedToday = 0;
+  let bestOfCount = 0;
+  let reviewCount = 0;
+  let rejectCount = 0;
+  let clientReadyCount = 0;
+  let latestCaptureTime: number | null = null;
+  let activeCaptureAlbum: typeof albums[number] | undefined;
+  let activeCaptureAlbumTime = 0;
+  for (const album of albums) {
+    let albumLatest = 0;
     const proofingStage = album.proofingStage || "not-started";
     const closedAlbum = proofingStage === "finals-delivered" || album.status === "delivered";
-    if (closedAlbum || photo.starred || photo.cull?.status === "pick" || photo.cull?.status === "reject") return false;
-    return photo.cull?.status === "review" || photo.cull?.status === "unscored";
-  }).length;
-  const rejectCount = allAlbumPhotos.filter(photo => photo.cull?.status === "reject").length;
-  const clientReadyCount = allAlbumPhotos.filter(photo =>
-    photo.starred || !photo.cull?.status || photo.cull?.status === "pick" || photo.cull?.status === "review" || photo.cull?.status === "unscored"
-  ).length;
-  const latestCaptureTime = allAlbumPhotos
-    .map(photo => new Date(photo.uploadedAt || photo.takenAt || 0).getTime())
-    .filter(Number.isFinite)
-    .sort((a, b) => b - a)[0] || null;
-  const activeCaptureAlbum = albums
-    .filter(album => (album.photos?.length || 0) > 0)
-    .sort((a, b) => {
-      const aLatest = Math.max(...(a.photos || []).map(photo => new Date(photo.uploadedAt || photo.takenAt || 0).getTime()), 0);
-      const bLatest = Math.max(...(b.photos || []).map(photo => new Date(photo.uploadedAt || photo.takenAt || 0).getTime()), 0);
-      return bLatest - aLatest;
-    })[0];
+    for (const photo of album.photos || []) {
+      const photoTime = new Date(photo.uploadedAt || photo.takenAt || 0).getTime();
+      if (Number.isFinite(photoTime)) {
+        if (!latestCaptureTime || photoTime > latestCaptureTime) latestCaptureTime = photoTime;
+        if (photoTime > albumLatest) albumLatest = photoTime;
+      }
+      if ((photo.uploadedAt || photo.takenAt || "").startsWith(todayDateStr)) capturedToday += 1;
+      if (photo.starred || photo.cull?.status === "pick") bestOfCount += 1;
+      if (photo.cull?.status === "reject") rejectCount += 1;
+      if (photo.starred || !photo.cull?.status || photo.cull?.status === "pick" || photo.cull?.status === "review" || photo.cull?.status === "unscored") {
+        clientReadyCount += 1;
+      }
+      if (!closedAlbum && !photo.starred && photo.cull?.status !== "pick" && photo.cull?.status !== "reject" && (photo.cull?.status === "review" || photo.cull?.status === "unscored")) {
+        reviewCount += 1;
+      }
+    }
+    if ((album.photos?.length || 0) > 0 && albumLatest >= activeCaptureAlbumTime) {
+      activeCaptureAlbum = album;
+      activeCaptureAlbumTime = albumLatest;
+    }
+  }
+  const captureSummaryTiles = [
+    { label: "Today", value: capturedToday, sub: "Captured today", tone: "text-primary", onClick: () => navigate("/capture") },
+    { label: "Client ready", value: clientReadyCount, sub: "Visible by default", tone: "text-cyan-300", onClick: () => navigate("/admin/albums") },
+    { label: "Best of", value: bestOfCount, sub: "Picks / starred", tone: "text-green-400", onClick: () => navigate("/capture") },
+    { label: "Needs review", value: reviewCount, sub: "Active cull queue", tone: "text-yellow-400", onClick: () => navigate("/capture") },
+    { label: "Hidden rejects", value: rejectCount, sub: "Recoverable only", tone: "text-red-400", onClick: () => navigate("/capture") },
+  ];
   const captureFeatureTiles = [
     {
       label: "Live capture",
@@ -1911,32 +1934,31 @@ function DashboardView() {
       {/* ── Stats grid ── */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mb-3">
         {stats.map((stat) => {
-          if (stat.label === "Total Shoot Time") {
-            return (
-              <TooltipProvider key={stat.label}>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <div className="glass-panel metric-card rounded-xl p-4 sm:p-5 cursor-default">
-                      <span className="mb-3 flex size-9 items-center justify-center rounded-lg bg-white/[0.055] ring-1 ring-white/10">
-                        <stat.icon className={`w-4 h-4 ${stat.color}`} />
-                      </span>
-                      <p className="font-sans text-2xl sm:text-3xl font-semibold text-foreground">{stat.value}</p>
-                      <p className="text-[10px] font-body text-muted-foreground tracking-wider uppercase mt-1 leading-tight">{stat.label}</p>
-                    </div>
-                  </TooltipTrigger>
-                  <TooltipContent><p className="text-xs font-body">Total combined duration of all confirmed and completed bookings</p></TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
-            );
-          }
-          return (
-            <div key={stat.label} className="glass-panel metric-card rounded-xl p-4 sm:p-5">
-              <span className="mb-3 flex size-9 items-center justify-center rounded-lg bg-white/[0.055] ring-1 ring-white/10">
-                <stat.icon className={`w-4 h-4 ${stat.color}`} />
-              </span>
+          const card = (
+            <button
+              key={stat.label}
+              type="button"
+              onClick={stat.onClick}
+              className="glass-panel metric-card group rounded-xl p-4 sm:p-5 text-left transition-all hover:border-primary/35 hover:bg-white/[0.065] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+            >
+              <div className="mb-3 flex items-start justify-between gap-3">
+                <span className="flex size-9 items-center justify-center rounded-lg bg-white/[0.055] ring-1 ring-white/10">
+                  <stat.icon className={`w-4 h-4 ${stat.color}`} />
+                </span>
+                <span className="text-[10px] font-body tracking-wider uppercase text-primary opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">{stat.action}</span>
+              </div>
               <p className="font-sans text-2xl sm:text-3xl font-semibold text-foreground">{stat.value}</p>
               <p className="text-[10px] font-body text-muted-foreground tracking-wider uppercase mt-1 leading-tight">{stat.label}</p>
-            </div>
+            </button>
+          );
+          if (stat.label !== "Total Shoot Time") return card;
+          return (
+            <TooltipProvider key={stat.label}>
+              <Tooltip>
+                <TooltipTrigger asChild>{card}</TooltipTrigger>
+                <TooltipContent><p className="text-xs font-body">Total combined duration of all confirmed and completed bookings</p></TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
           );
         })}
       </div>
@@ -1987,18 +2009,20 @@ function DashboardView() {
             ))}
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 mt-3">
-            {[
-              { label: "Today", value: capturedToday, sub: "Captured today", tone: "text-primary" },
-              { label: "Client ready", value: clientReadyCount, sub: "Visible by default", tone: "text-cyan-300" },
-              { label: "Best of", value: bestOfCount, sub: "Picks / starred", tone: "text-green-400" },
-              { label: "Needs review", value: reviewCount, sub: "Active cull queue", tone: "text-yellow-400" },
-              { label: "Hidden rejects", value: rejectCount, sub: "Recoverable only", tone: "text-red-400" },
-            ].map(item => (
-              <div key={item.label} className="rounded-lg bg-white/[0.045] border border-white/10 p-3">
+            {captureSummaryTiles.map(item => (
+              <button
+                key={item.label}
+                type="button"
+                onClick={item.onClick}
+                className="group rounded-lg bg-white/[0.045] border border-white/10 p-3 text-left transition-all hover:border-primary/35 hover:bg-primary/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/45"
+              >
                 <p className={`font-sans text-xl font-semibold ${item.tone}`}>{item.value}</p>
-                <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground">{item.label}</p>
+                <div className="mt-0.5 flex items-center justify-between gap-2">
+                  <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground">{item.label}</p>
+                  <ExternalLink className="w-3 h-3 text-primary opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
+                </div>
                 <p className="mt-1 text-[10px] font-body text-muted-foreground/60 leading-tight">{item.sub}</p>
-              </div>
+              </button>
             ))}
           </div>
         </div>
@@ -2030,12 +2054,20 @@ function DashboardView() {
       {invoiceStats.length > 0 && (
         <div className="grid grid-cols-3 gap-3 mb-6">
           {invoiceStats.map((stat) => (
-            <div key={stat.label} className="glass-panel rounded-xl p-3 sm:p-5">
-              <stat.icon className={`w-4 h-4 ${stat.color} mb-2`} />
+            <button
+              key={stat.label}
+              type="button"
+              onClick={stat.onClick}
+              className="glass-panel group rounded-xl p-3 sm:p-5 text-left transition-all hover:border-primary/35 hover:bg-white/[0.065] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/45"
+            >
+              <div className="mb-2 flex items-start justify-between gap-2">
+                <stat.icon className={`w-4 h-4 ${stat.color}`} />
+                <ExternalLink className="w-3 h-3 text-primary opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
+              </div>
               <p className="font-display text-xl sm:text-2xl text-foreground">{stat.value}</p>
               <p className="text-[10px] font-body text-muted-foreground tracking-wider uppercase mt-0.5 leading-tight">{stat.label}</p>
               {stat.sub && <p className="text-[10px] font-body text-muted-foreground/60 mt-0.5 truncate">{stat.sub}</p>}
-            </div>
+            </button>
           ))}
         </div>
       )}
