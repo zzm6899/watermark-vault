@@ -227,6 +227,7 @@ export default function AlbumDetail() {
   const [showStarredOnly, setShowStarredOnly] = useState(false);
   const [clientCullFilter, setClientCullFilter] = useState<"all" | "best">("best");
   const [sortOrder, setSortOrder] = useState<"default" | "asc" | "desc">("default");
+  const [showGalleryFilters, setShowGalleryFilters] = useState(false);
   // Local display size — defaults to admin-set album size (or "medium" fallback)
   const [localDisplaySize, setLocalDisplaySize] = useState<string>(
     () => (albumId ? getAlbumBySlug(albumId) : undefined)?.displaySize ?? "medium"
@@ -1397,7 +1398,18 @@ export default function AlbumDetail() {
           {/* ── Filter / Sort toolbar ──────────────────────────────── */}
           {visiblePhotos.length > 0 && (
             <div className="flex items-center gap-2 flex-wrap mb-2">
-              {showProofingGalleryControls && bestOfPhotos.length > 0 && (
+              <button
+                onClick={() => setShowGalleryFilters(v => !v)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-body border transition-all ${
+                  showGalleryFilters
+                    ? "bg-primary/15 border-primary/40 text-primary"
+                    : "bg-secondary/50 border-border/50 text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <SlidersHorizontal className="w-3 h-3" />
+                Filter
+              </button>
+              {showGalleryFilters && showProofingGalleryControls && bestOfPhotos.length > 0 && (
                 <button
                   onClick={() => setClientCullFilter(v => v === "best" ? "all" : "best")}
                   className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-body border transition-all ${
@@ -1411,7 +1423,7 @@ export default function AlbumDetail() {
                 </button>
               )}
               {/* Starred filter — only shown when at least one photo is starred */}
-              {showProofingGalleryControls && hasStarred && (
+              {showGalleryFilters && showProofingGalleryControls && hasStarred && (
                 <button
                   onClick={() => setShowStarredOnly(v => !v)}
                   className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-body border transition-all ${
@@ -1425,7 +1437,7 @@ export default function AlbumDetail() {
                 </button>
               )}
               {/* Sort by time */}
-              {showProofingGalleryControls && (
+              {showGalleryFilters && (
                 <button
                   onClick={() => setSortOrder(s => s === "default" ? "desc" : s === "desc" ? "asc" : "default")}
                   className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-body border transition-all ${
@@ -1435,10 +1447,12 @@ export default function AlbumDetail() {
                   }`}
                 >
                   <ArrowUpDown className="w-3 h-3" />
-                  {sortOrder === "default" ? "Best first" : sortOrder === "desc" ? "Newest first" : "Oldest first"}
+                  {sortOrder === "default"
+                    ? (showProofingGalleryControls ? "Best first" : "Default order")
+                    : sortOrder === "desc" ? "Newest first" : "Oldest first"}
                 </button>
               )}
-              {showProofingGalleryControls && (showStarredOnly || clientCullFilter !== "best" || sortOrder !== "default") && (
+              {showGalleryFilters && (showStarredOnly || clientCullFilter !== "best" || sortOrder !== "default") && (
                 <button
                   onClick={() => { setShowStarredOnly(false); setClientCullFilter("best"); setSortOrder("default"); }}
                   className="flex items-center gap-1 px-2 py-1.5 rounded-full text-xs font-body text-muted-foreground/60 hover:text-muted-foreground transition-colors"
@@ -1447,7 +1461,7 @@ export default function AlbumDetail() {
                 </button>
               )}
               {/* Display size controls — push to right on larger screens */}
-              <div className="flex items-center gap-1 ml-auto">
+              <div className={`items-center gap-1 ml-auto ${showGalleryFilters ? "flex" : "hidden sm:flex"}`}>
                 {([
                   { size: "small", icon: <LayoutGrid className="w-3.5 h-3.5" />, label: "Small" },
                   { size: "medium", icon: <Grid className="w-3.5 h-3.5" />, label: "Medium" },
