@@ -192,8 +192,23 @@ export async function syncFromServer(): Promise<boolean> {
 const _writeQueue: Array<{ key: string; value: unknown }> = [];
 let _flushScheduled = false;
 
+function _scheduleStoreFlush(delayMs = 0) {
+  if (_flushScheduled) return;
+  _flushScheduled = true;
+  globalThis.setTimeout(() => {
+    _flushQueue().catch(() => {
+      _flushScheduled = false;
+      if (_writeQueue.length > 0) _scheduleStoreFlush(5000);
+    });
+  }, delayMs);
+}
+
 async function _flushQueue() {
-  if (!(await checkServer())) { _writeQueue.length = 0; return; }
+  if (!(await recheckServer())) {
+    _flushScheduled = false;
+    if (_writeQueue.length > 0) _scheduleStoreFlush(5000);
+    return;
+  }
   while (_writeQueue.length > 0) {
     const item = _writeQueue.shift()!;
     fetch(`/api/store/${encodeURIComponent(item.key)}`, {
@@ -209,8 +224,23 @@ async function _flushQueue() {
 const _albumWriteQueue: Array<{ albumId: string; album: import("./types").Album }> = [];
 let _albumFlushScheduled = false;
 
+function _scheduleAlbumFlush(delayMs = 0) {
+  if (_albumFlushScheduled) return;
+  _albumFlushScheduled = true;
+  globalThis.setTimeout(() => {
+    _flushAlbumQueue().catch(() => {
+      _albumFlushScheduled = false;
+      if (_albumWriteQueue.length > 0) _scheduleAlbumFlush(5000);
+    });
+  }, delayMs);
+}
+
 async function _flushAlbumQueue() {
-  if (!(await checkServer())) { _albumWriteQueue.length = 0; return; }
+  if (!(await recheckServer())) {
+    _albumFlushScheduled = false;
+    if (_albumWriteQueue.length > 0) _scheduleAlbumFlush(5000);
+    return;
+  }
   while (_albumWriteQueue.length > 0) {
     const item = _albumWriteQueue.shift()!;
     fetch(`/api/albums/${encodeURIComponent(item.albumId)}`, {
@@ -238,18 +268,16 @@ export function persistToServer(key: string, value: unknown): void {
     }).catch(() => {});
     return;
   }
-  if (serverAvailable === false) return; // No server, drop write
 
-  // serverAvailable is null — queue and flush once check completes
+  // Server availability is unknown or was previously false. Queue the latest
+  // value and keep retrying so a transient health-check failure does not leave
+  // data local-only forever.
   // Deduplicate: if same key is already queued, replace it
   const existing = _writeQueue.findIndex(w => w.key === key);
   if (existing >= 0) _writeQueue[existing].value = value;
   else _writeQueue.push({ key, value });
 
-  if (!_flushScheduled) {
-    _flushScheduled = true;
-    _flushQueue();
-  }
+  _scheduleStoreFlush();
 }
 
 /** Fire-and-forget persist a single album to the server via the per-album endpoint.
@@ -258,7 +286,6 @@ export function persistToServer(key: string, value: unknown): void {
  *  keepalive: true ensures the request is not cancelled on page unload.
  *  If the server check has not yet completed, queues the write and flushes once it has. */
 export function persistAlbumToServer(albumId: string, album: import("./types").Album): void {
-  if (serverAvailable === false) return;
   if (serverAvailable === true) {
     fetch(`/api/albums/${encodeURIComponent(albumId)}`, {
       method: "PUT",
@@ -268,16 +295,14 @@ export function persistAlbumToServer(albumId: string, album: import("./types").A
     }).catch(() => {});
     return;
   }
-  // serverAvailable is null — queue and flush once check completes.
+  // Server availability is unknown or was previously false. Queue and retry so
+  // a temporary offline/health-check miss does not strand albums in localStorage.
   // Deduplicate: if the same album is already queued, replace it.
   const existing = _albumWriteQueue.findIndex(w => w.albumId === albumId);
   if (existing >= 0) _albumWriteQueue[existing].album = album;
   else _albumWriteQueue.push({ albumId, album });
 
-  if (!_albumFlushScheduled) {
-    _albumFlushScheduled = true;
-    _flushAlbumQueue();
-  }
+  _scheduleAlbumFlush();
 }
 
 /** Fire-and-forget delete a single album from the server. */

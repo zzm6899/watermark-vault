@@ -357,6 +357,19 @@ export default function AlbumDetail() {
         // Reset access grant based on the server-loaded album's access code and URL token
         const tokenGrantsAccess = !!(urlToken && loadedAlbum.clientToken && urlToken === loadedAlbum.clientToken);
         setAccessGranted(!loadedAlbum.accessCode || tokenGrantsAccess);
+      } else {
+        const localAlbum = getAlbumBySlug(albumId);
+        if (localAlbum && !localAlbum._photosStripped) {
+          updateAlbum(localAlbum);
+          window.setTimeout(() => {
+            fetchPublicAlbum(albumId).then(retryResult => {
+              if (retryResult?.album) {
+                setAlbumState(retryResult.album);
+                setTenantSlug(retryResult.tenantSlug);
+              }
+            }).catch(() => {});
+          }, 1000);
+        }
       }
       setAlbumLoading(false);
     });

@@ -4166,6 +4166,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
             // confirmed by the server (e.g. newly created, persistToServer in-flight).
             const stubIds = new Set(stubs.map(s => s.id));
             const localOnly = existing.filter(e => !stubIds.has(e.id));
+            localOnly.filter(e => !e._photosStripped).forEach(updateAlbum);
             localStorage.setItem("wv_albums", JSON.stringify([...merged, ...localOnly]));
           }
         } catch { /* non-critical */ }
