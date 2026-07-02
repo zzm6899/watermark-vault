@@ -246,6 +246,14 @@ function dedupeAlbumsBySlug(albums: Album[]): Album[] {
   return orderedKeys.map(key => byKey.get(key)!).filter(Boolean);
 }
 
+function adminAlbumCoverSrc(album: Album): string | undefined {
+  const src = album.coverImage || album.photos?.[0]?.thumbnail || album.photos?.[0]?.src;
+  if (!src || src.startsWith("data:") || src.startsWith("blob:") || src.startsWith("file://")) return src;
+  const base = src.split("?")[0];
+  if (base.startsWith("/uploads/") || base.includes("/uploads/")) return `${base}?size=thumb&wm=0`;
+  return src;
+}
+
 async function ensurePublicShareReady(album: Album, action = "share this gallery"): Promise<boolean> {
   toast.loading("Checking public gallery...", { id: `public-share-${album.id}` });
   const result = await ensurePublicAlbumAvailable(album);
@@ -4465,7 +4473,10 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
           </div>
           <TooltipProvider delayDuration={300}>
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-3">
-          {sortedAlbums.map((alb) => (
+          {sortedAlbums.map((alb) => {
+            const coverSrc = adminAlbumCoverSrc(alb);
+            const coverKey = `${alb.id}:${coverSrc || ""}`;
+            return (
             <div key={alb.id} className={`glass-panel album-admin-card rounded-xl overflow-hidden transition-all hover:-translate-y-0.5 hover:border-primary/30 ${mergeMode ? "cursor-pointer" : ""} ${mergeSelection.has(alb.id) ? "ring-2 ring-primary" : ""} ${alb.enabled === false ? "opacity-50" : ""}`}
               onClick={() => {
                 if (mergeMode) {
@@ -4477,10 +4488,10 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                 }
               }}
             >
-              {alb.coverImage && !alb.coverImage.startsWith("file://") && !brokenCovers.has(alb.id) && (
+              {coverSrc && !coverSrc.startsWith("file://") && !brokenCovers.has(coverKey) && (
                 <div className="aspect-[16/9] bg-secondary overflow-hidden">
-                  <img src={alb.coverImage} alt={alb.title} className="w-full h-full object-cover transition-transform duration-700 hover:scale-105" loading="lazy"
-                    onError={() => setBrokenCovers(prev => { const n = new Set(prev); n.add(alb.id); return n; })} />
+                  <img src={coverSrc} alt={alb.title} className="w-full h-full object-cover transition-transform duration-700 hover:scale-105" loading="lazy"
+                    onError={() => setBrokenCovers(prev => { const n = new Set(prev); n.add(coverKey); return n; })} />
                 </div>
               )}
               <div className="p-4 space-y-2">
@@ -4706,7 +4717,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                         );
                       })()}
                       {/* Fix Thumbnail — shown when cover is missing or broken */}
-                      {(brokenCovers.has(alb.id) || !alb.coverImage) && !alb._photosStripped && alb.photos.length > 0 && (
+                      {(brokenCovers.has(coverKey) || !coverSrc) && !alb._photosStripped && alb.photos.length > 0 && (
                         <Tooltip>
                           <TooltipTrigger asChild>
                             <Button
@@ -4716,7 +4727,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                                 const firstPhoto = alb.photos[0];
                                 const newCover = firstPhoto.thumbnail || firstPhoto.src;
                                 updateAlbum({ ...alb, coverImage: newCover });
-                                setBrokenCovers(prev => { const n = new Set(prev); n.delete(alb.id); return n; });
+                                setBrokenCovers(prev => { const n = new Set(prev); n.delete(coverKey); return n; });
                                 refresh();
                                 toast.success("Thumbnail updated");
                               }}
@@ -4744,11 +4755,12 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                         </TooltipTrigger>
                         <TooltipContent>Delete Album</TooltipContent>
                       </Tooltip>
-                  </div>
-                )}
+                    </div>
+                  )}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
           </div>
           </TooltipProvider>
         </>
