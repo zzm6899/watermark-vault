@@ -2151,8 +2151,8 @@ function isPhotoAccessible(filename, sessionKey, albumId) {
     if (!found) return false;
     const album = found.album;
 
-    // If purchasing is disabled, all photos are free
-    if (album.purchasingDisabled) return true;
+    // Gallery Lock: no purchase UI and no original downloads.
+    if (album.purchasingDisabled) return false;
     // If downloads are locked while proofing is active, deny access
     if (album.lockDownloadsDuringProofing && album.proofingEnabled) {
       const stage = album.proofingStage || "not-started";

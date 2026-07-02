@@ -652,6 +652,7 @@ export default function AlbumDetail() {
   const freeUsed = getFreeUsed(album, sessionKey);
   const freeRemaining = Math.max(0, album.freeDownloads - freeUsed);
   const isFullyUnlocked = album.allUnlocked === true; // admin-set only (proofing delivery, manual unlock)
+  const isPurchasingLocked = album.purchasingDisabled === true;
   const isExpired = !!(album.downloadExpiresAt && new Date(album.downloadExpiresAt + "T23:59:59") < new Date());
   // Per-session purchase record for this viewer
   const sessionPurchase = album.sessionPurchases?.[sessionKey];
@@ -686,9 +687,9 @@ export default function AlbumDetail() {
     proofingStage !== "not-started" &&
     proofingStage !== "finals-delivered");
 
-  const canDownload = (isFullyUnlocked || sessionFullAlbum) && !isExpired && !isDownloadLockedForProofing;
+  const canDownload = (isFullyUnlocked || sessionFullAlbum) && !isExpired && !isDownloadLockedForProofing && !isPurchasingLocked;
   const showProofingGalleryControls = isProofing && !canDownload;
-  const isPhotoPaid = (id: string) => canDownload || paidPhotoIdSet.has(id);
+  const isPhotoPaid = (id: string) => !isPurchasingLocked && (canDownload || paidPhotoIdSet.has(id));
   const latestRound = album.proofingRounds?.[album.proofingRounds.length - 1];
   const adminNote = latestRound?.adminNote;
   // Visible photos: hide photos marked hidden and auto-cull rejects unless the
@@ -758,10 +759,7 @@ export default function AlbumDetail() {
    * watermarks explicitly disabled — serves the clean original.
    */
   const isCleanDownload = (photoId: string): boolean => {
-    // Admin branded giveaway: allUnlocked=true but watermarks still enabled and no real payment
-    if (isFullyUnlocked && !album.watermarkDisabled && !paidPhotoIdSet.has(photoId) && !sessionFullAlbum) {
-      return false;
-    }
+    if (isFullyUnlocked || album.watermarkDisabled) return true;
     return true; // free-tier, paid, watermarkDisabled, sessionFullAlbum — all get clean originals
   };
 
@@ -921,6 +919,10 @@ export default function AlbumDetail() {
   };
 
   const executeDownloadFree = async () => {
+    if (isPurchasingLocked) {
+      toast.error("Downloads are locked for this gallery");
+      return;
+    }
     const selected = album.photos.filter(p => selectedIds.has(p.id));
     // Photos paid individually via Stripe always downloadable
     const alreadyPaid = selected.filter(p => paidPhotoIdSet.has(p.id));
@@ -1260,6 +1262,18 @@ export default function AlbumDetail() {
                 </div>
               )}
 
+              {isPurchasingLocked && (
+                <div className="glass-panel rounded-xl p-5 border border-yellow-500/30 bg-yellow-500/5">
+                  <div className="flex items-start gap-3">
+                    <Lock className="w-5 h-5 text-yellow-400 mt-0.5 shrink-0" />
+                    <div>
+                      <p className="text-sm font-display text-foreground mb-1">Downloads locked</p>
+                      <p className="text-xs font-body text-muted-foreground">This gallery is available for viewing only. Contact the photographer to arrange download access.</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {/* ── Download Expiry Banner ─────────────────────────── */}
               {isExpired && (
                 <div className="glass-panel rounded-xl p-5 border border-destructive/30 bg-destructive/5">
@@ -1319,7 +1333,7 @@ export default function AlbumDetail() {
                       )}
                     </div>
 
-                    {!album.purchasingDisabled && (
+                    {!isPurchasingLocked && (
                       <div className="pt-1">
                         {previewCheckoutAmount === 0 ? (
                           <Button
@@ -1513,15 +1527,12 @@ export default function AlbumDetail() {
                 <div key={photo.id} className="relative group mb-3 sm:mb-4 overflow-hidden rounded-lg transition-transform duration-200 hover:scale-[1.01] hover:shadow-xl hover:shadow-black/40">
                   <WatermarkedImage
                 src={getGalleryPhotoSrc(photo,
-                  // Branded giveaway: allUnlocked but watermarks still active and no real payment → keep watermark in gallery (matches download behaviour)
-                  (isFullyUnlocked && !album.watermarkDisabled && !paidPhotoIdSet.has(photo.id) && !sessionFullAlbum)
-                    ? false
-                    : !!(album.watermarkDisabled || isPhotoPaid(photo.id))
+                  !!(album.watermarkDisabled || isPhotoPaid(photo.id))
                 )}
                   title={photo.title}
                   selected={isProofing ? starredIds.has(photo.id) : selectedIds.has(photo.id)}
                   onSelect={() => isProofing ? toggleStar(photo.id) : toggleSelect(photo.id)}
-                  locked={!isProofing && !isPhotoPaid(photo.id) && freeRemaining <= 0 && !selectedIds.has(photo.id)}
+                  locked={!isProofing && (isPurchasingLocked || (!isPhotoPaid(photo.id) && freeRemaining <= 0 && !selectedIds.has(photo.id)))}
                   index={i}
                   showWatermark={false}
                   renderWatermarkOverlay={false}

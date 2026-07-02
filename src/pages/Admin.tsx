@@ -4982,6 +4982,17 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
     };
   };
 
+  const saveAlbumSettingsPatch = (patch: Partial<Album>, message = "Album settings saved") => {
+    if (!album) return;
+    const draft = buildAlbumDraft(photos);
+    if (!draft) return;
+    const updated = { ...draft, ...patch, _photosStripped: false };
+    updateAlbum(updated);
+    setLiveAlbum(updated);
+    onUpdate?.(updated);
+    toast.success(message);
+  };
+
   // Keyboard navigation for editor lightbox
   useEffect(() => {
     if (!editorLightboxPhoto) return;
@@ -5370,25 +5381,50 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
             <span className="text-xs font-body text-muted-foreground flex items-center gap-2">
               <Unlock className="w-3.5 h-3.5" /> All Downloads Unlocked
             </span>
-            <Switch checked={allUnlocked} onCheckedChange={setAllUnlocked} />
+            <Switch checked={allUnlocked} onCheckedChange={(checked) => {
+              setAllUnlocked(checked);
+              if (checked) setPurchasingDisabled(false);
+              saveAlbumSettingsPatch({
+                allUnlocked: checked,
+                purchasingDisabled: checked ? false : purchasingDisabled,
+              });
+            }} />
           </div>
-          <p className="text-[10px] font-body text-muted-foreground/50 mt-1">When enabled, all photos can be downloaded without watermark</p>
+          <p className="text-[10px] font-body text-muted-foreground/50 mt-1">When enabled, all photos can be downloaded clean, without watermark</p>
 
           {/* Watermark toggle */}
           <div className="flex items-center justify-between mt-4">
             <span className="text-xs font-body text-muted-foreground flex items-center gap-2">
               <Camera className="w-3.5 h-3.5" /> Watermarks Disabled
             </span>
-            <Switch checked={watermarkDisabled} onCheckedChange={setWatermarkDisabled} />
+            <Switch checked={watermarkDisabled} onCheckedChange={(checked) => {
+              setWatermarkDisabled(checked);
+              if (checked) setPurchasingDisabled(false);
+              saveAlbumSettingsPatch({
+                watermarkDisabled: checked,
+                purchasingDisabled: checked ? false : purchasingDisabled,
+              });
+            }} />
           </div>
           <p className="text-[10px] font-body text-muted-foreground/50 mt-1">Turn off watermarks for this album (e.g. trusted client, gifted session)</p>
 
           {/* Purchasing toggle */}
           <div className="flex items-center justify-between mt-4">
             <span className="text-xs font-body text-muted-foreground flex items-center gap-2">
-              <CreditCard className="w-3.5 h-3.5" /> Purchasing Disabled (Gallery Lock) (Gallery Lock)
+              <CreditCard className="w-3.5 h-3.5" /> Gallery Lock
             </span>
-            <Switch checked={purchasingDisabled} onCheckedChange={setPurchasingDisabled} />
+            <Switch checked={purchasingDisabled} onCheckedChange={(checked) => {
+              setPurchasingDisabled(checked);
+              if (checked) {
+                setAllUnlocked(false);
+                setWatermarkDisabled(false);
+              }
+              saveAlbumSettingsPatch({
+                purchasingDisabled: checked,
+                allUnlocked: checked ? false : allUnlocked,
+                watermarkDisabled: checked ? false : watermarkDisabled,
+              });
+            }} />
           </div>
           <p className="text-[10px] font-body text-muted-foreground/50 mt-1">Photos stay watermarked and undownloadable, but no payment UI is shown. Use when payment is handled separately (invoice, in-person) or gallery is for review only.</p>
           {allUnlocked && (
