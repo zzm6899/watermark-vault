@@ -6432,26 +6432,69 @@ function PhotosView() {
       if (repairedAlbums > 0) messages.push(`Repaired ${repairedAlbums} album(s) with missing file references`);
       if (removedLibraryCount > 0) messages.push(`Removed ${removedLibraryCount} library photo(s) with missing files`);
       if (orphanedFileNames.length > 0) {
-        // Recover orphaned files by adding them to the photo library instead of
-        // deleting them. This is safer because files that exist on disk but lack
-        // a DB reference were likely uploaded successfully while their album-update
-        // request was cancelled (e.g. page reload before keepalive flush). Deleting
-        // them would cause permanent data loss; adding them to the library lets the
-        // admin re-assign them to the correct album.
-        const recoveredPhotos: Photo[] = orphanedFileNames.map(filename => ({
+        const filenameTimestamp = (filename: string) => {
+          const value = Number(filename.split("-", 1)[0]);
+          return Number.isFinite(value) && value > 0 ? value : Date.now();
+        };
+        const orphanGroups = [...orphanedFileNames]
+          .sort((a, b) => filenameTimestamp(a) - filenameTimestamp(b))
+          .reduce<string[][]>((groups, filename) => {
+            const lastGroup = groups[groups.length - 1];
+            const lastFile = lastGroup?.[lastGroup.length - 1];
+            if (!lastGroup || !lastFile || filenameTimestamp(filename) - filenameTimestamp(lastFile) > 10 * 60 * 1000) {
+              groups.push([filename]);
+            } else {
+              lastGroup.push(filename);
+            }
+            return groups;
+          }, []);
+        const albumGroups = orphanGroups.filter(group => group.length >= 20);
+        const looseFiles = orphanGroups.filter(group => group.length < 20).flat();
+
+        const photoFromFilename = (filename: string): Photo => ({
           id: filename.replace(/\.[^.]+$/, ""),
           src: `/uploads/${filename}`,
           thumbnail: `/uploads/${filename}?size=thumb&wm=0`,
           title: filename.replace(/\.[^.]+$/, "").replace(/^_+/, ""),
           width: 800,
           height: 600,
-          uploadedAt: new Date().toISOString(),
+          uploadedAt: new Date(filenameTimestamp(filename)).toISOString(),
           originalName: filename,
-        }));
-        const updatedLibrary = [...getPhotoLibrary(), ...recoveredPhotos];
-        setPhotoLibrary(updatedLibrary);
-        setLibraryPhotosState(updatedLibrary);
-        messages.push(`Recovered ${orphanedFileNames.length} untracked file(s) to the photo library`);
+        });
+
+        for (const group of albumGroups) {
+          const photos = group.map(photoFromFilename);
+          const started = new Date(filenameTimestamp(group[0]));
+          const title = `Recovered Upload ${started.toLocaleDateString("en-AU", { day: "numeric", month: "short", year: "numeric" })}`;
+          const album: Album = {
+            id: generateId("alb"),
+            title,
+            slug: `${slugify(title)}-${group.length}`,
+            description: "Recovered from uploaded files that were not attached to an album.",
+            date: started.toISOString().slice(0, 10),
+            photoCount: photos.length,
+            freeDownloads: settings.defaultFreeDownloads,
+            pricePerPhoto: settings.defaultPricePerPhoto,
+            priceFullAlbum: settings.defaultPriceFullAlbum,
+            isPublic: true,
+            enabled: false,
+            status: "editing",
+            coverImage: photos[0]?.src,
+            photos,
+            _photosStripped: false,
+          };
+          addAlbum(album);
+        }
+
+        if (looseFiles.length > 0) {
+          const recoveredPhotos = looseFiles.map(photoFromFilename);
+          const updatedLibrary = [...getPhotoLibrary(), ...recoveredPhotos];
+          setPhotoLibrary(updatedLibrary);
+          setLibraryPhotosState(updatedLibrary);
+        }
+
+        if (albumGroups.length > 0) messages.push(`Recovered ${albumGroups.length} upload group(s) as disabled album drafts`);
+        if (looseFiles.length > 0) messages.push(`Recovered ${looseFiles.length} loose file(s) to the photo library`);
       }
 
       if (messages.length === 0) {
