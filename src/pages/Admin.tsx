@@ -137,6 +137,7 @@ import {
   uploadXmpPresets,
   deleteXmpPreset,
   ensurePublicAlbumAvailable,
+  saveAlbumToServer,
 } from "@/lib/api";
 import type { CacheBreakdown, EmailAutomationPreview, ManualEditParams, PresetEditParams, XmpPreset, PhotoEditRequest } from "@/lib/api";
 import RichTextEditor, { RichTextDisplay } from "@/components/RichTextEditor";
@@ -4867,6 +4868,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
   const [allUnlocked, setAllUnlocked] = useState(album?.allUnlocked || false);
   const [watermarkDisabled, setWatermarkDisabled] = useState(album?.watermarkDisabled || false);
   const [purchasingDisabled, setPurchasingDisabled] = useState(album?.purchasingDisabled || false);
+  const [savingAlbum, setSavingAlbum] = useState(false);
   const [albumProofingEnabled, setAlbumProofingEnabled] = useState(album?.proofingEnabled || false);
   const [lockDownloadsDuringProofing, setLockDownloadsDuringProofing] = useState(album?.lockDownloadsDuringProofing || false);
 
@@ -4982,15 +4984,33 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
     };
   };
 
-  const saveAlbumSettingsPatch = (patch: Partial<Album>, message = "Album settings saved") => {
+  const persistExistingAlbum = async (updated: Album, message: string) => {
+    updateAlbum(updated);
+    setLiveAlbum(updated);
+    onUpdate?.(updated);
+
+    if (!isServerMode()) {
+      toast.success(message);
+      return true;
+    }
+
+    setSavingAlbum(true);
+    const result = await saveAlbumToServer(updated.id, updated);
+    setSavingAlbum(false);
+    if (result.ok) {
+      toast.success(message);
+      return true;
+    }
+    toast.warning(result.error || "Saved locally, but server sync did not confirm.");
+    return false;
+  };
+
+  const saveAlbumSettingsPatch = async (patch: Partial<Album>, message = "Album settings saved") => {
     if (!album) return;
     const draft = buildAlbumDraft(photos);
     if (!draft) return;
     const updated = { ...draft, ...patch, _photosStripped: false };
-    updateAlbum(updated);
-    setLiveAlbum(updated);
-    onUpdate?.(updated);
-    toast.success(message);
+    await persistExistingAlbum(updated, message);
   };
 
   // Keyboard navigation for editor lightbox
@@ -5244,7 +5264,8 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
     toast.success(`Invoice ${invoice.number} created and linked`);
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
+    if (savingAlbum) return;
     if (!title.trim()) { toast.error("Title required"); return; }
     const finalSlug = slug.trim() || slugify(title);
     const slugTaken = existingAlbums.some(a => a.slug === finalSlug && a.id !== album?.id);
@@ -5252,13 +5273,22 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
     const albumId = album?.id || generateId("alb");
     const draft = buildAlbumDraft(photos);
     if (!draft) return;
-    onSave({ ...draft, id: albumId });
+    const savedAlbum = { ...draft, id: albumId };
+    setSavingAlbum(true);
+    let confirmed = true;
+    if (isNew || !isServerMode()) {
+      onSave(savedAlbum);
+    } else {
+      confirmed = await persistExistingAlbum(savedAlbum, "Album saved");
+    }
+    setSavingAlbum(false);
     if (bookingId) {
       const bk = bookings.find(b => b.id === bookingId);
       if (bk) {
         updateBooking({ ...bk, albumId });
       }
     }
+    if (confirmed && !isNew && isServerMode()) onCancel();
   };
 
   const deliveryDraft = album ? buildAlbumDraft(photos) : null;
@@ -5390,7 +5420,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
               });
             }} />
           </div>
-          <p className="text-[10px] font-body text-muted-foreground/50 mt-1">When enabled, all photos can be downloaded clean, without watermark</p>
+          <p className="text-[10px] font-body text-muted-foreground/50 mt-1">When enabled, all photos can be downloaded. Watermarks still apply unless disabled below.</p>
 
           {/* Watermark toggle */}
           <div className="flex items-center justify-between mt-4">
@@ -5406,7 +5436,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
               });
             }} />
           </div>
-          <p className="text-[10px] font-body text-muted-foreground/50 mt-1">Turn off watermarks for this album (e.g. trusted client, gifted session)</p>
+          <p className="text-[10px] font-body text-muted-foreground/50 mt-1">Serve clean, watermark-free downloads for this album.</p>
 
           {/* Purchasing toggle */}
           <div className="flex items-center justify-between mt-4">
@@ -6195,8 +6225,8 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
 
       <div className="flex gap-3 pt-2 border-t border-border/50">
         <Button variant="outline" onClick={onCancel} className="font-body text-xs border-border text-foreground">Cancel</Button>
-        <Button onClick={handleSave} className="bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs tracking-wider uppercase gap-2">
-          <Save className="w-4 h-4" /> {isNew ? "Create Album" : "Save Album"}
+        <Button onClick={handleSave} disabled={savingAlbum} className="bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs tracking-wider uppercase gap-2">
+          <Save className="w-4 h-4" /> {savingAlbum ? "Saving..." : isNew ? "Create Album" : "Save Album"}
         </Button>
       </div>
     </div>

@@ -750,17 +750,9 @@ export default function AlbumDetail() {
     setTimeout(() => setCopiedField(null), 2000);
   };
 
-  /**
-   * A photo download is watermark-free EXCEPT when the admin has set "All Downloads Unlocked"
-   * with watermarks still ON and the client has not actually paid for the photo.
-   * In that case the photographer wants branded (watermarked) copies for freely distributed photos.
-   *
-   * Every other case — free-tier quota, individual Stripe/bank payment, full-album purchase,
-   * watermarks explicitly disabled — serves the clean original.
-   */
   const isCleanDownload = (photoId: string): boolean => {
-    if (isFullyUnlocked || album.watermarkDisabled) return true;
-    return true; // free-tier, paid, watermarkDisabled, sessionFullAlbum — all get clean originals
+    if (album.watermarkDisabled) return true;
+    return !isFullyUnlocked && isPhotoPaid(photoId);
   };
 
   /** Returns the URL to use when downloading a photo.

@@ -305,6 +305,30 @@ export function persistAlbumToServer(albumId: string, album: import("./types").A
   _scheduleAlbumFlush();
 }
 
+/** Persist one album and report whether the server accepted it. */
+export async function saveAlbumToServer(albumId: string, album: import("./types").Album): Promise<{ ok: boolean; error?: string }> {
+  const online = await checkServer();
+  if (!online) return { ok: false, error: "Server is offline. Changes are saved locally and will retry when sync reconnects." };
+
+  try {
+    const res = await fetch(`/api/albums/${encodeURIComponent(albumId)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(album),
+    });
+    if (!res.ok) {
+      const body = await readJson<{ error?: string } | null>(res, null);
+      return { ok: false, error: body?.error || `Server rejected the save (${res.status})` };
+    }
+    return { ok: true };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : "Could not reach the server. Changes are saved locally and will retry.",
+    };
+  }
+}
+
 /** Fire-and-forget delete a single album from the server. */
 export function deleteAlbumFromServer(albumId: string): void {
   if (serverAvailable !== true) return;
