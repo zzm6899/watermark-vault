@@ -218,6 +218,34 @@ function slugify(text: string): string {
   return text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
 }
 
+function albumDedupeKey(album: Album): string {
+  return (album.slug || album.id || "").trim().toLowerCase();
+}
+
+function albumCompletenessScore(album: Album): number {
+  return (album.coverImage ? 1000 : 0)
+    + (album._photosStripped ? 0 : 500)
+    + (album.photoCount || album.photos?.length || 0)
+    + (album.updatedAt ? Math.min(new Date(album.updatedAt).getTime() / 1000000000000, 10) : 0);
+}
+
+function dedupeAlbumsBySlug(albums: Album[]): Album[] {
+  const byKey = new Map<string, Album>();
+  const orderedKeys: string[] = [];
+  for (const album of albums) {
+    const key = albumDedupeKey(album);
+    if (!key) continue;
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, album);
+      orderedKeys.push(key);
+      continue;
+    }
+    byKey.set(key, albumCompletenessScore(album) >= albumCompletenessScore(existing) ? album : existing);
+  }
+  return orderedKeys.map(key => byKey.get(key)!).filter(Boolean);
+}
+
 async function ensurePublicShareReady(album: Album, action = "share this gallery"): Promise<boolean> {
   toast.loading("Checking public gallery...", { id: `public-share-${album.id}` });
   const result = await ensurePublicAlbumAvailable(album);
@@ -4133,7 +4161,7 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
 
 // ─── Albums ──────────────────────────────────────────
 function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: string | null; onClearPrefill?: () => void }) {
-  const [albums, setAlbumsState] = useState<Album[]>(getAlbums());
+  const [albums, setAlbumsState] = useState<Album[]>(() => dedupeAlbumsBySlug(getAlbums()));
   const bookings = getBookings();
   const settings = getSettings();
   const [showNew, setShowNew] = useState(false);
@@ -4151,7 +4179,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
     }
   }, [prefillBookingId]);
 
-  const refresh = () => setAlbumsState(getAlbums());
+  const refresh = () => setAlbumsState(dedupeAlbumsBySlug(getAlbums()));
 
   // Poll server for proofing updates (client submissions won't be in localStorage)
   useEffect(() => {
@@ -4202,14 +4230,15 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
             // Preserve any albums that exist in localStorage but haven't yet been
             // confirmed by the server (e.g. newly created, persistToServer in-flight).
             const stubIds = new Set(stubs.map(s => s.id));
-            const localOnly = existing.filter(e => !stubIds.has(e.id));
+            const stubKeys = new Set(stubs.map(albumDedupeKey));
+            const localOnly = existing.filter(e => !stubIds.has(e.id) && !stubKeys.has(albumDedupeKey(e)));
             localOnly.filter(e => !e._photosStripped).forEach(updateAlbum);
-            localStorage.setItem("wv_albums", JSON.stringify([...merged, ...localOnly]));
+            localStorage.setItem("wv_albums", JSON.stringify(dedupeAlbumsBySlug([...merged, ...localOnly])));
           }
         } catch { /* non-critical */ }
       }
       if (cancelled) return;
-      const fresh = getAlbums();
+      const fresh = dedupeAlbumsBySlug(getAlbums());
       setAlbumsState(fresh);
       // If an album editor is open, refresh its metadata (proofing stage, etc.)
       // but always preserve the photos already loaded in the editor so the photo
@@ -4399,7 +4428,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
             || (a.slug || "").toLowerCase().includes(q)
             || linkedInstagram.includes(q);
         });
-        const sortedAlbums = [...filteredAlbums].sort((a, b) => {
+        const sortedAlbums = dedupeAlbumsBySlug(filteredAlbums).sort((a, b) => {
           const dir = albumSortDir === "asc" ? 1 : -1;
           switch (albumSortKey) {
             case "date": return dir * (new Date(a.date).getTime() - new Date(b.date).getTime());
