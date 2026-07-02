@@ -2374,6 +2374,55 @@ export async function fetchPublicAlbum(albumSlug: string): Promise<{ album: impo
   } catch { return null; }
 }
 
+export type PublicAlbumAvailability = {
+  ok: boolean;
+  album?: import("./types").Album;
+  error?: string;
+};
+
+const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+/**
+ * Confirm a public gallery slug resolves before the admin shares it.
+ * If the album is full local data, republish once and retry; if it is only a
+ * stub, block sharing so we never overwrite server photos with empty metadata.
+ */
+export async function ensurePublicAlbumAvailable(album: import("./types").Album, retries = 3): Promise<PublicAlbumAvailability> {
+  const target = album.slug || album.id;
+  if (!target) return { ok: false, error: "Album needs a slug before it can be shared." };
+
+  const current = await fetchPublicAlbum(target);
+  if (current?.album) return { ok: true, album: current.album };
+
+  if (album._photosStripped) {
+    return {
+      ok: false,
+      error: "Open the album editor first so the full photo list loads, then share the gallery.",
+    };
+  }
+
+  const online = await checkServer();
+  if (!online) {
+    persistAlbumToServer(album.id, album);
+    return {
+      ok: false,
+      error: "Server is offline, so this gallery is only saved on this device. Try again when sync is online.",
+    };
+  }
+
+  persistAlbumToServer(album.id, album);
+  for (let attempt = 0; attempt < retries; attempt++) {
+    await wait(600 * (attempt + 1));
+    const published = await fetchPublicAlbum(target);
+    if (published?.album) return { ok: true, album: published.album };
+  }
+
+  return {
+    ok: false,
+    error: "Gallery is not published on the server yet. Keep this device online and try again before sharing.",
+  };
+}
+
 /** Get storage stats for a tenant's files (total bytes and file count). */
 export async function getTenantStorageStats(slug: string): Promise<{ ok: boolean; totalBytes: number; fileCount: number; albumCount: number } | null> {
   try {

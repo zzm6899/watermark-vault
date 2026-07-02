@@ -136,6 +136,7 @@ import {
   listXmpPresets,
   uploadXmpPresets,
   deleteXmpPreset,
+  ensurePublicAlbumAvailable,
 } from "@/lib/api";
 import type { CacheBreakdown, EmailAutomationPreview, ManualEditParams, PresetEditParams, XmpPreset, PhotoEditRequest } from "@/lib/api";
 import RichTextEditor, { RichTextDisplay } from "@/components/RichTextEditor";
@@ -215,6 +216,17 @@ function formatDuration(mins: number) {
 
 function slugify(text: string): string {
   return text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+}
+
+async function ensurePublicShareReady(album: Album, action = "share this gallery"): Promise<boolean> {
+  toast.loading("Checking public gallery...", { id: `public-share-${album.id}` });
+  const result = await ensurePublicAlbumAvailable(album);
+  if (result.ok) {
+    toast.success("Public gallery is live", { id: `public-share-${album.id}` });
+    return true;
+  }
+  toast.error(result.error || `Cannot ${action} until the gallery is published.`, { id: `public-share-${album.id}` });
+  return false;
 }
 
 const WATERMARK_REBUILD_STATUS_KEY = "wm_rebuild_status_v2";
@@ -1124,13 +1136,15 @@ function ShootDayCommandCenterView() {
     return absolute ? `${window.location.origin}${path}` : path;
   };
 
-  const openShootDayGallery = (album: Album) => {
+  const openShootDayGallery = async (album: Album) => {
     const linkedAlbum = ensureShootDayClientToken(album);
+    if (!(await ensurePublicShareReady(linkedAlbum, "open this gallery"))) return;
     window.open(shootDayGalleryPath(linkedAlbum), "_blank");
   };
 
   const copyShootDayGalleryLink = async (album: Album) => {
     const linkedAlbum = ensureShootDayClientToken(album);
+    if (!(await ensurePublicShareReady(linkedAlbum, "copy this gallery link"))) return;
     try {
       await navigator.clipboard.writeText(shootDayGalleryPath(linkedAlbum, true));
       toast.success("Gallery link copied");
@@ -1174,6 +1188,13 @@ function ShootDayCommandCenterView() {
     updateBooking({ ...booking, status: "completed", albumId: linkedAlbum?.id || booking.albumId, statusHistory });
     if (linkedAlbum) {
       const tokenAlbum = ensureShootDayClientToken(linkedAlbum);
+      const shareReady = await ensurePublicShareReady(tokenAlbum, "copy this gallery link");
+      if (!shareReady) {
+        toast.success("Session wrapped. Gallery link is blocked until publishing finishes.");
+        setRefreshTick((tick) => tick + 1);
+        window.dispatchEvent(new CustomEvent("storage-synced"));
+        return;
+      }
       try {
         await navigator.clipboard.writeText(shootDayGalleryPath(tokenAlbum, true));
         toast.success(`Session wrapped. Gallery link copied.`);
@@ -2033,7 +2054,11 @@ function DashboardView() {
               <h3 className="font-display text-base text-foreground truncate">{activeCaptureAlbum.title}</h3>
               <p className="text-xs font-body text-muted-foreground truncate mt-1">{activeCaptureAlbum.clientName || activeCaptureAlbum.clientEmail || "No client assigned"}</p>
               <div className="flex items-center gap-2 mt-4">
-                <Button size="sm" variant="outline" onClick={() => window.open(`/gallery/${activeCaptureAlbum.slug || activeCaptureAlbum.id}`, "_blank")} className="gap-2 text-xs font-body">
+                <Button size="sm" variant="outline" onClick={async () => {
+                  if (await ensurePublicShareReady(activeCaptureAlbum, "open this gallery")) {
+                    window.open(`/gallery/${activeCaptureAlbum.slug || activeCaptureAlbum.id}`, "_blank");
+                  }
+                }} className="gap-2 text-xs font-body">
                   <Eye className="w-3.5 h-3.5" /> Client View
                 </Button>
                 <Button size="sm" variant="outline" onClick={() => window.location.href = "/capture"} className="gap-2 text-xs font-body">
@@ -3544,11 +3569,23 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                       )}
 
                       {bk.albumId ? (
-                        <a href={`/gallery/${bk.albumId}`} target="_blank" rel="noopener noreferrer">
-                          <Button size="sm" variant="outline" className="gap-2 font-body text-xs border-border text-foreground">
-                            <ExternalLink className="w-3.5 h-3.5" /> View Album
-                          </Button>
-                        </a>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="gap-2 font-body text-xs border-border text-foreground"
+                          onClick={async () => {
+                            const album = getAlbums().find(a => a.id === bk.albumId || a.slug === bk.albumId);
+                            if (!album) {
+                              toast.error("Album record not found on this device yet");
+                              return;
+                            }
+                            if (await ensurePublicShareReady(album, "open this gallery")) {
+                              window.open(`/gallery/${album.slug || album.id}`, "_blank", "noopener,noreferrer");
+                            }
+                          }}
+                        >
+                          <ExternalLink className="w-3.5 h-3.5" /> View Album
+                        </Button>
                       ) : onCreateAlbum ? (
                         <Button size="sm" variant="outline" onClick={() => onCreateAlbum(bk.id)} className="gap-2 font-body text-xs border-border text-foreground">
                           <Image className="w-3.5 h-3.5" /> Create Album
@@ -4266,18 +4303,28 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
     toast.success(`Merged ${mergeSelection.size} albums with ${totalFree} free downloads`);
   };
 
-  const copyLink = (album: Album) => {
+  const galleryUrlForAlbum = (album: Album) => {
+    const target = album.slug || album.id;
     const tok = album.clientToken;
-    const url = `${window.location.origin}/gallery/${album.slug}${tok ? `?token=${tok}` : ""}`;
-    navigator.clipboard.writeText(url);
+    return `${window.location.origin}/gallery/${target}${tok ? `?token=${encodeURIComponent(tok)}` : ""}`;
+  };
+
+  const copyLink = async (album: Album) => {
+    if (!(await ensurePublicShareReady(album, "copy this gallery link"))) return;
+    await navigator.clipboard.writeText(galleryUrlForAlbum(album));
     toast.success("Gallery link copied!");
+  };
+
+  const openPublicGallery = async (album: Album) => {
+    if (!(await ensurePublicShareReady(album, "open this gallery"))) return;
+    window.open(`/gallery/${album.slug || album.id}`, "_blank", "noopener,noreferrer");
   };
 
   const handleSendNotification = async (album: Album) => {
     if (!album.clientEmail) { toast.error("No client email on this album"); return; }
+    if (!(await ensurePublicShareReady(album, "send this gallery link"))) return;
     const template = settings.notificationEmailTemplate || "Hey {name}, your photos are ready! Check them out here: {link}";
-    const tok = (album as any).clientToken;
-    const link = `${window.location.origin}/gallery/${album.slug}${tok ? `?token=${tok}` : ""}`;
+    const link = galleryUrlForAlbum(album);
     const message = template.replace("{name}", album.clientName || "there").replace("{link}", link).replace("{instagram}", (album as any).instagramHandle || album.clientEmail || "");
     const html = `<div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:32px;background:#0a0a0a;color:#f5f5f5;border-radius:12px;"><h2 style="font-size:22px;margin:0 0 16px;">📸 Your photos are ready!</h2><p style="color:#aaa;line-height:1.6;">${message.replace(link, "")}</p><a href="${link}" style="display:inline-block;margin-top:24px;padding:12px 28px;background:#fff;color:#000;border-radius:8px;text-decoration:none;font-weight:600;">View Your Gallery →</a><p style="margin-top:32px;font-size:11px;color:#555;">${link}</p></div>`;
     try {
@@ -4585,11 +4632,9 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                       </Tooltip>
                       <Tooltip>
                         <TooltipTrigger asChild>
-                          <a href={`/gallery/${alb.slug}`} target="_blank" rel="noopener noreferrer">
-                            <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary">
-                              <ExternalLink className="w-3.5 h-3.5" />
-                            </Button>
-                          </a>
+                          <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary" onClick={() => openPublicGallery(alb)}>
+                            <ExternalLink className="w-3.5 h-3.5" />
+                          </Button>
                         </TooltipTrigger>
                         <TooltipContent>Open Gallery</TooltipContent>
                       </Tooltip>
@@ -4952,10 +4997,11 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
     setTimeout(() => setFtpUploadProgress(null), 4000);
   };
 
-  const copyLink = (alb: Album) => {
+  const copyLink = async (alb: Album) => {
+    if (!(await ensurePublicShareReady(alb, "copy this gallery link"))) return;
     const tok = alb.clientToken;
-    const url = `${window.location.origin}/gallery/${alb.slug}${tok ? `?token=${tok}` : ""}`;
-    navigator.clipboard.writeText(url);
+    const url = `${window.location.origin}/gallery/${alb.slug || alb.id}${tok ? `?token=${encodeURIComponent(tok)}` : ""}`;
+    await navigator.clipboard.writeText(url);
     toast.success("Gallery link copied!");
   };
 
@@ -5409,19 +5455,24 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
           const newRound = { roundNumber: rounds.length + 1, sentAt: new Date().toISOString(), selectedPhotoIds: [], adminNote: note || undefined };
           const updated = { ...liveAlbum!, proofingEnabled: true, proofingStage: "proofing" as const, proofingRounds: [...rounds, newRound], clientToken, proofingExpiresAt };
           updateLiveAlbum(updated);
+          let inviteSent = false;
           if (clientEmail) {
-            const galleryUrl = `${window.location.origin}/gallery/${liveAlbum!.slug}?token=${clientToken}`;
-            const expiryDateStr = new Date(proofingExpiresAt).toLocaleString("en-AU", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
-            fetch("/api/email/send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ to: clientEmail, subject: `📸 Your proofing gallery is ready — ${liveAlbum!.title}`, html: buildProofingEmailHtml(galleryUrl, expiryDateStr, note || undefined) }) }).catch(() => {});
+            if (await ensurePublicShareReady(updated, "send this proofing invite")) {
+              const galleryUrl = `${window.location.origin}/gallery/${updated.slug || updated.id}?token=${encodeURIComponent(clientToken)}`;
+              const expiryDateStr = new Date(proofingExpiresAt).toLocaleString("en-AU", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+              fetch("/api/email/send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ to: clientEmail, subject: `📸 Your proofing gallery is ready — ${liveAlbum!.title}`, html: buildProofingEmailHtml(galleryUrl, expiryDateStr, note || undefined) }) }).catch(() => {});
+              inviteSent = true;
+            }
           }
-          toast.success("Proofing round started" + (clientEmail ? " — invite sent to client" : " (no client email on file)"));
+          toast.success("Proofing round started" + (inviteSent ? " — invite sent to client" : clientEmail ? " — invite blocked until gallery is published" : " (no client email on file)"));
           onUpdate?.(updated);
         };
 
-        const resendProofingEmail = () => {
+        const resendProofingEmail = async () => {
           if (!clientEmail) return;
+          if (!(await ensurePublicShareReady(liveAlbum!, "resend this proofing invite"))) return;
           const tok = liveAlbum!.clientToken;
-          const galleryUrl = `${window.location.origin}/gallery/${liveAlbum!.slug}${tok ? `?token=${tok}` : ""}`;
+          const galleryUrl = `${window.location.origin}/gallery/${liveAlbum!.slug || liveAlbum!.id}${tok ? `?token=${encodeURIComponent(tok)}` : ""}`;
           const expiryDateStr = liveAlbum!.proofingExpiresAt
             ? new Date(liveAlbum!.proofingExpiresAt as string).toLocaleString("en-AU", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })
             : "";
@@ -5441,8 +5492,9 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
 
         const sendEditingEmail = async () => {
           if (!clientEmail) { toast.error("No client email on file"); return; }
+          if (!(await ensurePublicShareReady(liveAlbum!, "send this gallery link"))) return;
           const tok = liveAlbum!.clientToken;
-          const galleryUrl = `${window.location.origin}/gallery/${liveAlbum!.slug}${tok ? `?token=${tok}` : ""}`;
+          const galleryUrl = `${window.location.origin}/gallery/${liveAlbum!.slug || liveAlbum!.id}${tok ? `?token=${encodeURIComponent(tok)}` : ""}`;
           await fetch("/api/email/send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ to: clientEmail, subject: `✏️ Your photos are being edited — ${liveAlbum!.title}`, html: `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;"><h2 style="margin:0 0 16px;font-size:20px;">Your photos are being edited ✏️</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${liveAlbum!.clientName || "there"},</p><p style="color:#9ca3af;margin:0 0 20px;">Your selections for <strong style="color:#e5e7eb;">${liveAlbum!.title}</strong> are confirmed and editing has begun. We'll send you another email as soon as your final photos are ready.</p><a href="${galleryUrl}" style="display:inline-block;background:#374151;color:#e5e7eb;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">Preview Gallery →</a></div>` }) }).catch(() => {});
           toast.success("Editing notification sent to client");
         };
@@ -5450,13 +5502,17 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
         const deliverFinals = async (free: boolean) => {
           const updated = { ...liveAlbum!, proofingStage: "finals-delivered" as const, allUnlocked: free ? true : liveAlbum!.allUnlocked };
           updateLiveAlbum(updated);
+          onUpdate?.(updated);
           if (clientEmail) {
+            if (!(await ensurePublicShareReady(updated, "send this finals link"))) {
+              toast.success("Finals marked delivered. Client email blocked until gallery is published.");
+              return;
+            }
             const tok = liveAlbum!.clientToken;
-            const galleryUrl = `${window.location.origin}/gallery/${liveAlbum!.slug}${tok ? `?token=${tok}` : ""}`;
+            const galleryUrl = `${window.location.origin}/gallery/${updated.slug || updated.id}${tok ? `?token=${encodeURIComponent(tok)}` : ""}`;
             fetch("/api/email/send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ to: clientEmail, subject: `✨ Your final photos are ready — ${liveAlbum!.title}`, html: free ? `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;"><h2 style="margin:0 0 16px;font-size:20px;">Your edited photos are ready! ✨</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${liveAlbum!.clientName || "there"},</p><p style="color:#9ca3af;margin:0 0 20px;">Your final edited photos for <strong style="color:#e5e7eb;">${liveAlbum!.title}</strong> are ready — no payment needed, they're all yours to download!</p><a href="${galleryUrl}" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">Download Your Photos →</a></div>` : `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;"><h2 style="margin:0 0 16px;font-size:20px;">Your edited photos are ready! ✨</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${liveAlbum!.clientName || "there"},</p><p style="color:#9ca3af;margin:0 0 20px;">Your final edited photos for <strong style="color:#e5e7eb;">${liveAlbum!.title}</strong> are now available to view and download.</p><a href="${galleryUrl}" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">View &amp; Download Photos →</a></div>` }) }).catch(() => {});
           }
           toast.success("Finals delivered!" + (clientEmail ? " — client notified" : ""));
-          onUpdate?.(updated);
         };
 
         const resetProofing = () => {
@@ -10086,16 +10142,19 @@ function ContactsView() {
                       <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-2">Albums</p>
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                         {cAlbums.map(album => (
-                          <a
+                          <button
                             key={album.id}
-                            href={`/gallery/${album.slug || album.id}`}
-                            target="_blank"
-                            rel="noreferrer"
+                            type="button"
+                            onClick={async () => {
+                              if (await ensurePublicShareReady(album, "open this gallery")) {
+                                window.open(`/gallery/${album.slug || album.id}`, "_blank", "noopener,noreferrer");
+                              }
+                            }}
                             className="rounded-lg border border-border/50 bg-secondary/30 px-3 py-2 hover:border-primary/40 transition-colors"
                           >
                             <p className="text-xs font-body text-foreground truncate">{album.title}</p>
                             <p className="text-[10px] font-body text-muted-foreground truncate">{album.photoCount || album.photos?.length || 0} photo{(album.photoCount || album.photos?.length || 0) !== 1 ? "s" : ""} · open gallery</p>
-                          </a>
+                          </button>
                         ))}
                       </div>
                     </div>
@@ -14180,7 +14239,17 @@ function StorageView() {
                                 <p className="text-muted-foreground"><span className="text-foreground font-medium">Album:</span> {matchingAlbum.title}</p>
                                 {matchingAlbum.clientName && <p className="text-muted-foreground"><span className="text-foreground font-medium">Client:</span> {matchingAlbum.clientName}</p>}
                                 {albumPhoto?.uploadedAt && <p className="text-muted-foreground"><span className="text-foreground font-medium">Uploaded:</span> {new Date(albumPhoto.uploadedAt).toLocaleDateString()}</p>}
-                                <a href={`/gallery/${matchingAlbum.slug || matchingAlbum.id}`} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline inline-flex items-center gap-1">View album <ExternalLink className="w-3 h-3" /></a>
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    if (await ensurePublicShareReady(matchingAlbum, "open this gallery")) {
+                                      window.open(`/gallery/${matchingAlbum.slug || matchingAlbum.id}`, "_blank", "noopener,noreferrer");
+                                    }
+                                  }}
+                                  className="text-primary hover:underline inline-flex items-center gap-1"
+                                >
+                                  View album <ExternalLink className="w-3 h-3" />
+                                </button>
                               </>
                             ) : matchingLibraryPhoto ? (
                               <>
