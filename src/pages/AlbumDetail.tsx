@@ -1527,7 +1527,7 @@ export default function AlbumDetail() {
                 <div key={photo.id} className="relative group mb-3 sm:mb-4 overflow-hidden rounded-lg transition-transform duration-200 hover:scale-[1.01] hover:shadow-xl hover:shadow-black/40">
                   <WatermarkedImage
                 src={getGalleryPhotoSrc(photo,
-                  !!(album.watermarkDisabled || isPhotoPaid(photo.id))
+                  isCleanDownload(photo.id)
                 )}
                   title={photo.title}
                   selected={isProofing ? starredIds.has(photo.id) : selectedIds.has(photo.id)}
@@ -2092,7 +2092,7 @@ export default function AlbumDetail() {
                   photo={lbPhoto}
                   cache={lightboxSrcCache}
                   onCacheUpdate={handleLightboxCacheUpdate}
-                  wmDisabled={!!(album.watermarkDisabled || isPhotoPaid(lbPhoto.id))}
+                  wmDisabled={isCleanDownload(lbPhoto.id)}
                   watermarkVersion={(settings as any).watermarkVersion || (lbPhoto as any).watermarkVersion || 0}
                 />
               </div>

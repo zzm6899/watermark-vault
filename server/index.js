@@ -2207,6 +2207,58 @@ function isPhotoAccessible(filename, sessionKey, albumId) {
   }
 }
 
+function getPhotoDownloadAccess(filename, sessionKey, albumId) {
+  try {
+    const db = readDb();
+    const found = findAlbumById(db, albumId);
+    if (!found) return { accessible: false, clean: false };
+    const album = found.album;
+
+    if (album.purchasingDisabled) return { accessible: false, clean: false };
+    if (album.lockDownloadsDuringProofing && album.proofingEnabled) {
+      const stage = album.proofingStage || "not-started";
+      if (stage !== "not-started" && stage !== "finals-delivered") {
+        return { accessible: false, clean: false };
+      }
+    }
+
+    const albumClean = album.watermarkDisabled === true;
+    if (album.allUnlocked) return { accessible: true, clean: albumClean };
+
+    const sessionPurchase = album.sessionPurchases?.[sessionKey];
+    if (sessionPurchase?.fullAlbum === true) return { accessible: true, clean: true };
+
+    const photo = album.photos?.find(p => {
+      const url = p.url || p.src || "";
+      const urlBasename = url.split("?")[0].split("/").pop() || "";
+      return urlBasename === filename;
+    });
+    if (!photo) return { accessible: false, clean: false };
+
+    if (photo.paid) return { accessible: true, clean: true };
+    if (sessionPurchase?.photoIds?.includes(photo.id)) return { accessible: true, clean: true };
+    if (Array.isArray(album.paidPhotoIds) && album.paidPhotoIds.includes(photo.id)) return { accessible: true, clean: true };
+
+    const bankApproved = (album.downloadRequests || []).some(
+      r => (r.status === "approved" || r.status === "completed") &&
+           Array.isArray(r.photoIds) && r.photoIds.includes(photo.id)
+    );
+    if (bankApproved) return { accessible: true, clean: true };
+
+    const sessionData = db[`wv_session_${sessionKey}_${albumId}`];
+    const sessionParsed = typeof sessionData === "string" ? JSON.parse(sessionData) : sessionData;
+    if (sessionParsed?.unlockedPhotoIds?.includes(photo.id)) return { accessible: true, clean: albumClean };
+
+    const sessionFreeUsed = album.usedFreeDownloads?.[sessionKey] || 0;
+    const freeQuota = typeof album.freeDownloads === "number" ? album.freeDownloads : 5;
+    if (sessionFreeUsed < freeQuota) return { accessible: true, clean: albumClean };
+
+    return { accessible: false, clean: false };
+  } catch {
+    return { accessible: false, clean: false };
+  }
+}
+
 /** Generate (or load from cache) a watermarked full-res buffer for a file. */
 async function getWatermarkedBuffer(safeName, filepath) {
   const baseName = path.basename(safeName, path.extname(safeName));
@@ -2431,7 +2483,8 @@ app.get("/api/photo/:filename/original", async (req, res) => {
   const { sessionKey, albumId } = req.query;
   if (!sessionKey || !albumId) return res.status(403).send("Forbidden");
 
-  if (!isPhotoAccessible(safeName, sessionKey, albumId)) {
+  const access = getPhotoDownloadAccess(safeName, sessionKey, albumId);
+  if (!access.accessible || !access.clean) {
     return res.status(403).send("Forbidden");
   }
 
@@ -3118,6 +3171,7 @@ app.post("/api/download/zip", downloadZipLimiter, async (req, res) => {
   const accessibleFiles = [];
   let missingCount = 0;
   let deniedCount = 0;
+  let downgradedCount = 0;
   for (const { filename, clean } of fileList) {
     // Strip any query-string that may be appended (e.g. "photo.jpg?tenant=slug")
     const safeName = path.basename(filename.split("?")[0]);
@@ -3126,11 +3180,14 @@ app.post("/api/download/zip", downloadZipLimiter, async (req, res) => {
       missingCount++;
       continue;
     }
-    if (!isPhotoAccessible(safeName, sessionKey, albumId)) {
+    const access = getPhotoDownloadAccess(safeName, sessionKey, albumId);
+    if (!access.accessible) {
       deniedCount++;
       continue;
     }
-    accessibleFiles.push({ safeName, filepath, clean });
+    const serveClean = clean && access.clean;
+    if (clean && !access.clean) downgradedCount++;
+    accessibleFiles.push({ safeName, filepath, clean: serveClean });
   }
 
   if (accessibleFiles.length === 0) {
@@ -3157,6 +3214,7 @@ app.post("/api/download/zip", downloadZipLimiter, async (req, res) => {
   res.setHeader("X-Zip-Requested", String(fileList.length));
   res.setHeader("X-Zip-Included", String(accessibleFiles.length));
   res.setHeader("X-Zip-Skipped", String(missingCount + deniedCount));
+  res.setHeader("X-Zip-Downgraded-Watermarked", String(downgradedCount));
 
   // JPEG images are already compressed — store them as-is (level 0) to keep zip creation fast
   const archive = archiver("zip", { zlib: { level: 0 } });
