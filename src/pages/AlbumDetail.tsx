@@ -152,6 +152,14 @@ function getGalleryPhotoSrc(photo: Photo, disableWatermark: boolean): string {
   return getPhotoVariantSrc(photo, "thumbnail", disableWatermark);
 }
 
+function formatZipDuration(seconds: number): string {
+  const safe = Math.max(0, Math.ceil(seconds));
+  if (safe < 60) return `${safe}s`;
+  const mins = Math.floor(safe / 60);
+  const secs = safe % 60;
+  return secs > 0 ? `${mins}m ${secs}s` : `${mins}m`;
+}
+
 export default function AlbumDetail() {
   const { albumId } = useParams();
   const [album, setAlbumState] = useState(() => {
@@ -180,6 +188,8 @@ export default function AlbumDetail() {
   const [downloadQuality, setDownloadQuality] = useState<DownloadQuality>("original");
   const [preferIndividualDownload, setPreferIndividualDownload] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  const [zipProgress, setZipProgress] = useState<{ startedAt: number; estimateSeconds: number; photoCount: number } | null>(null);
+  const [zipElapsedSeconds, setZipElapsedSeconds] = useState(0);
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [searchParams] = useSearchParams();
   const urlToken = searchParams.get("token");
@@ -259,6 +269,17 @@ export default function AlbumDetail() {
   const [emailSkippedThisSession, setEmailSkippedThisSession] = useState(false);
   const [purchaserEmail, setPurchaserEmail] = useState("");
   const [savingEmail, setSavingEmail] = useState(false);
+
+  useEffect(() => {
+    if (!zipProgress) {
+      setZipElapsedSeconds(0);
+      return;
+    }
+    const tick = () => setZipElapsedSeconds(Math.max(0, Math.floor((Date.now() - zipProgress.startedAt) / 1000)));
+    tick();
+    const id = window.setInterval(tick, 1000);
+    return () => window.clearInterval(id);
+  }, [zipProgress]);
   // When user explicitly requests to purchase the full album (via button)
   const [requestedFullAlbum, setRequestedFullAlbum] = useState(false);
   // When user explicitly requests bank transfer flow
@@ -755,6 +776,14 @@ export default function AlbumDetail() {
     return !isFullyUnlocked && isPhotoPaid(photoId);
   };
 
+  const estimateZipSeconds = (photos: Photo[]): number => {
+    const serverPhotos = photos.filter(p => p.src.startsWith("/uploads/"));
+    const cleanCount = serverPhotos.filter(p => isCleanDownload(p.id)).length;
+    const watermarkedCount = serverPhotos.length - cleanCount;
+    const localCount = photos.length - serverPhotos.length;
+    return Math.max(3, Math.ceil(2 + cleanCount * 0.25 + watermarkedCount * 0.55 + localCount * 0.15));
+  };
+
   /** Returns the URL to use when downloading a photo.
    *  Clean photos → authenticated /api/photo/original endpoint (no watermark).
    *  Watermarked photos → plain /uploads/ URL so the server applies the watermark. */
@@ -823,6 +852,8 @@ export default function AlbumDetail() {
       filename: p.src.split("?")[0].split("/").pop() || "",
       clean: isCleanDownload(p.id),
     }));
+    const estimateSeconds = estimateZipSeconds(photos);
+    setZipProgress({ startedAt: Date.now(), estimateSeconds, photoCount: photos.length });
     try {
       const res = await fetch("/api/download/zip", {
         method: "POST",
@@ -846,6 +877,8 @@ export default function AlbumDetail() {
     } catch (err: any) {
       toast.error(`Zip download failed: ${err.message || "unknown error"}`);
       return false;
+    } finally {
+      setZipProgress(null);
     }
   };
 
@@ -1707,16 +1740,21 @@ export default function AlbumDetail() {
           </DialogHeader>
           <div className="space-y-4 mt-2">
             {(() => {
-              const downloadCount = canDownload
-                ? (selectedIds.size > 0 ? selectedIds.size : album.photos.length)
+              const downloadPhotos = canDownload
+                ? (selectedIds.size > 0 ? album.photos.filter(p => selectedIds.has(p.id)) : album.photos)
                 : (() => {
                     const sel = album.photos.filter(p => selectedIds.has(p.id));
                     const paid = sel.filter(p => paidPhotoIdSet.has(p.id));
-                    const free = Math.min(sel.filter(p => !paidPhotoIdSet.has(p.id)).length, freeRemaining);
-                    return paid.length + free;
+                    const notPaid = sel.filter(p => !paidPhotoIdSet.has(p.id));
+                    return [...paid, ...notPaid.slice(0, freeRemaining)];
                   })();
+              const downloadCount = downloadPhotos.length;
               const canUseZip = isServerMode() && downloadCount > 1;
               const useZip = canUseZip && !preferIndividualDownload;
+              const estimatedZipSeconds = canUseZip ? estimateZipSeconds(downloadPhotos as Photo[]) : 0;
+              const zipRemainingSeconds = zipProgress
+                ? Math.max(0, zipProgress.estimateSeconds - zipElapsedSeconds)
+                : estimatedZipSeconds;
               return (
                 <>
                   {/* ZIP vs Individual toggle — only shown in server mode with multiple photos */}
@@ -1729,7 +1767,9 @@ export default function AlbumDetail() {
                         <Download className="w-4 h-4 flex-shrink-0" />
                         <div className="text-left">
                           <p>Download as ZIP</p>
-                          <p className="text-[10px] text-muted-foreground">{downloadCount} photos · single file</p>
+                          <p className="text-[10px] text-muted-foreground">
+                            {downloadCount} photos · ETA {formatZipDuration(estimatedZipSeconds)}
+                          </p>
                         </div>
                       </button>
                       <button
@@ -1742,6 +1782,18 @@ export default function AlbumDetail() {
                           <p className="text-[10px] text-muted-foreground">{downloadCount} separate downloads</p>
                         </div>
                       </button>
+                    </div>
+                  )}
+                  {useZip && (
+                    <div className="rounded-lg border border-border/60 bg-secondary/40 px-3 py-2">
+                      <p className="text-xs font-body text-foreground">
+                        {zipProgress ? `Preparing ${zipProgress.photoCount} photo ZIP…` : `Estimated ZIP preparation: ${formatZipDuration(estimatedZipSeconds)}`}
+                      </p>
+                      <p className="mt-0.5 text-[10px] font-body text-muted-foreground">
+                        {zipProgress
+                          ? `Elapsed ${formatZipDuration(zipElapsedSeconds)} · about ${formatZipDuration(zipRemainingSeconds)} remaining`
+                          : "Large albums can take longer while the server packages originals and watermarked files."}
+                      </p>
                     </div>
                   )}
                   {/* Quality selector — shown when downloading individually OR non-server mode */}
@@ -1777,7 +1829,7 @@ export default function AlbumDetail() {
                   >
                     <Download className="w-4 h-4" />
                     {downloading
-                      ? (useZip ? "Preparing ZIP…" : "Downloading…")
+                      ? (useZip ? `Preparing ZIP · ${formatZipDuration(zipRemainingSeconds)} left` : "Downloading…")
                       : (useZip ? `Download ZIP (${downloadCount})` : `Download (${downloadCount})`)}
                   </Button>
                 </>
