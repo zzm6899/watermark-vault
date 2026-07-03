@@ -160,6 +160,17 @@ function formatZipDuration(seconds: number): string {
   return secs > 0 ? `${mins}m ${secs}s` : `${mins}m`;
 }
 
+type ZipProgressState = {
+  startedAt: number;
+  estimateSeconds: number;
+  photoCount: number;
+  total: number;
+  ready: number;
+  status: "preparing" | "done" | "failed";
+};
+
+const wait = (ms: number) => new Promise(resolve => window.setTimeout(resolve, ms));
+
 export default function AlbumDetail() {
   const { albumId } = useParams();
   const [album, setAlbumState] = useState(() => {
@@ -188,7 +199,7 @@ export default function AlbumDetail() {
   const [downloadQuality, setDownloadQuality] = useState<DownloadQuality>("original");
   const [preferIndividualDownload, setPreferIndividualDownload] = useState(false);
   const [downloading, setDownloading] = useState(false);
-  const [zipProgress, setZipProgress] = useState<{ startedAt: number; estimateSeconds: number; photoCount: number } | null>(null);
+  const [zipProgress, setZipProgress] = useState<ZipProgressState | null>(null);
   const [zipElapsedSeconds, setZipElapsedSeconds] = useState(0);
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [searchParams] = useSearchParams();
@@ -853,13 +864,70 @@ export default function AlbumDetail() {
       clean: isCleanDownload(p.id),
     }));
     const estimateSeconds = estimateZipSeconds(photos);
-    setZipProgress({ startedAt: Date.now(), estimateSeconds, photoCount: photos.length });
+    const startedAt = Date.now();
+    setZipProgress({ startedAt, estimateSeconds, photoCount: photos.length, total: serverPhotos.length, ready: 0, status: "preparing" });
     try {
-      const res = await fetch("/api/download/zip", {
+      const startRes = await fetch("/api/download/zip/start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ files, sessionKey, albumId: album.id }),
       });
+      if (startRes.status === 404) {
+        const res = await fetch("/api/download/zip", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ files, sessionKey, albumId: album.id }),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.error || "Server error");
+        }
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = `${album.title || "photos"}.zip`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+        return true;
+      }
+      if (!startRes.ok) {
+        const err = await startRes.json().catch(() => ({}));
+        throw new Error(err.error || "Server error");
+      }
+
+      let job = await startRes.json();
+      setZipProgress({
+        startedAt,
+        estimateSeconds,
+        photoCount: photos.length,
+        total: Number(job.total) || serverPhotos.length,
+        ready: Number(job.ready) || 0,
+        status: job.status || "preparing",
+      });
+
+      while (job.status !== "done") {
+        if (job.status === "failed") throw new Error(job.error || "Failed to create zip");
+        await wait(800);
+        const statusRes = await fetch(`/api/download/zip/${encodeURIComponent(job.jobId)}/status`);
+        if (!statusRes.ok) {
+          const err = await statusRes.json().catch(() => ({}));
+          throw new Error(err.error || "Could not check zip progress");
+        }
+        job = await statusRes.json();
+        setZipProgress({
+          startedAt,
+          estimateSeconds,
+          photoCount: photos.length,
+          total: Number(job.total) || serverPhotos.length,
+          ready: Number(job.ready) || 0,
+          status: job.status || "preparing",
+        });
+      }
+
+      const res = await fetch(`/api/download/zip/${encodeURIComponent(job.jobId)}/file`);
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error || "Server error");
@@ -1755,6 +1823,11 @@ export default function AlbumDetail() {
               const zipRemainingSeconds = zipProgress
                 ? Math.max(0, zipProgress.estimateSeconds - zipElapsedSeconds)
                 : estimatedZipSeconds;
+              const zipReadyCount = zipProgress ? Math.min(zipProgress.ready, zipProgress.total) : 0;
+              const zipTotalCount = zipProgress?.total || downloadCount;
+              const zipPercent = zipProgress && zipTotalCount > 0
+                ? Math.min(100, Math.round((zipReadyCount / zipTotalCount) * 100))
+                : 0;
               return (
                 <>
                   {/* ZIP vs Individual toggle — only shown in server mode with multiple photos */}
@@ -1786,9 +1859,20 @@ export default function AlbumDetail() {
                   )}
                   {useZip && (
                     <div className="rounded-lg border border-border/60 bg-secondary/40 px-3 py-2">
-                      <p className="text-xs font-body text-foreground">
-                        {zipProgress ? `Preparing ${zipProgress.photoCount} photo ZIP…` : `Estimated ZIP preparation: ${formatZipDuration(estimatedZipSeconds)}`}
-                      </p>
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="text-xs font-body text-foreground">
+                          {zipProgress ? `Preparing ZIP: ${zipReadyCount}/${zipTotalCount} ready` : `Estimated ZIP preparation: ${formatZipDuration(estimatedZipSeconds)}`}
+                        </p>
+                        {zipProgress && <span className="text-[10px] font-body text-primary">{zipPercent}%</span>}
+                      </div>
+                      {zipProgress && (
+                        <div className="mt-2 h-1.5 rounded-full bg-background/70 overflow-hidden">
+                          <div
+                            className="h-full rounded-full bg-primary transition-all duration-500"
+                            style={{ width: `${zipPercent}%` }}
+                          />
+                        </div>
+                      )}
                       <p className="mt-0.5 text-[10px] font-body text-muted-foreground">
                         {zipProgress
                           ? `Elapsed ${formatZipDuration(zipElapsedSeconds)} · about ${formatZipDuration(zipRemainingSeconds)} remaining`
@@ -1829,7 +1913,7 @@ export default function AlbumDetail() {
                   >
                     <Download className="w-4 h-4" />
                     {downloading
-                      ? (useZip ? `Preparing ZIP · ${formatZipDuration(zipRemainingSeconds)} left` : "Downloading…")
+                      ? (useZip ? `Preparing ZIP · ${zipReadyCount}/${zipTotalCount} ready` : "Downloading…")
                       : (useZip ? `Download ZIP (${downloadCount})` : `Download (${downloadCount})`)}
                   </Button>
                 </>

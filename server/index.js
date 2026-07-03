@@ -128,6 +128,8 @@ fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 // avoids a redundant mkdirSync syscall on the hot path.
 const CACHE_DIR = path.join(UPLOADS_DIR, "_cache");
 fs.mkdirSync(CACHE_DIR, { recursive: true });
+const ZIP_JOBS_DIR = path.join(CACHE_DIR, "zip-jobs");
+fs.mkdirSync(ZIP_JOBS_DIR, { recursive: true });
 if (!fs.existsSync(DB_FILE)) fs.writeFileSync(DB_FILE, JSON.stringify({}));
 
 // ── Super Admin Bootstrap ──────────────────────────────────────────────────
@@ -3146,34 +3148,38 @@ app.post("/api/upload/bulk-delete", uploadDeleteLimiter, async (req, res) => {
 //   { filenames: string[], sessionKey, albumId }   — all clean originals (legacy)
 //   { files: [{filename, clean}], sessionKey, albumId } — per-file clean/watermarked
 const downloadZipLimiter = rateLimit({ windowMs: 60_000, max: 6, standardHeaders: true, legacyHeaders: false, message: { error: "Too many zip requests — please wait before retrying" } });
-app.post("/api/download/zip", downloadZipLimiter, async (req, res) => {
+const zipJobs = new Map();
+
+function normalizeZipFileList(filenames, files) {
+  if (Array.isArray(files)) return files.map(f => ({ filename: String(f.filename || ""), clean: f.clean === true }));
+  if (Array.isArray(filenames)) return filenames.map(n => ({ filename: String(n), clean: true }));
+  return null;
+}
+
+function validateZipRequest(req, res) {
   const { filenames, files, sessionKey, albumId } = req.body;
-
-  // Normalise to a [{filename, clean}] array regardless of which format was sent
-  let fileList;
-  if (Array.isArray(files)) {
-    fileList = files.map(f => ({ filename: String(f.filename || ""), clean: f.clean === true }));
-  } else if (Array.isArray(filenames)) {
-    fileList = filenames.map(n => ({ filename: String(n), clean: true }));
-  } else {
-    return res.status(400).json({ error: "files array (or filenames), sessionKey and albumId required" });
+  const fileList = normalizeZipFileList(filenames, files);
+  if (!fileList) {
+    res.status(400).json({ error: "files array (or filenames), sessionKey and albumId required" });
+    return null;
   }
-
   if (!sessionKey || !albumId) {
-    return res.status(400).json({ error: "sessionKey and albumId required" });
+    res.status(400).json({ error: "sessionKey and albumId required" });
+    return null;
   }
-  // Reasonable upper bound to prevent resource abuse
   if (fileList.length > MAX_ZIP_FILES) {
-    return res.status(400).json({ error: `Too many files in a single zip request (max ${MAX_ZIP_FILES})` });
+    res.status(400).json({ error: `Too many files in a single zip request (max ${MAX_ZIP_FILES})` });
+    return null;
   }
+  return { fileList, sessionKey, albumId };
+}
 
-  // Collect accessible files
+function collectAccessibleZipFiles(fileList, sessionKey, albumId) {
   const accessibleFiles = [];
   let missingCount = 0;
   let deniedCount = 0;
   let downgradedCount = 0;
   for (const { filename, clean } of fileList) {
-    // Strip any query-string that may be appended (e.g. "photo.jpg?tenant=slug")
     const safeName = path.basename(filename.split("?")[0]);
     const filepath = path.join(UPLOADS_DIR, safeName);
     if (!fs.existsSync(filepath)) {
@@ -3189,6 +3195,91 @@ app.post("/api/download/zip", downloadZipLimiter, async (req, res) => {
     if (clean && !access.clean) downgradedCount++;
     accessibleFiles.push({ safeName, filepath, clean: serveClean });
   }
+  return { accessibleFiles, missingCount, deniedCount, downgradedCount };
+}
+
+function getZipAlbumName(albumId) {
+  let albumName = "photos";
+  try {
+    const db = readDb();
+    const albums = db["wv_albums"];
+    const parsed = typeof albums === "string" ? JSON.parse(albums) : albums;
+    const album = Array.isArray(parsed) ? parsed.find(a => a.id === albumId) : null;
+    if (album?.title) albumName = album.title.replace(/[^a-z0-9_\- ]/gi, "_").trim();
+  } catch {}
+  return albumName;
+}
+
+function publicZipJob(job) {
+  return {
+    jobId: job.id,
+    status: job.status,
+    requested: job.requested,
+    total: job.total,
+    ready: job.ready,
+    skipped: job.skipped,
+    downgraded: job.downgraded,
+    error: job.error || null,
+    filename: job.filename,
+  };
+}
+
+function cleanupZipJob(jobId, delayMs = 15 * 60 * 1000) {
+  const timeout = setTimeout(() => {
+    const job = zipJobs.get(jobId);
+    if (!job) return;
+    try { if (job.filepath && fs.existsSync(job.filepath)) fs.unlinkSync(job.filepath); } catch {}
+    zipJobs.delete(jobId);
+  }, delayMs);
+  if (typeof timeout.unref === "function") timeout.unref();
+}
+
+async function buildZipJob(job, accessibleFiles) {
+  const output = fs.createWriteStream(job.filepath);
+  const archive = archiver("zip", { zlib: { level: 0 } });
+  const closed = new Promise((resolve, reject) => {
+    output.on("close", resolve);
+    output.on("error", reject);
+    archive.on("error", reject);
+  });
+  archive.pipe(output);
+
+  try {
+    for (const { safeName, filepath, clean } of accessibleFiles) {
+      if (clean) {
+        archive.file(filepath, { name: safeName });
+      } else {
+        try {
+          const stream = await getWatermarkedZipStream(filepath);
+          archive.append(stream, { name: safeName });
+        } catch (err) {
+          console.error("Zip watermark stream error for", safeName, err.message);
+          archive.file(filepath, { name: safeName });
+        }
+      }
+      job.ready = Math.min(job.total, job.ready + 1);
+      job.updatedAt = Date.now();
+    }
+    await archive.finalize();
+    await closed;
+    job.ready = job.total;
+    job.status = "done";
+    job.updatedAt = Date.now();
+    cleanupZipJob(job.id);
+  } catch (err) {
+    job.status = "failed";
+    job.error = err?.message || "Failed to create zip";
+    job.updatedAt = Date.now();
+    try { archive.abort(); } catch {}
+    cleanupZipJob(job.id, 60 * 1000);
+  }
+}
+
+app.post("/api/download/zip/start", downloadZipLimiter, async (req, res) => {
+  const valid = validateZipRequest(req, res);
+  if (!valid) return;
+  const { fileList, sessionKey, albumId } = valid;
+  const { accessibleFiles, missingCount, deniedCount, downgradedCount } = collectAccessibleZipFiles(fileList, sessionKey, albumId);
 
   if (accessibleFiles.length === 0) {
     return res.status(403).json({
@@ -3199,15 +3290,61 @@ app.post("/api/download/zip", downloadZipLimiter, async (req, res) => {
     });
   }
 
-  // Look up a friendly album name for the zip filename
-  let albumName = "photos";
-  try {
-    const db = readDb();
-    const albums = db["wv_albums"];
-    const parsed = typeof albums === "string" ? JSON.parse(albums) : albums;
-    const album = Array.isArray(parsed) ? parsed.find(a => a.id === albumId) : null;
-    if (album?.title) albumName = album.title.replace(/[^a-z0-9_\- ]/gi, "_").trim();
-  } catch {}
+  const albumName = getZipAlbumName(albumId);
+  const jobId = crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString("hex");
+  const job = {
+    id: jobId,
+    status: "preparing",
+    requested: fileList.length,
+    total: accessibleFiles.length,
+    ready: 0,
+    skipped: missingCount + deniedCount,
+    downgraded: downgradedCount,
+    error: null,
+    filename: `${albumName}.zip`,
+    filepath: path.join(ZIP_JOBS_DIR, `${jobId}.zip`),
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  };
+  zipJobs.set(jobId, job);
+  res.status(202).json(publicZipJob(job));
+  setImmediate(() => buildZipJob(job, accessibleFiles));
+});
+
+app.get("/api/download/zip/:jobId/status", (req, res) => {
+  const job = zipJobs.get(req.params.jobId);
+  if (!job) return res.status(404).json({ error: "Zip job not found or expired" });
+  res.json(publicZipJob(job));
+});
+
+app.get("/api/download/zip/:jobId/file", (req, res) => {
+  const job = zipJobs.get(req.params.jobId);
+  if (!job) return res.status(404).json({ error: "Zip job not found or expired" });
+  if (job.status === "failed") return res.status(500).json({ error: job.error || "Failed to create zip" });
+  if (job.status !== "done" || !fs.existsSync(job.filepath)) return res.status(409).json(publicZipJob(job));
+
+  res.download(job.filepath, job.filename, (err) => {
+    if (err) console.error("Zip job download error:", err.message);
+    cleanupZipJob(job.id, 60 * 1000);
+  });
+});
+
+app.post("/api/download/zip", downloadZipLimiter, async (req, res) => {
+  const valid = validateZipRequest(req, res);
+  if (!valid) return;
+  const { fileList, sessionKey, albumId } = valid;
+  const { accessibleFiles, missingCount, deniedCount, downgradedCount } = collectAccessibleZipFiles(fileList, sessionKey, albumId);
+
+  if (accessibleFiles.length === 0) {
+    return res.status(403).json({
+      error: "No accessible photos found for this session",
+      missing: missingCount,
+      denied: deniedCount,
+      requested: fileList.length,
+    });
+  }
+
+  const albumName = getZipAlbumName(albumId);
 
   res.setHeader("Content-Type", "application/zip");
   res.setHeader("Content-Disposition", `attachment; filename="${albumName}.zip"`);
