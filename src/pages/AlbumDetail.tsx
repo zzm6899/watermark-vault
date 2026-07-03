@@ -806,7 +806,7 @@ export default function AlbumDetail() {
   };
 
   /** Downloads multiple photos as a single zip via the server zip endpoint. */
-  const downloadZip = async (photos: Photo[]) => {
+  const downloadZip = async (photos: Photo[]): Promise<boolean> => {
     const serverPhotos = photos.filter(p => p.src.startsWith("/uploads/"));
     const localPhotos = photos.filter(p => !p.src.startsWith("/uploads/"));
 
@@ -815,7 +815,7 @@ export default function AlbumDetail() {
       await downloadPhoto(p, downloadQuality);
     }
 
-    if (serverPhotos.length === 0) return;
+    if (serverPhotos.length === 0) return true;
 
     // Pass per-file clean/watermarked flag so the server renders each correctly
     const files = serverPhotos.map(p => ({
@@ -842,12 +842,10 @@ export default function AlbumDetail() {
       link.click();
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
+      return true;
     } catch (err: any) {
       toast.error(`Zip download failed: ${err.message || "unknown error"}`);
-      // Fallback: download individually
-      for (const p of serverPhotos) {
-        await downloadPhoto(p, downloadQuality);
-      }
+      return false;
     }
   };
 
@@ -927,12 +925,17 @@ export default function AlbumDetail() {
     }
     setDownloading(true);
     const toDownload = [...alreadyPaid, ...notPaid.slice(0, canDownloadFree)];
+    let downloaded = true;
     if (isServerMode() && toDownload.length > 1 && !preferIndividualDownload) {
-      await downloadZip(toDownload as Photo[]);
+      downloaded = await downloadZip(toDownload as Photo[]);
     } else {
       for (const p of toDownload) {
         await downloadPhoto(p, downloadQuality);
       }
+    }
+    if (!downloaded) {
+      setDownloading(false);
+      return;
     }
 
     const updated = { ...album };
@@ -966,12 +969,17 @@ export default function AlbumDetail() {
     const photos = selectedIds.size > 0
       ? album.photos.filter(p => selectedIds.has(p.id))
       : album.photos;
+    let downloaded = true;
     if (isServerMode() && photos.length > 1 && !preferIndividualDownload) {
-      await downloadZip(photos as Photo[]);
+      downloaded = await downloadZip(photos as Photo[]);
     } else {
       for (const p of photos) {
         await downloadPhoto(p, downloadQuality);
       }
+    }
+    if (!downloaded) {
+      setDownloading(false);
+      return;
     }
     // Track download history
     const updated = { ...album };

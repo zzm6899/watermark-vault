@@ -2229,6 +2229,18 @@ async function getWatermarkedBuffer(safeName, filepath) {
   return result;
 }
 
+/** Create a streaming watermarked JPEG for ZIP downloads without buffering full albums in memory. */
+async function getWatermarkedZipStream(filepath) {
+  const origMeta = await sharp(filepath).metadata();
+  const origW = origMeta.width || 800;
+  const origH = origMeta.height || 600;
+  const wm = getWatermarkSettings();
+  const overlay = await buildWatermarkOverlay(origW, origH, wm);
+  return sharp(filepath)
+    .composite([overlay])
+    .jpeg({ quality: 82, progressive: true });
+}
+
 // ── Serve watermarked / resized photo ────────────────────────
 // Supports:
 //   ?size=thumb   → resize to 700 px wide (for gallery grids)
@@ -3080,7 +3092,7 @@ app.post("/api/upload/bulk-delete", uploadDeleteLimiter, async (req, res) => {
 // Accepts either:
 //   { filenames: string[], sessionKey, albumId }   — all clean originals (legacy)
 //   { files: [{filename, clean}], sessionKey, albumId } — per-file clean/watermarked
-const downloadZipLimiter = rateLimit({ windowMs: 5_000, max: 1, standardHeaders: true, legacyHeaders: false, message: { error: "Too many requests — please wait before retrying" } });
+const downloadZipLimiter = rateLimit({ windowMs: 60_000, max: 6, standardHeaders: true, legacyHeaders: false, message: { error: "Too many zip requests — please wait before retrying" } });
 app.post("/api/download/zip", downloadZipLimiter, async (req, res) => {
   const { filenames, files, sessionKey, albumId } = req.body;
 
@@ -3104,17 +3116,30 @@ app.post("/api/download/zip", downloadZipLimiter, async (req, res) => {
 
   // Collect accessible files
   const accessibleFiles = [];
+  let missingCount = 0;
+  let deniedCount = 0;
   for (const { filename, clean } of fileList) {
     // Strip any query-string that may be appended (e.g. "photo.jpg?tenant=slug")
     const safeName = path.basename(filename.split("?")[0]);
     const filepath = path.join(UPLOADS_DIR, safeName);
-    if (!fs.existsSync(filepath)) continue;
-    if (!isPhotoAccessible(safeName, sessionKey, albumId)) continue;
+    if (!fs.existsSync(filepath)) {
+      missingCount++;
+      continue;
+    }
+    if (!isPhotoAccessible(safeName, sessionKey, albumId)) {
+      deniedCount++;
+      continue;
+    }
     accessibleFiles.push({ safeName, filepath, clean });
   }
 
   if (accessibleFiles.length === 0) {
-    return res.status(403).json({ error: "No accessible photos found for this session" });
+    return res.status(403).json({
+      error: "No accessible photos found for this session",
+      missing: missingCount,
+      denied: deniedCount,
+      requested: fileList.length,
+    });
   }
 
   // Look up a friendly album name for the zip filename
@@ -3129,31 +3154,40 @@ app.post("/api/download/zip", downloadZipLimiter, async (req, res) => {
 
   res.setHeader("Content-Type", "application/zip");
   res.setHeader("Content-Disposition", `attachment; filename="${albumName}.zip"`);
+  res.setHeader("X-Zip-Requested", String(fileList.length));
+  res.setHeader("X-Zip-Included", String(accessibleFiles.length));
+  res.setHeader("X-Zip-Skipped", String(missingCount + deniedCount));
 
   // JPEG images are already compressed — store them as-is (level 0) to keep zip creation fast
   const archive = archiver("zip", { zlib: { level: 0 } });
+  let zipFailed = false;
   archive.on("error", (err) => {
+    zipFailed = true;
     console.error("Zip archive error:", err.message);
     if (!res.headersSent) res.status(500).json({ error: "Failed to create zip" });
+    else res.destroy(err);
   });
 
   archive.pipe(res);
   for (const { safeName, filepath, clean } of accessibleFiles) {
+    if (zipFailed || res.destroyed) break;
     if (clean) {
       // Serve the original file untouched
       archive.file(filepath, { name: safeName });
     } else {
-      // Serve the server-watermarked version (from cache or generated on-the-fly)
+      // Stream the server-watermarked version. Do not buffer hundreds of full-res
+      // files in memory when a client downloads a whole album.
       try {
-        const buf = await getWatermarkedBuffer(safeName, filepath);
-        archive.append(buf, { name: safeName });
-      } catch {
+        const stream = await getWatermarkedZipStream(filepath);
+        archive.append(stream, { name: safeName });
+      } catch (err) {
+        console.error("Zip watermark stream error for", safeName, err.message);
         // Fallback: serve original if watermarking fails
         archive.file(filepath, { name: safeName });
       }
     }
   }
-  await archive.finalize();
+  if (!zipFailed && !res.destroyed) await archive.finalize();
 });
 
 // ── Discord webhook endpoints ─────────────────────────
