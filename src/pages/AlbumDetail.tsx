@@ -1391,7 +1391,7 @@ export default function AlbumDetail() {
                 <p className="text-xs font-body text-muted-foreground">
                   All photos are unlocked! Click any photo to select, then download.
                 </p>
-                <Button size="sm" variant="outline" onClick={handleDownloadAll} className="ml-auto gap-2 border-green-500/30 text-green-400 hover:bg-green-500/10 font-body text-xs">
+                <Button size="sm" variant="outline" onClick={handleDownloadAll} aria-label="Download all photos" className="ml-auto gap-2 border-green-500/30 text-green-400 hover:bg-green-500/10 font-body text-xs">
                   <Download className="w-3.5 h-3.5" /> Download All
                 </Button>
               </div>
@@ -1427,6 +1427,8 @@ export default function AlbumDetail() {
             <div className="flex items-center gap-2 flex-wrap mb-2">
               <button
                 onClick={() => setShowGalleryFilters(v => !v)}
+                aria-pressed={showGalleryFilters}
+                aria-label={showGalleryFilters ? "Hide gallery filters" : "Show gallery filters"}
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-body border transition-all ${
                   showGalleryFilters
                     ? "bg-primary/15 border-primary/40 text-primary"
@@ -1499,6 +1501,8 @@ export default function AlbumDetail() {
                     key={size}
                     onClick={() => setLocalDisplaySize(size)}
                     title={label}
+                    aria-label={`Use ${label.toLowerCase()} gallery layout`}
+                    aria-pressed={localDisplaySize === size}
                     className={`p-1.5 rounded-lg border transition-all ${
                       localDisplaySize === size
                         ? "border-primary/50 text-primary bg-primary/10"
@@ -1545,6 +1549,7 @@ export default function AlbumDetail() {
                   {/* Expand button — always visible on touch devices, hover-only on pointer devices */}
                   <button
                     onClick={e => { e.stopPropagation(); setLightboxPhotoId(photo.id); }}
+                    aria-label={`Open ${((photo as any).originalName || photo.title).replace(/\.[^.]+$/, "")} in lightbox`}
                     className="absolute top-2 left-2 w-7 h-7 rounded-full bg-black/60 backdrop-blur-sm text-white flex items-center justify-center [@media(hover:none)]:opacity-100 opacity-0 group-hover:opacity-100 transition-opacity z-10"
                   >
                     <Maximize2 className="w-3 h-3" />
@@ -1552,6 +1557,8 @@ export default function AlbumDetail() {
                   {isProofing && (
                     <button
                       onClick={() => toggleStar(photo.id)}
+                      aria-label={`${starredIds.has(photo.id) ? "Remove" : "Add"} ${((photo as any).originalName || photo.title).replace(/\.[^.]+$/, "")} ${starredIds.has(photo.id) ? "from" : "to"} starred picks`}
+                      aria-pressed={starredIds.has(photo.id)}
                       className={`absolute top-2 right-2 w-8 h-8 rounded-full flex items-center justify-center transition-all shadow-lg ${
                         starredIds.has(photo.id)
                           ? "bg-yellow-400 text-yellow-900 scale-110"
@@ -2017,6 +2024,7 @@ export default function AlbumDetail() {
           >
             {/* Close button */}
             <button className="absolute top-3 right-3 sm:top-4 sm:right-4 z-10 w-11 h-11 rounded-full bg-white/15 backdrop-blur-sm flex items-center justify-center text-white hover:bg-white/25 transition-colors"
+              aria-label="Close lightbox"
               onClick={() => { setLightboxPhotoId(null); setLbZoom(1); setLbPan({ x: 0, y: 0 }); }}>
               <X className="w-5 h-5" />
             </button>
@@ -2028,6 +2036,7 @@ export default function AlbumDetail() {
                 disabled={lbZoom <= 1}
                 className="w-9 h-9 rounded-full bg-white/15 backdrop-blur-sm flex items-center justify-center text-white hover:bg-white/25 transition-colors disabled:opacity-30 disabled:cursor-default"
                 title="Zoom out (−)"
+                aria-label="Zoom out"
               >
                 <ZoomOut className="w-4 h-4" />
               </button>
@@ -2036,6 +2045,7 @@ export default function AlbumDetail() {
                   onClick={(e) => { e.stopPropagation(); setLbZoom(1); setLbPan({ x: 0, y: 0 }); }}
                   className="h-9 px-3 rounded-full bg-white/15 backdrop-blur-sm text-white text-xs font-body hover:bg-white/25 transition-colors"
                   title="Reset zoom (0)"
+                  aria-label="Reset zoom"
                 >
                   {Math.round(lbZoom * 100)}%
                 </button>
@@ -2045,6 +2055,7 @@ export default function AlbumDetail() {
                 disabled={lbZoom >= 4}
                 className="w-9 h-9 rounded-full bg-white/15 backdrop-blur-sm flex items-center justify-center text-white hover:bg-white/25 transition-colors disabled:opacity-30 disabled:cursor-default"
                 title="Zoom in (+)"
+                aria-label="Zoom in"
               >
                 <ZoomIn className="w-4 h-4" />
               </button>
@@ -2053,12 +2064,14 @@ export default function AlbumDetail() {
             {/* Nav arrows — hidden when zoomed */}
             {lbZoom === 1 && lbIdx > 0 && (
               <button className="absolute left-2 sm:left-4 z-10 w-11 h-11 rounded-full bg-white/15 backdrop-blur-sm flex items-center justify-center text-white hover:bg-white/25 transition-colors"
+                aria-label="Previous photo"
                 onClick={(e) => { e.stopPropagation(); setLightboxPhotoId(displayedPhotos[lbIdx - 1].id); setLbZoom(1); setLbPan({ x: 0, y: 0 }); }}>
                 <ChevronLeft className="w-5 h-5" />
               </button>
             )}
             {lbZoom === 1 && lbIdx < displayedPhotos.length - 1 && (
               <button className="absolute right-2 sm:right-4 z-10 w-11 h-11 rounded-full bg-white/15 backdrop-blur-sm flex items-center justify-center text-white hover:bg-white/25 transition-colors"
+                aria-label="Next photo"
                 onClick={(e) => { e.stopPropagation(); setLightboxPhotoId(displayedPhotos[lbIdx + 1].id); setLbZoom(1); setLbPan({ x: 0, y: 0 }); }}>
                 <ChevronRight className="w-5 h-5" />
               </button>
