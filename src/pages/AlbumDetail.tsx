@@ -1820,14 +1820,18 @@ export default function AlbumDetail() {
               const canUseZip = isServerMode() && downloadCount > 1;
               const useZip = canUseZip && !preferIndividualDownload;
               const estimatedZipSeconds = canUseZip ? estimateZipSeconds(downloadPhotos as Photo[]) : 0;
-              const zipRemainingSeconds = zipProgress
-                ? Math.max(0, zipProgress.estimateSeconds - zipElapsedSeconds)
-                : estimatedZipSeconds;
               const zipReadyCount = zipProgress ? Math.min(zipProgress.ready, zipProgress.total) : 0;
               const zipTotalCount = zipProgress?.total || downloadCount;
+              const zipReadyRate = zipProgress && zipElapsedSeconds > 0 ? zipReadyCount / zipElapsedSeconds : 0;
+              const zipRemainingSeconds = zipProgress && zipReadyRate > 0
+                ? Math.ceil(Math.max(0, zipTotalCount - zipReadyCount) / zipReadyRate)
+                : zipProgress
+                  ? Math.max(0, zipProgress.estimateSeconds - zipElapsedSeconds)
+                  : estimatedZipSeconds;
               const zipPercent = zipProgress && zipTotalCount > 0
                 ? Math.min(100, Math.round((zipReadyCount / zipTotalCount) * 100))
                 : 0;
+              const zipRateLabel = zipReadyRate > 0 ? `${zipReadyRate.toFixed(zipReadyRate >= 10 ? 0 : 1)} photos/s` : "Starting…";
               return (
                 <>
                   {/* ZIP vs Individual toggle — only shown in server mode with multiple photos */}
@@ -1875,7 +1879,7 @@ export default function AlbumDetail() {
                       )}
                       <p className="mt-0.5 text-[10px] font-body text-muted-foreground">
                         {zipProgress
-                          ? `Elapsed ${formatZipDuration(zipElapsedSeconds)} · about ${formatZipDuration(zipRemainingSeconds)} remaining`
+                          ? `Elapsed ${formatZipDuration(zipElapsedSeconds)} · ${zipRateLabel} · about ${formatZipDuration(zipRemainingSeconds)} left`
                           : "Large albums can take longer while the server packages originals and watermarked files."}
                       </p>
                     </div>

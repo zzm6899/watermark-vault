@@ -2295,6 +2295,31 @@ async function getWatermarkedZipStream(filepath) {
     .jpeg({ quality: 82, progressive: true });
 }
 
+/** Return a cached watermarked full-res file path for ZIP packaging. */
+async function getWatermarkedZipFilePath(safeName, filepath) {
+  const baseName = path.basename(safeName, path.extname(safeName));
+  const cacheFile = path.join(CACHE_DIR, getCacheFilename(baseName, "full", true));
+  if (fs.existsSync(cacheFile)) return cacheFile;
+
+  const tmpFile = path.join(CACHE_DIR, `${baseName}_full_wm_${crypto.randomBytes(6).toString("hex")}.tmp`);
+  try {
+    const origMeta = await sharp(filepath).metadata();
+    const origW = origMeta.width || 800;
+    const origH = origMeta.height || 600;
+    const wm = getWatermarkSettings();
+    const overlay = await buildWatermarkOverlay(origW, origH, wm);
+    await sharp(filepath)
+      .composite([overlay])
+      .jpeg({ quality: 82, progressive: true })
+      .toFile(tmpFile);
+    fs.renameSync(tmpFile, cacheFile);
+    return cacheFile;
+  } catch (err) {
+    try { if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile); } catch {}
+    throw err;
+  }
+}
+
 // ── Serve watermarked / resized photo ────────────────────────
 // Supports:
 //   ?size=thumb   → resize to 700 px wide (for gallery grids)
@@ -3219,6 +3244,8 @@ function publicZipJob(job) {
     ready: job.ready,
     skipped: job.skipped,
     downgraded: job.downgraded,
+    startedAt: job.createdAt,
+    updatedAt: job.updatedAt,
     error: job.error || null,
     filename: job.filename,
   };
@@ -3242,6 +3269,13 @@ async function buildZipJob(job, accessibleFiles) {
     output.on("error", reject);
     archive.on("error", reject);
   });
+  archive.on("progress", (progress) => {
+    const processed = Number(progress?.entries?.processed) || 0;
+    if (processed > job.ready) {
+      job.ready = Math.min(job.total, processed);
+      job.updatedAt = Date.now();
+    }
+  });
   archive.pipe(output);
 
   try {
@@ -3250,14 +3284,13 @@ async function buildZipJob(job, accessibleFiles) {
         archive.file(filepath, { name: safeName });
       } else {
         try {
-          const stream = await getWatermarkedZipStream(filepath);
-          archive.append(stream, { name: safeName });
+          const watermarkedPath = await getWatermarkedZipFilePath(safeName, filepath);
+          archive.file(watermarkedPath, { name: safeName });
         } catch (err) {
           console.error("Zip watermark stream error for", safeName, err.message);
           archive.file(filepath, { name: safeName });
         }
       }
-      job.ready = Math.min(job.total, job.ready + 1);
       job.updatedAt = Date.now();
     }
     await archive.finalize();
@@ -3373,8 +3406,8 @@ app.post("/api/download/zip", downloadZipLimiter, async (req, res) => {
       // Stream the server-watermarked version. Do not buffer hundreds of full-res
       // files in memory when a client downloads a whole album.
       try {
-        const stream = await getWatermarkedZipStream(filepath);
-        archive.append(stream, { name: safeName });
+        const watermarkedPath = await getWatermarkedZipFilePath(safeName, filepath);
+        archive.file(watermarkedPath, { name: safeName });
       } catch (err) {
         console.error("Zip watermark stream error for", safeName, err.message);
         // Fallback: serve original if watermarking fails
