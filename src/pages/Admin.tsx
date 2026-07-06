@@ -8024,21 +8024,6 @@ function formatInvMoney(inv: Pick<Invoice, "currency">, amount: number) {
   }).format(amount);
 }
 
-const SPORTOGRAF_PARTY: InvoiceParty = {
-  name: "Sportograf Digital Solutions GmbH",
-  email: "",
-  address: "Süsterfeldstr. 170\n52072 Aachen\nGermany",
-  vatId: "DE341002439",
-};
-
-const SPORTOGRAF_EVENTS = [
-  { eventId: "20289", name: "HYROX Sydney 2026 - Day 1 Wednesday" },
-  { eventId: "20552", name: "HYROX Sydney 2026 - Day 2 Thursday" },
-  { eventId: "21637", name: "HYROX Sydney 2026 - Day 4 Saturday" },
-  { eventId: "21638", name: "HYROX Sydney 2026 - Day 5 Sunday" },
-  { eventId: "20561", name: "HYROX Sydney 2026 - Day 3 Friday" },
-];
-
 function buildInvoiceEmailHtml(inv: Invoice, shareUrl: string, isReminder = false): string {
   const total = calcInvTotal(inv);
   const sub   = calcInvSubtotal(inv.items);
@@ -8147,65 +8132,6 @@ function InvoicesView() {
       paymentMethods: [],
     };
     setEditing(blankInv);
-    setView("form");
-  };
-
-  const openCreateSportograf = () => {
-    const now = new Date();
-    const due = new Date(now); due.setDate(due.getDate() + 30);
-    const invFrom = settings.invoiceFrom;
-    const provider: InvoiceParty = {
-      name: invFrom?.name || profile.name || "Zac Morgan",
-      email: invFrom?.email || "",
-      address: invFrom?.address || profile.address || "",
-      abn: invFrom?.abn || "",
-      taxNumber: invFrom?.taxNumber || invFrom?.abn || "",
-      vatId: invFrom?.vatId || "",
-      iban: invFrom?.iban || "",
-      bicSwift: invFrom?.bicSwift || "",
-      accountHolder: invFrom?.accountHolder || invFrom?.name || profile.name || "",
-      bankName: invFrom?.bankName || "",
-      accountNumber: invFrom?.accountNumber || "",
-      paymentProvider: invFrom?.paymentProvider || "wise",
-      wiseEmail: invFrom?.wiseEmail || invFrom?.email || "",
-      revolutHandle: invFrom?.revolutHandle || "",
-      paypalEmail: invFrom?.paypalEmail || "",
-    };
-    const sportografInvoice: Invoice = {
-      id: generateId("inv"),
-      number: getNextInvoiceNumber(),
-      status: "draft",
-      from: provider,
-      to: SPORTOGRAF_PARTY,
-      currency: "EUR",
-      items: SPORTOGRAF_EVENTS.map(event => ({
-        id: generateId("item"),
-        description: `ID ${event.eventId}\nPhoto documentation ${event.name}`,
-        subdescription: "Photographer - regular photographer salary.",
-        quantity: 1,
-        unitPrice: 400,
-      })),
-      notes: [
-        "Invoice date corresponds to service date.",
-        "Submit this PDF invoice and any expense receipts via EVENTMANAGER (EM2.0).",
-        "Payment preference: Wise / European IBAN bank transfer.",
-      ].join("\n"),
-      dueDate: due.toISOString().slice(0, 10),
-      serviceDate: now.toISOString().slice(0, 7),
-      serviceDateNote: "Invoice date corresponds to service date",
-      eventManagerSubmission: true,
-      receiptAttachmentNote: "Attach copies of all receipts for airline tickets or other travel expenses if claimed.",
-      createdAt: now.toISOString(),
-      shareToken: Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2),
-      emailLog: [],
-      tax: 0,
-      discount: 0,
-      paymentMethods: ["bank"],
-    };
-    addInvoice(sportografInvoice);
-    reload();
-    toast.success(`Sportograf invoice ${sportografInvoice.number} created as draft`);
-    setEditing(sportografInvoice);
     setView("form");
   };
 
@@ -8402,9 +8328,6 @@ function InvoicesView() {
           <div className="flex gap-2">
             <Button onClick={handleExportAllCSV} variant="outline" className="gap-2 font-body text-sm border-border text-foreground" title="Export all invoices as CSV">
               <Download className="w-4 h-4" /> CSV
-            </Button>
-            <Button onClick={openCreateSportograf} variant="outline" className="gap-2 font-body text-sm border-border text-foreground" title="Create a Sportograf EM2.0 invoice draft">
-              <Globe className="w-4 h-4" /> Sportograf
             </Button>
             <Button onClick={openCreate} className="gap-2 font-body text-sm">
               <Plus className="w-4 h-4" /> New Invoice
