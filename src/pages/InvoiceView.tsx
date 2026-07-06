@@ -40,6 +40,14 @@ function calcTotals(invoice: Invoice) {
   return { sub, disc, taxAmt, taxRate, total: sub - disc + taxAmt };
 }
 
+function formatInvoiceMoney(invoice: Invoice, amount: number) {
+  return new Intl.NumberFormat("en-AU", {
+    style: "currency",
+    currency: invoice.currency || "AUD",
+    minimumFractionDigits: 2,
+  }).format(amount);
+}
+
 const STATUS_STYLES: Record<Invoice["status"], { label: string; icon: React.ReactNode; className: string }> = {
   draft:     { label: "Draft",                    icon: <Clock className="w-4 h-4" />,        className: "text-gray-400 bg-gray-500/15"   },
   sent:      { label: "Sent – Awaiting Payment",  icon: <Clock className="w-4 h-4" />,        className: "text-yellow-400 bg-yellow-500/15"},
@@ -247,6 +255,8 @@ export default function InvoiceView() {
               <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground mb-2">From</p>
               <p className="text-sm font-body text-foreground font-medium">{invoice.from.name}</p>
               {invoice.from.abn && <p className="text-xs font-body text-muted-foreground">ABN: {invoice.from.abn}</p>}
+              {invoice.from.taxNumber && <p className="text-xs font-body text-muted-foreground">Tax No: {invoice.from.taxNumber}</p>}
+              {invoice.from.vatId && <p className="text-xs font-body text-muted-foreground">VAT-ID: {invoice.from.vatId}</p>}
               {invoice.from.address && <p className="text-xs font-body text-muted-foreground whitespace-pre-line">{invoice.from.address}</p>}
               {invoice.from.email && <p className="text-xs font-body text-muted-foreground">{invoice.from.email}</p>}
             </div>
@@ -254,6 +264,8 @@ export default function InvoiceView() {
               <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground mb-2">To</p>
               <p className="text-sm font-body text-foreground font-medium">{invoice.to.name}</p>
               {invoice.to.abn && <p className="text-xs font-body text-muted-foreground">ABN: {invoice.to.abn}</p>}
+              {invoice.to.taxNumber && <p className="text-xs font-body text-muted-foreground">Tax No: {invoice.to.taxNumber}</p>}
+              {invoice.to.vatId && <p className="text-xs font-body text-muted-foreground">VAT-ID: {invoice.to.vatId}</p>}
               {invoice.to.address && <p className="text-xs font-body text-muted-foreground whitespace-pre-line">{invoice.to.address}</p>}
               {invoice.to.email && <p className="text-xs font-body text-muted-foreground">{invoice.to.email}</p>}
             </div>
@@ -271,6 +283,19 @@ export default function InvoiceView() {
                 <p className={invoice.status === "overdue" ? "text-red-400" : "text-foreground"}>
                   {new Date(invoice.dueDate + "T00:00:00").toLocaleDateString("en-AU", { day: "numeric", month: "long", year: "numeric" })}
                 </p>
+              </div>
+            )}
+            {(invoice.serviceDate || invoice.serviceDateNote) && (
+              <div>
+                <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Service Delivery</p>
+                <p className="text-foreground">{invoice.serviceDate || invoice.serviceDateNote}</p>
+                {invoice.serviceDate && invoice.serviceDateNote && <p className="text-xs text-muted-foreground">{invoice.serviceDateNote}</p>}
+              </div>
+            )}
+            {invoice.eventManagerSubmission && (
+              <div>
+                <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Submission</p>
+                <p className="text-foreground">EVENTMANAGER (EM2.0)</p>
               </div>
             )}
           </div>
@@ -294,8 +319,8 @@ export default function InvoiceView() {
                       {item.subdescription && <p className="text-xs text-muted-foreground mt-0.5">{item.subdescription}</p>}
                     </td>
                     <td className="px-4 py-3 text-muted-foreground text-right">{item.quantity}</td>
-                    <td className="px-4 py-3 text-muted-foreground text-right">${item.unitPrice.toFixed(2)}</td>
-                    <td className="px-4 py-3 text-foreground text-right">${(item.quantity * item.unitPrice).toFixed(2)}</td>
+                    <td className="px-4 py-3 text-muted-foreground text-right">{formatInvoiceMoney(invoice, item.unitPrice)}</td>
+                    <td className="px-4 py-3 text-foreground text-right">{formatInvoiceMoney(invoice, item.quantity * item.unitPrice)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -306,21 +331,21 @@ export default function InvoiceView() {
           <div className="flex justify-end mb-8">
             <div className="w-64 space-y-2 text-sm font-body">
               <div className="flex justify-between text-muted-foreground">
-                <span>Subtotal</span><span>${sub.toFixed(2)}</span>
+                <span>Subtotal</span><span>{formatInvoiceMoney(invoice, sub)}</span>
               </div>
               {disc > 0 && (
                 <div className="flex justify-between text-green-400">
-                  <span>Discount</span><span>−${disc.toFixed(2)}</span>
+                  <span>Discount</span><span>−{formatInvoiceMoney(invoice, disc)}</span>
                 </div>
               )}
               {taxRate > 0 && (
                 <div className="flex justify-between text-muted-foreground">
-                  <span>GST ({taxRate}%)</span><span>${taxAmt.toFixed(2)}</span>
+                  <span>Tax ({taxRate}%)</span><span>{formatInvoiceMoney(invoice, taxAmt)}</span>
                 </div>
               )}
               <div className="flex justify-between text-foreground font-medium pt-2 border-t border-border">
                 <span>Total</span>
-                <span className="font-display text-lg">${total.toFixed(2)}</span>
+                <span className="font-display text-lg">{formatInvoiceMoney(invoice, total)}</span>
               </div>
             </div>
           </div>
@@ -330,6 +355,71 @@ export default function InvoiceView() {
             <div className="rounded-xl border border-border p-4 mb-6">
               <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-2">Notes</p>
               <p className="text-sm font-body text-muted-foreground whitespace-pre-line">{invoice.notes}</p>
+            </div>
+          )}
+
+          {(invoice.from.iban || invoice.from.bicSwift || invoice.from.accountHolder || invoice.from.accountNumber || invoice.from.wiseEmail || invoice.from.revolutHandle || invoice.from.paypalEmail || invoice.receiptAttachmentNote) && (
+            <div className="rounded-xl border border-border p-4 mb-6">
+              <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-2">Provider Payment Details</p>
+              <div className="grid grid-cols-2 gap-3 text-sm font-body">
+                {invoice.from.paymentProvider && (
+                  <div>
+                    <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Preference</p>
+                    <p className="text-foreground capitalize">{invoice.from.paymentProvider}</p>
+                  </div>
+                )}
+                {invoice.from.accountHolder && (
+                  <div>
+                    <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Account Holder</p>
+                    <p className="text-foreground">{invoice.from.accountHolder}</p>
+                  </div>
+                )}
+                {invoice.from.iban && (
+                  <div>
+                    <p className="text-[10px] uppercase tracking-wider text-muted-foreground">IBAN</p>
+                    <p className="text-foreground">{invoice.from.iban}</p>
+                  </div>
+                )}
+                {invoice.from.bicSwift && (
+                  <div>
+                    <p className="text-[10px] uppercase tracking-wider text-muted-foreground">BIC / Swift</p>
+                    <p className="text-foreground">{invoice.from.bicSwift}</p>
+                  </div>
+                )}
+                {invoice.from.bankName && (
+                  <div>
+                    <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Bank</p>
+                    <p className="text-foreground">{invoice.from.bankName}</p>
+                  </div>
+                )}
+                {invoice.from.accountNumber && (
+                  <div>
+                    <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Account Number</p>
+                    <p className="text-foreground">{invoice.from.accountNumber}</p>
+                  </div>
+                )}
+                {invoice.from.wiseEmail && (
+                  <div>
+                    <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Wise</p>
+                    <p className="text-foreground">{invoice.from.wiseEmail}</p>
+                  </div>
+                )}
+                {invoice.from.revolutHandle && (
+                  <div>
+                    <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Revolut</p>
+                    <p className="text-foreground">{invoice.from.revolutHandle}</p>
+                  </div>
+                )}
+                {invoice.from.paypalEmail && (
+                  <div>
+                    <p className="text-[10px] uppercase tracking-wider text-muted-foreground">PayPal</p>
+                    <p className="text-foreground">{invoice.from.paypalEmail}</p>
+                  </div>
+                )}
+              </div>
+              {invoice.receiptAttachmentNote && (
+                <p className="text-xs font-body text-muted-foreground mt-3">{invoice.receiptAttachmentNote}</p>
+              )}
             </div>
           )}
 
@@ -443,7 +533,7 @@ function BankTransferPanel({ invoice }: { invoice: Invoice }) {
         <div>
           <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Amount</p>
           <div className="flex items-center gap-1.5">
-            <p className="text-foreground font-medium">${grandTotal.toFixed(2)}</p>
+            <p className="text-foreground font-medium">{formatInvoiceMoney(invoice, grandTotal)}</p>
             <CopyButton value={grandTotal.toFixed(2)} fieldKey="amount" copiedField={copiedField} onCopy={copyToClipboard} />
           </div>
         </div>

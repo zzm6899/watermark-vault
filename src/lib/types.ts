@@ -378,6 +378,17 @@ export interface InvoiceParty {
   email: string;
   address: string;
   abn?: string;
+  taxNumber?: string;
+  vatId?: string;
+  iban?: string;
+  bicSwift?: string;
+  accountHolder?: string;
+  bankName?: string;
+  accountNumber?: string;
+  paymentProvider?: "bank" | "wise" | "revolut" | "paypal";
+  wiseEmail?: string;
+  revolutHandle?: string;
+  paypalEmail?: string;
 }
 
 export interface InvoiceItem {
@@ -405,6 +416,17 @@ export interface Contact {
   email: string;
   address: string;
   abn?: string;
+  taxNumber?: string;
+  vatId?: string;
+  iban?: string;
+  bicSwift?: string;
+  accountHolder?: string;
+  bankName?: string;
+  accountNumber?: string;
+  paymentProvider?: "bank" | "wise" | "revolut" | "paypal";
+  wiseEmail?: string;
+  revolutHandle?: string;
+  paypalEmail?: string;
   phone?: string;
   company?: string;
   albumIds?: string[];
@@ -419,8 +441,13 @@ export interface Invoice {
   from: InvoiceParty;
   to: InvoiceParty;
   items: InvoiceItem[];
+  currency?: string;        // ISO code, e.g. AUD, EUR, USD
   notes: string;
   dueDate: string;          // YYYY-MM-DD
+  serviceDate?: string;     // YYYY-MM-DD, YYYY-MM, or free-text month when required by recipient
+  serviceDateNote?: string; // e.g. "Invoice date corresponds to service date"
+  eventManagerSubmission?: boolean; // recipient requires PDF upload via EM2 / Event Manager
+  receiptAttachmentNote?: string;
   createdAt: string;
   sentAt?: string;
   paidAt?: string;

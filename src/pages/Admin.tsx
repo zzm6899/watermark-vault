@@ -8012,6 +8012,33 @@ const INV_STATUS_META: Record<InvoiceStatus, { label: string; color: string; bg:
 function emptyParty(): InvoiceParty { return { name: "", email: "", address: "", abn: "" }; }
 function emptyItem(): InvoiceItem   { return { id: generateId("item"), description: "", quantity: 1, unitPrice: 0 }; }
 
+function invoiceCurrency(inv: Pick<Invoice, "currency">) {
+  return inv.currency || "AUD";
+}
+
+function formatInvMoney(inv: Pick<Invoice, "currency">, amount: number) {
+  return new Intl.NumberFormat("en-AU", {
+    style: "currency",
+    currency: invoiceCurrency(inv),
+    minimumFractionDigits: 2,
+  }).format(amount);
+}
+
+const SPORTOGRAF_PARTY: InvoiceParty = {
+  name: "Sportograf Digital Solutions GmbH",
+  email: "",
+  address: "Süsterfeldstr. 170\n52072 Aachen\nGermany",
+  vatId: "DE341002439",
+};
+
+const SPORTOGRAF_EVENTS = [
+  { eventId: "20289", name: "HYROX Sydney 2026 - Day 1 Wednesday" },
+  { eventId: "20552", name: "HYROX Sydney 2026 - Day 2 Thursday" },
+  { eventId: "21637", name: "HYROX Sydney 2026 - Day 4 Saturday" },
+  { eventId: "21638", name: "HYROX Sydney 2026 - Day 5 Sunday" },
+  { eventId: "20561", name: "HYROX Sydney 2026 - Day 3 Friday" },
+];
+
 function buildInvoiceEmailHtml(inv: Invoice, shareUrl: string, isReminder = false): string {
   const total = calcInvTotal(inv);
   const sub   = calcInvSubtotal(inv.items);
@@ -8021,8 +8048,8 @@ function buildInvoiceEmailHtml(inv: Invoice, shareUrl: string, isReminder = fals
   const rows = inv.items.map(it =>
     `<tr><td style="padding:8px 12px;border-bottom:1px solid #333">${it.description}${it.subdescription ? `<br><span style="font-size:11px;color:#888">${it.subdescription}</span>` : ""}</td>
      <td style="padding:8px 12px;border-bottom:1px solid #333;text-align:right">${it.quantity}</td>
-     <td style="padding:8px 12px;border-bottom:1px solid #333;text-align:right">$${it.unitPrice.toFixed(2)}</td>
-     <td style="padding:8px 12px;border-bottom:1px solid #333;text-align:right">$${(it.quantity * it.unitPrice).toFixed(2)}</td></tr>`
+     <td style="padding:8px 12px;border-bottom:1px solid #333;text-align:right">${formatInvMoney(inv, it.unitPrice)}</td>
+     <td style="padding:8px 12px;border-bottom:1px solid #333;text-align:right">${formatInvMoney(inv, it.quantity * it.unitPrice)}</td></tr>`
   ).join("");
   return `<!DOCTYPE html><html><body style="background:#0a0a0a;color:#e5e5e5;font-family:sans-serif;margin:0;padding:32px">
   <div style="max-width:600px;margin:auto">
@@ -8038,10 +8065,10 @@ function buildInvoiceEmailHtml(inv: Invoice, shareUrl: string, isReminder = fals
       <tbody>${rows}</tbody>
     </table>
     <table style="width:220px;margin-left:auto;border-collapse:collapse;margin-bottom:24px">
-      <tr><td style="padding:4px 8px;color:#888">Subtotal</td><td style="padding:4px 8px;text-align:right">$${sub.toFixed(2)}</td></tr>
-      ${disc > 0 ? `<tr><td style="padding:4px 8px;color:#4ade80">Discount</td><td style="padding:4px 8px;text-align:right;color:#4ade80">−$${disc.toFixed(2)}</td></tr>` : ""}
-      ${taxRate > 0 ? `<tr><td style="padding:4px 8px;color:#888">GST (${taxRate}%)</td><td style="padding:4px 8px;text-align:right">$${taxAmt.toFixed(2)}</td></tr>` : ""}
-      <tr style="background:#1a1a1a"><td style="padding:8px;font-weight:bold">Total</td><td style="padding:8px;text-align:right;font-size:18px;font-weight:bold">$${total.toFixed(2)}</td></tr>
+      <tr><td style="padding:4px 8px;color:#888">Subtotal</td><td style="padding:4px 8px;text-align:right">${formatInvMoney(inv, sub)}</td></tr>
+      ${disc > 0 ? `<tr><td style="padding:4px 8px;color:#4ade80">Discount</td><td style="padding:4px 8px;text-align:right;color:#4ade80">−${formatInvMoney(inv, disc)}</td></tr>` : ""}
+      ${taxRate > 0 ? `<tr><td style="padding:4px 8px;color:#888">Tax (${taxRate}%)</td><td style="padding:4px 8px;text-align:right">${formatInvMoney(inv, taxAmt)}</td></tr>` : ""}
+      <tr style="background:#1a1a1a"><td style="padding:8px;font-weight:bold">Total</td><td style="padding:8px;text-align:right;font-size:18px;font-weight:bold">${formatInvMoney(inv, total)}</td></tr>
     </table>
     ${inv.notes ? `<p style="padding:12px;background:#1a1a1a;border-radius:8px;color:#aaa;margin-bottom:24px">${inv.notes}</p>` : ""}
     ${shareUrl ? `<a href="${shareUrl}" style="display:inline-block;padding:12px 24px;background:#7c3aed;color:white;border-radius:8px;text-decoration:none;font-weight:bold">View Invoice &amp; Pay Online</a>` : ""}
@@ -8120,6 +8147,65 @@ function InvoicesView() {
       paymentMethods: [],
     };
     setEditing(blankInv);
+    setView("form");
+  };
+
+  const openCreateSportograf = () => {
+    const now = new Date();
+    const due = new Date(now); due.setDate(due.getDate() + 30);
+    const invFrom = settings.invoiceFrom;
+    const provider: InvoiceParty = {
+      name: invFrom?.name || profile.name || "Zac Morgan",
+      email: invFrom?.email || "",
+      address: invFrom?.address || profile.address || "",
+      abn: invFrom?.abn || "",
+      taxNumber: invFrom?.taxNumber || invFrom?.abn || "",
+      vatId: invFrom?.vatId || "",
+      iban: invFrom?.iban || "",
+      bicSwift: invFrom?.bicSwift || "",
+      accountHolder: invFrom?.accountHolder || invFrom?.name || profile.name || "",
+      bankName: invFrom?.bankName || "",
+      accountNumber: invFrom?.accountNumber || "",
+      paymentProvider: invFrom?.paymentProvider || "wise",
+      wiseEmail: invFrom?.wiseEmail || invFrom?.email || "",
+      revolutHandle: invFrom?.revolutHandle || "",
+      paypalEmail: invFrom?.paypalEmail || "",
+    };
+    const sportografInvoice: Invoice = {
+      id: generateId("inv"),
+      number: getNextInvoiceNumber(),
+      status: "draft",
+      from: provider,
+      to: SPORTOGRAF_PARTY,
+      currency: "EUR",
+      items: SPORTOGRAF_EVENTS.map(event => ({
+        id: generateId("item"),
+        description: `ID ${event.eventId}\nPhoto documentation ${event.name}`,
+        subdescription: "Photographer - regular photographer salary.",
+        quantity: 1,
+        unitPrice: 400,
+      })),
+      notes: [
+        "Invoice date corresponds to service date.",
+        "Submit this PDF invoice and any expense receipts via EVENTMANAGER (EM2.0).",
+        "Payment preference: Wise / European IBAN bank transfer.",
+      ].join("\n"),
+      dueDate: due.toISOString().slice(0, 10),
+      serviceDate: now.toISOString().slice(0, 7),
+      serviceDateNote: "Invoice date corresponds to service date",
+      eventManagerSubmission: true,
+      receiptAttachmentNote: "Attach copies of all receipts for airline tickets or other travel expenses if claimed.",
+      createdAt: now.toISOString(),
+      shareToken: Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2),
+      emailLog: [],
+      tax: 0,
+      discount: 0,
+      paymentMethods: ["bank"],
+    };
+    addInvoice(sportografInvoice);
+    reload();
+    toast.success(`Sportograf invoice ${sportografInvoice.number} created as draft`);
+    setEditing(sportografInvoice);
     setView("form");
   };
 
@@ -8317,6 +8403,9 @@ function InvoicesView() {
             <Button onClick={handleExportAllCSV} variant="outline" className="gap-2 font-body text-sm border-border text-foreground" title="Export all invoices as CSV">
               <Download className="w-4 h-4" /> CSV
             </Button>
+            <Button onClick={openCreateSportograf} variant="outline" className="gap-2 font-body text-sm border-border text-foreground" title="Create a Sportograf EM2.0 invoice draft">
+              <Globe className="w-4 h-4" /> Sportograf
+            </Button>
             <Button onClick={openCreate} className="gap-2 font-body text-sm">
               <Plus className="w-4 h-4" /> New Invoice
             </Button>
@@ -8476,9 +8565,9 @@ function InvoicesView() {
                       </div>
                       {/* Amount */}
                       <div className="text-right shrink-0 w-20">
-                        <p className={`text-sm font-display ${amountColor}`}>${total.toFixed(2)}</p>
+                        <p className={`text-sm font-display ${amountColor}`}>{formatInvMoney(inv, total)}</p>
                         {inv.status === "partial" && inv.amountPaid != null && inv.amountPaid > 0 && (
-                          <p className="text-[10px] font-body text-amber-400/70">${inv.amountPaid.toFixed(2)} paid</p>
+                          <p className="text-[10px] font-body text-amber-400/70">{formatInvMoney(inv, inv.amountPaid)} paid</p>
                         )}
                       </div>
                       {/* Desktop actions */}
@@ -8676,7 +8765,23 @@ function InvoiceForm({
     if (!contactId) return;
     const c = contacts.find(ct => ct.id === contactId);
     if (!c) return;
-    setTo({ name: c.name, email: c.email, address: c.address, abn: c.abn || "" });
+    setTo({
+      name: c.name,
+      email: c.email,
+      address: c.address,
+      abn: c.abn || "",
+      taxNumber: c.taxNumber || "",
+      vatId: c.vatId || "",
+      iban: c.iban || "",
+      bicSwift: c.bicSwift || "",
+      accountHolder: c.accountHolder || "",
+      bankName: c.bankName || "",
+      accountNumber: c.accountNumber || "",
+      paymentProvider: c.paymentProvider,
+      wiseEmail: c.wiseEmail || "",
+      revolutHandle: c.revolutHandle || "",
+      paypalEmail: c.paypalEmail || "",
+    });
   };
 
   const sub = calcInvSubtotal(inv.items);
@@ -8709,7 +8814,7 @@ function InvoiceForm({
       </div>
 
       {/* Status + Due */}
-      <div className="glass-panel rounded-xl p-4 grid grid-cols-2 sm:grid-cols-4 gap-4">
+      <div className="glass-panel rounded-xl p-4 grid grid-cols-2 sm:grid-cols-6 gap-4">
         <div>
           <label className={labelClass}>Status</label>
           <select value={inv.status} onChange={e => setInv(p => ({ ...p, status: e.target.value as InvoiceStatus }))} className={fieldClass}>
@@ -8719,6 +8824,20 @@ function InvoiceForm({
         <div>
           <label className={labelClass}>Due Date</label>
           <input type="date" value={inv.dueDate} onChange={e => setInv(p => ({ ...p, dueDate: e.target.value }))} className={fieldClass} />
+        </div>
+        <div>
+          <label className={labelClass}>Currency</label>
+          <select value={inv.currency || "AUD"} onChange={e => setInv(p => ({ ...p, currency: e.target.value }))} className={fieldClass}>
+            <option value="AUD">AUD</option>
+            <option value="EUR">EUR</option>
+            <option value="USD">USD</option>
+            <option value="GBP">GBP</option>
+            <option value="NZD">NZD</option>
+          </select>
+        </div>
+        <div>
+          <label className={labelClass}>Service Date</label>
+          <input value={inv.serviceDate || ""} onChange={e => setInv(p => ({ ...p, serviceDate: e.target.value || undefined }))} className={fieldClass} placeholder="YYYY-MM or YYYY-MM-DD" />
         </div>
         <div>
           <label className={labelClass}>Link to Booking</label>
@@ -8733,6 +8852,33 @@ function InvoiceForm({
             <option value="">None</option>
             {albums.map(a => <option key={a.id} value={a.id}>{a.title}</option>)}
           </select>
+        </div>
+      </div>
+      <div className="glass-panel rounded-xl p-4 space-y-3">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div>
+            <p className="text-xs font-body text-foreground font-medium">International / Event Manager invoice metadata</p>
+            <p className="text-[11px] font-body text-muted-foreground mt-0.5">Use for recipients that require exact service dates, tax IDs, or EM2.0 PDF upload.</p>
+          </div>
+          <label className="flex items-center gap-2 text-xs font-body text-muted-foreground">
+            <input
+              type="checkbox"
+              checked={!!inv.eventManagerSubmission}
+              onChange={e => setInv(p => ({ ...p, eventManagerSubmission: e.target.checked }))}
+              className="accent-primary"
+            />
+            EM2.0 submission required
+          </label>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label className={labelClass}>Service Date Note</label>
+            <input className={fieldClass} value={inv.serviceDateNote || ""} onChange={e => setInv(p => ({ ...p, serviceDateNote: e.target.value || undefined }))} placeholder="Invoice date corresponds to service date" />
+          </div>
+          <div>
+            <label className={labelClass}>Receipt Attachment Note</label>
+            <input className={fieldClass} value={inv.receiptAttachmentNote || ""} onChange={e => setInv(p => ({ ...p, receiptAttachmentNote: e.target.value || undefined }))} placeholder="Attach copies of travel expense receipts" />
+          </div>
         </div>
       </div>
       {inv.albumId && (
@@ -8776,8 +8922,34 @@ function InvoiceForm({
           <p className="text-xs font-body uppercase tracking-wider text-muted-foreground font-medium">From</p>
           <div><label className={labelClass}>Name</label><input className={fieldClass} value={inv.from.name} onChange={e => setFrom({ name: e.target.value })} placeholder="Your business name" /></div>
           <div><label className={labelClass}>ABN</label><input className={fieldClass} value={inv.from.abn || ""} onChange={e => setFrom({ abn: e.target.value })} placeholder="12 345 678 901" /></div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <div><label className={labelClass}>Tax Number</label><input className={fieldClass} value={inv.from.taxNumber || ""} onChange={e => setFrom({ taxNumber: e.target.value })} placeholder="Tax number" /></div>
+            <div><label className={labelClass}>VAT ID</label><input className={fieldClass} value={inv.from.vatId || ""} onChange={e => setFrom({ vatId: e.target.value })} placeholder="VAT identification number" /></div>
+          </div>
           <div><label className={labelClass}>Email</label><input className={fieldClass} type="email" value={inv.from.email} onChange={e => setFrom({ email: e.target.value })} /></div>
           <div><label className={labelClass}>Address</label><textarea className={fieldClass} rows={2} value={inv.from.address} onChange={e => setFrom({ address: e.target.value })} placeholder="Street address" /></div>
+          <div className="rounded-lg border border-border/60 bg-secondary/30 p-3 space-y-2">
+            <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">International Payment Details</p>
+            <div>
+              <label className={labelClass}>Payment Preference</label>
+              <select className={fieldClass} value={inv.from.paymentProvider || "bank"} onChange={e => setFrom({ paymentProvider: e.target.value as InvoiceParty["paymentProvider"] })}>
+                <option value="bank">European IBAN / Bank Transfer</option>
+                <option value="wise">Wise</option>
+                <option value="revolut">Revolut</option>
+                <option value="paypal">PayPal</option>
+              </select>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <div><label className={labelClass}>Account Holder</label><input className={fieldClass} value={inv.from.accountHolder || ""} onChange={e => setFrom({ accountHolder: e.target.value })} /></div>
+              <div><label className={labelClass}>Bank Name</label><input className={fieldClass} value={inv.from.bankName || ""} onChange={e => setFrom({ bankName: e.target.value })} /></div>
+              <div><label className={labelClass}>IBAN</label><input className={fieldClass} value={inv.from.iban || ""} onChange={e => setFrom({ iban: e.target.value })} placeholder="IBAN" /></div>
+              <div><label className={labelClass}>BIC / Swift</label><input className={fieldClass} value={inv.from.bicSwift || ""} onChange={e => setFrom({ bicSwift: e.target.value })} placeholder="BIC or Swift code" /></div>
+              <div><label className={labelClass}>Account Number</label><input className={fieldClass} value={inv.from.accountNumber || ""} onChange={e => setFrom({ accountNumber: e.target.value })} /></div>
+              <div><label className={labelClass}>Wise Email</label><input className={fieldClass} value={inv.from.wiseEmail || ""} onChange={e => setFrom({ wiseEmail: e.target.value })} /></div>
+              <div><label className={labelClass}>Revolut</label><input className={fieldClass} value={inv.from.revolutHandle || ""} onChange={e => setFrom({ revolutHandle: e.target.value })} placeholder="@username or account" /></div>
+              <div><label className={labelClass}>PayPal Email</label><input className={fieldClass} value={inv.from.paypalEmail || ""} onChange={e => setFrom({ paypalEmail: e.target.value })} /></div>
+            </div>
+          </div>
         </div>
         {/* TO */}
         <div className="glass-panel rounded-xl p-4 space-y-3">
@@ -8800,6 +8972,10 @@ function InvoiceForm({
           </div>
           <div><label className={labelClass}>Name *</label><input className={fieldClass} value={inv.to.name} onChange={e => setTo({ name: e.target.value })} placeholder="Client name" required /></div>
           <div><label className={labelClass}>ABN</label><input className={fieldClass} value={inv.to.abn || ""} onChange={e => setTo({ abn: e.target.value })} /></div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <div><label className={labelClass}>Tax Number</label><input className={fieldClass} value={inv.to.taxNumber || ""} onChange={e => setTo({ taxNumber: e.target.value })} /></div>
+            <div><label className={labelClass}>VAT ID</label><input className={fieldClass} value={inv.to.vatId || ""} onChange={e => setTo({ vatId: e.target.value })} /></div>
+          </div>
           <div><label className={labelClass}>Email</label><input className={fieldClass} type="email" value={inv.to.email} onChange={e => setTo({ email: e.target.value })} /></div>
           <div><label className={labelClass}>Address</label><textarea className={fieldClass} rows={2} value={inv.to.address} onChange={e => setTo({ address: e.target.value })} /></div>
         </div>
@@ -8831,12 +9007,12 @@ function InvoiceForm({
                   <input className={fieldClass} type="number" min="0.01" step="0.01" value={item.quantity} onChange={e => setItem(item.id, { quantity: parseFloat(e.target.value) || 0 })} />
                 </div>
                 <div>
-                  <label className={labelClass}>Unit ($)</label>
+                  <label className={labelClass}>Unit ({invoiceCurrency(inv)})</label>
                   <input className={fieldClass} type="number" min="0" step="0.01" value={item.unitPrice} onChange={e => setItem(item.id, { unitPrice: parseFloat(e.target.value) || 0 })} />
                 </div>
                 <div>
                   <label className={labelClass}>Total</label>
-                  <p className="text-sm font-body text-foreground pt-2 pl-1">${(item.quantity * item.unitPrice).toFixed(2)}</p>
+                  <p className="text-sm font-body text-foreground pt-2 pl-1">{formatInvMoney(inv, item.quantity * item.unitPrice)}</p>
                 </div>
               </div>
               {/* Desktop: grid layout */}
@@ -8851,12 +9027,12 @@ function InvoiceForm({
                   <input className={fieldClass} type="number" min="0.01" step="0.01" value={item.quantity} onChange={e => setItem(item.id, { quantity: parseFloat(e.target.value) || 0 })} />
                 </div>
                 <div className="col-span-3">
-                  {idx === 0 && <label className={labelClass}>Unit Price ($)</label>}
+                  {idx === 0 && <label className={labelClass}>Unit Price ({invoiceCurrency(inv)})</label>}
                   <input className={fieldClass} type="number" min="0" step="0.01" value={item.unitPrice} onChange={e => setItem(item.id, { unitPrice: parseFloat(e.target.value) || 0 })} />
                 </div>
                 <div className="col-span-1 text-right">
                   {idx === 0 && <label className={labelClass}>Total</label>}
-                  <p className="text-sm font-body text-foreground pt-1">${(item.quantity * item.unitPrice).toFixed(2)}</p>
+                  <p className="text-sm font-body text-foreground pt-1">{formatInvMoney(inv, item.quantity * item.unitPrice)}</p>
                 </div>
                 <div className="col-span-1 flex justify-end">
                   {idx === 0 && <div className="invisible text-[10px]">x</div>}
@@ -8869,16 +9045,16 @@ function InvoiceForm({
         {/* Totals */}
         <div className="p-4 border-t border-border flex flex-col items-end gap-1 text-sm font-body">
           <div className="grid grid-cols-2 gap-4 w-full sm:w-64">
-            <label className={labelClass}>Discount ($)</label>
+            <label className={labelClass}>Discount ({invoiceCurrency(inv)})</label>
             <input className={fieldClass} type="number" min="0" step="0.01" value={inv.discount ?? ""} placeholder="0" onChange={e => setInv(p => ({ ...p, discount: parseFloat(e.target.value) || 0 }))} />
             <label className={labelClass}>Tax Rate (%)</label>
             <input className={fieldClass} type="number" min="0" step="0.1" value={inv.tax ?? ""} placeholder="0" onChange={e => setInv(p => ({ ...p, tax: parseFloat(e.target.value) || 0 }))} />
           </div>
           <div className="w-full sm:w-64 mt-2 space-y-1 text-right">
-            <p className="text-muted-foreground">Subtotal <span className="text-foreground ml-4">${sub.toFixed(2)}</span></p>
-            {disc > 0 && <p className="text-green-400">Discount <span className="ml-4">−${disc.toFixed(2)}</span></p>}
-            {taxRate > 0 && <p className="text-muted-foreground">GST ({taxRate}%) <span className="text-foreground ml-4">${taxAmt.toFixed(2)}</span></p>}
-            <p className="text-foreground font-medium pt-1 border-t border-border">Total <span className="font-display text-lg ml-4">${total.toFixed(2)}</span></p>
+            <p className="text-muted-foreground">Subtotal <span className="text-foreground ml-4">{formatInvMoney(inv, sub)}</span></p>
+            {disc > 0 && <p className="text-green-400">Discount <span className="ml-4">−{formatInvMoney(inv, disc)}</span></p>}
+            {taxRate > 0 && <p className="text-muted-foreground">Tax ({taxRate}%) <span className="text-foreground ml-4">{formatInvMoney(inv, taxAmt)}</span></p>}
+            <p className="text-foreground font-medium pt-1 border-t border-border">Total <span className="font-display text-lg ml-4">{formatInvMoney(inv, total)}</span></p>
           </div>
         </div>
       </div>
@@ -10072,6 +10248,17 @@ function ContactsView() {
     email: "",
     address: "",
     abn: "",
+    taxNumber: "",
+    vatId: "",
+    iban: "",
+    bicSwift: "",
+    accountHolder: "",
+    bankName: "",
+    accountNumber: "",
+    paymentProvider: "bank",
+    wiseEmail: "",
+    revolutHandle: "",
+    paypalEmail: "",
     phone: "",
     company: "",
     albumIds: [],
@@ -10142,9 +10329,39 @@ function ContactsView() {
               <label className={labelClass}>ABN</label>
               <input className={fieldClass} value={editing.abn || ""} onChange={e => setEditing({ ...editing, abn: e.target.value })} placeholder="12 345 678 901" />
             </div>
+            <div>
+              <label className={labelClass}>Tax Number</label>
+              <input className={fieldClass} value={editing.taxNumber || ""} onChange={e => setEditing({ ...editing, taxNumber: e.target.value })} placeholder="Tax number" />
+            </div>
+            <div>
+              <label className={labelClass}>VAT ID</label>
+              <input className={fieldClass} value={editing.vatId || ""} onChange={e => setEditing({ ...editing, vatId: e.target.value })} placeholder="VAT identification number" />
+            </div>
             <div className="sm:col-span-2">
               <label className={labelClass}>Address</label>
               <textarea className={fieldClass} rows={2} value={editing.address} onChange={e => setEditing({ ...editing, address: e.target.value })} placeholder="Street address" />
+            </div>
+            <div className="sm:col-span-2 rounded-lg border border-border/60 bg-secondary/30 p-3 space-y-2">
+              <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">International Payment Details</p>
+              <div>
+                <label className={labelClass}>Payment Preference</label>
+                <select className={fieldClass} value={editing.paymentProvider || "bank"} onChange={e => setEditing({ ...editing, paymentProvider: e.target.value as Contact["paymentProvider"] })}>
+                  <option value="bank">European IBAN / Bank Transfer</option>
+                  <option value="wise">Wise</option>
+                  <option value="revolut">Revolut</option>
+                  <option value="paypal">PayPal</option>
+                </select>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <div><label className={labelClass}>Account Holder</label><input className={fieldClass} value={editing.accountHolder || ""} onChange={e => setEditing({ ...editing, accountHolder: e.target.value })} /></div>
+                <div><label className={labelClass}>Bank Name</label><input className={fieldClass} value={editing.bankName || ""} onChange={e => setEditing({ ...editing, bankName: e.target.value })} /></div>
+                <div><label className={labelClass}>IBAN</label><input className={fieldClass} value={editing.iban || ""} onChange={e => setEditing({ ...editing, iban: e.target.value })} /></div>
+                <div><label className={labelClass}>BIC / Swift</label><input className={fieldClass} value={editing.bicSwift || ""} onChange={e => setEditing({ ...editing, bicSwift: e.target.value })} /></div>
+                <div><label className={labelClass}>Account Number</label><input className={fieldClass} value={editing.accountNumber || ""} onChange={e => setEditing({ ...editing, accountNumber: e.target.value })} /></div>
+                <div><label className={labelClass}>Wise Email</label><input className={fieldClass} value={editing.wiseEmail || ""} onChange={e => setEditing({ ...editing, wiseEmail: e.target.value })} /></div>
+                <div><label className={labelClass}>Revolut</label><input className={fieldClass} value={editing.revolutHandle || ""} onChange={e => setEditing({ ...editing, revolutHandle: e.target.value })} /></div>
+                <div><label className={labelClass}>PayPal Email</label><input className={fieldClass} value={editing.paypalEmail || ""} onChange={e => setEditing({ ...editing, paypalEmail: e.target.value })} /></div>
+              </div>
             </div>
             {albums.length > 0 && (
               <div className="sm:col-span-2">
@@ -10236,6 +10453,11 @@ function ContactsView() {
                   <p className="font-body text-sm text-foreground font-medium truncate">{c.name}{c.company ? <span className="text-muted-foreground font-normal"> · {c.company}</span> : null}</p>
                   <p className="font-body text-xs text-muted-foreground truncate">{[c.email, c.phone].filter(Boolean).join(" · ")}</p>
                   {c.abn && <p className="font-body text-[10px] text-muted-foreground/60">ABN: {c.abn}</p>}
+                  {(c.taxNumber || c.vatId || c.iban || c.wiseEmail || c.revolutHandle || c.paypalEmail) && (
+                    <p className="font-body text-[10px] text-primary/70">
+                      {[c.vatId ? `VAT ${c.vatId}` : "", c.taxNumber ? `Tax ${c.taxNumber}` : "", c.paymentProvider ? c.paymentProvider.toUpperCase() : ""].filter(Boolean).join(" · ")}
+                    </p>
+                  )}
                 </div>
                 <div className="flex items-center gap-2 flex-wrap justify-end shrink-0">
                   <div className="flex items-center gap-1 text-[10px] font-body text-muted-foreground">
@@ -10615,6 +10837,16 @@ function SettingsView() {
                       <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">ABN</label>
                       <Input value={from.abn || ""} onChange={(e) => setFrom({ abn: e.target.value })} placeholder="12 345 678 901" className="bg-secondary border-border text-foreground font-body" />
                     </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Tax Number</label>
+                        <Input value={from.taxNumber || ""} onChange={(e) => setFrom({ taxNumber: e.target.value })} placeholder="Tax number" className="bg-secondary border-border text-foreground font-body" />
+                      </div>
+                      <div>
+                        <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">VAT ID</label>
+                        <Input value={from.vatId || ""} onChange={(e) => setFrom({ vatId: e.target.value })} placeholder="VAT identification number" className="bg-secondary border-border text-foreground font-body" />
+                      </div>
+                    </div>
                     <div>
                       <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Email</label>
                       <Input type="email" value={from.email} onChange={(e) => setFrom({ email: e.target.value })} className="bg-secondary border-border text-foreground font-body" />
@@ -10622,6 +10854,28 @@ function SettingsView() {
                     <div>
                       <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Address</label>
                       <Textarea value={from.address} onChange={(e) => setFrom({ address: e.target.value })} placeholder="Street address" className="bg-secondary border-border text-foreground font-body min-h-[60px]" />
+                    </div>
+                    <div className="rounded-lg border border-border/60 bg-secondary/30 p-3 space-y-3">
+                      <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">International Payment Defaults</p>
+                      <div>
+                        <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Payment Preference</label>
+                        <select value={from.paymentProvider || "bank"} onChange={(e) => setFrom({ paymentProvider: e.target.value as InvoiceParty["paymentProvider"] })} className="w-full bg-secondary border border-border text-foreground font-body text-sm rounded-md px-3 py-2">
+                          <option value="bank">European IBAN / Bank Transfer</option>
+                          <option value="wise">Wise</option>
+                          <option value="revolut">Revolut</option>
+                          <option value="paypal">PayPal</option>
+                        </select>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <Input value={from.accountHolder || ""} onChange={(e) => setFrom({ accountHolder: e.target.value })} placeholder="Account holder name" className="bg-secondary border-border text-foreground font-body" />
+                        <Input value={from.bankName || ""} onChange={(e) => setFrom({ bankName: e.target.value })} placeholder="Bank name" className="bg-secondary border-border text-foreground font-body" />
+                        <Input value={from.iban || ""} onChange={(e) => setFrom({ iban: e.target.value })} placeholder="IBAN" className="bg-secondary border-border text-foreground font-body" />
+                        <Input value={from.bicSwift || ""} onChange={(e) => setFrom({ bicSwift: e.target.value })} placeholder="BIC / Swift" className="bg-secondary border-border text-foreground font-body" />
+                        <Input value={from.accountNumber || ""} onChange={(e) => setFrom({ accountNumber: e.target.value })} placeholder="Account number" className="bg-secondary border-border text-foreground font-body" />
+                        <Input value={from.wiseEmail || ""} onChange={(e) => setFrom({ wiseEmail: e.target.value })} placeholder="Wise email" className="bg-secondary border-border text-foreground font-body" />
+                        <Input value={from.revolutHandle || ""} onChange={(e) => setFrom({ revolutHandle: e.target.value })} placeholder="Revolut username/account" className="bg-secondary border-border text-foreground font-body" />
+                        <Input value={from.paypalEmail || ""} onChange={(e) => setFrom({ paypalEmail: e.target.value })} placeholder="PayPal email" className="bg-secondary border-border text-foreground font-body" />
+                      </div>
                     </div>
                   </>
                 );
