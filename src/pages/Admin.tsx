@@ -8642,6 +8642,9 @@ function InvoiceForm({
   const [inv, setInv] = React.useState<Invoice>({ ...initial });
   const contacts = React.useMemo(() => getContacts(), []);
   const [selectedContact, setSelectedContact] = React.useState("");
+  const [showAdvancedInvoiceMetadata, setShowAdvancedInvoiceMetadata] = React.useState(
+    Boolean(initial.serviceDate || initial.serviceDateNote || initial.eventManagerSubmission || initial.receiptAttachmentNote),
+  );
 
   const setFrom = (patch: Partial<InvoiceParty>) => setInv(p => ({ ...p, from: { ...p.from, ...patch } }));
   const setTo   = (patch: Partial<InvoiceParty>) => setInv(p => ({ ...p, to:   { ...p.to,   ...patch } }));
@@ -8737,7 +8740,7 @@ function InvoiceForm({
       </div>
 
       {/* Status + Due */}
-      <div className="glass-panel rounded-xl p-4 grid grid-cols-2 sm:grid-cols-6 gap-4">
+      <div className="glass-panel rounded-xl p-4 grid grid-cols-2 sm:grid-cols-5 gap-4">
         <div>
           <label className={labelClass}>Status</label>
           <select value={inv.status} onChange={e => setInv(p => ({ ...p, status: e.target.value as InvoiceStatus }))} className={fieldClass}>
@@ -8759,10 +8762,6 @@ function InvoiceForm({
           </select>
         </div>
         <div>
-          <label className={labelClass}>Service Date</label>
-          <input value={inv.serviceDate || ""} onChange={e => setInv(p => ({ ...p, serviceDate: e.target.value || undefined }))} className={fieldClass} placeholder="YYYY-MM or YYYY-MM-DD" />
-        </div>
-        <div>
           <label className={labelClass}>Link to Booking</label>
           <select value={inv.bookingId || ""} onChange={e => handleBookingLink(e.target.value)} className={fieldClass}>
             <option value="">None</option>
@@ -8777,32 +8776,48 @@ function InvoiceForm({
           </select>
         </div>
       </div>
-      <div className="glass-panel rounded-xl p-4 space-y-3">
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-          <div>
-            <p className="text-xs font-body text-foreground font-medium">International / Event Manager invoice metadata</p>
-            <p className="text-[11px] font-body text-muted-foreground mt-0.5">Use for recipients that require exact service dates, tax IDs, or EM2.0 PDF upload.</p>
+      <div>
+        <button
+          type="button"
+          onClick={() => setShowAdvancedInvoiceMetadata(v => !v)}
+          className="text-xs font-body text-muted-foreground hover:text-foreground inline-flex items-center gap-1.5"
+        >
+          <ChevronDown className={`w-3.5 h-3.5 transition-transform ${showAdvancedInvoiceMetadata ? "rotate-180" : ""}`} />
+          Advanced invoice metadata
+        </button>
+        {showAdvancedInvoiceMetadata && (
+          <div className="glass-panel rounded-xl p-4 space-y-3 mt-2">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+              <div>
+                <p className="text-xs font-body text-foreground font-medium">Service / submission details</p>
+                <p className="text-[11px] font-body text-muted-foreground mt-0.5">Only needed for clients that require service dates, receipt notes, or Event Manager upload wording.</p>
+              </div>
+              <label className="flex items-center gap-2 text-xs font-body text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={!!inv.eventManagerSubmission}
+                  onChange={e => setInv(p => ({ ...p, eventManagerSubmission: e.target.checked }))}
+                  className="accent-primary"
+                />
+                Event Manager / EM2.0
+              </label>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div>
+                <label className={labelClass}>Service Date</label>
+                <input value={inv.serviceDate || ""} onChange={e => setInv(p => ({ ...p, serviceDate: e.target.value || undefined }))} className={fieldClass} placeholder="YYYY-MM or YYYY-MM-DD" />
+              </div>
+              <div>
+                <label className={labelClass}>Service Date Note</label>
+                <input className={fieldClass} value={inv.serviceDateNote || ""} onChange={e => setInv(p => ({ ...p, serviceDateNote: e.target.value || undefined }))} placeholder="Invoice date corresponds to service date" />
+              </div>
+              <div>
+                <label className={labelClass}>Receipt Note</label>
+                <input className={fieldClass} value={inv.receiptAttachmentNote || ""} onChange={e => setInv(p => ({ ...p, receiptAttachmentNote: e.target.value || undefined }))} placeholder="Attach copies of receipts if claimed" />
+              </div>
+            </div>
           </div>
-          <label className="flex items-center gap-2 text-xs font-body text-muted-foreground">
-            <input
-              type="checkbox"
-              checked={!!inv.eventManagerSubmission}
-              onChange={e => setInv(p => ({ ...p, eventManagerSubmission: e.target.checked }))}
-              className="accent-primary"
-            />
-            EM2.0 submission required
-          </label>
-        </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <div>
-            <label className={labelClass}>Service Date Note</label>
-            <input className={fieldClass} value={inv.serviceDateNote || ""} onChange={e => setInv(p => ({ ...p, serviceDateNote: e.target.value || undefined }))} placeholder="Invoice date corresponds to service date" />
-          </div>
-          <div>
-            <label className={labelClass}>Receipt Attachment Note</label>
-            <input className={fieldClass} value={inv.receiptAttachmentNote || ""} onChange={e => setInv(p => ({ ...p, receiptAttachmentNote: e.target.value || undefined }))} placeholder="Attach copies of travel expense receipts" />
-          </div>
-        </div>
+        )}
       </div>
       {inv.albumId && (
         <div className="glass-panel rounded-xl p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
