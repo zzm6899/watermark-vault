@@ -75,6 +75,9 @@ const DB_KEYS = {
   LICENSE_PLANS: "wv_license_plans",
   LICENSE_PURCHASES: "wv_license_purchases",
   SLOT_REQUESTS: "wv_event_slot_requests",
+  PORTFOLIO_DRAFT: "wv_portfolio_draft",
+  PORTFOLIO_PUBLISHED: "wv_portfolio_published",
+  ZIP_STATS: "wv_zip_stats",
 };
 
 /** Safe HTML entity escaping to prevent XSS when interpolating user data into email HTML. */
@@ -142,6 +145,17 @@ fs.mkdirSync(CACHE_DIR, { recursive: true });
 // image cache prevents a cache-clear request from deleting an in-progress job.
 const ZIP_JOBS_DIR = path.join(DATA_DIR, "zip-jobs");
 fs.mkdirSync(ZIP_JOBS_DIR, { recursive: true });
+const ZIP_READY_TTL_MS = Math.max(60_000, Number(process.env.ZIP_READY_TTL_MS) || 15 * 60 * 1000);
+const ZIP_TRANSFERRED_TTL_MS = Math.max(10_000, Number(process.env.ZIP_TRANSFERRED_TTL_MS) || 2 * 60 * 1000);
+// Remove artifacts left by a container restart. Active jobs only exist in memory,
+// so no ZIP in this directory is reusable after startup.
+try {
+  const cutoff = Date.now() - ZIP_READY_TTL_MS;
+  for (const name of fs.readdirSync(ZIP_JOBS_DIR)) {
+    const target = path.join(ZIP_JOBS_DIR, name);
+    try { if (fs.statSync(target).mtimeMs < cutoff) fs.unlinkSync(target); } catch {}
+  }
+} catch {}
 if (!fs.existsSync(DB_FILE)) fs.writeFileSync(DB_FILE, JSON.stringify({}));
 
 // ── Super Admin Bootstrap ──────────────────────────────────────────────────
@@ -2158,6 +2172,68 @@ function findAlbumById(db, albumId) {
   return _chooseAlbumStoreMatch(mainMatch, tenantMatches);
 }
 
+const DEFAULT_PORTFOLIO = {
+  brandName: "Zac Morgan Photography",
+  logo: "/portfolio/logo.png",
+  heroLabel: "Live in action",
+  introEyebrow: "Hey, I'm Zac, an event / wedding photographer",
+  introTitle: "Let's get to know each other",
+  introBody: "What started as a hobby quickly became a passion for capturing the moments people want to remember. I photograph weddings, live music, parties and corporate events across Sydney.",
+  portrait: "/portfolio/portrait.jpg",
+  testimonial: "Zac is an extremely talented photographer. His photos captured the energy of the night perfectly and were delivered quickly.",
+  testimonialAuthor: "Henry M",
+  projects: [
+    { id: "weddings", title: "Engagements / Weddings", image: "/portfolio/weddings.jpg", description: "Relaxed, honest coverage from the quiet moments to the dance floor." },
+    { id: "bands", title: "Band Photos", image: "/portfolio/bands.jpg", description: "Live performance and artist imagery that keeps the atmosphere intact." },
+    { id: "corporate", title: "Corporate Events", image: "/portfolio/corporate.jpg", description: "Polished event coverage for teams, brands and venues." },
+    { id: "parties", title: "Parties", image: "/portfolio/parties.jpg", description: "Candid celebration photography with people at the centre." },
+  ],
+  instagramUrl: "https://www.instagram.com/zacmphotos/",
+  instagramHandle: "@zacmphotos",
+  linkedinUrl: "https://www.linkedin.com/in/zac-morgan-photography/",
+  contactEmail: "zacmorganphotography@gmail.com",
+};
+
+app.get("/api/site-context", (req, res) => {
+  const hostname = String(req.hostname || "").toLowerCase();
+  const portfolioHosts = String(process.env.PUBLIC_SITE_HOSTS || "zacmclients.photos,www.zacmclients.photos").split(",").map(v => v.trim().toLowerCase());
+  const appHosts = String(process.env.APP_HOSTS || "book.zacmclients.photos").split(",").map(v => v.trim().toLowerCase());
+  if (portfolioHosts.includes(hostname)) return res.json({ role: "portfolio" });
+  if (appHosts.includes(hostname)) return res.json({ role: "platform" });
+  const tenant = readTenants().find(t => t.active !== false && String(t.customDomain || "").toLowerCase() === hostname);
+  return res.json(tenant ? { role: "tenant-booking", tenantSlug: tenant.slug } : { role: "platform" });
+});
+
+app.get("/api/portfolio", (_req, res) => {
+  const published = dbGet(readDb(), DB_KEYS.PORTFOLIO_PUBLISHED, DEFAULT_PORTFOLIO);
+  res.setHeader("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
+  res.json({ ...DEFAULT_PORTFOLIO, ...(published || {}) });
+});
+
+app.get("/api/admin/portfolio", requireAuth, (_req, res) => {
+  const db = readDb();
+  const published = dbGet(db, DB_KEYS.PORTFOLIO_PUBLISHED, DEFAULT_PORTFOLIO);
+  const draft = dbGet(db, DB_KEYS.PORTFOLIO_DRAFT, published);
+  res.json({ draft: { ...DEFAULT_PORTFOLIO, ...(draft || {}) }, publishedAt: published?.updatedAt });
+});
+
+app.put("/api/admin/portfolio/draft", requireAuth, (req, res) => {
+  if (!req.body?.draft || typeof req.body.draft !== "object") return res.status(400).json({ error: "draft is required" });
+  const db = readDb();
+  db[DB_KEYS.PORTFOLIO_DRAFT] = { ...DEFAULT_PORTFOLIO, ...req.body.draft, updatedAt: new Date().toISOString() };
+  writeDb(db);
+  res.json({ ok: true });
+});
+
+app.post("/api/admin/portfolio/publish", requireAuth, (_req, res) => {
+  const db = readDb();
+  const draft = dbGet(db, DB_KEYS.PORTFOLIO_DRAFT, DEFAULT_PORTFOLIO);
+  const publishedAt = new Date().toISOString();
+  db[DB_KEYS.PORTFOLIO_PUBLISHED] = { ...DEFAULT_PORTFOLIO, ...(draft || {}), updatedAt: publishedAt };
+  writeDb(db);
+  res.json({ ok: true, publishedAt });
+});
+
 // Most camera frames in an album share dimensions and watermark settings. Reusing
 // the rendered overlay avoids rebuilding the same full-resolution tiled PNG for
 // every photo in a bulk download.
@@ -3219,6 +3295,36 @@ app.post("/api/upload/bulk-delete", uploadDeleteLimiter, async (req, res) => {
 const downloadZipLimiter = rateLimit({ windowMs: 60_000, max: 6, standardHeaders: true, legacyHeaders: false, message: { error: "Too many zip requests — please wait before retrying" } });
 const zipJobs = new Map();
 
+function readZipStats() {
+  return dbGet(readDb(), DB_KEYS.ZIP_STATS, { generated: 0, downloaded: 0, failed: 0, photos: 0, bytes: 0, totalBuildMs: 0, lastGeneratedAt: null, lastDownloadedAt: null });
+}
+
+function updateZipStats(changes) {
+  const db = readDb();
+  const current = dbGet(db, DB_KEYS.ZIP_STATS, {});
+  const next = { generated: 0, downloaded: 0, failed: 0, photos: 0, bytes: 0, totalBuildMs: 0, ...current };
+  for (const key of ["generated", "downloaded", "failed", "photos", "bytes", "totalBuildMs"]) {
+    if (changes[key]) next[key] = Number(next[key] || 0) + Number(changes[key]);
+  }
+  Object.assign(next, changes.lastGeneratedAt ? { lastGeneratedAt: changes.lastGeneratedAt } : {}, changes.lastDownloadedAt ? { lastDownloadedAt: changes.lastDownloadedAt } : {});
+  db[DB_KEYS.ZIP_STATS] = next;
+  writeDb(db);
+  return next;
+}
+
+function zipDiskStats() {
+  let files = 0; let bytes = 0;
+  try { for (const name of fs.readdirSync(ZIP_JOBS_DIR)) { const stat = fs.statSync(path.join(ZIP_JOBS_DIR, name)); if (stat.isFile()) { files++; bytes += stat.size; } } } catch {}
+  return { files, bytes };
+}
+
+app.get("/api/admin/zip-stats", requireAuth, (_req, res) => {
+  const totals = readZipStats();
+  const active = [...zipJobs.values()].filter(job => job.status === "preparing").length;
+  const ready = [...zipJobs.values()].filter(job => job.status === "done").length;
+  res.json({ ...totals, active, ready, disk: zipDiskStats(), readyTtlMs: ZIP_READY_TTL_MS, transferredTtlMs: ZIP_TRANSFERRED_TTL_MS, averageBuildMs: totals.generated ? Math.round(totals.totalBuildMs / totals.generated) : 0 });
+});
+
 function normalizeZipFileList(filenames, files) {
   if (Array.isArray(files)) return files.map(f => ({ filename: String(f.filename || ""), clean: f.clean === true }));
   if (Array.isArray(filenames)) return filenames.map(n => ({ filename: String(n), clean: true }));
@@ -3295,7 +3401,7 @@ function collectAccessibleZipFiles(fileList, sessionKey, albumId, quality = "ori
     const photo = albumPhotosByStoredName.get(safeName);
     const preferredName = photo?.originalName || (photo?.title ? `${photo.title}${path.extname(safeName)}` : safeName);
     const archiveName = uniqueZipEntryName(preferredName, safeName, quality, usedArchiveNames);
-    accessibleFiles.push({ safeName, filepath, clean: serveClean, tenantSlug, quality, archiveName });
+    accessibleFiles.push({ safeName, filepath, clean: serveClean, tenantSlug, quality, archiveName, photoId: photo?.id || null });
   }
   return { accessibleFiles, missingCount, deniedCount, downgradedCount };
 }
@@ -3304,9 +3410,7 @@ function getZipAlbumName(albumId) {
   let albumName = "photos";
   try {
     const db = readDb();
-    const albums = db["wv_albums"];
-    const parsed = typeof albums === "string" ? JSON.parse(albums) : albums;
-    const album = Array.isArray(parsed) ? parsed.find(a => a.id === albumId) : null;
+    const album = findAlbumById(db, albumId)?.album;
     if (album?.title) albumName = album.title.replace(/[^a-z0-9_\- ]/gi, "_").trim();
   } catch {}
   return albumName;
@@ -3325,16 +3429,25 @@ function publicZipJob(job) {
     updatedAt: job.updatedAt,
     error: job.error || null,
     filename: job.filename,
+    bytes: job.bytes || 0,
+    buildMs: job.status === "done" ? job.updatedAt - job.createdAt : null,
+    expiresAt: job.expiresAt || null,
+    includedPhotoIds: job.includedPhotoIds || [],
+    includedFiles: job.includedFiles || [],
   };
 }
 
 function cleanupZipJob(jobId, delayMs = 15 * 60 * 1000) {
+  const existing = zipJobs.get(jobId);
+  if (existing?.cleanupTimer) clearTimeout(existing.cleanupTimer);
+  if (existing) existing.expiresAt = Date.now() + delayMs;
   const timeout = setTimeout(() => {
     const job = zipJobs.get(jobId);
     if (!job) return;
     try { if (job.filepath && fs.existsSync(job.filepath)) fs.unlinkSync(job.filepath); } catch {}
     zipJobs.delete(jobId);
   }, delayMs);
+  if (existing) existing.cleanupTimer = timeout;
   if (typeof timeout.unref === "function") timeout.unref();
 }
 
@@ -3380,12 +3493,15 @@ async function buildZipJob(job, accessibleFiles) {
     job.ready = job.total;
     job.status = "done";
     job.updatedAt = Date.now();
+    try { job.bytes = fs.statSync(job.filepath).size; } catch { job.bytes = 0; }
+    updateZipStats({ generated: 1, photos: job.total, bytes: job.bytes, totalBuildMs: job.updatedAt - job.createdAt, lastGeneratedAt: new Date(job.updatedAt).toISOString() });
     console.log(`[ZIP] ${job.id} completed ${job.total}/${job.requested} photos in ${((job.updatedAt - job.createdAt) / 1000).toFixed(1)}s`);
     cleanupZipJob(job.id);
   } catch (err) {
     job.status = "failed";
     job.error = err?.message || "Failed to create zip";
     job.updatedAt = Date.now();
+    updateZipStats({ failed: 1 });
     try { archive.abort(); } catch {}
     cleanupZipJob(job.id, 60 * 1000);
   }
@@ -3420,6 +3536,8 @@ app.post("/api/download/zip/start", downloadZipLimiter, async (req, res) => {
     filename: `${albumName}.zip`,
     quality,
     filepath: path.join(ZIP_JOBS_DIR, `${jobId}.zip`),
+    includedPhotoIds: accessibleFiles.map(file => file.photoId).filter(Boolean),
+    includedFiles: accessibleFiles.map(file => file.safeName),
     createdAt: Date.now(),
     updatedAt: Date.now(),
   };
@@ -3442,7 +3560,12 @@ app.get("/api/download/zip/:jobId/file", (req, res) => {
 
   res.download(job.filepath, job.filename, (err) => {
     if (err) console.error("Zip job download error:", err.message);
-    cleanupZipJob(job.id, 60 * 1000);
+    else if (!job.downloadRecorded) {
+      job.downloadRecorded = true;
+      job.downloadedAt = Date.now();
+      updateZipStats({ downloaded: 1, lastDownloadedAt: new Date(job.downloadedAt).toISOString() });
+    }
+    cleanupZipJob(job.id, ZIP_TRANSFERRED_TTL_MS);
   });
 });
 
@@ -4412,7 +4535,7 @@ app.post("/api/tenant/:slug/booking", tenantBookingLimiter, (req, res) => {
   const tenant = tenants.find(t => t.slug === slug && t.active !== false);
   if (!tenant) return res.status(404).json({ error: "Tenant not found" });
 
-  const { clientName, clientEmail, date, time, eventTypeId, type, duration, notes, answers,
+  const { clientName, clientEmail, phone, date, time, eventTypeId, type, duration, notes, answers,
     cosplayCharacter, cosplayCostume, conventionName } = req.body || {};
   if (!clientName || typeof clientName !== "string" || !clientName.trim()) {
     return res.status(400).json({ error: "clientName is required" });
@@ -4474,6 +4597,7 @@ app.post("/api/tenant/:slug/booking", tenantBookingLimiter, (req, res) => {
     modifyToken: `mod-${crypto.randomUUID()}`,
     clientName: clientName.trim(),
     clientEmail: clientEmail.trim(),
+    phone: typeof phone === "string" ? phone.trim().slice(0, 40) : "",
     date,
     time,
     eventTypeId: eventTypeId || "",

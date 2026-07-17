@@ -201,6 +201,8 @@ export interface DownloadHistoryEntry {
   sessionKey: string;
   email?: string;
   photoCount?: number;
+  method?: "zip" | "individual";
+  skippedCount?: number;
 }
 
 export interface Album {

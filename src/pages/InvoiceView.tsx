@@ -18,7 +18,7 @@ function CopyButton({ value, fieldKey, copiedField, onCopy }: {
   return (
     <button
       onClick={() => onCopy(value, fieldKey)}
-      className="text-muted-foreground/50 hover:text-muted-foreground transition-colors shrink-0"
+      className="no-print text-muted-foreground/50 hover:text-muted-foreground transition-colors shrink-0"
       title={`Copy ${fieldKey}`}
     >
       {copiedField === fieldKey
@@ -117,14 +117,8 @@ export default function InvoiceView() {
   const handleStripePayment = async () => {
     if (!invoice) return;
     setPayingStripe(true);
-    const { sub, disc, taxAmt } = calcTotals(invoice);
-    const total = sub - disc + taxAmt;
     const { url, error: err } = await createInvoiceCheckout({
       invoiceId: invoice.id,
-      invoiceNumber: invoice.number,
-      clientName: invoice.to.name,
-      clientEmail: invoice.to.email,
-      amount: total,
       shareToken: invoice.shareToken,
     });
     if (err || !url) {
@@ -155,6 +149,7 @@ export default function InvoiceView() {
   }
 
   const { sub, disc, taxAmt, taxRate, total } = calcTotals(invoice);
+  const amountDue = Math.max(0, total - (invoice.amountPaid || 0));
   const methods = invoice.paymentMethods || [];
   const statusInfo = invoice.status === "sent" && methods.length === 0
     ? { ...STATUS_STYLES.sent, label: "Sent" }
@@ -423,14 +418,14 @@ export default function InvoiceView() {
             </div>
           )}
 
-          {/* ── Payment Options (hidden in print) ── */}
+          {/* Bank instructions remain in PDF exports; only interactive card/copy controls are hidden. */}
           {canPay && (
-            <div className="no-print space-y-4 mb-8">
+            <div className="space-y-4 mb-8">
               <p className="text-xs font-body uppercase tracking-wider text-muted-foreground">Payment Options</p>
 
               {/* Stripe */}
               {methods.includes("stripe") && stripeAvailable && (
-                <div className="rounded-xl border border-border p-4">
+                <div className="no-print rounded-xl border border-border p-4">
                   <div className="flex items-center gap-3 mb-3">
                     <CreditCard className="w-4 h-4 text-purple-400" />
                     <p className="text-sm font-body text-foreground font-medium">Pay by Card</p>
@@ -442,7 +437,7 @@ export default function InvoiceView() {
                     className="gap-2 font-body text-sm w-full sm:w-auto"
                   >
                     {payingStripe ? <Loader2 className="w-4 h-4 animate-spin" /> : <ExternalLink className="w-4 h-4" />}
-                    {payingStripe ? "Redirecting…" : `Pay $${total.toFixed(2)} with Card`}
+                    {payingStripe ? "Redirecting…" : `Pay ${invoice.currency || "AUD"} ${amountDue.toFixed(2)} with Card`}
                   </Button>
                 </div>
               )}
@@ -486,7 +481,8 @@ function BankTransferPanel({ invoice }: { invoice: Invoice }) {
     }).catch(() => {});
   };
 
-  const { total: grandTotal } = calcTotals(invoice);
+  const { total } = calcTotals(invoice);
+  const grandTotal = Math.max(0, total - (invoice.amountPaid || 0));
 
   if (!bank) return null;
 

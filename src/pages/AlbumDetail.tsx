@@ -167,7 +167,11 @@ type ZipProgressState = {
   total: number;
   ready: number;
   status: "preparing" | "done" | "failed";
+  skipped?: number;
+  bytes?: number;
 };
+
+type ZipDownloadResult = { ok: boolean; includedPhotoIds: string[]; skipped: number };
 
 const wait = (ms: number) => new Promise(resolve => window.setTimeout(resolve, ms));
 
@@ -253,6 +257,9 @@ export default function AlbumDetail() {
   const [localDisplaySize, setLocalDisplaySize] = useState<string>(
     () => (albumId ? getAlbumBySlug(albumId) : undefined)?.displaySize ?? "medium"
   );
+  useEffect(() => {
+    if (album?.displaySize) setLocalDisplaySize(album.displaySize);
+  }, [album?.id, album?.displaySize]);
   const [lightboxSrcCache, setLightboxSrcCache] = useState<Record<string, string>>({});
   const [lbZoom, setLbZoom] = useState(1);
   const [lbPan, setLbPan] = useState({ x: 0, y: 0 });
@@ -851,7 +858,7 @@ export default function AlbumDetail() {
   };
 
   /** Downloads multiple photos as a single zip via the server zip endpoint. */
-  const downloadZip = async (photos: Photo[]): Promise<boolean> => {
+  const downloadZip = async (photos: Photo[]): Promise<ZipDownloadResult> => {
     const serverPhotos = photos.filter(p => p.src.startsWith("/uploads/"));
     const localPhotos = photos.filter(p => !p.src.startsWith("/uploads/"));
 
@@ -860,7 +867,7 @@ export default function AlbumDetail() {
       await downloadPhoto(p, downloadQuality);
     }
 
-    if (serverPhotos.length === 0) return true;
+    if (serverPhotos.length === 0) return { ok: true, includedPhotoIds: localPhotos.map(photo => photo.id), skipped: 0 };
 
     // Pass per-file clean/watermarked flag so the server renders each correctly
     const files = serverPhotos.map(p => ({
@@ -896,7 +903,8 @@ export default function AlbumDetail() {
         link.click();
         document.body.removeChild(link);
         URL.revokeObjectURL(url);
-        return true;
+        const included = Number(res.headers.get("X-Zip-Included")) || serverPhotos.length;
+        return { ok: true, includedPhotoIds: [...localPhotos.map(photo => photo.id), ...serverPhotos.slice(0, included).map(photo => photo.id)], skipped: Math.max(0, serverPhotos.length - included) };
       }
       if (!startRes.ok) {
         const err = await startRes.json().catch(() => ({}));
@@ -911,6 +919,8 @@ export default function AlbumDetail() {
         total: Number(job.total) || serverPhotos.length,
         ready: Number(job.ready) || 0,
         status: job.status || "preparing",
+        skipped: Number(job.skipped) || 0,
+        bytes: Number(job.bytes) || 0,
       });
 
       while (job.status !== "done") {
@@ -929,6 +939,8 @@ export default function AlbumDetail() {
           total: Number(job.total) || serverPhotos.length,
           ready: Number(job.ready) || 0,
           status: job.status || "preparing",
+          skipped: Number(job.skipped) || 0,
+          bytes: Number(job.bytes) || 0,
         });
       }
 
@@ -941,10 +953,15 @@ export default function AlbumDetail() {
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
-      return true;
+      const includedIds = Array.isArray(job.includedFiles)
+        ? serverPhotos.filter(photo => job.includedFiles.includes(photo.src.split("?")[0].split("/").pop() || "")).map(photo => photo.id)
+        : Array.isArray(job.includedPhotoIds) && job.includedPhotoIds.length > 0
+          ? job.includedPhotoIds
+          : serverPhotos.map(photo => photo.id);
+      return { ok: true, includedPhotoIds: [...localPhotos.map(photo => photo.id), ...includedIds], skipped: Number(job.skipped) || 0 };
     } catch (err: any) {
       toast.error(`Zip download failed: ${err.message || "unknown error"}`);
-      return false;
+      return { ok: false, includedPhotoIds: [], skipped: serverPhotos.length };
     } finally {
       setZipProgress(null);
     }
@@ -1028,8 +1045,13 @@ export default function AlbumDetail() {
     const toDownload = [...alreadyPaid, ...notPaid.slice(0, canDownloadFree)];
     const usedZip = isServerMode() && toDownload.length > 1 && !preferIndividualDownload;
     let downloaded = true;
+    let completedPhotoIds = toDownload.map(photo => photo.id);
+    let skippedCount = 0;
     if (usedZip) {
-      downloaded = await downloadZip(toDownload as Photo[]);
+      const result = await downloadZip(toDownload as Photo[]);
+      downloaded = result.ok;
+      completedPhotoIds = result.includedPhotoIds;
+      skippedCount = result.skipped;
     } else {
       for (const p of toDownload) {
         await downloadPhoto(p, downloadQuality);
@@ -1041,15 +1063,18 @@ export default function AlbumDetail() {
     }
 
     const updated = { ...album };
-    updated.usedFreeDownloads = { ...(updated.usedFreeDownloads || {}), [sessionKey]: freeUsed + canDownloadFree };
+    const completedFreeCount = completedPhotoIds.filter(id => !paidPhotoIdSet.has(id)).length;
+    updated.usedFreeDownloads = { ...(updated.usedFreeDownloads || {}), [sessionKey]: freeUsed + completedFreeCount };
     // Track download history
     const historyEntry: DownloadHistoryEntry = {
-      photoIds: toDownload.map(p => p.id),
+      photoIds: completedPhotoIds,
       downloadedAt: new Date().toISOString(),
       quality: downloadQuality,
       sessionKey,
       email: registeredEmail || undefined,
-      photoCount: toDownload.length,
+      photoCount: completedPhotoIds.length,
+      method: usedZip ? "zip" : "individual",
+      skippedCount,
     };
     updated.downloadHistory = [...(updated.downloadHistory || []), historyEntry];
     setAlbumState(updated);
@@ -1059,7 +1084,7 @@ export default function AlbumDetail() {
     setShowDownloadOptions(false);
     setDownloading(false);
     toast.success(usedZip
-      ? `ZIP download started for ${canDownload} photos. Track transfer progress in your browser.`
+      ? `ZIP download started for ${completedPhotoIds.length} photos${skippedCount ? `; ${skippedCount} unavailable file${skippedCount === 1 ? " was" : "s were"} skipped` : ""}. Track transfer progress in your browser.`
       : `Downloaded ${canDownload} photo${canDownload !== 1 ? "s" : ""}`);
   };
 
@@ -1075,8 +1100,13 @@ export default function AlbumDetail() {
       : album.photos;
     const usedZip = isServerMode() && photos.length > 1 && !preferIndividualDownload;
     let downloaded = true;
+    let completedPhotoIds = photos.map(photo => photo.id);
+    let skippedCount = 0;
     if (usedZip) {
-      downloaded = await downloadZip(photos as Photo[]);
+      const result = await downloadZip(photos as Photo[]);
+      downloaded = result.ok;
+      completedPhotoIds = result.includedPhotoIds;
+      skippedCount = result.skipped;
     } else {
       for (const p of photos) {
         await downloadPhoto(p, downloadQuality);
@@ -1089,10 +1119,13 @@ export default function AlbumDetail() {
     // Track download history
     const updated = { ...album };
     const historyEntry: DownloadHistoryEntry = {
-      photoIds: photos.map(p => p.id),
+      photoIds: completedPhotoIds,
       downloadedAt: new Date().toISOString(),
       quality: downloadQuality,
       sessionKey,
+      photoCount: completedPhotoIds.length,
+      method: usedZip ? "zip" : "individual",
+      skippedCount,
     };
     updated.downloadHistory = [...(updated.downloadHistory || []), historyEntry];
     setAlbumState(updated);
@@ -1102,7 +1135,7 @@ export default function AlbumDetail() {
     setShowDownloadOptions(false);
     setDownloading(false);
     toast.success(usedZip
-      ? `ZIP download started for ${photos.length} photos. Track transfer progress in your browser.`
+      ? `ZIP download started for ${completedPhotoIds.length} photos${skippedCount ? `; ${skippedCount} skipped` : ""}. Track transfer progress in your browser.`
       : `Downloaded ${photos.length} photo${photos.length !== 1 ? "s" : ""}`);
   };
 

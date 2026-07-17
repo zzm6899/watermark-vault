@@ -52,6 +52,7 @@ const ContractSign = lazyWithReload(() => import("./pages/ContractSign"));
 const TenantSetup = lazyWithReload(() => import("./pages/TenantSetup"));
 const TenantAdmin = lazyWithReload(() => import("./pages/TenantAdmin"));
 const LoginPage = lazyWithReload(() => import("./pages/LoginPage"));
+const PortfolioSite = lazyWithReload(() => import("./pages/PortfolioSite"));
 
 const queryClient = new QueryClient();
 
@@ -109,6 +110,7 @@ const App = () => {
   if (isNativeApp) installNativeApiFetchPrefix();
   const [ready, setReady] = useState(isNativeApp || isPublicRoute());
   const [customDomainSlug, setCustomDomainSlug] = useState<string | null>(null);
+  const [siteRole, setSiteRole] = useState<"platform" | "portfolio" | "tenant-booking">("platform");
 
   useEffect(() => {
     if (isNativeApp) {
@@ -132,9 +134,15 @@ const App = () => {
     const tasks: Promise<unknown>[] = [syncFromServer()];
     if (!isLocalAccess) {
       tasks.push(
-        getTenantByDomain(hostname).then((result) => {
-          if (result?.slug) setCustomDomainSlug(result.slug);
-        })
+        fetch("/api/site-context").then(r => r.ok ? r.json() : null).then((context) => {
+          if (context?.role === "portfolio") setSiteRole("portfolio");
+          if (context?.role === "tenant-booking" && context.tenantSlug) {
+            setSiteRole("tenant-booking");
+            setCustomDomainSlug(context.tenantSlug);
+          }
+        }).catch(() => getTenantByDomain(hostname).then((result) => {
+          if (result?.slug) { setSiteRole("tenant-booking"); setCustomDomainSlug(result.slug); }
+        }))
       );
     }
     Promise.allSettled(tasks).finally(() => setReady(true));
@@ -171,8 +179,9 @@ const App = () => {
                 {/* When the app is served from a tenant's custom domain, show their booking page at root */}
                 <Route
                   path="/"
-                  element={isNativeApp ? <MobileCapture /> : customDomainSlug ? <TenantBookingPage overrideSlug={customDomainSlug} /> : <Booking />}
+                  element={isNativeApp ? <MobileCapture /> : siteRole === "portfolio" ? <PortfolioSite /> : customDomainSlug ? <TenantBookingPage overrideSlug={customDomainSlug} /> : <Booking />}
                 />
+                <Route path="/portfolio-preview" element={<PortfolioSite />} />
                 <Route path="/book/:tenantSlug" element={<TenantBookingPage />} />
                 <Route path="/gallery/:albumId" element={<AlbumDetail />} />
                 <Route path="/booking/modify/:bookingId" element={<BookingModify />} />

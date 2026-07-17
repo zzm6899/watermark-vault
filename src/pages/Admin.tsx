@@ -152,6 +152,8 @@ import type {
 } from "@/lib/types";
 import WatermarkedImage from "@/components/WatermarkedImage";
 import ProgressiveImg from "@/components/ProgressiveImg";
+import PortfolioEditor from "@/components/admin/PortfolioEditor";
+import ZipOperationsPanel from "@/components/admin/ZipOperationsPanel";
 import { useBackfillThumbnails } from "@/hooks/use-backfill-thumbnails";
 import { Slider } from "@/components/ui/slider";
 import sampleLandscape from "@/assets/sample-landscape.jpg";
@@ -160,7 +162,7 @@ import sampleWedding from "@/assets/sample-wedding.jpg";
 import sampleEvent from "@/assets/sample-event.jpg";
 import sampleFood from "@/assets/sample-food.jpg";
 
-type Tab = "dashboard" | "shoot-day" | "bookings" | "automations" | "events" | "albums" | "photos" | "finance" | "invoices" | "contacts" | "enquiries" | "profile" | "settings" | "storage" | "apk" | "platform";
+type Tab = "dashboard" | "shoot-day" | "bookings" | "automations" | "events" | "albums" | "photos" | "finance" | "invoices" | "contacts" | "enquiries" | "website" | "profile" | "settings" | "storage" | "apk" | "platform";
 
 const TAB_ROUTE_MAP: Record<string, Tab> = {
   dashboard: "dashboard",
@@ -174,6 +176,7 @@ const TAB_ROUTE_MAP: Record<string, Tab> = {
   invoices: "invoices",
   contacts: "contacts",
   enquiries: "enquiries",
+  website: "website",
   profile: "profile",
   settings: "settings",
   storage: "storage",
@@ -193,6 +196,7 @@ const ADMIN_TAB_LABELS: Record<Tab, string> = {
   invoices: "Invoices",
   contacts: "Contacts",
   enquiries: "Enquiries",
+  website: "Website",
   profile: "Profile",
   settings: "Settings",
   storage: "Storage",
@@ -228,6 +232,10 @@ function albumCompletenessScore(album: Album): number {
     + (album._photosStripped ? 0 : 500)
     + (album.photoCount || album.photos?.length || 0)
     + (album.updatedAt ? Math.min(new Date(album.updatedAt).getTime() / 1000000000000, 10) : 0);
+}
+
+function albumPhotoTotal(album: Album): number {
+  return album._photosStripped ? (album.photoCount || 0) : (album.photos?.length || 0);
 }
 
 function dedupeAlbumsBySlug(albums: Album[]): Album[] {
@@ -824,6 +832,7 @@ export default function Admin() {
     { id: "invoices" as Tab, label: "Invoices", icon: Receipt },
     { id: "contacts" as Tab, label: "Contacts", icon: Users },
     { id: "enquiries" as Tab, label: "Enquiries", icon: MessageSquare },
+    { id: "website" as Tab, label: "Website", icon: Globe },
     { id: "profile" as Tab, label: "Profile", icon: Camera },
     { id: "settings" as Tab, label: "Settings", icon: Settings },
     { id: "storage" as Tab, label: "Storage", icon: HardDrive },
@@ -966,6 +975,7 @@ export default function Admin() {
           {activeTab === "invoices" && <InvoicesView />}
           {activeTab === "contacts" && <ContactsView />}
           {activeTab === "enquiries" && <EnquiriesView />}
+          {activeTab === "website" && <PortfolioEditor />}
           {activeTab === "profile" && <ProfileView />}
           {activeTab === "settings" && <SettingsView />}
           {activeTab === "storage" && <StorageView />}
@@ -1741,7 +1751,7 @@ function DashboardView() {
   const albumDownloadStats = albums.map(alb => {
     const history = alb.downloadHistory || [];
     const totalDownloaded = history.reduce((sum, h) => sum + h.photoIds.length, 0);
-    return { id: alb.id, title: alb.title, totalPhotos: alb.photos.length, totalDownloaded, sessions: history.length, lastDownload: history.length > 0 ? history[history.length - 1].downloadedAt : null };
+    return { id: alb.id, title: alb.title, totalPhotos: albumPhotoTotal(alb), totalDownloaded, sessions: history.length, lastDownload: history.length > 0 ? history[history.length - 1].downloadedAt : null };
   }).filter(a => a.totalPhotos > 0);
 
   const handleApproveRequest = (albumId: string, reqIdx: number) => {
@@ -4306,9 +4316,15 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
     toast.success("Album deleted");
   };
 
-  const handleMerge = () => {
+  const handleMerge = async () => {
     if (mergeSelection.size < 2) { toast.error("Select at least 2 albums to merge"); return; }
-    const selectedAlbums = albums.filter(a => mergeSelection.has(a.id));
+    const selectedAlbums = await Promise.all(albums.filter(a => mergeSelection.has(a.id)).map(async album => {
+      if (!album._photosStripped) return album;
+      const photos = await fetchAlbumPhotos(album.id);
+      if (!photos) throw new Error(`Could not load photos for ${album.title}`);
+      return { ...album, photos, photoCount: photos.length, _photosStripped: false };
+    })).catch(error => { toast.error(error instanceof Error ? error.message : "Could not load selected albums"); return null; });
+    if (!selectedAlbums) return;
     const mergedPhotos: Photo[] = [];
     const seen = new Set<string>();
     for (const alb of selectedAlbums) {
@@ -4355,7 +4371,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
 
   const openPublicGallery = async (album: Album) => {
     if (!(await ensurePublicShareReady(album, "open this gallery"))) return;
-    window.open(`/gallery/${album.slug || album.id}`, "_blank", "noopener,noreferrer");
+    window.open(galleryUrlForAlbum(album), "_blank", "noopener,noreferrer");
   };
 
   const handleSendNotification = async (album: Album) => {
@@ -4442,7 +4458,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
           switch (albumSortKey) {
             case "date": return dir * (new Date(a.date).getTime() - new Date(b.date).getTime());
             case "name": return dir * a.title.localeCompare(b.title);
-            case "photos": return dir * (a.photos.length - b.photos.length);
+            case "photos": return dir * (albumPhotoTotal(a) - albumPhotoTotal(b));
             case "client": return dir * (a.clientName || "").localeCompare(b.clientName || "");
             default: return 0;
           }
@@ -7542,7 +7558,7 @@ function PhotosView() {
             <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide cursor-grab active:cursor-grabbing select-none min-w-0">
               {albums.filter(a => !albumFilterSearch || a.title.toLowerCase().includes(albumFilterSearch.toLowerCase())).map(a => (
                 <button key={a.id} onClick={() => setViewSource(viewSource === a.title ? "all" : a.title)} className={`text-xs font-body px-3 py-1.5 rounded-full whitespace-nowrap transition-all flex-shrink-0 ${viewSource === a.title ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground hover:text-foreground"}`}>
-                  {a.title} ({a.photos.length})
+                  {a.title} ({albumPhotoTotal(a)})
                 </button>
               ))}
             </div>
@@ -8199,15 +8215,13 @@ function InvoicesView() {
 
   const handleExportAllCSV = () => {
     const rows: string[][] = [
-      ["Invoice #", "Date", "Due Date", "Status", "Client Name", "Client Email", "From", "Item Description", "Qty", "Unit Price", "Line Total", "Subtotal", "Tax %", "Discount %", "Total"],
+      ["Invoice #", "Date", "Due Date", "Status", "Currency", "Client Name", "Client Email", "From", "Item Description", "Quantity", "Unit Price", "Line Total", "Subtotal", "Tax %", "Discount Amount", "Total"],
     ];
     invoices.forEach(inv => {
-      const sub = inv.items.reduce((s, it) => s + it.qty * it.unitPrice, 0);
-      const taxAmt = sub * ((inv.tax ?? 0) / 100);
-      const discAmt = sub * ((inv.discount ?? 0) / 100);
-      const total = sub + taxAmt - discAmt;
+      const sub = calcInvSubtotal(inv.items);
+      const total = calcInvTotal(inv);
       if (inv.items.length === 0) {
-        rows.push([inv.number, inv.createdAt.slice(0, 10), inv.dueDate || "", inv.status, inv.to.name || "", inv.to.email || "", inv.from.name || "", "", "", "", "", sub.toFixed(2), String(inv.tax ?? 0), String(inv.discount ?? 0), total.toFixed(2)]);
+        rows.push([inv.number, inv.createdAt.slice(0, 10), inv.dueDate || "", inv.status, inv.currency || "AUD", inv.to.name || "", inv.to.email || "", inv.from.name || "", "", "", "", "", sub.toFixed(2), String(inv.tax ?? 0), String(inv.discount ?? 0), total.toFixed(2)]);
       } else {
         inv.items.forEach((it, idx) => {
           rows.push([
@@ -8215,13 +8229,14 @@ function InvoicesView() {
             idx === 0 ? inv.createdAt.slice(0, 10) : "",
             idx === 0 ? (inv.dueDate || "") : "",
             idx === 0 ? inv.status : "",
+            idx === 0 ? (inv.currency || "AUD") : "",
             idx === 0 ? (inv.to.name || "") : "",
             idx === 0 ? (inv.to.email || "") : "",
             idx === 0 ? (inv.from.name || "") : "",
             it.description,
-            String(it.qty),
+            String(it.quantity),
             it.unitPrice.toFixed(2),
-            (it.qty * it.unitPrice).toFixed(2),
+            (it.quantity * it.unitPrice).toFixed(2),
             idx === 0 ? sub.toFixed(2) : "",
             idx === 0 ? String(inv.tax ?? 0) : "",
             idx === 0 ? String(inv.discount ?? 0) : "",
@@ -14110,7 +14125,7 @@ function StorageView() {
   }, []));
 
   const { used: lsUsed, limit: lsLimit } = getLocalStorageUsage();
-  const totalAlbumPhotos = albums.reduce((sum, a) => sum + a.photos.length, 0);
+  const totalAlbumPhotos = albums.reduce((sum, a) => sum + albumPhotoTotal(a), 0);
   const totalLibraryPhotos = libraryPhotos.length;
   const totalDownloads = albums.reduce((sum, a) => sum + (a.downloadHistory || []).reduce((s, h) => s + h.photoIds.length, 0), 0);
   const totalRequests = albums.reduce((sum, a) => sum + (a.downloadRequests || []).length, 0);
@@ -14139,6 +14154,8 @@ function StorageView() {
       <h2 className="font-display text-2xl text-foreground mb-6 flex items-center gap-2">
         <HardDrive className="w-6 h-6 text-primary" /> Storage & Usage
       </h2>
+
+      <ZipOperationsPanel />
 
       {/* Overview Stats */}
       <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">

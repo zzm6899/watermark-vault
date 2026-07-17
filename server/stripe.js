@@ -99,27 +99,42 @@ function registerRoutes(app, { writeDb } = {}) {
   app.post("/api/stripe/checkout/invoice", checkoutLimiter, async (req, res) => {
     const s = getStripe();
     if (!s) return res.status(400).json({ error: "Stripe not configured" });
-    const { invoiceId, invoiceNumber, clientName, clientEmail, amount, description, successUrl, cancelUrl } = req.body;
-    if (!amount || amount <= 0) return res.status(400).json({ error: "Invalid amount" });
+    const { invoiceId, shareToken, successUrl, cancelUrl } = req.body;
     try {
+      const fs = require("fs");
+      const path = require("path");
+      const db = JSON.parse(fs.readFileSync(path.join(process.env.DATA_DIR || "/data", "db.json"), "utf-8"));
+      const raw = db["wv_invoices"];
+      const invoices = raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : [];
+      const invoice = Array.isArray(invoices) ? invoices.find(inv => inv.id === invoiceId && inv.shareToken === shareToken) : null;
+      if (!invoice) return res.status(404).json({ error: "Invoice not found" });
+      if (["paid", "cancelled"].includes(invoice.status)) return res.status(409).json({ error: "This invoice is not payable" });
+      const subtotal = (invoice.items || []).reduce((sum, item) => sum + Number(item.quantity || 0) * Number(item.unitPrice || 0), 0);
+      const total = Math.max(0, (subtotal - Number(invoice.discount || 0)) * (1 + Number(invoice.tax || 0) / 100));
+      const amount = Math.max(0, total - Number(invoice.amountPaid || 0));
+      if (!Number.isFinite(amount) || amount <= 0) return res.status(409).json({ error: "No balance remains on this invoice" });
+      const allowedCurrencies = new Set(["aud", "eur", "usd", "gbp", "nzd"]);
+      const currency = String(invoice.currency || "AUD").toLowerCase();
+      if (!allowedCurrencies.has(currency)) return res.status(400).json({ error: "Unsupported invoice currency" });
+      const expectedAmountCents = Math.round(amount * 100);
       const session = await s.checkout.sessions.create({
         payment_method_types: ["card"],
-        customer_email: clientEmail || undefined,
+        customer_email: invoice.to?.email || undefined,
         line_items: [{
           price_data: {
-            currency: "aud",
+            currency,
             product_data: {
-              name: invoiceNumber ? `Invoice ${invoiceNumber}` : "Invoice Payment",
-              description: description || `Payment for ${clientName || "Client"}`,
+              name: invoice.number ? `Invoice ${invoice.number}` : "Invoice Payment",
+              description: `Payment for ${invoice.to?.name || "Client"}`,
             },
-            unit_amount: Math.round(amount * 100),
+            unit_amount: expectedAmountCents,
           },
           quantity: 1,
         }],
         mode: "payment",
-        success_url: successUrl || `${req.headers.origin || ""}/invoice/${req.body.shareToken}?paid=1`,
-        cancel_url: cancelUrl || `${req.headers.origin || ""}/invoice/${req.body.shareToken}`,
-        metadata: { invoiceId, invoiceNumber: invoiceNumber || "", type: "invoice-payment" },
+        success_url: successUrl || `${req.headers.origin || ""}/invoice/${shareToken}?paid=1`,
+        cancel_url: cancelUrl || `${req.headers.origin || ""}/invoice/${shareToken}`,
+        metadata: { invoiceId, invoiceNumber: invoice.number || "", type: "invoice-payment", expectedAmountCents: String(expectedAmountCents), expectedCurrency: currency },
       });
       res.json({ url: session.url, sessionId: session.id });
     } catch (err) {
@@ -234,6 +249,12 @@ function registerRoutes(app, { writeDb } = {}) {
           const invoices = raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : [];
           const idx = invoices.findIndex(inv => inv.id === metadata.invoiceId);
           if (idx >= 0) {
+            const expectedCents = Number(metadata.expectedAmountCents);
+            const paidCurrency = String(session.currency || "").toLowerCase();
+            if (!Number.isFinite(expectedCents) || session.amount_total !== expectedCents || paidCurrency !== String(metadata.expectedCurrency || "").toLowerCase()) {
+              console.error(`Invoice ${metadata.invoiceId} payment amount/currency mismatch; refusing to mark paid`);
+              return res.status(400).json({ error: "Payment verification failed" });
+            }
             invoices[idx].status = "paid";
             invoices[idx].paidAt = new Date().toISOString();
             invoices[idx].stripeSessionId = session.id;
