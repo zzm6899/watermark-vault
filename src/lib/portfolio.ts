@@ -8,10 +8,15 @@ export type PortfolioProject = {
 export type PortfolioSite = {
   brandName: string;
   logo: string;
+  heroImage: string;
   heroLabel: string;
   introEyebrow: string;
   introTitle: string;
   introBody: string;
+  aboutSecondaryBody: string;
+  portfolioTitle: string;
+  portfolioBody: string;
+  testimonialsTitle: string;
   portrait: string;
   testimonial: string;
   testimonialAuthor: string;
@@ -20,16 +25,28 @@ export type PortfolioSite = {
   instagramHandle: string;
   linkedinUrl: string;
   contactEmail: string;
+  locationLabel: string;
+  bookingTitle: string;
+  bookingBody: string;
+  bookingButtonLabel: string;
+  footerTitle: string;
+  enquiryEventTypes: string[];
+  webhookUrl?: string;
   updatedAt?: string;
 };
 
 export const defaultPortfolioSite: PortfolioSite = {
   brandName: "Zac Morgan Photography",
   logo: "/portfolio/logo.png",
+  heroImage: "/portfolio/live-action.jpg",
   heroLabel: "Live in action",
   introEyebrow: "Hey, I'm Zac, an event / wedding photographer",
   introTitle: "Let's get to know each other",
   introBody: "What started as a hobby quickly became a passion for capturing the moments people want to remember. I photograph weddings, live music, parties and corporate events across Sydney.",
+  aboutSecondaryBody: "I work quietly when the moment calls for it and step in with direction when it helps. The goal is a polished gallery that keeps the people, movement and atmosphere that made the day yours.",
+  portfolioTitle: "Stories that still feel alive.",
+  portfolioBody: "Weddings, performances, parties, people and brands photographed with energy and intent.",
+  testimonialsTitle: "The experience matters too.",
   portrait: "/portfolio/portrait.jpg",
   testimonial: "Zac is an extremely talented photographer. His photos captured the energy of the night perfectly and were delivered quickly.",
   testimonialAuthor: "Henry M",
@@ -43,6 +60,12 @@ export const defaultPortfolioSite: PortfolioSite = {
   instagramHandle: "@zacmphotos",
   linkedinUrl: "https://www.linkedin.com/in/zac-morgan-photography/",
   contactEmail: "zacmorganphotography@gmail.com",
+  locationLabel: "Sydney, Australia",
+  bookingTitle: "Tell me what you're planning",
+  bookingBody: "Share the date, location and feeling you want captured. I'll reply with availability and the right coverage option.",
+  bookingButtonLabel: "Start an enquiry",
+  footerTitle: "Let's make it memorable.",
+  enquiryEventTypes: ["Wedding / engagement", "Corporate event", "Party", "Live music", "Brand / business shoot", "Other"],
 };
 
 function adminHeaders(): Record<string, string> {
@@ -68,6 +91,40 @@ export async function fetchPortfolioDraft(): Promise<{ draft: PortfolioSite; pub
   if (!response.ok) throw new Error("Could not load website settings");
   const data = await response.json();
   return { draft: { ...defaultPortfolioSite, ...(data.draft || {}) }, publishedAt: data.publishedAt };
+}
+
+export async function uploadPortfolioImage(file: File): Promise<string> {
+  const form = new FormData();
+  form.append("image", file);
+  const response = await fetch("/api/admin/portfolio/media", { method: "POST", headers: adminHeaders(), body: form });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.url) throw new Error(data.error || "Image upload failed");
+  return data.url;
+}
+
+export async function testPortfolioWebhook(webhookUrl: string): Promise<void> {
+  const response = await fetch("/api/admin/portfolio/webhook/test", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...adminHeaders() },
+    body: JSON.stringify({ webhookUrl }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || "Webhook test failed");
+}
+
+export type PortfolioEnquiry = {
+  name: string; email: string; phone?: string; eventTypeTitle: string;
+  preferredDate?: string; venue?: string; message: string; website?: string;
+};
+
+export async function submitPortfolioEnquiry(enquiry: PortfolioEnquiry): Promise<void> {
+  const response = await fetch("/api/portfolio/enquiry", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(enquiry),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data.ok !== true) throw new Error(data.error || "Could not send enquiry");
 }
 
 export async function savePortfolioDraft(draft: PortfolioSite): Promise<void> {

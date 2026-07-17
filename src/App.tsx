@@ -82,6 +82,12 @@ function isPublicRoute(): boolean {
     p.startsWith("/quote/") ||
     p.startsWith("/contract/") ||
     p.startsWith("/tenant-setup/") ||
+    p.startsWith("/portfolio-preview") ||
+    p === "/portfolio" ||
+    p === "/about" ||
+    p === "/testimonials" ||
+    p === "/enquire" ||
+    p === "/contact" ||
     p === "/login"
   );
 }
@@ -173,7 +179,7 @@ const App = () => {
         <Toaster />
         <Sonner />
         <CustomDomainContext.Provider value={customDomainSlug}>
-          <BrowserRouter>
+          <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
             <Suspense fallback={PageFallback}>
               <Routes>
                 {/* When the app is served from a tenant's custom domain, show their booking page at root */}
@@ -181,7 +187,12 @@ const App = () => {
                   path="/"
                   element={isNativeApp ? <MobileCapture /> : siteRole === "portfolio" ? <PortfolioSite /> : customDomainSlug ? <TenantBookingPage overrideSlug={customDomainSlug} /> : <Booking />}
                 />
-                <Route path="/portfolio-preview" element={<PortfolioSite />} />
+                <Route path="/portfolio-preview/*" element={<PortfolioSite />} />
+                <Route path="/portfolio" element={<PortfolioSite />} />
+                <Route path="/about" element={<PortfolioSite />} />
+                <Route path="/testimonials" element={<PortfolioSite />} />
+                <Route path="/enquire" element={<PortfolioSite />} />
+                <Route path="/contact" element={<PortfolioSite />} />
                 <Route path="/book/:tenantSlug" element={<TenantBookingPage />} />
                 <Route path="/gallery/:albumId" element={<AlbumDetail />} />
                 <Route path="/booking/modify/:bookingId" element={<BookingModify />} />

@@ -77,6 +77,7 @@ const DB_KEYS = {
   SLOT_REQUESTS: "wv_event_slot_requests",
   PORTFOLIO_DRAFT: "wv_portfolio_draft",
   PORTFOLIO_PUBLISHED: "wv_portfolio_published",
+  PORTFOLIO_SETTINGS: "wv_portfolio_settings",
   ZIP_STATS: "wv_zip_stats",
 };
 
@@ -145,6 +146,8 @@ fs.mkdirSync(CACHE_DIR, { recursive: true });
 // image cache prevents a cache-clear request from deleting an in-progress job.
 const ZIP_JOBS_DIR = path.join(DATA_DIR, "zip-jobs");
 fs.mkdirSync(ZIP_JOBS_DIR, { recursive: true });
+const PORTFOLIO_MEDIA_DIR = path.join(DATA_DIR, "portfolio-media");
+fs.mkdirSync(PORTFOLIO_MEDIA_DIR, { recursive: true });
 const ZIP_READY_TTL_MS = Math.max(60_000, Number(process.env.ZIP_READY_TTL_MS) || 15 * 60 * 1000);
 const ZIP_TRANSFERRED_TTL_MS = Math.max(10_000, Number(process.env.ZIP_TRANSFERRED_TTL_MS) || 2 * 60 * 1000);
 // Remove artifacts left by a container restart. Active jobs only exist in memory,
@@ -2175,10 +2178,15 @@ function findAlbumById(db, albumId) {
 const DEFAULT_PORTFOLIO = {
   brandName: "Zac Morgan Photography",
   logo: "/portfolio/logo.png",
+  heroImage: "/portfolio/live-action.jpg",
   heroLabel: "Live in action",
   introEyebrow: "Hey, I'm Zac, an event / wedding photographer",
   introTitle: "Let's get to know each other",
   introBody: "What started as a hobby quickly became a passion for capturing the moments people want to remember. I photograph weddings, live music, parties and corporate events across Sydney.",
+  aboutSecondaryBody: "I work quietly when the moment calls for it and step in with direction when it helps. The goal is a polished gallery that keeps the people, movement and atmosphere that made the day yours.",
+  portfolioTitle: "Stories that still feel alive.",
+  portfolioBody: "Weddings, performances, parties, people and brands photographed with energy and intent.",
+  testimonialsTitle: "The experience matters too.",
   portrait: "/portfolio/portrait.jpg",
   testimonial: "Zac is an extremely talented photographer. His photos captured the energy of the night perfectly and were delivered quickly.",
   testimonialAuthor: "Henry M",
@@ -2192,7 +2200,18 @@ const DEFAULT_PORTFOLIO = {
   instagramHandle: "@zacmphotos",
   linkedinUrl: "https://www.linkedin.com/in/zac-morgan-photography/",
   contactEmail: "zacmorganphotography@gmail.com",
+  locationLabel: "Sydney, Australia",
+  bookingTitle: "Tell me what you're planning",
+  bookingBody: "Share the date, location and feeling you want captured. I'll reply with availability and the right coverage option.",
+  bookingButtonLabel: "Start an enquiry",
+  footerTitle: "Let's make it memorable.",
+  enquiryEventTypes: ["Wedding / engagement", "Corporate event", "Party", "Live music", "Brand / business shoot", "Other"],
 };
+
+function publicPortfolioContent(value) {
+  const { webhookUrl: _privateWebhook, ...publicValue } = value || {};
+  return { ...DEFAULT_PORTFOLIO, ...publicValue };
+}
 
 app.get("/api/site-context", (req, res) => {
   const hostname = String(req.hostname || "").toLowerCase();
@@ -2207,20 +2226,27 @@ app.get("/api/site-context", (req, res) => {
 app.get("/api/portfolio", (_req, res) => {
   const published = dbGet(readDb(), DB_KEYS.PORTFOLIO_PUBLISHED, DEFAULT_PORTFOLIO);
   res.setHeader("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
-  res.json({ ...DEFAULT_PORTFOLIO, ...(published || {}) });
+  res.json(publicPortfolioContent(published));
 });
 
 app.get("/api/admin/portfolio", requireAuth, (_req, res) => {
   const db = readDb();
   const published = dbGet(db, DB_KEYS.PORTFOLIO_PUBLISHED, DEFAULT_PORTFOLIO);
   const draft = dbGet(db, DB_KEYS.PORTFOLIO_DRAFT, published);
-  res.json({ draft: { ...DEFAULT_PORTFOLIO, ...(draft || {}) }, publishedAt: published?.updatedAt });
+  const privateSettings = dbGet(db, DB_KEYS.PORTFOLIO_SETTINGS, {});
+  res.json({ draft: { ...publicPortfolioContent(draft), webhookUrl: privateSettings.webhookUrl || "" }, publishedAt: published?.updatedAt });
 });
 
 app.put("/api/admin/portfolio/draft", requireAuth, (req, res) => {
   if (!req.body?.draft || typeof req.body.draft !== "object") return res.status(400).json({ error: "draft is required" });
   const db = readDb();
-  db[DB_KEYS.PORTFOLIO_DRAFT] = { ...DEFAULT_PORTFOLIO, ...req.body.draft, updatedAt: new Date().toISOString() };
+  const draft = req.body.draft;
+  const webhookUrl = typeof draft.webhookUrl === "string" ? draft.webhookUrl.trim() : "";
+  if (webhookUrl && !/^https:\/\/(?:canary\.|ptb\.)?(?:discord(?:app)?\.com)\/api\/webhooks\//i.test(webhookUrl)) {
+    return res.status(400).json({ error: "Webhook must be a Discord webhook URL" });
+  }
+  db[DB_KEYS.PORTFOLIO_DRAFT] = { ...publicPortfolioContent(draft), updatedAt: new Date().toISOString() };
+  db[DB_KEYS.PORTFOLIO_SETTINGS] = { webhookUrl };
   writeDb(db);
   res.json({ ok: true });
 });
@@ -2229,9 +2255,74 @@ app.post("/api/admin/portfolio/publish", requireAuth, (_req, res) => {
   const db = readDb();
   const draft = dbGet(db, DB_KEYS.PORTFOLIO_DRAFT, DEFAULT_PORTFOLIO);
   const publishedAt = new Date().toISOString();
-  db[DB_KEYS.PORTFOLIO_PUBLISHED] = { ...DEFAULT_PORTFOLIO, ...(draft || {}), updatedAt: publishedAt };
+  db[DB_KEYS.PORTFOLIO_PUBLISHED] = { ...publicPortfolioContent(draft), updatedAt: publishedAt };
   writeDb(db);
   res.json({ ok: true, publishedAt });
+});
+
+const portfolioUpload = multer({
+  storage: multer.diskStorage({
+    destination: PORTFOLIO_MEDIA_DIR,
+    filename: (_req, file, cb) => cb(null, `${Date.now()}-${crypto.randomBytes(5).toString("hex")}${path.extname(file.originalname).toLowerCase() || ".jpg"}`),
+  }),
+  limits: { fileSize: 20 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => cb(null, file.mimetype.startsWith("image/") && isSupportedImageFilename(file.originalname)),
+});
+
+app.post("/api/admin/portfolio/media", requireAuth, portfolioUpload.single("image"), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "Choose a supported image up to 20 MB" });
+  res.json({ ok: true, url: `/portfolio-media/${encodeURIComponent(req.file.filename)}` });
+});
+
+app.get("/portfolio-media/:filename", (req, res) => {
+  const filename = path.basename(req.params.filename);
+  if (!isSupportedImageFilename(filename)) return res.status(404).end();
+  const target = path.join(PORTFOLIO_MEDIA_DIR, filename);
+  if (!fs.existsSync(target)) return res.status(404).end();
+  res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+  res.sendFile(target);
+});
+
+app.post("/api/admin/portfolio/webhook/test", requireAuth, async (req, res) => {
+  const webhookUrl = String(req.body?.webhookUrl || "").trim();
+  if (!/^https:\/\/(?:canary\.|ptb\.)?(?:discord(?:app)?\.com)\/api\/webhooks\//i.test(webhookUrl)) return res.status(400).json({ error: "Enter a valid Discord webhook URL" });
+  try {
+    await sendDiscordEmbed(webhookUrl, { embeds: [{ title: "Portfolio enquiry webhook connected", description: "New website enquiries will appear here.", color: 0xd0a94a, timestamp: new Date().toISOString() }] });
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(502).json({ error: error?.message || "Webhook test failed" });
+  }
+});
+
+const portfolioEnquiryLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 12, standardHeaders: true, legacyHeaders: false, message: { error: "Too many enquiries. Please try again later." } });
+app.post("/api/portfolio/enquiry", portfolioEnquiryLimiter, async (req, res) => {
+  const { name, email, phone, eventTypeTitle, preferredDate, venue, message, website } = req.body || {};
+  if (website) return res.json({ ok: true }); // honeypot
+  if (!name || typeof name !== "string" || !name.trim()) return res.status(400).json({ error: "Name is required" });
+  if (!email || typeof email !== "string" || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) return res.status(400).json({ error: "A valid email is required" });
+  if (!message || typeof message !== "string" || !message.trim()) return res.status(400).json({ error: "Tell us a little about the event" });
+  const enquiry = {
+    id: `enq-${Date.now()}-${crypto.randomBytes(3).toString("hex")}`,
+    name: name.trim().slice(0, 120), email: email.trim().slice(0, 200), phone: String(phone || "").trim().slice(0, 50) || undefined,
+    eventTypeTitle: String(eventTypeTitle || "Website enquiry").trim().slice(0, 100),
+    preferredDate: /^\d{4}-\d{2}-\d{2}$/.test(String(preferredDate || "")) ? preferredDate : undefined,
+    message: `${venue ? `Venue / location: ${String(venue).trim().slice(0, 180)}\n\n` : ""}${message.trim().slice(0, 3000)}`,
+    status: "pending", createdAt: new Date().toISOString(), source: "portfolio",
+  };
+  const db = readDb();
+  const enquiries = dbGet(db, DB_KEYS.ENQUIRIES, []);
+  const list = Array.isArray(enquiries) ? enquiries : [];
+  list.push(enquiry);
+  db[DB_KEYS.ENQUIRIES] = list;
+  writeDb(db);
+  const portfolioSettings = dbGet(db, DB_KEYS.PORTFOLIO_SETTINGS, {});
+  const globalSettings = dbGet(db, DB_KEYS.SETTINGS, {});
+  const webhookUrl = portfolioSettings.webhookUrl || globalSettings.discordWebhookUrl;
+  let webhookDelivered = false;
+  if (webhookUrl) {
+    try { await notifyNewEnquiry(webhookUrl, enquiry); webhookDelivered = true; } catch (error) { console.error("Portfolio enquiry webhook failed:", error?.message || error); }
+  }
+  res.status(201).json({ ok: true, enquiryId: enquiry.id, webhookDelivered });
 });
 
 // Most camera frames in an album share dimensions and watermark settings. Reusing

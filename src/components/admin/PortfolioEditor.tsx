@@ -1,16 +1,33 @@
 import { useEffect, useState } from "react";
-import { ExternalLink, Eye, Globe, Loader2, Save } from "lucide-react";
+import { ExternalLink, Eye, Globe, Loader2, Save, Send, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
-import { defaultPortfolioSite, fetchPortfolioDraft, publishPortfolio, savePortfolioDraft, type PortfolioSite } from "@/lib/portfolio";
+import { defaultPortfolioSite, fetchPortfolioDraft, publishPortfolio, savePortfolioDraft, testPortfolioWebhook, uploadPortfolioImage, type PortfolioSite } from "@/lib/portfolio";
+
+function ImageUploadField({ label, value, onChange }: { label: string; value: string; onChange: (url: string) => void }) {
+  const [uploading, setUploading] = useState(false);
+  const id = `portfolio-image-${label.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+  const upload = async (file?: File) => {
+    if (!file) return;
+    setUploading(true);
+    try { onChange(await uploadPortfolioImage(file)); toast.success(`${label} uploaded`); } catch (error) { toast.error(error instanceof Error ? error.message : "Upload failed"); } finally { setUploading(false); }
+  };
+  return <div className="space-y-2 md:col-span-2"><p className="text-xs text-muted-foreground">{label}</p><div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+    <div className="h-24 w-full overflow-hidden rounded-md border border-border bg-secondary sm:w-40">{value && <img src={value} alt="" className="h-full w-full object-cover" />}</div>
+    <div className="min-w-0 flex-1 space-y-2"><Input value={value} onChange={event => onChange(event.target.value)} aria-label={`${label} URL`} /><input id={id} type="file" accept="image/jpeg,image/png,image/webp,image/avif" className="hidden" onChange={event => upload(event.target.files?.[0])} />
+      <Button asChild variant="outline" size="sm" disabled={uploading}><label htmlFor={id} className="cursor-pointer">{uploading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Upload className="mr-2 h-4 w-4" />}{uploading ? "Uploading…" : "Upload image"}</label></Button>
+    </div>
+  </div></div>;
+}
 
 export default function PortfolioEditor() {
   const [draft, setDraft] = useState<PortfolioSite>(defaultPortfolioSite);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [publishedAt, setPublishedAt] = useState<string>();
+  const [testingWebhook, setTestingWebhook] = useState(false);
 
   useEffect(() => {
     fetchPortfolioDraft().then(data => { setDraft(data.draft); setPublishedAt(data.publishedAt); }).catch(err => toast.error(err.message)).finally(() => setLoading(false));
@@ -24,6 +41,11 @@ export default function PortfolioEditor() {
   const publish = async () => {
     setSaving(true);
     try { await savePortfolioDraft(draft); const result = await publishPortfolio(); setPublishedAt(result.publishedAt); toast.success("Website published"); } catch (err) { toast.error(err instanceof Error ? err.message : "Publish failed"); } finally { setSaving(false); }
+  };
+  const testWebhook = async () => {
+    if (!draft.webhookUrl) return toast.error("Enter a Discord webhook URL first");
+    setTestingWebhook(true);
+    try { await testPortfolioWebhook(draft.webhookUrl); toast.success("Test notification sent"); } catch (error) { toast.error(error instanceof Error ? error.message : "Webhook test failed"); } finally { setTestingWebhook(false); }
   };
 
   if (loading) return <div className="py-24 text-center text-sm text-muted-foreground"><Loader2 className="mx-auto mb-3 h-5 w-5 animate-spin" />Loading website editor…</div>;
@@ -47,7 +69,8 @@ export default function PortfolioEditor() {
       <div className="grid gap-4 md:grid-cols-2">
         <label className="space-y-1 text-xs text-muted-foreground">Business name<Input value={draft.brandName} onChange={e => change("brandName", e.target.value)} /></label>
         <label className="space-y-1 text-xs text-muted-foreground">Hero label<Input value={draft.heroLabel} onChange={e => change("heroLabel", e.target.value)} /></label>
-        <label className="space-y-1 text-xs text-muted-foreground md:col-span-2">Logo image URL<Input value={draft.logo} onChange={e => change("logo", e.target.value)} /></label>
+        <ImageUploadField label="Logo" value={draft.logo} onChange={value => change("logo", value)} />
+        <ImageUploadField label="Hero image" value={draft.heroImage} onChange={value => change("heroImage", value)} />
       </div>
     </section>
 
@@ -56,17 +79,36 @@ export default function PortfolioEditor() {
         <label className="space-y-1 text-xs text-muted-foreground">Intro line<Input value={draft.introEyebrow} onChange={e => change("introEyebrow", e.target.value)} /></label>
         <label className="space-y-1 text-xs text-muted-foreground">Heading<Input value={draft.introTitle} onChange={e => change("introTitle", e.target.value)} /></label>
         <label className="space-y-1 text-xs text-muted-foreground md:col-span-2">About text<Textarea rows={4} value={draft.introBody} onChange={e => change("introBody", e.target.value)} /></label>
-        <label className="space-y-1 text-xs text-muted-foreground md:col-span-2">Portrait image URL<Input value={draft.portrait} onChange={e => change("portrait", e.target.value)} /></label>
+        <label className="space-y-1 text-xs text-muted-foreground md:col-span-2">Detailed about text<Textarea rows={4} value={draft.aboutSecondaryBody} onChange={e => change("aboutSecondaryBody", e.target.value)} /></label>
+        <ImageUploadField label="Portrait image" value={draft.portrait} onChange={value => change("portrait", value)} />
       </div>
     </section>
+
+    <section className="space-y-4 border-t border-border pt-7"><h3 className="font-display text-2xl">Page copy</h3><div className="grid gap-4 md:grid-cols-2">
+      <label className="space-y-1 text-xs text-muted-foreground">Portfolio heading<Input value={draft.portfolioTitle} onChange={e => change("portfolioTitle", e.target.value)} /></label>
+      <label className="space-y-1 text-xs text-muted-foreground">Testimonials heading<Input value={draft.testimonialsTitle} onChange={e => change("testimonialsTitle", e.target.value)} /></label>
+      <label className="space-y-1 text-xs text-muted-foreground md:col-span-2">Portfolio intro<Textarea rows={3} value={draft.portfolioBody} onChange={e => change("portfolioBody", e.target.value)} /></label>
+      <label className="space-y-1 text-xs text-muted-foreground md:col-span-2">Footer heading<Input value={draft.footerTitle} onChange={e => change("footerTitle", e.target.value)} /></label>
+    </div></section>
 
     <section className="space-y-4 border-t border-border pt-7"><h3 className="font-display text-2xl">Portfolio categories</h3>
       <div className="divide-y divide-border border-y border-border">
         {draft.projects.map((project, index) => <div className="grid gap-3 py-5 md:grid-cols-2" key={project.id}>
           <Input value={project.title} aria-label={`Project ${index + 1} title`} onChange={e => change("projects", draft.projects.map((p, i) => i === index ? { ...p, title: e.target.value } : p))} />
-          <Input value={project.image} aria-label={`Project ${index + 1} image`} onChange={e => change("projects", draft.projects.map((p, i) => i === index ? { ...p, image: e.target.value } : p))} />
+          <div className="md:row-span-2"><ImageUploadField label={`${project.title || `Project ${index + 1}`} image`} value={project.image} onChange={value => change("projects", draft.projects.map((p, i) => i === index ? { ...p, image: value } : p))} /></div>
           <Textarea className="md:col-span-2" rows={2} value={project.description} aria-label={`Project ${index + 1} description`} onChange={e => change("projects", draft.projects.map((p, i) => i === index ? { ...p, description: e.target.value } : p))} />
         </div>)}
+      </div>
+    </section>
+
+    <section className="space-y-4 border-t border-border pt-7"><div><h3 className="font-display text-2xl">Booking enquiry</h3><p className="text-xs text-muted-foreground">Controls the public Book now page and notification delivery.</p></div>
+      <div className="grid gap-4 md:grid-cols-2">
+        <label className="space-y-1 text-xs text-muted-foreground">Page heading<Input value={draft.bookingTitle} onChange={e => change("bookingTitle", e.target.value)} /></label>
+        <label className="space-y-1 text-xs text-muted-foreground">Button label<Input value={draft.bookingButtonLabel} onChange={e => change("bookingButtonLabel", e.target.value)} /></label>
+        <label className="space-y-1 text-xs text-muted-foreground md:col-span-2">Intro text<Textarea rows={3} value={draft.bookingBody} onChange={e => change("bookingBody", e.target.value)} /></label>
+        <label className="space-y-1 text-xs text-muted-foreground">Location label<Input value={draft.locationLabel} onChange={e => change("locationLabel", e.target.value)} /></label>
+        <label className="space-y-1 text-xs text-muted-foreground">Event choices, one per line<Textarea rows={6} value={draft.enquiryEventTypes.join("\n")} onChange={e => change("enquiryEventTypes", e.target.value.split("\n").map(v => v.trim()).filter(Boolean))} /></label>
+        <div className="space-y-2 md:col-span-2"><label className="space-y-1 text-xs text-muted-foreground">Discord webhook URL<Input type="password" value={draft.webhookUrl || ""} onChange={e => change("webhookUrl", e.target.value)} placeholder="https://discord.com/api/webhooks/…" /></label><p className="text-[11px] text-muted-foreground">Stored privately and never included in public website data. Website enquiries still appear in Admin → Enquiries when no webhook is configured.</p><Button type="button" variant="outline" size="sm" onClick={testWebhook} disabled={testingWebhook}><Send className="mr-2 h-4 w-4" />{testingWebhook ? "Sending…" : "Send test"}</Button></div>
       </div>
     </section>
 
