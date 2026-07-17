@@ -3,6 +3,7 @@ export type PortfolioProject = {
   title: string;
   image: string;
   description: string;
+  category: string;
 };
 
 export type PortfolioGalleryImage = {
@@ -13,16 +14,31 @@ export type PortfolioGalleryImage = {
 };
 
 export type PortfolioTestimonial = {
+  id: string;
   quote: string;
   author: string;
   context: string;
+};
+
+export type PortfolioValue = {
+  id: string;
+  title: string;
+  body: string;
+};
+
+export type PortfolioStep = {
+  id: string;
+  title: string;
+  body: string;
 };
 
 export type PortfolioSite = {
   brandName: string;
   logo: string;
   heroImage: string;
+  heroImages: string[];
   heroLabel: string;
+  heroServicesLabel: string;
   introEyebrow: string;
   introTitle: string;
   introBody: string;
@@ -30,7 +46,34 @@ export type PortfolioSite = {
   portfolioTitle: string;
   portfolioBody: string;
   testimonialsTitle: string;
+  testimonialsIntro: string;
   portrait: string;
+  homeRibbonImages: string[];
+  storyEyebrow: string;
+  storyTitle: string;
+  philosophyEyebrow: string;
+  philosophyTitle: string;
+  philosophyBody: string;
+  philosophyImage: string;
+  portfolioClientsLabel: string;
+  portfolioClients: string[];
+  portfolioCtaEyebrow: string;
+  portfolioCtaTitle: string;
+  portfolioCtaLabel: string;
+  aboutApproachEyebrow: string;
+  aboutApproachTitle: string;
+  aboutApproachBody: string;
+  aboutSupportingImage: string;
+  aboutSupportingCaption: string;
+  aboutValues: PortfolioValue[];
+  aboutRibbonImages: string[];
+  testimonialsFeatureEyebrow: string;
+  testimonialsFeatureTitle: string;
+  testimonialsFeaturePoints: string[];
+  testimonialsImage: string;
+  testimonialsRibbonImages: string[];
+  enquiryImage: string;
+  enquirySteps: PortfolioStep[];
   testimonial: string;
   testimonialAuthor: string;
   projects: PortfolioProject[];
@@ -54,7 +97,9 @@ export const defaultPortfolioSite: PortfolioSite = {
   brandName: "Zac Morgan Photography",
   logo: "/portfolio/logo.png",
   heroImage: "/portfolio/live-action.jpg",
+  heroImages: ["/portfolio/live-action.jpg", "/portfolio/gallery/concert-performer.jpg", "/portfolio/gallery/brand-event.jpg"],
   heroLabel: "Live in action",
+  heroServicesLabel: "Weddings · Events · Live music · Brands",
   introEyebrow: "Hey, I'm Zac, an event / wedding photographer",
   introTitle: "Let's get to know each other",
   introBody: "What started as a hobby quickly became a passion for capturing the moments people want to remember. I photograph weddings, live music, parties and corporate events across Sydney.",
@@ -62,14 +107,49 @@ export const defaultPortfolioSite: PortfolioSite = {
   portfolioTitle: "Stories that still feel alive.",
   portfolioBody: "Weddings, performances, parties, people and brands photographed with energy and intent.",
   testimonialsTitle: "The experience matters too.",
+  testimonialsIntro: "Feedback from weddings, celebrations, portrait sessions and business events across Sydney.",
   portrait: "/portfolio/portrait.jpg",
+  homeRibbonImages: ["/portfolio/gallery/wedding-garden.jpg", "/portfolio/gallery/wedding-celebration.jpg", "/portfolio/gallery/wedding-candid.jpg"],
+  storyEyebrow: "Ways of seeing",
+  storyTitle: "Every room has its own rhythm.",
+  philosophyEyebrow: "The work",
+  philosophyTitle: "Photographs should feel like the night did.",
+  philosophyBody: "Not over-directed. Not flattened into a trend. Just the people, atmosphere and small details that made the moment yours.",
+  philosophyImage: "/portfolio/gallery/food-detail.jpg",
+  portfolioClientsLabel: "Selected clients and venues",
+  portfolioClients: ["Asahi Breweries", "Navarra Venues", "SMASH!"],
+  portfolioCtaEyebrow: "Your story, photographed honestly",
+  portfolioCtaTitle: "Planning something?",
+  portfolioCtaLabel: "Check availability",
+  aboutApproachEyebrow: "The approach",
+  aboutApproachTitle: "Present enough to guide. Quiet enough to notice.",
+  aboutApproachBody: "I look for the interactions happening between the scheduled moments: the reaction across the room, the energy building before a performance, and the details your team spent months getting right.",
+  aboutSupportingImage: "/portfolio/gallery/concert-performer.jpg",
+  aboutSupportingCaption: "Working across Sydney weddings, events, venues and live productions.",
+  aboutValues: [
+    { id: "natural", title: "Natural over staged", body: "Real expressions and useful direction, without turning your event into a production." },
+    { id: "dependable", title: "Fast and dependable", body: "Clear communication, careful backups and delivery that respects your timeline." },
+    { id: "people", title: "Built around people", body: "Coverage adapts to your guests, venue, schedule and what matters most to you." },
+  ],
+  aboutRibbonImages: ["/portfolio/gallery/concert-crowd.jpg", "/portfolio/gallery/event-energy.jpg", "/portfolio/gallery/brand-event.jpg"],
+  testimonialsFeatureEyebrow: "From first message to final gallery",
+  testimonialsFeatureTitle: "Clear, calm and ready for the moment.",
+  testimonialsFeaturePoints: ["Straightforward planning", "Natural, true-to-life coverage", "Careful backup and timely delivery"],
+  testimonialsImage: "/portfolio/gallery/portrait-editorial.jpg",
+  testimonialsRibbonImages: ["/portfolio/gallery/wedding-celebration.jpg", "/portfolio/gallery/wedding-candid.jpg", "/portfolio/gallery/concert-performer.jpg"],
+  enquiryImage: "/portfolio/gallery/concert-crowd.jpg",
+  enquirySteps: [
+    { id: "details", title: "Send the details", body: "Share the date, venue and kind of coverage you have in mind." },
+    { id: "fit", title: "Confirm the fit", body: "You'll receive availability, options and a clear recommendation." },
+    { id: "book", title: "Lock it in", body: "Approve the booking, sign online and your date is secured." },
+  ],
   testimonial: "Zac is an extremely talented photographer. His photos captured the energy of the night perfectly and were delivered quickly.",
   testimonialAuthor: "Henry M",
   projects: [
-    { id: "weddings", title: "Engagements / Weddings", image: "/portfolio/weddings.jpg", description: "Relaxed, honest coverage from the quiet moments to the dance floor." },
-    { id: "bands", title: "Band Photos", image: "/portfolio/bands.jpg", description: "Live performance and artist imagery that keeps the atmosphere intact." },
-    { id: "corporate", title: "Corporate Events", image: "/portfolio/corporate.jpg", description: "Polished event coverage for teams, brands and venues." },
-    { id: "parties", title: "Parties", image: "/portfolio/parties.jpg", description: "Candid celebration photography with people at the centre." },
+    { id: "weddings", title: "Engagements / Weddings", image: "/portfolio/weddings.jpg", description: "Relaxed, honest coverage from the quiet moments to the dance floor.", category: "Weddings" },
+    { id: "bands", title: "Band Photos", image: "/portfolio/bands.jpg", description: "Live performance and artist imagery that keeps the atmosphere intact.", category: "Live music" },
+    { id: "corporate", title: "Corporate Events", image: "/portfolio/corporate.jpg", description: "Polished event coverage for teams, brands and venues.", category: "Brand and business" },
+    { id: "parties", title: "Parties", image: "/portfolio/parties.jpg", description: "Candid celebration photography with people at the centre.", category: "Events" },
   ],
   galleryImages: [
     { id: "wedding-aisle", image: "/portfolio/gallery/wedding-garden.jpg", alt: "Newlyweds walking down the church aisle", category: "Weddings" },
@@ -86,12 +166,12 @@ export const defaultPortfolioSite: PortfolioSite = {
     { id: "balter", image: "/portfolio/gallery/nightlife.jpg", alt: "Balter brand activation", category: "Brand and business" },
   ],
   testimonials: [
-    { quote: "Zac's photos for our wedding were amazing. He was professional, genuine and made sure the day was captured beautifully, from our families to the candid moments.", author: "Alexander", context: "Wedding" },
-    { quote: "The photos were stunning, the session was fun and relaxed, and the turnaround time was incredibly fast.", author: "Jorden", context: "Portrait session" },
-    { quote: "Thanks so much Zac for your amazing work at our wedding. I am loving all the photos that captured the best day of my life.", author: "Luisa Munoz", context: "Wedding" },
-    { quote: "Zac was the ultimate professional, capturing only the best photos for my son's 21st and creating a lifetime of memories.", author: "Henry Makhouf", context: "21st birthday" },
-    { quote: "The photos were outstanding and the turnaround time was very speedy. Highly recommend.", author: "Keith", context: "Family celebration" },
-    { quote: "Professional, punctual and a great communicator. He handled the brief with professionalism and flair.", author: "Lorenzo", context: "Corporate event" },
+    { id: "alexander", quote: "Zac's photos for our wedding were amazing. He was professional, genuine and made sure the day was captured beautifully, from our families to the candid moments.", author: "Alexander", context: "Wedding" },
+    { id: "jorden", quote: "The photos were stunning, the session was fun and relaxed, and the turnaround time was incredibly fast.", author: "Jorden", context: "Portrait session" },
+    { id: "luisa", quote: "Thanks so much Zac for your amazing work at our wedding. I am loving all the photos that captured the best day of my life.", author: "Luisa Munoz", context: "Wedding" },
+    { id: "henry", quote: "Zac was the ultimate professional, capturing only the best photos for my son's 21st and creating a lifetime of memories.", author: "Henry Makhouf", context: "21st birthday" },
+    { id: "keith", quote: "The photos were outstanding and the turnaround time was very speedy. Highly recommend.", author: "Keith", context: "Family celebration" },
+    { id: "lorenzo", quote: "Professional, punctual and a great communicator. He handled the brief with professionalism and flair.", author: "Lorenzo", context: "Corporate event" },
   ],
   instagramUrl: "https://www.instagram.com/zacmphotos/",
   instagramHandle: "@zacmphotos",

@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { ArrowDown, ArrowRight, Check, ChevronLeft, ChevronRight, Instagram, Linkedin, Mail, Menu, X } from "lucide-react";
 import { Link, useLocation } from "react-router-dom";
 import { defaultPortfolioSite, fetchPublishedPortfolio, submitPortfolioEnquiry, type PortfolioEnquiry, type PortfolioGalleryImage, type PortfolioSite as PortfolioSiteData } from "@/lib/portfolio";
@@ -43,18 +43,17 @@ function SiteFooter({ site, preview }: { site: PortfolioSiteData; preview: boole
   </footer>;
 }
 
-function ImageRibbon({ images }: { images: PortfolioGalleryImage[] }) {
-  return <section className="portfolio-image-ribbon" aria-label="Selected photographs" data-reveal>{images.slice(0, 3).map(image => <img key={image.id} src={image.image} alt={image.alt} loading="lazy" />)}</section>;
+function UrlImageRibbon({ images }: { images: string[] }) {
+  return <section className="portfolio-image-ribbon" aria-label="Selected photographs" data-reveal>{images.filter(Boolean).slice(0, 3).map((image, index) => <img key={`${image}-${index}`} src={image} alt="" loading="lazy" />)}</section>;
 }
 
 function StoryIndex({ site, preview }: { site: PortfolioSiteData; preview: boolean }) {
   const [active, setActive] = useState(0);
-  const filters = ["Weddings", "Live music", "Brand and business", "Events"];
   const project = site.projects[active] || site.projects[0];
   return <section className="portfolio-story-index" data-reveal>
-    <div className="portfolio-story-heading"><p>Ways of seeing</p><h2>Every room has<br />its own rhythm.</h2></div>
+    <div className="portfolio-story-heading"><p>{site.storyEyebrow}</p><h2>{site.storyTitle}</h2></div>
     <div className="portfolio-story-layout">
-      <div className="portfolio-story-list">{site.projects.map((item, index) => <Link className={active === index ? "active" : ""} key={item.id} to={`${routeFor(preview, "/portfolio")}?category=${encodeURIComponent(filters[index] || "All")}`} onMouseEnter={() => setActive(index)} onFocus={() => setActive(index)}>
+      <div className="portfolio-story-list">{site.projects.map((item, index) => <Link className={active === index ? "active" : ""} key={item.id} to={`${routeFor(preview, "/portfolio")}?category=${encodeURIComponent(item.category || "All")}`} onMouseEnter={() => setActive(index)} onFocus={() => setActive(index)}>
         <span>{String(index + 1).padStart(2, "0")}</span><div><h3>{item.title}</h3><p>{item.description}</p></div><ArrowRight />
       </Link>)}</div>
       <figure key={project?.id}><img src={project?.image} alt={project?.title} /><figcaption>Explore {project?.title}</figcaption></figure>
@@ -63,17 +62,17 @@ function StoryIndex({ site, preview }: { site: PortfolioSiteData; preview: boole
 }
 
 function HomePage({ site, preview }: { site: PortfolioSiteData; preview: boolean }) {
-  const heroFrames = [site.heroImage, site.galleryImages[3]?.image, site.galleryImages[7]?.image].filter((image, index, all): image is string => !!image && all.indexOf(image) === index);
+  const heroFrames = (site.heroImages?.length ? site.heroImages : [site.heroImage]).filter((image, index, all): image is string => !!image && all.indexOf(image) === index);
   return <>
     <section className="portfolio-hero" aria-label={site.heroLabel}>
       <div className="portfolio-hero-media" aria-hidden="true">{heroFrames.map((image, index) => <img key={image} src={image} alt="" style={{ animationDelay: `${index * 6}s` }} />)}</div>
       <div className="portfolio-hero-copy"><p>{site.heroLabel}</p><h1>{site.brandName}</h1><div className="portfolio-hero-actions"><Link to={routeFor(preview, "/portfolio")}>View portfolio</Link><Link to={routeFor(preview, "/enquire")}>{site.bookingButtonLabel}</Link></div></div>
-      <div className="portfolio-hero-meta"><span>{site.locationLabel}</span><span>Weddings · Events · Live music · Brands</span></div>
+      <div className="portfolio-hero-meta"><span>{site.locationLabel}</span><span>{site.heroServicesLabel}</span></div>
       <a href="#introduction" className="portfolio-scroll" aria-label="Continue"><ArrowDown /></a>
     </section>
     <section className="portfolio-about" id="introduction" data-reveal><div className="portfolio-about-copy"><p className="portfolio-kicker">{site.introEyebrow}</p><h2>{site.introTitle}</h2><p>{site.introBody}</p><Link to={routeFor(preview, "/about")}>More about Zac</Link></div><figure><img src={site.portrait} alt="Zac Morgan photographing an event" /></figure></section>
-    <ImageRibbon images={site.galleryImages} />
-    <section className="portfolio-philosophy" data-reveal><figure><img src={site.galleryImages[4]?.image || site.heroImage} alt={site.galleryImages[4]?.alt || "Live performance photographed by Zac Morgan"} loading="lazy" /></figure><div><p className="portfolio-kicker">The work</p><h2>Photographs should feel like the night did.</h2><p>Not over-directed. Not flattened into a trend. Just the people, atmosphere and small details that made the moment yours.</p><Link to={routeFor(preview, "/portfolio")}>See the full portfolio <ArrowRight /></Link></div></section>
+    <UrlImageRibbon images={site.homeRibbonImages} />
+    <section className="portfolio-philosophy" data-reveal><figure><img src={site.philosophyImage || site.heroImage} alt="Selected portfolio photograph" loading="lazy" /></figure><div><p className="portfolio-kicker">{site.philosophyEyebrow}</p><h2>{site.philosophyTitle}</h2><p>{site.philosophyBody}</p><Link to={routeFor(preview, "/portfolio")}>See the full portfolio <ArrowRight /></Link></div></section>
     <StoryIndex site={site} preview={preview} />
     <section className="portfolio-testimonial" data-reveal><p className="portfolio-kicker">Kind words</p><blockquote>“{site.testimonial}”</blockquote><cite>{site.testimonialAuthor}</cite><Link to={routeFor(preview, "/testimonials")}>Read client stories</Link></section>
   </>;
@@ -84,8 +83,8 @@ function PortfolioGallery({ images, initialFilter }: { images: PortfolioGalleryI
   const [selected, setSelected] = useState<number | null>(null);
   const categories = useMemo(() => ["All", ...Array.from(new Set(images.map(image => image.category).filter(Boolean)))], [images]);
   const visible = filter === "All" ? images : images.filter(image => image.category === filter);
-  useEffect(() => { setFilter(initialFilter && categories.includes(initialFilter) ? initialFilter : "All"); setSelected(null); }, [initialFilter, categories.join("|")]);
-  const move = (direction: number) => setSelected(current => current === null ? null : (current + direction + visible.length) % visible.length);
+  useEffect(() => { setFilter(initialFilter && categories.includes(initialFilter) ? initialFilter : "All"); setSelected(null); }, [initialFilter, categories]);
+  const move = useCallback((direction: number) => setSelected(current => current === null ? null : (current + direction + visible.length) % visible.length), [visible.length]);
   useEffect(() => {
     if (selected === null) return;
     const keydown = (event: KeyboardEvent) => {
@@ -95,7 +94,7 @@ function PortfolioGallery({ images, initialFilter }: { images: PortfolioGalleryI
     };
     window.addEventListener("keydown", keydown);
     return () => window.removeEventListener("keydown", keydown);
-  }, [selected, visible.length]);
+  }, [move, selected]);
   return <section className="portfolio-gallery-section">
     <div className="portfolio-gallery-toolbar"><p>{visible.length} photographs</p><div role="group" aria-label="Filter portfolio">{categories.map(category => <button className={filter === category ? "active" : ""} key={category} onClick={() => { setFilter(category); setSelected(null); }}>{category}</button>)}</div></div>
     <div className="portfolio-gallery-grid">{visible.map((image, index) => <button className={`portfolio-gallery-item portfolio-gallery-item-${index % 6}`} key={image.id} onClick={() => setSelected(index)} aria-label={`Open ${image.alt}`}><img src={image.image} alt={image.alt} loading="lazy" /><span>{image.category}</span></button>)}</div>
@@ -110,31 +109,30 @@ function PortfolioGallery({ images, initialFilter }: { images: PortfolioGalleryI
 
 function WorkPage({ site, preview, category }: { site: PortfolioSiteData; preview: boolean; category?: string | null }) {
   return <>
-    <section className="portfolio-page-intro portfolio-page-intro-work" data-reveal><p>Portfolio</p><h1>{site.portfolioTitle}</h1><span>{site.portfolioBody}</span><div className="portfolio-client-line"><span>Selected clients and venues</span><strong>Asahi Breweries</strong><strong>Navarra Venues</strong><strong>SMASH!</strong></div></section>
+    <section className="portfolio-page-intro portfolio-page-intro-work" data-reveal><p>Portfolio</p><h1>{site.portfolioTitle}</h1><span>{site.portfolioBody}</span><div className="portfolio-client-line"><span>{site.portfolioClientsLabel}</span>{site.portfolioClients.map(client => <strong key={client}>{client}</strong>)}</div></section>
     <section className="portfolio-specialties" data-reveal>{site.projects.map((project, index) => <div key={project.id}><span>{String(index + 1).padStart(2, "0")}</span><h2>{project.title}</h2><p>{project.description}</p></div>)}</section>
     <PortfolioGallery images={site.galleryImages} initialFilter={category} />
-    <section className="portfolio-inline-cta"><div><p className="portfolio-kicker">Your story, photographed honestly</p><h2>Planning something?</h2></div><Link to={routeFor(preview, "/enquire")}>Check availability <ArrowRight /></Link></section>
+    <section className="portfolio-inline-cta"><div><p className="portfolio-kicker">{site.portfolioCtaEyebrow}</p><h2>{site.portfolioCtaTitle}</h2></div><Link to={routeFor(preview, "/enquire")}>{site.portfolioCtaLabel} <ArrowRight /></Link></section>
   </>;
 }
 
 function AboutPage({ site, preview }: { site: PortfolioSiteData; preview: boolean }) {
-  const supporting = site.galleryImages[3] || site.galleryImages[0];
   return <>
     <section className="portfolio-about-page" data-reveal><figure><img src={site.portrait} alt="Zac Morgan" /></figure><div><p className="portfolio-kicker">About Zac</p><h1>{site.introTitle}</h1><p>{site.introBody}</p><p>{site.aboutSecondaryBody}</p><Link to={routeFor(preview, "/enquire")}>{site.bookingButtonLabel}<ArrowRight /></Link></div></section>
-    <section className="portfolio-about-manifesto" data-reveal><div><p className="portfolio-kicker">The approach</p><h2>Present enough to guide. Quiet enough to notice.</h2><p>I look for the interactions happening between the scheduled moments: the reaction across the room, the energy building before a performance, and the details your team spent months getting right.</p></div>{supporting && <figure><img src={supporting.image} alt={supporting.alt} loading="lazy" /><figcaption>Working across Sydney weddings, events, venues and live productions.</figcaption></figure>}</section>
-    <section className="portfolio-values"><div><span>01</span><h2>Natural over staged</h2><p>Real expressions and useful direction, without turning your event into a production.</p></div><div><span>02</span><h2>Fast and dependable</h2><p>Clear communication, careful backups and delivery that respects your timeline.</p></div><div><span>03</span><h2>Built around people</h2><p>Coverage adapts to your guests, venue, schedule and what matters most to you.</p></div></section>
-    <ImageRibbon images={site.galleryImages.slice(5, 8)} />
+    <section className="portfolio-about-manifesto" data-reveal><div><p className="portfolio-kicker">{site.aboutApproachEyebrow}</p><h2>{site.aboutApproachTitle}</h2><p>{site.aboutApproachBody}</p></div>{site.aboutSupportingImage && <figure><img src={site.aboutSupportingImage} alt="Zac Morgan Photography at work" loading="lazy" /><figcaption>{site.aboutSupportingCaption}</figcaption></figure>}</section>
+    <section className="portfolio-values">{site.aboutValues.map((value, index) => <div key={`${value.title}-${index}`}><span>{String(index + 1).padStart(2, "0")}</span><h2>{value.title}</h2><p>{value.body}</p></div>)}</section>
+    <UrlImageRibbon images={site.aboutRibbonImages} />
   </>;
 }
 
 function TestimonialsPage({ site, preview }: { site: PortfolioSiteData; preview: boolean }) {
   const reviews = site.testimonials.length ? site.testimonials : [{ quote: site.testimonial, author: site.testimonialAuthor, context: "Client" }];
   return <>
-    <section className="portfolio-page-intro portfolio-page-intro-testimonials"><p>Testimonials</p><h1>{site.testimonialsTitle}</h1><span>Feedback from weddings, celebrations, portrait sessions and business events across Sydney.</span></section>
+    <section className="portfolio-page-intro portfolio-page-intro-testimonials"><p>Testimonials</p><h1>{site.testimonialsTitle}</h1><span>{site.testimonialsIntro}</span></section>
     <section className="portfolio-quote-page"><p>Featured review</p><blockquote>“{reviews[0].quote}”</blockquote><cite>{reviews[0].author} · {reviews[0].context}</cite></section>
     <section className="portfolio-reviews">{reviews.slice(1).map((review, index) => <blockquote key={`${review.author}-${index}`}><span>{String(index + 2).padStart(2, "0")}</span><p>“{review.quote}”</p><div className="portfolio-review-by">{review.author}<small>{review.context}</small></div></blockquote>)}</section>
-    <ImageRibbon images={site.galleryImages.slice(1, 4)} />
-    <section className="portfolio-testimonial-image"><img src={site.galleryImages[8]?.image || site.projects[0]?.image || site.heroImage} alt={site.galleryImages[8]?.alt || "Event photographed by Zac Morgan"} /><div><p>From first message to final gallery</p><h2>Clear, calm and ready for the moment.</h2><ul><li><Check />Straightforward planning</li><li><Check />Natural, true-to-life coverage</li><li><Check />Careful backup and timely delivery</li></ul><Link to={routeFor(preview, "/enquire")}>Start an enquiry <ArrowRight /></Link></div></section>
+    <UrlImageRibbon images={site.testimonialsRibbonImages} />
+    <section className="portfolio-testimonial-image"><img src={site.testimonialsImage || site.heroImage} alt="Client event photographed by Zac Morgan" /><div><p>{site.testimonialsFeatureEyebrow}</p><h2>{site.testimonialsFeatureTitle}</h2><ul>{site.testimonialsFeaturePoints.map(point => <li key={point}><Check />{point}</li>)}</ul><Link to={routeFor(preview, "/enquire")}>Start an enquiry <ArrowRight /></Link></div></section>
   </>;
 }
 
@@ -149,9 +147,8 @@ function EnquiryPage({ site }: { site: PortfolioSiteData }) {
     event.preventDefault(); setSending(true); setError("");
     try { await submitPortfolioEnquiry(form); setSent(true); setForm(emptyEnquiry); } catch (err) { setError(err instanceof Error ? err.message : "Could not send enquiry"); } finally { setSending(false); }
   };
-  const enquiryImage = site.galleryImages[5] || site.galleryImages[0];
   return <>
-    {enquiryImage && <section className="portfolio-enquiry-visual"><img src={enquiryImage.image} alt={enquiryImage.alt} /><div><span>Availability · Pricing · Coverage</span></div></section>}
+    {site.enquiryImage && <section className="portfolio-enquiry-visual"><img src={site.enquiryImage} alt="Event photographed by Zac Morgan" /><div><span>Availability · Pricing · Coverage</span></div></section>}
     <section className="portfolio-enquiry-page"><div className="portfolio-enquiry-intro"><p className="portfolio-kicker">Availability and pricing</p><h1>{site.bookingTitle}</h1><p>{site.bookingBody}</p><div><a href={`mailto:${site.contactEmail}`}>{site.contactEmail}</a><span>{site.locationLabel}</span></div></div>
       {sent ? <div className="portfolio-enquiry-success"><Check /><h2>Enquiry received.</h2><p>Thanks for getting in touch. Zac will reply with availability and next steps.</p><button onClick={() => setSent(false)}>Send another enquiry</button></div> : <form className="portfolio-enquiry-form" onSubmit={submit}>
         <label>Name<input required value={form.name} onChange={event => update("name", event.target.value)} autoComplete="name" /></label>
@@ -167,7 +164,7 @@ function EnquiryPage({ site }: { site: PortfolioSiteData }) {
         <button className="portfolio-submit" disabled={sending}>{sending ? "Sending…" : "Send enquiry"}<ArrowRight /></button>
       </form>}
     </section>
-    <section className="portfolio-enquiry-steps"><div><span>01</span><h2>Send the details</h2><p>Share the date, venue and kind of coverage you have in mind.</p></div><ArrowRight /><div><span>02</span><h2>Confirm the fit</h2><p>You’ll receive availability, options and a clear recommendation.</p></div><ArrowRight /><div><span>03</span><h2>Lock it in</h2><p>Approve the booking, sign online and your date is secured.</p></div></section>
+    <section className="portfolio-enquiry-steps">{site.enquirySteps.map((step, index) => <Fragment key={`${step.title}-${index}`}><div><span>{String(index + 1).padStart(2, "0")}</span><h2>{step.title}</h2><p>{step.body}</p></div>{index < site.enquirySteps.length - 1 && <ArrowRight />}</Fragment>)}</section>
   </>;
 }
 

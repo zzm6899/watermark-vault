@@ -1,147 +1,160 @@
-import { useEffect, useState } from "react";
-import { ExternalLink, Eye, Globe, Loader2, Plus, Save, Send, Trash2, Upload } from "lucide-react";
+import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
+import { DndContext, KeyboardSensor, PointerSensor, TouchSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
+import { SortableContext, arrayMove, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import { ArrowDown, ArrowUp, ExternalLink, Eye, Globe, GripVertical, ImagePlus, Loader2, Plus, Save, Send, Trash2, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
 import { defaultPortfolioSite, fetchPortfolioDraft, publishPortfolio, savePortfolioDraft, testPortfolioWebhook, uploadPortfolioImage, type PortfolioSite } from "@/lib/portfolio";
 
-function ImageUploadField({ label, value, onChange }: { label: string; value: string; onChange: (url: string) => void }) {
+const makeId = (prefix: string) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+
+function imageDimensions(url: string): Promise<{ width: number; height: number }> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve({ width: image.naturalWidth, height: image.naturalHeight });
+    image.onerror = reject;
+    image.src = url;
+  });
+}
+
+function ImageUploadField({ label, value, onChange, recommendedWidth = 2400, recommendedHeight = 0 }: { label: string; value: string; onChange: (url: string) => void; recommendedWidth?: number; recommendedHeight?: number }) {
   const [uploading, setUploading] = useState(false);
-  const id = `portfolio-image-${label.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+  const [dragging, setDragging] = useState(false);
+  const [dimensions, setDimensions] = useState<{ width: number; height: number }>();
+  const inputId = useId();
+
+  useEffect(() => {
+    let active = true;
+    if (!value) { setDimensions(undefined); return; }
+    imageDimensions(value).then(result => { if (active) setDimensions(result); }).catch(() => { if (active) setDimensions(undefined); });
+    return () => { active = false; };
+  }, [value]);
+
   const upload = async (file?: File) => {
-    if (!file) return;
+    if (!file || !file.type.startsWith("image/")) return;
     setUploading(true);
-    try { onChange(await uploadPortfolioImage(file)); toast.success(`${label} uploaded`); } catch (error) { toast.error(error instanceof Error ? error.message : "Upload failed"); } finally { setUploading(false); }
+    try {
+      const preview = URL.createObjectURL(file);
+      const size = await imageDimensions(preview).catch(() => undefined);
+      URL.revokeObjectURL(preview);
+      if (size) setDimensions(size);
+      onChange(await uploadPortfolioImage(file));
+      toast.success(`${label} uploaded at original quality`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Upload failed");
+    } finally { setUploading(false); setDragging(false); }
   };
-  return <div className="space-y-2 md:col-span-2"><p className="text-xs text-muted-foreground">{label}</p><div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-    <div className="h-24 w-full overflow-hidden rounded-md border border-border bg-secondary sm:w-40">{value && <img src={value} alt="" className="h-full w-full object-cover" />}</div>
-    <div className="min-w-0 flex-1 space-y-2"><Input value={value} onChange={event => onChange(event.target.value)} aria-label={`${label} URL`} /><input id={id} type="file" accept="image/jpeg,image/png,image/webp,image/avif" className="hidden" onChange={event => upload(event.target.files?.[0])} />
-      <Button asChild variant="outline" size="sm" disabled={uploading}><label htmlFor={id} className="cursor-pointer">{uploading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Upload className="mr-2 h-4 w-4" />}{uploading ? "Uploading…" : "Upload image"}</label></Button>
+
+  const tooSmall = !!dimensions && ((recommendedWidth > 0 && dimensions.width < recommendedWidth) || (recommendedHeight > 0 && dimensions.height < recommendedHeight));
+  return <div className="space-y-2 md:col-span-2">
+    <div className="flex items-center justify-between gap-3"><p className="text-xs text-muted-foreground">{label}</p>{dimensions && <span className={`text-[11px] ${tooSmall ? "text-amber-500" : "text-emerald-500"}`}>{dimensions.width} × {dimensions.height}{tooSmall ? " · low for large screens" : " · large-screen ready"}</span>}</div>
+    <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+      <label htmlFor={inputId} onDragEnter={event => { event.preventDefault(); setDragging(true); }} onDragOver={event => event.preventDefault()} onDragLeave={() => setDragging(false)} onDrop={event => { event.preventDefault(); upload(event.dataTransfer.files?.[0]); }} className={`group relative flex h-28 w-full cursor-pointer items-center justify-center overflow-hidden rounded-md border border-dashed bg-secondary transition-colors sm:w-48 ${dragging ? "border-primary bg-primary/10" : "border-border hover:border-primary/60"}`}>
+        {value ? <img src={value} alt="" className="h-full w-full object-cover" /> : <ImagePlus className="h-6 w-6 text-muted-foreground" />}
+        <span className="absolute inset-x-0 bottom-0 bg-background/85 px-2 py-1 text-center text-[10px] opacity-0 transition-opacity group-hover:opacity-100">Drop or choose original</span>
+      </label>
+      <div className="min-w-0 flex-1 space-y-2">
+        <Input value={value} onChange={event => onChange(event.target.value)} aria-label={`${label} URL`} placeholder="Image URL" />
+        <input id={inputId} type="file" accept="image/jpeg,image/png,image/webp,image/avif" className="hidden" onChange={event => upload(event.target.files?.[0])} />
+        <div className="flex flex-wrap items-center gap-2"><Button asChild variant="outline" size="sm" disabled={uploading}><label htmlFor={inputId} className="cursor-pointer">{uploading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Upload className="mr-2 h-4 w-4" />}{uploading ? "Uploading…" : "Choose original"}</label></Button><span className="text-[10px] text-muted-foreground">Recommended {recommendedWidth ? `${recommendedWidth}px wide` : `${recommendedHeight}px tall`} or larger</span></div>
+      </div>
     </div>
-  </div></div>;
+  </div>;
+}
+
+function SortableRow({ id, index, count, onMove, onRemove, removeLabel, children }: { id: string; index: number; count: number; onMove: (from: number, to: number) => void; onRemove?: () => void; removeLabel?: string; children: ReactNode }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
+  return <li ref={setNodeRef} style={{ transform: CSS.Transform.toString(transform), transition }} className={`grid gap-3 border-b border-border py-5 last:border-b-0 ${isDragging ? "relative z-10 bg-secondary/90 opacity-90" : ""}`}>
+    <div className="flex items-center gap-1">
+      <button type="button" className="inline-flex h-9 w-9 cursor-grab items-center justify-center rounded-md text-muted-foreground hover:bg-secondary hover:text-foreground active:cursor-grabbing" aria-label={`Drag item ${index + 1}`} {...attributes} {...listeners}><GripVertical className="h-4 w-4" /></button>
+      <span className="mr-auto text-xs tabular-nums text-muted-foreground">{String(index + 1).padStart(2, "0")}</span>
+      <Button type="button" variant="ghost" size="icon" aria-label={`Move item ${index + 1} up`} disabled={index === 0} onClick={() => onMove(index, index - 1)}><ArrowUp className="h-4 w-4" /></Button>
+      <Button type="button" variant="ghost" size="icon" aria-label={`Move item ${index + 1} down`} disabled={index === count - 1} onClick={() => onMove(index, index + 1)}><ArrowDown className="h-4 w-4" /></Button>
+      {onRemove && <Button type="button" variant="ghost" size="icon" aria-label={removeLabel || `Remove item ${index + 1}`} onClick={onRemove}><Trash2 className="h-4 w-4" /></Button>}
+    </div>
+    {children}
+  </li>;
+}
+
+function SortableList<T extends { id: string }>({ items, onChange, render, removeLabel }: { items: T[]; onChange: (items: T[]) => void; render: (item: T, index: number) => ReactNode; removeLabel?: (item: T) => string }) {
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }), useSensor(TouchSensor, { activationConstraint: { delay: 180, tolerance: 8 } }), useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }));
+  const move = (from: number, to: number) => onChange(arrayMove(items, from, to));
+  const finish = ({ active, over }: DragEndEvent) => {
+    if (!over || active.id === over.id) return;
+    const from = items.findIndex(item => item.id === active.id);
+    const to = items.findIndex(item => item.id === over.id);
+    if (from >= 0 && to >= 0) move(from, to);
+  };
+  return <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={finish}><SortableContext items={items.map(item => item.id)} strategy={verticalListSortingStrategy}><ol className="border-y border-border">{items.map((item, index) => <SortableRow key={item.id} id={item.id} index={index} count={items.length} onMove={move} onRemove={() => onChange(items.filter(current => current.id !== item.id))} removeLabel={removeLabel?.(item)}>{render(item, index)}</SortableRow>)}</ol></SortableContext></DndContext>;
+}
+
+function ImageCollectionEditor({ label, images, onChange, recommendedWidth = 2400 }: { label: string; images: string[]; onChange: (images: string[]) => void; recommendedWidth?: number }) {
+  const items = images.map((url, index) => ({ id: `${label}-${index}-${url}`, url }));
+  return <div className="space-y-3"><div className="flex items-center justify-between gap-3"><div><h4 className="text-sm font-medium text-foreground">{label}</h4><p className="text-[11px] text-muted-foreground">Drag to choose the display order.</p></div><Button type="button" variant="outline" size="sm" onClick={() => onChange([...images, ""])}><Plus className="mr-2 h-4 w-4" />Add image</Button></div>
+    <SortableList items={items} onChange={next => onChange(next.map(item => item.url))} removeLabel={() => `Remove image from ${label}`} render={(item, index) => <ImageUploadField label={`${label} ${index + 1}`} value={item.url} recommendedWidth={recommendedWidth} onChange={url => onChange(images.map((current, currentIndex) => currentIndex === index ? url : current))} />} />
+  </div>;
+}
+
+function EditorSection({ title, description, children, open = false }: { title: string; description?: string; children: ReactNode; open?: boolean }) {
+  return <details open={open} className="group border-t border-border py-6"><summary className="flex cursor-pointer list-none items-center justify-between gap-4"><div><h3 className="font-display text-2xl">{title}</h3>{description && <p className="mt-1 text-xs text-muted-foreground">{description}</p>}</div><span className="text-xs text-muted-foreground group-open:hidden">Open</span><span className="hidden text-xs text-muted-foreground group-open:inline">Close</span></summary><div className="mt-6 space-y-5">{children}</div></details>;
 }
 
 export default function PortfolioEditor() {
   const [draft, setDraft] = useState<PortfolioSite>(defaultPortfolioSite);
+  const [savedSnapshot, setSavedSnapshot] = useState(JSON.stringify(defaultPortfolioSite));
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [bulkUploading, setBulkUploading] = useState(false);
   const [publishedAt, setPublishedAt] = useState<string>();
   const [testingWebhook, setTestingWebhook] = useState(false);
+  const bulkInputId = useId();
 
+  useEffect(() => { fetchPortfolioDraft().then(data => { setDraft(data.draft); setSavedSnapshot(JSON.stringify(data.draft)); setPublishedAt(data.publishedAt); }).catch(err => toast.error(err.message)).finally(() => setLoading(false)); }, []);
+  const dirty = useMemo(() => JSON.stringify(draft) !== savedSnapshot, [draft, savedSnapshot]);
   useEffect(() => {
-    fetchPortfolioDraft().then(data => { setDraft(data.draft); setPublishedAt(data.publishedAt); }).catch(err => toast.error(err.message)).finally(() => setLoading(false));
-  }, []);
+    const warn = (event: BeforeUnloadEvent) => { if (dirty) event.preventDefault(); };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty]);
 
-  const change = <K extends keyof PortfolioSite>(key: K, value: PortfolioSite[K]) => setDraft(prev => ({ ...prev, [key]: value }));
-  const save = async () => {
-    setSaving(true);
-    try { await savePortfolioDraft(draft); toast.success("Website draft saved"); } catch (err) { toast.error(err instanceof Error ? err.message : "Save failed"); } finally { setSaving(false); }
-  };
-  const publish = async () => {
-    setSaving(true);
-    try { await savePortfolioDraft(draft); const result = await publishPortfolio(); setPublishedAt(result.publishedAt); toast.success("Website published"); } catch (err) { toast.error(err instanceof Error ? err.message : "Publish failed"); } finally { setSaving(false); }
-  };
-  const testWebhook = async () => {
-    if (!draft.webhookUrl) return toast.error("Enter a Discord webhook URL first");
-    setTestingWebhook(true);
-    try { await testPortfolioWebhook(draft.webhookUrl); toast.success("Test notification sent"); } catch (error) { toast.error(error instanceof Error ? error.message : "Webhook test failed"); } finally { setTestingWebhook(false); }
+  const change = <K extends keyof PortfolioSite>(key: K, value: PortfolioSite[K]) => setDraft(previous => ({ ...previous, [key]: value }));
+  const save = async () => { setSaving(true); try { await savePortfolioDraft(draft); setSavedSnapshot(JSON.stringify(draft)); toast.success("Website draft saved"); } catch (error) { toast.error(error instanceof Error ? error.message : "Save failed"); } finally { setSaving(false); } };
+  const publish = async () => { setSaving(true); try { await savePortfolioDraft(draft); const result = await publishPortfolio(); setSavedSnapshot(JSON.stringify(draft)); setPublishedAt(result.publishedAt); toast.success("Website published"); } catch (error) { toast.error(error instanceof Error ? error.message : "Publish failed"); } finally { setSaving(false); } };
+  const testWebhook = async () => { if (!draft.webhookUrl) return toast.error("Enter a Discord webhook URL first"); setTestingWebhook(true); try { await testPortfolioWebhook(draft.webhookUrl); toast.success("Test notification sent"); } catch (error) { toast.error(error instanceof Error ? error.message : "Webhook test failed"); } finally { setTestingWebhook(false); } };
+  const uploadGalleryFiles = async (files: FileList | File[]) => {
+    const images = Array.from(files).filter(file => file.type.startsWith("image/"));
+    if (!images.length) return;
+    setBulkUploading(true);
+    try {
+      const uploaded = await Promise.all(images.map(async file => ({ id: makeId("gallery"), image: await uploadPortfolioImage(file), alt: file.name.replace(/\.[^.]+$/, "").replace(/[-_]+/g, " "), category: "Events" })));
+      change("galleryImages", [...draft.galleryImages, ...uploaded]);
+      toast.success(`${uploaded.length} original photo${uploaded.length === 1 ? "" : "s"} added`);
+    } catch (error) { toast.error(error instanceof Error ? error.message : "Upload failed"); } finally { setBulkUploading(false); }
   };
 
   if (loading) return <div className="py-24 text-center text-sm text-muted-foreground"><Loader2 className="mx-auto mb-3 h-5 w-5 animate-spin" />Loading website editor…</div>;
+  return <div className="space-y-2 pb-24">
+    <div className="admin-page-header"><div><h2 className="font-display text-3xl text-foreground sm:text-4xl">Website</h2><p className="mt-2 text-sm text-muted-foreground">Structured content editor for the public portfolio. Original uploads are preserved.</p></div><Button variant="outline" size="sm" onClick={() => window.open("/portfolio-preview", "_blank")}><Eye className="mr-2 h-4 w-4" />Preview</Button></div>
+    <div className="sticky top-0 z-30 -mx-2 flex flex-wrap items-center justify-between gap-3 border-y border-border bg-background/95 px-2 py-3 backdrop-blur"><div className="text-xs text-muted-foreground"><span className={dirty ? "text-amber-500" : "text-emerald-500"}>{dirty ? "Unsaved changes" : "All changes saved"}</span>{publishedAt && <span> · Published {new Date(publishedAt).toLocaleString()}</span>}</div><div className="flex gap-2"><a className="inline-flex items-center gap-1 px-2 text-xs text-primary" href="https://zacmclients.photos" target="_blank" rel="noreferrer">Live site <ExternalLink className="h-3.5 w-3.5" /></a><Button variant="outline" size="sm" onClick={save} disabled={saving || !dirty}><Save className="mr-2 h-4 w-4" />Save draft</Button><Button size="sm" onClick={publish} disabled={saving}><Globe className="mr-2 h-4 w-4" />Publish</Button></div></div>
 
-  return <div className="space-y-8">
-    <div className="admin-page-header">
-      <div><h2 className="font-display text-3xl sm:text-4xl text-foreground">Website</h2><p className="mt-2 text-sm text-muted-foreground">Edit and publish the public Zac Morgan Photography portfolio.</p></div>
-      <div className="flex flex-wrap justify-end gap-2">
-        <Button variant="outline" size="sm" onClick={() => window.open("/portfolio-preview", "_blank")}><Eye className="mr-2 h-4 w-4" />Preview</Button>
-        <Button variant="outline" size="sm" onClick={save} disabled={saving}><Save className="mr-2 h-4 w-4" />Save draft</Button>
-        <Button size="sm" onClick={publish} disabled={saving}><Globe className="mr-2 h-4 w-4" />Publish</Button>
-      </div>
-    </div>
+    <EditorSection title="Brand and hero" description="Upload 3200px-wide originals for full-screen display." open><div className="grid gap-4 md:grid-cols-2"><label className="space-y-1 text-xs text-muted-foreground">Business name<Input value={draft.brandName} onChange={event => change("brandName", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground">Hero label<Input value={draft.heroLabel} onChange={event => change("heroLabel", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground md:col-span-2">Hero services line<Input value={draft.heroServicesLabel} onChange={event => change("heroServicesLabel", event.target.value)} /></label><ImageUploadField label="Logo" value={draft.logo} recommendedWidth={1000} onChange={value => change("logo", value)} /></div><ImageCollectionEditor label="Hero slideshow" images={draft.heroImages} recommendedWidth={3200} onChange={images => { change("heroImages", images); if (images[0]) change("heroImage", images[0]); }} /></EditorSection>
 
-    <div className="flex items-center justify-between border-y border-border py-3 text-xs text-muted-foreground">
-      <span>{publishedAt ? `Published ${new Date(publishedAt).toLocaleString()}` : "Using the original site content"}</span>
-      <a className="flex items-center gap-1 text-primary" href="https://zacmclients.photos" target="_blank" rel="noreferrer">Open live site <ExternalLink className="h-3.5 w-3.5" /></a>
-    </div>
+    <EditorSection title="Homepage" description="Edit the homepage story, image ribbon and philosophy section."><div className="grid gap-4 md:grid-cols-2"><label className="space-y-1 text-xs text-muted-foreground">Intro line<Input value={draft.introEyebrow} onChange={event => change("introEyebrow", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground">Intro heading<Input value={draft.introTitle} onChange={event => change("introTitle", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground md:col-span-2">Intro text<Textarea rows={4} value={draft.introBody} onChange={event => change("introBody", event.target.value)} /></label><ImageUploadField label="Portrait image" value={draft.portrait} recommendedWidth={0} recommendedHeight={2400} onChange={value => change("portrait", value)} /><label className="space-y-1 text-xs text-muted-foreground">Story eyebrow<Input value={draft.storyEyebrow} onChange={event => change("storyEyebrow", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground">Story heading<Input value={draft.storyTitle} onChange={event => change("storyTitle", event.target.value)} /></label></div><ImageCollectionEditor label="Homepage ribbon" images={draft.homeRibbonImages} onChange={images => change("homeRibbonImages", images)} /><div className="grid gap-4 md:grid-cols-2"><label className="space-y-1 text-xs text-muted-foreground">Philosophy eyebrow<Input value={draft.philosophyEyebrow} onChange={event => change("philosophyEyebrow", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground">Philosophy heading<Input value={draft.philosophyTitle} onChange={event => change("philosophyTitle", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground md:col-span-2">Philosophy text<Textarea rows={3} value={draft.philosophyBody} onChange={event => change("philosophyBody", event.target.value)} /></label><ImageUploadField label="Philosophy image" value={draft.philosophyImage} onChange={value => change("philosophyImage", value)} /></div></EditorSection>
 
-    <section className="space-y-4"><div><h3 className="font-display text-2xl">Brand and hero</h3><p className="text-xs text-muted-foreground">The first screen clients see.</p></div>
-      <div className="grid gap-4 md:grid-cols-2">
-        <label className="space-y-1 text-xs text-muted-foreground">Business name<Input value={draft.brandName} onChange={e => change("brandName", e.target.value)} /></label>
-        <label className="space-y-1 text-xs text-muted-foreground">Hero label<Input value={draft.heroLabel} onChange={e => change("heroLabel", e.target.value)} /></label>
-        <ImageUploadField label="Logo" value={draft.logo} onChange={value => change("logo", value)} />
-        <ImageUploadField label="Hero image" value={draft.heroImage} onChange={value => change("heroImage", value)} />
-      </div>
-    </section>
+    <EditorSection title="Portfolio page" description="Categories and gallery order are draggable and control the public display."><div className="grid gap-4 md:grid-cols-2"><label className="space-y-1 text-xs text-muted-foreground">Portfolio heading<Input value={draft.portfolioTitle} onChange={event => change("portfolioTitle", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground">Client list label<Input value={draft.portfolioClientsLabel} onChange={event => change("portfolioClientsLabel", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground md:col-span-2">Portfolio intro<Textarea rows={3} value={draft.portfolioBody} onChange={event => change("portfolioBody", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground md:col-span-2">Clients, one per line<Textarea rows={4} value={draft.portfolioClients.join("\n")} onChange={event => change("portfolioClients", event.target.value.split("\n").map(value => value.trim()).filter(Boolean))} /></label><label className="space-y-1 text-xs text-muted-foreground">Closing eyebrow<Input value={draft.portfolioCtaEyebrow} onChange={event => change("portfolioCtaEyebrow", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground">Closing heading<Input value={draft.portfolioCtaTitle} onChange={event => change("portfolioCtaTitle", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground">Closing button<Input value={draft.portfolioCtaLabel} onChange={event => change("portfolioCtaLabel", event.target.value)} /></label></div><div className="flex items-center justify-between gap-3"><h4 className="text-sm font-medium">Portfolio categories</h4><Button type="button" variant="outline" size="sm" onClick={() => change("projects", [...draft.projects, { id: makeId("project"), title: "New category", image: "", description: "", category: "Events" }])}><Plus className="mr-2 h-4 w-4" />Add category</Button></div><SortableList items={draft.projects} onChange={items => change("projects", items)} removeLabel={item => `Remove ${item.title}`} render={(project, index) => <div className="grid gap-3 md:grid-cols-2"><Input value={project.title} aria-label={`Category ${index + 1} title`} placeholder="Display title" onChange={event => change("projects", draft.projects.map(item => item.id === project.id ? { ...item, title: event.target.value } : item))} /><Input value={project.category} aria-label={`Category ${index + 1} gallery filter`} placeholder="Gallery filter" onChange={event => change("projects", draft.projects.map(item => item.id === project.id ? { ...item, category: event.target.value } : item))} /><Textarea className="md:col-span-2" rows={2} value={project.description} aria-label={`Category ${index + 1} description`} onChange={event => change("projects", draft.projects.map(item => item.id === project.id ? { ...item, description: event.target.value } : item))} /><ImageUploadField label={`${project.title} cover`} value={project.image} onChange={value => change("projects", draft.projects.map(item => item.id === project.id ? { ...item, image: value } : item))} /></div>} />
+      <div onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); uploadGalleryFiles(event.dataTransfer.files); }} className="flex flex-wrap items-center justify-between gap-4 rounded-md border border-dashed border-border p-4"><div><h4 className="text-sm font-medium">Portfolio gallery</h4><p className="text-[11px] text-muted-foreground">Drop multiple original photos here, then drag rows into order.</p></div><input id={bulkInputId} type="file" multiple accept="image/jpeg,image/png,image/webp,image/avif" className="hidden" onChange={event => event.target.files && uploadGalleryFiles(event.target.files)} /><Button asChild type="button" variant="outline" size="sm" disabled={bulkUploading}><label htmlFor={bulkInputId} className="cursor-pointer">{bulkUploading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ImagePlus className="mr-2 h-4 w-4" />}Upload photos</label></Button></div>
+      <SortableList items={draft.galleryImages} onChange={items => change("galleryImages", items)} removeLabel={item => `Remove ${item.alt || "gallery photo"}`} render={(item, index) => <div className="grid gap-3 md:grid-cols-2"><Input value={item.alt} aria-label={`Gallery photo ${index + 1} description`} placeholder="Accessible photo description" onChange={event => change("galleryImages", draft.galleryImages.map(photo => photo.id === item.id ? { ...photo, alt: event.target.value } : photo))} /><Input value={item.category} aria-label={`Gallery photo ${index + 1} category`} placeholder="Category" onChange={event => change("galleryImages", draft.galleryImages.map(photo => photo.id === item.id ? { ...photo, category: event.target.value } : photo))} /><ImageUploadField label={`Gallery photo ${index + 1}`} value={item.image} onChange={value => change("galleryImages", draft.galleryImages.map(photo => photo.id === item.id ? { ...photo, image: value } : photo))} /></div>} />
+    </EditorSection>
 
-    <section className="space-y-4 border-t border-border pt-7"><h3 className="font-display text-2xl">About</h3>
-      <div className="grid gap-4 md:grid-cols-2">
-        <label className="space-y-1 text-xs text-muted-foreground">Intro line<Input value={draft.introEyebrow} onChange={e => change("introEyebrow", e.target.value)} /></label>
-        <label className="space-y-1 text-xs text-muted-foreground">Heading<Input value={draft.introTitle} onChange={e => change("introTitle", e.target.value)} /></label>
-        <label className="space-y-1 text-xs text-muted-foreground md:col-span-2">About text<Textarea rows={4} value={draft.introBody} onChange={e => change("introBody", e.target.value)} /></label>
-        <label className="space-y-1 text-xs text-muted-foreground md:col-span-2">Detailed about text<Textarea rows={4} value={draft.aboutSecondaryBody} onChange={e => change("aboutSecondaryBody", e.target.value)} /></label>
-        <ImageUploadField label="Portrait image" value={draft.portrait} onChange={value => change("portrait", value)} />
-      </div>
-    </section>
+    <EditorSection title="About page"><div className="grid gap-4 md:grid-cols-2"><label className="space-y-1 text-xs text-muted-foreground md:col-span-2">Detailed about text<Textarea rows={4} value={draft.aboutSecondaryBody} onChange={event => change("aboutSecondaryBody", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground">Approach eyebrow<Input value={draft.aboutApproachEyebrow} onChange={event => change("aboutApproachEyebrow", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground">Approach heading<Input value={draft.aboutApproachTitle} onChange={event => change("aboutApproachTitle", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground md:col-span-2">Approach text<Textarea rows={3} value={draft.aboutApproachBody} onChange={event => change("aboutApproachBody", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground md:col-span-2">Image caption<Input value={draft.aboutSupportingCaption} onChange={event => change("aboutSupportingCaption", event.target.value)} /></label><ImageUploadField label="Approach image" value={draft.aboutSupportingImage} onChange={value => change("aboutSupportingImage", value)} /></div><div className="flex items-center justify-between"><h4 className="text-sm font-medium">Values</h4><Button type="button" variant="outline" size="sm" onClick={() => change("aboutValues", [...draft.aboutValues, { id: makeId("value"), title: "New value", body: "" }])}><Plus className="mr-2 h-4 w-4" />Add value</Button></div><SortableList items={draft.aboutValues} onChange={items => change("aboutValues", items)} removeLabel={item => `Remove ${item.title}`} render={value => <div className="grid gap-3 md:grid-cols-2"><Input value={value.title} placeholder="Value title" onChange={event => change("aboutValues", draft.aboutValues.map(item => item.id === value.id ? { ...item, title: event.target.value } : item))} /><Textarea rows={2} value={value.body} placeholder="Value description" onChange={event => change("aboutValues", draft.aboutValues.map(item => item.id === value.id ? { ...item, body: event.target.value } : item))} /></div>} /><ImageCollectionEditor label="About page ribbon" images={draft.aboutRibbonImages} onChange={images => change("aboutRibbonImages", images)} /></EditorSection>
 
-    <section className="space-y-4 border-t border-border pt-7"><h3 className="font-display text-2xl">Page copy</h3><div className="grid gap-4 md:grid-cols-2">
-      <label className="space-y-1 text-xs text-muted-foreground">Portfolio heading<Input value={draft.portfolioTitle} onChange={e => change("portfolioTitle", e.target.value)} /></label>
-      <label className="space-y-1 text-xs text-muted-foreground">Testimonials heading<Input value={draft.testimonialsTitle} onChange={e => change("testimonialsTitle", e.target.value)} /></label>
-      <label className="space-y-1 text-xs text-muted-foreground md:col-span-2">Portfolio intro<Textarea rows={3} value={draft.portfolioBody} onChange={e => change("portfolioBody", e.target.value)} /></label>
-      <label className="space-y-1 text-xs text-muted-foreground md:col-span-2">Footer heading<Input value={draft.footerTitle} onChange={e => change("footerTitle", e.target.value)} /></label>
-    </div></section>
+    <EditorSection title="Testimonials"><div className="grid gap-4 md:grid-cols-2"><label className="space-y-1 text-xs text-muted-foreground">Page heading<Input value={draft.testimonialsTitle} onChange={event => change("testimonialsTitle", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground md:col-span-2">Page intro<Textarea rows={3} value={draft.testimonialsIntro} onChange={event => change("testimonialsIntro", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground">Feature eyebrow<Input value={draft.testimonialsFeatureEyebrow} onChange={event => change("testimonialsFeatureEyebrow", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground">Feature heading<Input value={draft.testimonialsFeatureTitle} onChange={event => change("testimonialsFeatureTitle", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground md:col-span-2">Feature points, one per line<Textarea rows={4} value={draft.testimonialsFeaturePoints.join("\n")} onChange={event => change("testimonialsFeaturePoints", event.target.value.split("\n").map(value => value.trim()).filter(Boolean))} /></label><ImageUploadField label="Testimonials feature image" value={draft.testimonialsImage} onChange={value => change("testimonialsImage", value)} /></div><ImageCollectionEditor label="Testimonials ribbon" images={draft.testimonialsRibbonImages} onChange={images => change("testimonialsRibbonImages", images)} /><div className="flex items-center justify-between"><h4 className="text-sm font-medium">Client reviews</h4><Button type="button" variant="outline" size="sm" onClick={() => change("testimonials", [...draft.testimonials, { id: makeId("review"), quote: "", author: "", context: "" }])}><Plus className="mr-2 h-4 w-4" />Add review</Button></div><SortableList items={draft.testimonials} onChange={items => change("testimonials", items)} removeLabel={item => `Remove review by ${item.author || "client"}`} render={(review, index) => <div className="grid gap-3 md:grid-cols-2"><Input value={review.author} aria-label={`Review ${index + 1} client`} placeholder="Client name" onChange={event => change("testimonials", draft.testimonials.map(item => item.id === review.id ? { ...item, author: event.target.value } : item))} /><Input value={review.context} aria-label={`Review ${index + 1} context`} placeholder="Wedding, event, portrait…" onChange={event => change("testimonials", draft.testimonials.map(item => item.id === review.id ? { ...item, context: event.target.value } : item))} /><Textarea className="md:col-span-2" rows={3} value={review.quote} aria-label={`Review ${index + 1} quote`} placeholder="Client review" onChange={event => change("testimonials", draft.testimonials.map(item => item.id === review.id ? { ...item, quote: event.target.value } : item))} /></div>} /></EditorSection>
 
-    <section className="space-y-4 border-t border-border pt-7"><h3 className="font-display text-2xl">Portfolio categories</h3>
-      <div className="divide-y divide-border border-y border-border">
-        {draft.projects.map((project, index) => <div className="grid gap-3 py-5 md:grid-cols-2" key={project.id}>
-          <Input value={project.title} aria-label={`Project ${index + 1} title`} onChange={e => change("projects", draft.projects.map((p, i) => i === index ? { ...p, title: e.target.value } : p))} />
-          <div className="md:row-span-2"><ImageUploadField label={`${project.title || `Project ${index + 1}`} image`} value={project.image} onChange={value => change("projects", draft.projects.map((p, i) => i === index ? { ...p, image: value } : p))} /></div>
-          <Textarea className="md:col-span-2" rows={2} value={project.description} aria-label={`Project ${index + 1} description`} onChange={e => change("projects", draft.projects.map((p, i) => i === index ? { ...p, description: e.target.value } : p))} />
-        </div>)}
-      </div>
-    </section>
+    <EditorSection title="Booking enquiry" description="Controls the enquiry page, workflow steps and notifications."><div className="grid gap-4 md:grid-cols-2"><label className="space-y-1 text-xs text-muted-foreground">Page heading<Input value={draft.bookingTitle} onChange={event => change("bookingTitle", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground">Button label<Input value={draft.bookingButtonLabel} onChange={event => change("bookingButtonLabel", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground md:col-span-2">Intro text<Textarea rows={3} value={draft.bookingBody} onChange={event => change("bookingBody", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground">Event choices, one per line<Textarea rows={6} value={draft.enquiryEventTypes.join("\n")} onChange={event => change("enquiryEventTypes", event.target.value.split("\n").map(value => value.trim()).filter(Boolean))} /></label><ImageUploadField label="Enquiry page image" value={draft.enquiryImage} recommendedWidth={3200} onChange={value => change("enquiryImage", value)} /></div><div className="flex items-center justify-between"><h4 className="text-sm font-medium">Enquiry steps</h4><Button type="button" variant="outline" size="sm" onClick={() => change("enquirySteps", [...draft.enquirySteps, { id: makeId("step"), title: "New step", body: "" }])}><Plus className="mr-2 h-4 w-4" />Add step</Button></div><SortableList items={draft.enquirySteps} onChange={items => change("enquirySteps", items)} removeLabel={item => `Remove ${item.title}`} render={step => <div className="grid gap-3 md:grid-cols-2"><Input value={step.title} placeholder="Step title" onChange={event => change("enquirySteps", draft.enquirySteps.map(item => item.id === step.id ? { ...item, title: event.target.value } : item))} /><Textarea rows={2} value={step.body} placeholder="Step description" onChange={event => change("enquirySteps", draft.enquirySteps.map(item => item.id === step.id ? { ...item, body: event.target.value } : item))} /></div>} /><div className="space-y-2"><label className="space-y-1 text-xs text-muted-foreground">Discord webhook URL<Input type="password" value={draft.webhookUrl || ""} onChange={event => change("webhookUrl", event.target.value)} placeholder="https://discord.com/api/webhooks/…" /></label><p className="text-[11px] text-muted-foreground">Stored privately. Enquiries still appear under Admin → Enquiries without a webhook.</p><Button type="button" variant="outline" size="sm" onClick={testWebhook} disabled={testingWebhook}><Send className="mr-2 h-4 w-4" />{testingWebhook ? "Sending…" : "Send test"}</Button></div></EditorSection>
 
-    <section className="space-y-4 border-t border-border pt-7"><div className="flex items-end justify-between gap-4"><div><h3 className="font-display text-2xl">Portfolio gallery</h3><p className="text-xs text-muted-foreground">Images can be filtered by category and opened full-screen on the public site.</p></div><Button type="button" variant="outline" size="sm" onClick={() => change("galleryImages", [...draft.galleryImages, { id: `gallery-${Date.now()}`, image: "", alt: "", category: "Events" }])}><Plus className="mr-2 h-4 w-4" />Add photo</Button></div>
-      <div className="divide-y divide-border border-y border-border">
-        {draft.galleryImages.map((item, index) => <div className="grid gap-3 py-5 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]" key={item.id}>
-          <Input value={item.alt} aria-label={`Gallery photo ${index + 1} description`} placeholder="Accessible photo description" onChange={e => change("galleryImages", draft.galleryImages.map((photo, i) => i === index ? { ...photo, alt: e.target.value } : photo))} />
-          <Input value={item.category} aria-label={`Gallery photo ${index + 1} category`} placeholder="Category" onChange={e => change("galleryImages", draft.galleryImages.map((photo, i) => i === index ? { ...photo, category: e.target.value } : photo))} />
-          <Button type="button" variant="ghost" size="icon" title="Remove photo" onClick={() => change("galleryImages", draft.galleryImages.filter((_, i) => i !== index))}><Trash2 className="h-4 w-4" /></Button>
-          <div className="md:col-span-3"><ImageUploadField label={`Gallery photo ${index + 1}`} value={item.image} onChange={value => change("galleryImages", draft.galleryImages.map((photo, i) => i === index ? { ...photo, image: value } : photo))} /></div>
-        </div>)}
-      </div>
-    </section>
-
-    <section className="space-y-4 border-t border-border pt-7"><div><h3 className="font-display text-2xl">Booking enquiry</h3><p className="text-xs text-muted-foreground">Controls the public Book now page and notification delivery.</p></div>
-      <div className="grid gap-4 md:grid-cols-2">
-        <label className="space-y-1 text-xs text-muted-foreground">Page heading<Input value={draft.bookingTitle} onChange={e => change("bookingTitle", e.target.value)} /></label>
-        <label className="space-y-1 text-xs text-muted-foreground">Button label<Input value={draft.bookingButtonLabel} onChange={e => change("bookingButtonLabel", e.target.value)} /></label>
-        <label className="space-y-1 text-xs text-muted-foreground md:col-span-2">Intro text<Textarea rows={3} value={draft.bookingBody} onChange={e => change("bookingBody", e.target.value)} /></label>
-        <label className="space-y-1 text-xs text-muted-foreground">Location label<Input value={draft.locationLabel} onChange={e => change("locationLabel", e.target.value)} /></label>
-        <label className="space-y-1 text-xs text-muted-foreground">Event choices, one per line<Textarea rows={6} value={draft.enquiryEventTypes.join("\n")} onChange={e => change("enquiryEventTypes", e.target.value.split("\n").map(v => v.trim()).filter(Boolean))} /></label>
-        <div className="space-y-2 md:col-span-2"><label className="space-y-1 text-xs text-muted-foreground">Discord webhook URL<Input type="password" value={draft.webhookUrl || ""} onChange={e => change("webhookUrl", e.target.value)} placeholder="https://discord.com/api/webhooks/…" /></label><p className="text-[11px] text-muted-foreground">Stored privately and never included in public website data. Website enquiries still appear in Admin → Enquiries when no webhook is configured.</p><Button type="button" variant="outline" size="sm" onClick={testWebhook} disabled={testingWebhook}><Send className="mr-2 h-4 w-4" />{testingWebhook ? "Sending…" : "Send test"}</Button></div>
-      </div>
-    </section>
-
-    <section className="space-y-4 border-t border-border pt-7"><h3 className="font-display text-2xl">Featured testimonial and contact</h3>
-      <div className="grid gap-4 md:grid-cols-2">
-        <label className="space-y-1 text-xs text-muted-foreground md:col-span-2">Testimonial<Textarea rows={3} value={draft.testimonial} onChange={e => change("testimonial", e.target.value)} /></label>
-        <label className="space-y-1 text-xs text-muted-foreground">Client name<Input value={draft.testimonialAuthor} onChange={e => change("testimonialAuthor", e.target.value)} /></label>
-        <label className="space-y-1 text-xs text-muted-foreground">Contact email<Input type="email" value={draft.contactEmail} onChange={e => change("contactEmail", e.target.value)} /></label>
-        <label className="space-y-1 text-xs text-muted-foreground">Instagram URL<Input value={draft.instagramUrl} onChange={e => change("instagramUrl", e.target.value)} /></label>
-        <label className="space-y-1 text-xs text-muted-foreground">Instagram handle<Input value={draft.instagramHandle} onChange={e => change("instagramHandle", e.target.value)} /></label>
-      </div>
-    </section>
-
-    <section className="space-y-4 border-t border-border pt-7"><div className="flex items-end justify-between gap-4"><div><h3 className="font-display text-2xl">Client reviews</h3><p className="text-xs text-muted-foreground">Shown across the dedicated Testimonials page.</p></div><Button type="button" variant="outline" size="sm" onClick={() => change("testimonials", [...draft.testimonials, { quote: "", author: "", context: "" }])}><Plus className="mr-2 h-4 w-4" />Add review</Button></div>
-      <div className="divide-y divide-border border-y border-border">
-        {draft.testimonials.map((review, index) => <div className="grid gap-3 py-5 md:grid-cols-[1fr_1fr_auto]" key={`${review.author}-${index}`}>
-          <Input value={review.author} aria-label={`Review ${index + 1} client`} placeholder="Client name" onChange={e => change("testimonials", draft.testimonials.map((item, i) => i === index ? { ...item, author: e.target.value } : item))} />
-          <Input value={review.context} aria-label={`Review ${index + 1} context`} placeholder="Wedding, event, portrait…" onChange={e => change("testimonials", draft.testimonials.map((item, i) => i === index ? { ...item, context: e.target.value } : item))} />
-          <Button type="button" variant="ghost" size="icon" title="Remove review" onClick={() => change("testimonials", draft.testimonials.filter((_, i) => i !== index))}><Trash2 className="h-4 w-4" /></Button>
-          <Textarea className="md:col-span-3" rows={3} value={review.quote} aria-label={`Review ${index + 1} quote`} placeholder="Client review" onChange={e => change("testimonials", draft.testimonials.map((item, i) => i === index ? { ...item, quote: e.target.value } : item))} />
-        </div>)}
-      </div>
-    </section>
+    <EditorSection title="Contact and footer"><div className="grid gap-4 md:grid-cols-2"><label className="space-y-1 text-xs text-muted-foreground">Location label<Input value={draft.locationLabel} onChange={event => change("locationLabel", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground">Footer heading<Input value={draft.footerTitle} onChange={event => change("footerTitle", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground">Contact email<Input type="email" value={draft.contactEmail} onChange={event => change("contactEmail", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground">Instagram URL<Input value={draft.instagramUrl} onChange={event => change("instagramUrl", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground">Instagram handle<Input value={draft.instagramHandle} onChange={event => change("instagramHandle", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground">LinkedIn URL<Input value={draft.linkedinUrl} onChange={event => change("linkedinUrl", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground md:col-span-2">Featured testimonial<Textarea rows={3} value={draft.testimonial} onChange={event => change("testimonial", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground">Featured client<Input value={draft.testimonialAuthor} onChange={event => change("testimonialAuthor", event.target.value)} /></label></div></EditorSection>
   </div>;
 }

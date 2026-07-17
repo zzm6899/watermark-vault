@@ -14,8 +14,8 @@
 .portfolio-menu,.portfolio-mobile-nav { display:none; }
 .portfolio-hero { height:min(820px,calc(100vh - 104px)); min-height:620px; position:relative; overflow:hidden; background:#111; }
 .portfolio-hero-media { position:absolute; inset:0; }
-.portfolio-hero-media img { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; object-position:center 40%; opacity:0; animation:portfolio-hero-sequence 18s infinite; transform:scale(1.035); }
-@keyframes portfolio-hero-sequence { 0%{opacity:0;transform:scale(1.035)} 4%{opacity:.88} 29%{opacity:.88} 34%{opacity:0;transform:scale(1)} 100%{opacity:0;transform:scale(1)} }
+.portfolio-hero-media img { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; object-position:center 40%; opacity:0; animation:portfolio-hero-sequence 18s infinite; }
+@keyframes portfolio-hero-sequence { 0%{opacity:0} 4%{opacity:.88} 29%{opacity:.88} 34%{opacity:0} 100%{opacity:0} }
 .portfolio-hero-copy { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; color:#fff; text-align:center; text-shadow:0 2px 24px #0008; }
 .portfolio-hero-copy p,.portfolio-kicker,.portfolio-section-heading>p { font-size:11px; letter-spacing:.2em; text-transform:uppercase; }
 .portfolio-hero h1 { font-size:clamp(54px,8vw,116px); margin:10px 20px 0; line-height:.9; }

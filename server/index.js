@@ -460,11 +460,12 @@ app.get("/api/backup/download", requireAuth, (req, res) => {
     addFileIfExists(path.join(DATA_DIR, "google-tokens.json"), "google-tokens.json");
     addFileIfExists(path.join(DATA_DIR, "gcal-settings.json"), "gcal-settings.json");
     addDir(UPLOADS_DIR, "uploads");
+    addDir(PORTFOLIO_MEDIA_DIR, "portfolio-media");
     addFileIfExists(path.join(CACHE_DIR, "xmp-presets.json"), "uploads/_cache/xmp-presets.json");
     archive.append(JSON.stringify({
       createdAt: now.toISOString(),
       dataDir: DATA_DIR,
-      includes: ["db.json", "uploads/", "sidecar JSON files when present"],
+      includes: ["db.json", "uploads/", "portfolio-media/", "sidecar JSON files when present"],
       excluded: ["uploads/_cache generated image variants"],
       app: "PhotoFlow",
     }, null, 2), { name: "backup-manifest.json" });
@@ -2179,7 +2180,9 @@ const DEFAULT_PORTFOLIO = {
   brandName: "Zac Morgan Photography",
   logo: "/portfolio/logo.png",
   heroImage: "/portfolio/live-action.jpg",
+  heroImages: ["/portfolio/live-action.jpg", "/portfolio/gallery/concert-performer.jpg", "/portfolio/gallery/brand-event.jpg"],
   heroLabel: "Live in action",
+  heroServicesLabel: "Weddings · Events · Live music · Brands",
   introEyebrow: "Hey, I'm Zac, an event / wedding photographer",
   introTitle: "Let's get to know each other",
   introBody: "What started as a hobby quickly became a passion for capturing the moments people want to remember. I photograph weddings, live music, parties and corporate events across Sydney.",
@@ -2187,14 +2190,49 @@ const DEFAULT_PORTFOLIO = {
   portfolioTitle: "Stories that still feel alive.",
   portfolioBody: "Weddings, performances, parties, people and brands photographed with energy and intent.",
   testimonialsTitle: "The experience matters too.",
+  testimonialsIntro: "Feedback from weddings, celebrations, portrait sessions and business events across Sydney.",
   portrait: "/portfolio/portrait.jpg",
+  homeRibbonImages: ["/portfolio/gallery/wedding-garden.jpg", "/portfolio/gallery/wedding-celebration.jpg", "/portfolio/gallery/wedding-candid.jpg"],
+  storyEyebrow: "Ways of seeing",
+  storyTitle: "Every room has its own rhythm.",
+  philosophyEyebrow: "The work",
+  philosophyTitle: "Photographs should feel like the night did.",
+  philosophyBody: "Not over-directed. Not flattened into a trend. Just the people, atmosphere and small details that made the moment yours.",
+  philosophyImage: "/portfolio/gallery/food-detail.jpg",
+  portfolioClientsLabel: "Selected clients and venues",
+  portfolioClients: ["Asahi Breweries", "Navarra Venues", "SMASH!"],
+  portfolioCtaEyebrow: "Your story, photographed honestly",
+  portfolioCtaTitle: "Planning something?",
+  portfolioCtaLabel: "Check availability",
+  aboutApproachEyebrow: "The approach",
+  aboutApproachTitle: "Present enough to guide. Quiet enough to notice.",
+  aboutApproachBody: "I look for the interactions happening between the scheduled moments: the reaction across the room, the energy building before a performance, and the details your team spent months getting right.",
+  aboutSupportingImage: "/portfolio/gallery/concert-performer.jpg",
+  aboutSupportingCaption: "Working across Sydney weddings, events, venues and live productions.",
+  aboutValues: [
+    { id: "natural", title: "Natural over staged", body: "Real expressions and useful direction, without turning your event into a production." },
+    { id: "dependable", title: "Fast and dependable", body: "Clear communication, careful backups and delivery that respects your timeline." },
+    { id: "people", title: "Built around people", body: "Coverage adapts to your guests, venue, schedule and what matters most to you." },
+  ],
+  aboutRibbonImages: ["/portfolio/gallery/concert-crowd.jpg", "/portfolio/gallery/event-energy.jpg", "/portfolio/gallery/brand-event.jpg"],
+  testimonialsFeatureEyebrow: "From first message to final gallery",
+  testimonialsFeatureTitle: "Clear, calm and ready for the moment.",
+  testimonialsFeaturePoints: ["Straightforward planning", "Natural, true-to-life coverage", "Careful backup and timely delivery"],
+  testimonialsImage: "/portfolio/gallery/portrait-editorial.jpg",
+  testimonialsRibbonImages: ["/portfolio/gallery/wedding-celebration.jpg", "/portfolio/gallery/wedding-candid.jpg", "/portfolio/gallery/concert-performer.jpg"],
+  enquiryImage: "/portfolio/gallery/concert-crowd.jpg",
+  enquirySteps: [
+    { id: "details", title: "Send the details", body: "Share the date, venue and kind of coverage you have in mind." },
+    { id: "fit", title: "Confirm the fit", body: "You'll receive availability, options and a clear recommendation." },
+    { id: "book", title: "Lock it in", body: "Approve the booking, sign online and your date is secured." },
+  ],
   testimonial: "Zac is an extremely talented photographer. His photos captured the energy of the night perfectly and were delivered quickly.",
   testimonialAuthor: "Henry M",
   projects: [
-    { id: "weddings", title: "Engagements / Weddings", image: "/portfolio/weddings.jpg", description: "Relaxed, honest coverage from the quiet moments to the dance floor." },
-    { id: "bands", title: "Band Photos", image: "/portfolio/bands.jpg", description: "Live performance and artist imagery that keeps the atmosphere intact." },
-    { id: "corporate", title: "Corporate Events", image: "/portfolio/corporate.jpg", description: "Polished event coverage for teams, brands and venues." },
-    { id: "parties", title: "Parties", image: "/portfolio/parties.jpg", description: "Candid celebration photography with people at the centre." },
+    { id: "weddings", title: "Engagements / Weddings", image: "/portfolio/weddings.jpg", description: "Relaxed, honest coverage from the quiet moments to the dance floor.", category: "Weddings" },
+    { id: "bands", title: "Band Photos", image: "/portfolio/bands.jpg", description: "Live performance and artist imagery that keeps the atmosphere intact.", category: "Live music" },
+    { id: "corporate", title: "Corporate Events", image: "/portfolio/corporate.jpg", description: "Polished event coverage for teams, brands and venues.", category: "Brand and business" },
+    { id: "parties", title: "Parties", image: "/portfolio/parties.jpg", description: "Candid celebration photography with people at the centre.", category: "Events" },
   ],
   galleryImages: [
     { id: "wedding-aisle", image: "/portfolio/gallery/wedding-garden.jpg", alt: "Newlyweds walking down the church aisle", category: "Weddings" },
@@ -2211,12 +2249,12 @@ const DEFAULT_PORTFOLIO = {
     { id: "balter", image: "/portfolio/gallery/nightlife.jpg", alt: "Balter brand activation", category: "Brand and business" },
   ],
   testimonials: [
-    { quote: "Zac's photos for our wedding were amazing. He was professional, genuine and made sure the day was captured beautifully, from our families to the candid moments.", author: "Alexander", context: "Wedding" },
-    { quote: "The photos were stunning, the session was fun and relaxed, and the turnaround time was incredibly fast.", author: "Jorden", context: "Portrait session" },
-    { quote: "Thanks so much Zac for your amazing work at our wedding. I am loving all the photos that captured the best day of my life.", author: "Luisa Munoz", context: "Wedding" },
-    { quote: "Zac was the ultimate professional, capturing only the best photos for my son's 21st and creating a lifetime of memories.", author: "Henry Makhouf", context: "21st birthday" },
-    { quote: "The photos were outstanding and the turnaround time was very speedy. Highly recommend.", author: "Keith", context: "Family celebration" },
-    { quote: "Professional, punctual and a great communicator. He handled the brief with professionalism and flair.", author: "Lorenzo", context: "Corporate event" },
+    { id: "alexander", quote: "Zac's photos for our wedding were amazing. He was professional, genuine and made sure the day was captured beautifully, from our families to the candid moments.", author: "Alexander", context: "Wedding" },
+    { id: "jorden", quote: "The photos were stunning, the session was fun and relaxed, and the turnaround time was incredibly fast.", author: "Jorden", context: "Portrait session" },
+    { id: "luisa", quote: "Thanks so much Zac for your amazing work at our wedding. I am loving all the photos that captured the best day of my life.", author: "Luisa Munoz", context: "Wedding" },
+    { id: "henry", quote: "Zac was the ultimate professional, capturing only the best photos for my son's 21st and creating a lifetime of memories.", author: "Henry Makhouf", context: "21st birthday" },
+    { id: "keith", quote: "The photos were outstanding and the turnaround time was very speedy. Highly recommend.", author: "Keith", context: "Family celebration" },
+    { id: "lorenzo", quote: "Professional, punctual and a great communicator. He handled the brief with professionalism and flair.", author: "Lorenzo", context: "Corporate event" },
   ],
   instagramUrl: "https://www.instagram.com/zacmphotos/",
   instagramHandle: "@zacmphotos",
@@ -2232,7 +2270,19 @@ const DEFAULT_PORTFOLIO = {
 
 function publicPortfolioContent(value) {
   const { webhookUrl: _privateWebhook, ...publicValue } = value || {};
-  return { ...DEFAULT_PORTFOLIO, ...publicValue };
+  const merged = { ...DEFAULT_PORTFOLIO, ...publicValue };
+  merged.projects = (Array.isArray(merged.projects) ? merged.projects : DEFAULT_PORTFOLIO.projects).map((project, index) => ({
+    ...(DEFAULT_PORTFOLIO.projects.find(item => item.id === project?.id) || DEFAULT_PORTFOLIO.projects[index] || {}),
+    ...project,
+  }));
+  for (const key of ["testimonials", "aboutValues", "enquirySteps"]) {
+    merged[key] = (Array.isArray(merged[key]) ? merged[key] : DEFAULT_PORTFOLIO[key]).map((item, index) => ({
+      ...(DEFAULT_PORTFOLIO[key][index] || {}),
+      ...item,
+      id: item?.id || `${key}-${index + 1}`,
+    }));
+  }
+  return merged;
 }
 
 app.get("/api/site-context", (req, res) => {
@@ -2287,12 +2337,12 @@ const portfolioUpload = multer({
     destination: PORTFOLIO_MEDIA_DIR,
     filename: (_req, file, cb) => cb(null, `${Date.now()}-${crypto.randomBytes(5).toString("hex")}${path.extname(file.originalname).toLowerCase() || ".jpg"}`),
   }),
-  limits: { fileSize: 20 * 1024 * 1024 },
+  limits: { fileSize: 40 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => cb(null, file.mimetype.startsWith("image/") && isSupportedImageFilename(file.originalname)),
 });
 
 app.post("/api/admin/portfolio/media", requireAuth, portfolioUpload.single("image"), (req, res) => {
-  if (!req.file) return res.status(400).json({ error: "Choose a supported image up to 20 MB" });
+  if (!req.file) return res.status(400).json({ error: "Choose a supported image up to 40 MB" });
   res.json({ ok: true, url: `/portfolio-media/${encodeURIComponent(req.file.filename)}` });
 });
 
@@ -5753,6 +5803,8 @@ app.use(
         res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
       } else if (filePath.endsWith("sw.js") || /downloads[\\/]+android[\\/]+latest\.(apk|json)$/.test(filePath)) {
         res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+      } else if (filePath.includes(`${path.sep}portfolio${path.sep}`)) {
+        res.setHeader("Cache-Control", "public, max-age=300, must-revalidate");
       } else if (/\.(js|css|woff2?|ttf|eot|svg|png|jpg|jpeg|gif|ico|webp)$/.test(filePath)) {
         res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
       }
