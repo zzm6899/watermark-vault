@@ -105,6 +105,7 @@ const LAZY_STORE_KEYS = [
   "wv_photo_library",
   "wv_invoices",
   "wv_contacts",
+  "wv_pixieset_import_audit",
   "wv_enquiries",
   "wv_waitlist",
 ];
@@ -154,7 +155,7 @@ function _applyStoreData(data: Record<string, unknown>): void {
 async function _fetchStoreKeys(keys: string[]): Promise<boolean> {
   try {
     const param = keys.map(encodeURIComponent).join(",");
-    const res = await fetch(`/api/store?keys=${param}`);
+    const res = await fetch(`/api/store?keys=${param}`, { headers: adminAuthHeaders() });
     if (!res.ok) return false;
     const data = await readJson<Record<string, unknown> | null>(res, null);
     if (!data || typeof data !== "object" || Array.isArray(data)) return false;
@@ -174,17 +175,19 @@ async function _fetchStoreKeys(keys: string[]): Promise<boolean> {
  *   without blocking the caller.  These will be available in localStorage
  *   shortly after the UI first renders.
  */
-export async function syncFromServer(): Promise<boolean> {
+export async function syncFromServer(options: { awaitLazy?: boolean } = {}): Promise<boolean> {
   if (!(await checkServer())) return false;
   // Phase 1 — critical keys only (fast)
   const ok = await _fetchStoreKeys(CRITICAL_STORE_KEYS);
   if (!ok) return false;
   console.log("✅ Synced critical keys from server");
   // Phase 2 — heavy keys in background (non-blocking)
-  _fetchStoreKeys(LAZY_STORE_KEYS).then((lazyOk) => {
+  const lazySync = _fetchStoreKeys(LAZY_STORE_KEYS).then((lazyOk) => {
     if (lazyOk) console.log("✅ Synced lazy keys from server");
     else console.warn("⚠️ Failed to sync lazy keys from server");
+    return lazyOk;
   });
+  if (options.awaitLazy && !(await lazySync)) return false;
   return true;
 }
 
@@ -213,7 +216,7 @@ async function _flushQueue() {
     const item = _writeQueue.shift()!;
     fetch(`/api/store/${encodeURIComponent(item.key)}`, {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
       body: JSON.stringify({ value: item.value }),
     }).catch(() => {});
   }
@@ -262,7 +265,7 @@ export function persistToServer(key: string, value: unknown): void {
     // so that data written just before a reload is not silently dropped.
     fetch(`/api/store/${encodeURIComponent(key)}`, {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
       body: JSON.stringify({ value }),
       keepalive: true,
     }).catch(() => {});

@@ -1,6 +1,6 @@
 import type {
   EventType, Booking, Album, Photo, ProfileSettings,
-  AppSettings, AdminCredentials, BankTransferSettings, WaitlistEntry, EmailTemplate, Invoice, Contact, Enquiry,
+  AppSettings, AdminCredentials, BankTransferSettings, WaitlistEntry, EmailTemplate, Invoice, Contact, Enquiry, PixiesetImportAudit,
 } from "./types";
 import { persistToServer, persistAlbumToServer, deleteAlbumFromServer } from "./api";
 
@@ -519,6 +519,14 @@ export function updateContact(contact: Contact) {
 
 export function deleteContact(id: string) {
   setContacts(getContacts().filter(c => c.id !== id));
+}
+
+export function getPixiesetImportAudit(): PixiesetImportAudit | null {
+  return get<PixiesetImportAudit | null>("wv_pixieset_import_audit", null);
+}
+
+export function setPixiesetImportAudit(audit: PixiesetImportAudit) {
+  set("wv_pixieset_import_audit", audit);
 }
 
 // ── Enquiries ────────────────────────────────────────

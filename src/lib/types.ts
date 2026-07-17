@@ -403,6 +403,24 @@ export interface InvoiceItem {
 
 export type InvoiceStatus = "draft" | "sent" | "paid" | "partial" | "overdue" | "cancelled";
 
+export interface PixiesetCurrencySummary {
+  currency: string;
+  paid: number;
+  upcoming: number;
+  pastDue: number;
+  rowTotal: number;
+  invoiceCount: number;
+}
+
+export interface PixiesetImportAudit {
+  source: "pixieset";
+  version: number;
+  importedAt: string;
+  currencySummaries: PixiesetCurrencySummary[];
+  contactCount: number;
+  contactTypes: Record<string, number>;
+}
+
 export interface InvoiceEmailLogEntry {
   sentAt: string;
   type: "invoice" | "reminder" | "custom";

@@ -976,28 +976,47 @@ async function requireAuth(req, res, next) {
   return res.status(401).json({ error: "Authentication required" });
 }
 
-app.get("/api/store", (req, res) => {
+const SENSITIVE_STORE_KEYS = new Set(["wv_contacts", "wv_invoices", "wv_pixieset_import_audit"]);
+function isSensitiveStoreKey(key) {
+  return SENSITIVE_STORE_KEYS.has(String(key || ""));
+}
+async function requireSensitiveStoreAuth(req, res) {
+  if (!isSensitiveStoreKey(req.params.key)) return true;
+  if (await authenticateAdmin(req)) return true;
+  res.status(401).json({ error: "Authentication required" });
+  return false;
+}
+
+app.get("/api/store", async (req, res) => {
   const db = readDb();
   if (req.query.keys) {
     const requested = String(req.query.keys).split(",").map(k => k.trim()).filter(Boolean);
+    const canReadSensitive = requested.some(isSensitiveStoreKey) ? await authenticateAdmin(req) : false;
     const subset = {};
     for (const k of requested) {
+      if (isSensitiveStoreKey(k) && !canReadSensitive) continue;
       if (Object.prototype.hasOwnProperty.call(db, k)) subset[k] = stripBakedFields(k, db[k]);
     }
     return res.json(subset);
   }
   // Strip baked fields from every key in the full-dump path too, so that
   // any existing inflated databases are immediately lean on the wire.
+  const canReadSensitive = await authenticateAdmin(req);
   const result = {};
-  for (const [k, v] of Object.entries(db)) result[k] = stripBakedFields(k, v);
+  for (const [k, v] of Object.entries(db)) {
+    if (isSensitiveStoreKey(k) && !canReadSensitive) continue;
+    result[k] = stripBakedFields(k, v);
+  }
   res.json(result);
 });
-app.get("/api/store/:key", (req, res) => {
+app.get("/api/store/:key", async (req, res) => {
+  if (!(await requireSensitiveStoreAuth(req, res))) return;
   const db = readDb();
   const key = req.params.key;
   res.json({ value: key in db ? stripBakedFields(key, db[key]) : null });
 });
 app.put("/api/store/:key", async (req, res) => {
+  if (!(await requireSensitiveStoreAuth(req, res))) return;
   const db = readDb();
   const key = req.params.key;
   let value = stripBakedFields(key, req.body.value);
@@ -1016,7 +1035,8 @@ app.put("/api/store/:key", async (req, res) => {
   writeDb(db);
   res.json({ ok: true });
 });
-app.delete("/api/store/:key", (req, res) => {
+app.delete("/api/store/:key", async (req, res) => {
+  if (!(await requireSensitiveStoreAuth(req, res))) return;
   const db = readDb();
   delete db[req.params.key];
   writeDb(db);

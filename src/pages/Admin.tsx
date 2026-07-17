@@ -19,6 +19,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import PixiesetImportPanel from "@/components/admin/PixiesetImportPanel";
 import { toast } from "sonner";
 import { useNavigate, useParams } from "react-router-dom";
 import {
@@ -28,8 +29,8 @@ import {
   getAlbums, addAlbum, updateAlbum, deleteAlbum,
   getPhotoLibrary, setPhotoLibrary,
   getEmailTemplates, addEmailTemplate, updateEmailTemplate, deleteEmailTemplate,
-  getInvoices, addInvoice, updateInvoice, deleteInvoice, getNextInvoiceNumber,
-  getContacts, addContact, updateContact, deleteContact,
+  getInvoices, setInvoices as saveInvoices, addInvoice, updateInvoice, deleteInvoice, getNextInvoiceNumber,
+  getContacts, setContacts as saveContacts, addContact, updateContact, deleteContact,
   getEnquiries, updateEnquiry, deleteEnquiry,
   isSuperAdmin, setSuperAdmin, getAdminCredentials, hashPassword,
   isSlotBooked,
@@ -1794,14 +1795,21 @@ function DashboardView() {
   ];
 
   // Invoice stats for dashboard
-  const invPaid       = invoices.filter(i => i.status === "paid");
-  const invOutstanding = invoices.filter(i => i.status === "sent" || i.status === "overdue");
+  const invPaid = invoices.filter(i => i.status === "paid");
+  const invOutstanding = invoices.filter(i => i.status === "sent" || i.status === "partial" || i.status === "overdue");
   const invOverdue    = invoices.filter(i => i.status === "overdue");
-  const invPaidTotal  = invPaid.reduce((s, i) => s + calcInvTotal(i), 0);
-  const invOutTotal   = invOutstanding.reduce((s, i) => s + calcInvTotal(i), 0);
+  const invoiceCurrencies = Array.from(new Set(invoices.map(invoiceCurrency))).sort();
   const invoiceStats = invoices.length > 0 ? [
-    { label: "Invoices Paid",        value: `$${invPaidTotal.toFixed(2)}`,  sub: `${invPaid.length} invoice${invPaid.length !== 1 ? "s" : ""}`,        icon: Receipt,      color: "text-green-400", onClick: () => navigate("/admin/invoices") },
-    { label: "Outstanding",          value: `$${invOutTotal.toFixed(2)}`,   sub: `${invOutstanding.length} awaiting payment`,                           icon: TrendingUp,   color: "text-yellow-400", onClick: () => navigate("/admin/invoices") },
+    ...invoiceCurrencies.map(currency => {
+      const currencyInvoices = invPaid.filter(invoice => invoiceCurrency(invoice) === currency);
+      const total = currencyInvoices.reduce((sum, invoice) => sum + calcInvTotal(invoice), 0);
+      return { label: `${currency} invoices paid`, value: formatInvMoney({ currency }, total), sub: `${currencyInvoices.length} invoice${currencyInvoices.length !== 1 ? "s" : ""}`, icon: Receipt, color: "text-green-400", onClick: () => navigate("/admin/invoices") };
+    }),
+    ...invoiceCurrencies.map(currency => {
+      const currencyInvoices = invOutstanding.filter(invoice => invoiceCurrency(invoice) === currency);
+      const total = currencyInvoices.reduce((sum, invoice) => sum + Math.max(0, calcInvTotal(invoice) - (invoice.amountPaid || 0)), 0);
+      return { label: `${currency} outstanding`, value: formatInvMoney({ currency }, total), sub: `${currencyInvoices.length} awaiting payment`, icon: TrendingUp, color: "text-yellow-400", onClick: () => navigate("/admin/invoices") };
+    }).filter(stat => stat.sub !== "0 awaiting payment"),
     { label: "Overdue",              value: invOverdue.length,               sub: invOverdue.length > 0 ? "requires attention" : "all on time",         icon: TrendingDown, color: invOverdue.length > 0 ? "text-red-400" : "text-muted-foreground", onClick: () => navigate("/admin/invoices") },
   ] : [];
 
@@ -8350,6 +8358,13 @@ function InvoicesView() {
           </div>
         </div>
 
+        <PixiesetImportPanel
+          contacts={getContacts()}
+          invoices={invoices}
+          onReplaceContacts={saveContacts}
+          onReplaceInvoices={nextInvoices => { saveInvoices(nextInvoices); setInvoices(nextInvoices); }}
+        />
+
         {/* Search + Date range + Sort */}
         <div className="glass-panel rounded-xl p-3 space-y-3">
           <div className="flex flex-col sm:flex-row gap-2">
@@ -9154,8 +9169,17 @@ function FinanceView() {
   const bankTotal = payments.filter(p => p.method === "bank-transfer" && p.status === "completed").reduce((s, p) => s + p.amount, 0);
 
   // Invoice stats — reuse the module-level calcInvTotal helper
-  const invoicePaid = invoicesState.filter(i => i.status === "paid").reduce((s, i) => s + calcInvTotal(i), 0);
-  const invoicePending = invoicesState.filter(i => i.status === "sent" || i.status === "overdue").reduce((s, i) => s + calcInvTotal(i), 0);
+  const invoiceFinanceStats = Array.from(new Set(invoicesState.map(invoiceCurrency))).sort().map(currency => {
+    const paid = invoicesState.filter(invoice => invoiceCurrency(invoice) === currency && invoice.status === "paid");
+    const outstanding = invoicesState.filter(invoice => invoiceCurrency(invoice) === currency && (invoice.status === "sent" || invoice.status === "partial" || invoice.status === "overdue"));
+    return {
+      currency,
+      paidCount: paid.length,
+      paid: paid.reduce((sum, invoice) => sum + calcInvTotal(invoice), 0),
+      outstandingCount: outstanding.length,
+      outstanding: outstanding.reduce((sum, invoice) => sum + Math.max(0, calcInvTotal(invoice) - (invoice.amountPaid || 0)), 0),
+    };
+  });
 
   const handleDelete = (p: PaymentRecord) => {
     if (!confirm(`Delete this payment record? This will revoke the client's access to the purchased photos.`)) return;
@@ -9223,16 +9247,18 @@ function FinanceView() {
       {/* Invoice summary row */}
       {invoicesState.length > 0 && (
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          <div className="glass-panel rounded-xl p-5">
-            <p className="text-xs font-body text-muted-foreground tracking-wider uppercase mb-1">Invoices Paid</p>
-            <p className="font-display text-2xl text-green-400">${invoicePaid.toFixed(2)}</p>
-            <p className="text-[10px] font-body text-muted-foreground mt-1">{invoicesState.filter(i => i.status === "paid").length} paid invoices</p>
-          </div>
-          <div className="glass-panel rounded-xl p-5">
-            <p className="text-xs font-body text-muted-foreground tracking-wider uppercase mb-1">Invoices Outstanding</p>
-            <p className="font-display text-2xl text-yellow-400">${invoicePending.toFixed(2)}</p>
-            <p className="text-[10px] font-body text-muted-foreground mt-1">{invoicesState.filter(i => i.status === "sent" || i.status === "overdue").length} outstanding</p>
-          </div>
+          {invoiceFinanceStats.flatMap(stat => [
+            <div key={`${stat.currency}-paid`} className="glass-panel rounded-xl p-5">
+              <p className="text-xs font-body text-muted-foreground tracking-wider uppercase mb-1">{stat.currency} invoices paid</p>
+              <p className="font-display text-2xl text-green-400">{formatInvMoney({ currency: stat.currency }, stat.paid)}</p>
+              <p className="text-[10px] font-body text-muted-foreground mt-1">{stat.paidCount} paid invoices</p>
+            </div>,
+            <div key={`${stat.currency}-outstanding`} className="glass-panel rounded-xl p-5">
+              <p className="text-xs font-body text-muted-foreground tracking-wider uppercase mb-1">{stat.currency} outstanding</p>
+              <p className="font-display text-2xl text-yellow-400">{formatInvMoney({ currency: stat.currency }, stat.outstanding)}</p>
+              <p className="text-[10px] font-body text-muted-foreground mt-1">{stat.outstandingCount} outstanding</p>
+            </div>,
+          ])}
           <div className="glass-panel rounded-xl p-5 col-span-2 flex items-center justify-between">
             <div>
               <p className="text-xs font-body text-muted-foreground tracking-wider uppercase mb-1">All Invoices</p>
@@ -10155,7 +10181,7 @@ function buildClientTimeline(contact: Contact, bookings: Booking[], invoices: In
       at: invoice.paidAt || invoice.sentAt || invoice.createdAt,
       type: "invoice",
       title: `${invoice.number} ${invoice.status}`,
-      detail: `$${calcInvTotal(invoice).toFixed(2)} · due ${invoice.dueDate || "not set"}`,
+      detail: `${formatInvMoney(invoice, calcInvTotal(invoice))} · due ${invoice.dueDate || "not set"}`,
     });
   }
 
@@ -10391,7 +10417,11 @@ function ContactsView() {
             const cInvoices = invoices.filter(i => contactMatchesClient(c, i.to?.name, i.to?.email));
             const cAlbumIds = new Set(c.albumIds || []);
             const cAlbums = albums.filter(a => cAlbumIds.has(a.id) || contactMatchesClient(c, a.clientName, a.clientEmail));
-            const cTotal = cInvoices.reduce((s, i) => s + calcInvTotal(i), 0);
+            const cTotals = Object.entries(cInvoices.reduce<Record<string, number>>((totals, invoice) => {
+              const currency = invoiceCurrency(invoice);
+              totals[currency] = (totals[currency] || 0) + calcInvTotal(invoice);
+              return totals;
+            }, {}));
             const isExpanded = expandedContactId === c.id;
             const sortedBookings = [...cBookings].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
             const timeline = buildClientTimeline(c, bookings, invoices, albums);
@@ -10417,7 +10447,7 @@ function ContactsView() {
                     <span className="px-2 py-0.5 rounded-full bg-secondary/60 border border-border/60">{cBookings.length} booking{cBookings.length !== 1 ? "s" : ""}</span>
                     <span className="px-2 py-0.5 rounded-full bg-secondary/60 border border-border/60">{cInvoices.length} invoice{cInvoices.length !== 1 ? "s" : ""}</span>
                     <span className="px-2 py-0.5 rounded-full bg-secondary/60 border border-border/60">{cAlbums.length} album{cAlbums.length !== 1 ? "s" : ""}</span>
-                    <span className="px-2 py-0.5 rounded-full bg-secondary/60 border border-border/60">${cTotal.toFixed(2)}</span>
+                    {cTotals.map(([currency, total]) => <span key={currency} className="px-2 py-0.5 rounded-full bg-secondary/60 border border-border/60">{formatInvMoney({ currency }, total)}</span>)}
                   </div>
                   <div className="flex gap-1 shrink-0" onClick={e => e.stopPropagation()}>
                     <button onClick={() => setEditing({ ...c })} className="p-2 rounded hover:bg-secondary text-muted-foreground/60 hover:text-foreground transition-colors"><Edit className="w-4 h-4" /></button>

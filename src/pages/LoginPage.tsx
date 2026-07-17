@@ -50,11 +50,13 @@ export default function LoginPage({ onLogin }: { onLogin?: () => void } = {}) {
         ? await verifyAdminCredentials(normalized, hash)
         : (() => { const creds = getAdminCredentials(); return !!(creds && creds.username === normalized && creds.passwordHash === hash); })();
       if (adminOk) {
-        if (serverOk) await syncFromServer().catch(() => false);
-        login();
-        // Store the sha256 hash in sessionStorage so adminAuthHeaders() can
+        // Store the SHA-256 hash before sync so protected financial/contact
+        // stores are included in the post-login fetch.
+        // adminAuthHeaders() uses it to
         // build correct Basic Auth credentials for protected API endpoints.
         setAdminSessionHash(hash);
+        if (serverOk) await syncFromServer({ awaitLazy: true }).catch(() => false);
+        login();
         onLogin?.();
         navigate(isNative ? "/capture" : "/admin", { replace: true });
         return;
