@@ -37,7 +37,7 @@
 .portfolio-image-ribbon img:first-child { object-position:center 35%; }
 .portfolio-philosophy { background:#f7f6f2; padding:150px max(30px,calc((100vw - 1240px)/2)); display:grid; grid-template-columns:1.05fr .95fr; gap:9vw; align-items:center; }
 .portfolio-philosophy figure { margin:0; overflow:hidden; }
-.portfolio-philosophy figure img { width:100%; aspect-ratio:4/5; object-fit:cover; display:block; }
+.portfolio-philosophy figure img { width:100%; aspect-ratio:5/4; object-fit:cover; display:block; }
 .portfolio-philosophy h2 { font-size:clamp(52px,6vw,86px); line-height:.94; margin:20px 0 30px; }
 .portfolio-philosophy>div>p:not(.portfolio-kicker) { color:#5f5d58; font-size:16px; line-height:1.85; max-width:560px; }
 .portfolio-philosophy a { display:inline-flex; align-items:center; gap:9px; margin-top:28px; color:#171717; font-size:10px; letter-spacing:.14em; text-transform:uppercase; }
@@ -87,8 +87,8 @@
 .portfolio-footer-bottom nav { display:flex; gap:24px; }
 .portfolio-footer-bottom nav a { font-size:10px; letter-spacing:.13em; text-transform:uppercase; }
 .portfolio-site footer small { color:#696862; }
-[data-reveal] { opacity:0; transform:translateY(28px); transition:opacity .7s ease,transform .7s ease; }
-[data-reveal].revealed { opacity:1; transform:none; }
+[data-reveal] { transform:translateY(18px); transition:transform .55s ease; }
+[data-reveal].revealed { transform:none; }
 .portfolio-page-intro { min-height:500px; padding:120px max(30px,calc((100vw - 1240px)/2)); display:flex; flex-direction:column; justify-content:center; background:#f7f6f2; }
 .portfolio-page-intro>p { text-transform:uppercase; letter-spacing:.2em; font-size:10px; }
 .portfolio-page-intro h1,.portfolio-about-page h1,.portfolio-enquiry-page h1 { font-family:'Cormorant Garamond',serif; font-size:clamp(58px,8vw,112px); line-height:.9; max-width:1000px; margin:22px 0; font-weight:500; }
@@ -243,7 +243,7 @@
  .portfolio-hero{height:calc(100svh - 76px);min-height:540px}.portfolio-hero h1{font-size:54px}.portfolio-hero-actions{margin-top:28px}.portfolio-hero-actions a{padding:11px 12px}.portfolio-hero-meta{inset-inline:16px;bottom:18px}.portfolio-hero-meta span:last-child{display:none}.portfolio-scroll{display:none}
  .portfolio-about{padding:90px 22px;grid-template-columns:1fr;gap:58px}.portfolio-about h2{font-size:52px}.portfolio-about figure{grid-row:1}
  .portfolio-image-ribbon{height:auto;grid-template-columns:1fr 1fr}.portfolio-image-ribbon img{aspect-ratio:3/4}.portfolio-image-ribbon img:nth-child(2){grid-row:span 2;aspect-ratio:auto}.portfolio-image-ribbon img:nth-child(3){display:block}
- .portfolio-philosophy{padding:90px 22px;grid-template-columns:1fr;gap:55px}.portfolio-philosophy h2{font-size:52px}.portfolio-philosophy figure{grid-row:1}.portfolio-story-index{padding:90px 22px}.portfolio-story-heading{display:block;margin-bottom:55px}.portfolio-story-heading h2{text-align:left;font-size:56px;margin-top:18px}.portfolio-story-layout{grid-template-columns:1fr;gap:45px}.portfolio-story-list>a{min-height:104px;grid-template-columns:28px 1fr 20px}.portfolio-story-list h3{font-size:28px}.portfolio-story-list p{display:none}.portfolio-story-layout figure{position:static}.portfolio-story-layout figure img{aspect-ratio:4/3}
+ .portfolio-philosophy{padding:90px 22px;grid-template-columns:1fr;gap:55px}.portfolio-philosophy h2{font-size:52px}.portfolio-philosophy figure{grid-row:1}.portfolio-philosophy figure img{aspect-ratio:4/3}.portfolio-story-index{padding:90px 22px}.portfolio-story-heading{display:block;margin-bottom:55px}.portfolio-story-heading h2{text-align:left;font-size:56px;margin-top:18px}.portfolio-story-layout{grid-template-columns:1fr;gap:45px}.portfolio-story-list>a{min-height:104px;grid-template-columns:28px 1fr 20px}.portfolio-story-list h3{font-size:28px}.portfolio-story-list p{display:none}.portfolio-story-layout figure{position:static}.portfolio-story-layout figure img{aspect-ratio:4/3}
  .portfolio-work{padding:90px 20px}.portfolio-projects{grid-template-columns:1fr;gap:48px}.portfolio-project:nth-child(even){margin-top:0}.portfolio-project h3{font-size:30px}
  .portfolio-testimonial{padding:100px 22px}.portfolio-site footer{padding:80px 22px 35px}.portfolio-site footer h2{font-size:52px}.portfolio-footer-email{margin-top:65px;font-size:29px}.portfolio-footer-bottom{display:block;margin:35px 0 55px}.portfolio-socials{gap:18px}.portfolio-footer-bottom nav{margin-top:32px}
  .portfolio-page-intro{min-height:430px;padding:80px 22px}.portfolio-page-intro h1{font-size:58px}.portfolio-page-intro-work{min-height:540px}.portfolio-client-line{align-items:flex-start;gap:12px 20px;margin-top:42px}.portfolio-client-line span{width:100%}.portfolio-specialties{grid-template-columns:1fr;padding:60px 22px}.portfolio-specialties>div,.portfolio-specialties>div:first-child{border-left:0;border-top:1px solid #ffffff22;padding:28px 0}.portfolio-gallery-section{padding:25px 8px 80px}.portfolio-gallery-toolbar{display:block;padding:0 12px 25px}.portfolio-gallery-toolbar>div{justify-content:flex-start;margin-top:14px}.portfolio-gallery-toolbar button{padding:8px 7px}.portfolio-gallery-grid{gap:3px}.portfolio-gallery-item,.portfolio-gallery-item-1,.portfolio-gallery-item-4{grid-column:span 6;aspect-ratio:3/4}.portfolio-gallery-item:nth-child(3n){grid-column:span 12;aspect-ratio:4/3}.portfolio-gallery-item span{display:none}.portfolio-lightbox{grid-template-columns:44px minmax(0,1fr) 44px}.portfolio-lightbox figure{padding:55px 0 20px}.portfolio-lightbox figcaption{display:block;padding:10px 2px}.portfolio-lightbox figcaption span{display:block;margin-bottom:5px}.portfolio-inline-cta{padding:75px 22px;display:block}.portfolio-inline-cta a{margin-top:20px}
