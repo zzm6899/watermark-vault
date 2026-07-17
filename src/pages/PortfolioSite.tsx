@@ -194,7 +194,20 @@ export default function PortfolioSite() {
   const preview = location.pathname.startsWith("/portfolio-preview");
   const path = preview ? location.pathname.replace("/portfolio-preview", "") || "/" : location.pathname;
   const category = new URLSearchParams(location.search).get("category");
-  useEffect(() => { fetchPublishedPortfolio().then(setSite); }, []);
+  const editorPreview = preview && (new URLSearchParams(location.search).get("editor") === "1" || window.self !== window.top);
+  useEffect(() => {
+    if (!editorPreview) {
+      fetchPublishedPortfolio().then(setSite);
+      return;
+    }
+    const receiveDraft = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin || event.source !== window.parent || event.data?.type !== "wv:portfolio-preview" || !event.data.site || typeof event.data.site !== "object") return;
+      setSite({ ...defaultPortfolioSite, ...event.data.site });
+    };
+    window.addEventListener("message", receiveDraft);
+    window.parent.postMessage({ type: "wv:portfolio-preview-ready" }, window.location.origin);
+    return () => window.removeEventListener("message", receiveDraft);
+  }, [editorPreview]);
   useEffect(() => { document.title = path === "/" ? site.brandName : `${path.slice(1).replace(/-/g, " ")} — ${site.brandName}`; window.scrollTo(0, 0); }, [path, site.brandName]);
   useEffect(() => {
     const elements = Array.from(document.querySelectorAll<HTMLElement>(".portfolio-site [data-reveal]"));

@@ -1,8 +1,8 @@
-import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { DndContext, KeyboardSensor, PointerSensor, TouchSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
 import { SortableContext, arrayMove, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { ArrowDown, ArrowUp, ExternalLink, Eye, Globe, GripVertical, ImagePlus, Loader2, Plus, Save, Send, Trash2, Upload } from "lucide-react";
+import { ArrowDown, ArrowUp, ExternalLink, Eye, Globe, GripVertical, ImagePlus, Loader2, Monitor, Plus, Save, Send, Smartphone, Trash2, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -102,6 +102,34 @@ function EditorSection({ title, description, children, open = false }: { title: 
   return <details open={open} className="group border-t border-border py-6"><summary className="flex cursor-pointer list-none items-center justify-between gap-4"><div><h3 className="font-display text-2xl">{title}</h3>{description && <p className="mt-1 text-xs text-muted-foreground">{description}</p>}</div><span className="text-xs text-muted-foreground group-open:hidden">Open</span><span className="hidden text-xs text-muted-foreground group-open:inline">Close</span></summary><div className="mt-6 space-y-5">{children}</div></details>;
 }
 
+function LivePortfolioPreview({ draft }: { draft: PortfolioSite }) {
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const [path, setPath] = useState("/");
+  const [device, setDevice] = useState<"desktop" | "mobile">("desktop");
+  const publicDraft = useMemo(() => ({ ...draft, webhookUrl: undefined }), [draft]);
+  const sendDraft = useCallback(() => iframeRef.current?.contentWindow?.postMessage({ type: "wv:portfolio-preview", site: publicDraft }, window.location.origin), [publicDraft]);
+
+  useEffect(() => { sendDraft(); }, [sendDraft]);
+  useEffect(() => {
+    const receiveReady = (event: MessageEvent) => {
+      if (event.origin === window.location.origin && event.source === iframeRef.current?.contentWindow && event.data?.type === "wv:portfolio-preview-ready") sendDraft();
+    };
+    window.addEventListener("message", receiveReady);
+    return () => window.removeEventListener("message", receiveReady);
+  }, [sendDraft]);
+
+  const pages = [["Home", "/"], ["Portfolio", "/portfolio"], ["Concerts", "/concerts"], ["About", "/about"], ["Enquire", "/enquire"]] as const;
+  return <section className="space-y-3 border-t border-border py-5" aria-label="Live website preview">
+    <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="flex flex-wrap gap-1">{pages.map(([label, value]) => <Button key={value} type="button" size="sm" variant={path === value ? "secondary" : "ghost"} onClick={() => setPath(value)}>{label}</Button>)}</div>
+      <div className="flex rounded-md border border-border p-1" aria-label="Preview device"><Button type="button" size="icon" variant={device === "desktop" ? "secondary" : "ghost"} onClick={() => setDevice("desktop")} aria-label="Desktop preview"><Monitor className="h-4 w-4" /></Button><Button type="button" size="icon" variant={device === "mobile" ? "secondary" : "ghost"} onClick={() => setDevice("mobile")} aria-label="Mobile preview"><Smartphone className="h-4 w-4" /></Button></div>
+    </div>
+    <div className="overflow-hidden rounded-md border border-border bg-[#111] p-2 sm:p-3">
+      <iframe ref={iframeRef} title="Unsaved portfolio preview" src={`/portfolio-preview${path === "/" ? "" : path}?editor=1`} onLoad={sendDraft} className={`mx-auto block h-[68vh] min-h-[520px] bg-white transition-[width] ${device === "mobile" ? "w-[390px] max-w-full" : "w-full"}`} />
+    </div>
+  </section>;
+}
+
 export default function PortfolioEditor() {
   const [draft, setDraft] = useState<PortfolioSite>(defaultPortfolioSite);
   const [savedSnapshot, setSavedSnapshot] = useState(JSON.stringify(defaultPortfolioSite));
@@ -111,6 +139,7 @@ export default function PortfolioEditor() {
   const [concertUploading, setConcertUploading] = useState(false);
   const [publishedAt, setPublishedAt] = useState<string>();
   const [testingWebhook, setTestingWebhook] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
   const bulkInputId = useId();
   const concertInputId = useId();
 
@@ -140,8 +169,9 @@ export default function PortfolioEditor() {
 
   if (loading) return <div className="py-24 text-center text-sm text-muted-foreground"><Loader2 className="mx-auto mb-3 h-5 w-5 animate-spin" />Loading website editor…</div>;
   return <div className="space-y-2 pb-24">
-    <div className="admin-page-header"><div><h2 className="font-display text-3xl text-foreground sm:text-4xl">Website</h2><p className="mt-2 text-sm text-muted-foreground">Structured content editor for the public portfolio. Original uploads are preserved.</p></div><Button variant="outline" size="sm" onClick={() => window.open("/portfolio-preview", "_blank")}><Eye className="mr-2 h-4 w-4" />Preview</Button></div>
+    <div className="admin-page-header"><div><h2 className="font-display text-3xl text-foreground sm:text-4xl">Website</h2><p className="mt-2 text-sm text-muted-foreground">Structured content editor for the public portfolio. Original uploads are preserved.</p></div><Button variant={previewOpen ? "secondary" : "outline"} size="sm" onClick={() => setPreviewOpen(value => !value)}><Eye className="mr-2 h-4 w-4" />Live preview</Button></div>
     <div className="sticky top-0 z-30 -mx-2 flex flex-wrap items-center justify-between gap-3 border-y border-border bg-background/95 px-2 py-3 backdrop-blur"><div className="text-xs text-muted-foreground"><span className={dirty ? "text-amber-500" : "text-emerald-500"}>{dirty ? "Unsaved changes" : "All changes saved"}</span>{publishedAt && <span> · Published {new Date(publishedAt).toLocaleString()}</span>}</div><div className="flex gap-2"><a className="inline-flex items-center gap-1 px-2 text-xs text-primary" href="https://zacmclients.photos" target="_blank" rel="noreferrer">Live site <ExternalLink className="h-3.5 w-3.5" /></a><Button variant="outline" size="sm" onClick={save} disabled={saving || !dirty}><Save className="mr-2 h-4 w-4" />Save draft</Button><Button size="sm" onClick={publish} disabled={saving}><Globe className="mr-2 h-4 w-4" />Publish</Button></div></div>
+    {previewOpen && <LivePortfolioPreview draft={draft} />}
 
     <EditorSection title="Brand and hero" description="Upload 3200px-wide originals for full-screen display." open><div className="grid gap-4 md:grid-cols-2"><label className="space-y-1 text-xs text-muted-foreground">Business name<Input value={draft.brandName} onChange={event => change("brandName", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground">Hero label<Input value={draft.heroLabel} onChange={event => change("heroLabel", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground md:col-span-2">Hero services line<Input value={draft.heroServicesLabel} onChange={event => change("heroServicesLabel", event.target.value)} /></label><ImageUploadField label="Logo" value={draft.logo} recommendedWidth={1000} onChange={value => change("logo", value)} /></div><ImageCollectionEditor label="Hero slideshow" images={draft.heroImages} recommendedWidth={3200} onChange={images => { change("heroImages", images); if (images[0]) change("heroImage", images[0]); }} /></EditorSection>
 
@@ -153,7 +183,7 @@ export default function PortfolioEditor() {
     </EditorSection>
 
     <EditorSection title="Concert page" description="Edit the dedicated live-music page and add concert photos directly to it."><div className="grid gap-4 md:grid-cols-2"><label className="space-y-1 text-xs text-muted-foreground">Eyebrow<Input value={draft.concertEyebrow} onChange={event => change("concertEyebrow", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground">Page heading<Input value={draft.concertTitle} onChange={event => change("concertTitle", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground md:col-span-2">Introduction<Textarea rows={4} value={draft.concertBody} onChange={event => change("concertBody", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground">Highlights, one per line<Textarea rows={5} value={draft.concertHighlights.join("\n")} onChange={event => change("concertHighlights", event.target.value.split("\n").map(value => value.trim()).filter(Boolean))} /></label><ImageUploadField label="Concert hero" value={draft.concertHeroImage} recommendedWidth={3200} onChange={value => change("concertHeroImage", value)} /></div>
-      <div onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); uploadGalleryFiles(event.dataTransfer.files, "Live music", true); }} className="flex flex-wrap items-center justify-between gap-4 rounded-md border border-dashed border-border p-4"><div><h4 className="text-sm font-medium">Concert photographs</h4><p className="text-[11px] text-muted-foreground">{draft.galleryImages.filter(image => image.category.trim().toLowerCase() === "live music").length} live-music photos · new uploads are added to this page automatically.</p></div><input id={concertInputId} type="file" multiple accept="image/jpeg,image/png,image/webp,image/avif" className="hidden" onChange={event => event.target.files && uploadGalleryFiles(event.target.files, "Live music", true)} /><div className="flex gap-2"><Button type="button" variant="ghost" size="sm" onClick={() => window.open("/portfolio-preview/concerts", "_blank")}><Eye className="mr-2 h-4 w-4" />Preview page</Button><Button asChild type="button" variant="outline" size="sm" disabled={concertUploading}><label htmlFor={concertInputId} className="cursor-pointer">{concertUploading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ImagePlus className="mr-2 h-4 w-4" />}Add concert photos</label></Button></div></div>
+      <div onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); uploadGalleryFiles(event.dataTransfer.files, "Live Music", true); }} className="flex flex-wrap items-center justify-between gap-4 rounded-md border border-dashed border-border p-4"><div><h4 className="text-sm font-medium">Concert photographs</h4><p className="text-[11px] text-muted-foreground">{draft.galleryImages.filter(image => image.category.trim().toLowerCase() === "live music").length} live-music photos · new uploads are added to this page automatically.</p></div><input id={concertInputId} type="file" multiple accept="image/jpeg,image/png,image/webp,image/avif" className="hidden" onChange={event => event.target.files && uploadGalleryFiles(event.target.files, "Live Music", true)} /><div className="flex gap-2"><Button type="button" variant="ghost" size="sm" onClick={() => window.open("/portfolio-preview/concerts", "_blank")}><Eye className="mr-2 h-4 w-4" />Preview page</Button><Button asChild type="button" variant="outline" size="sm" disabled={concertUploading}><label htmlFor={concertInputId} className="cursor-pointer">{concertUploading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ImagePlus className="mr-2 h-4 w-4" />}Add concert photos</label></Button></div></div>
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-6">{draft.galleryImages.filter(image => image.category.trim().toLowerCase() === "live music").map(image => <div key={image.id} className="group relative aspect-square overflow-hidden rounded border border-border bg-muted"><img src={image.image} alt={image.alt} className="h-full w-full object-cover" /><button type="button" className="absolute right-1 top-1 grid h-7 w-7 place-items-center rounded bg-background/90 text-muted-foreground opacity-0 shadow group-hover:opacity-100 focus:opacity-100" onClick={() => change("galleryImages", draft.galleryImages.filter(item => item.id !== image.id))} aria-label={`Remove ${image.alt}`}><Trash2 className="h-3.5 w-3.5" /></button></div>)}</div>
     </EditorSection>
 

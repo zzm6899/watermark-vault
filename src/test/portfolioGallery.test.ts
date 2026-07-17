@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { defaultPortfolioSite, importedPortfolioGalleryImages } from "@/lib/portfolio";
+import { defaultPortfolioSite, importedPortfolioGalleryImages, portfolioCategoryOrder } from "@/lib/portfolio";
 
 describe("portfolio archive import", () => {
   it("ships every unique image imported from the legacy portfolio pages", () => {
@@ -15,8 +15,19 @@ describe("portfolio archive import", () => {
     }
 
     expect(defaultPortfolioSite.galleryImages).toHaveLength(46);
-    expect(defaultPortfolioSite.gallerySeedVersion).toBe(1);
-    expect(defaultPortfolioSite.galleryImages.filter(item => item.category === "Live music")).toHaveLength(6);
+    expect(defaultPortfolioSite.gallerySeedVersion).toBe(2);
+    expect(defaultPortfolioSite.galleryImages.filter(item => item.category === "Live Music")).toHaveLength(6);
+    const originalResolutionImages = [
+      ...importedPortfolioGalleryImages.map(item => item.image),
+      "/portfolio/gallery/concert-crowd.jpg",
+      "/portfolio/gallery/concert-performer.jpg",
+      "/portfolio/gallery/formal-room.jpg",
+    ];
+    expect(new Set(originalResolutionImages).size).toBe(37);
+    expect(defaultPortfolioSite.galleryImages.filter(item => originalResolutionImages.includes(item.image))).toHaveLength(37);
+    expect(defaultPortfolioSite.galleryImages.map(item => portfolioCategoryOrder.indexOf(item.category))).toEqual(
+      [...defaultPortfolioSite.galleryImages].map(item => portfolioCategoryOrder.indexOf(item.category)).sort((left, right) => left - right),
+    );
     expect(defaultPortfolioSite.concertHeroImage).toContain("/portfolio/");
     expect(defaultPortfolioSite.concertHighlights.length).toBeGreaterThanOrEqual(3);
   });

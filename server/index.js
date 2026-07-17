@@ -2218,8 +2218,35 @@ const IMPORTED_PORTFOLIO_GALLERY = [
   { id: "archive-cosplay", image: "/portfolio/imported/zm-182.jpg", alt: "Cosplay guests arriving at a convention", category: "Cosplay" },
 ];
 
+const PORTFOLIO_CATEGORY_ORDER = ["Weddings", "Live Music", "Events", "Brand & Corporate", "Food & Hospitality", "Venues & Details", "Portraits"];
+const PORTFOLIO_CATEGORY_LABELS = {
+  "live music": "Live Music",
+  "brand and business": "Brand & Corporate",
+  "food and hospitality": "Food & Hospitality",
+  formals: "Venues & Details",
+  details: "Venues & Details",
+  cosplay: "Events",
+};
+const CORE_PORTFOLIO_GALLERY = [
+  { id: "wedding-aisle", image: "/portfolio/gallery/wedding-garden.jpg", alt: "Newlyweds walking down the church aisle", category: "Weddings" },
+  { id: "wedding-flowers", image: "/portfolio/gallery/wedding-celebration.jpg", alt: "Wedding floral details", category: "Weddings" },
+  { id: "wedding-harbour", image: "/portfolio/gallery/wedding-candid.jpg", alt: "Wedding couple at Sydney Harbour", category: "Weddings" },
+  { id: "dj", image: "/portfolio/gallery/concert-performer.jpg", alt: "DJ performing at a live event", category: "Live Music" },
+  { id: "performer", image: "/portfolio/gallery/food-detail.jpg", alt: "Singer performing under stage lights", category: "Live Music" },
+  { id: "nightlife-sign", image: "/portfolio/gallery/concert-crowd.jpg", alt: "Neon venue signage at a nightlife event", category: "Events" },
+  { id: "cocktail", image: "/portfolio/gallery/event-energy.jpg", alt: "Cocktail service at an event", category: "Events" },
+  { id: "brand-networking", image: "/portfolio/gallery/brand-event.jpg", alt: "Guests networking at a business event", category: "Brand & Corporate" },
+  { id: "event-production", image: "/portfolio/gallery/portrait-editorial.jpg", alt: "Event production team at work", category: "Brand & Corporate" },
+  { id: "chef", image: "/portfolio/gallery/corporate-networking.jpg", alt: "Chef serving guests at a catered event", category: "Food & Hospitality" },
+  { id: "wine-detail", image: "/portfolio/gallery/formal-room.jpg", alt: "Wine and glassware at a formal event", category: "Venues & Details" },
+  { id: "balter", image: "/portfolio/gallery/nightlife.jpg", alt: "Balter brand activation", category: "Brand & Corporate" },
+];
+const CURATED_PORTFOLIO_GALLERY = [...CORE_PORTFOLIO_GALLERY, ...IMPORTED_PORTFOLIO_GALLERY]
+  .map(item => ({ ...item, category: PORTFOLIO_CATEGORY_LABELS[String(item.category || "").toLowerCase()] || item.category }))
+  .sort((left, right) => PORTFOLIO_CATEGORY_ORDER.indexOf(left.category) - PORTFOLIO_CATEGORY_ORDER.indexOf(right.category));
+
 const DEFAULT_PORTFOLIO = {
-  gallerySeedVersion: 1,
+  gallerySeedVersion: 2,
   brandName: "Zac Morgan Photography",
   logo: "/portfolio/logo.png",
   heroImage: "/portfolio/live-action.jpg",
@@ -2278,25 +2305,11 @@ const DEFAULT_PORTFOLIO = {
   testimonialAuthor: "Henry M",
   projects: [
     { id: "weddings", title: "Engagements / Weddings", image: "/portfolio/weddings.jpg", description: "Relaxed, honest coverage from the quiet moments to the dance floor.", category: "Weddings" },
-    { id: "bands", title: "Band Photos", image: "/portfolio/bands.jpg", description: "Live performance and artist imagery that keeps the atmosphere intact.", category: "Live music" },
-    { id: "corporate", title: "Corporate Events", image: "/portfolio/corporate.jpg", description: "Polished event coverage for teams, brands and venues.", category: "Brand and business" },
+    { id: "bands", title: "Band Photos", image: "/portfolio/bands.jpg", description: "Live performance and artist imagery that keeps the atmosphere intact.", category: "Live Music" },
+    { id: "corporate", title: "Corporate Events", image: "/portfolio/corporate.jpg", description: "Polished event coverage for teams, brands and venues.", category: "Brand & Corporate" },
     { id: "parties", title: "Parties", image: "/portfolio/parties.jpg", description: "Candid celebration photography with people at the centre.", category: "Events" },
   ],
-  galleryImages: [
-    { id: "wedding-aisle", image: "/portfolio/gallery/wedding-garden.jpg", alt: "Newlyweds walking down the church aisle", category: "Weddings" },
-    { id: "wedding-flowers", image: "/portfolio/gallery/wedding-celebration.jpg", alt: "Wedding floral details", category: "Weddings" },
-    { id: "wedding-harbour", image: "/portfolio/gallery/wedding-candid.jpg", alt: "Wedding couple at Sydney Harbour", category: "Weddings" },
-    { id: "dj", image: "/portfolio/gallery/concert-performer.jpg", alt: "DJ performing at a live event", category: "Live music" },
-    { id: "performer", image: "/portfolio/gallery/food-detail.jpg", alt: "Singer performing under stage lights", category: "Live music" },
-    { id: "nightlife-sign", image: "/portfolio/gallery/concert-crowd.jpg", alt: "Neon venue signage at a nightlife event", category: "Events" },
-    { id: "cocktail", image: "/portfolio/gallery/event-energy.jpg", alt: "Cocktail service at an event", category: "Events" },
-    { id: "brand-networking", image: "/portfolio/gallery/brand-event.jpg", alt: "Guests networking at a business event", category: "Brand and business" },
-    { id: "event-production", image: "/portfolio/gallery/portrait-editorial.jpg", alt: "Event production team at work", category: "Brand and business" },
-    { id: "chef", image: "/portfolio/gallery/corporate-networking.jpg", alt: "Chef serving guests at a catered event", category: "Brand and business" },
-    { id: "wine-detail", image: "/portfolio/gallery/formal-room.jpg", alt: "Wine and glassware at a formal event", category: "Details" },
-    { id: "balter", image: "/portfolio/gallery/nightlife.jpg", alt: "Balter brand activation", category: "Brand and business" },
-    ...IMPORTED_PORTFOLIO_GALLERY,
-  ],
+  galleryImages: CURATED_PORTFOLIO_GALLERY,
   testimonials: [
     { id: "alexander", quote: "Zac's photos for our wedding were amazing. He was professional, genuine and made sure the day was captured beautifully, from our families to the candid moments.", author: "Alexander", context: "Wedding" },
     { id: "jorden", quote: "The photos were stunning, the session was fun and relaxed, and the turnaround time was incredibly fast.", author: "Jorden", context: "Portrait session" },
@@ -2321,10 +2334,12 @@ function publicPortfolioContent(value) {
   const { webhookUrl: _privateWebhook, ...publicValue } = value || {};
   const merged = { ...DEFAULT_PORTFOLIO, ...publicValue };
   if ((Number(publicValue.gallerySeedVersion) || 0) < DEFAULT_PORTFOLIO.gallerySeedVersion) {
-    const existingIds = new Set((Array.isArray(merged.galleryImages) ? merged.galleryImages : []).map(item => item?.id));
+    const existingGallery = Array.isArray(merged.galleryImages) ? merged.galleryImages : [];
+    const existingById = new Map(existingGallery.map(item => [item?.id, item]));
+    const seedIds = new Set(DEFAULT_PORTFOLIO.galleryImages.map(item => item.id));
     merged.galleryImages = [
-      ...(Array.isArray(merged.galleryImages) ? merged.galleryImages : []),
-      ...IMPORTED_PORTFOLIO_GALLERY.filter(item => !existingIds.has(item.id)),
+      ...DEFAULT_PORTFOLIO.galleryImages.map(item => ({ ...item, ...(existingById.get(item.id) || {}), category: item.category })),
+      ...existingGallery.filter(item => item?.id && !seedIds.has(item.id)),
     ];
     merged.gallerySeedVersion = DEFAULT_PORTFOLIO.gallerySeedVersion;
   }
