@@ -2196,6 +2196,28 @@ const DEFAULT_PORTFOLIO = {
     { id: "corporate", title: "Corporate Events", image: "/portfolio/corporate.jpg", description: "Polished event coverage for teams, brands and venues." },
     { id: "parties", title: "Parties", image: "/portfolio/parties.jpg", description: "Candid celebration photography with people at the centre." },
   ],
+  galleryImages: [
+    { id: "wedding-aisle", image: "/portfolio/gallery/wedding-garden.jpg", alt: "Newlyweds walking down the church aisle", category: "Weddings" },
+    { id: "wedding-flowers", image: "/portfolio/gallery/wedding-celebration.jpg", alt: "Wedding floral details", category: "Weddings" },
+    { id: "wedding-harbour", image: "/portfolio/gallery/wedding-candid.jpg", alt: "Wedding couple at Sydney Harbour", category: "Weddings" },
+    { id: "dj", image: "/portfolio/gallery/concert-performer.jpg", alt: "DJ performing at a live event", category: "Live music" },
+    { id: "performer", image: "/portfolio/gallery/food-detail.jpg", alt: "Singer performing under stage lights", category: "Live music" },
+    { id: "nightlife-sign", image: "/portfolio/gallery/concert-crowd.jpg", alt: "Neon venue signage at a nightlife event", category: "Events" },
+    { id: "cocktail", image: "/portfolio/gallery/event-energy.jpg", alt: "Cocktail service at an event", category: "Events" },
+    { id: "brand-networking", image: "/portfolio/gallery/brand-event.jpg", alt: "Guests networking at a business event", category: "Brand and business" },
+    { id: "event-production", image: "/portfolio/gallery/portrait-editorial.jpg", alt: "Event production team at work", category: "Brand and business" },
+    { id: "chef", image: "/portfolio/gallery/corporate-networking.jpg", alt: "Chef serving guests at a catered event", category: "Brand and business" },
+    { id: "wine-detail", image: "/portfolio/gallery/formal-room.jpg", alt: "Wine and glassware at a formal event", category: "Details" },
+    { id: "balter", image: "/portfolio/gallery/nightlife.jpg", alt: "Balter brand activation", category: "Brand and business" },
+  ],
+  testimonials: [
+    { quote: "Zac's photos for our wedding were amazing. He was professional, genuine and made sure the day was captured beautifully, from our families to the candid moments.", author: "Alexander", context: "Wedding" },
+    { quote: "The photos were stunning, the session was fun and relaxed, and the turnaround time was incredibly fast.", author: "Jorden", context: "Portrait session" },
+    { quote: "Thanks so much Zac for your amazing work at our wedding. I am loving all the photos that captured the best day of my life.", author: "Luisa Munoz", context: "Wedding" },
+    { quote: "Zac was the ultimate professional, capturing only the best photos for my son's 21st and creating a lifetime of memories.", author: "Henry Makhouf", context: "21st birthday" },
+    { quote: "The photos were outstanding and the turnaround time was very speedy. Highly recommend.", author: "Keith", context: "Family celebration" },
+    { quote: "Professional, punctual and a great communicator. He handled the brief with professionalism and flair.", author: "Lorenzo", context: "Corporate event" },
+  ],
   instagramUrl: "https://www.instagram.com/zacmphotos/",
   instagramHandle: "@zacmphotos",
   linkedinUrl: "https://www.linkedin.com/in/zac-morgan-photography/",
@@ -2296,7 +2318,7 @@ app.post("/api/admin/portfolio/webhook/test", requireAuth, async (req, res) => {
 
 const portfolioEnquiryLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 12, standardHeaders: true, legacyHeaders: false, message: { error: "Too many enquiries. Please try again later." } });
 app.post("/api/portfolio/enquiry", portfolioEnquiryLimiter, async (req, res) => {
-  const { name, email, phone, eventTypeTitle, preferredDate, venue, message, website } = req.body || {};
+  const { name, email, phone, eventTypeTitle, preferredDate, venue, referralSource, message, website } = req.body || {};
   if (website) return res.json({ ok: true }); // honeypot
   if (!name || typeof name !== "string" || !name.trim()) return res.status(400).json({ error: "Name is required" });
   if (!email || typeof email !== "string" || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) return res.status(400).json({ error: "A valid email is required" });
@@ -2306,7 +2328,7 @@ app.post("/api/portfolio/enquiry", portfolioEnquiryLimiter, async (req, res) => 
     name: name.trim().slice(0, 120), email: email.trim().slice(0, 200), phone: String(phone || "").trim().slice(0, 50) || undefined,
     eventTypeTitle: String(eventTypeTitle || "Website enquiry").trim().slice(0, 100),
     preferredDate: /^\d{4}-\d{2}-\d{2}$/.test(String(preferredDate || "")) ? preferredDate : undefined,
-    message: `${venue ? `Venue / location: ${String(venue).trim().slice(0, 180)}\n\n` : ""}${message.trim().slice(0, 3000)}`,
+    message: `${venue ? `Venue / location: ${String(venue).trim().slice(0, 180)}\n` : ""}${referralSource ? `How they found Zac: ${String(referralSource).trim().slice(0, 100)}\n` : ""}${venue || referralSource ? "\n" : ""}${message.trim().slice(0, 3000)}`,
     status: "pending", createdAt: new Date().toISOString(), source: "portfolio",
   };
   const db = readDb();

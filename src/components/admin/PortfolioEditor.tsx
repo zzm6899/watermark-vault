@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ExternalLink, Eye, Globe, Loader2, Save, Send, Upload } from "lucide-react";
+import { ExternalLink, Eye, Globe, Loader2, Plus, Save, Send, Trash2, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -101,6 +101,17 @@ export default function PortfolioEditor() {
       </div>
     </section>
 
+    <section className="space-y-4 border-t border-border pt-7"><div className="flex items-end justify-between gap-4"><div><h3 className="font-display text-2xl">Portfolio gallery</h3><p className="text-xs text-muted-foreground">Images can be filtered by category and opened full-screen on the public site.</p></div><Button type="button" variant="outline" size="sm" onClick={() => change("galleryImages", [...draft.galleryImages, { id: `gallery-${Date.now()}`, image: "", alt: "", category: "Events" }])}><Plus className="mr-2 h-4 w-4" />Add photo</Button></div>
+      <div className="divide-y divide-border border-y border-border">
+        {draft.galleryImages.map((item, index) => <div className="grid gap-3 py-5 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]" key={item.id}>
+          <Input value={item.alt} aria-label={`Gallery photo ${index + 1} description`} placeholder="Accessible photo description" onChange={e => change("galleryImages", draft.galleryImages.map((photo, i) => i === index ? { ...photo, alt: e.target.value } : photo))} />
+          <Input value={item.category} aria-label={`Gallery photo ${index + 1} category`} placeholder="Category" onChange={e => change("galleryImages", draft.galleryImages.map((photo, i) => i === index ? { ...photo, category: e.target.value } : photo))} />
+          <Button type="button" variant="ghost" size="icon" title="Remove photo" onClick={() => change("galleryImages", draft.galleryImages.filter((_, i) => i !== index))}><Trash2 className="h-4 w-4" /></Button>
+          <div className="md:col-span-3"><ImageUploadField label={`Gallery photo ${index + 1}`} value={item.image} onChange={value => change("galleryImages", draft.galleryImages.map((photo, i) => i === index ? { ...photo, image: value } : photo))} /></div>
+        </div>)}
+      </div>
+    </section>
+
     <section className="space-y-4 border-t border-border pt-7"><div><h3 className="font-display text-2xl">Booking enquiry</h3><p className="text-xs text-muted-foreground">Controls the public Book now page and notification delivery.</p></div>
       <div className="grid gap-4 md:grid-cols-2">
         <label className="space-y-1 text-xs text-muted-foreground">Page heading<Input value={draft.bookingTitle} onChange={e => change("bookingTitle", e.target.value)} /></label>
@@ -112,13 +123,24 @@ export default function PortfolioEditor() {
       </div>
     </section>
 
-    <section className="space-y-4 border-t border-border pt-7"><h3 className="font-display text-2xl">Testimonial and contact</h3>
+    <section className="space-y-4 border-t border-border pt-7"><h3 className="font-display text-2xl">Featured testimonial and contact</h3>
       <div className="grid gap-4 md:grid-cols-2">
         <label className="space-y-1 text-xs text-muted-foreground md:col-span-2">Testimonial<Textarea rows={3} value={draft.testimonial} onChange={e => change("testimonial", e.target.value)} /></label>
         <label className="space-y-1 text-xs text-muted-foreground">Client name<Input value={draft.testimonialAuthor} onChange={e => change("testimonialAuthor", e.target.value)} /></label>
         <label className="space-y-1 text-xs text-muted-foreground">Contact email<Input type="email" value={draft.contactEmail} onChange={e => change("contactEmail", e.target.value)} /></label>
         <label className="space-y-1 text-xs text-muted-foreground">Instagram URL<Input value={draft.instagramUrl} onChange={e => change("instagramUrl", e.target.value)} /></label>
         <label className="space-y-1 text-xs text-muted-foreground">Instagram handle<Input value={draft.instagramHandle} onChange={e => change("instagramHandle", e.target.value)} /></label>
+      </div>
+    </section>
+
+    <section className="space-y-4 border-t border-border pt-7"><div className="flex items-end justify-between gap-4"><div><h3 className="font-display text-2xl">Client reviews</h3><p className="text-xs text-muted-foreground">Shown across the dedicated Testimonials page.</p></div><Button type="button" variant="outline" size="sm" onClick={() => change("testimonials", [...draft.testimonials, { quote: "", author: "", context: "" }])}><Plus className="mr-2 h-4 w-4" />Add review</Button></div>
+      <div className="divide-y divide-border border-y border-border">
+        {draft.testimonials.map((review, index) => <div className="grid gap-3 py-5 md:grid-cols-[1fr_1fr_auto]" key={`${review.author}-${index}`}>
+          <Input value={review.author} aria-label={`Review ${index + 1} client`} placeholder="Client name" onChange={e => change("testimonials", draft.testimonials.map((item, i) => i === index ? { ...item, author: e.target.value } : item))} />
+          <Input value={review.context} aria-label={`Review ${index + 1} context`} placeholder="Wedding, event, portrait…" onChange={e => change("testimonials", draft.testimonials.map((item, i) => i === index ? { ...item, context: e.target.value } : item))} />
+          <Button type="button" variant="ghost" size="icon" title="Remove review" onClick={() => change("testimonials", draft.testimonials.filter((_, i) => i !== index))}><Trash2 className="h-4 w-4" /></Button>
+          <Textarea className="md:col-span-3" rows={3} value={review.quote} aria-label={`Review ${index + 1} quote`} placeholder="Client review" onChange={e => change("testimonials", draft.testimonials.map((item, i) => i === index ? { ...item, quote: e.target.value } : item))} />
+        </div>)}
       </div>
     </section>
   </div>;

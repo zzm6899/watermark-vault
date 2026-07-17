@@ -5,6 +5,19 @@ export type PortfolioProject = {
   description: string;
 };
 
+export type PortfolioGalleryImage = {
+  id: string;
+  image: string;
+  alt: string;
+  category: string;
+};
+
+export type PortfolioTestimonial = {
+  quote: string;
+  author: string;
+  context: string;
+};
+
 export type PortfolioSite = {
   brandName: string;
   logo: string;
@@ -21,6 +34,8 @@ export type PortfolioSite = {
   testimonial: string;
   testimonialAuthor: string;
   projects: PortfolioProject[];
+  galleryImages: PortfolioGalleryImage[];
+  testimonials: PortfolioTestimonial[];
   instagramUrl: string;
   instagramHandle: string;
   linkedinUrl: string;
@@ -55,6 +70,28 @@ export const defaultPortfolioSite: PortfolioSite = {
     { id: "bands", title: "Band Photos", image: "/portfolio/bands.jpg", description: "Live performance and artist imagery that keeps the atmosphere intact." },
     { id: "corporate", title: "Corporate Events", image: "/portfolio/corporate.jpg", description: "Polished event coverage for teams, brands and venues." },
     { id: "parties", title: "Parties", image: "/portfolio/parties.jpg", description: "Candid celebration photography with people at the centre." },
+  ],
+  galleryImages: [
+    { id: "wedding-aisle", image: "/portfolio/gallery/wedding-garden.jpg", alt: "Newlyweds walking down the church aisle", category: "Weddings" },
+    { id: "wedding-flowers", image: "/portfolio/gallery/wedding-celebration.jpg", alt: "Wedding floral details", category: "Weddings" },
+    { id: "wedding-harbour", image: "/portfolio/gallery/wedding-candid.jpg", alt: "Wedding couple at Sydney Harbour", category: "Weddings" },
+    { id: "dj", image: "/portfolio/gallery/concert-performer.jpg", alt: "DJ performing at a live event", category: "Live music" },
+    { id: "performer", image: "/portfolio/gallery/food-detail.jpg", alt: "Singer performing under stage lights", category: "Live music" },
+    { id: "nightlife-sign", image: "/portfolio/gallery/concert-crowd.jpg", alt: "Neon venue signage at a nightlife event", category: "Events" },
+    { id: "cocktail", image: "/portfolio/gallery/event-energy.jpg", alt: "Cocktail service at an event", category: "Events" },
+    { id: "brand-networking", image: "/portfolio/gallery/brand-event.jpg", alt: "Guests networking at a business event", category: "Brand and business" },
+    { id: "event-production", image: "/portfolio/gallery/portrait-editorial.jpg", alt: "Event production team at work", category: "Brand and business" },
+    { id: "chef", image: "/portfolio/gallery/corporate-networking.jpg", alt: "Chef serving guests at a catered event", category: "Brand and business" },
+    { id: "wine-detail", image: "/portfolio/gallery/formal-room.jpg", alt: "Wine and glassware at a formal event", category: "Details" },
+    { id: "balter", image: "/portfolio/gallery/nightlife.jpg", alt: "Balter brand activation", category: "Brand and business" },
+  ],
+  testimonials: [
+    { quote: "Zac's photos for our wedding were amazing. He was professional, genuine and made sure the day was captured beautifully, from our families to the candid moments.", author: "Alexander", context: "Wedding" },
+    { quote: "The photos were stunning, the session was fun and relaxed, and the turnaround time was incredibly fast.", author: "Jorden", context: "Portrait session" },
+    { quote: "Thanks so much Zac for your amazing work at our wedding. I am loving all the photos that captured the best day of my life.", author: "Luisa Munoz", context: "Wedding" },
+    { quote: "Zac was the ultimate professional, capturing only the best photos for my son's 21st and creating a lifetime of memories.", author: "Henry Makhouf", context: "21st birthday" },
+    { quote: "The photos were outstanding and the turnaround time was very speedy. Highly recommend.", author: "Keith", context: "Family celebration" },
+    { quote: "Professional, punctual and a great communicator. He handled the brief with professionalism and flair.", author: "Lorenzo", context: "Corporate event" },
   ],
   instagramUrl: "https://www.instagram.com/zacmphotos/",
   instagramHandle: "@zacmphotos",
@@ -114,7 +151,7 @@ export async function testPortfolioWebhook(webhookUrl: string): Promise<void> {
 
 export type PortfolioEnquiry = {
   name: string; email: string; phone?: string; eventTypeTitle: string;
-  preferredDate?: string; venue?: string; message: string; website?: string;
+  preferredDate?: string; venue?: string; referralSource?: string; message: string; website?: string;
 };
 
 export async function submitPortfolioEnquiry(enquiry: PortfolioEnquiry): Promise<void> {
