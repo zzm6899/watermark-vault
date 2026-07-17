@@ -4,6 +4,7 @@ const cors = require("cors");
 const compression = require("compression");
 const path = require("path");
 const fs = require("fs");
+const os = require("os");
 const sharp = require("sharp");
 const archiver = require("archiver");
 const rateLimit = require("express-rate-limit");
@@ -109,6 +110,11 @@ const DATA_DIR = process.env.DATA_DIR || "/data";
 const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
 const DB_FILE = path.join(DATA_DIR, "db.json");
 const MAX_ZIP_FILES = 1000; // Reasonable upper bound per request to prevent resource abuse
+const ZIP_WATERMARK_CONCURRENCY = Math.max(1, Math.min(8,
+  Number.parseInt(process.env.ZIP_WATERMARK_CONCURRENCY || "", 10) ||
+  Math.min(4, Math.max(2, (os.availableParallelism?.() || os.cpus().length || 2) - 1))
+));
+const WATERMARK_OVERLAY_CACHE_SIZE = 8;
 // Shared Cache-Control header for short-lived public read endpoints (60 s fresh, 5 min stale)
 const SHORT_CACHE = "public, max-age=60, stale-while-revalidate=300";
 const ALLOWED_IMAGE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif", ".tif", ".tiff", ".heic", ".heif"]);
@@ -128,7 +134,9 @@ fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 // avoids a redundant mkdirSync syscall on the hot path.
 const CACHE_DIR = path.join(UPLOADS_DIR, "_cache");
 fs.mkdirSync(CACHE_DIR, { recursive: true });
-const ZIP_JOBS_DIR = path.join(CACHE_DIR, "zip-jobs");
+// ZIPs are active job artifacts, not image variants. Keeping them outside the
+// image cache prevents a cache-clear request from deleting an in-progress job.
+const ZIP_JOBS_DIR = path.join(DATA_DIR, "zip-jobs");
 fs.mkdirSync(ZIP_JOBS_DIR, { recursive: true });
 if (!fs.existsSync(DB_FILE)) fs.writeFileSync(DB_FILE, JSON.stringify({}));
 
@@ -2146,67 +2154,42 @@ function findAlbumById(db, albumId) {
   return _chooseAlbumStoreMatch(mainMatch, tenantMatches);
 }
 
-function isPhotoAccessible(filename, sessionKey, albumId) {
-  try {
-    const db = readDb();
-    const found = findAlbumById(db, albumId);
-    if (!found) return false;
-    const album = found.album;
+// Most camera frames in an album share dimensions and watermark settings. Reusing
+// the rendered overlay avoids rebuilding the same full-resolution tiled PNG for
+// every photo in a bulk download.
+const watermarkOverlayCache = new Map();
+function getWatermarkOverlayCacheKey(imgWidth, imgHeight, wm) {
+  const imageHash = wm.imageBase64
+    ? crypto.createHash("sha1").update(wm.imageBase64).digest("hex")
+    : "text";
+  return `${imgWidth}x${imgHeight}:${wm.text}:${wm.opacity}:${wm.position}:${wm.size}:${imageHash}`;
+}
 
-    // Gallery Lock: no purchase UI and no original downloads.
-    if (album.purchasingDisabled) return false;
-    // If downloads are locked while proofing is active, deny access
-    if (album.lockDownloadsDuringProofing && album.proofingEnabled) {
-      const stage = album.proofingStage || "not-started";
-      if (stage !== "not-started" && stage !== "finals-delivered") return false;
-    }
-    // If full album unlocked by admin
-    if (album.allUnlocked) return true;
-
-    // Session-level full-album purchase (Stripe / bank transfer)
-    const sessionPurchase = album.sessionPurchases?.[sessionKey];
-    if (sessionPurchase?.fullAlbum === true) return true;
-
-    const photo = album.photos?.find(p => {
-      const url = p.url || p.src || "";
-      // Compare exact basename to avoid substring collisions (e.g. "photo.jpg" matching "group-photo.jpg")
-      const urlBasename = url.split("?")[0].split("/").pop() || "";
-      return urlBasename === filename;
-    });
-    if (!photo) return false;
-
-    // Check per-photo paid flag set by admin
-    if (photo.paid) return true;
-
-    // Per-session Stripe purchase includes this photo
-    if (sessionPurchase?.photoIds?.includes(photo.id)) return true;
-
-    // Legacy global paidPhotoIds list
-    if (Array.isArray(album.paidPhotoIds) && album.paidPhotoIds.includes(photo.id)) return true;
-
-    // Bank transfer requests that have been approved/completed
-    const bankApproved = (album.downloadRequests || []).some(
-      r => (r.status === "approved" || r.status === "completed") &&
-           Array.isArray(r.photoIds) && r.photoIds.includes(photo.id)
-    );
-    if (bankApproved) return true;
-
-    // Check session-level free downloads (legacy wv_session_* key)
-    const sessionData = db[`wv_session_${sessionKey}_${albumId}`];
-    const sessionParsed = typeof sessionData === "string" ? JSON.parse(sessionData) : sessionData;
-    if (sessionParsed?.unlockedPhotoIds?.includes(photo.id)) return true;
-
-    // Check per-session free download quota — any photo is accessible if the
-    // session still has remaining free downloads (tracked client-side via
-    // usedFreeDownloads and persisted to the album on the server).
-    const sessionFreeUsed = album.usedFreeDownloads?.[sessionKey] || 0;
-    const freeQuota = typeof album.freeDownloads === "number" ? album.freeDownloads : 5;
-    if (sessionFreeUsed < freeQuota) return true;
-
-    return false;
-  } catch {
-    return false;
+async function getCachedWatermarkOverlay(imgWidth, imgHeight, wm) {
+  const key = getWatermarkOverlayCacheKey(imgWidth, imgHeight, wm);
+  let pending = watermarkOverlayCache.get(key);
+  if (pending) {
+    watermarkOverlayCache.delete(key);
+    watermarkOverlayCache.set(key, pending);
+    return pending;
   }
+
+  pending = buildWatermarkOverlay(imgWidth, imgHeight, wm);
+  watermarkOverlayCache.set(key, pending);
+  while (watermarkOverlayCache.size > WATERMARK_OVERLAY_CACHE_SIZE) {
+    watermarkOverlayCache.delete(watermarkOverlayCache.keys().next().value);
+  }
+  try {
+    return await pending;
+  } catch (err) {
+    if (watermarkOverlayCache.get(key) === pending) watermarkOverlayCache.delete(key);
+    throw err;
+  }
+}
+
+function isPhotoAccessible(filename, sessionKey, albumId) {
+  const access = getPhotoDownloadAccess(filename, sessionKey, albumId);
+  return access.accessible && access.clean;
 }
 
 function getPhotoDownloadAccess(filename, sessionKey, albumId) {
@@ -2224,12 +2207,6 @@ function getPhotoDownloadAccess(filename, sessionKey, albumId) {
       }
     }
 
-    const albumClean = album.watermarkDisabled === true;
-    if (album.allUnlocked) return { accessible: true, clean: albumClean };
-
-    const sessionPurchase = album.sessionPurchases?.[sessionKey];
-    if (sessionPurchase?.fullAlbum === true) return { accessible: true, clean: true };
-
     const photo = album.photos?.find(p => {
       const url = p.url || p.src || "";
       const urlBasename = url.split("?")[0].split("/").pop() || "";
@@ -2237,6 +2214,11 @@ function getPhotoDownloadAccess(filename, sessionKey, albumId) {
     });
     if (!photo) return { accessible: false, clean: false };
 
+    const albumClean = album.watermarkDisabled === true;
+    const sessionPurchase = album.sessionPurchases?.[sessionKey];
+    // Paid entitlements always win over a free album-wide unlock and receive
+    // originals. The global unlock can still intentionally remain watermarked.
+    if (sessionPurchase?.fullAlbum === true) return { accessible: true, clean: true };
     if (photo.paid) return { accessible: true, clean: true };
     if (sessionPurchase?.photoIds?.includes(photo.id)) return { accessible: true, clean: true };
     if (Array.isArray(album.paidPhotoIds) && album.paidPhotoIds.includes(photo.id)) return { accessible: true, clean: true };
@@ -2246,6 +2228,7 @@ function getPhotoDownloadAccess(filename, sessionKey, albumId) {
            Array.isArray(r.photoIds) && r.photoIds.includes(photo.id)
     );
     if (bankApproved) return { accessible: true, clean: true };
+    if (album.allUnlocked) return { accessible: true, clean: albumClean };
 
     const sessionData = db[`wv_session_${sessionKey}_${albumId}`];
     const sessionParsed = typeof sessionData === "string" ? JSON.parse(sessionData) : sessionData;
@@ -2289,34 +2272,46 @@ async function getWatermarkedZipStream(filepath) {
   const origW = origMeta.width || 800;
   const origH = origMeta.height || 600;
   const wm = getWatermarkSettings();
-  const overlay = await buildWatermarkOverlay(origW, origH, wm);
+  const overlay = await getCachedWatermarkOverlay(origW, origH, wm);
   return sharp(filepath)
     .composite([overlay])
     .jpeg({ quality: 82, progressive: true });
 }
 
 /** Return a cached watermarked full-res file path for ZIP packaging. */
-async function getWatermarkedZipFilePath(safeName, filepath) {
+const watermarkedZipRenders = new Map();
+async function getWatermarkedZipFilePath(safeName, filepath, tenantSlug = null) {
   const baseName = path.basename(safeName, path.extname(safeName));
-  const cacheFile = path.join(CACHE_DIR, getCacheFilename(baseName, "full", true));
+  const cacheFile = path.join(CACHE_DIR, getCacheFilename(baseName, "full", true, tenantSlug));
   if (fs.existsSync(cacheFile)) return cacheFile;
 
-  const tmpFile = path.join(CACHE_DIR, `${baseName}_full_wm_${crypto.randomBytes(6).toString("hex")}.tmp`);
+  const existingRender = watermarkedZipRenders.get(cacheFile);
+  if (existingRender) return existingRender;
+
+  const render = (async () => {
+    const tmpFile = path.join(ZIP_JOBS_DIR, `${baseName}_full_wm_${crypto.randomBytes(6).toString("hex")}.tmp`);
+    try {
+      const origMeta = await sharp(filepath).metadata();
+      const origW = origMeta.width || 800;
+      const origH = origMeta.height || 600;
+      const wm = getWatermarkSettings(tenantSlug);
+      const overlay = await getCachedWatermarkOverlay(origW, origH, wm);
+      await sharp(filepath, { sequentialRead: true })
+        .composite([overlay])
+        .jpeg({ quality: 82 })
+        .toFile(tmpFile);
+      fs.renameSync(tmpFile, cacheFile);
+      return cacheFile;
+    } catch (err) {
+      try { if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile); } catch {}
+      throw err;
+    }
+  })();
+  watermarkedZipRenders.set(cacheFile, render);
   try {
-    const origMeta = await sharp(filepath).metadata();
-    const origW = origMeta.width || 800;
-    const origH = origMeta.height || 600;
-    const wm = getWatermarkSettings();
-    const overlay = await buildWatermarkOverlay(origW, origH, wm);
-    await sharp(filepath)
-      .composite([overlay])
-      .jpeg({ quality: 82, progressive: true })
-      .toFile(tmpFile);
-    fs.renameSync(tmpFile, cacheFile);
-    return cacheFile;
-  } catch (err) {
-    try { if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile); } catch {}
-    throw err;
+    return await render;
+  } finally {
+    if (watermarkedZipRenders.get(cacheFile) === render) watermarkedZipRenders.delete(cacheFile);
   }
 }
 
@@ -3118,6 +3113,9 @@ function clearImageCache() {
 }
 
 app.post("/api/cache/clear", (_req, res) => {
+  if ([...zipJobs.values()].some(job => job.status === "preparing")) {
+    return res.status(409).json({ error: "A ZIP download is being prepared. Try clearing the image cache again when it finishes." });
+  }
   const { cleared, breakdown } = clearImageCache();
   res.json({ ok: true, cleared, breakdown });
 });
@@ -3201,6 +3199,8 @@ function validateZipRequest(req, res) {
 
 function collectAccessibleZipFiles(fileList, sessionKey, albumId) {
   const accessibleFiles = [];
+  const albumMatch = findAlbumById(readDb(), albumId);
+  const tenantSlug = albumMatch?.tenantSlug || null;
   let missingCount = 0;
   let deniedCount = 0;
   let downgradedCount = 0;
@@ -3218,7 +3218,7 @@ function collectAccessibleZipFiles(fileList, sessionKey, albumId) {
     }
     const serveClean = clean && access.clean;
     if (clean && !access.clean) downgradedCount++;
-    accessibleFiles.push({ safeName, filepath, clean: serveClean });
+    accessibleFiles.push({ safeName, filepath, clean: serveClean, tenantSlug });
   }
   return { accessibleFiles, missingCount, deniedCount, downgradedCount };
 }
@@ -3262,6 +3262,7 @@ function cleanupZipJob(jobId, delayMs = 15 * 60 * 1000) {
 }
 
 async function buildZipJob(job, accessibleFiles) {
+  fs.mkdirSync(ZIP_JOBS_DIR, { recursive: true });
   const output = fs.createWriteStream(job.filepath);
   const archive = archiver("zip", { zlib: { level: 0 } });
   const closed = new Promise((resolve, reject) => {
@@ -3279,25 +3280,32 @@ async function buildZipJob(job, accessibleFiles) {
   archive.pipe(output);
 
   try {
-    for (const { safeName, filepath, clean } of accessibleFiles) {
-      if (clean) {
-        archive.file(filepath, { name: safeName });
-      } else {
-        try {
-          const watermarkedPath = await getWatermarkedZipFilePath(safeName, filepath);
-          archive.file(watermarkedPath, { name: safeName });
-        } catch (err) {
-          console.error("Zip watermark stream error for", safeName, err.message);
+    let nextIndex = 0;
+    let preparedCount = 0;
+    const addNextFiles = async () => {
+      while (true) {
+        const index = nextIndex++;
+        if (index >= accessibleFiles.length) return;
+        const { safeName, filepath, clean, tenantSlug } = accessibleFiles[index];
+        if (clean) {
           archive.file(filepath, { name: safeName });
+        } else {
+          const watermarkedPath = await getWatermarkedZipFilePath(safeName, filepath, tenantSlug);
+          archive.file(watermarkedPath, { name: safeName });
         }
+        preparedCount++;
+        job.ready = Math.max(job.ready, preparedCount);
+        job.updatedAt = Date.now();
       }
-      job.updatedAt = Date.now();
-    }
+    };
+    const workerCount = Math.min(ZIP_WATERMARK_CONCURRENCY, accessibleFiles.length);
+    await Promise.all(Array.from({ length: workerCount }, () => addNextFiles()));
     await archive.finalize();
     await closed;
     job.ready = job.total;
     job.status = "done";
     job.updatedAt = Date.now();
+    console.log(`[ZIP] ${job.id} completed ${job.total}/${job.requested} photos in ${((job.updatedAt - job.createdAt) / 1000).toFixed(1)}s`);
     cleanupZipJob(job.id);
   } catch (err) {
     job.status = "failed";
@@ -3397,25 +3405,31 @@ app.post("/api/download/zip", downloadZipLimiter, async (req, res) => {
   });
 
   archive.pipe(res);
-  for (const { safeName, filepath, clean } of accessibleFiles) {
-    if (zipFailed || res.destroyed) break;
-    if (clean) {
-      // Serve the original file untouched
-      archive.file(filepath, { name: safeName });
-    } else {
-      // Stream the server-watermarked version. Do not buffer hundreds of full-res
-      // files in memory when a client downloads a whole album.
-      try {
-        const watermarkedPath = await getWatermarkedZipFilePath(safeName, filepath);
-        archive.file(watermarkedPath, { name: safeName });
-      } catch (err) {
-        console.error("Zip watermark stream error for", safeName, err.message);
-        // Fallback: serve original if watermarking fails
+  let nextIndex = 0;
+  const addNextFiles = async () => {
+    while (!zipFailed && !res.destroyed) {
+      const index = nextIndex++;
+      if (index >= accessibleFiles.length) return;
+      const { safeName, filepath, clean, tenantSlug } = accessibleFiles[index];
+      if (clean) {
         archive.file(filepath, { name: safeName });
+      } else {
+        const watermarkedPath = await getWatermarkedZipFilePath(safeName, filepath, tenantSlug);
+        archive.file(watermarkedPath, { name: safeName });
       }
     }
+  };
+  const workerCount = Math.min(ZIP_WATERMARK_CONCURRENCY, accessibleFiles.length);
+  try {
+    await Promise.all(Array.from({ length: workerCount }, () => addNextFiles()));
+    if (!zipFailed && !res.destroyed) await archive.finalize();
+  } catch (err) {
+    zipFailed = true;
+    console.error("Zip preparation error:", err?.message || err);
+    try { archive.abort(); } catch {}
+    if (!res.headersSent) res.status(500).json({ error: "Failed to prepare protected photos" });
+    else res.destroy(err);
   }
-  if (!zipFailed && !res.destroyed) await archive.finalize();
 });
 
 // ── Discord webhook endpoints ─────────────────────────
@@ -4262,6 +4276,9 @@ app.post("/api/tenant/:slug/cache/clear", tenantLimiter, (req, res) => {
   const slug = req.params.slug;
   const tenants = readTenants();
   if (!tenants.find(t => t.slug === slug)) return res.status(404).json({ error: "Tenant not found" });
+  if ([...zipJobs.values()].some(job => job.status === "preparing")) {
+    return res.status(409).json({ error: "A ZIP download is being prepared. Try clearing the image cache again when it finishes." });
+  }
   // Cache filenames are `${baseName}_${sizeLabel}_t_${slug}_wm.jpg` — use underscore-bounded match
   // to prevent slug "foo" from matching slug "foobar"'s files.
   const slugPattern = new RegExp(`_t_${slug.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}_`);

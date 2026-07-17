@@ -784,7 +784,9 @@ export default function AlbumDetail() {
 
   const isCleanDownload = (photoId: string): boolean => {
     if (album.watermarkDisabled) return true;
-    return !isFullyUnlocked && isPhotoPaid(photoId);
+    if (sessionFullAlbum) return true;
+    if (paidPhotoIdSet.has(photoId)) return true;
+    return album.photos.some((photo: any) => photo.id === photoId && photo.paid === true);
   };
 
   const estimateZipSeconds = (photos: Photo[]): number => {
@@ -927,20 +929,16 @@ export default function AlbumDetail() {
         });
       }
 
-      const res = await fetch(`/api/download/zip/${encodeURIComponent(job.jobId)}/file`);
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || "Server error");
-      }
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
+      // Let the browser stream the completed ZIP directly to disk. Fetching it as
+      // a Blob first made large albums appear stuck at 100% and duplicated the
+      // entire archive in tab memory before the download even started.
       const link = document.createElement("a");
-      link.href = url;
+      link.href = `/api/download/zip/${encodeURIComponent(job.jobId)}/file`;
       link.download = `${album.title || "photos"}.zip`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
-      URL.revokeObjectURL(url);
+      toast.success("ZIP ready. Download started.");
       return true;
     } catch (err: any) {
       toast.error(`Zip download failed: ${err.message || "unknown error"}`);
