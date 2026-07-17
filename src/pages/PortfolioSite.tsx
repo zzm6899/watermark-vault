@@ -10,14 +10,17 @@ function routeFor(preview: boolean, path: string) {
 
 function SiteHeader({ site, preview }: { site: PortfolioSiteData; preview: boolean }) {
   const [open, setOpen] = useState(false);
+  const location = useLocation();
+  const currentPath = preview ? location.pathname.replace("/portfolio-preview", "") || "/" : location.pathname;
   const links = [["Portfolio", "/portfolio"], ["About", "/about"], ["Testimonials", "/testimonials"], [site.bookingButtonLabel, "/enquire"]];
+  const active = (path: string) => currentPath === path || (path === "/enquire" && currentPath === "/contact");
   return <header className="portfolio-header">
     <nav aria-label="Main navigation">
-      <Link to={routeFor(preview, "/portfolio")}>Portfolio</Link>
-      <Link to={routeFor(preview, "/about")}>About</Link>
+      <Link className={active("/portfolio") ? "active" : ""} aria-current={active("/portfolio") ? "page" : undefined} to={routeFor(preview, "/portfolio")}>Portfolio</Link>
+      <Link className={active("/about") ? "active" : ""} aria-current={active("/about") ? "page" : undefined} to={routeFor(preview, "/about")}>About</Link>
       <Link className="portfolio-brand" to={routeFor(preview, "/")} aria-label={site.brandName}><img src={site.logo} alt={site.brandName} /></Link>
-      <Link to={routeFor(preview, "/testimonials")}>Testimonials</Link>
-      <Link className="portfolio-book-link" to={routeFor(preview, "/enquire")}>{site.bookingButtonLabel}</Link>
+      <Link className={active("/testimonials") ? "active" : ""} aria-current={active("/testimonials") ? "page" : undefined} to={routeFor(preview, "/testimonials")}>Testimonials</Link>
+      <Link className={`portfolio-book-link ${active("/enquire") ? "active" : ""}`} aria-current={active("/enquire") ? "page" : undefined} to={routeFor(preview, "/enquire")}>{site.bookingButtonLabel}</Link>
       <button className="portfolio-menu" onClick={() => setOpen(value => !value)} aria-label={open ? "Close navigation" : "Open navigation"}>{open ? <X /> : <Menu />}</button>
     </nav>
     {open && <div className="portfolio-mobile-nav">{links.map(([label, path]) => <Link key={path} to={routeFor(preview, path)} onClick={() => setOpen(false)}>{label}</Link>)}</div>}
@@ -26,46 +29,62 @@ function SiteHeader({ site, preview }: { site: PortfolioSiteData; preview: boole
 
 function SiteFooter({ site, preview }: { site: PortfolioSiteData; preview: boolean }) {
   return <footer>
-    <div><p>{site.locationLabel}</p><h2>{site.footerTitle}</h2><Link className="portfolio-footer-cta" to={routeFor(preview, "/enquire")}>{site.bookingButtonLabel}<ArrowRight /></Link></div>
-    <div className="portfolio-socials">
-      <a href={site.instagramUrl} target="_blank" rel="noreferrer"><Instagram /> {site.instagramHandle}</a>
-      <a href={site.linkedinUrl} target="_blank" rel="noreferrer"><Linkedin /> LinkedIn</a>
-      <a href={`mailto:${site.contactEmail}`}><Mail /> Email</a>
+    <div className="portfolio-footer-lead"><p>{site.locationLabel}</p><h2>{site.footerTitle}</h2><Link className="portfolio-footer-cta" to={routeFor(preview, "/enquire")}>{site.bookingButtonLabel}<ArrowRight /></Link></div>
+    <a className="portfolio-footer-email" href={`mailto:${site.contactEmail}`}>{site.contactEmail}</a>
+    <div className="portfolio-footer-bottom">
+      <div className="portfolio-socials">
+        <a href={site.instagramUrl} target="_blank" rel="noreferrer"><Instagram /> {site.instagramHandle}</a>
+        <a href={site.linkedinUrl} target="_blank" rel="noreferrer"><Linkedin /> LinkedIn</a>
+        <a href={`mailto:${site.contactEmail}`}><Mail /> Email</a>
+      </div>
+      <nav aria-label="Footer navigation"><Link to={routeFor(preview, "/portfolio")}>Work</Link><Link to={routeFor(preview, "/about")}>About</Link><Link to={routeFor(preview, "/testimonials")}>Reviews</Link></nav>
     </div>
     <small>© {new Date().getFullYear()} {site.brandName}</small>
   </footer>;
 }
 
-function ProjectGrid({ site, limit }: { site: PortfolioSiteData; limit?: number }) {
-  return <div className="portfolio-projects">{site.projects.slice(0, limit).map((project, index) => <article className="portfolio-project" key={project.id}>
-    <img src={project.image} alt={project.title} loading="lazy" />
-    <div><span>{String(index + 1).padStart(2, "0")}</span><h3>{project.title}</h3><p>{project.description}</p></div>
-  </article>)}</div>;
+function ImageRibbon({ images }: { images: PortfolioGalleryImage[] }) {
+  return <section className="portfolio-image-ribbon" aria-label="Selected photographs" data-reveal>{images.slice(0, 3).map(image => <img key={image.id} src={image.image} alt={image.alt} loading="lazy" />)}</section>;
 }
 
-function ImageRibbon({ images }: { images: PortfolioGalleryImage[] }) {
-  return <section className="portfolio-image-ribbon" aria-label="Selected photographs">{images.slice(0, 3).map(image => <img key={image.id} src={image.image} alt={image.alt} loading="lazy" />)}</section>;
+function StoryIndex({ site, preview }: { site: PortfolioSiteData; preview: boolean }) {
+  const [active, setActive] = useState(0);
+  const filters = ["Weddings", "Live music", "Brand and business", "Events"];
+  const project = site.projects[active] || site.projects[0];
+  return <section className="portfolio-story-index" data-reveal>
+    <div className="portfolio-story-heading"><p>Ways of seeing</p><h2>Every room has<br />its own rhythm.</h2></div>
+    <div className="portfolio-story-layout">
+      <div className="portfolio-story-list">{site.projects.map((item, index) => <Link className={active === index ? "active" : ""} key={item.id} to={`${routeFor(preview, "/portfolio")}?category=${encodeURIComponent(filters[index] || "All")}`} onMouseEnter={() => setActive(index)} onFocus={() => setActive(index)}>
+        <span>{String(index + 1).padStart(2, "0")}</span><div><h3>{item.title}</h3><p>{item.description}</p></div><ArrowRight />
+      </Link>)}</div>
+      <figure key={project?.id}><img src={project?.image} alt={project?.title} /><figcaption>Explore {project?.title}</figcaption></figure>
+    </div>
+  </section>;
 }
 
 function HomePage({ site, preview }: { site: PortfolioSiteData; preview: boolean }) {
+  const heroFrames = [site.heroImage, site.galleryImages[3]?.image, site.galleryImages[7]?.image].filter((image, index, all): image is string => !!image && all.indexOf(image) === index);
   return <>
     <section className="portfolio-hero" aria-label={site.heroLabel}>
-      <img src={site.heroImage} alt="Live event photographed by Zac Morgan" />
+      <div className="portfolio-hero-media" aria-hidden="true">{heroFrames.map((image, index) => <img key={image} src={image} alt="" style={{ animationDelay: `${index * 6}s` }} />)}</div>
       <div className="portfolio-hero-copy"><p>{site.heroLabel}</p><h1>{site.brandName}</h1><div className="portfolio-hero-actions"><Link to={routeFor(preview, "/portfolio")}>View portfolio</Link><Link to={routeFor(preview, "/enquire")}>{site.bookingButtonLabel}</Link></div></div>
+      <div className="portfolio-hero-meta"><span>{site.locationLabel}</span><span>Weddings · Events · Live music · Brands</span></div>
       <a href="#introduction" className="portfolio-scroll" aria-label="Continue"><ArrowDown /></a>
     </section>
-    <section className="portfolio-about" id="introduction"><div className="portfolio-about-copy"><p className="portfolio-kicker">{site.introEyebrow}</p><h2>{site.introTitle}</h2><p>{site.introBody}</p><Link to={routeFor(preview, "/about")}>More about Zac</Link></div><figure><img src={site.portrait} alt="Zac Morgan photographing an event" /></figure></section>
+    <section className="portfolio-about" id="introduction" data-reveal><div className="portfolio-about-copy"><p className="portfolio-kicker">{site.introEyebrow}</p><h2>{site.introTitle}</h2><p>{site.introBody}</p><Link to={routeFor(preview, "/about")}>More about Zac</Link></div><figure><img src={site.portrait} alt="Zac Morgan photographing an event" /></figure></section>
     <ImageRibbon images={site.galleryImages} />
-    <section className="portfolio-work"><div className="portfolio-section-heading"><p>Selected work</p><h2>People, atmosphere, moments.</h2><Link to={routeFor(preview, "/portfolio")}>View every category <ArrowRight /></Link></div><ProjectGrid site={site} limit={2} /></section>
-    <section className="portfolio-testimonial"><p className="portfolio-kicker">Kind words</p><blockquote>“{site.testimonial}”</blockquote><cite>{site.testimonialAuthor}</cite><Link to={routeFor(preview, "/testimonials")}>Read client stories</Link></section>
+    <section className="portfolio-philosophy" data-reveal><figure><img src={site.galleryImages[4]?.image || site.heroImage} alt={site.galleryImages[4]?.alt || "Live performance photographed by Zac Morgan"} loading="lazy" /></figure><div><p className="portfolio-kicker">The work</p><h2>Photographs should feel like the night did.</h2><p>Not over-directed. Not flattened into a trend. Just the people, atmosphere and small details that made the moment yours.</p><Link to={routeFor(preview, "/portfolio")}>See the full portfolio <ArrowRight /></Link></div></section>
+    <StoryIndex site={site} preview={preview} />
+    <section className="portfolio-testimonial" data-reveal><p className="portfolio-kicker">Kind words</p><blockquote>“{site.testimonial}”</blockquote><cite>{site.testimonialAuthor}</cite><Link to={routeFor(preview, "/testimonials")}>Read client stories</Link></section>
   </>;
 }
 
-function PortfolioGallery({ images }: { images: PortfolioGalleryImage[] }) {
-  const [filter, setFilter] = useState("All");
+function PortfolioGallery({ images, initialFilter }: { images: PortfolioGalleryImage[]; initialFilter?: string | null }) {
+  const [filter, setFilter] = useState(initialFilter || "All");
   const [selected, setSelected] = useState<number | null>(null);
   const categories = useMemo(() => ["All", ...Array.from(new Set(images.map(image => image.category).filter(Boolean)))], [images]);
   const visible = filter === "All" ? images : images.filter(image => image.category === filter);
+  useEffect(() => { setFilter(initialFilter && categories.includes(initialFilter) ? initialFilter : "All"); setSelected(null); }, [initialFilter, categories.join("|")]);
   const move = (direction: number) => setSelected(current => current === null ? null : (current + direction + visible.length) % visible.length);
   useEffect(() => {
     if (selected === null) return;
@@ -89,11 +108,11 @@ function PortfolioGallery({ images }: { images: PortfolioGalleryImage[] }) {
   </section>;
 }
 
-function WorkPage({ site, preview }: { site: PortfolioSiteData; preview: boolean }) {
+function WorkPage({ site, preview, category }: { site: PortfolioSiteData; preview: boolean; category?: string | null }) {
   return <>
-    <section className="portfolio-page-intro portfolio-page-intro-work"><p>Portfolio</p><h1>{site.portfolioTitle}</h1><span>{site.portfolioBody}</span><div className="portfolio-client-line"><span>Selected clients and venues</span><strong>Asahi Breweries</strong><strong>Navarra Venues</strong><strong>SMASH!</strong></div></section>
-    <section className="portfolio-specialties">{site.projects.map((project, index) => <div key={project.id}><span>{String(index + 1).padStart(2, "0")}</span><h2>{project.title}</h2><p>{project.description}</p></div>)}</section>
-    <PortfolioGallery images={site.galleryImages} />
+    <section className="portfolio-page-intro portfolio-page-intro-work" data-reveal><p>Portfolio</p><h1>{site.portfolioTitle}</h1><span>{site.portfolioBody}</span><div className="portfolio-client-line"><span>Selected clients and venues</span><strong>Asahi Breweries</strong><strong>Navarra Venues</strong><strong>SMASH!</strong></div></section>
+    <section className="portfolio-specialties" data-reveal>{site.projects.map((project, index) => <div key={project.id}><span>{String(index + 1).padStart(2, "0")}</span><h2>{project.title}</h2><p>{project.description}</p></div>)}</section>
+    <PortfolioGallery images={site.galleryImages} initialFilter={category} />
     <section className="portfolio-inline-cta"><div><p className="portfolio-kicker">Your story, photographed honestly</p><h2>Planning something?</h2></div><Link to={routeFor(preview, "/enquire")}>Check availability <ArrowRight /></Link></section>
   </>;
 }
@@ -101,8 +120,8 @@ function WorkPage({ site, preview }: { site: PortfolioSiteData; preview: boolean
 function AboutPage({ site, preview }: { site: PortfolioSiteData; preview: boolean }) {
   const supporting = site.galleryImages[3] || site.galleryImages[0];
   return <>
-    <section className="portfolio-about-page"><figure><img src={site.portrait} alt="Zac Morgan" /></figure><div><p className="portfolio-kicker">About Zac</p><h1>{site.introTitle}</h1><p>{site.introBody}</p><p>{site.aboutSecondaryBody}</p><Link to={routeFor(preview, "/enquire")}>{site.bookingButtonLabel}<ArrowRight /></Link></div></section>
-    <section className="portfolio-about-manifesto"><div><p className="portfolio-kicker">The approach</p><h2>Present enough to guide. Quiet enough to notice.</h2><p>I look for the interactions happening between the scheduled moments: the reaction across the room, the energy building before a performance, and the details your team spent months getting right.</p></div>{supporting && <figure><img src={supporting.image} alt={supporting.alt} loading="lazy" /><figcaption>Working across Sydney weddings, events, venues and live productions.</figcaption></figure>}</section>
+    <section className="portfolio-about-page" data-reveal><figure><img src={site.portrait} alt="Zac Morgan" /></figure><div><p className="portfolio-kicker">About Zac</p><h1>{site.introTitle}</h1><p>{site.introBody}</p><p>{site.aboutSecondaryBody}</p><Link to={routeFor(preview, "/enquire")}>{site.bookingButtonLabel}<ArrowRight /></Link></div></section>
+    <section className="portfolio-about-manifesto" data-reveal><div><p className="portfolio-kicker">The approach</p><h2>Present enough to guide. Quiet enough to notice.</h2><p>I look for the interactions happening between the scheduled moments: the reaction across the room, the energy building before a performance, and the details your team spent months getting right.</p></div>{supporting && <figure><img src={supporting.image} alt={supporting.alt} loading="lazy" /><figcaption>Working across Sydney weddings, events, venues and live productions.</figcaption></figure>}</section>
     <section className="portfolio-values"><div><span>01</span><h2>Natural over staged</h2><p>Real expressions and useful direction, without turning your event into a production.</p></div><div><span>02</span><h2>Fast and dependable</h2><p>Clear communication, careful backups and delivery that respects your timeline.</p></div><div><span>03</span><h2>Built around people</h2><p>Coverage adapts to your guests, venue, schedule and what matters most to you.</p></div></section>
     <ImageRibbon images={site.galleryImages.slice(5, 8)} />
   </>;
@@ -157,8 +176,16 @@ export default function PortfolioSite() {
   const location = useLocation();
   const preview = location.pathname.startsWith("/portfolio-preview");
   const path = preview ? location.pathname.replace("/portfolio-preview", "") || "/" : location.pathname;
+  const category = new URLSearchParams(location.search).get("category");
   useEffect(() => { fetchPublishedPortfolio().then(setSite); }, []);
   useEffect(() => { document.title = path === "/" ? site.brandName : `${path.slice(1).replace(/-/g, " ")} — ${site.brandName}`; window.scrollTo(0, 0); }, [path, site.brandName]);
-  const page = path === "/portfolio" ? <WorkPage site={site} preview={preview} /> : path === "/about" ? <AboutPage site={site} preview={preview} /> : path === "/testimonials" ? <TestimonialsPage site={site} preview={preview} /> : path === "/enquire" || path === "/contact" ? <EnquiryPage site={site} /> : <HomePage site={site} preview={preview} />;
+  useEffect(() => {
+    const elements = Array.from(document.querySelectorAll<HTMLElement>(".portfolio-site [data-reveal]"));
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) { elements.forEach(element => element.classList.add("revealed")); return; }
+    const observer = new IntersectionObserver(entries => entries.forEach(entry => { if (entry.isIntersecting) { (entry.target as HTMLElement).classList.add("revealed"); observer.unobserve(entry.target); } }), { threshold: 0.12 });
+    elements.forEach(element => observer.observe(element));
+    return () => observer.disconnect();
+  }, [path, site.updatedAt, site.galleryImages.length]);
+  const page = path === "/portfolio" ? <WorkPage site={site} preview={preview} category={category} /> : path === "/about" ? <AboutPage site={site} preview={preview} /> : path === "/testimonials" ? <TestimonialsPage site={site} preview={preview} /> : path === "/enquire" || path === "/contact" ? <EnquiryPage site={site} /> : <HomePage site={site} preview={preview} />;
   return <div className="portfolio-site"><SiteHeader site={site} preview={preview} /><main>{page}</main><SiteFooter site={site} preview={preview} /></div>;
 }
