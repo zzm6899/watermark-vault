@@ -84,6 +84,8 @@ function isPublicRoute(): boolean {
     p.startsWith("/tenant-setup/") ||
     p.startsWith("/portfolio-preview") ||
     p === "/portfolio" ||
+    p === "/concert" ||
+    p === "/concerts" ||
     p === "/about" ||
     p === "/testimonials" ||
     p === "/enquire" ||
@@ -189,6 +191,8 @@ const App = () => {
                 />
                 <Route path="/portfolio-preview/*" element={<PortfolioSite />} />
                 <Route path="/portfolio" element={<PortfolioSite />} />
+                <Route path="/concert" element={<PortfolioSite />} />
+                <Route path="/concerts" element={<PortfolioSite />} />
                 <Route path="/about" element={<PortfolioSite />} />
                 <Route path="/testimonials" element={<PortfolioSite />} />
                 <Route path="/enquire" element={<PortfolioSite />} />

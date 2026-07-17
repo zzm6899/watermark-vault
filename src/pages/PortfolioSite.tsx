@@ -12,13 +12,14 @@ function SiteHeader({ site, preview }: { site: PortfolioSiteData; preview: boole
   const [open, setOpen] = useState(false);
   const location = useLocation();
   const currentPath = preview ? location.pathname.replace("/portfolio-preview", "") || "/" : location.pathname;
-  const links = [["Portfolio", "/portfolio"], ["About", "/about"], ["Testimonials", "/testimonials"], [site.bookingButtonLabel, "/enquire"]];
+  const links = [["Portfolio", "/portfolio"], ["Concerts", "/concerts"], ["About", "/about"], ["Testimonials", "/testimonials"], [site.bookingButtonLabel, "/enquire"]];
   const active = (path: string) => currentPath === path || (path === "/enquire" && currentPath === "/contact");
   return <header className="portfolio-header">
     <nav aria-label="Main navigation">
       <Link className={active("/portfolio") ? "active" : ""} aria-current={active("/portfolio") ? "page" : undefined} to={routeFor(preview, "/portfolio")}>Portfolio</Link>
-      <Link className={active("/about") ? "active" : ""} aria-current={active("/about") ? "page" : undefined} to={routeFor(preview, "/about")}>About</Link>
+      <Link className={active("/concerts") || active("/concert") ? "active" : ""} aria-current={active("/concerts") || active("/concert") ? "page" : undefined} to={routeFor(preview, "/concerts")}>Concerts</Link>
       <Link className="portfolio-brand" to={routeFor(preview, "/")} aria-label={site.brandName}><img src={site.logo} alt={site.brandName} /></Link>
+      <Link className={active("/about") ? "active" : ""} aria-current={active("/about") ? "page" : undefined} to={routeFor(preview, "/about")}>About</Link>
       <Link className={active("/testimonials") ? "active" : ""} aria-current={active("/testimonials") ? "page" : undefined} to={routeFor(preview, "/testimonials")}>Testimonials</Link>
       <Link className={`portfolio-book-link ${active("/enquire") ? "active" : ""}`} aria-current={active("/enquire") ? "page" : undefined} to={routeFor(preview, "/enquire")}>{site.bookingButtonLabel}</Link>
       <button className="portfolio-menu" onClick={() => setOpen(value => !value)} aria-label={open ? "Close navigation" : "Open navigation"}>{open ? <X /> : <Menu />}</button>
@@ -37,7 +38,7 @@ function SiteFooter({ site, preview }: { site: PortfolioSiteData; preview: boole
         <a href={site.linkedinUrl} target="_blank" rel="noreferrer"><Linkedin /> LinkedIn</a>
         <a href={`mailto:${site.contactEmail}`}><Mail /> Email</a>
       </div>
-      <nav aria-label="Footer navigation"><Link to={routeFor(preview, "/portfolio")}>Work</Link><Link to={routeFor(preview, "/about")}>About</Link><Link to={routeFor(preview, "/testimonials")}>Reviews</Link></nav>
+      <nav aria-label="Footer navigation"><Link to={routeFor(preview, "/portfolio")}>Work</Link><Link to={routeFor(preview, "/concerts")}>Concerts</Link><Link to={routeFor(preview, "/about")}>About</Link><Link to={routeFor(preview, "/testimonials")}>Reviews</Link></nav>
     </div>
     <small>© {new Date().getFullYear()} {site.brandName}</small>
   </footer>;
@@ -50,10 +51,11 @@ function UrlImageRibbon({ images }: { images: string[] }) {
 function StoryIndex({ site, preview }: { site: PortfolioSiteData; preview: boolean }) {
   const [active, setActive] = useState(0);
   const project = site.projects[active] || site.projects[0];
+  const projectRoute = (category: string) => category.trim().toLowerCase() === "live music" ? routeFor(preview, "/concerts") : `${routeFor(preview, "/portfolio")}?category=${encodeURIComponent(category || "All")}`;
   return <section className="portfolio-story-index" data-reveal>
     <div className="portfolio-story-heading"><p>{site.storyEyebrow}</p><h2>{site.storyTitle}</h2></div>
     <div className="portfolio-story-layout">
-      <div className="portfolio-story-list">{site.projects.map((item, index) => <Link className={active === index ? "active" : ""} key={item.id} to={`${routeFor(preview, "/portfolio")}?category=${encodeURIComponent(item.category || "All")}`} onMouseEnter={() => setActive(index)} onFocus={() => setActive(index)}>
+      <div className="portfolio-story-list">{site.projects.map((item, index) => <Link className={active === index ? "active" : ""} key={item.id} to={projectRoute(item.category)} onMouseEnter={() => setActive(index)} onFocus={() => setActive(index)}>
         <span>{String(index + 1).padStart(2, "0")}</span><div><h3>{item.title}</h3><p>{item.description}</p></div><ArrowRight />
       </Link>)}</div>
       <figure key={project?.id}><img src={project?.image} alt={project?.title} /><figcaption>Explore {project?.title}</figcaption></figure>
@@ -78,7 +80,7 @@ function HomePage({ site, preview }: { site: PortfolioSiteData; preview: boolean
   </>;
 }
 
-function PortfolioGallery({ images, initialFilter }: { images: PortfolioGalleryImage[]; initialFilter?: string | null }) {
+function PortfolioGallery({ images, initialFilter, showFilters = true }: { images: PortfolioGalleryImage[]; initialFilter?: string | null; showFilters?: boolean }) {
   const [filter, setFilter] = useState(initialFilter || "All");
   const [selected, setSelected] = useState<number | null>(null);
   const categories = useMemo(() => ["All", ...Array.from(new Set(images.map(image => image.category).filter(Boolean)))], [images]);
@@ -96,7 +98,7 @@ function PortfolioGallery({ images, initialFilter }: { images: PortfolioGalleryI
     return () => window.removeEventListener("keydown", keydown);
   }, [move, selected]);
   return <section className="portfolio-gallery-section">
-    <div className="portfolio-gallery-toolbar"><p>{visible.length} photographs</p><div role="group" aria-label="Filter portfolio">{categories.map(category => <button className={filter === category ? "active" : ""} key={category} onClick={() => { setFilter(category); setSelected(null); }}>{category}</button>)}</div></div>
+    <div className="portfolio-gallery-toolbar"><p>{visible.length} photographs</p>{showFilters && <div role="group" aria-label="Filter portfolio">{categories.map(category => <button className={filter === category ? "active" : ""} key={category} onClick={() => { setFilter(category); setSelected(null); }}>{category}</button>)}</div>}</div>
     <div className="portfolio-gallery-grid">{visible.map((image, index) => <button className={`portfolio-gallery-item portfolio-gallery-item-${index % 6}`} key={image.id} onClick={() => setSelected(index)} aria-label={`Open ${image.alt}`}><img src={image.image} alt={image.alt} loading="lazy" /><span>{image.category}</span></button>)}</div>
     {selected !== null && visible[selected] && <div className="portfolio-lightbox" role="dialog" aria-modal="true" aria-label={visible[selected].alt}>
       <button className="portfolio-lightbox-close" onClick={() => setSelected(null)} aria-label="Close photo"><X /></button>
@@ -113,6 +115,24 @@ function WorkPage({ site, preview, category }: { site: PortfolioSiteData; previe
     <section className="portfolio-specialties" data-reveal>{site.projects.map((project, index) => <div key={project.id}><span>{String(index + 1).padStart(2, "0")}</span><h2>{project.title}</h2><p>{project.description}</p></div>)}</section>
     <PortfolioGallery images={site.galleryImages} initialFilter={category} />
     <section className="portfolio-inline-cta"><div><p className="portfolio-kicker">{site.portfolioCtaEyebrow}</p><h2>{site.portfolioCtaTitle}</h2></div><Link to={routeFor(preview, "/enquire")}>{site.portfolioCtaLabel} <ArrowRight /></Link></section>
+  </>;
+}
+
+function ConcertPage({ site, preview }: { site: PortfolioSiteData; preview: boolean }) {
+  const images = site.galleryImages.filter(image => image.category.trim().toLowerCase() === "live music");
+  const hero = site.concertHeroImage || images[0]?.image || site.heroImage;
+  return <>
+    <section className="portfolio-concert-hero">
+      <img src={hero} alt="Concert photographed by Zac Morgan" />
+      <div><p>{site.concertEyebrow}</p><h1>{site.concertTitle}</h1><span>{site.locationLabel} · Available for artists, venues and festivals</span></div>
+    </section>
+    <section className="portfolio-concert-intro" data-reveal>
+      <div><p className="portfolio-kicker">Live work</p><strong>{images.length}</strong><span>concert photographs in this collection</span></div>
+      <div><p>{site.concertBody}</p><Link to={routeFor(preview, "/enquire")}>Book live coverage <ArrowRight /></Link></div>
+    </section>
+    <section className="portfolio-concert-highlights" aria-label="Concert photography services">{site.concertHighlights.filter(Boolean).map((highlight, index) => <div key={`${highlight}-${index}`}><span>{String(index + 1).padStart(2, "0")}</span><p>{highlight}</p></div>)}</section>
+    <PortfolioGallery images={images} showFilters={false} />
+    <section className="portfolio-inline-cta"><div><p className="portfolio-kicker">On the bill?</p><h2>Bring the night back with you.</h2></div><Link to={routeFor(preview, "/enquire")}>{site.bookingButtonLabel} <ArrowRight /></Link></section>
   </>;
 }
 
@@ -183,6 +203,6 @@ export default function PortfolioSite() {
     elements.forEach(element => observer.observe(element));
     return () => observer.disconnect();
   }, [path, site.updatedAt, site.galleryImages.length]);
-  const page = path === "/portfolio" ? <WorkPage site={site} preview={preview} category={category} /> : path === "/about" ? <AboutPage site={site} preview={preview} /> : path === "/testimonials" ? <TestimonialsPage site={site} preview={preview} /> : path === "/enquire" || path === "/contact" ? <EnquiryPage site={site} /> : <HomePage site={site} preview={preview} />;
+  const page = path === "/portfolio" ? <WorkPage site={site} preview={preview} category={category} /> : path === "/concerts" || path === "/concert" ? <ConcertPage site={site} preview={preview} /> : path === "/about" ? <AboutPage site={site} preview={preview} /> : path === "/testimonials" ? <TestimonialsPage site={site} preview={preview} /> : path === "/enquire" || path === "/contact" ? <EnquiryPage site={site} /> : <HomePage site={site} preview={preview} />;
   return <div className="portfolio-site"><SiteHeader site={site} preview={preview} /><main>{page}</main><SiteFooter site={site} preview={preview} /></div>;
 }

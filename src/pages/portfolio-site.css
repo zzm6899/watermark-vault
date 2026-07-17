@@ -3,7 +3,7 @@
 .portfolio-site { background:#f7f6f2; color:#171717; font-family:'DM Sans',sans-serif; min-height:100vh; }
 .portfolio-site h1,.portfolio-site h2,.portfolio-site h3,.portfolio-site blockquote { font-family:'Cormorant Garamond',serif; letter-spacing:0; font-weight:500; }
 .portfolio-header { height:104px; background:#161616; color:#fff; position:sticky; top:0; z-index:20; }
-.portfolio-header nav { max-width:1320px; height:100%; margin:auto; padding:0 34px; display:grid; grid-template-columns:1fr 1fr 240px 1fr 1fr; align-items:center; gap:28px; }
+.portfolio-header nav { max-width:1420px; height:100%; margin:auto; padding:0 34px; display:grid; grid-template-columns:1fr 1fr 240px 1fr 1fr 1fr; align-items:center; gap:24px; }
 .portfolio-header a { color:#fff; text-decoration:none; text-transform:uppercase; font-size:11px; letter-spacing:.16em; text-align:center; }
 .portfolio-header nav>a:not(.portfolio-brand)::after { content:""; display:block; width:0; height:1px; background:currentColor; margin:6px auto 0; transition:width .25s ease; }
 .portfolio-header nav>a:not(.portfolio-brand):hover::after,.portfolio-header nav>a.active:not(.portfolio-brand)::after { width:28px; }
@@ -126,6 +126,26 @@
 .portfolio-lightbox button svg { width:28px; height:28px; }
 .portfolio-lightbox-close { position:absolute; top:22px; right:24px; z-index:2; }
 .portfolio-work-page { padding-top:90px; }
+.portfolio-concert-hero { height:min(850px,calc(100svh - 104px)); min-height:650px; position:relative; overflow:hidden; background:#111; color:#fff; }
+.portfolio-concert-hero::after { content:""; position:absolute; inset:0; background:linear-gradient(180deg,#0002 0%,#0001 38%,#000c 100%); }
+.portfolio-concert-hero>img { width:100%; height:100%; object-fit:cover; object-position:center; display:block; }
+.portfolio-concert-hero>div { position:absolute; z-index:1; inset:auto max(30px,calc((100vw - 1320px)/2)) 64px; }
+.portfolio-concert-hero p,.portfolio-concert-hero span { margin:0; text-transform:uppercase; letter-spacing:.18em; font-size:10px; }
+.portfolio-concert-hero h1 { margin:16px 0 24px; max-width:1000px; font-size:clamp(66px,9vw,136px); line-height:.82; }
+.portfolio-concert-hero span { color:#d2d2d2; }
+.portfolio-concert-intro { padding:120px max(30px,calc((100vw - 1240px)/2)); display:grid; grid-template-columns:.75fr 1.25fr; gap:10vw; align-items:end; }
+.portfolio-concert-intro>div:first-child { display:grid; grid-template-columns:auto 1fr; gap:5px 18px; align-items:end; }
+.portfolio-concert-intro .portfolio-kicker { grid-column:1/-1; }
+.portfolio-concert-intro strong { font:500 clamp(72px,9vw,130px)/.8 'Cormorant Garamond',serif; }
+.portfolio-concert-intro span { max-width:150px; color:#77746e; font-size:10px; line-height:1.5; text-transform:uppercase; letter-spacing:.12em; }
+.portfolio-concert-intro>div:last-child>p { color:#4f4d48; font:500 clamp(27px,3.4vw,46px)/1.15 'Cormorant Garamond',serif; margin:0; }
+.portfolio-concert-intro a { display:inline-flex; align-items:center; gap:9px; color:#171717; margin-top:32px; text-transform:uppercase; letter-spacing:.14em; font-size:10px; }
+.portfolio-concert-intro a svg { width:16px; }
+.portfolio-concert-highlights { background:#181818; color:#fff; display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); padding:65px max(30px,calc((100vw - 1320px)/2)); }
+.portfolio-concert-highlights>div { padding:15px 30px; border-left:1px solid #ffffff22; }
+.portfolio-concert-highlights>div:first-child { border-left:0; }
+.portfolio-concert-highlights span { color:#777; font-size:9px; }
+.portfolio-concert-highlights p { margin:20px 0 0; font:500 26px 'Cormorant Garamond',serif; }
 .portfolio-inline-cta { padding:100px max(30px,calc((100vw - 1240px)/2)); display:flex; align-items:center; justify-content:space-between; gap:30px; }
 .portfolio-inline-cta h2 { font-size:clamp(42px,5vw,72px); margin:0; }
 .portfolio-inline-cta a,.portfolio-about-page a,.portfolio-testimonial-image a { color:#171717; display:inline-flex; align-items:center; gap:9px; text-transform:uppercase; letter-spacing:.14em; font-size:10px; }
@@ -198,7 +218,7 @@
 .portfolio-enquiry-steps h2 { font-size:33px; margin:20px 0 12px; }
 .portfolio-enquiry-steps p { color:#aaa; line-height:1.6; font-size:13px; }
 @media(min-width:1800px){
- .portfolio-header nav{max-width:1680px;padding-inline:54px}
+ .portfolio-header nav{max-width:1800px;padding-inline:54px}
  .portfolio-hero{height:min(1080px,calc(100svh - 104px));min-height:760px}.portfolio-hero h1{font-size:clamp(116px,6vw,150px);max-width:1700px}.portfolio-hero-copy p{font-size:12px}.portfolio-hero-actions a{font-size:11px;padding:15px 24px}
  .portfolio-about{max-width:1680px;padding:160px 64px;grid-template-columns:minmax(0,1.1fr) minmax(480px,.9fr);gap:clamp(100px,8vw,180px)}.portfolio-about-copy{max-width:720px}.portfolio-about h2{font-size:104px}.portfolio-about-copy>p:not(.portfolio-kicker){font-size:18px}.portfolio-image-ribbon{height:min(42vw,760px)}
  .portfolio-philosophy{padding-inline:max(64px,calc((100vw - 1680px)/2));gap:clamp(100px,8vw,180px)}.portfolio-story-index{padding-inline:max(64px,calc((100vw - 1760px)/2))}.portfolio-story-heading h2{font-size:112px}
@@ -208,7 +228,7 @@
  .portfolio-site footer{padding-inline:max(64px,calc((100vw - 1680px)/2))}
 }
 @media(min-width:2600px){
- .portfolio-header{height:128px}.portfolio-header nav{max-width:2200px;grid-template-columns:1fr 1fr 320px 1fr 1fr;gap:54px;padding-inline:80px}.portfolio-header a{font-size:14px}.portfolio-brand img{width:240px;max-height:88px}.portfolio-header .portfolio-book-link{padding:15px 20px}
+ .portfolio-header{height:128px}.portfolio-header nav{max-width:2400px;grid-template-columns:1fr 1fr 320px 1fr 1fr 1fr;gap:46px;padding-inline:80px}.portfolio-header a{font-size:14px}.portfolio-brand img{width:240px;max-height:88px}.portfolio-header .portfolio-book-link{padding:15px 20px}
  .portfolio-hero{height:calc(100svh - 224px);min-height:950px;max-height:none}.portfolio-hero h1{font-size:190px;max-width:2200px}.portfolio-hero-copy p{font-size:14px}.portfolio-hero-actions{gap:18px;margin-top:48px}.portfolio-hero-actions a{font-size:13px;padding:18px 30px}.portfolio-hero-meta{inset-inline:52px;bottom:38px;font-size:12px}.portfolio-scroll{bottom:34px}.portfolio-scroll svg{width:28px}
  .portfolio-about{max-width:2200px;padding:220px 100px;grid-template-columns:minmax(0,1.08fr) minmax(620px,.92fr);gap:180px}.portfolio-about-copy{max-width:900px}.portfolio-about-copy .portfolio-kicker{font-size:14px}.portfolio-about h2{font-size:132px;margin-block:26px 42px}.portfolio-about-copy>p:not(.portfolio-kicker){font-size:22px;line-height:1.8}.portfolio-about-copy>a{font-size:14px;margin-top:42px}
  .portfolio-image-ribbon{height:min(38vw,920px)}.portfolio-philosophy{padding-inline:max(100px,calc((100vw - 2200px)/2));gap:180px}.portfolio-story-index{padding-inline:max(100px,calc((100vw - 2300px)/2))}.portfolio-story-heading h2{font-size:138px}
@@ -227,6 +247,7 @@
  .portfolio-work{padding:90px 20px}.portfolio-projects{grid-template-columns:1fr;gap:48px}.portfolio-project:nth-child(even){margin-top:0}.portfolio-project h3{font-size:30px}
  .portfolio-testimonial{padding:100px 22px}.portfolio-site footer{padding:80px 22px 35px}.portfolio-site footer h2{font-size:52px}.portfolio-footer-email{margin-top:65px;font-size:29px}.portfolio-footer-bottom{display:block;margin:35px 0 55px}.portfolio-socials{gap:18px}.portfolio-footer-bottom nav{margin-top:32px}
  .portfolio-page-intro{min-height:430px;padding:80px 22px}.portfolio-page-intro h1{font-size:58px}.portfolio-page-intro-work{min-height:540px}.portfolio-client-line{align-items:flex-start;gap:12px 20px;margin-top:42px}.portfolio-client-line span{width:100%}.portfolio-specialties{grid-template-columns:1fr;padding:60px 22px}.portfolio-specialties>div,.portfolio-specialties>div:first-child{border-left:0;border-top:1px solid #ffffff22;padding:28px 0}.portfolio-gallery-section{padding:25px 8px 80px}.portfolio-gallery-toolbar{display:block;padding:0 12px 25px}.portfolio-gallery-toolbar>div{justify-content:flex-start;margin-top:14px}.portfolio-gallery-toolbar button{padding:8px 7px}.portfolio-gallery-grid{gap:3px}.portfolio-gallery-item,.portfolio-gallery-item-1,.portfolio-gallery-item-4{grid-column:span 6;aspect-ratio:3/4}.portfolio-gallery-item:nth-child(3n){grid-column:span 12;aspect-ratio:4/3}.portfolio-gallery-item span{display:none}.portfolio-lightbox{grid-template-columns:44px minmax(0,1fr) 44px}.portfolio-lightbox figure{padding:55px 0 20px}.portfolio-lightbox figcaption{display:block;padding:10px 2px}.portfolio-lightbox figcaption span{display:block;margin-bottom:5px}.portfolio-inline-cta{padding:75px 22px;display:block}.portfolio-inline-cta a{margin-top:20px}
+ .portfolio-concert-hero{height:calc(100svh - 76px);min-height:560px}.portfolio-concert-hero>div{inset:auto 22px 38px}.portfolio-concert-hero h1{font-size:64px}.portfolio-concert-hero span{line-height:1.6}.portfolio-concert-intro{padding:80px 22px;grid-template-columns:1fr;gap:55px}.portfolio-concert-intro>div:last-child>p{font-size:30px}.portfolio-concert-highlights{grid-template-columns:1fr 1fr;padding:45px 22px}.portfolio-concert-highlights>div,.portfolio-concert-highlights>div:first-child{border-left:0;border-top:1px solid #ffffff22;padding:24px 10px}.portfolio-concert-highlights p{font-size:23px}
  .portfolio-about-page{padding:70px 22px 100px;grid-template-columns:1fr;gap:55px}.portfolio-about-page h1{font-size:54px}.portfolio-about-manifesto{padding:0 22px 90px;grid-template-columns:1fr;gap:45px}.portfolio-about-manifesto h2{font-size:50px}.portfolio-values{grid-template-columns:1fr;padding:70px 22px}.portfolio-values>div{border-left:0;border-top:1px solid #ffffff25;padding:30px 0}
  .portfolio-quote-page{padding:90px 22px}.portfolio-reviews{padding:65px 22px 100px;grid-template-columns:1fr;gap:0}.portfolio-reviews blockquote:nth-child(even){transform:none}.portfolio-testimonial-image{grid-template-columns:1fr;min-height:0}.portfolio-testimonial-image img{min-height:0;aspect-ratio:4/3}.portfolio-testimonial-image div{padding:65px 22px}
  .portfolio-enquiry-page{padding:75px 22px 110px;grid-template-columns:1fr;gap:60px}.portfolio-enquiry-intro{position:static}.portfolio-enquiry-page h1{font-size:56px}.portfolio-enquiry-form{grid-template-columns:1fr}.portfolio-enquiry-form label,.portfolio-form-wide,.portfolio-submit,.portfolio-form-error{grid-column:1}

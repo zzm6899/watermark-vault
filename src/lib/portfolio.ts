@@ -61,6 +61,11 @@ export type PortfolioSite = {
   portfolioCtaEyebrow: string;
   portfolioCtaTitle: string;
   portfolioCtaLabel: string;
+  concertEyebrow: string;
+  concertTitle: string;
+  concertBody: string;
+  concertHeroImage: string;
+  concertHighlights: string[];
   aboutApproachEyebrow: string;
   aboutApproachTitle: string;
   aboutApproachBody: string;
@@ -160,6 +165,11 @@ export const defaultPortfolioSite: PortfolioSite = {
   portfolioCtaEyebrow: "Your story, photographed honestly",
   portfolioCtaTitle: "Planning something?",
   portfolioCtaLabel: "Check availability",
+  concertEyebrow: "Live music photography",
+  concertTitle: "The room, at full volume.",
+  concertBody: "Touring artists, festivals, venues and late-night sets photographed from inside the energy. Fast, atmospheric coverage built for press, social and the archive.",
+  concertHeroImage: "/portfolio/imported/zm-day2-120.jpg",
+  concertHighlights: ["Live sets", "Artist portraits", "Crowd and atmosphere", "Fast selects"],
   aboutApproachEyebrow: "The approach",
   aboutApproachTitle: "Present enough to guide. Quiet enough to notice.",
   aboutApproachBody: "I look for the interactions happening between the scheduled moments: the reaction across the room, the energy building before a performance, and the details your team spent months getting right.",

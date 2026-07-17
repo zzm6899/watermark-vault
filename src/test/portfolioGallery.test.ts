@@ -16,5 +16,8 @@ describe("portfolio archive import", () => {
 
     expect(defaultPortfolioSite.galleryImages).toHaveLength(46);
     expect(defaultPortfolioSite.gallerySeedVersion).toBe(1);
+    expect(defaultPortfolioSite.galleryImages.filter(item => item.category === "Live music")).toHaveLength(6);
+    expect(defaultPortfolioSite.concertHeroImage).toContain("/portfolio/");
+    expect(defaultPortfolioSite.concertHighlights.length).toBeGreaterThanOrEqual(3);
   });
 });
