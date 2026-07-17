@@ -1820,6 +1820,7 @@ export default function AlbumDetail() {
               const estimatedZipSeconds = canUseZip ? estimateZipSeconds(downloadPhotos as Photo[]) : 0;
               const zipReadyCount = zipProgress ? Math.min(zipProgress.ready, zipProgress.total) : 0;
               const zipTotalCount = zipProgress?.total || downloadCount;
+              const zipFinalizing = !!zipProgress && zipProgress.status === "preparing" && zipTotalCount > 0 && zipReadyCount >= zipTotalCount;
               const zipReadyRate = zipProgress && zipElapsedSeconds > 0 ? zipReadyCount / zipElapsedSeconds : 0;
               const zipRemainingSeconds = zipProgress && zipReadyRate > 0
                 ? Math.ceil(Math.max(0, zipTotalCount - zipReadyCount) / zipReadyRate)
@@ -1827,7 +1828,9 @@ export default function AlbumDetail() {
                   ? Math.max(0, zipProgress.estimateSeconds - zipElapsedSeconds)
                   : estimatedZipSeconds;
               const zipPercent = zipProgress && zipTotalCount > 0
-                ? Math.min(100, Math.round((zipReadyCount / zipTotalCount) * 100))
+                ? zipFinalizing
+                  ? 99
+                  : Math.min(100, Math.round((zipReadyCount / zipTotalCount) * 100))
                 : 0;
               const zipRateLabel = zipReadyRate > 0 ? `${zipReadyRate.toFixed(zipReadyRate >= 10 ? 0 : 1)} photos/s` : "Starting…";
               return (
@@ -1863,7 +1866,11 @@ export default function AlbumDetail() {
                     <div className="rounded-lg border border-border/60 bg-secondary/40 px-3 py-2">
                       <div className="flex items-center justify-between gap-3">
                         <p className="text-xs font-body text-foreground">
-                          {zipProgress ? `Preparing ZIP: ${zipReadyCount}/${zipTotalCount} ready` : `Estimated ZIP preparation: ${formatZipDuration(estimatedZipSeconds)}`}
+                          {zipProgress
+                            ? zipFinalizing
+                              ? `Finalizing ZIP: ${zipReadyCount}/${zipTotalCount} photos ready`
+                              : `Preparing ZIP: ${zipReadyCount}/${zipTotalCount} ready`
+                            : `Estimated ZIP preparation: ${formatZipDuration(estimatedZipSeconds)}`}
                         </p>
                         {zipProgress && <span className="text-[10px] font-body text-primary">{zipPercent}%</span>}
                       </div>
@@ -1877,7 +1884,9 @@ export default function AlbumDetail() {
                       )}
                       <p className="mt-0.5 text-[10px] font-body text-muted-foreground">
                         {zipProgress
-                          ? `Elapsed ${formatZipDuration(zipElapsedSeconds)} · ${zipRateLabel} · about ${formatZipDuration(zipRemainingSeconds)} left`
+                          ? zipFinalizing
+                            ? `Elapsed ${formatZipDuration(zipElapsedSeconds)} · Writing the completed archive to disk`
+                            : `Elapsed ${formatZipDuration(zipElapsedSeconds)} · ${zipRateLabel} · about ${formatZipDuration(zipRemainingSeconds)} left`
                           : "Large albums can take longer while the server packages originals and watermarked files."}
                       </p>
                     </div>
@@ -1915,7 +1924,11 @@ export default function AlbumDetail() {
                   >
                     <Download className="w-4 h-4" />
                     {downloading
-                      ? (useZip ? `Preparing ZIP · ${zipReadyCount}/${zipTotalCount} ready` : "Downloading…")
+                      ? (useZip
+                          ? zipFinalizing
+                            ? `Finalizing ZIP · ${zipReadyCount}/${zipTotalCount}`
+                            : `Preparing ZIP · ${zipReadyCount}/${zipTotalCount} ready`
+                          : "Downloading…")
                       : (useZip ? `Download ZIP (${downloadCount})` : `Download (${downloadCount})`)}
                   </Button>
                 </>
