@@ -794,6 +794,9 @@ export default function AlbumDetail() {
     const cleanCount = serverPhotos.filter(p => isCleanDownload(p.id)).length;
     const watermarkedCount = serverPhotos.length - cleanCount;
     const localCount = photos.length - serverPhotos.length;
+    if (downloadQuality !== "original") {
+      return Math.max(3, Math.ceil(2 + serverPhotos.length * 0.45 + localCount * 0.15));
+    }
     return Math.max(3, Math.ceil(2 + cleanCount * 0.25 + watermarkedCount * 0.55 + localCount * 0.15));
   };
 
@@ -872,13 +875,13 @@ export default function AlbumDetail() {
       const startRes = await fetch("/api/download/zip/start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ files, sessionKey, albumId: album.id }),
+        body: JSON.stringify({ files, sessionKey, albumId: album.id, quality: downloadQuality }),
       });
       if (startRes.status === 404) {
         const res = await fetch("/api/download/zip", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ files, sessionKey, albumId: album.id }),
+          body: JSON.stringify({ files, sessionKey, albumId: album.id, quality: downloadQuality }),
         });
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));
@@ -938,7 +941,6 @@ export default function AlbumDetail() {
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
-      toast.success("ZIP ready. Download started.");
       return true;
     } catch (err: any) {
       toast.error(`Zip download failed: ${err.message || "unknown error"}`);
@@ -1024,8 +1026,9 @@ export default function AlbumDetail() {
     }
     setDownloading(true);
     const toDownload = [...alreadyPaid, ...notPaid.slice(0, canDownloadFree)];
+    const usedZip = isServerMode() && toDownload.length > 1 && !preferIndividualDownload;
     let downloaded = true;
-    if (isServerMode() && toDownload.length > 1 && !preferIndividualDownload) {
+    if (usedZip) {
       downloaded = await downloadZip(toDownload as Photo[]);
     } else {
       for (const p of toDownload) {
@@ -1055,7 +1058,9 @@ export default function AlbumDetail() {
     setSelectedIds(new Set());
     setShowDownloadOptions(false);
     setDownloading(false);
-    toast.success(`Downloaded ${canDownload} photo${canDownload !== 1 ? "s" : ""}`);
+    toast.success(usedZip
+      ? `ZIP download started for ${canDownload} photos. Track transfer progress in your browser.`
+      : `Downloaded ${canDownload} photo${canDownload !== 1 ? "s" : ""}`);
   };
 
   const handleDownloadAll = async () => {
@@ -1068,8 +1073,9 @@ export default function AlbumDetail() {
     const photos = selectedIds.size > 0
       ? album.photos.filter(p => selectedIds.has(p.id))
       : album.photos;
+    const usedZip = isServerMode() && photos.length > 1 && !preferIndividualDownload;
     let downloaded = true;
-    if (isServerMode() && photos.length > 1 && !preferIndividualDownload) {
+    if (usedZip) {
       downloaded = await downloadZip(photos as Photo[]);
     } else {
       for (const p of photos) {
@@ -1095,7 +1101,9 @@ export default function AlbumDetail() {
     setSelectedIds(new Set());
     setShowDownloadOptions(false);
     setDownloading(false);
-    toast.success(`Downloaded ${photos.length} photo${photos.length !== 1 ? "s" : ""}`);
+    toast.success(usedZip
+      ? `ZIP download started for ${photos.length} photos. Track transfer progress in your browser.`
+      : `Downloaded ${photos.length} photo${photos.length !== 1 ? "s" : ""}`);
   };
 
   const handlePurchaseSelected = () => {
@@ -1820,6 +1828,7 @@ export default function AlbumDetail() {
               const estimatedZipSeconds = canUseZip ? estimateZipSeconds(downloadPhotos as Photo[]) : 0;
               const zipReadyCount = zipProgress ? Math.min(zipProgress.ready, zipProgress.total) : 0;
               const zipTotalCount = zipProgress?.total || downloadCount;
+              const zipCompleted = zipProgress?.status === "done";
               const zipFinalizing = !!zipProgress && zipProgress.status === "preparing" && zipTotalCount > 0 && zipReadyCount >= zipTotalCount;
               const zipReadyRate = zipProgress && zipElapsedSeconds > 0 ? zipReadyCount / zipElapsedSeconds : 0;
               const zipRemainingSeconds = zipProgress && zipReadyRate > 0
@@ -1867,9 +1876,11 @@ export default function AlbumDetail() {
                       <div className="flex items-center justify-between gap-3">
                         <p className="text-xs font-body text-foreground">
                           {zipProgress
-                            ? zipFinalizing
-                              ? `Finalizing ZIP: ${zipReadyCount}/${zipTotalCount} photos ready`
-                              : `Preparing ZIP: ${zipReadyCount}/${zipTotalCount} ready`
+                            ? zipCompleted
+                              ? `ZIP ready: ${zipReadyCount}/${zipTotalCount} photos`
+                              : zipFinalizing
+                                ? `Finalizing ZIP: ${zipReadyCount}/${zipTotalCount} photos ready`
+                                : `Preparing ZIP: ${zipReadyCount}/${zipTotalCount} ready`
                             : `Estimated ZIP preparation: ${formatZipDuration(estimatedZipSeconds)}`}
                         </p>
                         {zipProgress && <span className="text-[10px] font-body text-primary">{zipPercent}%</span>}
@@ -1884,15 +1895,18 @@ export default function AlbumDetail() {
                       )}
                       <p className="mt-0.5 text-[10px] font-body text-muted-foreground">
                         {zipProgress
-                          ? zipFinalizing
-                            ? `Elapsed ${formatZipDuration(zipElapsedSeconds)} · Writing the completed archive to disk`
-                            : `Elapsed ${formatZipDuration(zipElapsedSeconds)} · ${zipRateLabel} · about ${formatZipDuration(zipRemainingSeconds)} left`
+                          ? zipCompleted
+                            ? "Starting the browser download"
+                            : zipFinalizing
+                              ? `Elapsed ${formatZipDuration(zipElapsedSeconds)} · Writing the completed archive to disk`
+                              : `Elapsed ${formatZipDuration(zipElapsedSeconds)} · ${zipRateLabel} · about ${formatZipDuration(zipRemainingSeconds)} left`
                           : "Large albums can take longer while the server packages originals and watermarked files."}
                       </p>
                     </div>
                   )}
-                  {/* Quality selector — shown when downloading individually OR non-server mode */}
-                  {(!canUseZip || preferIndividualDownload) && (
+                  {/* Quality applies to both ZIP and individual downloads. */}
+                  <div className="space-y-2">
+                    <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Download quality</p>
                     <RadioGroup value={downloadQuality} onValueChange={(v) => setDownloadQuality(v as DownloadQuality)}>
                       <div className="flex items-center space-x-3 p-3 rounded-lg bg-secondary hover:bg-secondary/80 cursor-pointer">
                         <RadioGroupItem value="2mb" id="q-2mb" />
@@ -1916,7 +1930,12 @@ export default function AlbumDetail() {
                         </Label>
                       </div>
                     </RadioGroup>
-                  )}
+                    {useZip && (
+                      <p className="text-[10px] font-body text-muted-foreground">
+                        Smaller quality options reduce ZIP transfer time. Original preserves every uploaded pixel.
+                      </p>
+                    )}
+                  </div>
                   <Button
                     onClick={canDownload ? executeDownloadAll : executeDownloadFree}
                     disabled={downloading}
@@ -1925,9 +1944,11 @@ export default function AlbumDetail() {
                     <Download className="w-4 h-4" />
                     {downloading
                       ? (useZip
-                          ? zipFinalizing
-                            ? `Finalizing ZIP · ${zipReadyCount}/${zipTotalCount}`
-                            : `Preparing ZIP · ${zipReadyCount}/${zipTotalCount} ready`
+                          ? zipCompleted
+                            ? "Starting download"
+                            : zipFinalizing
+                              ? `Finalizing ZIP · ${zipReadyCount}/${zipTotalCount}`
+                              : `Preparing ZIP · ${zipReadyCount}/${zipTotalCount} ready`
                           : "Downloading…")
                       : (useZip ? `Download ZIP (${downloadCount})` : `Download (${downloadCount})`)}
                   </Button>

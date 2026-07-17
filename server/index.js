@@ -115,6 +115,10 @@ const ZIP_WATERMARK_CONCURRENCY = Math.max(1, Math.min(8,
   Math.min(4, Math.max(2, (os.availableParallelism?.() || os.cpus().length || 2) - 1))
 ));
 const WATERMARK_OVERLAY_CACHE_SIZE = 8;
+const ZIP_QUALITY_SETTINGS = {
+  "2mb": { width: 2048, jpegQuality: 80 },
+  "5mb": { width: 4000, jpegQuality: 88 },
+};
 // Shared Cache-Control header for short-lived public read endpoints (60 s fresh, 5 min stale)
 const SHORT_CACHE = "public, max-age=60, stale-while-revalidate=300";
 const ALLOWED_IMAGE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif", ".tif", ".tiff", ".heic", ".heif"]);
@@ -2315,6 +2319,48 @@ async function getWatermarkedZipFilePath(safeName, filepath, tenantSlug = null) 
   }
 }
 
+const sizedZipRenders = new Map();
+async function getSizedZipFilePath(safeName, filepath, clean, tenantSlug, quality) {
+  const settings = ZIP_QUALITY_SETTINGS[quality];
+  if (!settings) return clean ? filepath : getWatermarkedZipFilePath(safeName, filepath, tenantSlug);
+
+  const baseName = path.basename(safeName, path.extname(safeName));
+  const cacheFile = path.join(CACHE_DIR, getCacheFilename(baseName, `zip_${quality}`, !clean, tenantSlug));
+  if (fs.existsSync(cacheFile)) return cacheFile;
+  const existingRender = sizedZipRenders.get(cacheFile);
+  if (existingRender) return existingRender;
+
+  const render = (async () => {
+    const tmpFile = path.join(ZIP_JOBS_DIR, `${baseName}_zip_${quality}_${crypto.randomBytes(6).toString("hex")}.tmp`);
+    try {
+      const origMeta = await sharp(filepath).metadata();
+      const origW = origMeta.width || settings.width;
+      const origH = origMeta.height || Math.round(settings.width * 0.75);
+      const renderW = Math.min(origW, settings.width);
+      const renderH = Math.round(origH * (renderW / origW));
+      let pipeline = sharp(filepath, { sequentialRead: true })
+        .resize(settings.width, null, { withoutEnlargement: true });
+      if (!clean) {
+        const wm = getWatermarkSettings(tenantSlug);
+        const overlay = await getCachedWatermarkOverlay(renderW, renderH, wm);
+        pipeline = pipeline.composite([overlay]);
+      }
+      await pipeline.jpeg({ quality: settings.jpegQuality }).toFile(tmpFile);
+      fs.renameSync(tmpFile, cacheFile);
+      return cacheFile;
+    } catch (err) {
+      try { if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile); } catch {}
+      throw err;
+    }
+  })();
+  sizedZipRenders.set(cacheFile, render);
+  try {
+    return await render;
+  } finally {
+    if (sizedZipRenders.get(cacheFile) === render) sizedZipRenders.delete(cacheFile);
+  }
+}
+
 // ── Serve watermarked / resized photo ────────────────────────
 // Supports:
 //   ?size=thumb   → resize to 700 px wide (for gallery grids)
@@ -3181,6 +3227,7 @@ function normalizeZipFileList(filenames, files) {
 
 function validateZipRequest(req, res) {
   const { filenames, files, sessionKey, albumId } = req.body;
+  const quality = ["2mb", "5mb", "original"].includes(req.body.quality) ? req.body.quality : "original";
   const fileList = normalizeZipFileList(filenames, files);
   if (!fileList) {
     res.status(400).json({ error: "files array (or filenames), sessionKey and albumId required" });
@@ -3194,13 +3241,40 @@ function validateZipRequest(req, res) {
     res.status(400).json({ error: `Too many files in a single zip request (max ${MAX_ZIP_FILES})` });
     return null;
   }
-  return { fileList, sessionKey, albumId };
+  return { fileList, sessionKey, albumId, quality };
 }
 
-function collectAccessibleZipFiles(fileList, sessionKey, albumId) {
+function uniqueZipEntryName(preferredName, fallbackName, quality, usedNames) {
+  const rawName = String(preferredName || fallbackName || "photo.jpg")
+    .replace(/\\/g, "/")
+    .split("/")
+    .pop()
+    .replace(/[\x00-\x1f<>:"/\\|?*]/g, "_")
+    .trim();
+  const fallbackExt = path.extname(fallbackName) || ".jpg";
+  const rawExt = path.extname(rawName);
+  const outputExt = quality === "original" ? (rawExt || fallbackExt) : ".jpg";
+  const rawStem = rawExt ? rawName.slice(0, -rawExt.length) : rawName;
+  const stem = (rawStem || "photo").slice(0, Math.max(1, 180 - outputExt.length));
+  let candidate = `${stem}${outputExt}`;
+  let suffix = 2;
+  while (usedNames.has(candidate.toLowerCase())) {
+    candidate = `${stem} (${suffix++})${outputExt}`;
+  }
+  usedNames.add(candidate.toLowerCase());
+  return candidate;
+}
+
+function collectAccessibleZipFiles(fileList, sessionKey, albumId, quality = "original") {
   const accessibleFiles = [];
   const albumMatch = findAlbumById(readDb(), albumId);
   const tenantSlug = albumMatch?.tenantSlug || null;
+  const albumPhotos = Array.isArray(albumMatch?.album?.photos) ? albumMatch.album.photos : [];
+  const albumPhotosByStoredName = new Map(albumPhotos.map(photo => {
+    const source = photo.url || photo.src || "";
+    return [source.split("?")[0].split("/").pop() || "", photo];
+  }));
+  const usedArchiveNames = new Set();
   let missingCount = 0;
   let deniedCount = 0;
   let downgradedCount = 0;
@@ -3218,7 +3292,10 @@ function collectAccessibleZipFiles(fileList, sessionKey, albumId) {
     }
     const serveClean = clean && access.clean;
     if (clean && !access.clean) downgradedCount++;
-    accessibleFiles.push({ safeName, filepath, clean: serveClean, tenantSlug });
+    const photo = albumPhotosByStoredName.get(safeName);
+    const preferredName = photo?.originalName || (photo?.title ? `${photo.title}${path.extname(safeName)}` : safeName);
+    const archiveName = uniqueZipEntryName(preferredName, safeName, quality, usedArchiveNames);
+    accessibleFiles.push({ safeName, filepath, clean: serveClean, tenantSlug, quality, archiveName });
   }
   return { accessibleFiles, missingCount, deniedCount, downgradedCount };
 }
@@ -3286,13 +3363,11 @@ async function buildZipJob(job, accessibleFiles) {
       while (true) {
         const index = nextIndex++;
         if (index >= accessibleFiles.length) return;
-        const { safeName, filepath, clean, tenantSlug } = accessibleFiles[index];
-        if (clean) {
-          archive.file(filepath, { name: safeName });
-        } else {
-          const watermarkedPath = await getWatermarkedZipFilePath(safeName, filepath, tenantSlug);
-          archive.file(watermarkedPath, { name: safeName });
-        }
+        const { safeName, filepath, clean, tenantSlug, quality, archiveName } = accessibleFiles[index];
+        const preparedPath = quality === "original"
+          ? (clean ? filepath : await getWatermarkedZipFilePath(safeName, filepath, tenantSlug))
+          : await getSizedZipFilePath(safeName, filepath, clean, tenantSlug, quality);
+        archive.file(preparedPath, { name: archiveName });
         preparedCount++;
         job.ready = Math.max(job.ready, preparedCount);
         job.updatedAt = Date.now();
@@ -3319,8 +3394,8 @@ async function buildZipJob(job, accessibleFiles) {
 app.post("/api/download/zip/start", downloadZipLimiter, async (req, res) => {
   const valid = validateZipRequest(req, res);
   if (!valid) return;
-  const { fileList, sessionKey, albumId } = valid;
-  const { accessibleFiles, missingCount, deniedCount, downgradedCount } = collectAccessibleZipFiles(fileList, sessionKey, albumId);
+  const { fileList, sessionKey, albumId, quality } = valid;
+  const { accessibleFiles, missingCount, deniedCount, downgradedCount } = collectAccessibleZipFiles(fileList, sessionKey, albumId, quality);
 
   if (accessibleFiles.length === 0) {
     return res.status(403).json({
@@ -3343,6 +3418,7 @@ app.post("/api/download/zip/start", downloadZipLimiter, async (req, res) => {
     downgraded: downgradedCount,
     error: null,
     filename: `${albumName}.zip`,
+    quality,
     filepath: path.join(ZIP_JOBS_DIR, `${jobId}.zip`),
     createdAt: Date.now(),
     updatedAt: Date.now(),
@@ -3373,8 +3449,8 @@ app.get("/api/download/zip/:jobId/file", (req, res) => {
 app.post("/api/download/zip", downloadZipLimiter, async (req, res) => {
   const valid = validateZipRequest(req, res);
   if (!valid) return;
-  const { fileList, sessionKey, albumId } = valid;
-  const { accessibleFiles, missingCount, deniedCount, downgradedCount } = collectAccessibleZipFiles(fileList, sessionKey, albumId);
+  const { fileList, sessionKey, albumId, quality } = valid;
+  const { accessibleFiles, missingCount, deniedCount, downgradedCount } = collectAccessibleZipFiles(fileList, sessionKey, albumId, quality);
 
   if (accessibleFiles.length === 0) {
     return res.status(403).json({
@@ -3410,13 +3486,11 @@ app.post("/api/download/zip", downloadZipLimiter, async (req, res) => {
     while (!zipFailed && !res.destroyed) {
       const index = nextIndex++;
       if (index >= accessibleFiles.length) return;
-      const { safeName, filepath, clean, tenantSlug } = accessibleFiles[index];
-      if (clean) {
-        archive.file(filepath, { name: safeName });
-      } else {
-        const watermarkedPath = await getWatermarkedZipFilePath(safeName, filepath, tenantSlug);
-        archive.file(watermarkedPath, { name: safeName });
-      }
+      const { safeName, filepath, clean, tenantSlug, quality: fileQuality, archiveName } = accessibleFiles[index];
+      const preparedPath = fileQuality === "original"
+        ? (clean ? filepath : await getWatermarkedZipFilePath(safeName, filepath, tenantSlug))
+        : await getSizedZipFilePath(safeName, filepath, clean, tenantSlug, fileQuality);
+      archive.file(preparedPath, { name: archiveName });
     }
   };
   const workerCount = Math.min(ZIP_WATERMARK_CONCURRENCY, accessibleFiles.length);
