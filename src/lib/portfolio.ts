@@ -33,6 +33,7 @@ export type PortfolioStep = {
 };
 
 export type PortfolioSite = {
+  gallerySeedVersion: number;
   brandName: string;
   logo: string;
   heroImage: string;
@@ -93,7 +94,45 @@ export type PortfolioSite = {
   updatedAt?: string;
 };
 
+export const importedPortfolioGalleryImages: PortfolioGalleryImage[] = [
+  { id: "archive-wedding-waterfront", image: "/portfolio/imported/alexrosanna-010.jpg", alt: "Couple embracing beside the waterfront", category: "Weddings" },
+  { id: "archive-portrait-red-dress", image: "/portfolio/imported/aurie-175.jpg", alt: "Editorial portrait in a red dress", category: "Portraits" },
+  { id: "archive-wedding-garden", image: "/portfolio/imported/jjswedding-138.jpg", alt: "Wedding couple sharing a quiet garden moment", category: "Weddings" },
+  { id: "archive-wedding-blossoms", image: "/portfolio/imported/melanienicholaswedding0152.jpg", alt: "Newlyweds kissing beneath flowering trees", category: "Weddings" },
+  { id: "archive-live-band", image: "/portfolio/imported/coogebay-thevanns-22-09-240103.jpg", alt: "Live band performing on an outdoor stage", category: "Live music" },
+  { id: "archive-dj-duo", image: "/portfolio/imported/cosmosmidnight-fullres-018.jpg", alt: "DJ duo performing under coloured lights", category: "Live music" },
+  { id: "archive-stage-performer", image: "/portfolio/imported/zm-382.jpg", alt: "Performer on stage beneath blue lighting", category: "Live music" },
+  { id: "archive-concert-crowd", image: "/portfolio/imported/zm-day2-120.jpg", alt: "Concert crowd holding illuminated light sticks", category: "Live music" },
+  { id: "archive-party-crowd", image: "/portfolio/imported/greenwoodhotel-cruiser-31-10-240046.jpg", alt: "Crowd celebrating at a live party", category: "Events" },
+  { id: "archive-party-djs", image: "/portfolio/imported/greenwoodhotel-cruiser-31-10-240095.jpg", alt: "DJs performing at an outdoor party", category: "Events" },
+  { id: "archive-formal-audience", image: "/portfolio/imported/thewarwick-nrl-115.jpg", alt: "Audience watching a formal presentation", category: "Events" },
+  { id: "archive-gaming-event", image: "/portfolio/imported/thewarwick-nrl-46.jpg", alt: "Guests gathered around a gaming activation", category: "Events" },
+  { id: "archive-balter-bar", image: "/portfolio/imported/coogebay-thevanns-22-09-240010.jpg", alt: "Balter beverage display at a branded event", category: "Brand and business" },
+  { id: "archive-balter-can", image: "/portfolio/imported/greenwoodhotel-cruiser-31-10-240113.jpg", alt: "Balter Easy Hazy can at an event", category: "Brand and business" },
+  { id: "archive-restaurant-team", image: "/portfolio/imported/cloudec-050.jpg", alt: "Restaurant team portrait", category: "Brand and business" },
+  { id: "archive-brand-gardening", image: "/portfolio/imported/cloudec-264.jpg", alt: "Team member working in a garden", category: "Brand and business" },
+  { id: "archive-event-drinks", image: "/portfolio/imported/curzonhallschneidercorporate26-10-24-150.jpg", alt: "Guests enjoying drinks at a corporate event", category: "Brand and business" },
+  { id: "archive-corporate-networking", image: "/portfolio/imported/oatlandsestatesmallbusinessevent30-10-24137.jpg", alt: "Professionals networking at an evening reception", category: "Brand and business" },
+  { id: "archive-event-selfie", image: "/portfolio/imported/oatlandsestatesmallbusinessevent30-10-24109.jpg", alt: "Guests taking a selfie at a formal event", category: "Events" },
+  { id: "archive-outdoor-service", image: "/portfolio/imported/oatlandsestategraduationsetup13-11-240053.jpg", alt: "Outdoor beverage service at an event", category: "Events" },
+  { id: "archive-corporate-conversation", image: "/portfolio/imported/stryd-140.jpg", alt: "Business guests in conversation", category: "Brand and business" },
+  { id: "archive-catered-prosciutto", image: "/portfolio/imported/aawedding-190.jpg", alt: "Catered prosciutto finished with herbs", category: "Food and hospitality" },
+  { id: "archive-chef-service", image: "/portfolio/imported/curzonhallschneidercorporate26-10-24-123.jpg", alt: "Chef serving guests at an outdoor station", category: "Food and hospitality" },
+  { id: "archive-catering-spread", image: "/portfolio/imported/lemontage6-2-2025roomshotsnestle25of71.jpg", alt: "Catered sandwich and appetizer spread", category: "Food and hospitality" },
+  { id: "archive-plated-service", image: "/portfolio/imported/lemontage6-2-2025roomshotsnestle28of71.jpg", alt: "Chef plating dishes during service", category: "Food and hospitality" },
+  { id: "archive-gnocchi", image: "/portfolio/imported/oatlandsestategraduationsetup13-11-240101.jpg", alt: "Gnocchi finished with parmesan and herbs", category: "Food and hospitality" },
+  { id: "archive-plated-entree", image: "/portfolio/imported/lemontagegraduationsetup15-11-240083.jpg", alt: "Plated entree prepared for a formal dinner", category: "Food and hospitality" },
+  { id: "archive-formal-room-blue", image: "/portfolio/imported/lemontagegraduationsetup15-11-240014.jpg", alt: "Ballroom prepared with blue architectural lighting", category: "Formals" },
+  { id: "archive-formal-table-blue", image: "/portfolio/imported/lemontagegraduationsetup15-11-240008-enhanced-nr.jpg", alt: "Formal table setting with blue linens", category: "Formals" },
+  { id: "archive-corporate-room", image: "/portfolio/imported/lemontage6-2-2025roomshotsnestle42of71.jpg", alt: "Corporate dining room during an event", category: "Formals" },
+  { id: "archive-gift-table", image: "/portfolio/imported/oatlandsestate1-2-25elizabethroom41of66.jpg", alt: "Formal table setting with wrapped gifts", category: "Formals" },
+  { id: "archive-editorial-writing", image: "/portfolio/imported/cloudec-037.jpg", alt: "Hands writing in strong afternoon light", category: "Details" },
+  { id: "archive-cocktails", image: "/portfolio/imported/thewarwick-nrl-2-copy.jpg", alt: "Two pink cocktails at an evening event", category: "Details" },
+  { id: "archive-cosplay", image: "/portfolio/imported/zm-182.jpg", alt: "Cosplay guests arriving at a convention", category: "Cosplay" },
+];
+
 export const defaultPortfolioSite: PortfolioSite = {
+  gallerySeedVersion: 1,
   brandName: "Zac Morgan Photography",
   logo: "/portfolio/logo.png",
   heroImage: "/portfolio/live-action.jpg",
@@ -164,6 +203,7 @@ export const defaultPortfolioSite: PortfolioSite = {
     { id: "chef", image: "/portfolio/gallery/corporate-networking.jpg", alt: "Chef serving guests at a catered event", category: "Brand and business" },
     { id: "wine-detail", image: "/portfolio/gallery/formal-room.jpg", alt: "Wine and glassware at a formal event", category: "Details" },
     { id: "balter", image: "/portfolio/gallery/nightlife.jpg", alt: "Balter brand activation", category: "Brand and business" },
+    ...importedPortfolioGalleryImages,
   ],
   testimonials: [
     { id: "alexander", quote: "Zac's photos for our wedding were amazing. He was professional, genuine and made sure the day was captured beautifully, from our families to the candid moments.", author: "Alexander", context: "Wedding" },
