@@ -207,6 +207,14 @@
  .portfolio-about-page,.portfolio-reviews,.portfolio-enquiry-page{max-width:1680px}.portfolio-about-manifesto{padding-inline:max(64px,calc((100vw - 1680px)/2))}.portfolio-quote-page{padding-inline:max(64px,calc((100vw - 1350px)/2))}.portfolio-enquiry-steps{padding-inline:max(64px,calc((100vw - 1680px)/2))}
  .portfolio-site footer{padding-inline:max(64px,calc((100vw - 1680px)/2))}
 }
+@media(min-width:2600px){
+ .portfolio-header{height:128px}.portfolio-header nav{max-width:2200px;grid-template-columns:1fr 1fr 320px 1fr 1fr;gap:54px;padding-inline:80px}.portfolio-header a{font-size:14px}.portfolio-brand img{width:240px;max-height:88px}.portfolio-header .portfolio-book-link{padding:15px 20px}
+ .portfolio-hero{height:calc(100svh - 224px);min-height:950px;max-height:none}.portfolio-hero h1{font-size:190px;max-width:2200px}.portfolio-hero-copy p{font-size:14px}.portfolio-hero-actions{gap:18px;margin-top:48px}.portfolio-hero-actions a{font-size:13px;padding:18px 30px}.portfolio-hero-meta{inset-inline:52px;bottom:38px;font-size:12px}.portfolio-scroll{bottom:34px}.portfolio-scroll svg{width:28px}
+ .portfolio-about{max-width:2200px;padding:220px 100px;grid-template-columns:minmax(0,1.08fr) minmax(620px,.92fr);gap:180px}.portfolio-about-copy{max-width:900px}.portfolio-about-copy .portfolio-kicker{font-size:14px}.portfolio-about h2{font-size:132px;margin-block:26px 42px}.portfolio-about-copy>p:not(.portfolio-kicker){font-size:22px;line-height:1.8}.portfolio-about-copy>a{font-size:14px;margin-top:42px}
+ .portfolio-image-ribbon{height:min(38vw,920px)}.portfolio-philosophy{padding-inline:max(100px,calc((100vw - 2200px)/2));gap:180px}.portfolio-story-index{padding-inline:max(100px,calc((100vw - 2300px)/2))}.portfolio-story-heading h2{font-size:138px}
+ .portfolio-page-intro,.portfolio-inline-cta,.portfolio-values{padding-inline:max(100px,calc((100vw - 2200px)/2))}.portfolio-page-intro{min-height:760px}.portfolio-page-intro-work{min-height:900px}.portfolio-page-intro h1{font-size:168px;max-width:1600px}.portfolio-page-intro>span{font-size:21px;max-width:900px}
+ .portfolio-specialties{padding-inline:max(100px,calc((100vw - 2300px)/2))}.portfolio-gallery-section{padding-inline:max(64px,calc((100vw - 2500px)/2))}.portfolio-about-page,.portfolio-reviews,.portfolio-enquiry-page{max-width:2200px}.portfolio-about-manifesto,.portfolio-enquiry-steps{padding-inline:max(100px,calc((100vw - 2200px)/2))}.portfolio-quote-page{padding-inline:max(100px,calc((100vw - 1700px)/2))}.portfolio-site footer{padding-inline:max(100px,calc((100vw - 2200px)/2))}
+}
 @media(max-width:760px){
  .portfolio-header { height:76px; }
  .portfolio-header nav { display:flex; justify-content:center; padding:0 18px; }
