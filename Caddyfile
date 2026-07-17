@@ -37,6 +37,14 @@ www.zacmclients.photos {
     redir https://zacmclients.photos{uri} permanent
 }
 
+zacmorganphotography.com {
+    reverse_proxy 172.20.20.251:5066
+}
+
+www.zacmorganphotography.com {
+    redir https://zacmorganphotography.com{uri} permanent
+}
+
 
 # ── Tenant custom domains ─────────────────────────────────────────────────────
 # For each tenant that uses a custom domain, add a block exactly like the one

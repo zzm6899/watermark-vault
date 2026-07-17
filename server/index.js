@@ -110,6 +110,11 @@ const app = express();
 // (nginx / Coolify / TrueNAS) that sets X-Forwarded-For.
 app.set("trust proxy", 1);
 const PORT = process.env.PORT || 5066;
+const DEFAULT_PUBLIC_SITE_HOSTS = "zacmclients.photos,www.zacmclients.photos,zacmorganphotography.com,www.zacmorganphotography.com";
+const publicSiteHosts = () => String(process.env.PUBLIC_SITE_HOSTS || DEFAULT_PUBLIC_SITE_HOSTS)
+  .split(",")
+  .map(value => value.trim().toLowerCase())
+  .filter(Boolean);
 const DATA_DIR = process.env.DATA_DIR || "/data";
 const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
 const DB_FILE = path.join(DATA_DIR, "db.json");
@@ -2287,7 +2292,7 @@ function publicPortfolioContent(value) {
 
 app.get("/api/site-context", (req, res) => {
   const hostname = String(req.hostname || "").toLowerCase();
-  const portfolioHosts = String(process.env.PUBLIC_SITE_HOSTS || "zacmclients.photos,www.zacmclients.photos").split(",").map(v => v.trim().toLowerCase());
+  const portfolioHosts = publicSiteHosts();
   const appHosts = String(process.env.APP_HOSTS || "book.zacmclients.photos").split(",").map(v => v.trim().toLowerCase());
   if (portfolioHosts.includes(hostname)) return res.json({ role: "portfolio" });
   if (appHosts.includes(hostname)) return res.json({ role: "platform" });
@@ -4510,6 +4515,7 @@ app.get("/api/caddy/verify-domain", tenantPublicLimiter, (req, res) => {
   const domain = req.query.domain;
   if (!domain || typeof domain !== "string") return res.status(400).end();
   const normalized = domain.toLowerCase().trim();
+  if (publicSiteHosts().includes(normalized)) return res.status(200).end();
   const tenants = readTenants();
   const found = tenants.some(
     t => t.active !== false && t.customDomain && t.customDomain.toLowerCase() === normalized
