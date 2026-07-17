@@ -230,7 +230,7 @@ export const defaultPortfolioSite: PortfolioSite = {
   ],
   instagramUrl: "https://www.instagram.com/zacmphotos/",
   instagramHandle: "@zacmphotos",
-  linkedinUrl: "https://www.linkedin.com/in/zac-morgan-photography/",
+  linkedinUrl: "https://www.linkedin.com/in/zacmorgan1/",
   contactEmail: "zacmorganphotography@gmail.com",
   locationLabel: "Sydney, Australia",
   bookingTitle: "Tell me what you're planning",

@@ -2340,7 +2340,7 @@ const DEFAULT_PORTFOLIO = {
   ],
   instagramUrl: "https://www.instagram.com/zacmphotos/",
   instagramHandle: "@zacmphotos",
-  linkedinUrl: "https://www.linkedin.com/in/zac-morgan-photography/",
+  linkedinUrl: "https://www.linkedin.com/in/zacmorgan1/",
   contactEmail: "zacmorganphotography@gmail.com",
   locationLabel: "Sydney, Australia",
   bookingTitle: "Tell me what you're planning",
@@ -2459,6 +2459,50 @@ app.post("/api/admin/portfolio/webhook/test", requireAuth, async (req, res) => {
 });
 
 const portfolioEnquiryLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 12, standardHeaders: true, legacyHeaders: false, message: { error: "Too many enquiries. Please try again later." } });
+async function emailPortfolioEnquiry(recipient, enquiry) {
+  const transporter = getTransporter();
+  if (!transporter || !recipient) return false;
+  const safe = (value) => escapeHtml(String(value || ""));
+  const subject = `New website enquiry: ${enquiry.eventTypeTitle} - ${enquiry.name}`;
+  const text = [
+    `New portfolio website enquiry from ${enquiry.name}`,
+    `Email: ${enquiry.email}`,
+    enquiry.phone ? `Phone: ${enquiry.phone}` : "",
+    `Type: ${enquiry.eventTypeTitle}`,
+    enquiry.preferredDate ? `Preferred date: ${enquiry.preferredDate}` : "",
+    "",
+    enquiry.message,
+    "",
+    `Open enquiries: ${(process.env.APP_BASE_URL || "https://book.zacmclients.photos").replace(/\/$/, "")}/admin/enquiries`,
+  ].filter((line, index, lines) => line || (index > 0 && lines[index - 1])).join("\n");
+  const html = `<!doctype html><html><body style="font-family:Arial,sans-serif;color:#171717;line-height:1.5">
+    <h1 style="font-size:22px">New website enquiry</h1>
+    <p><strong>${safe(enquiry.name)}</strong> submitted an enquiry through the portfolio website.</p>
+    <table style="border-collapse:collapse">
+      <tr><td style="padding:4px 18px 4px 0;color:#666">Email</td><td><a href="mailto:${safe(enquiry.email)}">${safe(enquiry.email)}</a></td></tr>
+      ${enquiry.phone ? `<tr><td style="padding:4px 18px 4px 0;color:#666">Phone</td><td>${safe(enquiry.phone)}</td></tr>` : ""}
+      <tr><td style="padding:4px 18px 4px 0;color:#666">Type</td><td>${safe(enquiry.eventTypeTitle)}</td></tr>
+      ${enquiry.preferredDate ? `<tr><td style="padding:4px 18px 4px 0;color:#666">Preferred date</td><td>${safe(enquiry.preferredDate)}</td></tr>` : ""}
+    </table>
+    <div style="margin:20px 0;padding:16px;background:#f5f5f5;white-space:pre-wrap">${safe(enquiry.message)}</div>
+    <p><a href="${safe((process.env.APP_BASE_URL || "https://book.zacmclients.photos").replace(/\/$/, ""))}/admin/enquiries">Open enquiries in admin</a></p>
+  </body></html>`;
+  try {
+    await transporter.sendMail({
+      from: getFromAddress(),
+      to: recipient,
+      replyTo: enquiry.email,
+      subject,
+      text,
+      html,
+    });
+    return true;
+  } catch (error) {
+    console.error("Portfolio enquiry email failed:", error?.message || error);
+    return false;
+  }
+}
+
 app.post("/api/portfolio/enquiry", portfolioEnquiryLimiter, async (req, res) => {
   const { name, email, phone, eventTypeTitle, preferredDate, venue, referralSource, message, website } = req.body || {};
   if (website) return res.json({ ok: true }); // honeypot
@@ -2486,7 +2530,10 @@ app.post("/api/portfolio/enquiry", portfolioEnquiryLimiter, async (req, res) => 
   if (webhookUrl) {
     try { await notifyNewEnquiry(webhookUrl, enquiry); webhookDelivered = true; } catch (error) { console.error("Portfolio enquiry webhook failed:", error?.message || error); }
   }
-  res.status(201).json({ ok: true, enquiryId: enquiry.id, webhookDelivered });
+  const publishedPortfolio = dbGet(db, DB_KEYS.PORTFOLIO_PUBLISHED, DEFAULT_PORTFOLIO);
+  const enquiryRecipient = String(process.env.PORTFOLIO_ENQUIRY_EMAIL || publishedPortfolio.contactEmail || process.env.EMAIL_SERVER_USER || "").trim();
+  const emailDelivered = await emailPortfolioEnquiry(enquiryRecipient, enquiry);
+  res.status(201).json({ ok: true, enquiryId: enquiry.id, webhookDelivered, emailDelivered });
 });
 
 // Most camera frames in an album share dimensions and watermark settings. Reusing
