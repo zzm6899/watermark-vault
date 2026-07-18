@@ -8,10 +8,15 @@ function routeFor(preview: boolean, path: string) {
   return preview ? `/portfolio-preview${path === "/" ? "" : path}` : path;
 }
 
+function normalizeSitePath(pathname: string) {
+  const normalized = pathname.length > 1 ? pathname.replace(/\/+$/, "") : pathname;
+  return normalized || "/";
+}
+
 function SiteHeader({ site, preview }: { site: PortfolioSiteData; preview: boolean }) {
   const [open, setOpen] = useState(false);
   const location = useLocation();
-  const currentPath = preview ? location.pathname.replace("/portfolio-preview", "") || "/" : location.pathname;
+  const currentPath = normalizeSitePath(preview ? location.pathname.replace("/portfolio-preview", "") || "/" : location.pathname);
   const links = [["Portfolio", "/portfolio"], ["Concerts", "/concerts"], ["About", "/about"], ["Testimonials", "/testimonials"], [site.bookingButtonLabel, "/enquire"]];
   const active = (path: string) => currentPath === path || (path === "/enquire" && currentPath === "/contact");
   return <header className="portfolio-header">
@@ -234,7 +239,7 @@ export default function PortfolioSite() {
   const [site, setSite] = useState<PortfolioSiteData>(defaultPortfolioSite);
   const location = useLocation();
   const preview = location.pathname.startsWith("/portfolio-preview");
-  const path = preview ? location.pathname.replace("/portfolio-preview", "") || "/" : location.pathname;
+  const path = normalizeSitePath(preview ? location.pathname.replace("/portfolio-preview", "") || "/" : location.pathname);
   const category = new URLSearchParams(location.search).get("category");
   const editorPreview = preview && (new URLSearchParams(location.search).get("editor") === "1" || window.self !== window.top);
   useEffect(() => {
