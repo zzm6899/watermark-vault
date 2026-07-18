@@ -2904,8 +2904,9 @@ app.get("/uploads/:filename", imageServeLimiter, async (req, res) => {
         return res.status(304).end();
       }
       res.set({
-        "Cache-Control": "public, max-age=86400",
+        "Cache-Control": "private, no-store",
         "Last-Modified": stat.mtime.toUTCString(),
+        "X-Watermarked": "false",
       });
     } catch { /* non-critical — still serve the file */ }
     return res.sendFile(filepath);
@@ -2930,8 +2931,9 @@ app.get("/uploads/:filename", imageServeLimiter, async (req, res) => {
 
       res.set({
         "Content-Type": "image/jpeg",
-        "Cache-Control": "public, max-age=86400",
+        "Cache-Control": hasAccess ? "private, no-store" : "public, max-age=86400",
         "Last-Modified": lastModified,
+        "X-Watermarked": shouldWatermark ? "true" : "false",
         "X-Cache": "HIT",
       });
       return res.sendFile(cacheFile);
@@ -2981,7 +2983,7 @@ app.get("/uploads/:filename", imageServeLimiter, async (req, res) => {
 
     res.set({
       "Content-Type": "image/jpeg",
-      "Cache-Control": "public, max-age=86400",
+      "Cache-Control": hasAccess ? "private, no-store" : "public, max-age=86400",
       "Last-Modified": lastModified,
       "X-Watermarked": shouldWatermark ? "true" : "false",
       "X-Cache": "MISS",
