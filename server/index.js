@@ -2255,14 +2255,19 @@ const IMPORTED_PORTFOLIO_GALLERY = [
   { id: "cosplay-smash-stage", image: "/portfolio/curated/cosplay-smash-stage.jpg", alt: "Stage performer addressing the SMASH audience under theatrical light", category: "Cosplay & Conventions" },
   { id: "cosplay-smash-auditorium", image: "/portfolio/curated/cosplay-smash-auditorium.jpg", alt: "Wide view across a packed SMASH convention auditorium", category: "Cosplay & Conventions" },
   { id: "sports-hyrox-motion", image: "/portfolio/curated/sports-hyrox-motion.jpg", alt: "HYROX competitors surge past a race arch in motion", category: "Sports" },
-  { id: "sports-hyrox-sled", image: "/portfolio/curated/sports-hyrox-sled.jpg", alt: "Athlete drives a weighted sled through the HYROX arena", category: "Sports" },
-  { id: "sports-hyrox-finish", image: "/portfolio/curated/sports-hyrox-finish.jpg", alt: "HYROX athletes celebrate together at the finish line", category: "Sports" },
+  { id: "sports-hyrox-leap", image: "/portfolio/curated/sports-hyrox-leap.jpg", alt: "HYROX partners leap across the illuminated finish line", category: "Sports" },
+  { id: "sports-sydney-wheelchair", image: "/portfolio/curated/sports-sydney-wheelchair.jpg", alt: "Wheelchair racer powers through a tree-lined Sydney Marathon bend", category: "Sports" },
   { id: "sports-hyrox-row", image: "/portfolio/curated/sports-hyrox-row.jpg", alt: "Packed HYROX rowing station viewed from above", category: "Sports" },
-  { id: "sports-hyrox-brisbane", image: "/portfolio/curated/sports-hyrox-brisbane.jpg", alt: "HYROX athlete pushes a sled from a dramatic low viewpoint", category: "Sports" },
+  { id: "sports-hyrox-pan", image: "/portfolio/curated/sports-hyrox-pan.jpg", alt: "Sled athlete isolated through a layered panning exposure", category: "Sports" },
+  { id: "sports-hyrox-handstand", image: "/portfolio/curated/sports-hyrox-handstand.jpg", alt: "HYROX athlete performs a handstand at the finish", category: "Sports" },
   { id: "sports-hoka-dawn", image: "/portfolio/curated/sports-hoka-dawn.jpg", alt: "HOKA runners pass beneath palm silhouettes before sunrise", category: "Sports" },
-  { id: "sports-hoka-library", image: "/portfolio/curated/sports-hoka-library.jpg", alt: "HOKA half marathon runners pass the State Library of New South Wales", category: "Sports" },
-  { id: "sports-sydney-marathon", image: "/portfolio/curated/sports-sydney-marathon.jpg", alt: "Focused runner moving through the Sydney Marathon field", category: "Sports" },
+  { id: "sports-hyrox-crawl", image: "/portfolio/curated/sports-hyrox-crawl.jpg", alt: "Exhausted HYROX athlete crawls toward the lens at track level", category: "Sports" },
+  { id: "sports-hyrox-finish", image: "/portfolio/curated/sports-hyrox-finish.jpg", alt: "HYROX competitors collide in a finish-line embrace", category: "Sports" },
+  { id: "sports-hyrox-adaptive", image: "/portfolio/curated/sports-hyrox-adaptive.jpg", alt: "Adaptive HYROX athlete races through the course with lateral motion", category: "Sports" },
+  { id: "sports-hoka-pan", image: "/portfolio/curated/sports-hoka-pan.jpg", alt: "Elite HOKA runner stays sharp against streaked spectators", category: "Sports" },
+  { id: "sports-hyrox-brisbane", image: "/portfolio/curated/sports-hyrox-brisbane.jpg", alt: "HYROX athlete pushes a sled from below the rails", category: "Sports" },
 ];
+const PORTFOLIO_RETIRED_GALLERY_IDS = new Set(["sports-hyrox-sled", "sports-hoka-library", "sports-sydney-marathon"]);
 
 const PORTFOLIO_CATEGORY_ORDER = ["Weddings", "Live Music", "Cosplay & Conventions", "Sports", "Events", "Brand & Corporate", "Food & Hospitality", "Venues & Details", "Portraits"];
 const PORTFOLIO_CATEGORY_LABELS = {
@@ -2292,7 +2297,7 @@ const CURATED_PORTFOLIO_GALLERY = [...CORE_PORTFOLIO_GALLERY, ...IMPORTED_PORTFO
   .sort((left, right) => PORTFOLIO_CATEGORY_ORDER.indexOf(left.category) - PORTFOLIO_CATEGORY_ORDER.indexOf(right.category));
 
 const DEFAULT_PORTFOLIO = {
-  gallerySeedVersion: 3,
+  gallerySeedVersion: 4,
   brandName: "Zac Morgan Photography",
   logo: "/portfolio/logo.png",
   heroImage: "/portfolio/live-action.jpg",
@@ -2387,7 +2392,7 @@ function publicPortfolioContent(value) {
     const seedIds = new Set(DEFAULT_PORTFOLIO.galleryImages.map(item => item.id));
     merged.galleryImages = [
       ...DEFAULT_PORTFOLIO.galleryImages.map(item => ({ ...item, ...(existingById.get(item.id) || {}), category: item.category })),
-      ...existingGallery.filter(item => item?.id && !seedIds.has(item.id)),
+      ...existingGallery.filter(item => item?.id && !seedIds.has(item.id) && !PORTFOLIO_RETIRED_GALLERY_IDS.has(item.id)),
     ];
     merged.gallerySeedVersion = DEFAULT_PORTFOLIO.gallerySeedVersion;
   }

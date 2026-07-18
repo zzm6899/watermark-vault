@@ -1,6 +1,6 @@
 import { FormEvent, Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { ArrowDown, ArrowRight, Check, ChevronLeft, ChevronRight, Instagram, Linkedin, Mail, Menu, X } from "lucide-react";
-import { Link, useLocation } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { defaultPortfolioSite, fetchPublishedPortfolio, submitPortfolioEnquiry, type PortfolioEnquiry, type PortfolioGalleryImage, type PortfolioSite as PortfolioSiteData } from "@/lib/portfolio";
 import "./portfolio-site.css";
 
@@ -56,7 +56,7 @@ function StoryIndex({ site, preview }: { site: PortfolioSiteData; preview: boole
     <div className="portfolio-story-heading"><p>{site.storyEyebrow}</p><h2>{site.storyTitle}</h2></div>
     <div className="portfolio-story-layout">
       <div className="portfolio-story-list">{site.projects.map((item, index) => <Link className={active === index ? "active" : ""} key={item.id} to={projectRoute(item.category)} onMouseEnter={() => setActive(index)} onFocus={() => setActive(index)}>
-        <span>{String(index + 1).padStart(2, "0")}</span><div><h3>{item.title}</h3><p>{item.description}</p></div><ArrowRight />
+        <span>{String(index + 1).padStart(2, "0")}</span><img className="portfolio-story-thumb" src={item.image} alt="" loading="lazy" /><div><h3>{item.title}</h3><p>{item.description}</p></div><ArrowRight />
       </Link>)}</div>
       <figure key={project?.id}><img src={project?.image} alt={project?.title} /><figcaption>Explore {project?.title}</figcaption></figure>
     </div>
@@ -83,8 +83,19 @@ function HomePage({ site, preview }: { site: PortfolioSiteData; preview: boolean
 function PortfolioGallery({ images, initialFilter, showFilters = true }: { images: PortfolioGalleryImage[]; initialFilter?: string | null; showFilters?: boolean }) {
   const [filter, setFilter] = useState(initialFilter || "All");
   const [selected, setSelected] = useState<number | null>(null);
+  const location = useLocation();
+  const navigate = useNavigate();
   const categories = useMemo(() => ["All", ...Array.from(new Set(images.map(image => image.category).filter(Boolean)))], [images]);
   const visible = filter === "All" ? images : images.filter(image => image.category === filter);
+  const categoryCount = (category: string) => category === "All" ? images.length : images.filter(image => image.category === category).length;
+  const chooseFilter = (category: string) => {
+    setFilter(category);
+    setSelected(null);
+    if (!showFilters) return;
+    const params = new URLSearchParams(location.search);
+    if (category === "All") params.delete("category"); else params.set("category", category);
+    navigate({ pathname: location.pathname, search: params.toString() ? `?${params}` : "" }, { replace: true });
+  };
   useEffect(() => { setFilter(initialFilter && categories.includes(initialFilter) ? initialFilter : "All"); setSelected(null); }, [initialFilter, categories]);
   const move = useCallback((direction: number) => setSelected(current => current === null ? null : (current + direction + visible.length) % visible.length), [visible.length]);
   useEffect(() => {
@@ -98,8 +109,8 @@ function PortfolioGallery({ images, initialFilter, showFilters = true }: { image
     return () => window.removeEventListener("keydown", keydown);
   }, [move, selected]);
   return <section className="portfolio-gallery-section">
-    <div className="portfolio-gallery-toolbar"><p>{visible.length} photographs</p>{showFilters && <div role="group" aria-label="Filter portfolio">{categories.map(category => <button className={filter === category ? "active" : ""} key={category} onClick={() => { setFilter(category); setSelected(null); }}>{category}</button>)}</div>}</div>
-    <div className="portfolio-gallery-grid">{visible.map((image, index) => <button className={`portfolio-gallery-item portfolio-gallery-item-${index % 6}`} key={image.id} onClick={() => setSelected(index)} aria-label={`Open ${image.alt}`}><img src={image.image} alt={image.alt} loading="lazy" /><span>{image.category}</span></button>)}</div>
+    <div className="portfolio-gallery-toolbar"><p>{visible.length} photographs</p>{showFilters && <div role="group" aria-label="Filter portfolio">{categories.map(category => <button className={filter === category ? "active" : ""} key={category} onClick={() => chooseFilter(category)} aria-pressed={filter === category}><span>{category}</span><small>{categoryCount(category)}</small></button>)}</div>}</div>
+    <div className="portfolio-gallery-grid">{visible.map((image, index) => <button className={`portfolio-gallery-item portfolio-gallery-item-${index % 8}`} key={image.id} onClick={() => setSelected(index)} aria-label={`Open ${image.alt}`}><img src={image.image} alt={image.alt} loading="lazy" /><span>{image.category}</span></button>)}</div>
     {selected !== null && visible[selected] && <div className="portfolio-lightbox" role="dialog" aria-modal="true" aria-label={visible[selected].alt}>
       <button className="portfolio-lightbox-close" onClick={() => setSelected(null)} aria-label="Close photo"><X /></button>
       <button className="portfolio-lightbox-prev" onClick={() => move(-1)} aria-label="Previous photo"><ChevronLeft /></button>
@@ -110,9 +121,19 @@ function PortfolioGallery({ images, initialFilter, showFilters = true }: { image
 }
 
 function WorkPage({ site, preview, category }: { site: PortfolioSiteData; preview: boolean; category?: string | null }) {
+  const categoryRoute = (projectCategory: string) => `${routeFor(preview, "/portfolio")}?category=${encodeURIComponent(projectCategory || "All")}`;
+  const activeProject = category ? site.projects.find(project => project.category === category) : undefined;
   return <>
     <section className="portfolio-page-intro portfolio-page-intro-work" data-reveal><p>Portfolio</p><h1>{site.portfolioTitle}</h1><span>{site.portfolioBody}</span><div className="portfolio-client-line"><span>{site.portfolioClientsLabel}</span>{site.portfolioClients.map(client => <strong key={client}>{client}</strong>)}</div></section>
-    <section className="portfolio-specialties" data-reveal>{site.projects.map((project, index) => <div key={project.id}><span>{String(index + 1).padStart(2, "0")}</span><h2>{project.title}</h2><p>{project.description}</p></div>)}</section>
+    {!activeProject && <section className="portfolio-category-index" aria-label="Photography categories" data-reveal>
+      <div className="portfolio-category-heading"><p className="portfolio-kicker">Selected disciplines</p><h2>Find your kind of energy.</h2></div>
+      <div className="portfolio-category-grid">{site.projects.map((project, index) => <Link className="portfolio-category-card" key={project.id} to={categoryRoute(project.category)}>
+        <img src={project.image} alt="" loading={index > 1 ? "lazy" : undefined} />
+        <div><span>{String(index + 1).padStart(2, "0")} · {site.galleryImages.filter(image => image.category === project.category).length} photographs</span><h3>{project.title}</h3><p>{project.description}</p><ArrowRight /></div>
+      </Link>)}</div>
+    </section>}
+    {activeProject && <section className="portfolio-category-focus" data-reveal><img src={activeProject.image} alt={activeProject.title} /><div><p className="portfolio-kicker">Focused collection</p><h2>{activeProject.title}</h2><span>{activeProject.description}</span><Link to={routeFor(preview, "/portfolio")}>View every category <ArrowRight /></Link></div></section>}
+    <section className="portfolio-gallery-lead" data-reveal><p className="portfolio-kicker">{activeProject ? `${activeProject.title} edit` : "The full edit"}</p><h2>{activeProject ? "Movement, atmosphere and the decisive frame." : "People, pressure and the moment between."}</h2><span>{activeProject ? `${site.galleryImages.filter(image => image.category === activeProject.category).length} selected photographs in this collection.` : "Browse the complete collection or narrow the work by discipline."}</span></section>
     <PortfolioGallery images={site.galleryImages} initialFilter={category} />
     <section className="portfolio-inline-cta"><div><p className="portfolio-kicker">{site.portfolioCtaEyebrow}</p><h2>{site.portfolioCtaTitle}</h2></div><Link to={routeFor(preview, "/enquire")}>{site.portfolioCtaLabel} <ArrowRight /></Link></section>
   </>;
@@ -208,7 +229,7 @@ export default function PortfolioSite() {
     window.parent.postMessage({ type: "wv:portfolio-preview-ready" }, window.location.origin);
     return () => window.removeEventListener("message", receiveDraft);
   }, [editorPreview]);
-  useEffect(() => { document.title = path === "/" ? site.brandName : `${path.slice(1).replace(/-/g, " ")} — ${site.brandName}`; window.scrollTo(0, 0); }, [path, site.brandName]);
+  useEffect(() => { document.title = path === "/" ? site.brandName : `${path.slice(1).replace(/-/g, " ")} — ${site.brandName}`; window.scrollTo(0, 0); }, [path, location.search, site.brandName]);
   useEffect(() => {
     const elements = Array.from(document.querySelectorAll<HTMLElement>(".portfolio-site [data-reveal]"));
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) { elements.forEach(element => element.classList.add("revealed")); return; }
