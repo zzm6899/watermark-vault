@@ -1,5 +1,6 @@
 const stripe = require("stripe");
 const rateLimit = require("express-rate-limit");
+const crypto = require("crypto");
 const { notifyInvoice, notifyAlbumPurchase } = require("./discord");
 const { sendInvoicePaidEmail } = require("./email");
 
@@ -13,7 +14,59 @@ function getStripe() {
   return stripeClient;
 }
 
-function registerRoutes(app, { writeDb } = {}) {
+function parseStored(value, fallback = []) {
+  if (value == null) return fallback;
+  if (typeof value !== "string") return value;
+  try { return JSON.parse(value); } catch { return fallback; }
+}
+
+function calculateAlbumCheckout(album, request) {
+  if (!album || album.enabled === false) return { error: "Album not found" };
+  if (album.purchasingDisabled) return { error: "Purchasing is disabled for this gallery" };
+  const deliverable = (album.photos || []).filter(photo => !photo.hidden && (album.showCullRejectsToClient || photo.cull?.status !== "reject"));
+  const deliverableById = new Map(deliverable.map(photo => [photo.id, photo]));
+  const sessionKey = String(request.sessionKey || "").slice(0, 240);
+  if (!sessionKey) return { error: "A gallery session is required" };
+  const isFullAlbum = request.isFullAlbum === true;
+  const requestedIds = [...new Set(Array.isArray(request.photoIds) ? request.photoIds.map(String) : [])];
+  if (!isFullAlbum && requestedIds.length === 0) return { error: "Select at least one photo" };
+  if (requestedIds.some(id => !deliverableById.has(id))) return { error: "One or more selected photos are unavailable" };
+
+  const currentPurchase = album.sessionPurchases?.[sessionKey] || {};
+  const alreadyPaid = new Set([
+    ...(currentPurchase.photoIds || []),
+    ...(album.paidPhotoIds || []),
+    ...(album.photos || []).filter(photo => photo.paid).map(photo => photo.id),
+  ]);
+  if (currentPurchase.fullAlbum) return { error: "This gallery is already unlocked" };
+
+  if (isFullAlbum) {
+    const amount = Number(album.priceFullAlbum) || 0;
+    if (amount <= 0) return { error: "This gallery does not require payment" };
+    return { amount, isFullAlbum: true, photoIds: [], photoCount: deliverable.length, sessionKey, albumTitle: album.title || "Photo gallery" };
+  }
+
+  const unpaidIds = requestedIds.filter(id => !alreadyPaid.has(id));
+  const freeUsed = Number(album.usedFreeDownloads?.[sessionKey] || 0);
+  const freeRemaining = Math.max(0, Number(album.freeDownloads || 0) - freeUsed);
+  const billableIds = unpaidIds.slice(Math.min(freeRemaining, unpaidIds.length));
+  const amount = billableIds.length * (Number(album.pricePerPhoto) || 0);
+  if (amount <= 0) return { error: "The selected photos do not require payment" };
+  return { amount, isFullAlbum: false, photoIds: billableIds, photoCount: billableIds.length, sessionKey, albumTitle: album.title || "Photo gallery" };
+}
+
+function saveCheckoutOrder(db, writeDb, order) {
+  const orders = parseStored(db["wv_album_checkout_orders"], {});
+  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+  for (const [id, existing] of Object.entries(orders)) {
+    if (!existing?.createdAt || new Date(existing.createdAt).getTime() < cutoff) delete orders[id];
+  }
+  orders[order.id] = order;
+  db["wv_album_checkout_orders"] = orders;
+  writeDb(db);
+}
+
+function registerRoutes(app, { readDb, writeDb } = {}) {
   const checkoutLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHeaders: true, legacyHeaders: false, message: { error: "Too many checkout requests — please wait" } });
   // ── Status ─────────────────────────────────────────
   app.get("/api/stripe/status", (_req, res) => {
@@ -57,10 +110,15 @@ function registerRoutes(app, { writeDb } = {}) {
   app.post("/api/stripe/checkout/album", checkoutLimiter, async (req, res) => {
     const s = getStripe();
     if (!s) return res.status(400).json({ error: "Stripe not configured" });
-    const { albumId, albumTitle, photoCount, amount, clientEmail, successUrl, cancelUrl, photoIds, isFullAlbum, sessionKey } = req.body;
-    const hasSpecificPhotos = Array.isArray(photoIds) && photoIds.length > 0;
-    const productName = isFullAlbum ? (albumTitle || "Full Photo Album") : hasSpecificPhotos ? `${photoCount || photoIds.length} Photo(s) — ${albumTitle || "Gallery"}` : (albumTitle || "Photo Album");
-    if (!amount || amount <= 0) return res.status(400).json({ error: "Invalid amount" });
+    const { albumId, clientEmail, successUrl, cancelUrl } = req.body;
+    const db = readDb();
+    const albums = parseStored(db["wv_albums"], []);
+    const album = albums.find(item => item.id === albumId || item.slug === albumId);
+    const checkout = calculateAlbumCheckout(album, req.body);
+    if (checkout.error) return res.status(album ? 400 : 404).json({ error: checkout.error });
+    const orderId = crypto.randomUUID();
+    saveCheckoutOrder(db, writeDb, { id: orderId, albumId: album.id, tenantSlug: null, ...checkout, createdAt: new Date().toISOString() });
+    const productName = checkout.isFullAlbum ? checkout.albumTitle : `${checkout.photoCount} Photo(s) — ${checkout.albumTitle}`;
     try {
       const session = await s.checkout.sessions.create({
         payment_method_types: ["card"],
@@ -70,9 +128,9 @@ function registerRoutes(app, { writeDb } = {}) {
             currency: "aud",
             product_data: {
               name: productName,
-              description: `${photoCount || 0} photos`,
+              description: `${checkout.photoCount} photos`,
             },
-            unit_amount: Math.round(amount * 100),
+            unit_amount: Math.round(checkout.amount * 100),
           },
           quantity: 1,
         }],
@@ -80,12 +138,11 @@ function registerRoutes(app, { writeDb } = {}) {
         success_url: successUrl || `${req.headers.origin || ""}/gallery/${albumId}?success=1`,
         cancel_url: cancelUrl || `${req.headers.origin || ""}/gallery/${albumId}?cancelled=1`,
         metadata: {
-          albumId,
+          albumId: album.id,
           type: "album-purchase",
-          isFullAlbum: isFullAlbum ? "true" : "false",
-          // Stripe metadata values are capped at 500 chars; leave room for the key name overhead
-          photoIds: hasSpecificPhotos ? photoIds.join(",").slice(0, 490) : "",
-          sessionKey: sessionKey || "",
+          orderId,
+          isFullAlbum: checkout.isFullAlbum ? "true" : "false",
+          sessionKey: checkout.sessionKey,
         },
       });
       res.json({ url: session.url, sessionId: session.id });
@@ -206,22 +263,30 @@ function registerRoutes(app, { writeDb } = {}) {
           const albumIdx = albums.findIndex(a => a.id === metadata.albumId);
           if (albumIdx >= 0) {
             const album = albums[albumIdx];
+            const checkoutOrders = parseStored(db["wv_album_checkout_orders"], {});
+            const order = metadata.orderId ? checkoutOrders[metadata.orderId] : null;
+            if (!order || order.albumId !== metadata.albumId) {
+              console.error(`Album purchase ${session.id} has no valid server checkout order`);
+              throw new Error("Invalid or expired album checkout order");
+            }
             // Record the purchase per-session so other visitors aren't affected
-            const sKey = metadata.sessionKey || `stripe-${session.id}`;
+            const sKey = order.sessionKey || `stripe-${session.id}`;
             const sessionPurchases = album.sessionPurchases || {};
-            if (metadata.isFullAlbum === "true" || !metadata.photoIds) {
+            if (order.isFullAlbum === true) {
               // Full album — unlock for this session only
               sessionPurchases[sKey] = { fullAlbum: true, photoIds: [], paidAt: new Date().toISOString(), stripeSessionId: session.id, purchaserEmail: session.customer_email || "" };
               album.stripePaidAt = new Date().toISOString(); // for finance view
               console.log(`📝 Album ${metadata.albumId} full album unlocked for session ${sKey}`);
             } else {
               // Per-photo — add to this session's purchased set
-              const newIds = metadata.photoIds ? metadata.photoIds.split(",").filter(Boolean) : [];
+              const newIds = Array.isArray(order.photoIds) ? order.photoIds : [];
               const existing = sessionPurchases[sKey]?.photoIds || [];
               sessionPurchases[sKey] = { fullAlbum: false, photoIds: [...new Set([...existing, ...newIds])], paidAt: new Date().toISOString(), stripeSessionId: session.id, purchaserEmail: session.customer_email || "" };
               console.log(`📝 Album ${metadata.albumId}: ${newIds.length} photo(s) unlocked for session ${sKey}`);
             }
             album.sessionPurchases = sessionPurchases;
+            delete checkoutOrders[metadata.orderId];
+            db["wv_album_checkout_orders"] = checkoutOrders;
             albums[albumIdx] = album;
             db["wv_albums"] = JSON.stringify(albums);
             saveDb(db);
@@ -461,10 +526,14 @@ function registerTenantStripeRoutes(app, { readDb, writeDb, readTenants, readLic
     const ts = raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : {};
     const resolved = resolveTenantStripe(ts);
     if (!resolved) return res.status(400).json({ error: "Stripe not configured for this tenant" });
-    const { albumId, albumTitle, photoCount, amount, clientEmail, successUrl, cancelUrl, photoIds, isFullAlbum, sessionKey } = req.body;
-    const hasSpecificPhotos = Array.isArray(photoIds) && photoIds.length > 0;
-    const productName = isFullAlbum ? (albumTitle || "Full Photo Album") : hasSpecificPhotos ? `${photoCount || photoIds.length} Photo(s) — ${albumTitle || "Gallery"}` : (albumTitle || "Photo Album");
-    if (!amount || amount <= 0) return res.status(400).json({ error: "Invalid amount" });
+    const { albumId, clientEmail, successUrl, cancelUrl } = req.body;
+    const albums = parseStored(db[`t_${slug}_wv_albums`], []);
+    const album = albums.find(item => item.id === albumId || item.slug === albumId);
+    const checkout = calculateAlbumCheckout(album, req.body);
+    if (checkout.error) return res.status(album ? 400 : 404).json({ error: checkout.error });
+    const orderId = crypto.randomUUID();
+    saveCheckoutOrder(db, writeDb, { id: orderId, albumId: album.id, tenantSlug: slug, ...checkout, createdAt: new Date().toISOString() });
+    const productName = checkout.isFullAlbum ? checkout.albumTitle : `${checkout.photoCount} Photo(s) — ${checkout.albumTitle}`;
     try {
       const session = await resolved.client.checkout.sessions.create({
         payment_method_types: ["card"],
@@ -474,9 +543,9 @@ function registerTenantStripeRoutes(app, { readDb, writeDb, readTenants, readLic
             currency: resolved.currency,
             product_data: {
               name: productName,
-              description: `${photoCount || 0} photos`,
+              description: `${checkout.photoCount} photos`,
             },
-            unit_amount: Math.round(amount * 100),
+            unit_amount: Math.round(checkout.amount * 100),
           },
           quantity: 1,
         }],
@@ -484,13 +553,12 @@ function registerTenantStripeRoutes(app, { readDb, writeDb, readTenants, readLic
         success_url: successUrl || `${req.headers.origin || ""}/gallery/${albumId}?success=1`,
         cancel_url: cancelUrl || `${req.headers.origin || ""}/gallery/${albumId}?cancelled=1`,
         metadata: {
-          albumId,
+          albumId: album.id,
           tenantSlug: slug,
           type: "tenant-album-purchase",
-          isFullAlbum: isFullAlbum ? "true" : "false",
-          // Stripe metadata values are capped at 500 chars; leave room for the key name overhead
-          photoIds: hasSpecificPhotos ? photoIds.join(",").slice(0, 490) : "",
-          sessionKey: sessionKey || "",
+          orderId,
+          isFullAlbum: checkout.isFullAlbum ? "true" : "false",
+          sessionKey: checkout.sessionKey,
         },
       });
       res.json({ url: session.url, sessionId: session.id });
@@ -614,17 +682,24 @@ function registerTenantStripeRoutes(app, { readDb, writeDb, readTenants, readLic
           const albumIdx = albums.findIndex(a => a.id === metadata.albumId);
           if (albumIdx >= 0) {
             const album = albums[albumIdx];
-            const sKey = metadata.sessionKey || `stripe-${session.id}`;
+            const checkoutOrders = parseStored(dbData["wv_album_checkout_orders"], {});
+            const order = metadata.orderId ? checkoutOrders[metadata.orderId] : null;
+            if (!order || order.albumId !== metadata.albumId || order.tenantSlug !== slug) {
+              throw new Error("Invalid or expired tenant album checkout order");
+            }
+            const sKey = order.sessionKey || `stripe-${session.id}`;
             const sessionPurchases = album.sessionPurchases || {};
-            if (metadata.isFullAlbum === "true" || !metadata.photoIds) {
+            if (order.isFullAlbum === true) {
               sessionPurchases[sKey] = { fullAlbum: true, photoIds: [], paidAt: new Date().toISOString(), stripeSessionId: session.id, purchaserEmail: session.customer_email || "" };
               album.stripePaidAt = new Date().toISOString();
             } else {
-              const newIds = metadata.photoIds ? metadata.photoIds.split(",").filter(Boolean) : [];
+              const newIds = Array.isArray(order.photoIds) ? order.photoIds : [];
               const existing = sessionPurchases[sKey]?.photoIds || [];
               sessionPurchases[sKey] = { fullAlbum: false, photoIds: [...new Set([...existing, ...newIds])], paidAt: new Date().toISOString(), stripeSessionId: session.id, purchaserEmail: session.customer_email || "" };
             }
             album.sessionPurchases = sessionPurchases;
+            delete checkoutOrders[metadata.orderId];
+            dbData["wv_album_checkout_orders"] = checkoutOrders;
             albums[albumIdx] = album;
             dbData[albumsKey] = JSON.stringify(albums);
             fs.writeFileSync(DB_FILE, JSON.stringify(dbData, null, 2));
@@ -674,4 +749,4 @@ function registerTenantStripeRoutes(app, { readDb, writeDb, readTenants, readLic
 // Need express for the raw body parser
 const express = require("express");
 
-module.exports = { registerRoutes, getTenantStripe, registerTenantStripeRoutes };
+module.exports = { registerRoutes, getTenantStripe, registerTenantStripeRoutes, calculateAlbumCheckout };

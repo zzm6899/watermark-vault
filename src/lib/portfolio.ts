@@ -164,6 +164,19 @@ export const importedPortfolioGalleryImages: PortfolioGalleryImage[] = [
   { id: "sports-hyrox-adaptive", image: "/portfolio/curated/sports-hyrox-adaptive.jpg", alt: "Adaptive HYROX athlete races through the course with lateral motion", category: "Sports" },
   { id: "sports-hoka-pan", image: "/portfolio/curated/sports-hoka-pan.jpg", alt: "Elite HOKA runner stays sharp against streaked spectators", category: "Sports" },
   { id: "sports-hyrox-brisbane", image: "/portfolio/curated/sports-hyrox-brisbane.jpg", alt: "HYROX athlete pushes a sled from below the rails", category: "Sports" },
+  { id: "wedding-aa-exit", image: "/portfolio/curated/wedding-aa-exit.jpg", alt: "Newlyweds leave the church as guests applaud around them", category: "Weddings" },
+  { id: "wedding-kj-laugh", image: "/portfolio/curated/wedding-kj-laugh.jpg", alt: "Bride laughs toward the camera while carrying a vivid red bouquet", category: "Weddings" },
+  { id: "wedding-kj-harbour", image: "/portfolio/curated/wedding-kj-harbour.jpg", alt: "Groom carries the bride beside Sydney Harbour as she raises her bouquet", category: "Weddings" },
+  { id: "music-chronobeat-motion", image: "/portfolio/curated/music-chronobeat-motion.jpg", alt: "Concert guest dances with illuminated light sticks amid circular motion", category: "Live Music" },
+  { id: "music-chronobeat-guitar", image: "/portfolio/curated/music-chronobeat-guitar.jpg", alt: "Guitarist bends over the stage while the band streaks through coloured light", category: "Live Music" },
+  { id: "cosplay-animaga-editorial", image: "/portfolio/curated/cosplay-animaga-editorial.jpg", alt: "Pink-haired cosplayer reclines across broad architectural steps", category: "Cosplay & Conventions" },
+  { id: "cosplay-pax-portrait", image: "/portfolio/curated/cosplay-pax-portrait.jpg", alt: "Red-haired horned character poses in a close editorial portrait", category: "Cosplay & Conventions" },
+  { id: "sports-hyrox-jump", image: "/portfolio/curated/sports-hyrox-jump.jpg", alt: "HYROX athlete suspended in a celebratory jump inside a symmetrical arena", category: "Sports" },
+  { id: "sports-hoka-city-pan", image: "/portfolio/curated/sports-hoka-city-pan.jpg", alt: "Runners streak past a heritage streetscape and moving city bus", category: "Sports" },
+  { id: "sports-hyrox-sleds", image: "/portfolio/curated/sports-hyrox-sleds.jpg", alt: "Two HYROX athletes drive sleds through parallel lanes from above", category: "Sports" },
+  { id: "brand-digipark-red", image: "/portfolio/curated/brand-digipark-red.jpg", alt: "Guests meditate beneath an immense glowing red projection", category: "Brand & Corporate" },
+  { id: "brand-digipark-tunnel", image: "/portfolio/curated/brand-digipark-tunnel.jpg", alt: "Fitness participants move through a luminous blue digital tunnel", category: "Brand & Corporate" },
+  { id: "food-lexus-live-service", image: "/portfolio/curated/food-lexus-live-service.jpg", alt: "Navarra chef slices cured meat during live service at a Lexus event", category: "Food & Hospitality" },
 ];
 
 const corePortfolioGalleryImages: PortfolioGalleryImage[] = [
@@ -186,7 +199,7 @@ export const curatedPortfolioGalleryImages = [...corePortfolioGalleryImages, ...
   .sort((left, right) => portfolioCategoryOrder.indexOf(left.category) - portfolioCategoryOrder.indexOf(right.category));
 
 export const defaultPortfolioSite: PortfolioSite = {
-  gallerySeedVersion: 4,
+  gallerySeedVersion: 5,
   brandName: "Zac Morgan Photography",
   logo: "/portfolio/logo.png",
   heroImage: "/portfolio/live-action.jpg",

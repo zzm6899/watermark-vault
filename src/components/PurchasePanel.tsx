@@ -20,6 +20,8 @@ interface PurchasePanelProps {
 
 export default function PurchasePanel({
   selectedCount,
+  unpaidCount,
+  alreadyPaidCount = 0,
   freeRemaining,
   pricePerPhoto,
   priceFullAlbum,
@@ -32,12 +34,14 @@ export default function PurchasePanel({
 }: PurchasePanelProps) {
   const perPhotoPrice = Number(pricePerPhoto) || 0;
   const albumPrice = Number(priceFullAlbum) || 0;
-  const paidCount = Math.max(0, selectedCount - freeRemaining);
+  const effectiveUnpaidCount = unpaidCount ?? selectedCount;
+  const paidCount = Math.max(0, effectiveUnpaidCount - freeRemaining);
   const paidTotal = paidCount * perPhotoPrice;
   const fullAlbumCheaper = albumPrice > 0 && paidCount > 0 && paidTotal >= albumPrice;
 
-  const freeUsed = Math.min(selectedCount, freeRemaining);
+  const freeUsed = Math.min(effectiveUnpaidCount, freeRemaining);
   const breakdownParts: string[] = [];
+  if (alreadyPaidCount > 0) breakdownParts.push(`${alreadyPaidCount} purchased`);
   if (freeUsed > 0) breakdownParts.push(`${freeUsed} free`);
   if (paidCount > 0) breakdownParts.push(`${paidCount} × $${perPhotoPrice} = $${paidTotal}`);
   const breakdown = breakdownParts.length ? breakdownParts.join(" · ") : "No charge";
@@ -49,10 +53,10 @@ export default function PurchasePanel({
           initial={{ y: 100, opacity: 0 }}
           animate={{ y: 0, opacity: 1 }}
           exit={{ y: 100, opacity: 0 }}
-          className="fixed bottom-0 left-0 right-0 z-40 glass-panel border-t border-border/50 px-3 pt-2.5 pb-2.5"
+          className="fixed bottom-0 left-0 right-0 z-40 glass-panel border-t border-border/50 px-3 pt-3 pb-3 shadow-[0_-18px_45px_rgba(0,0,0,0.28)]"
           style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 0.625rem)" }}
         >
-          <div className="flex flex-col gap-2">
+          <div className="mx-auto flex w-full max-w-6xl flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
 
             {/* Info row */}
             <div className="flex items-center gap-2">
@@ -70,9 +74,9 @@ export default function PurchasePanel({
             </div>
 
             {/* Buttons row — equal width, always side by side */}
-            <div className="flex gap-2">
+            <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:justify-end">
 
-              {freeRemaining > 0 && selectedCount <= freeRemaining && (
+              {(effectiveUnpaidCount === 0 || (freeRemaining > 0 && effectiveUnpaidCount <= freeRemaining)) && (
                 <Button onClick={onDownloadFree} variant="outline" size="sm"
                   className="flex-1 h-9 text-xs border-primary/30 text-primary hover:bg-primary/10">
                   <Download className="w-3.5 h-3.5 mr-1" />

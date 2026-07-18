@@ -2385,13 +2385,18 @@ export function tenantPhotoSrc(src: string, slug: string): string {
   return `${src}${sep}tenant=${encodeURIComponent(slug)}`;
 }
 
-/** Fetch an album by slug/id from any store (main or tenant). Returns the album and tenantSlug (null if main). */
-export async function fetchPublicAlbum(albumSlug: string): Promise<{ album: import("./types").Album; tenantSlug: string | null } | null> {
+/** Fetch an album by slug/id from any store (main or tenant). Private galleries are authorized server-side. */
+export async function fetchPublicAlbum(albumSlug: string, access: { token?: string | null; pin?: string; sessionKey?: string } = {}): Promise<{ album: import("./types").Album; tenantSlug: string | null; protected?: boolean } | null> {
   try {
     // Use no-store so the browser never serves a cached copy — gallery photo
     // changes (additions, deletions) must always reflect the current server state.
-    const res = await fetch(`/api/public-album/${encodeURIComponent(albumSlug)}`, { cache: 'no-store' });
-    if (!res.ok) return null;
+    const params = new URLSearchParams();
+    if (access.token) params.set("token", access.token);
+    if (access.pin) params.set("pin", access.pin);
+    if (access.sessionKey) params.set("sessionKey", access.sessionKey);
+    const suffix = params.toString() ? `?${params}` : "";
+    const res = await fetch(`/api/public-album/${encodeURIComponent(albumSlug)}${suffix}`, { cache: 'no-store' });
+    if (!res.ok && res.status !== 401) return null;
     return await res.json();
   } catch { return null; }
 }
@@ -2413,7 +2418,7 @@ export async function ensurePublicAlbumAvailable(album: import("./types").Album,
   const target = album.slug || album.id;
   if (!target) return { ok: false, error: "Album needs a slug before it can be shared." };
 
-  const current = await fetchPublicAlbum(target);
+  const current = await fetchPublicAlbum(target, { token: album.clientToken });
   if (current?.album) return { ok: true, album: current.album };
 
   if (album._photosStripped) {
@@ -2435,7 +2440,7 @@ export async function ensurePublicAlbumAvailable(album: import("./types").Album,
   persistAlbumToServer(album.id, album);
   for (let attempt = 0; attempt < retries; attempt++) {
     await wait(600 * (attempt + 1));
-    const published = await fetchPublicAlbum(target);
+    const published = await fetchPublicAlbum(target, { token: album.clientToken });
     if (published?.album) return { ok: true, album: published.album };
   }
 

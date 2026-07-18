@@ -2201,6 +2201,45 @@ function findAlbumById(db, albumId) {
   return _chooseAlbumStoreMatch(mainMatch, tenantMatches);
 }
 
+const purchaserRegistrationLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHeaders: true, legacyHeaders: false, message: { error: "Too many registration attempts" } });
+app.post("/api/album/register-purchaser", purchaserRegistrationLimiter, (req, res) => {
+  const { albumId, email, sessionKey, currentSessionKey } = req.body || {};
+  if (!albumId || !sessionKey || !currentSessionKey || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email || ""))) {
+    return res.status(400).json({ error: "Album, current gallery session and a valid email are required" });
+  }
+  const db = readDb();
+  const found = findAlbumById(db, albumId);
+  if (!found) return res.status(404).json({ error: "Album not found" });
+  const storeKey = found.tenantSlug ? `t_${found.tenantSlug}_wv_albums` : "wv_albums";
+  const albumsRaw = db[storeKey];
+  const albums = albumsRaw ? (typeof albumsRaw === "string" ? JSON.parse(albumsRaw) : albumsRaw) : [];
+  const index = albums.findIndex(album => album.id === found.album.id);
+  if (index < 0) return res.status(404).json({ error: "Album not found" });
+
+  const album = albums[index];
+  const purchases = { ...(album.sessionPurchases || {}) };
+  const current = purchases[currentSessionKey] || {};
+  const existing = purchases[sessionKey] || {};
+  purchases[sessionKey] = {
+    ...existing,
+    ...current,
+    fullAlbum: existing.fullAlbum === true || current.fullAlbum === true,
+    photoIds: [...new Set([...(existing.photoIds || []), ...(current.photoIds || [])])],
+    purchaserEmail: String(email).trim().toLowerCase(),
+  };
+  album.sessionPurchases = purchases;
+  if (album.usedFreeDownloads?.[currentSessionKey] != null) {
+    album.usedFreeDownloads = {
+      ...album.usedFreeDownloads,
+      [sessionKey]: Math.max(Number(album.usedFreeDownloads[sessionKey] || 0), Number(album.usedFreeDownloads[currentSessionKey] || 0)),
+    };
+  }
+  albums[index] = album;
+  db[storeKey] = typeof albumsRaw === "string" ? JSON.stringify(albums) : albums;
+  writeDb(db);
+  res.json({ ok: true });
+});
+
 const IMPORTED_PORTFOLIO_GALLERY = [
   { id: "archive-wedding-waterfront", image: "/portfolio/imported/alexrosanna-010.jpg", alt: "Couple embracing beside the waterfront", category: "Weddings" },
   { id: "archive-portrait-red-dress", image: "/portfolio/imported/aurie-175.jpg", alt: "Editorial portrait in a red dress", category: "Portraits" },
@@ -2266,6 +2305,19 @@ const IMPORTED_PORTFOLIO_GALLERY = [
   { id: "sports-hyrox-adaptive", image: "/portfolio/curated/sports-hyrox-adaptive.jpg", alt: "Adaptive HYROX athlete races through the course with lateral motion", category: "Sports" },
   { id: "sports-hoka-pan", image: "/portfolio/curated/sports-hoka-pan.jpg", alt: "Elite HOKA runner stays sharp against streaked spectators", category: "Sports" },
   { id: "sports-hyrox-brisbane", image: "/portfolio/curated/sports-hyrox-brisbane.jpg", alt: "HYROX athlete pushes a sled from below the rails", category: "Sports" },
+  { id: "wedding-aa-exit", image: "/portfolio/curated/wedding-aa-exit.jpg", alt: "Newlyweds leave the church as guests applaud around them", category: "Weddings" },
+  { id: "wedding-kj-laugh", image: "/portfolio/curated/wedding-kj-laugh.jpg", alt: "Bride laughs toward the camera while carrying a vivid red bouquet", category: "Weddings" },
+  { id: "wedding-kj-harbour", image: "/portfolio/curated/wedding-kj-harbour.jpg", alt: "Groom carries the bride beside Sydney Harbour as she raises her bouquet", category: "Weddings" },
+  { id: "music-chronobeat-motion", image: "/portfolio/curated/music-chronobeat-motion.jpg", alt: "Concert guest dances with illuminated light sticks amid circular motion", category: "Live Music" },
+  { id: "music-chronobeat-guitar", image: "/portfolio/curated/music-chronobeat-guitar.jpg", alt: "Guitarist bends over the stage while the band streaks through coloured light", category: "Live Music" },
+  { id: "cosplay-animaga-editorial", image: "/portfolio/curated/cosplay-animaga-editorial.jpg", alt: "Pink-haired cosplayer reclines across broad architectural steps", category: "Cosplay & Conventions" },
+  { id: "cosplay-pax-portrait", image: "/portfolio/curated/cosplay-pax-portrait.jpg", alt: "Red-haired horned character poses in a close editorial portrait", category: "Cosplay & Conventions" },
+  { id: "sports-hyrox-jump", image: "/portfolio/curated/sports-hyrox-jump.jpg", alt: "HYROX athlete suspended in a celebratory jump inside a symmetrical arena", category: "Sports" },
+  { id: "sports-hoka-city-pan", image: "/portfolio/curated/sports-hoka-city-pan.jpg", alt: "Runners streak past a heritage streetscape and moving city bus", category: "Sports" },
+  { id: "sports-hyrox-sleds", image: "/portfolio/curated/sports-hyrox-sleds.jpg", alt: "Two HYROX athletes drive sleds through parallel lanes from above", category: "Sports" },
+  { id: "brand-digipark-red", image: "/portfolio/curated/brand-digipark-red.jpg", alt: "Guests meditate beneath an immense glowing red projection", category: "Brand & Corporate" },
+  { id: "brand-digipark-tunnel", image: "/portfolio/curated/brand-digipark-tunnel.jpg", alt: "Fitness participants move through a luminous blue digital tunnel", category: "Brand & Corporate" },
+  { id: "food-lexus-live-service", image: "/portfolio/curated/food-lexus-live-service.jpg", alt: "Navarra chef slices cured meat during live service at a Lexus event", category: "Food & Hospitality" },
 ];
 const PORTFOLIO_RETIRED_GALLERY_IDS = new Set(["sports-hyrox-sled", "sports-hoka-library", "sports-sydney-marathon"]);
 
@@ -2297,7 +2349,7 @@ const CURATED_PORTFOLIO_GALLERY = [...CORE_PORTFOLIO_GALLERY, ...IMPORTED_PORTFO
   .sort((left, right) => PORTFOLIO_CATEGORY_ORDER.indexOf(left.category) - PORTFOLIO_CATEGORY_ORDER.indexOf(right.category));
 
 const DEFAULT_PORTFOLIO = {
-  gallerySeedVersion: 4,
+  gallerySeedVersion: 5,
   brandName: "Zac Morgan Photography",
   logo: "/portfolio/logo.png",
   heroImage: "/portfolio/live-action.jpg",
@@ -2779,7 +2831,7 @@ async function getSizedZipFilePath(safeName, filepath, clean, tenantSlug, qualit
 // Supports:
 //   ?size=thumb   → resize to 700 px wide (for gallery grids)
 //   ?size=medium  → resize to 1400 px wide (for lightbox)
-//   ?wm=0         → skip watermark (admin / paid access)
+//   ?wm=0         → legacy hint only; clean access still requires entitlement
 // Resized variants are cached in _cache/ for fast re-delivery.
 // Run POST /api/cache/clear after changing watermark settings.
 
@@ -2825,7 +2877,6 @@ app.get("/uploads/:filename", imageServeLimiter, async (req, res) => {
   }
 
   const sizeParam = req.query.size; // 'thumb' | 'medium' | undefined
-  const disableWm = req.query.wm === "0";
   // Optional tenant slug — when provided, use that tenant's watermark settings
   const tenantSlug = (req.query.tenant && typeof req.query.tenant === "string" && /^(?:[a-z0-9][a-z0-9-]{0,28}[a-z0-9]$|[a-z0-9]{1,2}$)/.test(req.query.tenant))
     ? req.query.tenant
@@ -2840,7 +2891,9 @@ app.get("/uploads/:filename", imageServeLimiter, async (req, res) => {
     ? isPhotoAccessible(safeName, sessionKey, albumId)
     : false;
 
-  const shouldWatermark = !disableWm && !hasAccess;
+  // A bare `wm=0` is not an entitlement. Clean delivery requires the same
+  // album/session check as the protected original endpoint.
+  const shouldWatermark = !hasAccess;
 
   // Fast path: no resize, no watermark → serve original file directly
   if (!targetWidth && !shouldWatermark) {
@@ -2936,7 +2989,8 @@ app.get("/uploads/:filename", imageServeLimiter, async (req, res) => {
     return res.send(result);
   } catch (err) {
     console.error("Image processing error for", safeName, err.message);
-    // Fallback: serve original file
+    // Never leak the clean original when a protected render fails.
+    if (shouldWatermark) return res.status(500).send("Image preview unavailable");
     return res.sendFile(filepath);
   }
 });
@@ -4348,7 +4402,7 @@ const store = {
 // ── Integrations ──────────────────────────────────────
 registerGoogleCalendarRoutes(app);
 registerEmailRoutes(app, store);
-registerStripeRoutes(app, { writeDb });
+registerStripeRoutes(app, { readDb, writeDb });
 registerTenantStripeRoutes(app, { readDb, writeDb, readTenants: () => {
   try {
     if (!fs.existsSync(path.join(DATA_DIR, "tenants.json"))) return [];
@@ -5922,7 +5976,36 @@ app.get("/api/public-album/:albumSlug", (req, res) => {
 
   const chosen = _chooseAlbumStoreMatch(mainMatch, tenantMatches);
   if (chosen) {
-    const album = { ...chosen.album, photos: _stripBakedFromPhotos(chosen.album.photos || []) };
+    const suppliedToken = typeof req.query.token === "string" ? req.query.token : "";
+    const suppliedPin = typeof req.query.pin === "string" ? req.query.pin : "";
+    const storedTokenBuffer = Buffer.from(String(chosen.album.clientToken || ""));
+    const suppliedTokenBuffer = Buffer.from(suppliedToken);
+    const tokenValid = !!(storedTokenBuffer.length && storedTokenBuffer.length === suppliedTokenBuffer.length && crypto.timingSafeEqual(storedTokenBuffer, suppliedTokenBuffer));
+    const pinValid = !!(chosen.album.accessCode && suppliedPin && String(chosen.album.accessCode) === suppliedPin);
+    if (chosen.album.accessCode && !tokenValid && !pinValid) {
+      res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+      return res.status(401).json({
+        protected: true,
+        tenantSlug: chosen.tenantSlug,
+        album: { id: chosen.album.id, slug: chosen.album.slug, title: chosen.album.title, description: chosen.album.description, enabled: chosen.album.enabled, accessCode: "__server_protected__", photos: [] },
+      });
+    }
+    const requestedSessionKey = typeof req.query.sessionKey === "string" ? req.query.sessionKey.slice(0, 240) : "";
+    const viewerSessionKey = requestedSessionKey || (tokenValid ? `token-${suppliedToken}` : pinValid ? suppliedPin : `session-${chosen.album.id}`);
+    const viewerPurchase = chosen.album.sessionPurchases?.[viewerSessionKey];
+    const viewerFreeUsed = chosen.album.usedFreeDownloads?.[viewerSessionKey];
+    const visiblePhotos = (chosen.album.photos || []).filter(photo => !photo.hidden && (chosen.album.showCullRejectsToClient || photo.cull?.status !== "reject"));
+    const album = {
+      ...chosen.album,
+      accessCode: "",
+      clientToken: tokenValid ? suppliedToken : undefined,
+      clientEmail: undefined,
+      sessionPurchases: viewerPurchase ? { [viewerSessionKey]: viewerPurchase } : {},
+      usedFreeDownloads: viewerFreeUsed == null ? {} : { [viewerSessionKey]: viewerFreeUsed },
+      downloadHistory: undefined,
+      downloadRequests: undefined,
+      photos: _stripBakedFromPhotos(visiblePhotos),
+    };
     // Must not cache: photo additions/deletions in the admin must be
     // reflected immediately when clients open the gallery link.
     res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");

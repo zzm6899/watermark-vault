@@ -1,4 +1,4 @@
-import { FormEvent, Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowDown, ArrowRight, Check, ChevronLeft, ChevronRight, Instagram, Linkedin, Mail, Menu, X } from "lucide-react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { defaultPortfolioSite, fetchPublishedPortfolio, submitPortfolioEnquiry, type PortfolioEnquiry, type PortfolioGalleryImage, type PortfolioSite as PortfolioSiteData } from "@/lib/portfolio";
@@ -83,6 +83,9 @@ function HomePage({ site, preview }: { site: PortfolioSiteData; preview: boolean
 function PortfolioGallery({ images, initialFilter, showFilters = true }: { images: PortfolioGalleryImage[]; initialFilter?: string | null; showFilters?: boolean }) {
   const [filter, setFilter] = useState(initialFilter || "All");
   const [selected, setSelected] = useState<number | null>(null);
+  const lightboxRef = useRef<HTMLDivElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const restoreFocusRef = useRef<HTMLElement | null>(null);
   const location = useLocation();
   const navigate = useNavigate();
   const categories = useMemo(() => ["All", ...Array.from(new Set(images.map(image => image.category).filter(Boolean)))], [images]);
@@ -100,19 +103,35 @@ function PortfolioGallery({ images, initialFilter, showFilters = true }: { image
   const move = useCallback((direction: number) => setSelected(current => current === null ? null : (current + direction + visible.length) % visible.length), [visible.length]);
   useEffect(() => {
     if (selected === null) return;
+    restoreFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    closeRef.current?.focus();
     const keydown = (event: KeyboardEvent) => {
       if (event.key === "Escape") setSelected(null);
       if (event.key === "ArrowLeft") move(-1);
       if (event.key === "ArrowRight") move(1);
+      if (event.key === "Tab" && lightboxRef.current) {
+        const controls = Array.from(lightboxRef.current.querySelectorAll<HTMLElement>("button:not([disabled])"));
+        if (controls.length === 0) return;
+        const first = controls[0];
+        const last = controls[controls.length - 1];
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+        if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+      }
     };
     window.addEventListener("keydown", keydown);
-    return () => window.removeEventListener("keydown", keydown);
+    return () => {
+      window.removeEventListener("keydown", keydown);
+      document.body.style.overflow = previousOverflow;
+      restoreFocusRef.current?.focus();
+    };
   }, [move, selected]);
   return <section className="portfolio-gallery-section">
     <div className="portfolio-gallery-toolbar"><p>{visible.length} photographs</p>{showFilters && <div role="group" aria-label="Filter portfolio">{categories.map(category => <button className={filter === category ? "active" : ""} key={category} onClick={() => chooseFilter(category)} aria-pressed={filter === category}><span>{category}</span><small>{categoryCount(category)}</small></button>)}</div>}</div>
     <div className="portfolio-gallery-grid">{visible.map((image, index) => <button className={`portfolio-gallery-item portfolio-gallery-item-${index % 8}`} key={image.id} onClick={() => setSelected(index)} aria-label={`Open ${image.alt}`}><img src={image.image} alt={image.alt} loading="lazy" /><span>{image.category}</span></button>)}</div>
-    {selected !== null && visible[selected] && <div className="portfolio-lightbox" role="dialog" aria-modal="true" aria-label={visible[selected].alt}>
-      <button className="portfolio-lightbox-close" onClick={() => setSelected(null)} aria-label="Close photo"><X /></button>
+    {selected !== null && visible[selected] && <div ref={lightboxRef} className="portfolio-lightbox" role="dialog" aria-modal="true" aria-label={visible[selected].alt}>
+      <button ref={closeRef} className="portfolio-lightbox-close" onClick={() => setSelected(null)} aria-label="Close photo"><X /></button>
       <button className="portfolio-lightbox-prev" onClick={() => move(-1)} aria-label="Previous photo"><ChevronLeft /></button>
       <figure><img src={visible[selected].image} alt={visible[selected].alt} /><figcaption><span>{visible[selected].category}</span>{visible[selected].alt}</figcaption></figure>
       <button className="portfolio-lightbox-next" onClick={() => move(1)} aria-label="Next photo"><ChevronRight /></button>
@@ -123,8 +142,9 @@ function PortfolioGallery({ images, initialFilter, showFilters = true }: { image
 function WorkPage({ site, preview, category }: { site: PortfolioSiteData; preview: boolean; category?: string | null }) {
   const categoryRoute = (projectCategory: string) => `${routeFor(preview, "/portfolio")}?category=${encodeURIComponent(projectCategory || "All")}`;
   const activeProject = category ? site.projects.find(project => project.category === category) : undefined;
+  const galleryImages = activeProject ? site.galleryImages.filter(image => image.image !== activeProject.image) : site.galleryImages;
   return <>
-    <section className="portfolio-page-intro portfolio-page-intro-work" data-reveal><p>Portfolio</p><h1>{site.portfolioTitle}</h1><span>{site.portfolioBody}</span><div className="portfolio-client-line"><span>{site.portfolioClientsLabel}</span>{site.portfolioClients.map(client => <strong key={client}>{client}</strong>)}</div></section>
+    {!activeProject && <section className="portfolio-page-intro portfolio-page-intro-work" data-reveal><p>Portfolio</p><h1>{site.portfolioTitle}</h1><span>{site.portfolioBody}</span><div className="portfolio-client-line"><span>{site.portfolioClientsLabel}</span>{site.portfolioClients.map(client => <strong key={client}>{client}</strong>)}</div></section>}
     {!activeProject && <section className="portfolio-category-index" aria-label="Photography categories" data-reveal>
       <div className="portfolio-category-heading"><p className="portfolio-kicker">Selected disciplines</p><h2>Find your kind of energy.</h2></div>
       <div className="portfolio-category-grid">{site.projects.map((project, index) => <Link className="portfolio-category-card" key={project.id} to={categoryRoute(project.category)}>
@@ -134,7 +154,7 @@ function WorkPage({ site, preview, category }: { site: PortfolioSiteData; previe
     </section>}
     {activeProject && <section className="portfolio-category-focus" data-reveal><img src={activeProject.image} alt={activeProject.title} /><div><p className="portfolio-kicker">Focused collection</p><h2>{activeProject.title}</h2><span>{activeProject.description}</span><Link to={routeFor(preview, "/portfolio")}>View every category <ArrowRight /></Link></div></section>}
     <section className="portfolio-gallery-lead" data-reveal><p className="portfolio-kicker">{activeProject ? `${activeProject.title} edit` : "The full edit"}</p><h2>{activeProject ? "Movement, atmosphere and the decisive frame." : "People, pressure and the moment between."}</h2><span>{activeProject ? `${site.galleryImages.filter(image => image.category === activeProject.category).length} selected photographs in this collection.` : "Browse the complete collection or narrow the work by discipline."}</span></section>
-    <PortfolioGallery images={site.galleryImages} initialFilter={category} />
+    <PortfolioGallery images={galleryImages} initialFilter={category} />
     <section className="portfolio-inline-cta"><div><p className="portfolio-kicker">{site.portfolioCtaEyebrow}</p><h2>{site.portfolioCtaTitle}</h2></div><Link to={routeFor(preview, "/enquire")}>{site.portfolioCtaLabel} <ArrowRight /></Link></section>
   </>;
 }
@@ -183,6 +203,7 @@ function EnquiryPage({ site }: { site: PortfolioSiteData }) {
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(false);
   const [error, setError] = useState("");
+  const today = new Intl.DateTimeFormat("en-CA", { year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
   const update = (key: keyof PortfolioEnquiry, value: string) => setForm(current => ({ ...current, [key]: value }));
   const submit = async (event: FormEvent) => {
     event.preventDefault(); setSending(true); setError("");
@@ -196,7 +217,7 @@ function EnquiryPage({ site }: { site: PortfolioSiteData }) {
         <label>Email<input required type="email" value={form.email} onChange={event => update("email", event.target.value)} autoComplete="email" /></label>
         <label>Phone<input value={form.phone} onChange={event => update("phone", event.target.value)} autoComplete="tel" /></label>
         <label>What are you planning?<select required value={form.eventTypeTitle} onChange={event => update("eventTypeTitle", event.target.value)}><option value="">Choose one</option>{site.enquiryEventTypes.map(type => <option key={type}>{type}</option>)}</select></label>
-        <label>Preferred date<input type="date" value={form.preferredDate} onChange={event => update("preferredDate", event.target.value)} /></label>
+        <label>Preferred date<input type="date" min={today} value={form.preferredDate} onChange={event => update("preferredDate", event.target.value)} /></label>
         <label>Venue / location<input value={form.venue} onChange={event => update("venue", event.target.value)} /></label>
         <label className="portfolio-form-wide">How did you find me?<select value={form.referralSource} onChange={event => update("referralSource", event.target.value)}><option value="">Choose one</option><option>Recommended by a friend</option><option>Recent event or shoot</option><option>Instagram</option><option>Google</option><option>Bark / Oneflare / Airtasker</option><option>Other</option></select></label>
         <label className="portfolio-form-wide">Tell me about it<textarea required rows={6} value={form.message} onChange={event => update("message", event.target.value)} placeholder="Guest count, timings, priorities and anything useful to know." /></label>

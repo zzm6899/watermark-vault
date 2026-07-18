@@ -5,7 +5,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { getProfile } from "@/lib/storage";
 import { useCustomDomainSlug } from "@/lib/custom-domain-context";
 
-export default function Header({ tenantSlug, tenantName }: { tenantSlug?: string | null; tenantName?: string | null }) {
+export default function Header({ tenantSlug, tenantName, clientView = false }: { tenantSlug?: string | null; tenantName?: string | null; clientView?: boolean }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const location = useLocation();
   const navigate = useNavigate();
@@ -60,7 +60,7 @@ export default function Header({ tenantSlug, tenantName }: { tenantSlug?: string
               {item.label}
             </Link>
           ))}
-          {!tenantSlug && (
+          {!tenantSlug && !clientView && (
             <Link
               to="/admin"
               className="text-xs font-body tracking-widest uppercase text-muted-foreground/50 hover:text-primary transition-colors"
@@ -89,7 +89,7 @@ export default function Header({ tenantSlug, tenantName }: { tenantSlug?: string
                   {item.label}
                 </Link>
               ))}
-              {!tenantSlug && (
+              {!tenantSlug && !clientView && (
                 <Link to="/admin" onClick={() => setMobileOpen(false)} className="text-xs font-body tracking-widest uppercase text-muted-foreground/50 hover:text-primary transition-colors">
                   Admin
                 </Link>

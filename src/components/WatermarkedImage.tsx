@@ -136,6 +136,16 @@ export default function WatermarkedImage({
       transition={{ delay: Math.min(index * 0.05, 0.5), duration: 0.4 }}
       className="break-inside-avoid mb-4 group relative cursor-pointer rounded-lg overflow-hidden"
       onClick={onSelect}
+      role={onSelect ? "button" : undefined}
+      tabIndex={onSelect ? 0 : undefined}
+      aria-pressed={onSelect ? !!selected : undefined}
+      aria-label={onSelect ? `${selected ? "Deselect" : "Select"} ${title}` : undefined}
+      onKeyDown={onSelect ? (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onSelect();
+        }
+      } : undefined}
     >
       <img
         src={src}
@@ -148,15 +158,15 @@ export default function WatermarkedImage({
 
       {showWatermark && renderWatermarkOverlay && renderWatermark()}
 
-      <div className="absolute inset-0 bg-background/0 group-hover:bg-background/40 transition-all duration-300 flex items-center justify-center">
-        <div className="opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex items-center gap-3">
+      <div className="absolute inset-0 bg-background/0 group-hover:bg-background/35 group-focus-visible:bg-background/35 transition-all duration-300 flex items-center justify-center pointer-events-none">
+        <div className="opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity duration-300 flex items-center gap-3">
           {locked ? (
-            <div className="flex items-center gap-2 bg-card/90 backdrop-blur-sm px-4 py-2 rounded-full">
+            <div className="flex items-center gap-2 bg-card/90 backdrop-blur-sm px-3 py-2 rounded-full shadow-lg">
               <Lock className="w-4 h-4 text-primary" />
               <span className="text-xs font-body tracking-wider uppercase text-foreground">Purchase</span>
             </div>
           ) : (
-            <div className="flex items-center gap-2 bg-card/90 backdrop-blur-sm px-4 py-2 rounded-full">
+            <div className="flex items-center gap-2 bg-card/90 backdrop-blur-sm px-3 py-2 rounded-full shadow-lg">
               <Download className="w-4 h-4 text-primary" />
               <span className="text-xs font-body tracking-wider uppercase text-foreground">Select</span>
             </div>
@@ -170,7 +180,7 @@ export default function WatermarkedImage({
         </div>
       )}
 
-      <div className="absolute bottom-0 left-0 right-0 p-3 bg-gradient-to-t from-background/80 to-transparent opacity-0 group-hover:opacity-100 transition-opacity">
+      <div className="absolute bottom-0 left-0 right-0 p-3 bg-gradient-to-t from-background/80 to-transparent opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 transition-opacity pointer-events-none">
         <p className="text-xs font-body text-foreground tracking-wide">{title}</p>
       </div>
     </motion.div>
