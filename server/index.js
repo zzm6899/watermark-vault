@@ -2236,16 +2236,42 @@ const IMPORTED_PORTFOLIO_GALLERY = [
   { id: "archive-editorial-writing", image: "/portfolio/imported/cloudec-037.jpg", alt: "Hands writing in strong afternoon light", category: "Details" },
   { id: "archive-cocktails", image: "/portfolio/imported/thewarwick-nrl-2-copy.jpg", alt: "Two pink cocktails at an evening event", category: "Details" },
   { id: "archive-cosplay", image: "/portfolio/imported/zm-182.jpg", alt: "Cosplay guests arriving at a convention", category: "Cosplay" },
+  { id: "navarra-ballroom", image: "/portfolio/curated/navarra-ballroom.jpg", alt: "Conca D'Oro ballroom prepared for an evening dining event", category: "Venues & Details" },
+  { id: "navarra-plated-entree", image: "/portfolio/curated/navarra-plated-entree.jpg", alt: "Restaurant entree plated with vegetables and edible flowers", category: "Food & Hospitality" },
+  { id: "navarra-seafood", image: "/portfolio/curated/navarra-seafood.jpg", alt: "Seafood entree with prawns and mussels served at Le Montage", category: "Food & Hospitality" },
+  { id: "navarra-chefs", image: "/portfolio/curated/navarra-chefs.jpg", alt: "Navarra chefs preparing dishes during live service", category: "Food & Hospitality" },
+  { id: "navarra-dessert", image: "/portfolio/curated/navarra-dessert.jpg", alt: "Red gluten-free dessert finished with berries and meringue", category: "Food & Hospitality" },
+  { id: "navarra-mcdonalds", image: "/portfolio/curated/navarra-mcdonalds.jpg", alt: "McDonald's character beside a Navarra catering display", category: "Brand & Corporate" },
+  { id: "navarra-mercedes", image: "/portfolio/curated/navarra-mercedes.jpg", alt: "Waiter carrying drinks beside Mercedes performance cars", category: "Brand & Corporate" },
+  { id: "navarra-pinsent", image: "/portfolio/curated/navarra-pinsent.jpg", alt: "Corporate speakers addressing guests at a harbour-side launch", category: "Brand & Corporate" },
+  { id: "cosplay-animaga-steps", image: "/portfolio/curated/cosplay-animaga-steps.jpg", alt: "Blue and white cosplayer posed across architectural steps at Animaga", category: "Cosplay & Conventions" },
+  { id: "cosplay-animaga-sunlight", image: "/portfolio/curated/cosplay-animaga-sunlight.jpg", alt: "Cosplayer reaching into warm sunlight beneath trees at Animaga", category: "Cosplay & Conventions" },
+  { id: "cosplay-animaga-armour", image: "/portfolio/curated/cosplay-animaga-armour.jpg", alt: "Red and black armoured cosplayer in an editorial portrait", category: "Cosplay & Conventions" },
+  { id: "cosplay-animaga-harbour", image: "/portfolio/curated/cosplay-animaga-harbour.jpg", alt: "Armoured character beside Sydney Harbour at sunset", category: "Cosplay & Conventions" },
+  { id: "cosplay-pax-spiderman", image: "/portfolio/curated/cosplay-pax-spiderman.jpg", alt: "Spider-Man cosplayer crouched in character at PAX", category: "Cosplay & Conventions" },
+  { id: "cosplay-pax-duo", image: "/portfolio/curated/cosplay-pax-duo.jpg", alt: "Elaborately costumed duo posed beneath trees at PAX", category: "Cosplay & Conventions" },
+  { id: "cosplay-pax-valkyries", image: "/portfolio/curated/cosplay-pax-valkyries.jpg", alt: "Fantasy characters stage a confrontation at PAX", category: "Cosplay & Conventions" },
+  { id: "cosplay-smash-confetti", image: "/portfolio/curated/cosplay-smash-confetti.jpg", alt: "Packed SMASH convention crowd beneath a burst of confetti", category: "Cosplay & Conventions" },
+  { id: "cosplay-smash-stage", image: "/portfolio/curated/cosplay-smash-stage.jpg", alt: "Stage performer addressing the SMASH audience under theatrical light", category: "Cosplay & Conventions" },
+  { id: "cosplay-smash-auditorium", image: "/portfolio/curated/cosplay-smash-auditorium.jpg", alt: "Wide view across a packed SMASH convention auditorium", category: "Cosplay & Conventions" },
+  { id: "sports-hyrox-motion", image: "/portfolio/curated/sports-hyrox-motion.jpg", alt: "HYROX competitors surge past a race arch in motion", category: "Sports" },
+  { id: "sports-hyrox-sled", image: "/portfolio/curated/sports-hyrox-sled.jpg", alt: "Athlete drives a weighted sled through the HYROX arena", category: "Sports" },
+  { id: "sports-hyrox-finish", image: "/portfolio/curated/sports-hyrox-finish.jpg", alt: "HYROX athletes celebrate together at the finish line", category: "Sports" },
+  { id: "sports-hyrox-row", image: "/portfolio/curated/sports-hyrox-row.jpg", alt: "Packed HYROX rowing station viewed from above", category: "Sports" },
+  { id: "sports-hyrox-brisbane", image: "/portfolio/curated/sports-hyrox-brisbane.jpg", alt: "HYROX athlete pushes a sled from a dramatic low viewpoint", category: "Sports" },
+  { id: "sports-hoka-dawn", image: "/portfolio/curated/sports-hoka-dawn.jpg", alt: "HOKA runners pass beneath palm silhouettes before sunrise", category: "Sports" },
+  { id: "sports-hoka-library", image: "/portfolio/curated/sports-hoka-library.jpg", alt: "HOKA half marathon runners pass the State Library of New South Wales", category: "Sports" },
+  { id: "sports-sydney-marathon", image: "/portfolio/curated/sports-sydney-marathon.jpg", alt: "Focused runner moving through the Sydney Marathon field", category: "Sports" },
 ];
 
-const PORTFOLIO_CATEGORY_ORDER = ["Weddings", "Live Music", "Events", "Brand & Corporate", "Food & Hospitality", "Venues & Details", "Portraits"];
+const PORTFOLIO_CATEGORY_ORDER = ["Weddings", "Live Music", "Cosplay & Conventions", "Sports", "Events", "Brand & Corporate", "Food & Hospitality", "Venues & Details", "Portraits"];
 const PORTFOLIO_CATEGORY_LABELS = {
   "live music": "Live Music",
   "brand and business": "Brand & Corporate",
   "food and hospitality": "Food & Hospitality",
   formals: "Venues & Details",
   details: "Venues & Details",
-  cosplay: "Events",
+  cosplay: "Cosplay & Conventions",
 };
 const CORE_PORTFOLIO_GALLERY = [
   { id: "wedding-aisle", image: "/portfolio/gallery/wedding-garden.jpg", alt: "Newlyweds walking down the church aisle", category: "Weddings" },
@@ -2266,19 +2292,19 @@ const CURATED_PORTFOLIO_GALLERY = [...CORE_PORTFOLIO_GALLERY, ...IMPORTED_PORTFO
   .sort((left, right) => PORTFOLIO_CATEGORY_ORDER.indexOf(left.category) - PORTFOLIO_CATEGORY_ORDER.indexOf(right.category));
 
 const DEFAULT_PORTFOLIO = {
-  gallerySeedVersion: 2,
+  gallerySeedVersion: 3,
   brandName: "Zac Morgan Photography",
   logo: "/portfolio/logo.png",
   heroImage: "/portfolio/live-action.jpg",
   heroImages: ["/portfolio/live-action.jpg", "/portfolio/gallery/concert-performer.jpg", "/portfolio/gallery/brand-event.jpg"],
   heroLabel: "Live in action",
-  heroServicesLabel: "Weddings · Events · Live music · Brands",
+  heroServicesLabel: "Weddings · Events · Live music · Sport · Brands",
   introEyebrow: "Hey, I'm Zac, an event / wedding photographer",
   introTitle: "Let's get to know each other",
   introBody: "What started as a hobby quickly became a passion for capturing the moments people want to remember. I photograph weddings, live music, parties and corporate events across Sydney.",
   aboutSecondaryBody: "I work quietly when the moment calls for it and step in with direction when it helps. The goal is a polished gallery that keeps the people, movement and atmosphere that made the day yours.",
   portfolioTitle: "Stories that still feel alive.",
-  portfolioBody: "Weddings, performances, parties, people and brands photographed with energy and intent.",
+  portfolioBody: "Weddings, performances, conventions, sport and brands photographed with energy and intent.",
   testimonialsTitle: "The experience matters too.",
   testimonialsIntro: "Feedback from weddings, celebrations, portrait sessions and business events across Sydney.",
   portrait: "/portfolio/portrait.jpg",
@@ -2290,7 +2316,7 @@ const DEFAULT_PORTFOLIO = {
   philosophyBody: "Not over-directed. Not flattened into a trend. Just the people, atmosphere and small details that made the moment yours.",
   philosophyImage: "/portfolio/gallery/food-detail.jpg",
   portfolioClientsLabel: "Selected clients and venues",
-  portfolioClients: ["Asahi Breweries", "Navarra Venues", "SMASH!"],
+  portfolioClients: ["Asahi Breweries", "Navarra Venues", "SMASH!", "Sportograf"],
   portfolioCtaEyebrow: "Your story, photographed honestly",
   portfolioCtaTitle: "Planning something?",
   portfolioCtaLabel: "Check availability",
@@ -2328,6 +2354,8 @@ const DEFAULT_PORTFOLIO = {
     { id: "bands", title: "Band Photos", image: "/portfolio/bands.jpg", description: "Live performance and artist imagery that keeps the atmosphere intact.", category: "Live Music" },
     { id: "corporate", title: "Corporate Events", image: "/portfolio/corporate.jpg", description: "Polished event coverage for teams, brands and venues.", category: "Brand & Corporate" },
     { id: "parties", title: "Parties", image: "/portfolio/parties.jpg", description: "Candid celebration photography with people at the centre.", category: "Events" },
+    { id: "cosplay", title: "Cosplay & Conventions", image: "/portfolio/curated/cosplay-smash-confetti.jpg", description: "Character portraits, stages and convention crowds photographed with colour and energy.", category: "Cosplay & Conventions" },
+    { id: "sports", title: "Sport & Endurance", image: "/portfolio/curated/sports-hyrox-motion.jpg", description: "Fast, expressive race coverage from first light to the finish line.", category: "Sports" },
   ],
   galleryImages: CURATED_PORTFOLIO_GALLERY,
   testimonials: [
@@ -2347,7 +2375,7 @@ const DEFAULT_PORTFOLIO = {
   bookingBody: "Share the date, location and feeling you want captured. I'll reply with availability and the right coverage option.",
   bookingButtonLabel: "Start an enquiry",
   footerTitle: "Let's make it memorable.",
-  enquiryEventTypes: ["Wedding / engagement", "Corporate event", "Party", "Live music", "Brand / business shoot", "Other"],
+  enquiryEventTypes: ["Wedding / engagement", "Corporate event", "Party", "Live music", "Sports / race coverage", "Convention / cosplay", "Brand / business shoot", "Other"],
 };
 
 function publicPortfolioContent(value) {
@@ -2363,10 +2391,13 @@ function publicPortfolioContent(value) {
     ];
     merged.gallerySeedVersion = DEFAULT_PORTFOLIO.gallerySeedVersion;
   }
-  merged.projects = (Array.isArray(merged.projects) ? merged.projects : DEFAULT_PORTFOLIO.projects).map((project, index) => ({
-    ...(DEFAULT_PORTFOLIO.projects.find(item => item.id === project?.id) || DEFAULT_PORTFOLIO.projects[index] || {}),
-    ...project,
-  }));
+  const existingProjects = Array.isArray(merged.projects) ? merged.projects : [];
+  const existingProjectsById = new Map(existingProjects.map(project => [project?.id, project]));
+  const defaultProjectIds = new Set(DEFAULT_PORTFOLIO.projects.map(project => project.id));
+  merged.projects = [
+    ...DEFAULT_PORTFOLIO.projects.map(project => ({ ...project, ...(existingProjectsById.get(project.id) || {}) })),
+    ...existingProjects.filter(project => project?.id && !defaultProjectIds.has(project.id)),
+  ];
   for (const key of ["testimonials", "aboutValues", "enquirySteps"]) {
     merged[key] = (Array.isArray(merged[key]) ? merged[key] : DEFAULT_PORTFOLIO[key]).map((item, index) => ({
       ...(DEFAULT_PORTFOLIO[key][index] || {}),
