@@ -2498,6 +2498,10 @@ const IMPORTED_PORTFOLIO_GALLERY = [
   { id: "wedding-kj-harbour", image: "/portfolio/curated/wedding-kj-harbour.jpg", alt: "Groom carries the bride beside Sydney Harbour as she raises her bouquet", category: "Weddings" },
   { id: "music-chronobeat-motion", image: "/portfolio/curated/music-chronobeat-motion.jpg", alt: "Concert guest dances with illuminated light sticks amid circular motion", category: "Live Music" },
   { id: "music-chronobeat-guitar", image: "/portfolio/curated/music-chronobeat-guitar.jpg", alt: "Guitarist bends over the stage while the band streaks through coloured light", category: "Live Music" },
+  { id: "music-teddyloid-smash-crowd", image: "/portfolio/curated/music-teddyloid-smash-crowd.webp", alt: "TeddyLoid performs above a packed SMASH crowd holding illuminated light sticks", category: "Live Music" },
+  { id: "music-teddyloid-smash-portrait", image: "/portfolio/curated/music-teddyloid-smash-portrait.webp", alt: "TeddyLoid points toward the audience while performing at SMASH", category: "Live Music" },
+  { id: "music-teddyloid-smash-wide", image: "/portfolio/curated/music-teddyloid-smash-wide.webp", alt: "Wide view of TeddyLoid performing to a full SMASH auditorium", category: "Live Music" },
+  { id: "music-teddyloid-smash-stage", image: "/portfolio/curated/music-teddyloid-smash-stage.webp", alt: "TeddyLoid mixes from side stage as dancers face the SMASH audience", category: "Live Music" },
   { id: "cosplay-animaga-editorial", image: "/portfolio/curated/cosplay-animaga-editorial.jpg", alt: "Pink-haired cosplayer reclines across broad architectural steps", category: "Cosplay & Conventions" },
   { id: "cosplay-pax-portrait", image: "/portfolio/curated/cosplay-pax-portrait.jpg", alt: "Red-haired horned character poses in a close editorial portrait", category: "Cosplay & Conventions" },
   { id: "sports-hyrox-jump", image: "/portfolio/curated/sports-hyrox-jump.jpg", alt: "HYROX athlete suspended in a celebratory jump inside a symmetrical arena", category: "Sports" },
@@ -2527,7 +2531,7 @@ const PORTFOLIO_LEGACY_RIBBON_IMAGES = {
 };
 
 const PORTFOLIO_CATEGORY_ORDER = ["Weddings", "Live Music", "Cosplay & Conventions", "Sports", "Events", "Brand & Corporate", "Food & Hospitality", "Venues & Details", "Portraits"];
-const PORTFOLIO_FEATURED_IMAGE_ORDER = ["food-lexus-slider-service", "food-mcdonalds-live-cooking", "food-mcdonalds-chef-service", "food-conca-oyster-service", "food-lexus-tasting-tray", "food-conca-pasta"];
+const PORTFOLIO_FEATURED_IMAGE_ORDER = ["music-teddyloid-smash-crowd", "music-teddyloid-smash-portrait", "music-teddyloid-smash-wide", "music-teddyloid-smash-stage", "food-lexus-slider-service", "food-mcdonalds-live-cooking", "food-mcdonalds-chef-service", "food-conca-oyster-service", "food-lexus-tasting-tray", "food-conca-pasta"];
 const PORTFOLIO_CATEGORY_LABELS = {
   "live music": "Live Music",
   "brand and business": "Brand & Corporate",
@@ -2560,7 +2564,7 @@ const CURATED_PORTFOLIO_GALLERY = [...CORE_PORTFOLIO_GALLERY, ...IMPORTED_PORTFO
   });
 
 const DEFAULT_PORTFOLIO = {
-  gallerySeedVersion: 7,
+  gallerySeedVersion: 8,
   brandName: "Zac Morgan Photography",
   logo: "/portfolio/logo.png",
   heroImage: "/portfolio/live-action.jpg",
@@ -2591,7 +2595,7 @@ const DEFAULT_PORTFOLIO = {
   concertEyebrow: "Live music photography",
   concertTitle: "The room, at full volume.",
   concertBody: "Touring artists, festivals, venues and late-night sets photographed from inside the energy. Fast, atmospheric coverage built for press, social and the archive.",
-  concertHeroImage: "/portfolio/imported/zm-day2-120.jpg",
+  concertHeroImage: "/portfolio/curated/music-teddyloid-smash-crowd.webp",
   concertHighlights: ["Live sets", "Artist portraits", "Crowd and atmosphere", "Fast selects"],
   aboutApproachEyebrow: "The approach",
   aboutApproachTitle: "Present enough to guide. Quiet enough to notice.",
@@ -2663,6 +2667,9 @@ function publicPortfolioContent(value) {
       ...existingGallery.filter(item => item?.id && !seedIds.has(item.id) && !PORTFOLIO_RETIRED_GALLERY_IDS.has(item.id) && !PORTFOLIO_RETIRED_IMAGE_PATHS.has(item.image)),
     ];
     merged.gallerySeedVersion = DEFAULT_PORTFOLIO.gallerySeedVersion;
+    if (merged.concertHeroImage === "/portfolio/imported/zm-day2-120.jpg") {
+      merged.concertHeroImage = DEFAULT_PORTFOLIO.concertHeroImage;
+    }
   }
   const existingProjects = Array.isArray(merged.projects) ? merged.projects : [];
   const existingProjectsById = new Map(existingProjects.map(project => [project?.id, project]));

@@ -5,20 +5,20 @@ import { defaultPortfolioSite, importedPortfolioGalleryImages, portfolioCategory
 
 describe("portfolio archive import", () => {
   it("ships every unique image imported from the legacy portfolio pages", () => {
-    expect(importedPortfolioGalleryImages).toHaveLength(81);
-    expect(new Set(importedPortfolioGalleryImages.map(item => item.id)).size).toBe(81);
-    expect(new Set(importedPortfolioGalleryImages.map(item => item.image)).size).toBe(81);
+    expect(importedPortfolioGalleryImages).toHaveLength(85);
+    expect(new Set(importedPortfolioGalleryImages.map(item => item.id)).size).toBe(85);
+    expect(new Set(importedPortfolioGalleryImages.map(item => item.image)).size).toBe(85);
 
     for (const item of importedPortfolioGalleryImages) {
-      expect(item.image).toMatch(/^\/portfolio\/(imported|curated)\/.+\.jpg$/);
+      expect(item.image).toMatch(/^\/portfolio\/(imported|curated)\/.+\.(jpg|webp)$/);
       expect(existsSync(path.join(process.cwd(), "public", item.image.slice(1)))).toBe(true);
     }
 
-    expect(defaultPortfolioSite.galleryImages).toHaveLength(92);
-    expect(defaultPortfolioSite.gallerySeedVersion).toBe(7);
+    expect(defaultPortfolioSite.galleryImages).toHaveLength(96);
+    expect(defaultPortfolioSite.gallerySeedVersion).toBe(8);
     expect(defaultPortfolioSite.galleryImages.filter(item => item.category === "Cosplay & Conventions")).toHaveLength(13);
     expect(defaultPortfolioSite.galleryImages.filter(item => item.category === "Sports")).toHaveLength(15);
-    expect(defaultPortfolioSite.galleryImages.filter(item => item.category === "Live Music")).toHaveLength(8);
+    expect(defaultPortfolioSite.galleryImages.filter(item => item.category === "Live Music")).toHaveLength(12);
     expect(defaultPortfolioSite.galleryImages.filter(item => item.category === "Food & Hospitality")).toHaveLength(18);
     expect(defaultPortfolioSite.galleryImages.some(item => item.alt.toLowerCase().includes("kissing"))).toBe(false);
     expect(new Set(defaultPortfolioSite.homeRibbonImages).size).toBe(defaultPortfolioSite.homeRibbonImages.length);
@@ -31,12 +31,18 @@ describe("portfolio archive import", () => {
       "/portfolio/gallery/concert-performer.jpg",
       "/portfolio/gallery/formal-room.jpg",
     ];
-    expect(new Set(originalResolutionImages).size).toBe(84);
-    expect(defaultPortfolioSite.galleryImages.filter(item => originalResolutionImages.includes(item.image))).toHaveLength(84);
+    expect(new Set(originalResolutionImages).size).toBe(88);
+    expect(defaultPortfolioSite.galleryImages.filter(item => originalResolutionImages.includes(item.image))).toHaveLength(88);
     expect(defaultPortfolioSite.galleryImages.map(item => portfolioCategoryOrder.indexOf(item.category))).toEqual(
       [...defaultPortfolioSite.galleryImages].map(item => portfolioCategoryOrder.indexOf(item.category)).sort((left, right) => left - right),
     );
-    expect(defaultPortfolioSite.concertHeroImage).toContain("/portfolio/");
+    expect(defaultPortfolioSite.concertHeroImage).toBe("/portfolio/curated/music-teddyloid-smash-crowd.webp");
+    expect(defaultPortfolioSite.galleryImages.filter(item => item.category === "Live Music").slice(0, 4).map(item => item.id)).toEqual([
+      "music-teddyloid-smash-crowd",
+      "music-teddyloid-smash-portrait",
+      "music-teddyloid-smash-wide",
+      "music-teddyloid-smash-stage",
+    ]);
     expect(defaultPortfolioSite.concertHighlights.length).toBeGreaterThanOrEqual(3);
   });
 });
