@@ -602,7 +602,23 @@ export default function AlbumDetail() {
       }
       try { localStorage.setItem(`wv_email_${albumId}`, purchaserEmail); } catch { /* localStorage may be unavailable */ }
       setRegisteredEmail(purchaserEmail);
-      toast.success("Email saved — your purchases are now linked to " + purchaserEmail);
+      const restored = await fetchPublicAlbum(albumId, { token: urlToken, sessionKey: emailKey });
+      const restoredPurchase = restored?.album?.sessionPurchases?.[emailKey];
+      if (restored?.album) {
+        setAlbumState(previous => previous ? {
+          ...previous,
+          sessionPurchases: restored.album.sessionPurchases || {},
+          usedFreeDownloads: restored.album.usedFreeDownloads || previous.usedFreeDownloads,
+        } : restored.album);
+      }
+      if (restoredPurchase?.fullAlbum) {
+        toast.success("Full album purchase restored — all photos are ready to download.");
+      } else if (restoredPurchase?.photoIds?.length) {
+        const count = restoredPurchase.photoIds.length;
+        toast.success(`${count} purchased photo${count === 1 ? "" : "s"} restored and ready to download.`);
+      } else {
+        toast.success("Email linked. No previous purchases were found for this gallery.");
+      }
       setShowEmailReg(false);
       setPurchaserEmail("");
       // If the user was mid-Stripe-checkout, resume it now with the email session key
@@ -1595,7 +1611,7 @@ export default function AlbumDetail() {
                       ) : (
                         <button onClick={() => setShowEmailReg(true)} className="text-center hover:opacity-80 transition-opacity min-w-0">
                           <p className="text-lg font-display text-muted-foreground">@</p>
-                          <p className="text-[10px] font-body uppercase tracking-wider text-primary leading-tight">Add Email</p>
+                          <p className="text-[10px] font-body uppercase tracking-wider text-primary leading-tight">Restore Purchases</p>
                         </button>
                       )}
                     </div>
@@ -1796,6 +1812,11 @@ export default function AlbumDetail() {
             <div className={gridClass}>
               {displayedPhotos.slice(0, galleryVisibleCount).map((photo, i) => (
                 <div key={photo.id} className="relative group mb-3 sm:mb-4 overflow-hidden rounded-lg transition-transform duration-200 hover:scale-[1.01] hover:shadow-xl hover:shadow-black/40">
+                  {(sessionFullAlbum || paidPhotoIdSet.has(photo.id)) && (
+                    <span className="pointer-events-none absolute left-2 top-2 z-20 inline-flex items-center gap-1 rounded-full bg-emerald-950/90 px-2 py-1 text-[10px] font-body uppercase tracking-wider text-emerald-200 shadow-lg backdrop-blur-sm">
+                      <CheckCircle2 className="h-3 w-3" /> Purchased
+                    </span>
+                  )}
                   <WatermarkedImage
                 src={getGalleryPhotoSrc(photo, isCleanDownload(photo.id), { albumId: album.id, sessionKey })}
                   title={photo.title}
@@ -2329,15 +2350,15 @@ export default function AlbumDetail() {
         <DialogContent className="glass-panel border-border max-w-sm">
           <DialogHeader>
             <DialogTitle className="font-display text-xl text-foreground">
-              {pendingStripeParams ? "Email required for payment" : "Save your access"}
+              {pendingStripeParams ? "Email required for payment" : "Access your purchases"}
             </DialogTitle>
-            <DialogDescription className="sr-only">Add your email to link purchases to your account so you can access photos from any device.</DialogDescription>
+            <DialogDescription className="sr-only">Enter the email used at checkout to restore purchased photos on this device.</DialogDescription>
           </DialogHeader>
           <div className="space-y-4 mt-2">
             <p className="text-sm font-body text-muted-foreground">
               {pendingStripeParams
                 ? "Enter your email so your purchase is logged and you can re-access your photos from any device."
-                : "Add your email to link this purchase to your account — so you can re-access your photos from any device using the same gallery link."}
+                : "Enter the email used for this gallery. Any full-album or individual-photo purchases will be restored on this device."}
             </p>
             <input
               type="email"
@@ -2353,7 +2374,7 @@ export default function AlbumDetail() {
                 disabled={savingEmail}
                 className="flex-1 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-sm"
               >
-                {savingEmail ? "Saving…" : pendingStripeParams ? "Save & Pay" : "Save Email"}
+                {savingEmail ? "Checking…" : pendingStripeParams ? "Save & Pay" : "Restore Purchases"}
               </Button>
               {/* Don't offer Skip when Stripe payment is waiting — email is required */}
               {!pendingStripeParams && (
