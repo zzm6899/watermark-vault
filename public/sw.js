@@ -3,11 +3,18 @@
  * Handles offline caching + Web Push notifications
  */
 
-const CACHE_NAME = "photoflow-v2";
+const PORTFOLIO_HOSTS = new Set(["zacmorganphotography.com", "www.zacmorganphotography.com"]);
+const IS_PORTFOLIO_HOST = PORTFOLIO_HOSTS.has(self.location.hostname);
+const CACHE_NAME = "photoflow-v3";
 const OFFLINE_URLS = ["/", "/index.html"];
 
 // ─── Install ──────────────────────────────────────────────────────────────────
 self.addEventListener("install", (event) => {
+  if (IS_PORTFOLIO_HOST) {
+    self.skipWaiting();
+    return;
+  }
+
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) =>
       cache.addAll(OFFLINE_URLS).catch(() => {/* best effort */})
@@ -18,6 +25,14 @@ self.addEventListener("install", (event) => {
 
 // ─── Activate ─────────────────────────────────────────────────────────────────
 self.addEventListener("activate", (event) => {
+  if (IS_PORTFOLIO_HOST) {
+    event.waitUntil(
+      caches.keys().then((keys) => Promise.all(keys.map((key) => caches.delete(key))))
+        .then(() => self.registration.unregister())
+    );
+    return;
+  }
+
   event.waitUntil(
     caches.keys().then((keys) =>
       Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k)))
@@ -28,6 +43,8 @@ self.addEventListener("activate", (event) => {
 
 // ─── Fetch (network-first, cache fallback for navigation) ────────────────────
 self.addEventListener("fetch", (event) => {
+  if (IS_PORTFOLIO_HOST) return;
+
   const { request } = event;
 
   // Only handle GET requests
