@@ -244,6 +244,8 @@ export interface Album {
   downloadExpiresAt?: string;
   watermarkDisabled?: boolean;
   purchasingDisabled?: boolean;
+  /** Collect an email before free/open downloads. Optional prompts can be skipped; required prompts cannot. */
+  downloadEmailCapture?: "off" | "optional" | "required";
   sessionPurchases?: Record<string, { fullAlbum?: boolean; photoIds?: string[]; purchaserEmail?: string; paidAt?: string; stripeSessionId?: string }>;
   /** When true, all downloads are blocked while proofing is in progress (any stage except not-started/finals-delivered). Unlocks when proofing is reset or finals are delivered. */
   lockDownloadsDuringProofing?: boolean;

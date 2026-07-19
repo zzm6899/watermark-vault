@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { DndContext, KeyboardSensor, PointerSensor, TouchSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
-import { SortableContext, arrayMove, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
+import { SortableContext, arrayMove, rectSortingStrategy, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { ArrowDown, ArrowUp, ExternalLink, Eye, Globe, GripVertical, ImagePlus, Loader2, Monitor, Plus, Save, Send, Smartphone, Trash2, Upload } from "lucide-react";
+import { ArrowDown, ArrowUp, ExternalLink, Eye, Globe, GripVertical, ImagePlus, LayoutPanelLeft, Loader2, Monitor, Plus, Save, Send, Smartphone, Trash2, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -98,8 +98,42 @@ function ImageCollectionEditor({ label, images, onChange, recommendedWidth = 240
   </div>;
 }
 
+function GalleryGridCard({ item, index, onUpdate, onRemove }: { item: PortfolioSite["galleryImages"][number]; index: number; onUpdate: (patch: Partial<PortfolioSite["galleryImages"][number]>) => void; onRemove: () => void }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: item.id });
+  return <div ref={setNodeRef} style={{ transform: CSS.Transform.toString(transform), transition }} className={`group overflow-hidden rounded-md border border-border bg-card ${isDragging ? "relative z-20 opacity-75 shadow-xl" : ""}`}>
+    <div className="relative aspect-[4/3] overflow-hidden bg-secondary">
+      {item.image ? <img src={item.image} alt="" className="h-full w-full object-cover" /> : <div className="grid h-full place-items-center text-xs text-muted-foreground">No image</div>}
+      <button type="button" className="absolute left-2 top-2 inline-flex h-9 w-9 cursor-grab items-center justify-center rounded-md bg-background/90 text-foreground shadow active:cursor-grabbing" aria-label={`Drag gallery photo ${index + 1}`} {...attributes} {...listeners}><GripVertical className="h-4 w-4" /></button>
+      <Button type="button" variant="secondary" size="icon" className="absolute right-2 top-2 h-9 w-9 opacity-0 shadow group-hover:opacity-100 focus:opacity-100" aria-label={`Remove ${item.alt || `gallery photo ${index + 1}`}`} onClick={onRemove}><Trash2 className="h-4 w-4" /></Button>
+      <span className="absolute bottom-2 left-2 rounded bg-background/85 px-2 py-1 text-[10px] tabular-nums text-muted-foreground">{String(index + 1).padStart(2, "0")}</span>
+    </div>
+    <div className="grid gap-2 p-3">
+      <Input value={item.alt} aria-label={`Gallery photo ${index + 1} description`} placeholder="Photo description" onChange={event => onUpdate({ alt: event.target.value })} />
+      <Input value={item.category} aria-label={`Gallery photo ${index + 1} category`} placeholder="Category" onChange={event => onUpdate({ category: event.target.value })} />
+    </div>
+  </div>;
+}
+
+function GalleryGridEditor({ items, onChange }: { items: PortfolioSite["galleryImages"]; onChange: (items: PortfolioSite["galleryImages"]) => void }) {
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }), useSensor(TouchSensor, { activationConstraint: { delay: 180, tolerance: 8 } }), useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }));
+  const finish = ({ active, over }: DragEndEvent) => {
+    if (!over || active.id === over.id) return;
+    const from = items.findIndex(item => item.id === active.id);
+    const to = items.findIndex(item => item.id === over.id);
+    if (from >= 0 && to >= 0) onChange(arrayMove(items, from, to));
+  };
+  return <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={finish}>
+    <SortableContext items={items.map(item => item.id)} strategy={rectSortingStrategy}>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 2xl:grid-cols-3">
+        {items.map((item, index) => <GalleryGridCard key={item.id} item={item} index={index} onUpdate={patch => onChange(items.map(photo => photo.id === item.id ? { ...photo, ...patch } : photo))} onRemove={() => onChange(items.filter(photo => photo.id !== item.id))} />)}
+      </div>
+    </SortableContext>
+  </DndContext>;
+}
+
 function EditorSection({ title, description, children, open = false }: { title: string; description?: string; children: ReactNode; open?: boolean }) {
-  return <details open={open} className="group border-t border-border py-6"><summary className="flex cursor-pointer list-none items-center justify-between gap-4"><div><h3 className="font-display text-2xl">{title}</h3>{description && <p className="mt-1 text-xs text-muted-foreground">{description}</p>}</div><span className="text-xs text-muted-foreground group-open:hidden">Open</span><span className="hidden text-xs text-muted-foreground group-open:inline">Close</span></summary><div className="mt-6 space-y-5">{children}</div></details>;
+  const sectionId = `website-${title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}`;
+  return <details id={sectionId} open={open} className="group scroll-mt-32 border-t border-border py-6"><summary className="flex cursor-pointer list-none items-center justify-between gap-4"><div><h3 className="font-display text-2xl">{title}</h3>{description && <p className="mt-1 text-xs text-muted-foreground">{description}</p>}</div><span className="text-xs text-muted-foreground group-open:hidden">Open</span><span className="hidden text-xs text-muted-foreground group-open:inline">Close</span></summary><div className="mt-6 space-y-5">{children}</div></details>;
 }
 
 function LivePortfolioPreview({ draft }: { draft: PortfolioSite }) {
@@ -119,13 +153,13 @@ function LivePortfolioPreview({ draft }: { draft: PortfolioSite }) {
   }, [sendDraft]);
 
   const pages = [["Home", "/"], ["Portfolio", "/portfolio"], ["Concerts", "/concerts"], ["About", "/about"], ["Enquire", "/enquire"]] as const;
-  return <section className="space-y-3 border-t border-border py-5" aria-label="Live website preview">
-    <div className="flex flex-wrap items-center justify-between gap-3">
+  return <section className="overflow-hidden rounded-md border border-border bg-card" aria-label="Live website preview">
+    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-3 py-2">
       <div className="flex flex-wrap gap-1">{pages.map(([label, value]) => <Button key={value} type="button" size="sm" variant={path === value ? "secondary" : "ghost"} onClick={() => setPath(value)}>{label}</Button>)}</div>
       <div className="flex rounded-md border border-border p-1" aria-label="Preview device"><Button type="button" size="icon" variant={device === "desktop" ? "secondary" : "ghost"} onClick={() => setDevice("desktop")} aria-label="Desktop preview"><Monitor className="h-4 w-4" /></Button><Button type="button" size="icon" variant={device === "mobile" ? "secondary" : "ghost"} onClick={() => setDevice("mobile")} aria-label="Mobile preview"><Smartphone className="h-4 w-4" /></Button></div>
     </div>
-    <div className="overflow-hidden rounded-md border border-border bg-[#111] p-2 sm:p-3">
-      <iframe ref={iframeRef} title="Unsaved portfolio preview" src={`/portfolio-preview${path === "/" ? "" : path}?editor=1`} onLoad={sendDraft} className={`mx-auto block h-[68vh] min-h-[520px] bg-white transition-[width] ${device === "mobile" ? "w-[390px] max-w-full" : "w-full"}`} />
+    <div className="overflow-auto bg-[#111] p-2">
+      <iframe ref={iframeRef} title="Unsaved portfolio preview" src={`/portfolio-preview${path === "/" ? "" : path}?editor=1`} onLoad={sendDraft} className={`mx-auto block h-[72vh] min-h-[560px] bg-white transition-[width] ${device === "mobile" ? "w-[390px] max-w-full" : "w-full"}`} />
     </div>
   </section>;
 }
@@ -139,7 +173,7 @@ export default function PortfolioEditor() {
   const [concertUploading, setConcertUploading] = useState(false);
   const [publishedAt, setPublishedAt] = useState<string>();
   const [testingWebhook, setTestingWebhook] = useState(false);
-  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(true);
   const bulkInputId = useId();
   const concertInputId = useId();
 
@@ -168,10 +202,22 @@ export default function PortfolioEditor() {
   };
 
   if (loading) return <div className="py-24 text-center text-sm text-muted-foreground"><Loader2 className="mx-auto mb-3 h-5 w-5 animate-spin" />Loading website editor…</div>;
+  const editorSections = ["Brand and hero", "Homepage", "Portfolio page", "Concert page", "About page", "Testimonials", "Booking enquiry", "Contact and footer"];
+  const jumpToSection = (title: string) => {
+    const section = document.getElementById(`website-${title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}`) as HTMLDetailsElement | null;
+    if (!section) return;
+    section.open = true;
+    section.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
   return <div className="space-y-2 pb-24">
-    <div className="admin-page-header"><div><h2 className="font-display text-3xl text-foreground sm:text-4xl">Website</h2><p className="mt-2 text-sm text-muted-foreground">Structured content editor for the public portfolio. Original uploads are preserved.</p></div><Button variant={previewOpen ? "secondary" : "outline"} size="sm" onClick={() => setPreviewOpen(value => !value)}><Eye className="mr-2 h-4 w-4" />Live preview</Button></div>
-    <div className="sticky top-0 z-30 -mx-2 flex flex-wrap items-center justify-between gap-3 border-y border-border bg-background/95 px-2 py-3 backdrop-blur"><div className="text-xs text-muted-foreground"><span className={dirty ? "text-amber-500" : "text-emerald-500"}>{dirty ? "Unsaved changes" : "All changes saved"}</span>{publishedAt && <span> · Published {new Date(publishedAt).toLocaleString()}</span>}</div><div className="flex gap-2"><a className="inline-flex items-center gap-1 px-2 text-xs text-primary" href="https://zacmclients.photos" target="_blank" rel="noreferrer">Live site <ExternalLink className="h-3.5 w-3.5" /></a><Button variant="outline" size="sm" onClick={save} disabled={saving || !dirty}><Save className="mr-2 h-4 w-4" />Save draft</Button><Button size="sm" onClick={publish} disabled={saving}><Globe className="mr-2 h-4 w-4" />Publish</Button></div></div>
-    {previewOpen && <LivePortfolioPreview draft={draft} />}
+    <div className="admin-page-header"><div><h2 className="font-display text-3xl text-foreground sm:text-4xl">Website studio</h2><p className="mt-2 text-sm text-muted-foreground">Edit, reorder and preview the public portfolio without publishing first.</p></div><Button variant={previewOpen ? "secondary" : "outline"} size="sm" onClick={() => setPreviewOpen(value => !value)}>{previewOpen ? <LayoutPanelLeft className="mr-2 h-4 w-4" /> : <Eye className="mr-2 h-4 w-4" />}{previewOpen ? "Hide preview" : "Show preview"}</Button></div>
+    <div className="sticky top-0 z-30 -mx-2 flex flex-wrap items-center justify-between gap-3 border-y border-border bg-background/95 px-2 py-3 backdrop-blur"><div className="text-xs text-muted-foreground"><span className={dirty ? "text-amber-500" : "text-emerald-500"}>{dirty ? "Unsaved changes · preview is current" : "All changes saved"}</span>{publishedAt && <span> · Published {new Date(publishedAt).toLocaleString()}</span>}</div><div className="flex gap-2"><a className="inline-flex items-center gap-1 px-2 text-xs text-primary" href="https://zacmorganphotography.com" target="_blank" rel="noreferrer">Live site <ExternalLink className="h-3.5 w-3.5" /></a><Button variant="outline" size="sm" onClick={save} disabled={saving || !dirty}><Save className="mr-2 h-4 w-4" />Save draft</Button><Button size="sm" onClick={publish} disabled={saving}><Globe className="mr-2 h-4 w-4" />Publish</Button></div></div>
+    <div className={`grid items-start gap-5 ${previewOpen ? "xl:grid-cols-[minmax(420px,0.9fr)_minmax(520px,1.1fr)]" : "grid-cols-1"}`}>
+      <div className="min-w-0">
+        <nav className="sticky top-[57px] z-20 -mx-2 flex gap-1 overflow-x-auto border-b border-border bg-background/95 px-2 py-2 backdrop-blur" aria-label="Website editor sections">
+          {editorSections.map(section => <Button key={section} type="button" variant="ghost" size="sm" className="shrink-0 text-xs" onClick={() => jumpToSection(section)}>{section.replace(" page", "")}</Button>)}
+        </nav>
 
     <EditorSection title="Brand and hero" description="Upload 3200px-wide originals for full-screen display." open><div className="grid gap-4 md:grid-cols-2"><label className="space-y-1 text-xs text-muted-foreground">Business name<Input value={draft.brandName} onChange={event => change("brandName", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground">Hero label<Input value={draft.heroLabel} onChange={event => change("heroLabel", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground md:col-span-2">Hero services line<Input value={draft.heroServicesLabel} onChange={event => change("heroServicesLabel", event.target.value)} /></label><ImageUploadField label="Logo" value={draft.logo} recommendedWidth={1000} onChange={value => change("logo", value)} /></div><ImageCollectionEditor label="Hero slideshow" images={draft.heroImages} recommendedWidth={3200} onChange={images => { change("heroImages", images); if (images[0]) change("heroImage", images[0]); }} /></EditorSection>
 
@@ -179,7 +225,7 @@ export default function PortfolioEditor() {
 
     <EditorSection title="Portfolio page" description="Categories and gallery order are draggable and control the public display."><div className="grid gap-4 md:grid-cols-2"><label className="space-y-1 text-xs text-muted-foreground">Portfolio heading<Input value={draft.portfolioTitle} onChange={event => change("portfolioTitle", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground">Client list label<Input value={draft.portfolioClientsLabel} onChange={event => change("portfolioClientsLabel", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground md:col-span-2">Portfolio intro<Textarea rows={3} value={draft.portfolioBody} onChange={event => change("portfolioBody", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground md:col-span-2">Clients, one per line<Textarea rows={4} value={draft.portfolioClients.join("\n")} onChange={event => change("portfolioClients", event.target.value.split("\n").map(value => value.trim()).filter(Boolean))} /></label><label className="space-y-1 text-xs text-muted-foreground">Closing eyebrow<Input value={draft.portfolioCtaEyebrow} onChange={event => change("portfolioCtaEyebrow", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground">Closing heading<Input value={draft.portfolioCtaTitle} onChange={event => change("portfolioCtaTitle", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground">Closing button<Input value={draft.portfolioCtaLabel} onChange={event => change("portfolioCtaLabel", event.target.value)} /></label></div><div className="flex items-center justify-between gap-3"><h4 className="text-sm font-medium">Portfolio categories</h4><Button type="button" variant="outline" size="sm" onClick={() => change("projects", [...draft.projects, { id: makeId("project"), title: "New category", image: "", description: "", category: "Events" }])}><Plus className="mr-2 h-4 w-4" />Add category</Button></div><SortableList items={draft.projects} onChange={items => change("projects", items)} removeLabel={item => `Remove ${item.title}`} render={(project, index) => <div className="grid gap-3 md:grid-cols-2"><Input value={project.title} aria-label={`Category ${index + 1} title`} placeholder="Display title" onChange={event => change("projects", draft.projects.map(item => item.id === project.id ? { ...item, title: event.target.value } : item))} /><Input value={project.category} aria-label={`Category ${index + 1} gallery filter`} placeholder="Gallery filter" onChange={event => change("projects", draft.projects.map(item => item.id === project.id ? { ...item, category: event.target.value } : item))} /><Textarea className="md:col-span-2" rows={2} value={project.description} aria-label={`Category ${index + 1} description`} onChange={event => change("projects", draft.projects.map(item => item.id === project.id ? { ...item, description: event.target.value } : item))} /><ImageUploadField label={`${project.title} cover`} value={project.image} onChange={value => change("projects", draft.projects.map(item => item.id === project.id ? { ...item, image: value } : item))} /></div>} />
       <div onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); uploadGalleryFiles(event.dataTransfer.files); }} className="flex flex-wrap items-center justify-between gap-4 rounded-md border border-dashed border-border p-4"><div><h4 className="text-sm font-medium">Portfolio gallery</h4><p className="text-[11px] text-muted-foreground">Drop multiple original photos here, then drag rows into order.</p></div><input id={bulkInputId} type="file" multiple accept="image/jpeg,image/png,image/webp,image/avif" className="hidden" onChange={event => event.target.files && uploadGalleryFiles(event.target.files)} /><Button asChild type="button" variant="outline" size="sm" disabled={bulkUploading}><label htmlFor={bulkInputId} className="cursor-pointer">{bulkUploading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ImagePlus className="mr-2 h-4 w-4" />}Upload photos</label></Button></div>
-      <SortableList items={draft.galleryImages} onChange={items => change("galleryImages", items)} removeLabel={item => `Remove ${item.alt || "gallery photo"}`} render={(item, index) => <div className="grid gap-3 md:grid-cols-2"><Input value={item.alt} aria-label={`Gallery photo ${index + 1} description`} placeholder="Accessible photo description" onChange={event => change("galleryImages", draft.galleryImages.map(photo => photo.id === item.id ? { ...photo, alt: event.target.value } : photo))} /><Input value={item.category} aria-label={`Gallery photo ${index + 1} category`} placeholder="Category" onChange={event => change("galleryImages", draft.galleryImages.map(photo => photo.id === item.id ? { ...photo, category: event.target.value } : photo))} /><ImageUploadField label={`Gallery photo ${index + 1}`} value={item.image} onChange={value => change("galleryImages", draft.galleryImages.map(photo => photo.id === item.id ? { ...photo, image: value } : photo))} /></div>} />
+      <GalleryGridEditor items={draft.galleryImages} onChange={items => change("galleryImages", items)} />
     </EditorSection>
 
     <EditorSection title="Concert page" description="Edit the dedicated live-music page and add concert photos directly to it."><div className="grid gap-4 md:grid-cols-2"><label className="space-y-1 text-xs text-muted-foreground">Eyebrow<Input value={draft.concertEyebrow} onChange={event => change("concertEyebrow", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground">Page heading<Input value={draft.concertTitle} onChange={event => change("concertTitle", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground md:col-span-2">Introduction<Textarea rows={4} value={draft.concertBody} onChange={event => change("concertBody", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground">Highlights, one per line<Textarea rows={5} value={draft.concertHighlights.join("\n")} onChange={event => change("concertHighlights", event.target.value.split("\n").map(value => value.trim()).filter(Boolean))} /></label><ImageUploadField label="Concert hero" value={draft.concertHeroImage} recommendedWidth={3200} onChange={value => change("concertHeroImage", value)} /></div>
@@ -194,5 +240,9 @@ export default function PortfolioEditor() {
     <EditorSection title="Booking enquiry" description="Controls the enquiry page, workflow steps and notifications."><div className="grid gap-4 md:grid-cols-2"><label className="space-y-1 text-xs text-muted-foreground">Page heading<Input value={draft.bookingTitle} onChange={event => change("bookingTitle", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground">Button label<Input value={draft.bookingButtonLabel} onChange={event => change("bookingButtonLabel", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground md:col-span-2">Intro text<Textarea rows={3} value={draft.bookingBody} onChange={event => change("bookingBody", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground">Event choices, one per line<Textarea rows={6} value={draft.enquiryEventTypes.join("\n")} onChange={event => change("enquiryEventTypes", event.target.value.split("\n").map(value => value.trim()).filter(Boolean))} /></label><ImageUploadField label="Enquiry page image" value={draft.enquiryImage} recommendedWidth={3200} onChange={value => change("enquiryImage", value)} /></div><div className="flex items-center justify-between"><h4 className="text-sm font-medium">Enquiry steps</h4><Button type="button" variant="outline" size="sm" onClick={() => change("enquirySteps", [...draft.enquirySteps, { id: makeId("step"), title: "New step", body: "" }])}><Plus className="mr-2 h-4 w-4" />Add step</Button></div><SortableList items={draft.enquirySteps} onChange={items => change("enquirySteps", items)} removeLabel={item => `Remove ${item.title}`} render={step => <div className="grid gap-3 md:grid-cols-2"><Input value={step.title} placeholder="Step title" onChange={event => change("enquirySteps", draft.enquirySteps.map(item => item.id === step.id ? { ...item, title: event.target.value } : item))} /><Textarea rows={2} value={step.body} placeholder="Step description" onChange={event => change("enquirySteps", draft.enquirySteps.map(item => item.id === step.id ? { ...item, body: event.target.value } : item))} /></div>} /><div className="space-y-2"><label className="space-y-1 text-xs text-muted-foreground">Discord webhook URL<Input type="password" value={draft.webhookUrl || ""} onChange={event => change("webhookUrl", event.target.value)} placeholder="https://discord.com/api/webhooks/…" /></label><p className="text-[11px] text-muted-foreground">Stored privately. Enquiries still appear under Admin → Enquiries without a webhook.</p><Button type="button" variant="outline" size="sm" onClick={testWebhook} disabled={testingWebhook}><Send className="mr-2 h-4 w-4" />{testingWebhook ? "Sending…" : "Send test"}</Button></div></EditorSection>
 
     <EditorSection title="Contact and footer"><div className="grid gap-4 md:grid-cols-2"><label className="space-y-1 text-xs text-muted-foreground">Location label<Input value={draft.locationLabel} onChange={event => change("locationLabel", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground">Footer heading<Input value={draft.footerTitle} onChange={event => change("footerTitle", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground">Contact email<Input type="email" value={draft.contactEmail} onChange={event => change("contactEmail", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground">Instagram URL<Input value={draft.instagramUrl} onChange={event => change("instagramUrl", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground">Instagram handle<Input value={draft.instagramHandle} onChange={event => change("instagramHandle", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground">LinkedIn URL<Input value={draft.linkedinUrl} onChange={event => change("linkedinUrl", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground md:col-span-2">Featured testimonial<Textarea rows={3} value={draft.testimonial} onChange={event => change("testimonial", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground">Featured client<Input value={draft.testimonialAuthor} onChange={event => change("testimonialAuthor", event.target.value)} /></label></div></EditorSection>
+      </div>
+      {previewOpen && <div className="sticky top-[68px] hidden min-w-0 xl:block"><LivePortfolioPreview draft={draft} /></div>}
+      {previewOpen && <div className="xl:hidden"><LivePortfolioPreview draft={draft} /></div>}
+    </div>
   </div>;
 }

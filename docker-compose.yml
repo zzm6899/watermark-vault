@@ -12,6 +12,7 @@ services:
     environment:
       - TZ=Australia/Sydney
       - PUBLIC_SITE_HOSTS=${PUBLIC_SITE_HOSTS:-zacmclients.photos,www.zacmclients.photos,zacmorganphotography.com,www.zacmorganphotography.com}
+      - CANONICAL_PORTFOLIO_HOST=${CANONICAL_PORTFOLIO_HOST:-zacmorganphotography.com}
       - APP_HOSTS=${APP_HOSTS:-book.zacmclients.photos}
       - ZIP_READY_TTL_MS=${ZIP_READY_TTL_MS:-900000}
       - ZIP_TRANSFERRED_TTL_MS=${ZIP_TRANSFERRED_TTL_MS:-120000}

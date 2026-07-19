@@ -4892,6 +4892,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
   const [allUnlocked, setAllUnlocked] = useState(album?.allUnlocked || false);
   const [watermarkDisabled, setWatermarkDisabled] = useState(album?.watermarkDisabled || false);
   const [purchasingDisabled, setPurchasingDisabled] = useState(album?.purchasingDisabled || false);
+  const [downloadEmailCapture, setDownloadEmailCapture] = useState<"off" | "optional" | "required">(album?.downloadEmailCapture || "off");
   const [savingAlbum, setSavingAlbum] = useState(false);
   const [albumProofingEnabled, setAlbumProofingEnabled] = useState(album?.proofingEnabled || false);
   const [lockDownloadsDuringProofing, setLockDownloadsDuringProofing] = useState(album?.lockDownloadsDuringProofing || false);
@@ -5001,6 +5002,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
       lockDownloadsDuringProofing: lockDownloadsDuringProofing ? true : undefined,
       watermarkDisabled,
       purchasingDisabled,
+      downloadEmailCapture,
       displaySize,
       status: albumStatus,
       _photosStripped: false,
@@ -5445,6 +5447,31 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
             }} />
           </div>
           <p className="text-[10px] font-body text-muted-foreground/50 mt-1">When enabled, all photos can be downloaded. Watermarks still apply unless disabled below.</p>
+
+          {(allUnlocked || freeDownloads > 0) && (
+            <div className="mt-4 border-t border-border/50 pt-4">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-xs font-body text-muted-foreground">Collect email for free downloads</span>
+                <span className="text-[10px] font-body text-primary">{downloadEmailCapture === "off" ? "Off" : downloadEmailCapture === "optional" ? "Ask" : "Required"}</span>
+              </div>
+              <div className="mt-2 grid grid-cols-3 rounded-md border border-border bg-background/50 p-1">
+                {(["off", "optional", "required"] as const).map(policy => (
+                  <button
+                    key={policy}
+                    type="button"
+                    onClick={() => {
+                      setDownloadEmailCapture(policy);
+                      saveAlbumSettingsPatch({ downloadEmailCapture: policy }, `Email capture set to ${policy === "off" ? "off" : policy === "optional" ? "ask" : "required"}`);
+                    }}
+                    className={`h-8 rounded text-[10px] font-body capitalize transition-colors ${downloadEmailCapture === policy ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-secondary hover:text-foreground"}`}
+                  >
+                    {policy === "optional" ? "Ask" : policy}
+                  </button>
+                ))}
+              </div>
+              <p className="mt-1.5 text-[10px] font-body text-muted-foreground/50">Applies only to free access. Paid customers keep their existing checkout email flow. Watermarked and clean downloads are both counted separately in stats.</p>
+            </div>
+          )}
 
           {/* Watermark toggle */}
           <div className="flex items-center justify-between mt-4">
@@ -9074,7 +9101,14 @@ function FinanceView() {
   const [deletingId, setDeletingId] = React.useState<string | null>(null);
   const [expandedDownloadKeys, setExpandedDownloadKeys] = React.useState<Set<string>>(new Set());
   const [financeExpenses, setFinanceExpenses] = React.useState<Expense[]>([]);
+  const [downloadCaptureStats, setDownloadCaptureStats] = React.useState<any>(null);
   React.useEffect(() => { getExpenses().then(setFinanceExpenses).catch(() => {}); }, []);
+  React.useEffect(() => {
+    fetch("/api/admin/download-email-stats")
+      .then(response => response.ok ? response.json() : null)
+      .then(setDownloadCaptureStats)
+      .catch(() => {});
+  }, []);
 
   const toggleDownloadThumbs = (key: string) => {
     setExpandedDownloadKeys(prev => {
@@ -9710,7 +9744,7 @@ function FinanceView() {
             ...allDownloads.map((d: any) => [
               new Date(d.downloadedAt).toLocaleString(),
               `"${(d.albumTitle || "").replace(/"/g, '""')}"`,
-              `"${(d.email || "").replace(/"/g, '""')}"`,
+              `"${(d.clientName || "").replace(/"/g, '""')}"`,
               `"${(d.email || "").replace(/"/g, '""')}"`,
               d.photoCount ?? d.photoIds?.length ?? 0,
               d.quality || "standard",
@@ -9733,7 +9767,7 @@ function FinanceView() {
             <div className="p-4 border-b border-border flex items-center justify-between">
               <div>
                 <h3 className="font-display text-base text-foreground">Download Log</h3>
-                <p className="text-xs font-body text-muted-foreground mt-0.5">{allDownloads.length} download event{allDownloads.length !== 1 ? "s" : ""}</p>
+                <p className="text-xs font-body text-muted-foreground mt-0.5">{allDownloads.length} download event{allDownloads.length !== 1 ? "s" : ""}{downloadCaptureStats?.uniqueEmails ? ` · ${downloadCaptureStats.uniqueEmails} captured email${downloadCaptureStats.uniqueEmails === 1 ? "" : "s"}` : ""}</p>
               </div>
               <div className="flex items-center gap-2">
                 <Button
@@ -9754,6 +9788,21 @@ function FinanceView() {
                 </Button>
               </div>
             </div>
+            {downloadCaptureStats?.totalCaptures > 0 && (
+              <div className="grid grid-cols-2 gap-px border-b border-border bg-border sm:grid-cols-4">
+                {[
+                  ["Captured emails", downloadCaptureStats.uniqueEmails],
+                  ["Tracked downloads", downloadCaptureStats.downloads],
+                  ["Clean photos", downloadCaptureStats.cleanPhotos],
+                  ["Watermarked", downloadCaptureStats.watermarkedPhotos],
+                ].map(([label, value]) => (
+                  <div key={String(label)} className="bg-card px-4 py-3">
+                    <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">{label}</p>
+                    <p className="mt-1 font-display text-xl text-foreground">{Number(value || 0).toLocaleString()}</p>
+                  </div>
+                ))}
+              </div>
+            )}
             <div className="divide-y divide-border max-h-[480px] overflow-y-auto">
               {allDownloads.map((d: any, i: number) => {
                 const entryKey = `${d.albumId}-${d.downloadedAt}`;

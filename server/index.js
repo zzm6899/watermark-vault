@@ -38,6 +38,13 @@ const {
 const { registerRoutes: registerStripeRoutes, registerTenantStripeRoutes } = require("./stripe");
 const { registerRoutes: registerGoogleSheetsRoutes } = require("./google-sheets");
 const {
+  buildDownloadCaptureRecord,
+  freeAccessRequiresCapture,
+  normalizeDownloadEmail,
+  normalizeDownloadEmailPolicy,
+  recordMatchesRequest,
+} = require("./download-email-capture");
+const {
   sendDiscordEmbed,
   notifyNewBooking,
   notifyNewEnquiry,
@@ -79,6 +86,7 @@ const DB_KEYS = {
   PORTFOLIO_PUBLISHED: "wv_portfolio_published",
   PORTFOLIO_SETTINGS: "wv_portfolio_settings",
   ZIP_STATS: "wv_zip_stats",
+  DOWNLOAD_EMAIL_CAPTURES: "wv_download_email_captures",
 };
 
 /** Safe HTML entity escaping to prevent XSS when interpolating user data into email HTML. */
@@ -115,6 +123,154 @@ const publicSiteHosts = () => String(process.env.PUBLIC_SITE_HOSTS || DEFAULT_PU
   .split(",")
   .map(value => value.trim().toLowerCase())
   .filter(Boolean);
+const CANONICAL_PORTFOLIO_HOST = String(process.env.CANONICAL_PORTFOLIO_HOST || "zacmorganphotography.com")
+  .trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/$/, "");
+const CANONICAL_PORTFOLIO_ORIGIN = `https://${CANONICAL_PORTFOLIO_HOST}`;
+const PORTFOLIO_SEO_ROUTES = {
+  "/": {
+    title: "Zac Morgan Photography | Sydney Event Photographer",
+    description: "Sydney event photographer Zac Morgan captures weddings, concerts, sport, corporate events and hospitality with vivid, candid imagery.",
+  },
+  "/portfolio": {
+    title: "Photography Portfolio | Zac Morgan Photography",
+    description: "Explore wedding, live music, sports, cosplay, corporate event and hospitality photography by Sydney photographer Zac Morgan.",
+  },
+  "/concerts": {
+    title: "Concert & Live Music Photography | Zac Morgan",
+    description: "Live music and concert photography from Sydney venues, festivals and performances, captured by Zac Morgan.",
+  },
+  "/about": {
+    title: "About Zac Morgan | Sydney Event Photographer",
+    description: "Meet Sydney event photographer Zac Morgan and learn about his candid, people-focused approach to weddings, sport, music and events.",
+  },
+  "/testimonials": {
+    title: "Client Testimonials | Zac Morgan Photography",
+    description: "Read feedback from wedding, event and commercial photography clients who have worked with Sydney photographer Zac Morgan.",
+  },
+  "/enquire": {
+    title: "Photography Enquiry | Zac Morgan Photography",
+    description: "Enquire about wedding, event, concert, sports, corporate or hospitality photography in Sydney and beyond.",
+  },
+};
+const PORTFOLIO_ROUTE_ALIASES = new Map([
+  ["/concert", "/concerts"],
+  ["/contact", "/enquire"],
+  ["/index.html", "/"],
+]);
+const PORTFOLIO_SOCIAL_IMAGE = `${CANONICAL_PORTFOLIO_ORIGIN}/portfolio/curated/sports-hyrox-leap.jpg`;
+
+function normalizedRequestPath(value) {
+  const pathname = String(value || "/");
+  return pathname.length > 1 ? pathname.replace(/\/+$/, "") : "/";
+}
+
+function isPortfolioSiteHost(hostname) {
+  return publicSiteHosts().includes(String(hostname || "").toLowerCase());
+}
+
+function portfolioCanonicalUrl(routePath) {
+  return `${CANONICAL_PORTFOLIO_ORIGIN}${routePath === "/" ? "/" : routePath}`;
+}
+
+function portfolioStructuredData(routePath, title) {
+  const canonicalUrl = portfolioCanonicalUrl(routePath);
+  const graph = [
+    {
+      "@type": "WebSite",
+      "@id": `${CANONICAL_PORTFOLIO_ORIGIN}/#website`,
+      url: `${CANONICAL_PORTFOLIO_ORIGIN}/`,
+      name: "Zac Morgan Photography",
+      inLanguage: "en-AU",
+    },
+    {
+      "@type": ["LocalBusiness", "ProfessionalService"],
+      "@id": `${CANONICAL_PORTFOLIO_ORIGIN}/#business`,
+      name: "Zac Morgan Photography",
+      description: "Sydney event and commercial photography studio",
+      url: `${CANONICAL_PORTFOLIO_ORIGIN}/`,
+      image: PORTFOLIO_SOCIAL_IMAGE,
+      email: "zacmorganphotography@gmail.com",
+      areaServed: { "@type": "City", name: "Sydney" },
+      founder: { "@id": `${CANONICAL_PORTFOLIO_ORIGIN}/#zac-morgan` },
+      sameAs: ["https://www.instagram.com/zacmphotos/", "https://www.linkedin.com/in/zacmorgan1/"],
+      knowsAbout: ["Event photography", "Wedding photography", "Concert photography", "Sports photography", "Corporate photography", "Food photography"],
+    },
+    {
+      "@type": "Person",
+      "@id": `${CANONICAL_PORTFOLIO_ORIGIN}/#zac-morgan`,
+      name: "Zac Morgan",
+      jobTitle: "Photographer",
+      url: `${CANONICAL_PORTFOLIO_ORIGIN}/about`,
+      worksFor: { "@id": `${CANONICAL_PORTFOLIO_ORIGIN}/#business` },
+      sameAs: ["https://www.instagram.com/zacmphotos/", "https://www.linkedin.com/in/zacmorgan1/"],
+    },
+    {
+      "@type": "WebPage",
+      "@id": `${canonicalUrl}#webpage`,
+      url: canonicalUrl,
+      name: title,
+      isPartOf: { "@id": `${CANONICAL_PORTFOLIO_ORIGIN}/#website` },
+      about: { "@id": `${CANONICAL_PORTFOLIO_ORIGIN}/#business` },
+      inLanguage: "en-AU",
+    },
+  ];
+  if (routePath !== "/") {
+    graph.push({
+      "@type": "BreadcrumbList",
+      itemListElement: [
+        { "@type": "ListItem", position: 1, name: "Home", item: `${CANONICAL_PORTFOLIO_ORIGIN}/` },
+        { "@type": "ListItem", position: 2, name: title.split(" | ")[0], item: canonicalUrl },
+      ],
+    });
+  }
+  return JSON.stringify({ "@context": "https://schema.org", "@graph": graph }).replace(/</g, "\\u003c");
+}
+
+function portfolioSeoBlock(routePath) {
+  const meta = PORTFOLIO_SEO_ROUTES[routePath] || PORTFOLIO_SEO_ROUTES["/"];
+  const canonicalUrl = portfolioCanonicalUrl(routePath);
+  const title = escapeHtml(meta.title);
+  const description = escapeHtml(meta.description);
+  return `<!-- SEO:START -->
+    <title>${title}</title>
+    <meta name="description" content="${description}" />
+    <meta name="author" content="Zac Morgan Photography" />
+    <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1" />
+    <link rel="canonical" href="${canonicalUrl}" />
+    <link rel="icon" href="/portfolio/logo.png" type="image/png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <meta property="og:site_name" content="Zac Morgan Photography" />
+    <meta property="og:title" content="${title}" />
+    <meta property="og:description" content="${description}" />
+    <meta property="og:type" content="website" />
+    <meta property="og:locale" content="en_AU" />
+    <meta property="og:url" content="${canonicalUrl}" />
+    <meta property="og:image" content="${PORTFOLIO_SOCIAL_IMAGE}" />
+    <meta property="og:image:width" content="3000" />
+    <meta property="og:image:height" content="2004" />
+    <meta property="og:image:alt" content="Athletes in motion photographed by Zac Morgan" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="${title}" />
+    <meta name="twitter:description" content="${description}" />
+    <meta name="twitter:image" content="${PORTFOLIO_SOCIAL_IMAGE}" />
+    <meta name="twitter:image:alt" content="Athletes in motion photographed by Zac Morgan" />
+    <script type="application/ld+json">${portfolioStructuredData(routePath, meta.title)}</script>
+    <!-- SEO:END -->`;
+}
+
+function platformSeoBlock() {
+  return `<!-- SEO:START -->
+    <title>PhotoFlow - Booking & Client Galleries</title>
+    <meta name="description" content="Photography booking, payments and private client gallery delivery powered by PhotoFlow." />
+    <meta name="author" content="PhotoFlow" />
+    <meta name="robots" content="noindex, nofollow, noarchive" />
+    <meta property="og:title" content="PhotoFlow - Booking & Client Galleries" />
+    <meta property="og:description" content="Photography booking, payments and private client gallery delivery powered by PhotoFlow." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary" />
+    <!-- SEO:END -->`;
+}
 const DATA_DIR = process.env.DATA_DIR || "/data";
 const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
 const DB_FILE = path.join(DATA_DIR, "db.json");
@@ -342,6 +498,31 @@ app.use((req, res, next) => {
   res.setHeader("Permissions-Policy", "camera=(self), microphone=(), geolocation=()");
   if (req.secure || req.headers["x-forwarded-proto"] === "https") {
     res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+  }
+  const requestPath = normalizedRequestPath(req.path);
+  if (requestPath.startsWith("/admin") || requestPath.startsWith("/api") || requestPath.startsWith("/portfolio-preview") || requestPath.startsWith("/downloads")) {
+    res.setHeader("X-Robots-Tag", "noindex, nofollow, noarchive");
+  }
+  if (isPortfolioSiteHost(req.hostname)) {
+    res.setHeader("Content-Language", "en-AU");
+    res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+    res.setHeader("Content-Security-Policy", "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; form-action 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob:; connect-src 'self'; upgrade-insecure-requests");
+  }
+  next();
+});
+app.use((req, res, next) => {
+  if (!isPortfolioSiteHost(req.hostname)) return next();
+  const requestPath = normalizedRequestPath(req.path);
+  if (requestPath === "/api" || requestPath.startsWith("/api/")) return next();
+  const canonicalPath = PORTFOLIO_ROUTE_ALIASES.get(requestPath) || requestPath;
+  const forwardedProto = String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim().toLowerCase();
+  const requiresHttps = forwardedProto && forwardedProto !== "https";
+  const requiresCanonicalHost = String(req.hostname || "").toLowerCase() !== CANONICAL_PORTFOLIO_HOST;
+  const requiresCanonicalPath = canonicalPath !== requestPath || (req.path.length > 1 && req.path.endsWith("/"));
+  if ((requiresHttps || requiresCanonicalHost || requiresCanonicalPath) && (req.method === "GET" || req.method === "HEAD")) {
+    const queryIndex = req.originalUrl.indexOf("?");
+    const query = queryIndex >= 0 ? req.originalUrl.slice(queryIndex) : "";
+    return res.redirect(308, `${portfolioCanonicalUrl(canonicalPath)}${query}`);
   }
   next();
 });
@@ -976,7 +1157,7 @@ async function requireAuth(req, res, next) {
   return res.status(401).json({ error: "Authentication required" });
 }
 
-const SENSITIVE_STORE_KEYS = new Set(["wv_contacts", "wv_invoices", "wv_pixieset_import_audit"]);
+const SENSITIVE_STORE_KEYS = new Set(["wv_contacts", "wv_invoices", "wv_pixieset_import_audit", DB_KEYS.DOWNLOAD_EMAIL_CAPTURES]);
 function isSensitiveStoreKey(key) {
   return SENSITIVE_STORE_KEYS.has(String(key || ""));
 }
@@ -1413,6 +1594,9 @@ app.put("/api/albums/:albumId", (req, res) => {
   const albums = _parseAlbumsFromDb(db[ALBUMS_KEY]);
   const idx = albums.findIndex(a => a.id === albumId);
   const incoming = { ...req.body, id: albumId };
+  if (Object.prototype.hasOwnProperty.call(incoming, "downloadEmailCapture")) {
+    incoming.downloadEmailCapture = normalizeDownloadEmailPolicy(incoming.downloadEmailCapture);
+  }
   // If the client is sending a bandwidth-saving stub (_photosStripped:true, photos:[])
   // don't overwrite the server's real photos array with the empty stub.  Stubs are only
   // used for metadata-only updates (e.g. toggling the enabled flag from the albums list
@@ -2709,14 +2893,14 @@ function getPhotoDownloadAccess(filename, sessionKey, albumId) {
   try {
     const db = readDb();
     const found = findAlbumById(db, albumId);
-    if (!found) return { accessible: false, clean: false };
+    if (!found) return { accessible: false, clean: false, reason: "album-not-found" };
     const album = found.album;
 
-    if (album.purchasingDisabled) return { accessible: false, clean: false };
+    if (album.purchasingDisabled) return { accessible: false, clean: false, reason: "purchasing-disabled" };
     if (album.lockDownloadsDuringProofing && album.proofingEnabled) {
       const stage = album.proofingStage || "not-started";
       if (stage !== "not-started" && stage !== "finals-delivered") {
-        return { accessible: false, clean: false };
+        return { accessible: false, clean: false, reason: "proofing-locked" };
       }
     }
 
@@ -2725,35 +2909,35 @@ function getPhotoDownloadAccess(filename, sessionKey, albumId) {
       const urlBasename = url.split("?")[0].split("/").pop() || "";
       return urlBasename === filename;
     });
-    if (!photo) return { accessible: false, clean: false };
+    if (!photo) return { accessible: false, clean: false, reason: "photo-not-found" };
 
     const albumClean = album.watermarkDisabled === true;
     const sessionPurchase = album.sessionPurchases?.[sessionKey];
     // Paid entitlements always win over a free album-wide unlock and receive
     // originals. The global unlock can still intentionally remain watermarked.
-    if (sessionPurchase?.fullAlbum === true) return { accessible: true, clean: true };
-    if (photo.paid) return { accessible: true, clean: true };
-    if (sessionPurchase?.photoIds?.includes(photo.id)) return { accessible: true, clean: true };
-    if (Array.isArray(album.paidPhotoIds) && album.paidPhotoIds.includes(photo.id)) return { accessible: true, clean: true };
+    if (sessionPurchase?.fullAlbum === true) return { accessible: true, clean: true, reason: "paid-album" };
+    if (photo.paid) return { accessible: true, clean: true, reason: "paid-photo" };
+    if (sessionPurchase?.photoIds?.includes(photo.id)) return { accessible: true, clean: true, reason: "paid-photo" };
+    if (Array.isArray(album.paidPhotoIds) && album.paidPhotoIds.includes(photo.id)) return { accessible: true, clean: true, reason: "paid-photo" };
 
     const bankApproved = (album.downloadRequests || []).some(
       r => (r.status === "approved" || r.status === "completed") &&
            Array.isArray(r.photoIds) && r.photoIds.includes(photo.id)
     );
-    if (bankApproved) return { accessible: true, clean: true };
-    if (album.allUnlocked) return { accessible: true, clean: albumClean };
+    if (bankApproved) return { accessible: true, clean: true, reason: "approved-request" };
+    if (album.allUnlocked) return { accessible: true, clean: albumClean, reason: "album-unlock" };
 
     const sessionData = db[`wv_session_${sessionKey}_${albumId}`];
     const sessionParsed = typeof sessionData === "string" ? JSON.parse(sessionData) : sessionData;
-    if (sessionParsed?.unlockedPhotoIds?.includes(photo.id)) return { accessible: true, clean: albumClean };
+    if (sessionParsed?.unlockedPhotoIds?.includes(photo.id)) return { accessible: true, clean: albumClean, reason: "session-unlock" };
 
     const sessionFreeUsed = album.usedFreeDownloads?.[sessionKey] || 0;
     const freeQuota = typeof album.freeDownloads === "number" ? album.freeDownloads : 5;
-    if (sessionFreeUsed < freeQuota) return { accessible: true, clean: albumClean };
+    if (sessionFreeUsed < freeQuota) return { accessible: true, clean: albumClean, reason: "free-quota" };
 
-    return { accessible: false, clean: false };
+    return { accessible: false, clean: false, reason: "payment-required" };
   } catch {
-    return { accessible: false, clean: false };
+    return { accessible: false, clean: false, reason: "access-error" };
   }
 }
 
@@ -3067,6 +3251,27 @@ app.get("/api/photo/:filename/original", async (req, res) => {
   const access = getPhotoDownloadAccess(safeName, sessionKey, albumId);
   if (!access.accessible || !access.clean) {
     return res.status(403).send("Forbidden");
+  }
+
+  if (FREE_DOWNLOAD_REASONS.has(access.reason)) {
+    const albumMatch = findAlbumById(readDb(), albumId);
+    const policy = normalizeDownloadEmailPolicy(albumMatch?.album?.downloadEmailCapture);
+    if (policy === "required") {
+      const captureId = typeof req.query.downloadEmailCaptureId === "string"
+        ? req.query.downloadEmailCaptureId.slice(0, 120)
+        : "";
+      const validCapture = captureId && readDownloadEmailCaptures().some(record =>
+        record.id === captureId
+        && recordMatchesRequest(record, albumId, sessionKey, DOWNLOAD_CAPTURE_SECRET)
+      );
+      if (!validCapture) {
+        return res.status(428).json({
+          error: "Email address required before downloading this free album",
+          code: "DOWNLOAD_EMAIL_REQUIRED",
+          policy,
+        });
+      }
+    }
   }
 
   res.sendFile(filepath);
@@ -3730,7 +3935,183 @@ app.post("/api/upload/bulk-delete", uploadDeleteLimiter, async (req, res) => {
 //   { filenames: string[], sessionKey, albumId }   — all clean originals (legacy)
 //   { files: [{filename, clean}], sessionKey, albumId } — per-file clean/watermarked
 const downloadZipLimiter = rateLimit({ windowMs: 60_000, max: 6, standardHeaders: true, legacyHeaders: false, message: { error: "Too many zip requests — please wait before retrying" } });
+const downloadEmailLimiter = rateLimit({ windowMs: 60_000, max: 12, standardHeaders: true, legacyHeaders: false, message: { error: "Too many email capture attempts — please wait" } });
 const zipJobs = new Map();
+const FREE_DOWNLOAD_REASONS = new Set(["album-unlock", "session-unlock", "free-quota"]);
+const DOWNLOAD_CAPTURE_RETENTION_MS = 2 * 365 * 24 * 60 * 60 * 1000;
+const DOWNLOAD_CAPTURE_MAX_RECORDS = 20_000;
+const DOWNLOAD_CAPTURE_SECRET = process.env.DOWNLOAD_CAPTURE_HASH_SECRET
+  || process.env.SESSION_SECRET
+  || process.env.SUPER_ADMIN_PASSWORD
+  || "watermark-vault-download-capture";
+
+function readDownloadEmailCaptures(db = readDb()) {
+  const records = dbGet(db, DB_KEYS.DOWNLOAD_EMAIL_CAPTURES, []);
+  return Array.isArray(records) ? records : [];
+}
+
+function pruneDownloadEmailCaptures(records, now = Date.now()) {
+  const cutoff = now - DOWNLOAD_CAPTURE_RETENTION_MS;
+  return records
+    .filter(record => {
+      const timestamp = Date.parse(record.updatedAt || record.createdAt || "");
+      return Number.isFinite(timestamp) && timestamp >= cutoff;
+    })
+    .slice(-DOWNLOAD_CAPTURE_MAX_RECORDS);
+}
+
+function saveDownloadEmailCaptures(db, records) {
+  db[DB_KEYS.DOWNLOAD_EMAIL_CAPTURES] = pruneDownloadEmailCaptures(records);
+  writeDb(db);
+}
+
+function createOrReuseDownloadEmailCapture({ email, albumMatch, sessionKey, req }) {
+  const normalizedEmail = normalizeDownloadEmail(email);
+  if (!normalizedEmail) return { error: "A valid email address is required" };
+  const db = readDb();
+  const records = readDownloadEmailCaptures(db);
+  const candidate = buildDownloadCaptureRecord({
+    email: normalizedEmail,
+    album: albumMatch.album,
+    tenantSlug: albumMatch.tenantSlug,
+    sessionKey,
+    ip: req.ip,
+    userAgent: req.get("user-agent"),
+    secret: DOWNLOAD_CAPTURE_SECRET,
+  });
+  let record = records.find(existing =>
+    existing.email === normalizedEmail
+    && recordMatchesRequest(existing, albumMatch.album.id, sessionKey, DOWNLOAD_CAPTURE_SECRET)
+  );
+  if (record) {
+    record.updatedAt = new Date().toISOString();
+    record.userAgent = candidate.userAgent;
+    record.ipHash = candidate.ipHash;
+  } else {
+    record = candidate;
+    records.push(record);
+  }
+  saveDownloadEmailCaptures(db, records);
+  return { record };
+}
+
+function resolveDownloadEmailCapture(req, albumId, sessionKey, accessibleFiles) {
+  const freeFiles = accessibleFiles.filter(file => FREE_DOWNLOAD_REASONS.has(file.accessReason));
+  if (freeFiles.length === 0) return { ok: true, record: null, freeFiles };
+
+  const albumMatch = findAlbumById(readDb(), albumId);
+  if (!albumMatch) return { ok: false, status: 404, error: "Album not found" };
+  const policy = normalizeDownloadEmailPolicy(albumMatch.album.downloadEmailCapture);
+  if (policy === "off") return { ok: true, record: null, freeFiles, policy };
+  let record = null;
+  const captureId = typeof req.body.downloadEmailCaptureId === "string"
+    ? req.body.downloadEmailCaptureId.slice(0, 120)
+    : "";
+  if (captureId) {
+    record = readDownloadEmailCaptures().find(candidate =>
+      candidate.id === captureId
+      && recordMatchesRequest(candidate, albumMatch.album.id, sessionKey, DOWNLOAD_CAPTURE_SECRET)
+    ) || null;
+  }
+
+  const suppliedEmail = typeof req.body.email === "string" ? req.body.email.trim() : "";
+  if (!record && suppliedEmail) {
+    const result = createOrReuseDownloadEmailCapture({
+      email: suppliedEmail,
+      albumMatch,
+      sessionKey,
+      req,
+    });
+    if (result.error) return { ok: false, status: 400, error: result.error };
+    record = result.record;
+  }
+
+  if (freeAccessRequiresCapture(policy, true, !!record)) {
+    return {
+      ok: false,
+      status: 428,
+      error: "Email address required before downloading this free album",
+      code: "DOWNLOAD_EMAIL_REQUIRED",
+      policy,
+    };
+  }
+  return { ok: true, record, freeFiles, policy };
+}
+
+function recordCapturedDownload(record, { requested, accessibleFiles, quality }) {
+  if (!record) return;
+  const db = readDb();
+  const records = readDownloadEmailCaptures(db);
+  const stored = records.find(candidate => candidate.id === record.id);
+  if (!stored) return;
+  const now = new Date().toISOString();
+  const watermarkedPhotos = accessibleFiles.filter(file => !file.clean).length;
+  stored.updatedAt = now;
+  stored.firstDownloadedAt ||= now;
+  stored.lastDownloadedAt = now;
+  stored.downloadCount = Number(stored.downloadCount || 0) + 1;
+  stored.requestedPhotos = Number(stored.requestedPhotos || 0) + Number(requested || 0);
+  stored.includedPhotos = Number(stored.includedPhotos || 0) + accessibleFiles.length;
+  stored.watermarkedPhotos = Number(stored.watermarkedPhotos || 0) + watermarkedPhotos;
+  stored.cleanPhotos = Number(stored.cleanPhotos || 0) + (accessibleFiles.length - watermarkedPhotos);
+  stored.lastQuality = quality;
+  saveDownloadEmailCaptures(db, records);
+}
+
+app.post("/api/download/email-capture", downloadEmailLimiter, (req, res) => {
+  const { albumId, sessionKey, email } = req.body || {};
+  if (!albumId || !sessionKey) return res.status(400).json({ error: "albumId and sessionKey are required" });
+  const albumMatch = findAlbumById(readDb(), albumId);
+  if (!albumMatch) return res.status(404).json({ error: "Album not found" });
+  const policy = normalizeDownloadEmailPolicy(albumMatch.album.downloadEmailCapture);
+  if (policy === "off") return res.status(409).json({ error: "Email capture is not enabled for this album", policy });
+  const result = createOrReuseDownloadEmailCapture({ email, albumMatch, sessionKey, req });
+  if (result.error) return res.status(400).json({ error: result.error });
+  res.status(201).json({
+    ok: true,
+    captureId: result.record.id,
+    policy,
+    albumId: albumMatch.album.id,
+  });
+});
+
+app.post("/api/download/email-capture/complete", downloadEmailLimiter, (req, res) => {
+  const { captureId, albumId, sessionKey } = req.body || {};
+  if (!captureId || !albumId || !sessionKey) return res.status(400).json({ error: "captureId, albumId and sessionKey are required" });
+  const record = readDownloadEmailCaptures().find(candidate =>
+    candidate.id === String(captureId).slice(0, 120)
+    && recordMatchesRequest(candidate, albumId, sessionKey, DOWNLOAD_CAPTURE_SECRET)
+  );
+  if (!record) return res.status(404).json({ error: "Email capture not found for this download session" });
+  const included = Math.max(0, Math.min(MAX_ZIP_FILES, Number(req.body.included) || 0));
+  const clean = Math.max(0, Math.min(included, Number(req.body.clean) || 0));
+  const requested = Math.max(included, Math.min(MAX_ZIP_FILES, Number(req.body.requested) || included));
+  recordCapturedDownload(record, {
+    requested,
+    accessibleFiles: Array.from({ length: included }, (_, index) => ({ clean: index < clean })),
+    quality: ["2mb", "5mb", "original"].includes(req.body.quality) ? req.body.quality : "original",
+  });
+  res.json({ ok: true });
+});
+
+app.get("/api/admin/download-email-stats", requireAuth, (req, res) => {
+  const records = pruneDownloadEmailCaptures(readDownloadEmailCaptures());
+  const albumId = typeof req.query.albumId === "string" ? req.query.albumId : "";
+  const filtered = albumId ? records.filter(record => record.albumId === albumId) : records;
+  const uniqueEmails = new Set(filtered.map(record => record.email));
+  res.setHeader("Cache-Control", "no-store");
+  res.json({
+    totalCaptures: filtered.length,
+    uniqueEmails: uniqueEmails.size,
+    downloads: filtered.reduce((sum, record) => sum + Number(record.downloadCount || 0), 0),
+    requestedPhotos: filtered.reduce((sum, record) => sum + Number(record.requestedPhotos || 0), 0),
+    includedPhotos: filtered.reduce((sum, record) => sum + Number(record.includedPhotos || 0), 0),
+    watermarkedPhotos: filtered.reduce((sum, record) => sum + Number(record.watermarkedPhotos || 0), 0),
+    cleanPhotos: filtered.reduce((sum, record) => sum + Number(record.cleanPhotos || 0), 0),
+    records: filtered.slice(-500).reverse().map(({ sessionHash: _sessionHash, ipHash: _ipHash, ...record }) => record),
+    retentionDays: Math.round(DOWNLOAD_CAPTURE_RETENTION_MS / 86_400_000),
+  });
+});
 
 function readZipStats() {
   return dbGet(readDb(), DB_KEYS.ZIP_STATS, { generated: 0, downloaded: 0, failed: 0, photos: 0, bytes: 0, totalBuildMs: 0, lastGeneratedAt: null, lastDownloadedAt: null });
@@ -3838,7 +4219,16 @@ function collectAccessibleZipFiles(fileList, sessionKey, albumId, quality = "ori
     const photo = albumPhotosByStoredName.get(safeName);
     const preferredName = photo?.originalName || (photo?.title ? `${photo.title}${path.extname(safeName)}` : safeName);
     const archiveName = uniqueZipEntryName(preferredName, safeName, quality, usedArchiveNames);
-    accessibleFiles.push({ safeName, filepath, clean: serveClean, tenantSlug, quality, archiveName, photoId: photo?.id || null });
+    accessibleFiles.push({
+      safeName,
+      filepath,
+      clean: serveClean,
+      tenantSlug,
+      quality,
+      archiveName,
+      photoId: photo?.id || null,
+      accessReason: access.reason,
+    });
   }
   return { accessibleFiles, missingCount, deniedCount, downgradedCount };
 }
@@ -3959,6 +4349,15 @@ app.post("/api/download/zip/start", downloadZipLimiter, async (req, res) => {
     });
   }
 
+  const emailCapture = resolveDownloadEmailCapture(req, albumId, sessionKey, accessibleFiles);
+  if (!emailCapture.ok) {
+    return res.status(emailCapture.status).json({
+      error: emailCapture.error,
+      code: emailCapture.code,
+      policy: emailCapture.policy,
+    });
+  }
+
   const albumName = getZipAlbumName(albumId);
   const jobId = crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString("hex");
   const job = {
@@ -3975,6 +4374,8 @@ app.post("/api/download/zip/start", downloadZipLimiter, async (req, res) => {
     filepath: path.join(ZIP_JOBS_DIR, `${jobId}.zip`),
     includedPhotoIds: accessibleFiles.map(file => file.photoId).filter(Boolean),
     includedFiles: accessibleFiles.map(file => file.safeName),
+    includedAccess: accessibleFiles.map(file => ({ clean: file.clean })),
+    downloadEmailCaptureId: emailCapture.record?.id || null,
     createdAt: Date.now(),
     updatedAt: Date.now(),
   };
@@ -4001,6 +4402,13 @@ app.get("/api/download/zip/:jobId/file", (req, res) => {
       job.downloadRecorded = true;
       job.downloadedAt = Date.now();
       updateZipStats({ downloaded: 1, lastDownloadedAt: new Date(job.downloadedAt).toISOString() });
+      if (job.downloadEmailCaptureId) {
+        recordCapturedDownload({ id: job.downloadEmailCaptureId }, {
+          requested: job.requested,
+          accessibleFiles: job.includedAccess || [],
+          quality: job.quality,
+        });
+      }
     }
     cleanupZipJob(job.id, ZIP_TRANSFERRED_TTL_MS);
   });
@@ -4018,6 +4426,15 @@ app.post("/api/download/zip", downloadZipLimiter, async (req, res) => {
       missing: missingCount,
       denied: deniedCount,
       requested: fileList.length,
+    });
+  }
+
+  const emailCapture = resolveDownloadEmailCapture(req, albumId, sessionKey, accessibleFiles);
+  if (!emailCapture.ok) {
+    return res.status(emailCapture.status).json({
+      error: emailCapture.error,
+      code: emailCapture.code,
+      policy: emailCapture.policy,
     });
   }
 
@@ -4056,7 +4473,10 @@ app.post("/api/download/zip", downloadZipLimiter, async (req, res) => {
   const workerCount = Math.min(ZIP_WATERMARK_CONCURRENCY, accessibleFiles.length);
   try {
     await Promise.all(Array.from({ length: workerCount }, () => addNextFiles()));
-    if (!zipFailed && !res.destroyed) await archive.finalize();
+    if (!zipFailed && !res.destroyed) {
+      await archive.finalize();
+      recordCapturedDownload(emailCapture.record, { requested: fileList.length, accessibleFiles, quality });
+    }
   } catch (err) {
     zipFailed = true;
     console.error("Zip preparation error:", err?.message || err);
@@ -5335,6 +5755,9 @@ app.put("/api/tenant/:slug/albums/:albumId", tenantLimiter, (req, res) => {
   const idx = albums.findIndex(a => a.id === albumId);
   // Strip baked watermark fields before persisting to keep db.json lean.
   const incoming = { ...req.body, id: albumId };
+  if (Object.prototype.hasOwnProperty.call(incoming, "downloadEmailCapture")) {
+    incoming.downloadEmailCapture = normalizeDownloadEmailPolicy(incoming.downloadEmailCapture);
+  }
   // If the client is sending a bandwidth-saving stub (_photosStripped:true, photos:[])
   // don't overwrite the server's real photos array with the empty stub.
   if (incoming._photosStripped) {
@@ -6042,6 +6465,7 @@ app.get("/api/public-album/:albumSlug", (req, res) => {
     const visiblePhotos = (chosen.album.photos || []).filter(photo => !photo.hidden && (chosen.album.showCullRejectsToClient || photo.cull?.status !== "reject"));
     const album = {
       ...chosen.album,
+      downloadEmailCapture: normalizeDownloadEmailPolicy(chosen.album.downloadEmailCapture),
       accessCode: "",
       clientToken: tokenValid ? suppliedToken : undefined,
       clientEmail: undefined,
@@ -6098,19 +6522,36 @@ app.get("/api/tenant/:slug/storage-stats", tenantLimiter, (req, res) => {
 
 // ── Serve React app ───────────────────────────────────
 const distPath = path.join(__dirname, "../dist");
+const portfolioIndexPath = path.join(distPath, "index.html");
+const portfolioIndexHtml = fs.existsSync(portfolioIndexPath) ? fs.readFileSync(portfolioIndexPath, "utf8") : "";
+
+app.get(Object.keys(PORTFOLIO_SEO_ROUTES), (req, res, next) => {
+  if (!isPortfolioSiteHost(req.hostname) || !portfolioIndexHtml) return next();
+  const routePath = normalizedRequestPath(req.path);
+  const html = portfolioIndexHtml.replace(/<!-- SEO:START -->[\s\S]*?<!-- SEO:END -->/, portfolioSeoBlock(routePath));
+  res.setHeader("Cache-Control", "public, max-age=0, must-revalidate");
+  res.setHeader("Cloudflare-CDN-Cache-Control", "public, max-age=300, stale-while-revalidate=86400, stale-if-error=86400");
+  res.type("html").send(html);
+});
 // Hashed assets (JS/CSS chunks) are immutable — cache aggressively.
 // index.html must always be re-fetched so the browser picks up new chunk names.
 app.use(
   express.static(distPath, {
+    index: false,
     setHeaders(res, filePath) {
       if (filePath.endsWith("index.html")) {
         res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+      } else if (filePath.endsWith("robots.txt") || filePath.endsWith("sitemap.xml")) {
+        res.setHeader("Cache-Control", "public, max-age=3600, stale-while-revalidate=86400");
+        res.setHeader("Cloudflare-CDN-Cache-Control", "public, max-age=86400, stale-while-revalidate=604800, stale-if-error=604800");
       } else if (filePath.endsWith("sw.js") || /downloads[\\/]+android[\\/]+latest\.(apk|json)$/.test(filePath)) {
         res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
       } else if (filePath.includes(`${path.sep}portfolio${path.sep}`)) {
         res.setHeader("Cache-Control", "public, max-age=300, must-revalidate");
+        res.setHeader("Cloudflare-CDN-Cache-Control", "public, max-age=86400, stale-while-revalidate=604800, stale-if-error=604800");
       } else if (/\.(js|css|woff2?|ttf|eot|svg|png|jpg|jpeg|gif|ico|webp)$/.test(filePath)) {
         res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+        res.setHeader("Cloudflare-CDN-Cache-Control", "public, max-age=31536000, immutable");
       }
     },
   })
@@ -7342,9 +7783,17 @@ app.use("/api", (req, res) => {
   res.status(404).json({ error: "API route not found", path: req.path });
 });
 
-app.get("*", (_req, res) => {
+app.get("*", (req, res) => {
   res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-  res.sendFile(path.join(distPath, "index.html"));
+  if (!portfolioIndexHtml) return res.status(503).send("Application build is unavailable");
+  if (!isPortfolioSiteHost(req.hostname)) {
+    return res.type("html").send(portfolioIndexHtml.replace(/<!-- SEO:START -->[\s\S]*?<!-- SEO:END -->/, platformSeoBlock()));
+  }
+  res.setHeader("X-Robots-Tag", "noindex, nofollow, noarchive");
+  return res.status(404).type("html").send(portfolioIndexHtml.replace(
+    /<meta name="robots" content="[^"]+" \/>/,
+    '<meta name="robots" content="noindex, nofollow, noarchive" />',
+  ));
 });
 
 app.listen(PORT, "0.0.0.0", () => {

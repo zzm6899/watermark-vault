@@ -812,6 +812,14 @@ export default function AlbumDetail() {
     const _timeCmp = _dA !== _dB ? _dA - _dB : _tCmp;
     return sortOrder === "asc" ? _timeCmp : -_timeCmp;
   });
+  const [downloadEmailCaptureId, setDownloadEmailCaptureId] = useState<string>(() => {
+    try { return localStorage.getItem(`wv_download_capture_${albumId}`) || ""; } catch { return ""; }
+  });
+  const [downloadCaptureEmail, setDownloadCaptureEmail] = useState("");
+  const [showDownloadEmailCapture, setShowDownloadEmailCapture] = useState(false);
+  const [downloadEmailSkipped, setDownloadEmailSkipped] = useState(false);
+  const [pendingDownloadIntent, setPendingDownloadIntent] = useState<"all" | "free" | null>(null);
+  const [savingDownloadEmail, setSavingDownloadEmail] = useState(false);
 
   // Keep ref in sync with the current displayed photos without a useEffect (direct assignment
   // is safe here and avoids a conditional-hook violation: this code is reached only when
@@ -861,12 +869,13 @@ export default function AlbumDetail() {
   /** Returns the URL to use when downloading a photo.
    *  Clean photos → authenticated /api/photo/original endpoint (no watermark).
    *  Watermarked photos → plain /uploads/ URL so the server applies the watermark. */
-  const getDownloadSrc = (photo: { src: string; id: string }) => {
+  const getDownloadSrc = (photo: { src: string; id: string }, captureId = downloadEmailCaptureId) => {
     if (isServerMode() && photo.src?.startsWith("/uploads/")) {
       // Strip query params (e.g. ?tenant=slug) to get the bare filename
       const filename = photo.src.split("?")[0].split("/").pop() || "";
       if (isCleanDownload(photo.id)) {
-        return `/api/photo/${encodeURIComponent(filename)}/original?sessionKey=${encodeURIComponent(sessionKey)}&albumId=${encodeURIComponent(album.id)}`;
+        const captureQuery = captureId ? `&downloadEmailCaptureId=${encodeURIComponent(captureId)}` : "";
+        return `/api/photo/${encodeURIComponent(filename)}/original?sessionKey=${encodeURIComponent(sessionKey)}&albumId=${encodeURIComponent(album.id)}${captureQuery}`;
       }
       // Watermarked — the plain upload URL causes the server to apply the watermark
       return photo.src;
@@ -875,8 +884,8 @@ export default function AlbumDetail() {
     return photo.src;
   };
 
-  const downloadPhoto = async (photo: { src: string; id: string; title: string }, quality: DownloadQuality) => {
-    const downloadSrc = getDownloadSrc(photo);
+  const downloadPhoto = async (photo: { src: string; id: string; title: string }, quality: DownloadQuality, captureId = downloadEmailCaptureId) => {
+    const downloadSrc = getDownloadSrc(photo, captureId);
     if (quality === "original") {
       const link = document.createElement("a");
       link.href = downloadSrc;
@@ -909,13 +918,13 @@ export default function AlbumDetail() {
   };
 
   /** Downloads multiple photos as a single zip via the server zip endpoint. */
-  const downloadZip = async (photos: Photo[]): Promise<ZipDownloadResult> => {
+  const downloadZip = async (photos: Photo[], captureId = downloadEmailCaptureId): Promise<ZipDownloadResult> => {
     const serverPhotos = photos.filter(p => p.src.startsWith("/uploads/"));
     const localPhotos = photos.filter(p => !p.src.startsWith("/uploads/"));
 
     // Download local (data-URL) photos individually as fallback
     for (const p of localPhotos) {
-      await downloadPhoto(p, downloadQuality);
+      await downloadPhoto(p, downloadQuality, captureId);
     }
 
     if (serverPhotos.length === 0) return { ok: true, includedPhotoIds: localPhotos.map(photo => photo.id), skipped: 0 };
@@ -933,13 +942,13 @@ export default function AlbumDetail() {
       const startRes = await fetch("/api/download/zip/start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ files, sessionKey, albumId: album.id, quality: downloadQuality }),
+        body: JSON.stringify({ files, sessionKey, albumId: album.id, quality: downloadQuality, downloadEmailCaptureId: captureId || undefined }),
       });
       if (startRes.status === 404) {
         const res = await fetch("/api/download/zip", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ files, sessionKey, albumId: album.id, quality: downloadQuality }),
+          body: JSON.stringify({ files, sessionKey, albumId: album.id, quality: downloadQuality, downloadEmailCaptureId: captureId || undefined }),
         });
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));
@@ -1077,7 +1086,24 @@ export default function AlbumDetail() {
     }
   };
 
-  const executeDownloadFree = async () => {
+  const recordIndividualDownloadCapture = async (captureId: string, photos: Photo[]) => {
+    if (!captureId || photos.length === 0) return;
+    await fetch("/api/download/email-capture/complete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        captureId,
+        albumId: album.id,
+        sessionKey,
+        requested: photos.length,
+        included: photos.length,
+        clean: photos.filter(photo => isCleanDownload(photo.id)).length,
+        quality: downloadQuality,
+      }),
+    }).catch(() => {});
+  };
+
+  const executeDownloadFree = async (captureId = downloadEmailCaptureId, capturedEmail = registeredEmail) => {
     if (isPurchasingLocked) {
       toast.error("Downloads are locked for this gallery");
       return;
@@ -1099,14 +1125,15 @@ export default function AlbumDetail() {
     let completedPhotoIds = toDownload.map(photo => photo.id);
     let skippedCount = 0;
     if (usedZip) {
-      const result = await downloadZip(toDownload as Photo[]);
+      const result = await downloadZip(toDownload as Photo[], captureId);
       downloaded = result.ok;
       completedPhotoIds = result.includedPhotoIds;
       skippedCount = result.skipped;
     } else {
       for (const p of toDownload) {
-        await downloadPhoto(p, downloadQuality);
+        await downloadPhoto(p, downloadQuality, captureId);
       }
+      await recordIndividualDownloadCapture(captureId, toDownload as Photo[]);
     }
     if (!downloaded) {
       setDownloading(false);
@@ -1122,7 +1149,7 @@ export default function AlbumDetail() {
       downloadedAt: new Date().toISOString(),
       quality: downloadQuality,
       sessionKey,
-      email: registeredEmail || undefined,
+      email: capturedEmail || registeredEmail || undefined,
       photoCount: completedPhotoIds.length,
       method: usedZip ? "zip" : "individual",
       skippedCount,
@@ -1144,7 +1171,7 @@ export default function AlbumDetail() {
     setShowDownloadOptions(true);
   };
 
-  const executeDownloadAll = async () => {
+  const executeDownloadAll = async (captureId = downloadEmailCaptureId, capturedEmail = registeredEmail) => {
     setDownloading(true);
     const photos = selectedIds.size > 0
       ? clientDeliverablePhotos.filter(p => selectedIds.has(p.id))
@@ -1154,14 +1181,15 @@ export default function AlbumDetail() {
     let completedPhotoIds = photos.map(photo => photo.id);
     let skippedCount = 0;
     if (usedZip) {
-      const result = await downloadZip(photos as Photo[]);
+      const result = await downloadZip(photos as Photo[], captureId);
       downloaded = result.ok;
       completedPhotoIds = result.includedPhotoIds;
       skippedCount = result.skipped;
     } else {
       for (const p of photos) {
-        await downloadPhoto(p, downloadQuality);
+        await downloadPhoto(p, downloadQuality, captureId);
       }
+      await recordIndividualDownloadCapture(captureId, photos as Photo[]);
     }
     if (!downloaded) {
       setDownloading(false);
@@ -1174,6 +1202,7 @@ export default function AlbumDetail() {
       downloadedAt: new Date().toISOString(),
       quality: downloadQuality,
       sessionKey,
+      email: capturedEmail || registeredEmail || undefined,
       photoCount: completedPhotoIds.length,
       method: usedZip ? "zip" : "individual",
       skippedCount,
@@ -1188,6 +1217,52 @@ export default function AlbumDetail() {
     toast.success(usedZip
       ? `ZIP download started for ${completedPhotoIds.length} photos${skippedCount ? `; ${skippedCount} skipped` : ""}. Track transfer progress in your browser.`
       : `Downloaded ${photos.length} photo${photos.length !== 1 ? "s" : ""}`);
+  };
+
+  const beginConfiguredDownload = (intent: "all" | "free") => {
+    const policy = album.downloadEmailCapture || "off";
+    if (policy !== "off" && !downloadEmailCaptureId && !downloadEmailSkipped) {
+      setPendingDownloadIntent(intent);
+      setDownloadCaptureEmail(registeredEmail || album.clientEmail || "");
+      setShowDownloadEmailCapture(true);
+      return;
+    }
+    if (intent === "all") void executeDownloadAll();
+    else void executeDownloadFree();
+  };
+
+  const saveDownloadEmailAndContinue = async () => {
+    const email = downloadCaptureEmail.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      toast.error("Please enter a valid email address");
+      return;
+    }
+    setSavingDownloadEmail(true);
+    try {
+      const response = await fetch("/api/download/email-capture", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ albumId: album.id, sessionKey, email }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || "Could not save email");
+      const captureId = String(result.captureId || "");
+      setDownloadEmailCaptureId(captureId);
+      setRegisteredEmail(email);
+      try {
+        localStorage.setItem(`wv_download_capture_${albumId}`, captureId);
+        localStorage.setItem(`wv_email_${albumId}`, email);
+      } catch { /* storage may be unavailable */ }
+      const intent = pendingDownloadIntent;
+      setPendingDownloadIntent(null);
+      setShowDownloadEmailCapture(false);
+      if (intent === "all") await executeDownloadAll(captureId, email);
+      if (intent === "free") await executeDownloadFree(captureId, email);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not save email");
+    } finally {
+      setSavingDownloadEmail(false);
+    }
   };
 
   const handlePurchaseSelected = () => {
@@ -2020,7 +2095,7 @@ export default function AlbumDetail() {
                     )}
                   </div>
                   <Button
-                    onClick={canDownload ? executeDownloadAll : executeDownloadFree}
+                    onClick={() => beginConfiguredDownload(canDownload ? "all" : "free")}
                     disabled={downloading}
                     className="w-full bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs tracking-wider uppercase gap-2"
                   >
@@ -2038,6 +2113,51 @@ export default function AlbumDetail() {
                 </>
               );
             })()}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Optional/required email capture for free album downloads */}
+      <Dialog open={showDownloadEmailCapture} onOpenChange={(open) => {
+        if (!open && album.downloadEmailCapture === "required") return;
+        setShowDownloadEmailCapture(open);
+        if (!open) setPendingDownloadIntent(null);
+      }}>
+        <DialogContent className="glass-panel border-border max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="font-display text-xl text-foreground">Email your download receipt</DialogTitle>
+            <DialogDescription className="text-sm font-body text-muted-foreground">
+              {album.downloadEmailCapture === "required"
+                ? "Enter your email to continue with this free download."
+                : "Add your email so the photographer can keep a record of this download."}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="mt-2 space-y-4">
+            <Input
+              type="email"
+              autoComplete="email"
+              value={downloadCaptureEmail}
+              onChange={event => setDownloadCaptureEmail(event.target.value)}
+              onKeyDown={event => { if (event.key === "Enter") void saveDownloadEmailAndContinue(); }}
+              placeholder="your@email.com"
+              className="bg-secondary border-border text-foreground font-body"
+            />
+            <div className="flex gap-2">
+              <Button className="flex-1" disabled={savingDownloadEmail} onClick={() => void saveDownloadEmailAndContinue()}>
+                {savingDownloadEmail ? "Saving…" : "Continue download"}
+              </Button>
+              {album.downloadEmailCapture === "optional" && (
+                <Button variant="outline" onClick={() => {
+                  const intent = pendingDownloadIntent;
+                  setDownloadEmailSkipped(true);
+                  setPendingDownloadIntent(null);
+                  setShowDownloadEmailCapture(false);
+                  if (intent === "all") void executeDownloadAll();
+                  if (intent === "free") void executeDownloadFree();
+                }}>Not now</Button>
+              )}
+            </div>
+            <p className="text-[10px] font-body text-muted-foreground">Used for download records and gallery statistics. Your email is not shown publicly.</p>
           </div>
         </DialogContent>
       </Dialog>
