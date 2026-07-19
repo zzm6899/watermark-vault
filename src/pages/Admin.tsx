@@ -12,7 +12,7 @@ import {
   Star, CheckCircle2, Sparkles, ChevronLeft, ChevronRight, Flag, FileText, Receipt, Printer, AlertCircle, BookOpen,
   ArrowUpDown, MoreHorizontal, TrendingUp, TrendingDown, Key, Globe, Wifi,
   Maximize2, Check, PlusCircle, Pencil, Tags, CalendarDays, Share2, ClipboardList,
-  RadioTower, Smartphone,
+  RadioTower, Smartphone, CalendarPlus, ImagePlus,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -1812,6 +1812,30 @@ function DashboardView() {
     }).filter(stat => stat.sub !== "0 awaiting payment"),
     { label: "Overdue",              value: invOverdue.length,               sub: invOverdue.length > 0 ? "requires attention" : "all on time",         icon: TrendingDown, color: invOverdue.length > 0 ? "text-red-400" : "text-muted-foreground", onClick: () => navigate("/admin/invoices") },
   ] : [];
+  const nextBooking = upcomingBookings[0];
+  const operationsSummary = [
+    {
+      label: "Next session",
+      value: nextBooking ? `${nextBooking.date} · ${nextBooking.time}` : "Nothing scheduled",
+      detail: nextBooking?.clientName || "Open the calendar to plan the next shoot",
+      tone: nextBooking ? "text-primary" : "text-muted-foreground",
+      onClick: () => navigate("/admin/shoot-day"),
+    },
+    {
+      label: "Download approvals",
+      value: `${allPendingRequests.length} waiting`,
+      detail: allPendingRequests.length ? "Client requests need a decision" : "No client requests waiting",
+      tone: allPendingRequests.length ? "text-amber-300" : "text-emerald-400",
+      onClick: () => navigate("/admin/albums"),
+    },
+    {
+      label: "Overdue invoices",
+      value: `${invOverdue.length} overdue`,
+      detail: invOverdue.length ? "Follow up outstanding invoices" : "All issued invoices are on time",
+      tone: invOverdue.length ? "text-red-400" : "text-emerald-400",
+      onClick: () => navigate("/admin/invoices"),
+    },
+  ];
 
   let capturedToday = 0;
   let bestOfCount = 0;
@@ -2000,11 +2024,13 @@ function DashboardView() {
       <div className="admin-page-header">
         <div>
           <h2 className="font-display text-3xl sm:text-4xl leading-none text-foreground">Dashboard</h2>
-          <p className="mt-2 text-sm font-body text-muted-foreground">Bookings, capture activity, and delivery health in one view.</p>
+          <p className="mt-2 text-sm font-body text-muted-foreground">{new Date().toLocaleDateString("en-AU", { weekday: "long", day: "numeric", month: "long" })} · bookings, money and delivery health.</p>
         </div>
-        <Button onClick={() => window.location.href = "/capture"} className="gap-2 font-body text-sm h-10 px-4 shadow-lg shadow-primary/10">
-          <Upload className="w-4 h-4" /><span className="hidden sm:inline">Capture</span>
-        </Button>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <Button variant="outline" onClick={() => navigate("/admin/bookings")} className="gap-2 font-body text-sm h-10 px-3"><CalendarPlus className="w-4 h-4" /><span className="hidden sm:inline">New booking</span></Button>
+          <Button variant="outline" onClick={() => navigate("/admin/albums")} className="gap-2 font-body text-sm h-10 px-3"><ImagePlus className="w-4 h-4" /><span className="hidden sm:inline">New album</span></Button>
+          <Button onClick={() => window.location.href = "/capture"} className="gap-2 font-body text-sm h-10 px-4 shadow-lg shadow-primary/10"><Upload className="w-4 h-4" /><span className="hidden sm:inline">Capture</span></Button>
+        </div>
       </div>
 
       {/* ── Stats grid ── */}
@@ -2039,6 +2065,19 @@ function DashboardView() {
         })}
       </div>
 
+      <div className="mb-4 grid grid-cols-1 gap-2 md:grid-cols-3">
+        {operationsSummary.map(item => (
+          <button key={item.label} type="button" onClick={item.onClick} className="group flex min-h-[76px] items-center justify-between gap-4 rounded-lg border border-border/70 bg-card/45 px-4 py-3 text-left transition-colors hover:border-primary/35 hover:bg-card/75 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/45">
+            <div className="min-w-0">
+              <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">{item.label}</p>
+              <p className={`mt-1 truncate text-sm font-body font-medium ${item.tone}`}>{item.value}</p>
+              <p className="mt-0.5 truncate text-[11px] font-body text-muted-foreground/70">{item.detail}</p>
+            </div>
+            <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-primary" />
+          </button>
+        ))}
+      </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-[1.25fr_0.75fr] gap-3 mb-6">
         <div className="glass-panel rounded-xl p-5 sm:p-6 overflow-hidden">
           <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
@@ -2048,12 +2087,12 @@ function DashboardView() {
                   <Wifi className="w-4 h-4" />
                 </span>
                 <div>
-                  <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground">Wireless Capture</p>
-                  <h3 className="font-display text-2xl leading-none text-foreground">New capture suite</h3>
+                  <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground">Studio operations</p>
+                  <h3 className="font-display text-2xl leading-none text-foreground">Capture and delivery</h3>
                 </div>
               </div>
               <p className="text-xs font-body text-muted-foreground max-w-2xl">
-                Live FTP intake, shoot-day operations, server automations, and upload cleanup are now linked from here. Rejects are hidden from clients by default but stay recoverable for the photographer.
+                Move from live intake to review and client delivery. Rejects remain recoverable and stay hidden from the client gallery.
               </p>
               {latestCaptureTime && (
                 <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground/70 mt-2">

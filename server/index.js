@@ -2514,7 +2514,12 @@ const PORTFOLIO_RETIRED_IMAGE_PATHS = new Set([
   "/portfolio/imported/melanienicholaswedding0152.jpg",
   "/portfolio/gallery/wedding-candid.jpg",
 ]);
-const PORTFOLIO_RETIRED_RIBBON_IMAGE_PATHS = new Set(["/portfolio/gallery/wedding-garden.jpg"]);
+const PORTFOLIO_RETIRED_RIBBON_IMAGE_PATHS = new Set([
+  "/portfolio/gallery/wedding-garden.jpg",
+  "/portfolio/curated/wedding-aa-exit.jpg",
+  "/portfolio/curated/wedding-kj-laugh.jpg",
+  "/portfolio/gallery/wedding-celebration.jpg",
+]);
 const PORTFOLIO_LEGACY_RIBBON_IMAGES = {
   homeRibbonImages: ["/portfolio/gallery/wedding-garden.jpg", "/portfolio/gallery/wedding-celebration.jpg", "/portfolio/gallery/wedding-candid.jpg"],
   aboutRibbonImages: ["/portfolio/gallery/concert-crowd.jpg", "/portfolio/gallery/event-energy.jpg", "/portfolio/gallery/brand-event.jpg"],
@@ -2571,7 +2576,7 @@ const DEFAULT_PORTFOLIO = {
   testimonialsTitle: "The experience matters too.",
   testimonialsIntro: "Feedback from weddings, celebrations, portrait sessions and business events across Sydney.",
   portrait: "/portfolio/portrait.jpg",
-  homeRibbonImages: ["/portfolio/curated/wedding-aa-exit.jpg", "/portfolio/curated/wedding-kj-laugh.jpg", "/portfolio/gallery/wedding-celebration.jpg"],
+  homeRibbonImages: ["/portfolio/imported/oatlandsestatesmallbusinessevent30-10-24109.jpg", "/portfolio/curated/brand-digipark-tunnel.jpg", "/portfolio/curated/food-lexus-live-service.jpg"],
   storyEyebrow: "Ways of seeing",
   storyTitle: "Every room has its own rhythm.",
   philosophyEyebrow: "The work",

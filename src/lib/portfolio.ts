@@ -225,7 +225,7 @@ export const defaultPortfolioSite: PortfolioSite = {
   testimonialsTitle: "The experience matters too.",
   testimonialsIntro: "Feedback from weddings, celebrations, portrait sessions and business events across Sydney.",
   portrait: "/portfolio/portrait.jpg",
-  homeRibbonImages: ["/portfolio/curated/wedding-aa-exit.jpg", "/portfolio/curated/wedding-kj-laugh.jpg", "/portfolio/gallery/wedding-celebration.jpg"],
+  homeRibbonImages: ["/portfolio/imported/oatlandsestatesmallbusinessevent30-10-24109.jpg", "/portfolio/curated/brand-digipark-tunnel.jpg", "/portfolio/curated/food-lexus-live-service.jpg"],
   storyEyebrow: "Ways of seeing",
   storyTitle: "Every room has its own rhythm.",
   philosophyEyebrow: "The work",

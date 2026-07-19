@@ -23,6 +23,8 @@ describe("portfolio archive import", () => {
     expect(defaultPortfolioSite.galleryImages.some(item => item.alt.toLowerCase().includes("kissing"))).toBe(false);
     expect(new Set(defaultPortfolioSite.homeRibbonImages).size).toBe(defaultPortfolioSite.homeRibbonImages.length);
     expect(defaultPortfolioSite.homeRibbonImages).not.toContain("/portfolio/gallery/wedding-garden.jpg");
+    expect(defaultPortfolioSite.homeRibbonImages.every(image => !image.toLowerCase().includes("wedding"))).toBe(true);
+    expect(defaultPortfolioSite.homeRibbonImages).toContain("/portfolio/curated/brand-digipark-tunnel.jpg");
     const originalResolutionImages = [
       ...importedPortfolioGalleryImages.map(item => item.image),
       "/portfolio/gallery/concert-crowd.jpg",
