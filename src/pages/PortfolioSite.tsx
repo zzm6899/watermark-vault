@@ -85,9 +85,37 @@ function HomePage({ site, preview }: { site: PortfolioSiteData; preview: boolean
   </>;
 }
 
+function buildGalleryFrames(images: PortfolioGalleryImage[], ratios: Record<string, number>, containerWidth: number) {
+  const frames = new Map<string, { width: number; height: number }>();
+  if (!containerWidth) return frames;
+  const gap = containerWidth <= 760 ? 3 : 7;
+  const targetHeight = containerWidth <= 760 ? 230 : Math.min(460, Math.max(320, containerWidth * .23));
+  let row: PortfolioGalleryImage[] = [];
+  let ratioTotal = 0;
+  const commitRow = (last: boolean) => {
+    if (!row.length) return;
+    const availableWidth = containerWidth - gap * (row.length - 1);
+    const filledHeight = availableWidth / ratioTotal;
+    const height = last ? Math.min(targetHeight, filledHeight) : filledHeight;
+    row.forEach(image => frames.set(image.id, { width: (ratios[image.id] || 1.5) * height, height }));
+    row = [];
+    ratioTotal = 0;
+  };
+  images.forEach((image, index) => {
+    row.push(image);
+    ratioTotal += ratios[image.id] || 1.5;
+    const projectedWidth = ratioTotal * targetHeight + gap * (row.length - 1);
+    if (projectedWidth >= containerWidth || index === images.length - 1) commitRow(index === images.length - 1);
+  });
+  return frames;
+}
+
 function PortfolioGallery({ images, initialFilter, showFilters = true }: { images: PortfolioGalleryImage[]; initialFilter?: string | null; showFilters?: boolean }) {
   const [filter, setFilter] = useState(initialFilter || "All");
   const [selected, setSelected] = useState<number | null>(null);
+  const [imageRatios, setImageRatios] = useState<Record<string, number>>({});
+  const [galleryWidth, setGalleryWidth] = useState(0);
+  const galleryRef = useRef<HTMLDivElement>(null);
   const lightboxRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
   const restoreFocusRef = useRef<HTMLElement | null>(null);
@@ -95,6 +123,7 @@ function PortfolioGallery({ images, initialFilter, showFilters = true }: { image
   const navigate = useNavigate();
   const categories = useMemo(() => ["All", ...Array.from(new Set(images.map(image => image.category).filter(Boolean)))], [images]);
   const visible = filter === "All" ? images : images.filter(image => image.category === filter);
+  const galleryFrames = useMemo(() => buildGalleryFrames(visible, imageRatios, galleryWidth), [galleryWidth, imageRatios, visible]);
   const categoryCount = (category: string) => category === "All" ? images.length : images.filter(image => image.category === category).length;
   const chooseFilter = (category: string) => {
     setFilter(category);
@@ -105,6 +134,15 @@ function PortfolioGallery({ images, initialFilter, showFilters = true }: { image
     navigate({ pathname: location.pathname, search: params.toString() ? `?${params}` : "" }, { replace: true });
   };
   useEffect(() => { setFilter(initialFilter && categories.includes(initialFilter) ? initialFilter : "All"); setSelected(null); }, [initialFilter, categories]);
+  useEffect(() => {
+    const gallery = galleryRef.current;
+    if (!gallery) return;
+    const updateWidth = () => setGalleryWidth(Math.round(gallery.getBoundingClientRect().width));
+    updateWidth();
+    const observer = new ResizeObserver(updateWidth);
+    observer.observe(gallery);
+    return () => observer.disconnect();
+  }, []);
   const move = useCallback((direction: number) => setSelected(current => current === null ? null : (current + direction + visible.length) % visible.length), [visible.length]);
   useEffect(() => {
     if (selected === null) return;
@@ -134,7 +172,16 @@ function PortfolioGallery({ images, initialFilter, showFilters = true }: { image
   }, [move, selected]);
   return <section className="portfolio-gallery-section">
     <div className="portfolio-gallery-toolbar"><p>{visible.length} photographs</p>{showFilters && <div role="group" aria-label="Filter portfolio">{categories.map(category => <button className={filter === category ? "active" : ""} key={category} onClick={() => chooseFilter(category)} aria-pressed={filter === category}><span>{category}</span><small>{categoryCount(category)}</small></button>)}</div>}</div>
-    <div className="portfolio-gallery-grid">{visible.map((image, index) => <button className={`portfolio-gallery-item portfolio-gallery-item-${index % 8}`} key={image.id} onClick={() => setSelected(index)} aria-label={`Open ${image.alt}`}><img src={image.image} alt={image.alt} loading="lazy" /><span>{image.category}</span></button>)}</div>
+    <div ref={galleryRef} className="portfolio-gallery-grid">{visible.map((image, index) => {
+      const frame = galleryFrames.get(image.id);
+      return <button className="portfolio-gallery-item" style={frame ? { flexBasis: `${frame.width}px`, height: `${frame.height}px` } : undefined} key={image.id} onClick={() => setSelected(index)} aria-label={`Open ${image.alt}`}>
+        <img src={image.image} alt={image.alt} loading="lazy" onLoad={event => {
+          const nextRatio = event.currentTarget.naturalWidth / event.currentTarget.naturalHeight;
+          if (Number.isFinite(nextRatio) && Math.abs((imageRatios[image.id] || 0) - nextRatio) > 0.01) setImageRatios(current => ({ ...current, [image.id]: nextRatio }));
+        }} />
+        <span>{image.category}</span>
+      </button>;
+    })}</div>
     {selected !== null && visible[selected] && <div ref={lightboxRef} className="portfolio-lightbox" role="dialog" aria-modal="true" aria-label={visible[selected].alt}>
       <button ref={closeRef} className="portfolio-lightbox-close" onClick={() => setSelected(null)} aria-label="Close photo"><X /></button>
       <button className="portfolio-lightbox-prev" onClick={() => move(-1)} aria-label="Previous photo"><ChevronLeft /></button>
