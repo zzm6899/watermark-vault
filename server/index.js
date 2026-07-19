@@ -2330,6 +2330,11 @@ const PORTFOLIO_RETIRED_IMAGE_PATHS = new Set([
   "/portfolio/imported/melanienicholaswedding0152.jpg",
   "/portfolio/gallery/wedding-candid.jpg",
 ]);
+const PORTFOLIO_LEGACY_RIBBON_IMAGES = {
+  homeRibbonImages: ["/portfolio/gallery/wedding-garden.jpg", "/portfolio/gallery/wedding-celebration.jpg", "/portfolio/gallery/wedding-candid.jpg"],
+  aboutRibbonImages: ["/portfolio/gallery/concert-crowd.jpg", "/portfolio/gallery/event-energy.jpg", "/portfolio/gallery/brand-event.jpg"],
+  testimonialsRibbonImages: ["/portfolio/gallery/wedding-celebration.jpg", "/portfolio/gallery/wedding-candid.jpg", "/portfolio/gallery/concert-performer.jpg"],
+};
 
 const PORTFOLIO_CATEGORY_ORDER = ["Weddings", "Live Music", "Cosplay & Conventions", "Sports", "Events", "Brand & Corporate", "Food & Hospitality", "Venues & Details", "Portraits"];
 const PORTFOLIO_FEATURED_IMAGE_ORDER = ["food-lexus-slider-service", "food-mcdonalds-live-cooking", "food-mcdonalds-chef-service", "food-conca-oyster-service", "food-lexus-tasting-tray", "food-conca-pasta"];
@@ -2482,8 +2487,10 @@ function publicPortfolioContent(value) {
   ];
   for (const key of ["heroImages", "homeRibbonImages", "aboutRibbonImages", "testimonialsRibbonImages"]) {
     const stored = Array.isArray(merged[key]) ? merged[key] : [];
+    const legacy = PORTFOLIO_LEGACY_RIBBON_IMAGES[key];
+    const storedImages = requiresGalleryMigration && legacy && stored.length === legacy.length && stored.every((image, index) => image === legacy[index]) ? [] : stored;
     merged[key] = [...new Set([
-      ...stored.filter(image => image && !PORTFOLIO_RETIRED_IMAGE_PATHS.has(image)),
+      ...storedImages.filter(image => image && !PORTFOLIO_RETIRED_IMAGE_PATHS.has(image)),
       ...DEFAULT_PORTFOLIO[key],
     ])].slice(0, 3);
   }
