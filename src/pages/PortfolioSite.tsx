@@ -193,20 +193,34 @@ function PortfolioGallery({ images, initialFilter, showFilters = true }: { image
 
 function WorkPage({ site, preview, category }: { site: PortfolioSiteData; preview: boolean; category?: string | null }) {
   const categoryRoute = (projectCategory: string) => `${routeFor(preview, "/portfolio")}?category=${encodeURIComponent(projectCategory || "All")}`;
-  const activeProject = category ? site.projects.find(project => project.category === category) : undefined;
-  const galleryImages = activeProject ? site.galleryImages.filter(image => image.image !== activeProject.image) : site.galleryImages;
+  const requestedCategory = category?.trim().toLowerCase();
+  const activeCategory = requestedCategory && requestedCategory !== "all"
+    ? site.galleryImages.find(image => image.category.trim().toLowerCase() === requestedCategory)?.category
+    : undefined;
+  const activeProject = activeCategory ? site.projects.find(project => project.category.trim().toLowerCase() === activeCategory.toLowerCase()) : undefined;
+  const categoryDescriptions: Record<string, string> = {
+    "food & hospitality": "Food, service and hospitality photographed with texture, colour and a sense of place.",
+    "venues & details": "Architecture, atmosphere and the considered details that shape an event.",
+    portraits: "Character-led portraits with natural expression and a clear sense of place.",
+  };
+  const activeTitle = activeProject?.title || activeCategory;
+  const activeDescription = activeProject?.description || (activeCategory ? categoryDescriptions[activeCategory.toLowerCase()] : undefined) || "A focused selection from the portfolio.";
+  const activeCount = activeCategory ? site.galleryImages.filter(image => image.category === activeCategory).length : 0;
   return <>
-    {!activeProject && <section className="portfolio-page-intro portfolio-page-intro-work" data-reveal><p>Portfolio</p><h1>{site.portfolioTitle}</h1><span>{site.portfolioBody}</span><div className="portfolio-client-line"><span>{site.portfolioClientsLabel}</span>{site.portfolioClients.map(client => <strong key={client}>{client}</strong>)}</div></section>}
-    {!activeProject && <section className="portfolio-category-index" aria-label="Photography categories" data-reveal>
+    {!activeCategory && <section className="portfolio-page-intro portfolio-page-intro-work" data-reveal><p>Portfolio</p><h1>{site.portfolioTitle}</h1><span>{site.portfolioBody}</span><div className="portfolio-client-line"><span>{site.portfolioClientsLabel}</span>{site.portfolioClients.map(client => <strong key={client}>{client}</strong>)}</div></section>}
+    {!activeCategory && <section className="portfolio-category-index" aria-label="Photography categories" data-reveal>
       <div className="portfolio-category-heading"><p className="portfolio-kicker">Selected disciplines</p><h2>Find your kind of energy.</h2></div>
       <div className="portfolio-category-grid">{site.projects.map((project, index) => <Link className="portfolio-category-card" key={project.id} to={categoryRoute(project.category)}>
         <img src={project.image} alt="" loading={index > 1 ? "lazy" : undefined} />
         <div><span>{String(index + 1).padStart(2, "0")} · {site.galleryImages.filter(image => image.category === project.category).length} photographs</span><h3>{project.title}</h3><p>{project.description}</p><ArrowRight /></div>
       </Link>)}</div>
     </section>}
-    {activeProject && <section className="portfolio-category-focus" data-reveal><img src={activeProject.image} alt={activeProject.title} /><div><p className="portfolio-kicker">Focused collection</p><h2>{activeProject.title}</h2><span>{activeProject.description}</span><Link to={routeFor(preview, "/portfolio")}>View every category <ArrowRight /></Link></div></section>}
-    <section className="portfolio-gallery-lead" data-reveal><p className="portfolio-kicker">{activeProject ? `${activeProject.title} edit` : "The full edit"}</p><h2>{activeProject ? "Movement, atmosphere and the decisive frame." : "People, pressure and the moment between."}</h2><span>{activeProject ? `${site.galleryImages.filter(image => image.category === activeProject.category).length} selected photographs in this collection.` : "Browse the complete collection or narrow the work by discipline."}</span></section>
-    <PortfolioGallery images={galleryImages} initialFilter={category} />
+    {activeCategory && <section className="portfolio-category-compact" data-reveal>
+      <div><p className="portfolio-kicker">Focused collection · {activeCount} photographs</p><h1>{activeTitle}</h1></div>
+      <div><p>{activeDescription}</p><Link to={routeFor(preview, "/portfolio")}>View every category <ArrowRight /></Link></div>
+    </section>}
+    {!activeCategory && <section className="portfolio-gallery-lead" data-reveal><p className="portfolio-kicker">The full edit</p><h2>People, pressure and the moment between.</h2><span>Browse the complete collection or narrow the work by discipline.</span></section>}
+    <PortfolioGallery images={site.galleryImages} initialFilter={activeCategory} />
     <section className="portfolio-inline-cta"><div><p className="portfolio-kicker">{site.portfolioCtaEyebrow}</p><h2>{site.portfolioCtaTitle}</h2></div><Link to={routeFor(preview, "/enquire")}>{site.portfolioCtaLabel} <ArrowRight /></Link></section>
   </>;
 }
