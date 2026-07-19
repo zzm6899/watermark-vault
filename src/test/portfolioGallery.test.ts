@@ -15,12 +15,14 @@ describe("portfolio archive import", () => {
     }
 
     expect(defaultPortfolioSite.galleryImages).toHaveLength(92);
-    expect(defaultPortfolioSite.gallerySeedVersion).toBe(6);
+    expect(defaultPortfolioSite.gallerySeedVersion).toBe(7);
     expect(defaultPortfolioSite.galleryImages.filter(item => item.category === "Cosplay & Conventions")).toHaveLength(13);
     expect(defaultPortfolioSite.galleryImages.filter(item => item.category === "Sports")).toHaveLength(15);
     expect(defaultPortfolioSite.galleryImages.filter(item => item.category === "Live Music")).toHaveLength(8);
     expect(defaultPortfolioSite.galleryImages.filter(item => item.category === "Food & Hospitality")).toHaveLength(18);
     expect(defaultPortfolioSite.galleryImages.some(item => item.alt.toLowerCase().includes("kissing"))).toBe(false);
+    expect(new Set(defaultPortfolioSite.homeRibbonImages).size).toBe(defaultPortfolioSite.homeRibbonImages.length);
+    expect(defaultPortfolioSite.homeRibbonImages).not.toContain("/portfolio/gallery/wedding-garden.jpg");
     const originalResolutionImages = [
       ...importedPortfolioGalleryImages.map(item => item.image),
       "/portfolio/gallery/concert-crowd.jpg",

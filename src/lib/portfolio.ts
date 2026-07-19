@@ -209,7 +209,7 @@ export const curatedPortfolioGalleryImages = [...corePortfolioGalleryImages, ...
   });
 
 export const defaultPortfolioSite: PortfolioSite = {
-  gallerySeedVersion: 6,
+  gallerySeedVersion: 7,
   brandName: "Zac Morgan Photography",
   logo: "/portfolio/logo.png",
   heroImage: "/portfolio/live-action.jpg",
@@ -225,7 +225,7 @@ export const defaultPortfolioSite: PortfolioSite = {
   testimonialsTitle: "The experience matters too.",
   testimonialsIntro: "Feedback from weddings, celebrations, portrait sessions and business events across Sydney.",
   portrait: "/portfolio/portrait.jpg",
-  homeRibbonImages: ["/portfolio/gallery/wedding-garden.jpg", "/portfolio/curated/wedding-kj-laugh.jpg", "/portfolio/curated/wedding-aa-exit.jpg"],
+  homeRibbonImages: ["/portfolio/curated/wedding-aa-exit.jpg", "/portfolio/curated/wedding-kj-laugh.jpg", "/portfolio/gallery/wedding-celebration.jpg"],
   storyEyebrow: "Ways of seeing",
   storyTitle: "Every room has its own rhythm.",
   philosophyEyebrow: "The work",
