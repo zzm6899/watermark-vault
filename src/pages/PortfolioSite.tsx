@@ -50,7 +50,9 @@ function SiteFooter({ site, preview }: { site: PortfolioSiteData; preview: boole
 }
 
 function UrlImageRibbon({ images }: { images: string[] }) {
-  return <section className="portfolio-image-ribbon" aria-label="Selected photographs" data-reveal>{images.filter(Boolean).slice(0, 3).map((image, index) => <img key={`${image}-${index}`} src={image} alt="" loading="lazy" />)}</section>;
+  const visibleImages = images.filter(Boolean).slice(0, 3);
+  if (!visibleImages.length) return null;
+  return <section className={`portfolio-image-ribbon portfolio-image-ribbon-${visibleImages.length}`} aria-label="Selected photographs" data-reveal>{visibleImages.map((image, index) => <img key={`${image}-${index}`} src={image} alt="" loading={index ? "lazy" : undefined} />)}</section>;
 }
 
 function StoryIndex({ site, preview }: { site: PortfolioSiteData; preview: boolean }) {
@@ -137,7 +139,7 @@ function PortfolioGallery({ images, initialFilter, showFilters = true }: { image
   useEffect(() => {
     const gallery = galleryRef.current;
     if (!gallery) return;
-    const updateWidth = () => setGalleryWidth(Math.round(gallery.getBoundingClientRect().width));
+    const updateWidth = () => setGalleryWidth(Math.floor(gallery.getBoundingClientRect().width));
     updateWidth();
     const observer = new ResizeObserver(updateWidth);
     observer.observe(gallery);
@@ -246,9 +248,9 @@ function ConcertPage({ site, preview }: { site: PortfolioSiteData; preview: bool
 function AboutPage({ site, preview }: { site: PortfolioSiteData; preview: boolean }) {
   return <>
     <section className="portfolio-about-page" data-reveal><figure><img src={site.portrait} alt="Zac Morgan" /></figure><div><p className="portfolio-kicker">About Zac</p><h1>{site.introTitle}</h1><p>{site.introBody}</p><p>{site.aboutSecondaryBody}</p><Link to={routeFor(preview, "/enquire")}>{site.bookingButtonLabel}<ArrowRight /></Link></div></section>
+    <UrlImageRibbon images={site.aboutRibbonImages} />
     <section className="portfolio-about-manifesto" data-reveal><div><p className="portfolio-kicker">{site.aboutApproachEyebrow}</p><h2>{site.aboutApproachTitle}</h2><p>{site.aboutApproachBody}</p></div>{site.aboutSupportingImage && <figure><img src={site.aboutSupportingImage} alt="Zac Morgan Photography at work" loading="lazy" /><figcaption>{site.aboutSupportingCaption}</figcaption></figure>}</section>
     <section className="portfolio-values">{site.aboutValues.map((value, index) => <div key={`${value.title}-${index}`}><span>{String(index + 1).padStart(2, "0")}</span><h2>{value.title}</h2><p>{value.body}</p></div>)}</section>
-    <UrlImageRibbon images={site.aboutRibbonImages} />
   </>;
 }
 
@@ -256,9 +258,9 @@ function TestimonialsPage({ site, preview }: { site: PortfolioSiteData; preview:
   const reviews = site.testimonials.length ? site.testimonials : [{ quote: site.testimonial, author: site.testimonialAuthor, context: "Client" }];
   return <>
     <section className="portfolio-page-intro portfolio-page-intro-testimonials"><p>Testimonials</p><h1>{site.testimonialsTitle}</h1><span>{site.testimonialsIntro}</span></section>
+    <UrlImageRibbon images={site.testimonialsRibbonImages} />
     <section className="portfolio-quote-page"><p>Featured review</p><blockquote>“{reviews[0].quote}”</blockquote><cite>{reviews[0].author} · {reviews[0].context}</cite></section>
     <section className="portfolio-reviews">{reviews.slice(1).map((review, index) => <blockquote key={`${review.author}-${index}`}><span>{String(index + 2).padStart(2, "0")}</span><p>“{review.quote}”</p><div className="portfolio-review-by">{review.author}<small>{review.context}</small></div></blockquote>)}</section>
-    <UrlImageRibbon images={site.testimonialsRibbonImages} />
     <section className="portfolio-testimonial-image"><img src={site.testimonialsImage || site.heroImage} alt="Client event photographed by Zac Morgan" /><div><p>{site.testimonialsFeatureEyebrow}</p><h2>{site.testimonialsFeatureTitle}</h2><ul>{site.testimonialsFeaturePoints.map(point => <li key={point}><Check />{point}</li>)}</ul><Link to={routeFor(preview, "/enquire")}>Start an enquiry <ArrowRight /></Link></div></section>
   </>;
 }

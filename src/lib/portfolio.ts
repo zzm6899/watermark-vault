@@ -102,8 +102,6 @@ export type PortfolioSite = {
 export const importedPortfolioGalleryImages: PortfolioGalleryImage[] = [
   { id: "archive-wedding-waterfront", image: "/portfolio/imported/alexrosanna-010.jpg", alt: "Couple embracing beside the waterfront", category: "Weddings" },
   { id: "archive-portrait-red-dress", image: "/portfolio/imported/aurie-175.jpg", alt: "Editorial portrait in a red dress", category: "Portraits" },
-  { id: "archive-wedding-garden", image: "/portfolio/imported/jjswedding-138.jpg", alt: "Wedding couple sharing a quiet garden moment", category: "Weddings" },
-  { id: "archive-wedding-blossoms", image: "/portfolio/imported/melanienicholaswedding0152.jpg", alt: "Newlyweds kissing beneath flowering trees", category: "Weddings" },
   { id: "archive-live-band", image: "/portfolio/imported/coogebay-thevanns-22-09-240103.jpg", alt: "Live band performing on an outdoor stage", category: "Live Music" },
   { id: "archive-dj-duo", image: "/portfolio/imported/cosmosmidnight-fullres-018.jpg", alt: "DJ duo performing under coloured lights", category: "Live Music" },
   { id: "archive-stage-performer", image: "/portfolio/imported/zm-382.jpg", alt: "Performer on stage beneath blue lighting", category: "Live Music" },
@@ -121,6 +119,12 @@ export const importedPortfolioGalleryImages: PortfolioGalleryImage[] = [
   { id: "archive-event-selfie", image: "/portfolio/imported/oatlandsestatesmallbusinessevent30-10-24109.jpg", alt: "Guests taking a selfie at a formal event", category: "Events" },
   { id: "archive-outdoor-service", image: "/portfolio/imported/oatlandsestategraduationsetup13-11-240053.jpg", alt: "Outdoor beverage service at an event", category: "Events" },
   { id: "archive-corporate-conversation", image: "/portfolio/imported/stryd-140.jpg", alt: "Business guests in conversation", category: "Brand & Corporate" },
+  { id: "food-lexus-slider-service", image: "/portfolio/curated/food-lexus-slider-service.jpg", alt: "Black-bun sliders carried through live service at a Lexus event", category: "Food & Hospitality" },
+  { id: "food-mcdonalds-live-cooking", image: "/portfolio/curated/food-mcdonalds-live-cooking.jpg", alt: "Navarra chef cooks paella inside the McDonald's headquarters", category: "Food & Hospitality" },
+  { id: "food-mcdonalds-chef-service", image: "/portfolio/curated/food-mcdonalds-chef-service.jpg", alt: "Navarra chef serves a guest during a live catering activation", category: "Food & Hospitality" },
+  { id: "food-conca-oyster-service", image: "/portfolio/curated/food-conca-oyster-service.jpg", alt: "Guests select fresh oysters during an interactive tasting", category: "Food & Hospitality" },
+  { id: "food-lexus-tasting-tray", image: "/portfolio/curated/food-lexus-tasting-tray.jpg", alt: "Colourful tasting cups presented during live event service", category: "Food & Hospitality" },
+  { id: "food-conca-pasta", image: "/portfolio/curated/food-conca-pasta.jpg", alt: "Fresh filled pasta plated with tomato and basil", category: "Food & Hospitality" },
   { id: "archive-catered-prosciutto", image: "/portfolio/imported/aawedding-190.jpg", alt: "Catered prosciutto finished with herbs", category: "Food & Hospitality" },
   { id: "archive-chef-service", image: "/portfolio/imported/curzonhallschneidercorporate26-10-24-123.jpg", alt: "Chef serving guests at an outdoor station", category: "Food & Hospitality" },
   { id: "archive-catering-spread", image: "/portfolio/imported/lemontage6-2-2025roomshotsnestle25of71.jpg", alt: "Catered sandwich and appetizer spread", category: "Food & Hospitality" },
@@ -182,7 +186,6 @@ export const importedPortfolioGalleryImages: PortfolioGalleryImage[] = [
 const corePortfolioGalleryImages: PortfolioGalleryImage[] = [
   { id: "wedding-aisle", image: "/portfolio/gallery/wedding-garden.jpg", alt: "Newlyweds walking down the church aisle", category: "Weddings" },
   { id: "wedding-flowers", image: "/portfolio/gallery/wedding-celebration.jpg", alt: "Wedding floral details", category: "Weddings" },
-  { id: "wedding-harbour", image: "/portfolio/gallery/wedding-candid.jpg", alt: "Wedding couple at Sydney Harbour", category: "Weddings" },
   { id: "dj", image: "/portfolio/gallery/concert-performer.jpg", alt: "DJ performing at a live event", category: "Live Music" },
   { id: "performer", image: "/portfolio/gallery/food-detail.jpg", alt: "Singer performing under stage lights", category: "Live Music" },
   { id: "nightlife-sign", image: "/portfolio/gallery/concert-crowd.jpg", alt: "Neon venue signage at a nightlife event", category: "Events" },
@@ -195,11 +198,18 @@ const corePortfolioGalleryImages: PortfolioGalleryImage[] = [
 ];
 
 export const portfolioCategoryOrder = ["Weddings", "Live Music", "Cosplay & Conventions", "Sports", "Events", "Brand & Corporate", "Food & Hospitality", "Venues & Details", "Portraits"];
+const portfolioFeaturedImageOrder = ["food-lexus-slider-service", "food-mcdonalds-live-cooking", "food-mcdonalds-chef-service", "food-conca-oyster-service", "food-lexus-tasting-tray", "food-conca-pasta"];
 export const curatedPortfolioGalleryImages = [...corePortfolioGalleryImages, ...importedPortfolioGalleryImages]
-  .sort((left, right) => portfolioCategoryOrder.indexOf(left.category) - portfolioCategoryOrder.indexOf(right.category));
+  .sort((left, right) => {
+    const categoryDifference = portfolioCategoryOrder.indexOf(left.category) - portfolioCategoryOrder.indexOf(right.category);
+    if (categoryDifference) return categoryDifference;
+    const leftFeatured = portfolioFeaturedImageOrder.indexOf(left.id);
+    const rightFeatured = portfolioFeaturedImageOrder.indexOf(right.id);
+    return (leftFeatured < 0 ? Number.MAX_SAFE_INTEGER : leftFeatured) - (rightFeatured < 0 ? Number.MAX_SAFE_INTEGER : rightFeatured);
+  });
 
 export const defaultPortfolioSite: PortfolioSite = {
-  gallerySeedVersion: 5,
+  gallerySeedVersion: 6,
   brandName: "Zac Morgan Photography",
   logo: "/portfolio/logo.png",
   heroImage: "/portfolio/live-action.jpg",
@@ -215,7 +225,7 @@ export const defaultPortfolioSite: PortfolioSite = {
   testimonialsTitle: "The experience matters too.",
   testimonialsIntro: "Feedback from weddings, celebrations, portrait sessions and business events across Sydney.",
   portrait: "/portfolio/portrait.jpg",
-  homeRibbonImages: ["/portfolio/gallery/wedding-garden.jpg", "/portfolio/gallery/wedding-celebration.jpg", "/portfolio/gallery/wedding-candid.jpg"],
+  homeRibbonImages: ["/portfolio/gallery/wedding-garden.jpg", "/portfolio/curated/wedding-kj-laugh.jpg", "/portfolio/curated/wedding-aa-exit.jpg"],
   storyEyebrow: "Ways of seeing",
   storyTitle: "Every room has its own rhythm.",
   philosophyEyebrow: "The work",
@@ -242,12 +252,12 @@ export const defaultPortfolioSite: PortfolioSite = {
     { id: "dependable", title: "Fast and dependable", body: "Clear communication, careful backups and delivery that respects your timeline." },
     { id: "people", title: "Built around people", body: "Coverage adapts to your guests, venue, schedule and what matters most to you." },
   ],
-  aboutRibbonImages: ["/portfolio/gallery/concert-crowd.jpg", "/portfolio/gallery/event-energy.jpg", "/portfolio/gallery/brand-event.jpg"],
+  aboutRibbonImages: ["/portfolio/curated/brand-digipark-red.jpg", "/portfolio/curated/sports-hyrox-jump.jpg", "/portfolio/curated/music-chronobeat-motion.jpg"],
   testimonialsFeatureEyebrow: "From first message to final gallery",
   testimonialsFeatureTitle: "Clear, calm and ready for the moment.",
   testimonialsFeaturePoints: ["Straightforward planning", "Natural, true-to-life coverage", "Careful backup and timely delivery"],
   testimonialsImage: "/portfolio/gallery/portrait-editorial.jpg",
-  testimonialsRibbonImages: ["/portfolio/gallery/wedding-celebration.jpg", "/portfolio/gallery/wedding-candid.jpg", "/portfolio/gallery/concert-performer.jpg"],
+  testimonialsRibbonImages: ["/portfolio/curated/wedding-aa-exit.jpg", "/portfolio/curated/cosplay-smash-confetti.jpg", "/portfolio/curated/brand-digipark-tunnel.jpg"],
   enquiryImage: "/portfolio/gallery/concert-crowd.jpg",
   enquirySteps: [
     { id: "details", title: "Send the details", body: "Share the date, venue and kind of coverage you have in mind." },
@@ -257,12 +267,13 @@ export const defaultPortfolioSite: PortfolioSite = {
   testimonial: "Zac is an extremely talented photographer. His photos captured the energy of the night perfectly and were delivered quickly.",
   testimonialAuthor: "Henry M",
   projects: [
-    { id: "weddings", title: "Engagements / Weddings", image: "/portfolio/weddings.jpg", description: "Relaxed, honest coverage from the quiet moments to the dance floor.", category: "Weddings" },
+    { id: "weddings", title: "Engagements / Weddings", image: "/portfolio/curated/wedding-aa-exit.jpg", description: "Relaxed, honest coverage from the quiet moments to the dance floor.", category: "Weddings" },
     { id: "bands", title: "Band Photos", image: "/portfolio/bands.jpg", description: "Live performance and artist imagery that keeps the atmosphere intact.", category: "Live Music" },
     { id: "corporate", title: "Corporate Events", image: "/portfolio/corporate.jpg", description: "Polished event coverage for teams, brands and venues.", category: "Brand & Corporate" },
     { id: "parties", title: "Parties", image: "/portfolio/parties.jpg", description: "Candid celebration photography with people at the centre.", category: "Events" },
     { id: "cosplay", title: "Cosplay & Conventions", image: "/portfolio/curated/cosplay-smash-confetti.jpg", description: "Character portraits, stages and convention crowds photographed with colour and energy.", category: "Cosplay & Conventions" },
     { id: "sports", title: "Sport & Endurance", image: "/portfolio/curated/sports-hyrox-motion.jpg", description: "Fast, expressive race coverage from first light to the finish line.", category: "Sports" },
+    { id: "food", title: "Food & Hospitality", image: "/portfolio/curated/food-mcdonalds-live-cooking.jpg", description: "Food, chefs and service photographed with colour, texture and a sense of occasion.", category: "Food & Hospitality" },
   ],
   galleryImages: curatedPortfolioGalleryImages,
   testimonials: [
