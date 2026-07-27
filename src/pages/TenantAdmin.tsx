@@ -1740,6 +1740,8 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
       uploadedAt: new Date().toISOString(),
       ...(r.takenAt ? { takenAt: r.takenAt } : {}),
       originalName: r.originalName,
+      ...(r.originalFileNumber ? { originalFileNumber: r.originalFileNumber } : {}),
+      ...(r.proofId ? { proofId: r.proofId } : {}),
       fileSize: r.size,
       ...(r.ftpUploaded ? { ftpUploaded: true } : {}),
     }));
@@ -2690,6 +2692,8 @@ function TenantPhotos({ slug }: { slug: string }) {
         uploadedAt: new Date().toISOString(),
         ...(r.takenAt ? { takenAt: r.takenAt } : {}),
         originalName: r.originalName,
+        ...(r.originalFileNumber ? { originalFileNumber: r.originalFileNumber } : {}),
+        ...(r.proofId ? { proofId: r.proofId } : {}),
         fileSize: r.size,
         ...(r.ftpUploaded ? { ftpUploaded: true } : {}),
       }));

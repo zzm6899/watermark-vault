@@ -794,17 +794,37 @@ function _chooseAlbumStoreMatch(mainMatch, tenantMatches) {
   return mainMatch || bestTenant || null;
 }
 
+function _ensurePhotoProofIdentity(photo) {
+  if (!photo || typeof photo !== "object") return photo;
+  const originalName = photo.originalName || photo.title || photo.id || "";
+  const baseName = originalName.replace(/\.[^.]+$/, "");
+  // The camera-assigned number is the last run of digits (IMG_004217, DSC1234).
+  // Keep it as text so leading zeroes remain useful when matching the card/file.
+  const originalFileNumber = (baseName.match(/(\d+)(?!.*\d)/) || [])[1];
+  return {
+    ...photo,
+    ...(photo.originalName ? {} : { originalName }),
+    ...(originalFileNumber && !photo.originalFileNumber ? { originalFileNumber } : {}),
+    ...(photo.proofId ? {} : { proofId: baseName.replace(/^_+/, "") || photo.id }),
+  };
+}
+
 function _photoRecordFromUpload(file, ftpUploaded) {
+  const originalName = file.originalName || file.id;
+  const baseName = originalName.replace(/\.[^.]+$/, "");
+  const originalFileNumber = (baseName.match(/(\d+)(?!.*\d)/) || [])[1];
   return {
     id: file.id,
     src: file.url,
     thumbnail: `${file.url}?size=thumb&wm=0`,
-    title: (file.originalName || file.id).replace(/\.[^.]+$/, "").replace(/^_+/, ""),
+    title: baseName.replace(/^_+/, ""),
     width: file.width || 800,
     height: file.height || 600,
     uploadedAt: new Date().toISOString(),
     ...(file.takenAt ? { takenAt: file.takenAt } : {}),
-    originalName: file.originalName,
+    originalName,
+    ...(originalFileNumber ? { originalFileNumber } : {}),
+    proofId: baseName.replace(/^_+/, "") || file.id,
     fileSize: file.size,
     ...(file.cull ? { cull: file.cull } : {}),
     ...(file.cullMetadata ? { cullMetadata: file.cullMetadata } : {}),
@@ -1259,7 +1279,9 @@ app.get("/api/albums/:albumId/photos", (req, res) => {
   const album = albums.find(a => a.id === req.params.albumId || a.slug === req.params.albumId);
   if (!album) return res.status(404).json({ photos: [] });
   // Apply baked-field stripping so the response stays lean.
-  res.json({ photos: _stripBakedFromPhotos(album.photos || []) });
+  // Older albums are backfilled on read as well, so proofing references work
+  // immediately without a migration job. They are persisted on the next save.
+  res.json({ photos: _stripBakedFromPhotos((album.photos || []).map(_ensurePhotoProofIdentity)) });
 });
 
 // POST /api/albums/:id/auto-cull?tenant=<slug>
@@ -1408,7 +1430,7 @@ app.post("/api/albums/:id/auto-cull", async (req, res) => {
         bucket: "review",
         bucketLabel: cullLabels.review,
       };
-      return {
+      return _ensurePhotoProofIdentity({
         ...photo,
         blurScore: 0,
         duplicateGroupId: undefined,
@@ -1425,7 +1447,7 @@ app.post("/api/albums/:id/auto-cull", async (req, res) => {
           bucketLabel: cull.bucketLabel,
           analysedAt,
         },
-      };
+      });
     }
 
     const file = mediaByPath.get(_photoCullPath(photo, index)) || _mediaFileFromCullResult(photo, result, result.visualGroupSize || 1);
@@ -1484,7 +1506,7 @@ app.post("/api/albums/:id/auto-cull", async (req, res) => {
       bucket,
       bucketLabel,
     };
-    return {
+    return _ensurePhotoProofIdentity({
       ...photo,
       blurScore: result.cull?.blur,
       duplicateGroupId: result.duplicateGroupId || undefined,
@@ -1501,7 +1523,7 @@ app.post("/api/albums/:id/auto-cull", async (req, res) => {
         bucketLabel: cull.bucketLabel,
         analysedAt,
       },
-    };
+    });
   });
 
   const counts = {
@@ -1573,6 +1595,9 @@ app.post("/api/albums/:id/auto-cull", async (req, res) => {
     photos: updatedPhotos.map(photo => ({
       id: photo.id,
       src: photo.src,
+      originalName: photo.originalName,
+      originalFileNumber: photo.originalFileNumber,
+      proofId: photo.proofId,
       status: photo.cull?.status || "unscored",
       score: photo.cull?.score ?? 0,
       reasons: photo.cull?.reasons || [],
@@ -1611,7 +1636,7 @@ app.put("/api/albums/:albumId", (req, res) => {
     }
     delete incoming._photosStripped;
   } else if (incoming.photos) {
-    incoming.photos = _stripBakedFromPhotos(incoming.photos);
+    incoming.photos = _stripBakedFromPhotos(incoming.photos).map(_ensurePhotoProofIdentity);
   }
   if (idx >= 0) {
     albums[idx] = { ...albums[idx], ...incoming };
@@ -2072,10 +2097,14 @@ app.post("/api/upload", uploadLimiter, upload.array("photos", 100), async (req, 
         console.warn(`Rejected invalid image upload "${f.originalname}": ${err.message || err}`);
         return null;
       }
+      const originalBaseName = f.originalname.replace(/\.[^.]+$/, "").replace(/^_+/, "");
+      const originalFileNumber = (originalBaseName.match(/(\d+)(?!.*\d)/) || [])[1];
       return {
         id: path.basename(f.filename, path.extname(f.filename)),
         url: `/uploads/${f.filename}`,
         originalName: f.originalname,
+        ...(originalFileNumber ? { originalFileNumber } : {}),
+        proofId: originalBaseName || path.basename(f.filename, path.extname(f.filename)),
         size: f.size,
         localPath: f.path,
         width,
@@ -5753,7 +5782,7 @@ app.get("/api/tenant/:slug/mobile-data", tenantPublicLimiter, (req, res) => {
   const albums = albumsRaw ? (typeof albumsRaw === "string" ? JSON.parse(albumsRaw) : (Array.isArray(albumsRaw) ? albumsRaw : [])) : [];
   // Strip baked watermark blobs before sending to client — they are not needed
   // for admin views and would greatly inflate the response size.
-  const leanAlbums = albums.map(a => ({ ...a, photos: _stripBakedFromPhotos(a.photos || []) }));
+  const leanAlbums = albums.map(a => ({ ...a, photos: _stripBakedFromPhotos((a.photos || []).map(_ensurePhotoProofIdentity)) }));
   res.json({ tenant, bookings: tenantBookings, albums: leanAlbums });
 });
 
@@ -5782,7 +5811,7 @@ app.put("/api/tenant/:slug/albums/:albumId", tenantLimiter, (req, res) => {
     }
     delete incoming._photosStripped;
   } else if (incoming.photos) {
-    incoming.photos = _stripBakedFromPhotos(incoming.photos);
+    incoming.photos = _stripBakedFromPhotos(incoming.photos).map(_ensurePhotoProofIdentity);
   }
   if (idx >= 0) {
     albums[idx] = { ...albums[idx], ...incoming };

@@ -139,6 +139,7 @@ import {
   deleteXmpPreset,
   ensurePublicAlbumAvailable,
   saveAlbumToServer,
+  autoCullAlbum,
 } from "@/lib/api";
 import type { CacheBreakdown, EmailAutomationPreview, ManualEditParams, PresetEditParams, XmpPreset, PhotoEditRequest } from "@/lib/api";
 import RichTextEditor, { RichTextDisplay } from "@/components/RichTextEditor";
@@ -4995,6 +4996,8 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
   const [editorGridSize, setEditorGridSize] = useState<"small" | "medium" | "large">("medium");
   const [editorLightboxPhoto, setEditorLightboxPhoto] = useState<Photo | null>(null);
   const [photoSortDir, setPhotoSortDir] = useState<"asc" | "desc">("asc");
+  const [cullView, setCullView] = useState<"all" | "pick" | "review" | "reject">("all");
+  const [autoCulling, setAutoCulling] = useState(false);
   const existingAlbums = getAlbums();
   const linkedBooking = bookingId ? bookings.find(b => b.id === bookingId) : undefined;
   const allInvoices = getInvoices();
@@ -5175,6 +5178,8 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
         uploadedAt: new Date().toISOString(),
         ...(r.takenAt ? { takenAt: r.takenAt } : {}),
         originalName: r.originalName,
+        ...(r.originalFileNumber ? { originalFileNumber: r.originalFileNumber } : {}),
+        ...(r.proofId ? { proofId: r.proofId } : {}),
         fileSize: r.size,
         ...(r.ftpUploaded ? { ftpUploaded: true } : {}),
       }));
@@ -5242,6 +5247,45 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
     const label = photoLabel(photo);
     const matches = label.match(/\d+/g);
     return matches?.length ? Number(matches[matches.length - 1]) : Number.MAX_SAFE_INTEGER;
+  };
+
+  const proofReference = (photo: Photo) => {
+    const name = photo.originalName || photo.title || photo.proofId || photo.id;
+    const number = photo.originalFileNumber || (name.replace(/\.[^.]+$/, "").match(/(\d+)(?!.*\d)/) || [])[1];
+    return number ? `#${number} · ${name}` : name;
+  };
+
+  const setCullStatus = async (photoId: string, status: "pick" | "review" | "reject") => {
+    const updatedPhotos = photos.map(photo => photo.id !== photoId ? photo : {
+      ...photo,
+      starred: status === "pick",
+      cull: { ...photo.cull, status, recommendedAction: status === "reject" ? "hold-back" : "keep", reasons: ["manual selection"] },
+      cullMetadata: { ...photo.cullMetadata, status, reasons: ["manual selection"] },
+    });
+    setPhotos(updatedPhotos);
+    if (album) {
+      const draft = buildAlbumDraft(updatedPhotos);
+      if (draft) await persistExistingAlbum(draft, `Marked ${status}`);
+    }
+  };
+
+  const runAutoCull = async () => {
+    if (!album?.id || !isServerMode()) {
+      toast.info("Save this album to the server before running the cull assistant.");
+      return;
+    }
+    setAutoCulling(true);
+    const result = await autoCullAlbum(album.id);
+    setAutoCulling(false);
+    if (!result.ok || !result.album) {
+      toast.error(result.error || "Culling could not be completed");
+      return;
+    }
+    const analysedPhotos = result.album.photos || [];
+    setPhotos(analysedPhotos);
+    setLiveAlbum(result.album);
+    onUpdate?.(result.album);
+    toast.success(`Cull complete: ${result.counts?.pick || 0} best picks, ${result.counts?.review || 0} to review, ${result.counts?.reject || 0} held back`);
   };
 
   const sortPhotos = (mode: "name" | "file-number" | "uploaded" | "captured") => {
@@ -5360,6 +5404,18 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
   const deliveryChecklist = deliveryDraft ? buildDeliveryChecklist(deliveryDraft, linkedBooking, linkedInvoices) : [];
   const deliveryBlockers = deliveryChecklist.filter(item => item.status === "blocker");
   const deliveryWarnings = deliveryChecklist.filter(item => item.status === "warning");
+  const cullCounts = {
+    pick: photos.filter(photo => photo.cull?.status === "pick" || photo.starred).length,
+    review: photos.filter(photo => !photo.cull?.status || photo.cull.status === "review" || photo.cull.status === "unscored").length,
+    reject: photos.filter(photo => photo.cull?.status === "reject").length,
+  };
+  const visiblePhotos = cullView === "all"
+    ? photos
+    : photos.filter(photo => cullView === "pick"
+      ? photo.cull?.status === "pick" || photo.starred
+      : cullView === "review"
+        ? !photo.cull?.status || photo.cull.status === "review" || photo.cull.status === "unscored"
+        : photo.cull?.status === "reject");
 
   return (
     <div className="glass-panel rounded-xl p-6 mb-6 space-y-5">
@@ -5650,7 +5706,12 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
           const proofingExpiresAt = new Date(Date.now() + expiryHours * 3600 * 1000).toISOString();
           const clientToken = liveAlbum!.clientToken || `ct-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
           const newRound = { roundNumber: rounds.length + 1, sentAt: new Date().toISOString(), selectedPhotoIds: [], adminNote: note || undefined };
-          const updated = { ...liveAlbum!, proofingEnabled: true, proofingStage: "proofing" as const, proofingRounds: [...rounds, newRound], clientToken, proofingExpiresAt };
+          // "Not sending" photos remain safely in the album for the photographer,
+          // but are hidden before the client-facing proofing link is published.
+          const proofingPhotos = (liveAlbum!.photos || []).map(photo =>
+            photo.cull?.status === "reject" ? { ...photo, hidden: true } : photo
+          );
+          const updated = { ...liveAlbum!, photos: proofingPhotos, proofingEnabled: true, proofingStage: "proofing" as const, proofingRounds: [...rounds, newRound], clientToken, proofingExpiresAt };
           updateLiveAlbum(updated);
           let inviteSent = false;
           if (clientEmail) {
@@ -6131,8 +6192,21 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
               </div>
             );
           })()}
+          <div className="rounded-xl border border-primary/20 bg-primary/5 p-3 mb-3">
+            <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+              <div>
+                <p className="text-sm font-body font-medium text-foreground">Choose photos for {clientName || "this client"}</p>
+                <p className="text-[11px] font-body text-muted-foreground mt-1">Use the three buttons on each photo: ★ send to client, ? decide later, − do not send. The camera file number stays visible so you can find the original instantly.</p>
+              </div>
+              {album && isServerMode() && (
+                <button type="button" onClick={runAutoCull} disabled={autoCulling} className="shrink-0 inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-body font-medium border border-primary/40 text-primary hover:bg-primary/10 disabled:opacity-50">
+                  <Sparkles className="w-3.5 h-3.5" /> {autoCulling ? "Checking photos…" : "Help me sort"}
+                </button>
+              )}
+            </div>
+          </div>
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-2">
-            <span className="text-xs font-body text-muted-foreground">{photos.length} photo{photos.length !== 1 ? "s" : ""}</span>
+            <span className="text-xs font-body text-muted-foreground">Showing {visiblePhotos.length} of {photos.length} photo{photos.length !== 1 ? "s" : ""}</span>
             <div className="flex items-center gap-2 flex-wrap sm:justify-end">
               <div className="flex items-center gap-1 rounded-lg border border-border/50 bg-secondary px-1 py-1">
                 <button
@@ -6166,14 +6240,30 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
               </div>
             </div>
           </div>
-          <div className={`grid gap-1.5 max-h-64 overflow-y-auto ${
+          <div className="flex items-center gap-1.5 mb-2 overflow-x-auto pb-1">
+            {([
+              ["all", "All", photos.length],
+              ["pick", "Sending", cullCounts.pick],
+              ["review", "Decide later", cullCounts.review],
+              ["reject", "Not sending", cullCounts.reject],
+            ] as const).map(([value, label, count]) => (
+              <button key={value} type="button" onClick={() => setCullView(value)} className={`whitespace-nowrap px-2 py-1 rounded-full text-[10px] font-body border transition-colors ${cullView === value ? "bg-primary text-primary-foreground border-primary" : "bg-secondary text-muted-foreground border-border hover:text-foreground"}`}>
+                {label} {count}
+              </button>
+            ))}
+            <span className="text-[10px] text-muted-foreground/70 ml-1">“Not sending” photos are hidden automatically when you start proofing.</span>
+          </div>
+          <div className={`grid gap-2 max-h-[70vh] sm:max-h-64 overflow-y-auto pr-0.5 ${
             editorGridSize === "small"
-              ? "grid-cols-5 sm:grid-cols-8 md:grid-cols-10 lg:grid-cols-12"
+              ? "grid-cols-3 sm:grid-cols-8 md:grid-cols-10 lg:grid-cols-12"
               : editorGridSize === "large"
-              ? "grid-cols-2 sm:grid-cols-3 md:grid-cols-4"
-              : "grid-cols-3 sm:grid-cols-5 md:grid-cols-7 lg:grid-cols-9"
+              ? "grid-cols-1 sm:grid-cols-3 md:grid-cols-4"
+              : "grid-cols-2 sm:grid-cols-5 md:grid-cols-7 lg:grid-cols-9"
           }`}>
-            {photos.map((p, idx) => (
+            {visiblePhotos.map((p) => {
+              const idx = photos.findIndex(photo => photo.id === p.id);
+              const cullStatus = p.cull?.status || "review";
+              return (
               <div key={p.id}
                 draggable
                 onDragStart={e => { e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", String(idx)); }}
@@ -6192,7 +6282,9 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
                 onDragEnd={e => { (e.currentTarget as HTMLElement).style.opacity = ""; }}
                 title="Drag to reorder"
                 className={`relative group aspect-square rounded-md overflow-hidden bg-secondary cursor-grab active:cursor-grabbing ${coverImage === p.src ? "ring-2 ring-primary" : ""}`}>
-                <ProgressiveImg thumbSrc={adminThumbSrc(p.thumbnail) ?? p.thumbnail} fullSrc={adminThumbSrc(p.src) ?? p.src} alt={p.title} className="w-full h-full object-cover" loading="lazy" />
+                <ProgressiveImg thumbSrc={adminThumbSrc(p.thumbnail) ?? p.thumbnail} fullSrc={adminThumbSrc(p.src) ?? p.src} alt={proofReference(p)} className="w-full h-full object-cover" loading="lazy" />
+                <div className="absolute left-1 bottom-1 max-w-[calc(100%-0.5rem)] rounded bg-black/70 px-1.5 py-0.5 text-[9px] font-mono text-white truncate" title={proofReference(p)}>{proofReference(p)}</div>
+                <div className={`absolute top-1 left-7 rounded px-1 py-0.5 text-[8px] uppercase font-body ${cullStatus === "pick" ? "bg-green-500/90 text-white" : cullStatus === "reject" ? "bg-red-500/90 text-white" : "bg-yellow-500/90 text-black"}`}>{cullStatus === "pick" ? "Send" : cullStatus === "reject" ? "Don't send" : "Later"}</div>
                 <button onClick={() => {
                   const filtered = photos.filter(pp => pp.id !== p.id);
                   const newCover = coverImage === p.src ? (filtered[0]?.src || "") : coverImage;
@@ -6231,8 +6323,16 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
                 >
                   <Image className="w-3 h-3" />
                 </button>
+                <div className="absolute bottom-6 right-1 flex flex-col gap-0.5 opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity">
+                  {(["pick", "review", "reject"] as const).map(status => (
+                    <button key={status} type="button" onClick={e => { e.stopPropagation(); setCullStatus(p.id, status); }} title={status === "pick" ? "Send this photo to the client" : status === "review" ? "Decide on this photo later" : "Do not send this photo to the client"} aria-label={status === "pick" ? "Send to client" : status === "review" ? "Decide later" : "Do not send"} className={`w-5 h-5 rounded text-[9px] font-bold ${cullStatus === status ? "bg-primary text-primary-foreground" : "bg-black/65 text-white hover:bg-black/85"}`}>
+                      {status === "pick" ? "★" : status === "review" ? "?" : "–"}
+                    </button>
+                  ))}
+                </div>
               </div>
-            ))}
+              );
+            })}
           </div>
           </>
         )}
@@ -6913,6 +7013,8 @@ function PhotosView() {
         uploadedAt: new Date().toISOString(),
         ...(r.takenAt ? { takenAt: r.takenAt } : {}),
         originalName: r.originalName,
+        ...(r.originalFileNumber ? { originalFileNumber: r.originalFileNumber } : {}),
+        ...(r.proofId ? { proofId: r.proofId } : {}),
         fileSize: r.size,
         ...(r.ftpUploaded ? { ftpUploaded: true } : {}),
       }));

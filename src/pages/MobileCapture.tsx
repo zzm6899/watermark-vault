@@ -202,6 +202,8 @@ function photoFromUploadResult(r: CaptureUploadResult, uploadedAt: string): Phot
     thumbnail: r.url + "?size=thumb&wm=0",
     title: r.originalName.replace(/\.[^.]+$/, "").replace(/^_+/, ""),
     originalName: r.originalName,
+    ...(r.originalFileNumber ? { originalFileNumber: r.originalFileNumber } : {}),
+    ...(r.proofId ? { proofId: r.proofId } : {}),
     width: r.width ?? 800,
     height: r.height ?? 600,
     proofing: true,
@@ -1677,6 +1679,25 @@ function MobileCaptureInner() {
     setAlbums(prev => prev.map(a => a.id === updated.id ? updated : a));
   };
 
+  // A phone-friendly, explicit selection control. Starred remains in sync with
+  // "Send" so existing exports and proofing logic continue to work.
+  const setPhotoSelection = (photoId: string, status: "pick" | "review" | "reject") => {
+    if (!targetAlbum) return;
+    const updated = {
+      ...targetAlbum,
+      photos: targetAlbum.photos.map(photo => photo.id !== photoId ? photo : {
+        ...photo,
+        starred: status === "pick",
+        cull: { ...photo.cull, status, recommendedAction: status === "reject" ? "hold-back" : "keep", reasons: ["manual mobile selection"] },
+        cullMetadata: { ...photo.cullMetadata, status, reasons: ["manual mobile selection"] },
+      }),
+    };
+    saveAlbum(updated).catch(() => toast.error("Could not save photo selection"));
+    setTargetAlbum(updated);
+    targetAlbumRef.current = updated;
+    setAlbums(prev => prev.map(album => album.id === updated.id ? updated : album));
+  };
+
   const setClientRejectVisibility = (visible: boolean) => {
     setShowRejectsToClient(visible);
     if (!targetAlbum) return;
@@ -2757,8 +2778,8 @@ function MobileCaptureInner() {
         <div className={`${captureTab === "review" ? "" : "hidden"} capture-review-panel mb-4 space-y-3`}>
           <div className="flex items-center justify-between gap-3">
             <div>
-              <p className="text-xs font-body tracking-wider uppercase text-muted-foreground">Best of review</p>
-              <p className="text-xs font-body text-muted-foreground/70">{reviewSummary}</p>
+              <p className="text-xs font-body tracking-wider uppercase text-muted-foreground">Choose client photos</p>
+              <p className="text-xs font-body text-muted-foreground/70">Tap a photo, then choose Send, Later, or Don’t send.</p>
             </div>
             <button
               onClick={() => runAutoCull(targetAlbum.id, targetAlbum)}
@@ -2766,14 +2787,14 @@ function MobileCaptureInner() {
               className="inline-flex items-center gap-1.5 text-[10px] font-body tracking-wider uppercase px-2.5 py-1.5 rounded-full border border-border text-muted-foreground hover:text-foreground hover:bg-secondary disabled:opacity-50 transition-all"
             >
               <RefreshCw className={`w-3 h-3 ${culling ? "animate-spin" : ""}`} />
-              {culling ? "Reviewing" : "Review again"}
+              {culling ? "Sorting" : "Help me sort"}
             </button>
           </div>
           <div className="grid grid-cols-4 gap-1.5">
             {([
-              ["best", "Best of", cullCounts.bestOf],
-              ["review", "Review", cullCounts.review],
-              ["reject", "Rejects", cullCounts.reject],
+              ["best", "Sending", cullCounts.bestOf],
+              ["review", "Later", cullCounts.review],
+              ["reject", "Not sending", cullCounts.reject],
               ["all", "All", cullCounts.all],
             ] as const).map(([id, label, count]) => (
               <button
@@ -2791,7 +2812,7 @@ function MobileCaptureInner() {
             ))}
           </div>
           <div className="flex items-center justify-between pt-1">
-            <p className="text-[10px] font-body text-muted-foreground/70">Rejects stay recoverable and off the client view unless enabled.</p>
+            <p className="text-[10px] font-body text-muted-foreground/70">“Not sending” stays safe here, but is hidden from the client.</p>
             <Switch checked={showRejectsToClient} onCheckedChange={setClientRejectVisibility} />
           </div>
         </div>
@@ -2808,7 +2829,7 @@ function MobileCaptureInner() {
         return (
           <div className={`${captureTab === "review" ? "" : "hidden"} glass-panel rounded-xl p-4`}>
             <div className="flex items-center justify-between mb-3">
-              <p className="text-xs font-body tracking-wider uppercase text-muted-foreground">Review Tray</p>
+              <p className="text-xs font-body tracking-wider uppercase text-muted-foreground">Photo selection</p>
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => setStarFilter(v => !v)}
@@ -2825,9 +2846,9 @@ function MobileCaptureInner() {
                 )}
               </div>
             </div>
-            <div className="grid grid-cols-4 gap-1.5">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               {previewPhotos.map((photo, idx) => (
-                <div key={photo.id} className="relative aspect-square rounded-lg overflow-hidden bg-secondary">
+                <div key={photo.id} className="relative aspect-[4/5] rounded-xl overflow-hidden bg-secondary border border-border/50">
                   <button
                     onClick={() => setLightboxIndex(idx)}
                     className="absolute inset-0 w-full h-full active:scale-95 transition-transform"
@@ -2844,12 +2865,18 @@ function MobileCaptureInner() {
                     <span className="absolute top-1 left-1 text-[8px] font-body tracking-wider uppercase px-1 py-0.5 rounded bg-primary/90 text-primary-foreground leading-tight pointer-events-none">P</span>
                   )}
                   {!photo.localPreview && (
-                    <button
-                      onClick={e => { e.stopPropagation(); toggleStar(photo.id); }}
-                      className="absolute bottom-1 right-1 w-6 h-6 rounded-full bg-black/40 flex items-center justify-center active:scale-90 transition-all"
-                    >
-                      <Star className={`w-3 h-3 ${(photo as any).starred ? "text-yellow-400 fill-yellow-400" : "text-white/60"}`} />
-                    </button>
+                    <>
+                      <div className="absolute left-1 right-1 bottom-8 rounded bg-black/70 px-1.5 py-0.5 text-[9px] font-mono text-white truncate" title={photo.originalName || photo.title}>
+                        {photo.originalFileNumber ? `#${photo.originalFileNumber} · ` : ""}{photo.originalName || photo.title}
+                      </div>
+                      <div className="absolute bottom-1 left-1 right-1 grid grid-cols-3 gap-1">
+                        {(["pick", "review", "reject"] as const).map(status => {
+                          const active = (photo.cull?.status || "review") === status;
+                          const label = status === "pick" ? "Send" : status === "review" ? "Later" : "No";
+                          return <button key={status} onClick={e => { e.stopPropagation(); setPhotoSelection(photo.id, status); }} className={`min-h-7 rounded text-[9px] font-body font-semibold active:scale-95 ${active ? "bg-primary text-primary-foreground" : "bg-black/65 text-white"}`}>{label}</button>;
+                        })}
+                      </div>
+                    </>
                   )}
                 </div>
               ))}
