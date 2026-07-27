@@ -53,6 +53,7 @@ const TenantSetup = lazyWithReload(() => import("./pages/TenantSetup"));
 const TenantAdmin = lazyWithReload(() => import("./pages/TenantAdmin"));
 const LoginPage = lazyWithReload(() => import("./pages/LoginPage"));
 const PortfolioSite = lazyWithReload(() => import("./pages/PortfolioSite"));
+const ProofingDemo = lazyWithReload(() => import("./pages/ProofingDemo"));
 
 const queryClient = new QueryClient();
 
@@ -78,6 +79,7 @@ function isPublicRoute(): boolean {
   return (
     p.startsWith("/book/") ||
     p.startsWith("/gallery/") ||
+    p === "/demo/proofing" ||
     p.startsWith("/invoice/") ||
     p.startsWith("/quote/") ||
     p.startsWith("/contract/") ||
@@ -199,6 +201,7 @@ const App = () => {
                 <Route path="/contact" element={<PortfolioSite />} />
                 <Route path="/book/:tenantSlug" element={<TenantBookingPage />} />
                 <Route path="/gallery/:albumId" element={<AlbumDetail />} />
+                <Route path="/demo/proofing" element={<ProofingDemo />} />
                 <Route path="/booking/modify/:bookingId" element={<BookingModify />} />
                 <Route path="/login" element={<LoginPage />} />
                 <Route path="/capture" element={<MobileCapture />} />

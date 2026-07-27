@@ -353,6 +353,8 @@ export type UploadedPhotoResult = {
   id: string;
   url: string;
   originalName: string;
+  originalFileNumber?: string;
+  proofId?: string;
   size: number;
   ftpUploaded?: boolean;
   /** Actual image width extracted from server-side metadata (pixels). */
@@ -371,6 +373,9 @@ export type UploadedPhotoResult = {
 export type AutoCullPhotoResult = {
   id: string;
   src: string;
+  originalName?: string;
+  originalFileNumber?: string;
+  proofId?: string;
   status: import("./types").CullStatus;
   score: number;
   reasons: string[];

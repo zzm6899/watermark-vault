@@ -120,6 +120,10 @@ export interface Photo {
   proofing?: boolean;
   ftpUploaded?: boolean; // true when this photo was successfully sent to an FTP server
   originalName?: string; // original filename as uploaded by the user (e.g. "IMG_1234.jpg")
+  /** Camera file sequence parsed from the original filename, e.g. "01234" from IMG_01234.JPG. */
+  originalFileNumber?: string;
+  /** Human-readable, stable reference for proofing and edit handoff, e.g. "IMG_01234". */
+  proofId?: string;
   fileSize?: number; // file size in bytes
   cull?: PhotoCull;
   cullMetadata?: PhotoCullMetadata;

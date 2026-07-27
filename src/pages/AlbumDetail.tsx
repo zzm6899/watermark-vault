@@ -1458,20 +1458,22 @@ export default function AlbumDetail() {
 
               {/* Active proofing banner (only when window is open) */}
               {effectiveProofingEnabled && album.proofingEnabled && proofingStage === "proofing" && !isProofingWindowExpired && (
-                <div className="glass-panel rounded-xl p-5 border border-yellow-500/30 bg-yellow-500/5">
-                  <div className="flex items-start gap-3">
-                    <Star className="w-5 h-5 text-yellow-400 mt-0.5 shrink-0 fill-yellow-400/30" />
+                <div className="rounded-2xl p-5 sm:p-6 border border-yellow-400/25 bg-gradient-to-br from-yellow-500/10 via-background to-background shadow-[0_18px_45px_-32px_rgba(250,204,21,0.7)]">
+                  <div className="flex items-start gap-4">
+                    <div className="w-10 h-10 shrink-0 rounded-full bg-yellow-400 text-yellow-950 flex items-center justify-center shadow-lg shadow-yellow-400/20">
+                      <Star className="w-5 h-5 fill-current" />
+                    </div>
                     <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-1">
-                        <p className="text-sm font-display text-foreground">Select your favourite photos</p>
+                      <div className="flex items-center gap-2 mb-1.5">
+                        <p className="text-lg font-display text-foreground">Select your photos</p>
                         {album.proofingRounds && album.proofingRounds.length > 0 && (
                           <span className="text-[10px] font-body px-1.5 py-0.5 rounded-full bg-yellow-500/20 text-yellow-400">
                             Round {album.proofingRounds.length}
                           </span>
                         )}
                       </div>
-                      <p className="text-xs font-body text-muted-foreground">
-                        {adminNote || "Tap ★ on the photos you love — star as many as you like, then submit your picks below."}
+                      <p className="text-sm font-body leading-5 text-muted-foreground">
+                        {adminNote || "Open a photo, tap the star to select it, then use the arrows or swipe to continue."}
                       </p>
                       {album.proofingExpiresAt && (() => {
                         const expiresAt = new Date(album.proofingExpiresAt!);
@@ -1491,8 +1493,8 @@ export default function AlbumDetail() {
                           </p>
                         );
                       })()}
-                      <p className="text-xs font-body text-yellow-400/80 mt-1">
-                        {starredIds.size === 0 ? "No photos starred yet" : `${starredIds.size} photo${starredIds.size !== 1 ? "s" : ""} starred`}
+                      <p className="text-xs font-body text-yellow-300 mt-2">
+                        {starredIds.size === 0 ? "No photos selected" : `${starredIds.size} photo${starredIds.size !== 1 ? "s" : ""} selected`}
                       </p>
                     </div>
                   </div>
@@ -1811,7 +1813,7 @@ export default function AlbumDetail() {
             <>
             <div className={gridClass}>
               {displayedPhotos.slice(0, galleryVisibleCount).map((photo, i) => (
-                <div key={photo.id} className="relative group mb-3 sm:mb-4 overflow-hidden rounded-lg transition-transform duration-200 hover:scale-[1.01] hover:shadow-xl hover:shadow-black/40">
+                  <div key={photo.id} className={`relative group mb-3 sm:mb-4 overflow-hidden rounded-xl transition-all duration-200 hover:-translate-y-0.5 hover:shadow-xl hover:shadow-black/40 ${isProofing && starredIds.has(photo.id) ? "ring-2 ring-yellow-400 ring-offset-2 ring-offset-background" : ""}`}>
                   {(sessionFullAlbum || paidPhotoIdSet.has(photo.id)) && (
                     <span className="pointer-events-none absolute left-2 top-2 z-20 inline-flex items-center gap-1 rounded-full bg-emerald-950/90 px-2 py-1 text-[10px] font-body uppercase tracking-wider text-emerald-200 shadow-lg backdrop-blur-sm">
                       <CheckCircle2 className="h-3 w-3" /> Purchased
@@ -1845,13 +1847,13 @@ export default function AlbumDetail() {
                       onClick={() => toggleStar(photo.id)}
                       aria-label={`${starredIds.has(photo.id) ? "Remove" : "Add"} ${((photo as any).originalName || photo.title).replace(/\.[^.]+$/, "")} ${starredIds.has(photo.id) ? "from" : "to"} starred picks`}
                       aria-pressed={starredIds.has(photo.id)}
-                      className={`absolute top-2 right-2 w-8 h-8 rounded-full flex items-center justify-center transition-all shadow-lg ${
+                      className={`absolute top-2 right-2 w-10 h-10 rounded-full flex items-center justify-center transition-all shadow-lg ${
                         starredIds.has(photo.id)
                           ? "bg-yellow-400 text-yellow-900 scale-110"
                           : "bg-black/60 backdrop-blur-sm text-white/70 [@media(hover:none)]:opacity-100 opacity-0 group-hover:opacity-100"
                       }`}
                     >
-                      <Star className={`w-4 h-4 ${starredIds.has(photo.id) ? "fill-yellow-900" : ""}`} />
+                      <Star className={`w-5 h-5 ${starredIds.has(photo.id) ? "fill-yellow-900" : ""}`} />
                     </button>
                   )}
                   {/* Filename overlay on hover */}
@@ -1906,9 +1908,9 @@ export default function AlbumDetail() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm font-display text-foreground">
-                  {starredIds.size === 0 ? "Star photos to select them" : `${starredIds.size} photo${starredIds.size !== 1 ? "s" : ""} selected`}
+                  {starredIds.size === 0 ? "No photos selected" : `${starredIds.size} photo${starredIds.size !== 1 ? "s" : ""} selected`}
                 </p>
-                <p className="text-xs font-body text-muted-foreground">Tap ★ on any photo to add/remove from your picks</p>
+                <p className="text-xs font-body text-muted-foreground">Tap a star to select a photo. You can update your selection before submitting.</p>
               </div>
               <button
                 onClick={handleSubmitSelections}
@@ -1916,7 +1918,7 @@ export default function AlbumDetail() {
                 className="flex items-center gap-2 bg-yellow-500 hover:bg-yellow-400 disabled:opacity-50 disabled:cursor-not-allowed text-yellow-950 font-body text-xs tracking-wider uppercase px-5 py-2.5 rounded-full transition-colors font-semibold"
               >
                 <CheckCircle2 className="w-4 h-4" />
-                {proofingSubmitting ? "Submitting…" : "Submit Picks"}
+                {proofingSubmitting ? "Submitting…" : "Submit selection"}
               </button>
             </div>
             <textarea
@@ -2508,22 +2510,24 @@ export default function AlbumDetail() {
                 />
               </div>
 
-              {/* Bottom bar with select/star/title */}
-              <div className="absolute bottom-0 left-0 right-0 p-3 sm:p-4 bg-gradient-to-t from-black/80 to-transparent rounded-b-lg flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2" style={{ pointerEvents: lbZoom > 1 ? "none" : undefined }}>
-                <p className="text-sm font-body text-white/90 pr-12 sm:pr-0">{((lbPhoto as any).originalName || lbPhoto.title).replace(/\.[^.]+$/, "")}</p>
+              {/* Simple, image-first review controls */}
+              <div className="absolute bottom-0 left-0 right-0 p-3 sm:p-4 bg-gradient-to-t from-black/90 via-black/50 to-transparent rounded-b-lg flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2" style={{ pointerEvents: lbZoom > 1 ? "none" : undefined }}>
+                <div>
+                  <p className="text-sm font-body text-white/90">{((lbPhoto as any).originalName || lbPhoto.title).replace(/\.[^.]+$/, "")}</p>
+                  {isProofing && <p className="text-[11px] font-body text-white/55 mt-0.5">Swipe left or right to browse</p>}
+                </div>
                 <div className="flex gap-2">
                   {isProofing && (
                     <Button
-                      size="sm"
-                      variant="outline"
+                      size="default"
                       onClick={() => toggleStar(lbPhoto.id)}
-                      className={`gap-1.5 font-body text-xs border-white/20 ${(lbPhoto as any).starred ? "bg-yellow-500/20 text-yellow-400 border-yellow-500/40 hover:bg-yellow-500/30" : "bg-white/10 text-white/80 hover:bg-white/20"}`}
+                      className={`gap-2 font-body text-sm rounded-full px-4 ${(lbPhoto as any).starred ? "bg-yellow-400 text-yellow-950 hover:bg-yellow-300" : "bg-white text-black hover:bg-white/90"}`}
                     >
-                      <Star className={`w-3.5 h-3.5 ${(lbPhoto as any).starred ? "fill-yellow-400 text-yellow-400" : ""}`} />
-                      {(lbPhoto as any).starred ? "Starred" : "Star"}
+                      <Star className={`w-4 h-4 ${(lbPhoto as any).starred ? "fill-current" : ""}`} />
+                      {(lbPhoto as any).starred ? "Selected" : "Select photo"}
                     </Button>
                   )}
-                  <Button
+                  {!isProofing && <Button
                     size="sm"
                     variant={selectedIds.has(lbPhoto.id) ? "default" : "outline"}
                     onClick={() => toggleSelect(lbPhoto.id)}
@@ -2534,7 +2538,7 @@ export default function AlbumDetail() {
                     ) : (
                       <><Download className="w-3.5 h-3.5" /> Select</>
                     )}
-                  </Button>
+                  </Button>}
                 </div>
               </div>
             </div>
