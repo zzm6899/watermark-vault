@@ -5,6 +5,10 @@ const { notifyInvoice, notifyAlbumPurchase } = require("./discord");
 const { sendInvoicePaidEmail } = require("./email");
 
 let stripeClient = null;
+// Stripe accounts can have webhook endpoints for more than one product.  This
+// value makes each Checkout Session unambiguously belong to Watermark Vault,
+// so a payment from another product cannot be fulfilled here.
+const CHECKOUT_APP = "watermark-vault";
 
 function getStripe() {
   if (stripeClient) return stripeClient;
@@ -98,7 +102,7 @@ function registerRoutes(app, { readDb, writeDb } = {}) {
         mode: "payment",
         success_url: successUrl || `${req.headers.origin || ""}/booking?success=1&bookingId=${bookingId}`,
         cancel_url: cancelUrl || `${req.headers.origin || ""}/booking?cancelled=1`,
-        metadata: { bookingId, type: "booking-deposit" },
+        metadata: { app: CHECKOUT_APP, bookingId, type: "booking-deposit" },
       });
       res.json({ url: session.url, sessionId: session.id });
     } catch (err) {
@@ -138,6 +142,7 @@ function registerRoutes(app, { readDb, writeDb } = {}) {
         success_url: successUrl || `${req.headers.origin || ""}/gallery/${albumId}?success=1`,
         cancel_url: cancelUrl || `${req.headers.origin || ""}/gallery/${albumId}?cancelled=1`,
         metadata: {
+          app: CHECKOUT_APP,
           albumId: album.id,
           type: "album-purchase",
           orderId,
@@ -191,7 +196,7 @@ function registerRoutes(app, { readDb, writeDb } = {}) {
         mode: "payment",
         success_url: successUrl || `${req.headers.origin || ""}/invoice/${shareToken}?paid=1`,
         cancel_url: cancelUrl || `${req.headers.origin || ""}/invoice/${shareToken}`,
-        metadata: { invoiceId, invoiceNumber: invoice.number || "", type: "invoice-payment", expectedAmountCents: String(expectedAmountCents), expectedCurrency: currency },
+        metadata: { app: CHECKOUT_APP, invoiceId, invoiceNumber: invoice.number || "", type: "invoice-payment", expectedAmountCents: String(expectedAmountCents), expectedCurrency: currency },
       });
       res.json({ url: session.url, sessionId: session.id });
     } catch (err) {
@@ -226,6 +231,13 @@ function registerRoutes(app, { readDb, writeDb } = {}) {
     if (event.type === "checkout.session.completed") {
       const session = event.data.object;
       const metadata = session.metadata || {};
+      if (metadata.app !== CHECKOUT_APP) {
+        // A valid Stripe signature only proves that Stripe delivered the event;
+        // it does not prove the checkout was created by this app.  Ignore
+        // events from other products sharing the Stripe account/webhook.
+        console.warn(`Ignoring Stripe checkout ${session.id} from another app`);
+        return res.json({ received: true, ignored: true });
+      }
       console.log(`✅ Payment completed: ${metadata.type} — ${metadata.bookingId || metadata.albumId}`);
       
       // Update booking/album payment status in db.json
@@ -383,6 +395,12 @@ function registerRoutes(app, { readDb, writeDb } = {}) {
             const purchases = purchasesRaw
               ? (typeof purchasesRaw === "string" ? JSON.parse(purchasesRaw) : (Array.isArray(purchasesRaw) ? purchasesRaw : []))
               : [];
+            // Stripe retries webhook delivery.  A completed checkout must only
+            // ever issue one key, even if the event arrives more than once.
+            if (purchases.some(purchase => purchase.stripeSessionId === session.id)) {
+              console.log(`License checkout ${session.id} was already fulfilled`);
+              return res.json({ received: true, duplicate: true });
+            }
             purchases.push({
               id: `purchase-${Date.now()}`,
               planId: metadata.planId,
@@ -507,7 +525,7 @@ function registerTenantStripeRoutes(app, { readDb, writeDb, readTenants, readLic
         mode: "payment",
         success_url: successUrl || `${req.headers.origin || ""}/book/${slug}?success=1&bookingId=${bookingId}`,
         cancel_url: cancelUrl || `${req.headers.origin || ""}/book/${slug}?cancelled=1`,
-        metadata: { bookingId, tenantSlug: slug, type: "tenant-booking-deposit" },
+        metadata: { app: CHECKOUT_APP, bookingId, tenantSlug: slug, type: "tenant-booking-deposit" },
       });
       res.json({ url: session.url, sessionId: session.id });
     } catch (err) {
@@ -553,6 +571,7 @@ function registerTenantStripeRoutes(app, { readDb, writeDb, readTenants, readLic
         success_url: successUrl || `${req.headers.origin || ""}/gallery/${albumId}?success=1`,
         cancel_url: cancelUrl || `${req.headers.origin || ""}/gallery/${albumId}?cancelled=1`,
         metadata: {
+          app: CHECKOUT_APP,
           albumId: album.id,
           tenantSlug: slug,
           type: "tenant-album-purchase",
@@ -611,7 +630,7 @@ function registerTenantStripeRoutes(app, { readDb, writeDb, readTenants, readLic
         mode: "payment",
         success_url: req.body.successUrl || `${req.headers.origin || ""}/tenant-admin?event_slot_success=1`,
         cancel_url: req.body.cancelUrl || `${req.headers.origin || ""}/tenant-admin?event_slot_cancelled=1`,
-        metadata: { tenantSlug: slug, requestId: pendingRequest.id, type: "tenant-event-slot" },
+        metadata: { app: CHECKOUT_APP, tenantSlug: slug, requestId: pendingRequest.id, type: "tenant-event-slot" },
       });
       // Attach session ID to the request
       const idx = requests.findIndex(r => r.id === pendingRequest.id);
@@ -651,6 +670,10 @@ function registerTenantStripeRoutes(app, { readDb, writeDb, readTenants, readLic
     if (event.type === "checkout.session.completed") {
       const session = event.data.object;
       const metadata = session.metadata || {};
+      if (metadata.app !== CHECKOUT_APP || metadata.tenantSlug !== slug) {
+        console.warn(`Ignoring Stripe checkout ${session.id} not owned by tenant ${slug}`);
+        return res.json({ received: true, ignored: true });
+      }
       try {
         const fs = require("fs");
         const path = require("path");

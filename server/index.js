@@ -6155,6 +6155,7 @@ app.post("/api/license-plans/:planId/checkout", planLimiter, async (req, res) =>
       success_url: successUrl || `${origin}?plan_success=1`,
       cancel_url: cancelUrl || `${origin}?plan_cancelled=1`,
       metadata: {
+        app: "watermark-vault",
         type: "license-plan",
         planId: plan.id,
         planName: plan.name,
