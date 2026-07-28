@@ -70,6 +70,20 @@ function saveCheckoutOrder(db, writeDb, order) {
   writeDb(db);
 }
 
+function hasFulfilledAlbumCheckout(album, stripeSessionId) {
+  return Object.values(album?.sessionPurchases || {}).some(
+    purchase => purchase?.stripeSessionId === stripeSessionId,
+  );
+}
+
+function checkoutPaymentMatchesOrder(session, order, currency) {
+  const expectedCents = Math.round(Number(order?.amount) * 100);
+  return session?.payment_status === "paid"
+    && Number.isFinite(expectedCents)
+    && session.amount_total === expectedCents
+    && String(session.currency || "").toLowerCase() === String(currency || "aud").toLowerCase();
+}
+
 function registerRoutes(app, { readDb, writeDb } = {}) {
   const checkoutLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHeaders: true, legacyHeaders: false, message: { error: "Too many checkout requests — please wait" } });
   // ── Status ─────────────────────────────────────────
@@ -275,11 +289,21 @@ function registerRoutes(app, { readDb, writeDb } = {}) {
           const albumIdx = albums.findIndex(a => a.id === metadata.albumId);
           if (albumIdx >= 0) {
             const album = albums[albumIdx];
+            // Stripe may retry a successfully delivered event. The checkout
+            // order is intentionally consumed after the first fulfilment, so
+            // recognise the recorded Stripe session before requiring it again.
+            if (hasFulfilledAlbumCheckout(album, session.id)) {
+              console.log(`Album purchase ${session.id} was already fulfilled`);
+              return res.json({ received: true, duplicate: true });
+            }
             const checkoutOrders = parseStored(db["wv_album_checkout_orders"], {});
             const order = metadata.orderId ? checkoutOrders[metadata.orderId] : null;
             if (!order || order.albumId !== metadata.albumId) {
               console.error(`Album purchase ${session.id} has no valid server checkout order`);
               throw new Error("Invalid or expired album checkout order");
+            }
+            if (!checkoutPaymentMatchesOrder(session, order, "aud")) {
+              throw new Error("Album checkout payment amount, currency, or status did not match the order");
             }
             // Record the purchase per-session so other visitors aren't affected
             const sKey = order.sessionKey || `stripe-${session.id}`;
@@ -369,6 +393,16 @@ function registerRoutes(app, { readDb, writeDb } = {}) {
         // ── License Plan Purchase ─────────────────────────────
         if (metadata.type === "license-plan" && metadata.planId) {
           try {
+            // Check before generating/writing a key. Previously a retried
+            // webhook wrote an orphaned key and only then noticed the purchase.
+            const purchasesRaw = db["wv_license_purchases"];
+            const purchases = purchasesRaw
+              ? (typeof purchasesRaw === "string" ? JSON.parse(purchasesRaw) : (Array.isArray(purchasesRaw) ? purchasesRaw : []))
+              : [];
+            if (purchases.some(purchase => purchase.stripeSessionId === session.id)) {
+              console.log(`License checkout ${session.id} was already fulfilled`);
+              return res.json({ received: true, duplicate: true });
+            }
             const crypto = require("crypto");
             const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
             // Use crypto.randomInt for unbiased cryptographically secure selection
@@ -391,16 +425,6 @@ function registerRoutes(app, { readDb, writeDb } = {}) {
             fs.writeFileSync(KEYS_FILE, JSON.stringify(keys, null, 2));
 
             // Store purchase record
-            const purchasesRaw = db["wv_license_purchases"];
-            const purchases = purchasesRaw
-              ? (typeof purchasesRaw === "string" ? JSON.parse(purchasesRaw) : (Array.isArray(purchasesRaw) ? purchasesRaw : []))
-              : [];
-            // Stripe retries webhook delivery.  A completed checkout must only
-            // ever issue one key, even if the event arrives more than once.
-            if (purchases.some(purchase => purchase.stripeSessionId === session.id)) {
-              console.log(`License checkout ${session.id} was already fulfilled`);
-              return res.json({ received: true, duplicate: true });
-            }
             purchases.push({
               id: `purchase-${Date.now()}`,
               planId: metadata.planId,
@@ -705,10 +729,17 @@ function registerTenantStripeRoutes(app, { readDb, writeDb, readTenants, readLic
           const albumIdx = albums.findIndex(a => a.id === metadata.albumId);
           if (albumIdx >= 0) {
             const album = albums[albumIdx];
+            if (hasFulfilledAlbumCheckout(album, session.id)) {
+              console.log(`Tenant album purchase ${session.id} was already fulfilled`);
+              return res.json({ received: true, duplicate: true });
+            }
             const checkoutOrders = parseStored(dbData["wv_album_checkout_orders"], {});
             const order = metadata.orderId ? checkoutOrders[metadata.orderId] : null;
             if (!order || order.albumId !== metadata.albumId || order.tenantSlug !== slug) {
               throw new Error("Invalid or expired tenant album checkout order");
+            }
+            if (!checkoutPaymentMatchesOrder(session, order, resolved.currency)) {
+              throw new Error("Tenant album checkout payment amount, currency, or status did not match the order");
             }
             const sKey = order.sessionKey || `stripe-${session.id}`;
             const sessionPurchases = album.sessionPurchases || {};

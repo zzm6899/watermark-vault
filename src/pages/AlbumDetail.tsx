@@ -1838,7 +1838,7 @@ export default function AlbumDetail() {
                   <button
                     onClick={e => { e.stopPropagation(); setLightboxPhotoId(photo.id); }}
                     aria-label={`Open ${((photo as any).originalName || photo.title).replace(/\.[^.]+$/, "")} in lightbox`}
-                    className="absolute top-2 left-2 w-7 h-7 rounded-full bg-black/60 backdrop-blur-sm text-white flex items-center justify-center [@media(hover:none)]:opacity-100 opacity-0 group-hover:opacity-100 transition-opacity z-10"
+                    className="absolute top-2 left-2 w-10 h-10 rounded-full bg-black/60 backdrop-blur-sm text-white flex items-center justify-center [@media(hover:none)]:opacity-100 opacity-0 group-hover:opacity-100 transition-opacity z-10"
                   >
                     <Maximize2 className="w-3 h-3" />
                   </button>
@@ -1903,10 +1903,11 @@ export default function AlbumDetail() {
         <motion.div
           initial={{ y: 100, opacity: 0 }} animate={{ y: 0, opacity: 1 }}
           className="fixed bottom-0 left-0 right-0 z-40 bg-background/95 backdrop-blur-sm border-t border-yellow-500/20 p-4"
+          style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 1rem)" }}
         >
           <div className="max-w-2xl mx-auto space-y-3">
             <div className="flex items-center justify-between">
-              <div>
+              <div aria-live="polite">
                 <p className="text-sm font-display text-foreground">
                   {starredIds.size === 0 ? "No photos selected" : `${starredIds.size} photo${starredIds.size !== 1 ? "s" : ""} selected`}
                 </p>
@@ -2461,14 +2462,14 @@ export default function AlbumDetail() {
 
             {/* Nav arrows — hidden when zoomed */}
             {lbZoom === 1 && lbIdx > 0 && (
-              <button className="absolute left-2 sm:left-4 z-10 w-11 h-11 rounded-full bg-white/15 backdrop-blur-sm flex items-center justify-center text-white hover:bg-white/25 transition-colors"
+              <button className="absolute left-2 sm:left-4 top-1/2 -translate-y-1/2 z-10 w-11 h-11 rounded-full bg-white/15 backdrop-blur-sm flex items-center justify-center text-white hover:bg-white/25 transition-colors"
                 aria-label="Previous photo"
                 onClick={(e) => { e.stopPropagation(); setLightboxPhotoId(displayedPhotos[lbIdx - 1].id); setLbZoom(1); setLbPan({ x: 0, y: 0 }); }}>
                 <ChevronLeft className="w-5 h-5" />
               </button>
             )}
             {lbZoom === 1 && lbIdx < displayedPhotos.length - 1 && (
-              <button className="absolute right-2 sm:right-4 z-10 w-11 h-11 rounded-full bg-white/15 backdrop-blur-sm flex items-center justify-center text-white hover:bg-white/25 transition-colors"
+              <button className="absolute right-2 sm:right-4 top-1/2 -translate-y-1/2 z-10 w-11 h-11 rounded-full bg-white/15 backdrop-blur-sm flex items-center justify-center text-white hover:bg-white/25 transition-colors"
                 aria-label="Next photo"
                 onClick={(e) => { e.stopPropagation(); setLightboxPhotoId(displayedPhotos[lbIdx + 1].id); setLbZoom(1); setLbPan({ x: 0, y: 0 }); }}>
                 <ChevronRight className="w-5 h-5" />

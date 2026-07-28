@@ -2431,16 +2431,34 @@ app.post("/api/album/register-purchaser", purchaserRegistrationLimiter, (req, re
 
   const album = albums[index];
   const purchases = { ...(album.sessionPurchases || {}) };
+  const normalizedEmail = String(email).trim().toLowerCase();
   const current = purchases[currentSessionKey] || {};
+  const isEntitlement = purchase => purchase?.fullAlbum === true || Array.isArray(purchase?.photoIds) && purchase.photoIds.length > 0;
+  const purchaseEmail = purchase => String(purchase?.purchaserEmail || "").trim().toLowerCase();
+
+  // A payment flow reaches this endpoint before it owns an entitlement. For
+  // restoration, merge every prior entitlement belonging to this email rather
+  // than relying on a browser-specific gallery session key.
+  const matchingPurchases = Object.values(purchases).filter(purchase => isEntitlement(purchase) && purchaseEmail(purchase) === normalizedEmail);
+  if (isEntitlement(current) && purchaseEmail(current) && purchaseEmail(current) !== normalizedEmail) {
+    return res.status(403).json({ error: "This gallery purchase belongs to a different email address" });
+  }
+  if (isEntitlement(current) && !purchaseEmail(current)) matchingPurchases.push(current);
+
   const existing = purchases[sessionKey] || {};
-  purchases[sessionKey] = {
-    ...existing,
-    ...current,
-    fullAlbum: existing.fullAlbum === true || current.fullAlbum === true,
-    photoIds: [...new Set([...(existing.photoIds || []), ...(current.photoIds || [])])],
-    purchaserEmail: String(email).trim().toLowerCase(),
-  };
-  album.sessionPurchases = purchases;
+  const combined = [existing, ...matchingPurchases];
+  const hasPurchase = combined.some(isEntitlement);
+  if (hasPurchase) {
+    purchases[sessionKey] = {
+      ...existing,
+      fullAlbum: combined.some(purchase => purchase?.fullAlbum === true),
+      photoIds: [...new Set(combined.flatMap(purchase => Array.isArray(purchase?.photoIds) ? purchase.photoIds : []))],
+      purchaserEmail: normalizedEmail,
+      paidAt: existing.paidAt || matchingPurchases.find(purchase => purchase?.paidAt)?.paidAt,
+      stripeSessionId: existing.stripeSessionId || matchingPurchases.find(purchase => purchase?.stripeSessionId)?.stripeSessionId,
+    };
+    album.sessionPurchases = purchases;
+  }
   if (album.usedFreeDownloads?.[currentSessionKey] != null) {
     album.usedFreeDownloads = {
       ...album.usedFreeDownloads,
