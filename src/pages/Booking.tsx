@@ -1158,6 +1158,7 @@ export default function Booking() {
                 let modifyToken: string;
                 let clientName: string;
                 let clientEmail: string;
+                let newlyCreatedBooking: Record<string, unknown> | undefined;
 
                 if (existingBooking && depositAlreadyPaid) {
                   // Paying remaining on existing booking
@@ -1170,6 +1171,7 @@ export default function Booking() {
                   const newBooking = buildBookingRecord("stripe");
                   if (!newBooking) { setProcessingPayment(false); return; }
                   addBooking(newBooking);
+                  newlyCreatedBooking = newBooking;
                   syncBookingToCalendar(newBooking).then(res => { if (res?.eventId) updateBooking({ ...newBooking, gcalEventId: res.eventId }); }).catch(() => {});
                   localStorage.setItem("lastBookingId", newBooking.id);
                   setLastBookingId(newBooking.id);
@@ -1188,6 +1190,12 @@ export default function Booking() {
                 });
                 setProcessingPayment(false);
                 if (result.url) {
+                  // A Stripe booking is created before redirecting to checkout.
+                  // Notify Discord here (rather than after redirect), so paid
+                  // bookings receive the same new-booking alert as free ones.
+                  if (newlyCreatedBooking) {
+                    await notifyDiscord({ type: "new-booking", booking: newlyCreatedBooking });
+                  }
                   window.location.href = result.url;
                 } else {
                   toast.error(result.error || "Failed to create checkout session");
