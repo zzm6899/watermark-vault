@@ -5491,6 +5491,7 @@ app.post("/api/booking", publicBookingLimiter, (req, res) => {
     paymentStatus: paymentMethod === "bank" ? "pending-confirmation" : "unpaid",
     paymentAmount: totalPrice, depositRequired, depositAmount: depositRequired ? depositAmount : 0,
     depositMethod: paymentMethod === "none" ? undefined : paymentMethod,
+    paymentMethod: paymentMethod === "none" ? undefined : paymentMethod,
   };
   bookings.push(booking);
   db[DB_KEYS.BOOKINGS] = JSON.stringify(bookings);

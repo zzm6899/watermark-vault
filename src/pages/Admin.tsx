@@ -3438,6 +3438,14 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                       <div className="p-3 rounded-lg bg-secondary/50">
                         <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-1">Payment</p>
                         <p className="text-sm font-body text-foreground">{bk.paymentStatus === "paid" ? "Paid in Full" : bk.paymentStatus === "deposit-paid" ? "Deposit Paid" : bk.paymentStatus === "pending-confirmation" ? "Bank Transfer Pending" : bk.paymentStatus || "Unpaid"}</p>
+                        <p className="text-[11px] font-body text-muted-foreground mt-1">
+                          Method: {bk.paymentMethod === "stripe" || bk.depositMethod === "stripe" ? "Card via Stripe" : bk.paymentMethod === "bank" || bk.depositMethod === "bank" ? "Bank transfer" : bk.paymentMethod === "cash" || bk.paymentStatus === "cash" ? "Cash" : bk.paymentStatus === "unpaid" ? "Not selected — no Stripe charge" : "Not recorded"}
+                        </p>
+                        {bk.stripeReceiptUrl && (
+                          <a href={bk.stripeReceiptUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-[11px] font-body text-primary hover:underline mt-2">
+                            View Stripe receipt <ExternalLink className="w-3 h-3" />
+                          </a>
+                        )}
                       </div>
                     </div>
                     {bk.answers && Object.keys(bk.answers).length > 0 && (

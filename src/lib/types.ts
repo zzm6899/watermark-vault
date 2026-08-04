@@ -87,6 +87,11 @@ export interface Booking {
   depositMethod?: "stripe" | "bank";
   depositPaidAt?: string;
   stripeSessionId?: string;
+  /** Payment method selected for this booking, including full payments. */
+  paymentMethod?: "stripe" | "bank" | "cash";
+  /** Stripe payment intent and hosted receipt, stored only after a confirmed payment. */
+  stripePaymentIntentId?: string;
+  stripeReceiptUrl?: string;
   gcalEventId?: string;
   answerLabels?: Record<string, string>;
   emailLog?: any[];

@@ -277,6 +277,22 @@ function registerRoutes(app, { readDb, writeDb } = {}) {
               if (metadata.paymentKind === "balance") bookings[idx].balancePaidAt = paidAt;
             }
             bookings[idx].stripeSessionId = session.id;
+            bookings[idx].stripePaymentIntentId = typeof session.payment_intent === "string" ? session.payment_intent : session.payment_intent?.id;
+            bookings[idx].paymentMethod = "stripe";
+            // Stripe creates the hosted receipt after payment completion. It is
+            // optional (for example, for an unusual payment method), so a
+            // receipt lookup failure must never prevent fulfilment.
+            try {
+              const paymentIntentId = bookings[idx].stripePaymentIntentId;
+              if (paymentIntentId) {
+                const paymentIntent = await s.paymentIntents.retrieve(paymentIntentId, { expand: ["latest_charge"] });
+                const latestCharge = paymentIntent.latest_charge;
+                const receiptUrl = typeof latestCharge === "object" ? latestCharge?.receipt_url : null;
+                if (receiptUrl) bookings[idx].stripeReceiptUrl = receiptUrl;
+              }
+            } catch (receiptErr) {
+              console.warn(`Stripe receipt lookup failed for booking ${metadata.bookingId}:`, receiptErr.message);
+            }
             // Auto-confirm booking now that deposit is paid (unless admin confirmation is separately required)
             if (bookings[idx].status === "pending" && !bookings[idx].requiresConfirmation) {
               bookings[idx].status = "confirmed";
