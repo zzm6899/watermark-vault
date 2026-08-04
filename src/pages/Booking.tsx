@@ -13,8 +13,8 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import Footer from "@/components/Footer";
 import { toast } from "sonner";
-import { getEventTypes, getProfile, addBooking, getBookings, getSettings, isSlotBooked, updateBooking, addEnquiry, isDuplicateBooking } from "@/lib/storage";
-import { syncBookingToCalendar, createBookingCheckout, getStripeStatus, sendBookingConfirmationEmail, getGoogleBusyTimes, joinWaitlist, notifyDiscord, sendEnquiryReceivedEmail } from "@/lib/api";
+import { getEventTypes, getProfile, cacheBookingLocally, getBookings, getSettings, isSlotBooked, addEnquiry, isDuplicateBooking } from "@/lib/storage";
+import { syncBookingToCalendar, createBookingCheckout, createPublicBooking, fetchBookingByToken, getStripeStatus, sendBookingConfirmationEmail, getGoogleBusyTimes, joinWaitlist, sendEnquiryReceivedEmail } from "@/lib/api";
 import type { EventType, QuestionField, Enquiry } from "@/lib/types";
 import { RichTextDisplay } from "@/components/RichTextEditor";
 
@@ -292,6 +292,27 @@ export default function Booking() {
   const [use24h, setUse24h] = useState(false);
   const [timerActive, setTimerActive] = useState(false);
   const [lastBookingId, setLastBookingId] = useState<string | null>(restoredBookingId);
+  const [, setBookingVersion] = useState(0);
+
+  // Stripe returns the client before webhook delivery can be guaranteed. Refresh
+  // the authoritative booking shortly after returning so the confirmation page
+  // reflects a completed deposit or balance payment.
+  useEffect(() => {
+    if (!lastBookingId) return;
+    let cancelled = false;
+    const refresh = async () => {
+      const local = getBookings().find(booking => booking.id === lastBookingId);
+      if (!local?.modifyToken) return;
+      const result = await fetchBookingByToken(local.modifyToken);
+      if (!cancelled && result) {
+        cacheBookingLocally(result);
+        setBookingVersion(version => version + 1);
+      }
+    };
+    void refresh();
+    const timer = window.setTimeout(() => { void refresh(); }, 2500);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [lastBookingId]);
 
   // Waitlist state
   const [showWaitlist, setShowWaitlist] = useState(false);
@@ -523,17 +544,26 @@ export default function Booking() {
     };
   };
 
-  const handleCompletePaymentFree = () => {
+  const createServerBooking = async (paymentMethod: "stripe" | "bank" | "none") => {
+    const draft = buildBookingRecord(paymentMethod);
+    if (!draft || !selectedEvent) return { error: "Please complete your booking details" };
+    const result = await createPublicBooking({
+      clientName: draft.clientName, clientEmail: draft.clientEmail, date: draft.date, time: draft.time,
+      eventTypeId: selectedEvent.id, duration: draft.duration, answers: draft.answers,
+      paymentMethod, payInFull: payFullInstead,
+      phone: answers[selectedEvent.questions.find(q => q.type === "phone" || q.label.toLowerCase().includes("phone"))?.id || ""] || "",
+    });
+    if (result.booking) cacheBookingLocally(result.booking);
+    return result;
+  };
+
+  const handleCompletePaymentFree = async () => {
     if (!selectedEvent) return;
-    const booking = buildBookingRecord("none");
-    if (!booking) return;
-    addBooking(booking);
-    // Discord notification
-    notifyDiscord({ type: "new-booking", booking }).catch(() => {});
+    const result = await createServerBooking("none");
+    if (!result.booking) { toast.error(result.error || "Could not save your booking"); return; }
+    const booking = result.booking;
     // Save gcalEventId back to the booking so future syncs update rather than duplicate
-    syncBookingToCalendar(booking).then(res => {
-      if (res?.eventId) updateBooking({ ...booking, gcalEventId: res.eventId });
-    }).catch(() => {});
+    syncBookingToCalendar(booking).then(res => { if (res?.eventId) cacheBookingLocally({ ...booking, gcalEventId: res.eventId }); }).catch(() => {});
     if (booking.clientEmail) {
       sendBookingEmail({
         to: booking.clientEmail,
@@ -555,12 +585,12 @@ export default function Booking() {
     setStep("confirmed");
   };
 
-  const handleCompletePayment = (paymentMethod: "stripe" | "bank" | "none") => {
+  const handleCompletePayment = async (paymentMethod: "stripe" | "bank" | "none") => {
     if (!selectedEvent || !selectedDate || !selectedTime || !selectedDuration) return;
-    const booking = buildBookingRecord(paymentMethod);
-    if (!booking) return;
-    addBooking(booking);
-    syncBookingToCalendar(booking).then(res => { if (res?.eventId) updateBooking({ ...booking, gcalEventId: res.eventId }); }).catch(() => {});
+    const result = await createServerBooking(paymentMethod);
+    if (!result.booking) { toast.error(result.error || "Could not save your booking"); return; }
+    const booking = result.booking;
+    syncBookingToCalendar(booking).then(res => { if (res?.eventId) cacheBookingLocally({ ...booking, gcalEventId: res.eventId }); }).catch(() => {});
     if (booking.clientEmail) {
       sendBookingEmail({
         to: booking.clientEmail,
@@ -1158,7 +1188,6 @@ export default function Booking() {
                 let modifyToken: string;
                 let clientName: string;
                 let clientEmail: string;
-                let newlyCreatedBooking: Record<string, unknown> | undefined;
 
                 if (existingBooking && depositAlreadyPaid) {
                   // Paying remaining on existing booking
@@ -1168,11 +1197,10 @@ export default function Booking() {
                   clientEmail = existingBooking.clientEmail;
                 } else {
                   // New booking — create record before redirecting to Stripe
-                  const newBooking = buildBookingRecord("stripe");
-                  if (!newBooking) { setProcessingPayment(false); return; }
-                  addBooking(newBooking);
-                  newlyCreatedBooking = newBooking;
-                  syncBookingToCalendar(newBooking).then(res => { if (res?.eventId) updateBooking({ ...newBooking, gcalEventId: res.eventId }); }).catch(() => {});
+                  const createResult = await createServerBooking("stripe");
+                  if (!createResult.booking) { setProcessingPayment(false); toast.error(createResult.error || "Could not save your booking"); return; }
+                  const newBooking = createResult.booking;
+                  syncBookingToCalendar(newBooking).then(res => { if (res?.eventId) cacheBookingLocally({ ...newBooking, gcalEventId: res.eventId }); }).catch(() => {});
                   localStorage.setItem("lastBookingId", newBooking.id);
                   setLastBookingId(newBooking.id);
                   bookingId = newBooking.id;
@@ -1187,15 +1215,10 @@ export default function Booking() {
                   clientEmail,
                   amount: amountDue,
                   eventTitle: selectedEvent.title,
+                  paymentKind: depositAlreadyPaid ? "balance" : wantsPayFull || !depositEnabled ? "full" : "deposit",
                 });
                 setProcessingPayment(false);
                 if (result.url) {
-                  // A Stripe booking is created before redirecting to checkout.
-                  // Notify Discord here (rather than after redirect), so paid
-                  // bookings receive the same new-booking alert as free ones.
-                  if (newlyCreatedBooking) {
-                    await notifyDiscord({ type: "new-booking", booking: newlyCreatedBooking });
-                  }
                   window.location.href = result.url;
                 } else {
                   toast.error(result.error || "Failed to create checkout session");

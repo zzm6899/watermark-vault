@@ -1,7 +1,7 @@
 const stripe = require("stripe");
 const rateLimit = require("express-rate-limit");
 const crypto = require("crypto");
-const { notifyInvoice, notifyAlbumPurchase } = require("./discord");
+const { notifyInvoice, notifyAlbumPurchase, notifyPayment } = require("./discord");
 const { sendInvoicePaidEmail } = require("./email");
 
 let stripeClient = null;
@@ -78,18 +78,34 @@ function registerRoutes(app, { readDb, writeDb } = {}) {
   app.post("/api/stripe/checkout/booking", checkoutLimiter, async (req, res) => {
     const s = getStripe();
     if (!s) return res.status(400).json({ error: "Stripe not configured" });
-    const { bookingId, clientName, clientEmail, amount, eventTitle, successUrl, cancelUrl } = req.body;
-    if (!amount || amount <= 0) return res.status(400).json({ error: "Invalid amount" });
+    const { bookingId, successUrl, cancelUrl } = req.body;
+    const db = readDb();
+    const bookings = parseStored(db["wv_bookings"], []);
+    const booking = bookings.find(item => item.id === bookingId && !item.tenantSlug && item.status !== "cancelled");
+    if (!booking) return res.status(404).json({ error: "Booking not found or no longer payable" });
+    const total = Number(booking.paymentAmount);
+    const deposit = Number(booking.depositAmount) || 0;
+    if (!Number.isFinite(total) || total <= 0) return res.status(400).json({ error: "This booking does not require payment" });
+    let paymentKind = "full";
+    let amount = total;
+    if (booking.paymentStatus === "deposit-paid" && deposit > 0) {
+      paymentKind = "balance";
+      amount = Math.max(0, total - deposit);
+    } else if (booking.depositRequired && deposit > 0) {
+      paymentKind = "deposit";
+      amount = deposit;
+    }
+    if (!Number.isFinite(amount) || amount <= 0) return res.status(409).json({ error: "No balance remains on this booking" });
     try {
       const session = await s.checkout.sessions.create({
         payment_method_types: ["card"],
-        customer_email: clientEmail || undefined,
+        customer_email: booking.clientEmail || undefined,
         line_items: [{
           price_data: {
             currency: "aud",
             product_data: {
-              name: `Deposit — ${eventTitle || "Booking"}`,
-              description: `Booking for ${clientName || "Client"}`,
+              name: `${paymentKind === "deposit" ? "Deposit" : paymentKind === "balance" ? "Remaining balance" : "Payment"} — ${booking.type || "Booking"}`,
+              description: `Booking for ${booking.clientName || "Client"}`,
             },
             unit_amount: Math.round(amount * 100),
           },
@@ -98,7 +114,7 @@ function registerRoutes(app, { readDb, writeDb } = {}) {
         mode: "payment",
         success_url: successUrl || `${req.headers.origin || ""}/booking?success=1&bookingId=${bookingId}`,
         cancel_url: cancelUrl || `${req.headers.origin || ""}/booking?cancelled=1`,
-        metadata: { bookingId, type: "booking-deposit" },
+        metadata: { bookingId, type: "booking-payment", paymentKind, app: "watermark-vault", expectedAmountCents: String(Math.round(amount * 100)) },
       });
       res.json({ url: session.url, sessionId: session.id });
     } catch (err) {
@@ -238,13 +254,28 @@ function registerRoutes(app, { readDb, writeDb } = {}) {
       try {
         const db = JSON.parse(fs.readFileSync(DB_FILE, "utf-8"));
         
-        if (metadata.type === "booking-deposit" && metadata.bookingId) {
+        if ((metadata.type === "booking-payment" || metadata.type === "booking-deposit") && metadata.bookingId) {
           const raw = db["wv_bookings"];
           const bookings = raw ? (typeof raw === "string" ? JSON.parse(raw) : (Array.isArray(raw) ? raw : [])) : [];
           const idx = bookings.findIndex(b => b.id === metadata.bookingId);
           if (idx >= 0) {
-            bookings[idx].paymentStatus = bookings[idx].depositRequired ? "deposit-paid" : "paid";
-            bookings[idx].depositPaidAt = new Date().toISOString();
+            const expectedCents = Number(metadata.expectedAmountCents);
+            // Legacy sessions created before this release do not contain an
+            // expected amount. They remain supported for their short checkout
+            // lifetime; every new session is verified against server metadata.
+            if ((metadata.type === "booking-payment" && (!Number.isFinite(expectedCents) || session.amount_total !== expectedCents)) || String(session.currency || "").toLowerCase() !== "aud") {
+              console.error(`Booking ${metadata.bookingId} payment amount/currency mismatch; refusing to update`);
+              return res.status(400).json({ error: "Payment verification failed" });
+            }
+            const paidAt = new Date().toISOString();
+            if (metadata.type === "booking-deposit" || metadata.paymentKind === "deposit") {
+              bookings[idx].paymentStatus = "deposit-paid";
+              bookings[idx].depositPaidAt = paidAt;
+            } else {
+              bookings[idx].paymentStatus = "paid";
+              bookings[idx].paidAt = paidAt;
+              if (metadata.paymentKind === "balance") bookings[idx].balancePaidAt = paidAt;
+            }
             bookings[idx].stripeSessionId = session.id;
             // Auto-confirm booking now that deposit is paid (unless admin confirmation is separately required)
             if (bookings[idx].status === "pending" && !bookings[idx].requiresConfirmation) {
@@ -252,7 +283,13 @@ function registerRoutes(app, { readDb, writeDb } = {}) {
             }
             db["wv_bookings"] = JSON.stringify(bookings);
             saveDb(db);
-            console.log(`📝 Booking ${metadata.bookingId} marked as paid`);
+            console.log(`📝 Booking ${metadata.bookingId} marked as ${bookings[idx].paymentStatus}`);
+            try {
+              const settings = parseStored(db["wv_settings"], {});
+              if (settings?.discordWebhookUrl && settings?.discordNotifyPayments !== false) {
+                notifyPayment(settings.discordWebhookUrl, bookings[idx], bookings[idx].paymentStatus).catch(err => console.error("Discord booking-payment notify error:", err.message));
+              }
+            } catch (discordErr) { console.error("Discord settings read error:", discordErr.message); }
           }
         }
         

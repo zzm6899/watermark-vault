@@ -889,6 +889,7 @@ export async function createBookingCheckout(params: {
   amount: number;
   eventTitle: string;
   modifyToken?: string;   // used to build the Stripe success redirect URL
+  paymentKind?: "deposit" | "balance" | "full";
 }): Promise<{ url?: string; error?: string }> {
   try {
     const res = await fetch("/api/stripe/checkout/booking", {
@@ -953,6 +954,19 @@ export async function sendEmail(to: string, subject: string, html?: string, text
   } catch {
     return { ok: false, error: "Network error" };
   }
+}
+
+export async function createPublicBooking(params: Record<string, unknown>): Promise<{ booking?: import("./types").Booking; error?: string }> {
+  try {
+    const res = await fetch("/api/booking", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(params),
+    });
+    if (!res.ok) {
+      try { const e = await res.json(); return { error: e.error || `Request failed (${res.status})` }; }
+      catch { return { error: `Request failed (${res.status})` }; }
+    }
+    return await res.json();
+  } catch { return { error: "Network error — please check your connection and try again" }; }
 }
 
 export async function getEmailAutomations(): Promise<import("./types").EmailAutomationRule[]> {

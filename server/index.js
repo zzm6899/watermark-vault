@@ -1177,7 +1177,10 @@ async function requireAuth(req, res, next) {
   return res.status(401).json({ error: "Authentication required" });
 }
 
-const SENSITIVE_STORE_KEYS = new Set(["wv_contacts", "wv_invoices", "wv_pixieset_import_audit", DB_KEYS.DOWNLOAD_EMAIL_CAPTURES]);
+// Bookings must never be replaced by an unauthenticated browser's local list.
+// Public booking creation uses the dedicated endpoint below, which validates the
+// event and checks the live schedule before writing.
+const SENSITIVE_STORE_KEYS = new Set(["wv_contacts", "wv_invoices", "wv_pixieset_import_audit", DB_KEYS.BOOKINGS, DB_KEYS.DOWNLOAD_EMAIL_CAPTURES]);
 function isSensitiveStoreKey(key) {
   return SENSITIVE_STORE_KEYS.has(String(key || ""));
 }
@@ -5425,6 +5428,80 @@ app.get("/api/booking/:token", bookingLookupLimiter, (req, res) => {
   const booking = bookings.find(b => b.modifyToken === token || b.id === token);
   if (!booking) return res.status(404).json({ error: "Booking not found" });
   res.json({ booking });
+});
+
+// Create a main-site booking.  This is intentionally separate from the generic
+// store API: public visitors must not be able to overwrite the bookings list.
+const publicBookingLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHeaders: true, legacyHeaders: false, message: { error: "Too many booking attempts — please wait" } });
+app.post("/api/booking", publicBookingLimiter, (req, res) => {
+  const input = req.body || {};
+  const { clientName, clientEmail, phone, date, time, eventTypeId, duration, answers, paymentMethod, payInFull } = input;
+  if (!clientName || typeof clientName !== "string" || !clientName.trim()) return res.status(400).json({ error: "clientName is required" });
+  if (!clientEmail || typeof clientEmail !== "string" || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clientEmail.trim())) return res.status(400).json({ error: "Valid clientEmail is required" });
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date) || !time || !/^\d{2}:\d{2}$/.test(time)) return res.status(400).json({ error: "A valid date and time are required" });
+
+  const db = readDb();
+  const eventTypesRaw = db[DB_KEYS.EVENT_TYPES];
+  const eventTypes = eventTypesRaw ? (typeof eventTypesRaw === "string" ? JSON.parse(eventTypesRaw) : eventTypesRaw) : [];
+  const eventType = Array.isArray(eventTypes) ? eventTypes.find(event => event.id === eventTypeId && event.active !== false) : null;
+  if (!eventType) return res.status(400).json({ error: "This session type is no longer available" });
+  const bookingDuration = Number(duration);
+  if (!Number.isFinite(bookingDuration) || bookingDuration <= 0 || !Array.isArray(eventType.durations) || !eventType.durations.includes(bookingDuration)) {
+    return res.status(400).json({ error: "Invalid session duration" });
+  }
+  const allowedMethods = new Set(["stripe", "bank", "none"]);
+  if (!allowedMethods.has(paymentMethod)) return res.status(400).json({ error: "Invalid payment method" });
+  const totalPrice = Number(eventType.prices?.[bookingDuration] ?? eventType.price ?? 0);
+  if (!Number.isFinite(totalPrice) || totalPrice < 0) return res.status(400).json({ error: "Invalid session price" });
+  if (totalPrice === 0 && paymentMethod !== "none") return res.status(400).json({ error: "This session does not require payment" });
+  if (totalPrice > 0 && paymentMethod === "none") return res.status(400).json({ error: "A payment method is required" });
+
+  const depositEnabled = !!eventType.depositEnabled && Number(eventType.depositAmount) > 0;
+  const calculatedDeposit = depositEnabled
+    ? (eventType.depositType === "percentage" ? Math.round(totalPrice * Number(eventType.depositAmount) / 100) : Number(eventType.depositAmount))
+    : 0;
+  const depositAmount = Math.max(0, Math.min(totalPrice, calculatedDeposit));
+  const depositRequired = totalPrice > 0 && depositEnabled && !payInFull;
+  const [requestedHour, requestedMinute] = time.split(":").map(Number);
+  const requestedStart = requestedHour * 60 + requestedMinute;
+  const requestedEnd = requestedStart + bookingDuration;
+  const rawBookings = db[DB_KEYS.BOOKINGS];
+  const bookings = rawBookings ? (typeof rawBookings === "string" ? JSON.parse(rawBookings) : (Array.isArray(rawBookings) ? rawBookings : [])) : [];
+  const conflict = bookings.find(booking => {
+    if (booking.tenantSlug || booking.date !== date || booking.status === "cancelled" || !/^\d{2}:\d{2}$/.test(booking.time || "")) return false;
+    const [hour, minute] = booking.time.split(":").map(Number);
+    const start = hour * 60 + minute;
+    const end = start + (Number(booking.duration) > 0 ? Number(booking.duration) : 60);
+    return requestedStart < end && requestedEnd > start;
+  });
+  if (conflict) return res.status(409).json({ error: "This time slot has just been booked. Please choose a different time." });
+
+  const safeAnswers = answers && typeof answers === "object" && !Array.isArray(answers) ? answers : {};
+  const answerLabels = Array.isArray(eventType.questions) ? Object.fromEntries(eventType.questions.map(question => [question.id, question.label])) : {};
+  const id = `bk-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const booking = {
+    id,
+    modifyToken: `mod-${require("crypto").randomUUID()}`,
+    clientName: clientName.trim().slice(0, 160), clientEmail: clientEmail.trim().slice(0, 254),
+    phone: typeof phone === "string" ? phone.trim().slice(0, 40) : "",
+    date, time, eventTypeId: eventType.id, type: eventType.title || "Session", duration: bookingDuration,
+    status: eventType.requiresConfirmation || (depositRequired && paymentMethod !== "none") ? "pending" : "confirmed",
+    requiresConfirmation: !!eventType.requiresConfirmation,
+    notes: "", answers: safeAnswers, answerLabels, createdAt: new Date().toISOString(),
+    paymentStatus: paymentMethod === "bank" ? "pending-confirmation" : "unpaid",
+    paymentAmount: totalPrice, depositRequired, depositAmount: depositRequired ? depositAmount : 0,
+    depositMethod: paymentMethod === "none" ? undefined : paymentMethod,
+  };
+  bookings.push(booking);
+  db[DB_KEYS.BOOKINGS] = JSON.stringify(bookings);
+  writeDb(db);
+
+  try {
+    const settingsRaw = db[DB_KEYS.SETTINGS];
+    const settings = typeof settingsRaw === "string" ? JSON.parse(settingsRaw) : (settingsRaw || {});
+    if (settings.discordWebhookUrl && settings.discordNotifyBookings !== false) notifyNewBooking(settings.discordWebhookUrl, booking).catch(() => {});
+  } catch {}
+  res.status(201).json({ ok: true, booking });
 });
 
 // Create a booking on behalf of a tenant

@@ -186,6 +186,21 @@ export function addBooking(bk: Booking) {
   setBookings(list);
 }
 
+/** Cache a server-created booking in this browser without writing the whole
+ * bookings collection back to the server. Public booking flows use this after
+ * the server has safely created the authoritative record. */
+export function cacheBookingLocally(bk: Booking) {
+  try {
+    const list = getBookings();
+    const next = list.some(existing => existing.id === bk.id)
+      ? list.map(existing => existing.id === bk.id ? bk : existing)
+      : [...list, bk];
+    localStorage.setItem(KEYS.BOOKINGS, JSON.stringify(next));
+  } catch (e) {
+    console.error("localStorage booking cache failed:", e);
+  }
+}
+
 /**
  * Checks whether an identical booking has already been submitted in the last
  * 2 minutes by the same client for the same event, date, and time.
