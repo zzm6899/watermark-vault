@@ -228,28 +228,28 @@ function BookingSteps({ currentStep }: { currentStep: Step }) {
   const currentIdx = BOOKING_STEPS.findIndex(s => s.id === currentStep);
   if (currentIdx < 0) return null;
   return (
-    <div className="flex items-center justify-center gap-0 mb-8 max-w-sm mx-auto">
+    <div className="mb-8 border-b border-border/70">
+      <div className="mx-auto flex max-w-xl items-center justify-between gap-2">
       {BOOKING_STEPS.map((s, idx) => {
         const done = idx < currentIdx;
         const active = idx === currentIdx;
         return (
-          <div key={s.id} className="flex items-center min-w-0">
-            <div className={`flex items-center gap-1.5 px-2 py-1 rounded-full text-[11px] font-body transition-all ${
-              active ? "text-primary font-semibold" : done ? "text-green-400" : "text-muted-foreground/50"
-            }`}>
-              <div className={`w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-bold shrink-0 transition-all ${
-                active ? "bg-primary text-primary-foreground scale-110" : done ? "bg-green-500/20 text-green-400" : "bg-border text-muted-foreground/50"
+          <div key={s.id} className={`relative min-w-0 px-1 pb-3 text-center text-xs font-body transition-colors ${
+            active ? "text-foreground font-semibold" : done ? "text-muted-foreground" : "text-muted-foreground/50"
+          }`}>
+            <div className="flex items-center justify-center gap-1.5 whitespace-nowrap">
+              <span className={`grid h-5 w-5 place-items-center rounded-full text-[10px] ${
+                active ? "bg-foreground text-background" : done ? "bg-muted-foreground/20 text-foreground" : "bg-muted text-muted-foreground"
               }`}>
                 {done ? <CheckCircle2 className="w-3 h-3" /> : idx + 1}
-              </div>
+              </span>
               <span className="hidden sm:inline">{s.label}</span>
             </div>
-            {idx < BOOKING_STEPS.length - 1 && (
-              <div className={`h-px w-4 sm:w-6 shrink-0 transition-colors ${idx < currentIdx ? "bg-green-500/40" : "bg-border/50"}`} />
-            )}
+            {active && <span className="absolute inset-x-0 -bottom-px h-0.5 bg-foreground" />}
           </div>
         );
       })}
+      </div>
     </div>
   );
 }
@@ -675,23 +675,28 @@ export default function Booking() {
             {/* ─── Step 1: Event List ─── */}
             {step === "event-select" && (
               <motion.div key="event-select" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} className="mx-auto w-full max-w-3xl">
-                {/* Profile Card */}
-                <div className="glass-panel rounded-2xl p-6 sm:p-8 mb-5">
-                  <div className="flex flex-col sm:flex-row sm:items-center gap-5">
-                    <div className="w-20 h-20 rounded-2xl bg-primary/15 flex items-center justify-center overflow-hidden shrink-0 ring-1 ring-primary/25 shadow-lg shadow-primary/10">
+                <div className="mb-8 border-b border-border pb-7">
+                  <div className="flex flex-col sm:flex-row sm:items-center gap-4">
+                    <div className="w-14 h-14 rounded-full bg-secondary flex items-center justify-center overflow-hidden shrink-0 border border-border">
                       {profile.avatar ? (
                         <img src={profile.avatar} alt="Avatar" className="w-full h-full object-cover" />
                       ) : (
-                        <Camera className="w-8 h-8 text-primary" />
+                        <Camera className="w-5 h-5 text-muted-foreground" />
                       )}
                     </div>
-                    <div className="flex-1 min-w-0 pt-0.5">
-                      <h1 className="font-display text-4xl sm:text-5xl leading-none text-foreground">{profile.name}</h1>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-body text-muted-foreground">Schedule a session with</p>
+                      <h1 className="font-display text-3xl sm:text-4xl leading-tight text-foreground">{profile.name}</h1>
                       {profile.bio && (
-                        <RichTextDisplay html={profile.bio} className="mt-3 text-sm sm:text-base text-muted-foreground max-w-2xl" />
+                        <RichTextDisplay html={profile.bio} className="mt-2 text-sm text-muted-foreground max-w-2xl" />
                       )}
                     </div>
                   </div>
+                </div>
+
+                <div className="mb-4">
+                  <h2 className="text-base font-semibold text-foreground">Choose a session</h2>
+                  <p className="mt-1 text-sm font-body text-muted-foreground">Pick a service, then choose a time that suits you.</p>
                 </div>
 
                 {eventTypes.length === 0 ? (
@@ -700,23 +705,23 @@ export default function Booking() {
                     <p className="text-sm font-body text-muted-foreground">No event types available yet.</p>
                   </div>
                 ) : (
-                  <div className="flex flex-col gap-3">
+                  <div className="overflow-hidden rounded-xl border border-border bg-card">
                     {eventTypes.map((ev) => {
                       const minPrice = ev.durations.length > 0
                         ? Math.min(...ev.durations.map(d => getPriceForDuration(ev, d)))
                         : (ev.price ?? 0);
                       const isExpanded = !!expandedDescriptions[ev.id];
                       return (
-                        <button key={ev.id} onClick={() => handleSelectEvent(ev)} className="booking-service-card w-full text-left glass-panel rounded-2xl p-5 sm:p-6 hover:border-primary/50 hover:-translate-y-0.5 transition-all cursor-pointer group">
+                        <article key={ev.id} className="border-b border-border last:border-b-0 p-5 sm:p-6">
                           <div className="flex items-start gap-4">
-                            <div className="w-11 h-11 rounded-xl bg-primary/15 flex items-center justify-center flex-shrink-0 mt-0.5 group-hover:bg-primary/25 transition-colors ring-1 ring-primary/20">
-                              <Camera className="w-4 h-4 text-primary" />
+                            <div className="mt-0.5 grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-secondary text-muted-foreground">
+                              <Camera className="w-4 h-4" />
                             </div>
                             <div className="flex-1 min-w-0">
                               <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
-                                <h3 className="font-display text-2xl leading-tight text-foreground">{ev.title}</h3>
+                                <h3 className="font-display text-xl leading-tight text-foreground">{ev.title}</h3>
                                 {(ev.price ?? 0) > 0 && (
-                                  <span className="text-sm font-body font-semibold text-primary bg-primary/10 rounded-full px-3 py-1 border border-primary/20 shrink-0">
+                                  <span className="text-sm font-body font-medium text-foreground shrink-0">
                                     from ${minPrice}
                                   </span>
                                 )}
@@ -750,14 +755,14 @@ export default function Booking() {
                                   </span>
                                 )}
                               </div>
-                              <div className="flex justify-end mt-3">
-                                <span className="inline-flex items-center gap-1.5 text-xs font-body font-semibold bg-primary text-primary-foreground px-3.5 py-1.5 rounded-full">
-                                  Book <ArrowRight className="w-3 h-3" />
-                                </span>
+                              <div className="mt-4">
+                                <Button onClick={() => handleSelectEvent(ev)} className="h-9 rounded-md bg-foreground px-3 text-xs font-body text-background hover:bg-foreground/90">
+                                  Select <ArrowRight className="ml-1.5 w-3.5 h-3.5" />
+                                </Button>
                               </div>
                             </div>
                           </div>
-                        </button>
+                        </article>
                       );
                     })}
                   </div>
@@ -800,7 +805,7 @@ export default function Booking() {
                     <ArrowLeft className="w-3.5 h-3.5" /> Back
                   </button>
 
-                  <div className="glass-panel rounded-xl overflow-hidden">
+                  <div className="rounded-xl overflow-hidden border border-border bg-card shadow-sm">
                     <div className="grid lg:grid-cols-[320px_1fr_240px] divide-y lg:divide-y-0 lg:divide-x divide-border/50">
                       
                       {/* Left: Event Info */}

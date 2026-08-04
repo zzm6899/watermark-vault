@@ -2852,6 +2852,7 @@ function MobileCaptureInner() {
                   <button
                     onClick={() => setLightboxIndex(idx)}
                     className="absolute inset-0 w-full h-full active:scale-95 transition-transform"
+                    aria-label={`Open ${(photo.originalName || photo.title).replace(/\.[^.]+$/, "")}`}
                   >
                     <img src={getThumbSrc(photo, tenantSession?.slug)} alt={photo.title} className="w-full h-full object-cover" />
                   </button>
@@ -2873,7 +2874,7 @@ function MobileCaptureInner() {
                         {(["pick", "review", "reject"] as const).map(status => {
                           const active = (photo.cull?.status || "review") === status;
                           const label = status === "pick" ? "Send" : status === "review" ? "Later" : "No";
-                          return <button key={status} onClick={e => { e.stopPropagation(); setPhotoSelection(photo.id, status); }} className={`min-h-7 rounded text-[9px] font-body font-semibold active:scale-95 ${active ? "bg-primary text-primary-foreground" : "bg-black/65 text-white"}`}>{label}</button>;
+                          return <button key={status} onClick={e => { e.stopPropagation(); setPhotoSelection(photo.id, status); }} aria-label={`Mark ${(photo.originalName || photo.title).replace(/\.[^.]+$/, "")} as ${label}`} aria-pressed={active} className={`min-h-10 rounded text-[10px] font-body font-semibold active:scale-95 ${active ? "bg-primary text-primary-foreground" : "bg-black/65 text-white"}`}>{label}</button>;
                         })}
                       </div>
                     </>

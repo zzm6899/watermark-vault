@@ -245,13 +245,34 @@ async function _flushAlbumQueue() {
     return;
   }
   while (_albumWriteQueue.length > 0) {
-    const item = _albumWriteQueue.shift()!;
-    fetch(`/api/albums/${encodeURIComponent(item.albumId)}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(item.album),
-      keepalive: true,
-    }).catch(() => {});
+    // Keep the item in the queue until the server accepts it.  Album payloads can
+    // be large (one entry per photo), so `keepalive` is deliberately not used:
+    // browsers impose a small keepalive request budget and silently reject larger
+    // bodies.  Sending in order also prevents an older edit arriving after a newer
+    // one and restoring stale photo metadata.
+    const item = _albumWriteQueue[0];
+    try {
+      const res = await fetch(`/api/albums/${encodeURIComponent(item.albumId)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
+        body: JSON.stringify(item.album),
+      });
+      if (!res.ok) {
+        // Do not spin forever on validation/auth errors.  Transient failures are
+        // retried with the same latest album state.
+        if (res.status >= 500 || res.status === 408 || res.status === 429) {
+          _albumFlushScheduled = false;
+          _scheduleAlbumFlush(5000);
+          return;
+        }
+        console.warn(`Album ${item.albumId} was not saved (${res.status}).`);
+      }
+    } catch {
+      _albumFlushScheduled = false;
+      _scheduleAlbumFlush(5000);
+      return;
+    }
+    _albumWriteQueue.shift();
   }
   _albumFlushScheduled = false;
 }
@@ -286,21 +307,12 @@ export function persistToServer(key: string, value: unknown): void {
 /** Fire-and-forget persist a single album to the server via the per-album endpoint.
  *  Unlike persistToServer("wv_albums", allAlbums), this only updates the one album
  *  so other albums' photos are never overwritten with stale stub (empty) data.
- *  keepalive: true ensures the request is not cancelled on page unload.
- *  If the server check has not yet completed, queues the write and flushes once it has. */
+ *  Album bodies are not sent with `keepalive` because photo metadata can exceed the
+ *  browser's keepalive limit. Writes are queued and retried instead. */
 export function persistAlbumToServer(albumId: string, album: import("./types").Album): void {
-  if (serverAvailable === true) {
-    fetch(`/api/albums/${encodeURIComponent(albumId)}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(album),
-      keepalive: true,
-    }).catch(() => {});
-    return;
-  }
-  // Server availability is unknown or was previously false. Queue and retry so
-  // a temporary offline/health-check miss does not strand albums in localStorage.
-  // Deduplicate: if the same album is already queued, replace it.
+  // Always queue rather than dispatching parallel writes.  Consecutive edits are
+  // coalesced to the latest album and sent in sequence, which keeps large live
+  // shoot uploads from being saved out of order or lost after a transient failure.
   const existing = _albumWriteQueue.findIndex(w => w.albumId === albumId);
   if (existing >= 0) _albumWriteQueue[existing].album = album;
   else _albumWriteQueue.push({ albumId, album });
@@ -316,7 +328,7 @@ export async function saveAlbumToServer(albumId: string, album: import("./types"
   try {
     const res = await fetch(`/api/albums/${encodeURIComponent(albumId)}`, {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
       body: JSON.stringify(album),
     });
     if (!res.ok) {
@@ -337,6 +349,7 @@ export function deleteAlbumFromServer(albumId: string): void {
   if (serverAvailable !== true) return;
   fetch(`/api/albums/${encodeURIComponent(albumId)}`, {
     method: "DELETE",
+    headers: adminAuthHeaders(),
     keepalive: true,
   }).catch(() => {});
 }
