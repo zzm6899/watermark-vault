@@ -482,7 +482,8 @@ function buildReminderEmailHtml({ clientName, eventTitle, date, time, duration,
       ${bookingSection}
       <div style="margin-top:24px;">
         ${!isPaymentReminder ? `<a href="${calendarUrl}" style="display:block;background:#8b5cf6;color:#ffffff;text-decoration:none;text-align:center;padding:14px 20px;border-radius:10px;font-size:14px;font-weight:600;margin-bottom:10px;">📅 Add to Google Calendar</a>` : ""}
-        ${modifyUrl ? `<a href="${modifyUrl}" style="display:block;background:transparent;color:#9ca3af;text-decoration:none;text-align:center;padding:12px 20px;border-radius:10px;font-size:13px;border:1px solid #374151;">View Booking &amp; Manage →</a>` : ""}
+        ${isPaymentReminder && modifyUrl ? `<a href="${modifyUrl}" style="display:block;background:#8b5cf6;color:#ffffff;text-decoration:none;text-align:center;padding:14px 20px;border-radius:10px;font-size:14px;font-weight:600;margin-bottom:10px;">💳 Pay Now Securely</a>` : ""}
+        ${modifyUrl ? `<a href="${modifyUrl}" style="display:block;background:transparent;color:#9ca3af;text-decoration:none;text-align:center;padding:12px 20px;border-radius:10px;font-size:13px;border:1px solid #374151;">${isPaymentReminder ? "View Booking &amp; Manage" : "View Booking &amp; Manage →"}</a>` : ""}
       </div>
     </div>
     <div style="padding:20px 32px;border-top:1px solid #1f1f1f;text-align:center;">
