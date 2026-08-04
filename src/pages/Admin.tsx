@@ -21,7 +21,7 @@ import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import PixiesetImportPanel from "@/components/admin/PixiesetImportPanel";
 import { toast } from "sonner";
-import { useNavigate, useParams } from "react-router-dom";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
 import {
   getProfile, setProfile, getEventTypes, setEventTypes, addEventType,
   deleteEventType, updateEventType, getBookings, addBooking, deleteBooking,
@@ -1735,7 +1735,7 @@ function DashboardView() {
     } else if (booking.paymentStatus === "deposit-paid") {
       totalRevenue += booking.depositAmount || 0;
     } else if (!booking.paymentStatus || booking.paymentStatus === "unpaid") {
-      unpaidIncome += booking.paymentAmount || 0;
+      unpaidIncome += booking.depositRequired && booking.depositAmount ? booking.depositAmount : (booking.paymentAmount || 0);
     }
   }
 
@@ -1790,7 +1790,7 @@ function DashboardView() {
   const stats = [
     { label: "Total Bookings", value: totalBookingCount, icon: Calendar, color: "text-primary", action: "Open", onClick: () => navigate("/admin/bookings") },
     { label: "Revenue", value: `$${totalRevenue.toLocaleString()}`, icon: DollarSign, color: "text-green-400", action: "Finance", onClick: () => navigate("/admin/finance") },
-    { label: "Unpaid", value: `$${unpaidIncome.toLocaleString()}`, icon: DollarSign, color: "text-destructive", action: "Invoices", onClick: () => navigate("/admin/invoices") },
+    { label: "Deposit / payment due", value: `$${unpaidIncome.toLocaleString()}`, icon: DollarSign, color: "text-destructive", action: "Bookings", onClick: () => navigate("/admin/bookings?payment=unpaid") },
     { label: "Pending Requests", value: allPendingRequests.length, icon: Download, color: "text-yellow-400", action: "Review", onClick: () => navigate("/admin/albums") },
     { label: "Total Shoot Time", value: totalSessionLabel, icon: Clock, color: "text-blue-400", action: "Schedule", onClick: () => navigate("/admin/shoot-day") },
   ];
@@ -2788,6 +2788,7 @@ function BookingEditor({ booking, onSave, onCancel }: {
 }
 
 function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) => void }) {
+  const location = useLocation();
   const [bookings, setBookingsState] = useState<Booking[]>(getBookings());
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [sheetsSyncing, setSheetsSyncing] = useState(false);
@@ -2824,9 +2825,9 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
   };
 
   const [sortDir, setSortDir] = useState<SortDir>("desc");
-  const [bookingSearch, setBookingSearch] = useState("");
+  const [bookingSearch, setBookingSearch] = useState(() => new URLSearchParams(location.search).get("search") || "");
   const [statusFilter, setStatusFilter] = useState<"all" | "pending" | "confirmed" | "completed" | "cancelled">("all");
-  const [paymentFilter, setPaymentFilter] = useState<"all" | PaymentStatus>("all");
+  const [paymentFilter, setPaymentFilter] = useState<"all" | PaymentStatus>(() => new URLSearchParams(location.search).get("payment") === "unpaid" ? "unpaid" : "all");
   const [showCancelled, setShowCancelled] = useState(false);
   const albums = getAlbums();
   const [emailLogs, setEmailLogs] = useState<Record<string, { id: string; type: string; sentAt: string; openedAt?: string; subject: string; to: string }[]>>({});
@@ -3439,8 +3440,11 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                         <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-1">Payment</p>
                         <p className="text-sm font-body text-foreground">{bk.paymentStatus === "paid" ? "Paid in Full" : bk.paymentStatus === "deposit-paid" ? "Deposit Paid" : bk.paymentStatus === "pending-confirmation" ? "Bank Transfer Pending" : bk.paymentStatus || "Unpaid"}</p>
                         <p className="text-[11px] font-body text-muted-foreground mt-1">
-                          Method: {bk.paymentMethod === "stripe" || bk.depositMethod === "stripe" ? "Card via Stripe" : bk.paymentMethod === "bank" || bk.depositMethod === "bank" ? "Bank transfer" : bk.paymentMethod === "cash" || bk.paymentStatus === "cash" ? "Cash" : bk.paymentStatus === "unpaid" ? "Not selected — no Stripe charge" : "Not recorded"}
+                          Method: {bk.paymentMethod === "bank" || bk.depositMethod === "bank" ? "Bank transfer" : bk.paymentMethod === "cash" || bk.paymentStatus === "cash" ? "Cash" : bk.stripeCheckoutSessionId ? "Card via Stripe — checkout opened" : bk.paymentMethod === "stripe" || bk.depositMethod === "stripe" ? "Card selected — no checkout/payment recorded" : bk.paymentStatus === "unpaid" ? "Not selected — no payment started" : "Not recorded"}
                         </p>
+                        {bk.paymentStatus === "unpaid" && !bk.stripeCheckoutSessionId && (
+                          <p className="text-[11px] font-body text-yellow-400/90 mt-1">Deposit due: ${bk.depositRequired && bk.depositAmount ? bk.depositAmount : (bk.paymentAmount || 0)} · no money has been collected.</p>
+                        )}
                         {bk.stripeReceiptUrl && (
                           <a href={bk.stripeReceiptUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-[11px] font-body text-primary hover:underline mt-2">
                             View Stripe receipt <ExternalLink className="w-3 h-3" />
@@ -9245,6 +9249,7 @@ function InvoiceForm({
 
 // ─── Finance ───────────────────────────────────────────
 function FinanceView() {
+  const navigate = useNavigate();
   const [albumsState, setAlbumsState] = React.useState(() => getAlbums());
   const [invoicesState] = React.useState(() => getInvoices());
   const [deletingId, setDeletingId] = React.useState<string | null>(null);
@@ -9277,11 +9282,12 @@ function FinanceView() {
     sessionKey?: string;
     purchaserEmail?: string;
     photoIds?: string[];
-    method: "stripe" | "bank-transfer";
+    method: "stripe" | "bank-transfer" | "cash";
     amount: number;
     status: "completed" | "pending";
     description: string;
     requestedAt?: string; // for bank-transfer deletion key
+    bookingId?: string;
   };
 
   const payments: PaymentRecord[] = [];
@@ -9344,6 +9350,28 @@ function FinanceView() {
     }
   }
 
+  const bookingPayments = getBookings();
+  const bookingOutstanding = bookingPayments
+    .filter(booking => booking.status !== "cancelled" && !["paid", "cash", "deposit-paid"].includes(booking.paymentStatus || "unpaid") && (booking.paymentAmount || 0) > 0)
+    .map(booking => ({ booking, due: booking.depositRequired && booking.depositAmount ? booking.depositAmount : (booking.paymentAmount || 0) }));
+  for (const booking of bookingPayments) {
+    if (booking.status === "cancelled" || !["paid", "cash", "deposit-paid"].includes(booking.paymentStatus || "unpaid")) continue;
+    const amount = booking.paymentStatus === "deposit-paid" ? (booking.depositAmount || 0) : (booking.paymentAmount || 0);
+    if (amount <= 0) continue;
+    payments.push({
+      id: `booking-${booking.id}-${booking.depositPaidAt || booking.paidAt || booking.createdAt}`,
+      date: booking.depositPaidAt || booking.paidAt || booking.createdAt,
+      clientName: booking.clientName || "Unknown",
+      albumTitle: booking.type || "Booking",
+      albumId: "",
+      method: booking.paymentStatus === "cash" ? "cash" : (booking.paymentMethod || booking.depositMethod || "stripe"),
+      amount,
+      status: "completed",
+      description: booking.paymentStatus === "deposit-paid" ? "Booking deposit" : "Booking paid in full",
+      bookingId: booking.id,
+    });
+  }
+
   payments.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
   const totalRevenue = payments.filter(p => p.status === "completed").reduce((s, p) => s + p.amount, 0);
@@ -9393,8 +9421,8 @@ function FinanceView() {
     toast.success("Payment record deleted — client access revoked");
   };
 
-  const methodLabel = (m: string) => m === "stripe" ? "Stripe" : "Bank Transfer";
-  const methodColor = (m: string) => m === "stripe" ? "text-purple-400 bg-purple-500/10" : "text-blue-400 bg-blue-500/10";
+  const methodLabel = (m: string) => m === "stripe" ? "Stripe" : m === "cash" ? "Cash" : "Bank Transfer";
+  const methodColor = (m: string) => m === "stripe" ? "text-purple-400 bg-purple-500/10" : m === "cash" ? "text-yellow-400 bg-yellow-500/10" : "text-blue-400 bg-blue-500/10";
   const statusColor = (s: string) => s === "completed" ? "text-green-400 bg-green-500/10" : "text-yellow-400 bg-yellow-500/10";
 
   return (
@@ -9404,7 +9432,7 @@ function FinanceView() {
         <p className="text-sm font-body text-muted-foreground">Payment history and revenue summary</p>
       </div>
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
         <div className="glass-panel rounded-xl p-5">
           <p className="text-xs font-body text-muted-foreground tracking-wider uppercase mb-1">Total Revenue</p>
           <p className="font-display text-2xl text-green-400">${totalRevenue.toFixed(2)}</p>
@@ -9425,6 +9453,11 @@ function FinanceView() {
           <p className="font-display text-2xl text-blue-400">${bankTotal.toFixed(2)}</p>
           <p className="text-[10px] font-body text-muted-foreground mt-1">{payments.filter(p => p.method === "bank-transfer" && p.status === "completed").length} transfers</p>
         </div>
+        <button onClick={() => navigate("/admin/bookings?payment=unpaid")} className="glass-panel rounded-xl p-5 text-left hover:border-primary/40 border border-transparent transition-colors">
+          <p className="text-xs font-body text-muted-foreground tracking-wider uppercase mb-1">Booking deposits due</p>
+          <p className="font-display text-2xl text-yellow-400">${bookingOutstanding.reduce((sum, item) => sum + item.due, 0).toFixed(2)}</p>
+          <p className="text-[10px] font-body text-muted-foreground mt-1">{bookingOutstanding.length} booking{bookingOutstanding.length === 1 ? "" : "s"} · open bookings</p>
+        </button>
       </div>
 
       {/* Invoice summary row */}
@@ -9472,16 +9505,17 @@ function FinanceView() {
         const bookings = getBookings();
         const byService: Record<string, { count: number; rev: number }> = {};
         for (const bk of bookings) {
-          if (!bk.paymentAmount) continue;
+          if (!bk.paymentAmount || !["paid", "cash", "deposit-paid"].includes(bk.paymentStatus || "unpaid")) continue;
           const key = bk.type || "Other";
           if (!byService[key]) byService[key] = { count: 0, rev: 0 };
           byService[key].count++;
-          byService[key].rev += bk.paymentAmount;
+          byService[key].rev += bk.paymentStatus === "deposit-paid" ? (bk.depositAmount || 0) : bk.paymentAmount;
         }
         const serviceEntries = Object.entries(byService).sort((a, b) => b[1].rev - a[1].rev);
         const confirmedPayments = payments.filter(p => p.status === "completed");
-        const avgBookingValue = bookings.length > 0
-          ? bookings.reduce((s, b) => s + (b.paymentAmount || 0), 0) / bookings.filter(b => b.paymentAmount).length
+        const paidBookings = bookings.filter(b => ["paid", "cash", "deposit-paid"].includes(b.paymentStatus || "unpaid"));
+        const avgBookingValue = paidBookings.length > 0
+          ? paidBookings.reduce((s, b) => s + (b.paymentStatus === "deposit-paid" ? (b.depositAmount || 0) : (b.paymentAmount || 0)), 0) / paidBookings.length
           : 0;
         const conversionRate = bookings.length > 0
           ? bookings.filter(b => b.status === "confirmed" || b.status === "completed").length / bookings.length
@@ -9577,11 +9611,11 @@ function FinanceView() {
         };
         const revenueBySource: Record<string, { count: number; rev: number }> = {};
         for (const bk of bookings) {
-          if (!bk.paymentAmount || bk.status === "cancelled") continue;
+          if (!bk.paymentAmount || bk.status === "cancelled" || !["paid", "cash", "deposit-paid"].includes(bk.paymentStatus || "unpaid")) continue;
           const src = (bk.source as string) || "direct";
           if (!revenueBySource[src]) revenueBySource[src] = { count: 0, rev: 0 };
           revenueBySource[src].count++;
-          revenueBySource[src].rev += bk.paymentAmount;
+          revenueBySource[src].rev += bk.paymentStatus === "deposit-paid" ? (bk.depositAmount || 0) : bk.paymentAmount;
         }
         const srcEntries = Object.entries(revenueBySource).sort((a, b) => b[1].rev - a[1].rev);
         const maxSrcRev = srcEntries.length > 0 ? Math.max(...srcEntries.map(e => e[1].rev), 1) : 1;
@@ -9815,13 +9849,17 @@ function FinanceView() {
                       <span className={`text-[10px] font-body px-2 py-0.5 rounded-full ${methodColor(p.method)}`}>{methodLabel(p.method)}</span>
                       <span className={`text-[10px] font-body px-2 py-0.5 rounded-full capitalize ${statusColor(p.status)}`}>{p.status}</span>
                       <p className="text-sm font-display text-foreground w-16 text-right">${p.amount.toFixed(2)}</p>
-                      <button
-                        onClick={() => handleDelete(p)}
-                        className="opacity-0 group-hover:opacity-100 transition-opacity ml-1 p-1 rounded hover:bg-red-500/10 text-muted-foreground/40 hover:text-red-400"
-                        title="Delete & revoke access"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
+                      {p.bookingId ? (
+                        <button onClick={() => navigate(`/admin/bookings?search=${encodeURIComponent(p.clientName)}`)} className="text-[10px] font-body text-primary hover:underline">Booking</button>
+                      ) : (
+                        <button
+                          onClick={() => handleDelete(p)}
+                          className="opacity-0 group-hover:opacity-100 transition-opacity ml-1 p-1 rounded hover:bg-red-500/10 text-muted-foreground/40 hover:text-red-400"
+                          title="Delete & revoke access"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
                     </div>
                   </div>
                   {showThumbs && purchasedPhotos.length > 0 && (

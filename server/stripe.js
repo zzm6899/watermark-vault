@@ -116,6 +116,21 @@ function registerRoutes(app, { readDb, writeDb } = {}) {
         cancel_url: cancelUrl || `${req.headers.origin || ""}/booking?cancelled=1`,
         metadata: { bookingId, type: "booking-payment", paymentKind, app: "watermark-vault", expectedAmountCents: String(Math.round(amount * 100)) },
       });
+      // A booking may exist before checkout so Stripe can be tied to a specific
+      // slot. Record that checkout was actually opened; this lets the admin
+      // distinguish an abandoned checkout from a payment that was never begun.
+      const bookingIndex = bookings.findIndex(item => item.id === bookingId);
+      if (bookingIndex >= 0) {
+        bookings[bookingIndex] = {
+          ...bookings[bookingIndex],
+          stripeCheckoutSessionId: session.id,
+          stripeCheckoutStartedAt: new Date().toISOString(),
+          paymentMethod: "stripe",
+          depositMethod: "stripe",
+        };
+        db["wv_bookings"] = JSON.stringify(bookings);
+        writeDb(db);
+      }
       res.json({ url: session.url, sessionId: session.id });
     } catch (err) {
       console.error("Stripe checkout error:", err);

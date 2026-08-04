@@ -5490,8 +5490,10 @@ app.post("/api/booking", publicBookingLimiter, (req, res) => {
     notes: "", answers: safeAnswers, answerLabels, createdAt: new Date().toISOString(),
     paymentStatus: paymentMethod === "bank" ? "pending-confirmation" : "unpaid",
     paymentAmount: totalPrice, depositRequired, depositAmount: depositRequired ? depositAmount : 0,
-    depositMethod: paymentMethod === "none" ? undefined : paymentMethod,
-    paymentMethod: paymentMethod === "none" ? undefined : paymentMethod,
+    // Bank transfer is selected at booking time. Stripe is only recorded after
+    // Stripe successfully creates a checkout session (see stripe.js).
+    depositMethod: paymentMethod === "bank" ? "bank" : undefined,
+    paymentMethod: paymentMethod === "bank" ? "bank" : undefined,
   };
   bookings.push(booking);
   db[DB_KEYS.BOOKINGS] = JSON.stringify(bookings);
