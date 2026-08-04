@@ -189,6 +189,13 @@ export default function BookingModify() {
     setTimeout(() => setCopiedField(null), 2000);
   };
 
+  const handleBookAnother = () => {
+    // The main booking page restores the last booking by default. Clear that
+    // marker so this link always opens a fresh booking rather than this one.
+    localStorage.removeItem("lastBookingId");
+    navigate(booking?.tenantSlug ? `/book/${encodeURIComponent(booking.tenantSlug)}` : "/");
+  };
+
   if (fetchingBooking) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center p-4" style={{ paddingTop: "env(safe-area-inset-top)" }}>
@@ -259,6 +266,7 @@ export default function BookingModify() {
           <a href={buildGoogleCalendarUrl(et, selectedDate, selectedTime, booking.duration)} target="_blank" rel="noopener noreferrer" className="block mt-4">
             <Button variant="outline" className="w-full font-body text-xs gap-2"><CalendarIcon className="w-4 h-4" /> Update Google Calendar <ExternalLink className="w-3 h-3" /></Button>
           </a>
+          <Button onClick={handleBookAnother} variant="outline" className="w-full mt-2 font-body text-xs gap-2"><CalendarDays className="w-4 h-4" /> Book Another Session</Button>
           <Button onClick={() => setMode("status")} variant="ghost" className="w-full mt-2 font-body text-xs text-muted-foreground">Back to Booking</Button>
         </div>
       </div>
@@ -373,6 +381,7 @@ export default function BookingModify() {
                     <a href={buildGoogleCalendarUrl(et, bookingDate, booking.time, booking.duration)} target="_blank" rel="noopener noreferrer">
                       <Button variant="outline" className="w-full font-body text-xs tracking-wider uppercase gap-2"><CalendarIcon className="w-4 h-4" /> Add to Google Calendar <ExternalLink className="w-3 h-3" /></Button>
                     </a>
+                    <Button onClick={handleBookAnother} variant="outline" className="w-full font-body text-xs tracking-wider uppercase gap-2"><CalendarDays className="w-4 h-4" /> Book Another Session</Button>
                     <Button onClick={() => setMode("reschedule")} className="w-full bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2"><CalendarDays className="w-4 h-4" /> Change Date / Time</Button>
                     <Button onClick={handleCancel} variant="outline" className="w-full font-body text-xs tracking-wider uppercase border-destructive text-destructive hover:bg-destructive/10 gap-2"><XCircle className="w-4 h-4" /> Cancel Booking</Button>
                   </div>
