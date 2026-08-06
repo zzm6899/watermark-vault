@@ -145,6 +145,12 @@ export interface Photo {
   // ── New feature fields (PhotoExtensions) ───────────────────
   beforeSrc?: string;
   afterSrc?: string;
+  /** Original low-resolution proof retained after Lightroom uploads a final rendition. */
+  proofSrc?: string;
+  /** Final JPEG uploaded by the Lightroom Classic bridge. `src` points here once delivered. */
+  finalSrc?: string;
+  finalOriginalName?: string;
+  finalUploadedAt?: string;
   comments?: PhotoComment[];
 }
 

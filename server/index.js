@@ -89,6 +89,10 @@ const DB_KEYS = {
   DOWNLOAD_EMAIL_CAPTURES: "wv_download_email_captures",
 };
 
+// Lightroom Classic uses these endpoints from a local plug-in.  The key is
+// deliberately separate from the regular browser API: the plug-in needs a
+// stable, machine-readable manifest rather than an admin-page data dump.
+
 /** Safe HTML entity escaping to prevent XSS when interpolating user data into email HTML. */
 function escapeHtml(str) {
   if (typeof str !== "string") return str == null ? "" : String(str);
@@ -2203,6 +2207,145 @@ app.post("/api/upload", uploadLimiter, upload.array("photos", 100), async (req, 
       }
     }
   });
+});
+
+// ── Lightroom Classic integration ─────────────────────
+// These routes are intentionally admin-authenticated. Lightroom Classic runs on
+// the photographer's own workstation and uses the same SHA-256 credential that
+// the web admin stores for authenticated API calls.
+async function requireLightroomAdmin(req, res, next) {
+  // Lightroom's SDK does not expose a SHA-256 primitive. Accept the normal
+  // browser session hash, or a raw password over HTTPS and hash it locally
+  // before comparing it to the server's stored bcrypt(SHA-256(password)).
+  let authenticated = await authenticateAdmin(req);
+  if (!authenticated) {
+    const header = req.headers.authorization || "";
+    if (header.startsWith("Basic ")) {
+      try {
+        const decoded = Buffer.from(header.slice(6), "base64").toString("utf8");
+        const separator = decoded.indexOf(":");
+        const username = decoded.slice(0, separator);
+        const password = decoded.slice(separator + 1);
+        const admin = dbGet(readDb(), DB_KEYS.ADMIN);
+        authenticated = separator > 0 && String(admin?.username || "").toLowerCase() === username.toLowerCase()
+          && await verifyPasswordHash(sha256(password), admin.passwordHash);
+      } catch { authenticated = false; }
+    }
+  }
+  if (!authenticated) return res.status(401).json({ ok: false, error: "Authentication required" });
+  next();
+}
+
+function lightroomAlbumSummary(album, tenantSlug) {
+  return {
+    id: album.id,
+    tenantSlug: tenantSlug || undefined,
+    title: album.title || album.slug || album.id,
+    slug: album.slug || undefined,
+    clientName: album.clientName || undefined,
+    bookingId: album.bookingId || undefined,
+    // The booking UI stores these fields on event/session albums when available.
+    eventName: album.eventName || album.eventType || undefined,
+    sessionDate: album.sessionDate || album.date || undefined,
+    startTime: album.startTime || album.timeSlot || undefined,
+    photoCount: Array.isArray(album.photos) ? album.photos.length : 0,
+    proofingStage: album.proofingStage || "not-started",
+  };
+}
+
+function selectedPhotoIdsForLightroom(album) {
+  const rounds = Array.isArray(album.proofingRounds) ? album.proofingRounds : [];
+  const latest = rounds[rounds.length - 1];
+  if (Array.isArray(latest?.selectedPhotoIds)) return new Set(latest.selectedPhotoIds);
+  return new Set((album.photos || []).filter(photo => photo?.starred).map(photo => photo.id));
+}
+
+app.get("/api/lightroom/albums", requireLightroomAdmin, (req, res) => {
+  const db = readDb();
+  const albums = [];
+  const main = dbGet(db, DB_KEYS.ALBUMS, []);
+  if (Array.isArray(main)) albums.push(...main.map(album => lightroomAlbumSummary(album, null)));
+  for (const key of Object.keys(db)) {
+    if (!key.startsWith("t_") || !key.endsWith("_wv_albums")) continue;
+    const tenantSlug = key.slice(2, -"_wv_albums".length);
+    const tenantAlbums = dbGet(db, key, []);
+    if (Array.isArray(tenantAlbums)) albums.push(...tenantAlbums.map(album => lightroomAlbumSummary(album, tenantSlug)));
+  }
+  res.json({ ok: true, albums });
+});
+
+app.get("/api/lightroom/albums/:albumId/picks", requireLightroomAdmin, (req, res) => {
+  const db = readDb();
+  const found = findAlbumById(db, req.params.albumId);
+  if (!found) return res.status(404).json({ ok: false, error: "Album not found" });
+  const { album, tenantSlug } = found;
+  const selectedIds = selectedPhotoIdsForLightroom(album);
+  const origin = `${req.protocol}://${req.get("host")}`;
+  const latestRound = Array.isArray(album.proofingRounds) ? album.proofingRounds.at(-1) : null;
+  const assets = (album.photos || []).map(photo => {
+    const proof = _ensurePhotoProofIdentity(photo);
+    return {
+      assetId: proof.id,
+      proofId: proof.proofId,
+      originalName: proof.originalName,
+      originalFileNumber: proof.originalFileNumber,
+      takenAt: proof.takenAt || null,
+      selected: selectedIds.has(proof.id),
+      proofUrl: proof.src?.startsWith("/") ? `${origin}${proof.src}` : proof.src,
+      clientNote: latestRound?.clientNote || null,
+      finalUrl: proof.finalSrc?.startsWith("/") ? `${origin}${proof.finalSrc}` : proof.finalSrc || null,
+    };
+  });
+  res.json({
+    ok: true,
+    album: lightroomAlbumSummary(album, tenantSlug),
+    selectionSubmittedAt: latestRound?.submittedAt || null,
+    assets,
+  });
+});
+
+const lightroomFinalUpload = multer({ storage, limits: { fileSize: 100 * 1024 * 1024 } });
+app.post("/api/lightroom/albums/:albumId/finals", requireLightroomAdmin, lightroomFinalUpload.single("final"), async (req, res) => {
+  const assetId = String(req.body?.assetId || "").trim();
+  if (!assetId || !req.file) return res.status(400).json({ ok: false, error: "assetId and a JPEG final are required" });
+  if (path.extname(req.file.originalname).toLowerCase() !== ".jpg" && path.extname(req.file.originalname).toLowerCase() !== ".jpeg") {
+    try { fs.unlinkSync(req.file.path); } catch {}
+    return res.status(400).json({ ok: false, error: "Finals must be JPEG files" });
+  }
+  try {
+    const metadata = await sharp(req.file.path).metadata();
+    if (metadata.format !== "jpeg") throw new Error("not a JPEG");
+    const db = readDb();
+    const found = findAlbumById(db, req.params.albumId);
+    if (!found) throw new Error("Album not found");
+    const storeKey = found.tenantSlug ? `t_${found.tenantSlug}_wv_albums` : DB_KEYS.ALBUMS;
+    const albums = dbGet(db, storeKey, []);
+    const albumIndex = albums.findIndex(album => album.id === found.album.id);
+    const photoIndex = albums[albumIndex]?.photos?.findIndex(photo => photo.id === assetId) ?? -1;
+    if (albumIndex < 0 || photoIndex < 0) throw new Error("Photo not found in album");
+    const uploadedUrl = `/uploads/${req.file.filename}`;
+    const photo = albums[albumIndex].photos[photoIndex];
+    // Keep the proof URL for audit/re-proofing while making the final rendition
+    // the image served by the regular website gallery.
+    albums[albumIndex].photos[photoIndex] = {
+      ...photo,
+      proofSrc: photo.proofSrc || photo.src,
+      src: uploadedUrl,
+      thumbnail: `${uploadedUrl}?size=thumb&wm=0`,
+      finalSrc: uploadedUrl,
+      finalOriginalName: req.file.originalname,
+      finalUploadedAt: new Date().toISOString(),
+      fileSize: req.file.size,
+      width: metadata.width || photo.width,
+      height: metadata.height || photo.height,
+    };
+    db[storeKey] = JSON.stringify(albums);
+    writeDb(db);
+    res.json({ ok: true, assetId, finalUrl: uploadedUrl });
+  } catch (err) {
+    try { fs.unlinkSync(req.file.path); } catch {}
+    res.status(err.message === "Album not found" || err.message === "Photo not found in album" ? 404 : 400).json({ ok: false, error: err.message || "Final upload failed" });
+  }
 });
 
 // ── Delete ALL uploaded photos from disk ───────────────
