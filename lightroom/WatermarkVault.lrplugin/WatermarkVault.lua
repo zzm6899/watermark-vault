@@ -158,25 +158,45 @@ local function jsonGet(path)
   return data
 end
 
-local function promptAlbumId(title)
-  local albumId
+local function albumLabel(album)
+  local client = trim(album.clientName)
+  local timing = trim((album.sessionDate or "") .. " " .. (album.startTime or ""))
+  local details = {}
+  if client ~= "" then table.insert(details, client) end
+  if timing ~= "" then table.insert(details, timing) end
+  table.insert(details, tostring(album.photoCount or 0) .. " photos")
+  table.insert(details, album.proofingStage or "not started")
+  return (album.title or album.id) .. "  —  " .. table.concat(details, " · ")
+end
+
+local function chooseAlbum(title)
+  local response = jsonGet("/api/lightroom/albums")
+  local albums = response.albums or {}
+  if #albums == 0 then error("No Watermark Vault albums are available") end
+  table.sort(albums, function(a, b) return albumLabel(a):lower() < albumLabel(b):lower() end)
+  local items, selectedId = {}, prefs.lastAlbumId
+  for _, album in ipairs(albums) do
+    table.insert(items, { title = albumLabel(album), value = album.id })
+    if not selectedId then selectedId = album.id end
+  end
+  local selected
   LrFunctionContext.callWithContext("watermarkVaultAlbumPrompt", function(context)
     local f = LrView.osFactory()
     local props = LrBinding.makePropertyTable(context)
-    props.albumId = prefs.lastAlbumId or ""
+    props.albumId = selectedId
     local answer = LrDialogs.presentModalDialog {
       title = title,
       contents = f:column { bind_to_object = props, spacing = f:control_spacing(),
-        f:static_text { title = "Watermark Vault album ID" },
-        f:edit_field { value = LrView.bind "albumId", width_in_chars = 38 },
-        f:static_text { title = "The Album editor URL or Watermark Vault admin lists this ID." },
+        f:static_text { title = "Choose a proofing album" },
+        f:popup_menu { items = items, value = LrView.bind "albumId", width_in_chars = 72 },
+        f:static_text { title = "The menu includes client, time slot, photo count and proofing state." },
       },
     }
-    if answer == "ok" and trim(props.albumId) ~= "" then albumId = trim(props.albumId) end
+    if answer == "ok" and trim(props.albumId) ~= "" then selected = trim(props.albumId) end
   end)
-  if not albumId then return nil end
-  prefs.lastAlbumId = albumId
-  return albumId
+  if not selected then return nil end
+  prefs.lastAlbumId = selected
+  return selected
 end
 
 local function downloadProof(asset, cacheFolder)
@@ -290,10 +310,10 @@ function M.syncPicks()
   if not requireConfig() then return end
   local sourceFolder = chooseSourceFolder()
   if not sourceFolder then return end
-  local albumId = promptAlbumId("Sync Watermark Vault client picks")
-  if not albumId then return end
   LrTasks.startAsyncTask(function()
     local ok, message = LrTasks.pcall(function()
+      local albumId = chooseAlbum("Sync Watermark Vault client picks")
+      if not albumId then return end
       local manifest = jsonGet("/api/lightroom/albums/" .. albumId .. "/picks")
       local catalog = LrApplication.activeCatalog()
       local lookup = photoLookup(catalog, sourceFolder)
@@ -333,12 +353,12 @@ end
 
 function M.publishProofs()
   if not requireConfig() then return end
-  local albumId = promptAlbumId("Publish selected proof JPEGs")
-  if not albumId then return end
   local catalog, photos = LrApplication.activeCatalog(), LrApplication.activeCatalog():getTargetPhotos()
   if #photos == 0 then LrDialogs.message("Watermark Vault", "Select photos first.", "warning"); return end
   LrTasks.startAsyncTask(function()
     local ok, message = LrTasks.pcall(function()
+      local albumId = chooseAlbum("Publish selected proof JPEGs")
+      if not albumId then return end
       local session = LrExportSession { photosToExport = photos, exportSettings = { LR_format = "JPEG", LR_jpeg_quality = 75, LR_size_doConstrain = true, LR_size_maxWidth = 2000, LR_size_maxHeight = 2000, LR_export_destinationType = "specificFolder", LR_collisionHandling = "overwrite" } }
       local uploaded = 0
       for _, rendition in session:renditions { stopIfCanceled = true } do
@@ -356,12 +376,12 @@ end
 
 function M.uploadFinals()
   if not requireConfig() then return end
-  local albumId = promptAlbumId("Upload selected final JPEGs")
-  if not albumId then return end
   local catalog, photos = LrApplication.activeCatalog(), LrApplication.activeCatalog():getTargetPhotos()
   if #photos == 0 then LrDialogs.message("Watermark Vault", "Select the edited photos to upload first.", "warning"); return end
   LrTasks.startAsyncTask(function()
     local ok, message = LrTasks.pcall(function()
+      local albumId = chooseAlbum("Upload selected final JPEGs")
+      if not albumId then return end
       local manifest = jsonGet("/api/lightroom/albums/" .. albumId .. "/picks")
       local assetsByName = {}
       for _, asset in ipairs(manifest.assets or {}) do assetsByName[baseName(asset.originalName or asset.proofId)] = asset end
@@ -384,6 +404,28 @@ function M.uploadFinals()
       LrDialogs.message("Watermark Vault", string.format("Uploaded %d finals. %d selected Lightroom photos did not match an album proof.", uploaded, unmatched))
     end)
     if not ok then LrDialogs.message("Watermark Vault final upload failed", tostring(message), "critical") end
+  end)
+end
+
+function M.browseAlbums()
+  if not requireConfig() then return end
+  LrTasks.startAsyncTask(function()
+    local ok, message = LrTasks.pcall(function()
+      local albumId = chooseAlbum("Browse Watermark Vault albums")
+      if not albumId then return end
+      local manifest = jsonGet("/api/lightroom/albums/" .. albumId .. "/picks")
+      local cache = trim(prefs.proofCacheFolder)
+      if cache == "" then cache = LrPathUtils.child(LrPathUtils.getStandardFilePath("documents"), "WatermarkVaultProofs") end
+      local downloaded, picked = 0, 0
+      for _, asset in ipairs(manifest.assets or {}) do
+        if asset.selected then
+          picked = picked + 1
+          if downloadProof(asset, LrPathUtils.child(cache, albumId)) then downloaded = downloaded + 1 end
+        end
+      end
+      LrDialogs.message("Watermark Vault", string.format("%s has %d client pick(s). Downloaded %d proof JPEG(s) to %s.", manifest.album.title, picked, downloaded, LrPathUtils.child(cache, albumId)))
+    end)
+    if not ok then LrDialogs.message("Watermark Vault album browser failed", tostring(message), "critical") end
   end)
 end
 

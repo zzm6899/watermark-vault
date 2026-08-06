@@ -6,6 +6,7 @@ return {
   LrPluginInfoUrl = "https://watermark-vault.local/lightroom",
   LrLibraryMenuItems = {
     { title = "Watermark Vault: Configure connection", file = "Configure.lua" },
+    { title = "Watermark Vault: Browse albums and download picks", file = "BrowseAlbums.lua" },
     { title = "Watermark Vault: Publish selected proofs", file = "PublishProofs.lua" },
     { title = "Watermark Vault: Sync client picks from folder", file = "SyncPicks.lua" },
     { title = "Watermark Vault: Upload selected finals", file = "UploadFinals.lua" },
