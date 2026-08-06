@@ -120,11 +120,17 @@ end
 local function authHeaders()
   local username, password = trim(prefs.username), trim(prefs.password)
   if username == "" or password == "" then return nil end
-  return { Authorization = "Basic " .. base64Encode(username .. ":" .. password) }
+  -- LrHttp requires an array of { field, value } records. A string-keyed Lua
+  -- table is silently ignored, which makes the request fail on some versions.
+  return {
+    { field = "Authorization", value = "Basic " .. base64Encode(username .. ":" .. password) },
+    { field = "Accept", value = "application/json" },
+  }
 end
 
 local function serverUrl(path)
   local root = trim(prefs.serverUrl):gsub("/+$", "")
+  if not root:match("^https?://") then root = "https://" .. root end
   return root .. path
 end
 
@@ -137,8 +143,16 @@ local function requireConfig()
 end
 
 local function jsonGet(path)
-  local body, headers = LrHttp.get(serverUrl(path), authHeaders())
-  if not body or body == "" then error("No response from Watermark Vault") end
+  local body, headers = LrHttp.get(serverUrl(path), authHeaders(), 20)
+  if not body then
+    local networkError = headers and headers.error or nil
+    local reason = networkError and (networkError.name or networkError.errorCode or tostring(networkError)) or "unknown network error"
+    error("Could not reach " .. serverUrl(path) .. " (" .. reason .. ")")
+  end
+  if headers and headers.status and (headers.status < 200 or headers.status >= 300) then
+    error("Watermark Vault returned HTTP " .. tostring(headers.status) .. ": " .. tostring(body):sub(1, 240))
+  end
+  if body == "" then error("Watermark Vault returned an empty response") end
   local data = jsonDecode(body)
   if not data.ok then error(data.error or "Watermark Vault request failed") end
   return data
@@ -225,6 +239,7 @@ end
 
 function M.configure()
   LrTasks.startAsyncTask(function()
+    local saved = false
     LrFunctionContext.callWithContext("watermarkVaultConfigure", function(context)
       local f = LrView.osFactory()
       local props = LrBinding.makePropertyTable(context)
@@ -250,18 +265,24 @@ function M.configure()
         },
       }
       if result ~= "ok" then return end
-      prefs.serverUrl = trim(props.serverUrl)
+      prefs.serverUrl = trim(props.serverUrl):gsub("/+$", "")
+      if prefs.serverUrl ~= "" and not prefs.serverUrl:match("^https?://") then prefs.serverUrl = "https://" .. prefs.serverUrl end
       prefs.username = trim(props.username)
       prefs.password = props.password or ""
       prefs.proofCacheFolder = trim(props.proofCacheFolder)
       prefs.applyFiveStars = props.applyFiveStars == true
-      local ok, response = pcall(function() return jsonGet("/api/lightroom/albums") end)
-      if ok then
-        LrDialogs.message("Watermark Vault", string.format("Connected successfully. %d album(s) are available.", #(response.albums or {})))
-      else
-        LrDialogs.message("Watermark Vault connection failed", tostring(response), "critical")
-      end
+      saved = true
     end)
+    -- LrHttp yields while it waits for the response. It must run after the
+    -- modal dialog's C callback has returned, otherwise Lightroom reports
+    -- "Yielding is not allowed within a C or metamethod call".
+    if not saved then return end
+    local ok, response = pcall(function() return jsonGet("/api/lightroom/albums") end)
+    if ok then
+      LrDialogs.message("Watermark Vault", string.format("Connected successfully. %d album(s) are available.", #(response.albums or {})))
+    else
+      LrDialogs.message("Watermark Vault connection failed", tostring(response), "critical")
+    end
   end)
 end
 
