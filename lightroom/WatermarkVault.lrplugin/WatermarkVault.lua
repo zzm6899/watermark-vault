@@ -181,11 +181,28 @@ local function downloadProof(asset, cacheFolder)
   return nil
 end
 
-local function photoLookup(catalog)
+local function normalisedPath(value)
+  return tostring(value or ""):gsub("\\", "/"):lower()
+end
+
+local function chooseSourceFolder()
+  local folders = LrDialogs.runOpenPanel {
+    title = "Choose the shoot folder containing RAW files",
+    canChooseFiles = false,
+    canChooseDirectories = true,
+    allowsMultipleSelection = false,
+  }
+  return folders and folders[1] or nil
+end
+
+local function photoLookup(catalog, sourceFolder)
   local lookup = {}
+  local root = normalisedPath(sourceFolder)
+  if root ~= "" and root:sub(-1) ~= "/" then root = root .. "/" end
   for _, photo in ipairs(catalog:getAllPhotos()) do
     local path = photo:getRawMetadata("path")
-    if path and isRaw(path) then
+    local normalisedPhotoPath = normalisedPath(path)
+    if path and isRaw(path) and (root == "" or normalisedPhotoPath:sub(1, #root) == root) then
       local key = baseName(path)
       lookup[key] = lookup[key] or {}
       table.insert(lookup[key], photo)
@@ -250,13 +267,15 @@ end
 
 function M.syncPicks()
   if not requireConfig() then return end
+  local sourceFolder = chooseSourceFolder()
+  if not sourceFolder then return end
   local albumId = promptAlbumId("Sync Watermark Vault client picks")
   if not albumId then return end
   LrTasks.startAsyncTask(function()
     local ok, message = pcall(function()
       local manifest = jsonGet("/api/lightroom/albums/" .. albumId .. "/picks")
       local catalog = LrApplication.activeCatalog()
-      local lookup = photoLookup(catalog)
+      local lookup = photoLookup(catalog, sourceFolder)
       local selected, unmatched, ambiguous = {}, {}, {}
       local cache = trim(prefs.proofCacheFolder)
       if cache == "" then cache = LrPathUtils.child(LrPathUtils.getStandardFilePath("documents"), "WatermarkVaultProofs") end
@@ -278,7 +297,7 @@ function M.syncPicks()
           if prefs.applyFiveStars ~= false then photo:setRawMetadata("rating", 5) end
         end
       end)
-      LrDialogs.message("Watermark Vault", string.format("Synced %d picks. %d unmatched, %d ambiguous. Proof JPEGs are cached in %s.", #selected, #unmatched, #ambiguous, cache))
+      LrDialogs.message("Watermark Vault", string.format("Synced %d picks from %s. %d unmatched, %d ambiguous. Proof JPEGs are cached in %s.", #selected, sourceFolder, #unmatched, #ambiguous, cache))
     end)
     if not ok then LrDialogs.message("Watermark Vault sync failed", tostring(message), "critical") end
   end)
