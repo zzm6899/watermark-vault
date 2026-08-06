@@ -2291,7 +2291,11 @@ app.get("/api/lightroom/albums/:albumId/picks", requireLightroomAdmin, (req, res
       originalFileNumber: proof.originalFileNumber,
       takenAt: proof.takenAt || null,
       selected: selectedIds.has(proof.id),
-      proofUrl: proof.src?.startsWith("/") ? `${origin}${proof.src}` : proof.src,
+      // This is deliberately a Lightroom-authenticated route rather than the
+      // public gallery URL. The public URL correctly renders a watermark for a
+      // client preview; the photographer needs the clean, low-resolution file
+      // to identify and edit the matching RAW.
+      proofUrl: `${origin}/api/lightroom/albums/${encodeURIComponent(album.id)}/assets/${encodeURIComponent(proof.id)}/proof`,
       clientNote: latestRound?.clientNote || null,
       finalUrl: proof.finalSrc?.startsWith("/") ? `${origin}${proof.finalSrc}` : proof.finalSrc || null,
     };
@@ -2302,6 +2306,24 @@ app.get("/api/lightroom/albums/:albumId/picks", requireLightroomAdmin, (req, res
     selectionSubmittedAt: latestRound?.submittedAt || null,
     assets,
   });
+});
+
+app.get("/api/lightroom/albums/:albumId/assets/:assetId/proof", requireLightroomAdmin, (req, res) => {
+  const found = findAlbumById(readDb(), req.params.albumId);
+  if (!found) return res.status(404).json({ ok: false, error: "Album not found" });
+  const photo = (found.album.photos || []).find(item => item?.id === req.params.assetId);
+  if (!photo) return res.status(404).json({ ok: false, error: "Photo not found" });
+
+  // Finals replace `src`, while proofSrc retains the original low-res proof.
+  const source = String(photo.proofSrc || photo.src || "");
+  const filename = path.basename(source.split(/[?#]/)[0]);
+  if (isIgnoredSystemFileName(filename) || !isSupportedImageFilename(filename)) {
+    return res.status(404).json({ ok: false, error: "Proof file not found" });
+  }
+  const filepath = path.join(UPLOADS_DIR, filename);
+  if (!fs.existsSync(filepath)) return res.status(404).json({ ok: false, error: "Proof file not found" });
+  res.set({ "Cache-Control": "private, no-store", "X-Watermarked": "false" });
+  return res.sendFile(filepath);
 });
 
 const lightroomFinalUpload = multer({ storage, limits: { fileSize: 100 * 1024 * 1024 } });

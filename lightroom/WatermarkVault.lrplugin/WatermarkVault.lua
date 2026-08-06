@@ -134,6 +134,27 @@ local function serverUrl(path)
   return root .. path
 end
 
+local function defaultProofCacheFolder()
+  local documents = LrPathUtils.getStandardFilePath("documents")
+  if not documents or trim(documents) == "" then
+    error("Lightroom could not find your Documents folder. Set a download folder in Configure Watermark Vault connection.")
+  end
+  return LrPathUtils.child(documents, "WatermarkVaultProofs")
+end
+
+local function proofCacheFolder()
+  local folder = trim(prefs.proofCacheFolder)
+  if folder == "" then return defaultProofCacheFolder() end
+  -- Never put proof downloads straight in the root of a drive. It is very
+  -- easy to lose track of them there, and album folders then appear under C:.
+  local parent = tostring(LrPathUtils.parent(folder) or ""):gsub("\\", "/"):lower()
+  local normalisedFolder = tostring(folder):gsub("\\", "/"):lower()
+  if parent == normalisedFolder then
+    error("The proof download folder cannot be a drive root. Choose a folder such as Documents\\WatermarkVaultProofs in Configure Watermark Vault connection.")
+  end
+  return folder
+end
+
 local function requireConfig()
   if trim(prefs.serverUrl) == "" or not authHeaders() then
     LrDialogs.message("Watermark Vault", "Configure the server URL, username and password first.", "warning")
@@ -202,7 +223,12 @@ end
 local function downloadProof(asset, cacheFolder)
   if not asset.proofUrl or asset.proofUrl == "" then return nil end
   LrFileUtils.createAllDirectories(cacheFolder)
-  local name = (asset.assetId or asset.proofId or "proof") .. ".jpg"
+  -- Preserve the photographer's filename: RAW matching is deliberately based
+  -- on this name without its extension (e.g. DSC_1234.jpg → DSC_1234.NEF).
+  local name = LrPathUtils.leafName(asset.originalName or "")
+  name = name:gsub("[\\/:*?\"<>|]", "_")
+  if name == "" then name = (asset.proofId or asset.assetId or "proof") .. ".jpg" end
+  if (LrPathUtils.extension(name) or "") == "" then name = name .. ".jpg" end
   local destination = LrPathUtils.child(cacheFolder, name)
   if LrFileUtils.exists(destination) then return destination end
   local body = LrHttp.get(asset.proofUrl, authHeaders())
@@ -324,8 +350,7 @@ function M.syncPicks()
       local catalog = LrApplication.activeCatalog()
       local lookup = photoLookup(catalog, sourceFolder)
       local selected, unmatched, ambiguous = {}, {}, {}
-      local cache = trim(prefs.proofCacheFolder)
-      if cache == "" then cache = LrPathUtils.child(LrPathUtils.getStandardFilePath("documents"), "WatermarkVaultProofs") end
+      local cache = proofCacheFolder()
       for _, asset in ipairs(manifest.assets or {}) do
         if asset.selected then
           downloadProof(asset, LrPathUtils.child(cache, albumId))
@@ -420,8 +445,7 @@ function M.browseAlbums()
       local albumId = chooseAlbum("Browse Watermark Vault albums")
       if not albumId then return end
       local manifest = jsonGet("/api/lightroom/albums/" .. albumId .. "/picks")
-      local cache = trim(prefs.proofCacheFolder)
-      if cache == "" then cache = LrPathUtils.child(LrPathUtils.getStandardFilePath("documents"), "WatermarkVaultProofs") end
+      local cache = proofCacheFolder()
       local downloaded, picked = 0, 0
       local paths = {}
       for _, asset in ipairs(manifest.assets or {}) do
