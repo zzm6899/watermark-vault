@@ -257,6 +257,12 @@ local function collectionFor(catalog, albumTitle, clientName)
   return catalog:createCollection((clientName or "Client") .. " — Client Picks", album, true)
 end
 
+local function downloadedProofCollectionFor(catalog, albumTitle)
+  local root = catalog:createCollectionSet("Watermark Vault", nil, true)
+  local album = catalog:createCollectionSet(albumTitle or "Album", root, true)
+  return catalog:createCollection("Downloaded proof JPEGs", album, true)
+end
+
 function M.configure()
   LrTasks.startAsyncTask(function()
     local saved = false
@@ -417,13 +423,35 @@ function M.browseAlbums()
       local cache = trim(prefs.proofCacheFolder)
       if cache == "" then cache = LrPathUtils.child(LrPathUtils.getStandardFilePath("documents"), "WatermarkVaultProofs") end
       local downloaded, picked = 0, 0
+      local paths = {}
       for _, asset in ipairs(manifest.assets or {}) do
         if asset.selected then
           picked = picked + 1
-          if downloadProof(asset, LrPathUtils.child(cache, albumId)) then downloaded = downloaded + 1 end
+          local proofPath = downloadProof(asset, LrPathUtils.child(cache, albumId))
+          if proofPath then
+            downloaded = downloaded + 1
+            table.insert(paths, proofPath)
+          end
         end
       end
-      LrDialogs.message("Watermark Vault", string.format("%s has %d client pick(s). Downloaded %d proof JPEG(s) to %s.", manifest.album.title, picked, downloaded, LrPathUtils.child(cache, albumId)))
+      local catalog = LrApplication.activeCatalog()
+      local knownByPath, proofPhotos = {}, {}
+      for _, photo in ipairs(catalog:getAllPhotos()) do knownByPath[normalisedPath(photo:getRawMetadata("path"))] = photo end
+      local collection
+      catalog:withWriteAccessDo("Watermark Vault downloaded proofs", function()
+        collection = downloadedProofCollectionFor(catalog, manifest.album.title)
+        for _, proofPath in ipairs(paths) do
+          local photo = knownByPath[normalisedPath(proofPath)]
+          if not photo then photo = catalog:addPhoto(proofPath) end
+          if photo then table.insert(proofPhotos, photo) end
+        end
+        collection:addPhotos(proofPhotos)
+      end)
+      if collection and #proofPhotos > 0 then
+        catalog:setActiveSources({ collection })
+        catalog:setSelectedPhotos(proofPhotos[1], proofPhotos)
+      end
+      LrDialogs.message("Watermark Vault", string.format("%s has %d client pick(s). Added %d downloaded proof JPEG(s) to Lightroom collection: Watermark Vault > %s > Downloaded proof JPEGs.", manifest.album.title, picked, #proofPhotos, manifest.album.title))
     end)
     if not ok then LrDialogs.message("Watermark Vault album browser failed", tostring(message), "critical") end
   end)

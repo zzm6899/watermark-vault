@@ -258,7 +258,10 @@ export default function AlbumDetail() {
   }, []);
   const [galleryVisibleCount, setGalleryVisibleCount] = useState(GALLERY_INITIAL_BATCH);
   const [showStarredOnly, setShowStarredOnly] = useState(false);
-  const [clientCullFilter, setClientCullFilter] = useState<"all" | "best">("best");
+  // Proofing starts with the whole client set visible. "Best of" remains an
+  // optional filter, never the default, so review-later/mobile photos are not
+  // accidentally hidden from the client.
+  const [clientCullFilter, setClientCullFilter] = useState<"all" | "best">("all");
   const [sortOrder, setSortOrder] = useState<"default" | "asc" | "desc">("default");
   const [showGalleryFilters, setShowGalleryFilters] = useState(false);
   // Local display size — defaults to admin-set album size (or "medium" fallback)
@@ -1583,6 +1586,14 @@ export default function AlbumDetail() {
                     <p className="flex items-center justify-center gap-1.5 text-lg font-display text-green-400 sm:justify-start"><CheckCircle2 className="h-4 w-4" /> Unlocked</p>
                     <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">All Photos</p>
                   </div>
+                ) : isDownloadLockedForProofing ? (
+                  <div className="flex items-start gap-3 rounded-lg border border-yellow-500/20 bg-yellow-500/5 p-3">
+                    <Lock className="w-4 h-4 text-yellow-400 mt-0.5 shrink-0" />
+                    <div>
+                      <p className="text-xs font-body text-foreground font-medium">Proofing in progress</p>
+                      <p className="text-[10px] font-body text-muted-foreground mt-1">Purchases and downloads are unavailable while the photographer reviews selections. They will return when final images are delivered.</p>
+                    </div>
+                  </div>
                 ) : (
                   <>
                     <div className="grid grid-cols-4 gap-3 sm:gap-4 items-start">
@@ -1733,7 +1744,7 @@ export default function AlbumDetail() {
                   }`}
                 >
                   <Sparkles className="w-3 h-3" />
-                  {clientCullFilter === "best" ? `Best of (${bestOfPhotos.length})` : `Best of first (${bestOfPhotos.length})`}
+                  {clientCullFilter === "best" ? `Priority only (${bestOfPhotos.length})` : `All photos (${visiblePhotos.length})`}
                 </button>
               )}
               {/* Starred filter — only shown when at least one photo is starred */}
@@ -1768,7 +1779,7 @@ export default function AlbumDetail() {
               )}
               {showGalleryFilters && (showStarredOnly || clientCullFilter !== "best" || sortOrder !== "default") && (
                 <button
-                  onClick={() => { setShowStarredOnly(false); setClientCullFilter("best"); setSortOrder("default"); }}
+                  onClick={() => { setShowStarredOnly(false); setClientCullFilter("all"); setSortOrder("default"); }}
                   className="flex items-center gap-1 px-2 py-1.5 rounded-full text-xs font-body text-muted-foreground/60 hover:text-muted-foreground transition-colors"
                 >
                   <X className="w-3 h-3" /> Clear
@@ -1807,7 +1818,7 @@ export default function AlbumDetail() {
             </div>
           ) : displayedPhotos.length === 0 ? (
             <div className="glass-panel rounded-xl p-12 text-center">
-              <p className="text-sm font-body text-muted-foreground">{clientCullFilter === "best" ? "No client-ready photos yet." : "No starred photos yet."}</p>
+              <p className="text-sm font-body text-muted-foreground">{clientCullFilter === "best" ? "No priority photos yet." : "No photos available in this gallery."}</p>
             </div>
           ) : (
             <>
