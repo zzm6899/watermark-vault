@@ -277,7 +277,7 @@ function M.configure()
     -- modal dialog's C callback has returned, otherwise Lightroom reports
     -- "Yielding is not allowed within a C or metamethod call".
     if not saved then return end
-    local ok, response = pcall(function() return jsonGet("/api/lightroom/albums") end)
+    local ok, response = LrTasks.pcall(function() return jsonGet("/api/lightroom/albums") end)
     if ok then
       LrDialogs.message("Watermark Vault", string.format("Connected successfully. %d album(s) are available.", #(response.albums or {})))
     else
@@ -293,7 +293,7 @@ function M.syncPicks()
   local albumId = promptAlbumId("Sync Watermark Vault client picks")
   if not albumId then return end
   LrTasks.startAsyncTask(function()
-    local ok, message = pcall(function()
+    local ok, message = LrTasks.pcall(function()
       local manifest = jsonGet("/api/lightroom/albums/" .. albumId .. "/picks")
       local catalog = LrApplication.activeCatalog()
       local lookup = photoLookup(catalog, sourceFolder)
@@ -338,7 +338,7 @@ function M.publishProofs()
   local catalog, photos = LrApplication.activeCatalog(), LrApplication.activeCatalog():getTargetPhotos()
   if #photos == 0 then LrDialogs.message("Watermark Vault", "Select photos first.", "warning"); return end
   LrTasks.startAsyncTask(function()
-    local ok, message = pcall(function()
+    local ok, message = LrTasks.pcall(function()
       local session = LrExportSession { photosToExport = photos, exportSettings = { LR_format = "JPEG", LR_jpeg_quality = 75, LR_size_doConstrain = true, LR_size_maxWidth = 2000, LR_size_maxHeight = 2000, LR_export_destinationType = "specificFolder", LR_collisionHandling = "overwrite" } }
       local uploaded = 0
       for _, rendition in session:renditions { stopIfCanceled = true } do
@@ -361,7 +361,7 @@ function M.uploadFinals()
   local catalog, photos = LrApplication.activeCatalog(), LrApplication.activeCatalog():getTargetPhotos()
   if #photos == 0 then LrDialogs.message("Watermark Vault", "Select the edited photos to upload first.", "warning"); return end
   LrTasks.startAsyncTask(function()
-    local ok, message = pcall(function()
+    local ok, message = LrTasks.pcall(function()
       local manifest = jsonGet("/api/lightroom/albums/" .. albumId .. "/picks")
       local assetsByName = {}
       for _, asset in ipairs(manifest.assets or {}) do assetsByName[baseName(asset.originalName or asset.proofId)] = asset end
