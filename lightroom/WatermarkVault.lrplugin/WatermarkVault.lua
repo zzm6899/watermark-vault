@@ -166,7 +166,7 @@ local function promptAlbumId(title)
     props.albumId = prefs.lastAlbumId or ""
     local answer = LrDialogs.presentModalDialog {
       title = title,
-      contents = f:column { spacing = f:control_spacing(),
+      contents = f:column { bind_to_object = props, spacing = f:control_spacing(),
         f:static_text { title = "Watermark Vault album ID" },
         f:edit_field { value = LrView.bind "albumId", width_in_chars = 38 },
         f:static_text { title = "The Album editor URL or Watermark Vault admin lists this ID." },
@@ -251,7 +251,7 @@ function M.configure()
       local result = LrDialogs.presentModalDialog {
         title = "Watermark Vault connection",
         actionVerb = "Save & Test connection",
-        contents = f:column { spacing = f:control_spacing(),
+        contents = f:column { bind_to_object = props, spacing = f:control_spacing(),
           f:static_text { title = "Watermark Vault server URL (for example: https://book.yourdomain.com)" },
           f:edit_field { value = LrView.bind "serverUrl", width_in_chars = 56 },
           f:static_text { title = "Watermark Vault admin username" },
