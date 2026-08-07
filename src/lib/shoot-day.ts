@@ -29,7 +29,7 @@ export function timeToMinutes(time: string): number {
 
 export function getShootDayBookings(bookings: Booking[], date = localDateString()): Booking[] {
   return bookings
-    .filter((booking) => booking.status !== "cancelled" && booking.date === date)
+    .filter((booking) => booking.archived !== true && booking.status !== "cancelled" && booking.date === date)
     .sort((a, b) => timeToMinutes(a.time) - timeToMinutes(b.time));
 }
 

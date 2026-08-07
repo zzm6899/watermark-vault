@@ -4,8 +4,8 @@ import { Camera, LogIn, RadioTower, Wifi, Image as ImageIcon } from "lucide-reac
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
-import { getAdminCredentials, getAdminSessionHash, hashPassword, login, logout, setAdminSessionHash, setMobileTenantSession, getMobileTenantSession, isLoggedIn } from "@/lib/storage";
-import { syncFromServer, tenantLogin, verifyAdminCredentials, recheckServer } from "@/lib/api";
+import { clearAdminClientCredentials, hashPassword, login, logout, setMobileTenantSession, getMobileTenantSession, isLoggedIn } from "@/lib/storage";
+import { getAdminApiToken, syncFromServer, tenantLogin, verifyAdminCredentials, recheckServer } from "@/lib/api";
 import { useNavigate } from "react-router-dom";
 import { Capacitor } from "@capacitor/core";
 
@@ -26,7 +26,7 @@ export default function LoginPage({ onLogin }: { onLogin?: () => void } = {}) {
       return;
     }
     if (isLoggedIn()) {
-      if (isNative && !getAdminSessionHash()) {
+      if (isNative && !getAdminApiToken()) {
         logout();
         return;
       }
@@ -46,15 +46,12 @@ export default function LoginPage({ onLogin }: { onLogin?: () => void } = {}) {
       const serverOk = await recheckServer();
 
       // Try admin credentials first
-      const adminOk = serverOk
-        ? await verifyAdminCredentials(normalized, hash)
-        : (() => { const creds = getAdminCredentials(); return !!(creds && creds.username === normalized && creds.passwordHash === hash); })();
+      const adminOk = serverOk && await verifyAdminCredentials(normalized, hash);
       if (adminOk) {
-        // Store the SHA-256 hash before sync so protected financial/contact
-        // stores are included in the post-login fetch.
-        // adminAuthHeaders() uses it to
-        // build correct Basic Auth credentials for protected API endpoints.
-        setAdminSessionHash(hash);
+        if (!isNative) {
+          // Browser requests use the HttpOnly cookie set by /api/auth/verify.
+          clearAdminClientCredentials();
+        }
         if (serverOk) await syncFromServer({ awaitLazy: true }).catch(() => false);
         login();
         onLogin?.();

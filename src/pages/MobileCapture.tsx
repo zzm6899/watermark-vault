@@ -5,8 +5,8 @@ import { Progress } from "@/components/ui/progress";
 import { Switch } from "@/components/ui/switch";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
-import { getBookings, getAlbums, getSettings, updateAlbum, addAlbum, updateBooking, getMobileTenantSession, setMobileTenantSession, isLoggedIn } from "@/lib/storage";
-import { uploadPhotosToServer, isSupportedUploadFile, isSupportedPhotoSource, recheckServer, sendEmail, fetchTenantMobileData, saveTenantAlbum, autoCullAlbum, NATIVE_API_ORIGIN, type UploadedPhotoResult } from "@/lib/api";
+import { getBookings, getAlbums, getSettings, updateAlbum, addAlbum, updateBooking, getMobileTenantSession, setMobileTenantSession, isLoggedIn, logout } from "@/lib/storage";
+import { uploadPhotosToServer, isSupportedUploadFile, isSupportedPhotoSource, recheckServer, sendEmail, sendTenantEmail, fetchTenantMobileData, saveTenantAlbum, autoCullAlbum, tenantLogout, verifyTenantSession, verifyAdminSession, adminAuthHeaders, NATIVE_API_ORIGIN, type UploadedPhotoResult } from "@/lib/api";
 import { queueOfflineCapture, getOfflineQueue, useOfflineUploadQueue, type OfflineCaptureItem } from "@/lib/usePwa";
 import { generateThumbnail, formatSpeed } from "@/lib/image-utils";
 import CameraUsb from "@/plugins/camera-usb";
@@ -294,7 +294,7 @@ function buildMobileCullFallback(album: Album): { album: Album; counts: Record<s
       pick: photos.filter(photo => photo.cull?.status === "pick").length,
       review: photos.filter(photo => photo.cull?.status === "review").length,
       reject: photos.filter(photo => photo.cull?.status === "reject").length,
-      unscored: photos.filter(photo => !photo.cull?.status || photo.cull?.status === "unscored").length,
+      unscored: photos.filter(photo => !photo.cull?.status).length,
     },
   };
 }
@@ -467,13 +467,41 @@ function MobileCaptureInner() {
 
   // Tenant session — set when a tenant logs in via /login
   const [tenantSession] = useState(() => getMobileTenantSession());
+  const [authVerified, setAuthVerified] = useState(false);
 
-  // Auth guard — redirect to /login if neither admin nor tenant is logged in
+  // Validate the server capability before exposing cached client data. Native
+  // capture can continue offline after a prior local login so queued shooting
+  // remains usable when the venue has no connection.
   useEffect(() => {
     if (!tenantSession && !isLoggedIn()) {
       navigate("/login", { replace: true });
+      return;
     }
-  }, [tenantSession, navigate]);
+    let cancelled = false;
+    recheckServer().then(async online => {
+      if (cancelled) return;
+      if (!online && isNative) {
+        setAuthVerified(true);
+        return;
+      }
+      const valid = tenantSession
+        ? await verifyTenantSession(tenantSession.slug)
+        : await verifyAdminSession();
+      if (cancelled) return;
+      if (!valid) {
+        if (tenantSession) {
+          void tenantLogout(tenantSession.slug);
+          setMobileTenantSession(null);
+        } else {
+          logout();
+        }
+        navigate("/login", { replace: true });
+        return;
+      }
+      setAuthVerified(true);
+    });
+    return () => { cancelled = true; };
+  }, [tenantSession, navigate, isNative]);
 
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [albums, setAlbums] = useState<Album[]>([]);
@@ -634,7 +662,7 @@ function MobileCaptureInner() {
     updateAlbum(album);
     const response = await fetch(`/api/albums/${encodeURIComponent(album.id)}`, {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
       body: JSON.stringify(album),
     });
     if (!response.ok) throw new Error(`Failed to save album (${response.status})`);
@@ -799,10 +827,12 @@ function MobileCaptureInner() {
       ? `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;overflow:hidden;border:1px solid #1f1f1f;padding:32px;color:#e5e7eb;"><h1 style="font-size:20px;margin:0 0 12px;">📸 Your Photos Are On The Way!</h1><p style="color:#6b7280;">Hi ${clientName}, we're uploading your ${sessionType} photos now. You'll receive another email when your gallery is ready.</p></div>`
       : `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;overflow:hidden;border:1px solid #1f1f1f;padding:32px;color:#e5e7eb;"><h1 style="font-size:20px;margin:0 0 12px;">🖼️ ${photoCount} New Photos Added!</h1><p style="color:#6b7280;">Proofing previews for your ${sessionType} session are ready. Final edited photos coming soon.</p></div>`;
     try {
-      const result = await sendEmail(selectedBooking.clientEmail, subject, html);
+      const result = tenantSession
+        ? await sendTenantEmail(tenantSession.slug, selectedBooking.clientEmail, subject, html)
+        : await sendEmail(selectedBooking.clientEmail, subject, html);
       if (result.ok) toast.success(`Email sent to ${selectedBooking.clientEmail}`);
     } catch (e) { console.error("Email error:", e); }
-  }, [notifyClient, serverOnline, selectedBooking]);
+  }, [notifyClient, serverOnline, selectedBooking, tenantSession]);
 
   useEffect(() => {
     if (tenantSession) {
@@ -1101,7 +1131,7 @@ function MobileCaptureInner() {
       addAlbum(newAlbum);
       fetch(`/api/albums/${encodeURIComponent(newAlbum.id)}`, {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
         body: JSON.stringify(newAlbum),
       }).catch(() => {});
     }
@@ -1109,7 +1139,7 @@ function MobileCaptureInner() {
     return newAlbum;
   }, [albums, tenantSession]);
 
-  const selectBooking = (booking: Booking) => {
+  const selectBooking = useCallback((booking: Booking) => {
     setSelectedBooking(booking);
     setCaptureTab("capture");
     const existing = albums.find(a => a.bookingId === booking.id);
@@ -1127,7 +1157,7 @@ function MobileCaptureInner() {
     );
     if (!existing) { sendClientNotification("album-created"); emailSentRef.current = true; }
     if (isNative) checkCamera();
-  };
+  }, [albums, checkCamera, getOrCreateAlbum, isNative, sendClientNotification, setQuietCaptureStatus]);
 
   useEffect(() => {
     if (selectedBooking || bookings.length === 0) return;
@@ -1271,16 +1301,8 @@ function MobileCaptureInner() {
         const updated: Album = { ...fresh, enabled: true, photos: [...fresh.photos, ...newPhotos], photoCount: fresh.photos.length + newPhotos.length, coverImage: fresh.coverImage || newPhotos[0]?.src || "" };
         await saveAlbum(updated); setTargetAlbum(updated); targetAlbumRef.current = updated; setAlbums(prev => prev.map(a => a.id === updated.id ? updated : a));
         if (isOnline) scheduleAutoCull(updated);
-        // Sync album record to server so admin panel / recent uploads reflects new photos
-        if (isOnline) {
-          try {
-            await fetch(`/api/albums/${updated.id}`, {
-              method: "PATCH",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ photoCount: updated.photoCount, coverImage: updated.coverImage, photos: newPhotos.map(p => p.id) }),
-            });
-          } catch (syncErr) { console.warn("Album sync failed:", syncErr); }
-        }
+        // saveAlbum above persists the complete canonical album; a second partial
+        // PATCH would target a non-existent route and could never be authoritative.
         setUploadedCount(p => p + newPhotos.length);
         sessionUploadedRef.current = true;
         setImportLabel("");
@@ -1669,7 +1691,7 @@ function MobileCaptureInner() {
   // Star a photo — persists to album storage
   const toggleStar = (photoId: string) => {
     if (!targetAlbum) return;
-    const updated = {
+    const updated: Album = {
       ...targetAlbum,
       photos: targetAlbum.photos.map(p => p.id === photoId ? { ...p, starred: !(p as any).starred } : p),
     };
@@ -1683,12 +1705,12 @@ function MobileCaptureInner() {
   // "Send" so existing exports and proofing logic continue to work.
   const setPhotoSelection = (photoId: string, status: "pick" | "review" | "reject") => {
     if (!targetAlbum) return;
-    const updated = {
+    const updated: Album = {
       ...targetAlbum,
       photos: targetAlbum.photos.map(photo => photo.id !== photoId ? photo : {
         ...photo,
         starred: status === "pick",
-        cull: { ...photo.cull, status, recommendedAction: status === "reject" ? "hold-back" : "keep", reasons: ["manual mobile selection"] },
+        cull: { ...photo.cull, status, recommendedAction: status === "reject" ? "hold-back" as const : "keep" as const, reasons: ["manual mobile selection"] },
         cullMetadata: { ...photo.cullMetadata, status, reasons: ["manual mobile selection"] },
       }),
     };
@@ -1768,17 +1790,14 @@ function MobileCaptureInner() {
       targetAlbumRef.current = updatedAlbum;
       setAlbums(prev => prev.map(a => a.id === updatedAlbum.id ? updatedAlbum : a));
       if (selectedBooking?.clientEmail && serverOnline) {
-        const galleryUrl = `${window.location.origin}/gallery/${targetAlbum.slug}?token=${clientToken}`;
-        fetch("/api/email/send", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            to: selectedBooking.clientEmail,
-            subject: `📸 Your proofing gallery is ready — ${targetAlbum.title}`,
-            html: `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;"><h2 style="margin:0 0 16px;font-size:20px;">Your photos are ready to review! ⭐</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${selectedBooking.clientName || "there"}, your ${selectedBooking.type || "session"} photos are ready for you to star your favourites.</p><p style="color:#9ca3af;margin:0 0 20px;">Click the link below to open your private gallery.</p><a href="${galleryUrl}" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">View My Gallery →</a></div>`,
-          }),
-        }).catch(() => { toast.error("Failed to send proofing email"); });
-        toast.success("Proofing invite sent!");
+        const galleryUrl = `${window.location.origin}/gallery/${targetAlbum.slug}#token=${encodeURIComponent(clientToken)}`;
+        const subject = `📸 Your proofing gallery is ready — ${targetAlbum.title}`;
+        const html = `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;"><h2 style="margin:0 0 16px;font-size:20px;">Your photos are ready to review! ⭐</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${selectedBooking.clientName || "there"}, your ${selectedBooking.type || "session"} photos are ready for you to star your favourites.</p><p style="color:#9ca3af;margin:0 0 20px;">Click the link below to open your private gallery.</p><a href="${galleryUrl}" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">View My Gallery →</a></div>`;
+        const emailResult = tenantSession
+          ? await sendTenantEmail(tenantSession.slug, selectedBooking.clientEmail, subject, html)
+          : await sendEmail(selectedBooking.clientEmail, subject, html);
+        if (emailResult.ok) toast.success("Proofing invite sent!");
+        else toast.error(emailResult.error || "Failed to send proofing email");
       } else {
         toast.success("Proofing enabled!");
       }
@@ -1928,6 +1947,14 @@ function MobileCaptureInner() {
   const ftpPrimaryHost = ftpHotspotAddress || ftpStatus?.network?.hotspotLikelyAddress || ftpStatus?.host || ftpStatus?.ipAddress || ftpAddresses[0] || "192.168.43.1";
   const showFtpSetupHelp = !ftpCameraLinked || ftpSetupOpen || !!ftpCameraClient?.lastError;
 
+  if (!authVerified) {
+    return (
+      <div className="capture-app-shell min-h-screen flex items-center justify-center text-sm font-body text-white/50 animate-pulse">
+        Verifying session…
+      </div>
+    );
+  }
+
   // ═══════════════════════════════════════════════════════════
   // ── SESSION PICKER ─────────────────────────────────────────
   // ═══════════════════════════════════════════════════════════
@@ -1971,7 +1998,7 @@ function MobileCaptureInner() {
                 )}
                 {tenantSession && (
                   <button
-                    onClick={() => { setMobileTenantSession(null); navigate("/login", { replace: true }); }}
+                    onClick={() => { void tenantLogout(tenantSession.slug); setMobileTenantSession(null); navigate("/login", { replace: true }); }}
                     className="capture-icon-button"
                     title="Sign out"
                   >

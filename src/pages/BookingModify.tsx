@@ -12,10 +12,19 @@ import {
 import { Button } from "@/components/ui/button";
 import Footer from "@/components/Footer";
 import { toast } from "sonner";
-import { getBookings, updateBooking, addBooking, getEventTypes, getProfile, getSettings, isSlotBooked } from "@/lib/storage";
-import { createBookingCheckout, getStripeStatus, syncBookingToCalendar, getGoogleBusyTimes, fetchBookingByToken, getTenantPublicData } from "@/lib/api";
+import { cacheBookingLocally, getBookings, getEventTypes, getProfile, getSettings } from "@/lib/storage";
+import {
+  createBookingCheckout,
+  createTenantBookingCheckout,
+  fetchBookingByToken,
+  getStripeStatus,
+  getTenantPublicData,
+  getTenantStripeStatus,
+} from "@/lib/api";
 import type { EventType, Booking } from "@/lib/types";
 import { bookingPaymentReference } from "@/lib/booking-reference";
+import { buildBookingCalendarUrl, filterFutureBookingSlots, isPastBookingDate, readAvailableSlots } from "@/lib/booking-utils";
+import { fetchPublicAvailability, fetchPublicBookingConfig, patchPublicBooking } from "@/lib/booking-public-api";
 
 function formatDuration(mins: number) {
   if (mins >= 60) { const h = Math.floor(mins / 60); const m = mins % 60; return m > 0 ? `${h}h ${m}m` : `${h}h`; }
@@ -41,43 +50,13 @@ function getAvailabilityForDate(et: EventType, date: Date) {
   if (specific.length > 0) return specific.map(s => ({ startTime: s.startTime, endTime: s.endTime }));
   return (avail.recurring || []).filter(s => s.day === date.getDay()).map(s => ({ startTime: s.startTime, endTime: s.endTime }));
 }
-function generateTimeSlots(startTime: string, endTime: string, duration: number): string[] {
-  const slots: string[] = [];
-  const [sh,sm] = startTime.split(":").map(Number);
-  const [eh,em] = endTime.split(":").map(Number);
-  for (let m = sh*60+sm; m+duration <= eh*60+em; m += duration)
-    slots.push(`${Math.floor(m/60).toString().padStart(2,"0")}:${(m%60).toString().padStart(2,"0")}`);
-  return slots;
-}
-function buildGoogleCalendarUrl(event: EventType, date: Date, time: string, duration: number) {
-  const [h,m] = time.split(":").map(Number);
-  const start = new Date(date.getFullYear(), date.getMonth(), date.getDate(), h, m);
-  const end = new Date(start.getTime() + duration * 60000);
-  const fmt = (d: Date) => d.toISOString().replace(/[-:]/g,"").replace(/\.\d{3}/,"");
-  return `https://calendar.google.com/calendar/render?${new URLSearchParams({ action:"TEMPLATE", text:event.title, dates:`${fmt(start)}/${fmt(end)}`, details:event.description||"", location:event.location||"" })}`;
-}
-function isSlotBusyOnGoogle(
-  time: string, duration: number,
-  busyPeriods: { start: string; end: string }[]
-): boolean {
-  const [h, m] = time.split(":").map(Number);
-  const slotStart = h * 60 + m;
-  const slotEnd   = slotStart + duration;
-  for (const b of busyPeriods) {
-    const bs = new Date(b.start);
-    const be = new Date(b.end);
-    const bStartMins = bs.getHours() * 60 + bs.getMinutes();
-    const bEndMins   = be.getHours() * 60 + be.getMinutes();
-    if (slotStart < bEndMins && slotEnd > bStartMins) return true;
-  }
-  return false;
-}
 
 export default function BookingModify() {
   const { bookingId } = useParams();
   const navigate = useNavigate();
-  const profile = getProfile();
-  const settings = getSettings();
+  const checkoutResult = new URLSearchParams(window.location.search).get("checkout");
+  const [profile, setProfile] = useState(() => getProfile());
+  const [settings, setSettings] = useState(() => getSettings());
 
   const [booking, setBooking] = useState<Booking | undefined>(
     () => getBookings().find(b => b.modifyToken === bookingId || b.id === bookingId)
@@ -86,7 +65,8 @@ export default function BookingModify() {
   const localEventType = localEventTypes.find(e => e.id === booking?.eventTypeId) ||
                          localEventTypes.find(e => e.title === booking?.type);
   const [tenantEventType, setTenantEventType] = useState<EventType | undefined>(undefined);
-  const eventType = localEventType ?? tenantEventType ?? null;
+  const [publicEventType, setPublicEventType] = useState<EventType | undefined>(undefined);
+  const eventType = tenantEventType ?? publicEventType ?? localEventType ?? null;
 
   // True while we are fetching the booking from the server (only needed when not in localStorage)
   const [fetchingBooking, setFetchingBooking] = useState(!booking && !!bookingId);
@@ -98,45 +78,121 @@ export default function BookingModify() {
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [showBankDetails, setShowBankDetails] = useState(false);
   const [processingPayment, setProcessingPayment] = useState(false);
+  const [savingChange, setSavingChange] = useState(false);
   const [stripeAvailable, setStripeAvailable] = useState(false);
   const [currentMonth, setCurrentMonth] = useState(() => new Date(new Date().getFullYear(), new Date().getMonth()));
-  const [gcalBusy, setGcalBusy] = useState<{ start: string; end: string }[]>([]);
+  const [availableSlots, setAvailableSlots] = useState<string[] | null>(null);
+  const [availabilityLoading, setAvailabilityLoading] = useState(false);
+  const [availabilityError, setAvailabilityError] = useState<string | null>(null);
+  const [availabilityRetry, setAvailabilityRetry] = useState(0);
+  const [bookingTimezone, setBookingTimezone] = useState(profile.timezone || "Australia/Sydney");
+  const [tenantBankTransfer, setTenantBankTransfer] = useState<{
+    enabled: boolean;
+    accountName: string | null;
+    bsb: string | null;
+    accountNumber: string | null;
+    payId: string | null;
+    payIdType: string | null;
+    instructions: string | null;
+  } | null>(null);
 
-  useEffect(() => { getStripeStatus().then(s => setStripeAvailable(s.configured)); }, []);
-
-  // If booking wasn't found in localStorage (e.g. lazy sync not yet complete), try fetching from server
   useEffect(() => {
-    if (booking || !bookingId) return;
-    fetchBookingByToken(bookingId).then(found => {
-      if (!found) { setFetchingBooking(false); return; }
-      // Add to localStorage so that subsequent updateBooking/isSlotBooked calls work correctly
-      if (!getBookings().find(b => b.id === found.id)) {
-        addBooking(found);
+    let cancelled = false;
+    const statusRequest = booking?.tenantSlug
+      ? getTenantStripeStatus(booking.tenantSlug)
+      : getStripeStatus();
+    statusRequest.then(status => {
+      if (!cancelled) setStripeAvailable(status.configured);
+    });
+    return () => { cancelled = true; };
+  }, [booking?.tenantSlug]);
+
+  // Always refresh from the server. A local copy is only an instant-loading cache
+  // and may have stale payment, cancellation, or reschedule state.
+  useEffect(() => {
+    if (!bookingId) return;
+    let cancelled = false;
+    const refreshBooking = async () => {
+      const attempts = checkoutResult === "success" ? 5 : 1;
+      for (let attempt = 0; attempt < attempts && !cancelled; attempt++) {
+        const found = await fetchBookingByToken(bookingId);
+        if (found && !cancelled) {
+          cacheBookingLocally(found);
+          setBooking(found);
+          const paymentSettled = found.paymentStatus === "paid" || found.paymentStatus === "deposit-paid" || !!found.paidAt || !!found.depositPaidAt;
+          if (paymentSettled) break;
+        }
+        if (attempt < attempts - 1) await new Promise(resolve => window.setTimeout(resolve, 1200));
       }
-      setBooking(found);
-      setFetchingBooking(false);
-    }).catch(() => setFetchingBooking(false));
-  }, [booking, bookingId]);
+      if (!cancelled) setFetchingBooking(false);
+    };
+    refreshBooking().catch(() => { if (!cancelled) setFetchingBooking(false); });
+    return () => { cancelled = true; };
+  }, [bookingId, checkoutResult]);
 
   // If booking belongs to a tenant and the event type wasn't found in local storage,
   // fetch it from the tenant's public API (tenant event types are stored separately).
   // Also handles bookings where eventTypeId is missing/stale — falls back to title match.
   useEffect(() => {
-    if (localEventType || tenantEventType || !booking?.tenantSlug) return;
+    if (tenantEventType || !booking?.tenantSlug) return;
     getTenantPublicData(booking.tenantSlug).then(data => {
       if (!data) return;
+      if (data.tenant.timezone) setBookingTimezone(data.tenant.timezone);
+      if (data.bankTransfer) setTenantBankTransfer(data.bankTransfer);
       const found = data.eventTypes.find(
         e => e.id === booking.eventTypeId || e.title === booking.type
       );
       if (found) setTenantEventType(found);
     }).catch(() => {});
-  }, [booking?.tenantSlug, booking?.eventTypeId, booking?.type, localEventType, tenantEventType]);
+  }, [booking?.tenantSlug, booking?.eventTypeId, booking?.type, tenantEventType]);
 
-  // Fetch Google Calendar busy times whenever the selected date changes
   useEffect(() => {
-    if (!selectedDate) { setGcalBusy([]); return; }
-    getGoogleBusyTimes(toDateStr(selectedDate)).then(setGcalBusy).catch(() => setGcalBusy([]));
-  }, [selectedDate]);
+    if (!booking || booking.tenantSlug || publicEventType) return;
+    const controller = new AbortController();
+    fetchPublicBookingConfig(controller.signal).then(config => {
+      const found = config.eventTypes.find(event => event.id === booking.eventTypeId || event.title === booking.type);
+      if (found) setPublicEventType(found);
+      if (config.profile) {
+        setProfile(previous => ({ ...previous, ...config.profile }));
+        if (config.profile.timezone) setBookingTimezone(config.profile.timezone);
+      }
+      if (config.settings) setSettings(previous => ({ ...previous, ...config.settings }));
+    }).catch(() => {});
+    return () => controller.abort();
+  }, [booking, publicEventType]);
+
+  // Availability is authoritative: it already excludes bookings, buffers, and
+  // connected calendar conflicts (including the booking currently being edited).
+  useEffect(() => {
+    if (!selectedDate || !booking || !eventType) {
+      setAvailableSlots(null);
+      setAvailabilityError(null);
+      return;
+    }
+    const controller = new AbortController();
+    const date = toDateStr(selectedDate);
+    setAvailableSlots(null);
+    setAvailabilityLoading(true);
+    setAvailabilityError(null);
+    fetchPublicAvailability({
+      eventTypeId: eventType.id,
+      date,
+      duration: booking.duration,
+      tenantSlug: booking.tenantSlug,
+      signal: controller.signal,
+    }).then(payload => {
+      const slots = readAvailableSlots(payload);
+      if (slots === null) throw new Error("Availability could not be read");
+      setAvailableSlots(slots);
+      if (payload.timezone) setBookingTimezone(payload.timezone);
+    }).catch(error => {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      setAvailabilityError(error instanceof Error ? error.message : "Availability could not be loaded");
+    }).finally(() => {
+      if (!controller.signal.aborted) setAvailabilityLoading(false);
+    });
+    return () => controller.abort();
+  }, [selectedDate, booking, eventType, availabilityRetry]);
 
   usePageTitle(
     eventType && booking
@@ -151,38 +207,54 @@ export default function BookingModify() {
   const days = Array.from({ length: daysInMonth }, (_, i) => i+1);
 
   const timeSlots = useMemo(() => {
-    if (!selectedDate || !booking || !eventType) return [];
+    if (!selectedDate || !booking || !eventType || availableSlots === null) return [];
     const dateStr = toDateStr(selectedDate);
-    return getAvailabilityForDate(eventType, selectedDate)
-      .flatMap(r => generateTimeSlots(r.startTime, r.endTime, booking.duration))
-      .filter(t => !isSlotBooked(dateStr, t, booking.duration, booking.id) &&
-                   !isSlotBusyOnGoogle(t, booking.duration, gcalBusy));
-  }, [selectedDate, booking, eventType, gcalBusy]);
+    return filterFutureBookingSlots(availableSlots, dateStr, bookingTimezone);
+  }, [selectedDate, booking, eventType, availableSlots, bookingTimezone]);
 
-  const handleCancel = useCallback(() => {
+  const handleCancel = useCallback(async () => {
     if (!booking || !confirm("Cancel this booking?")) return;
-    const updated = { ...booking, status: "cancelled" as const };
-    updateBooking(updated);
-    setBooking(updated);
-    // Update calendar event to reflect cancellation (changes event color to grey)
-    if (booking.gcalEventId) {
-      syncBookingToCalendar(updated).catch(() => {});
+    if (!booking.modifyToken) { toast.error("This booking cannot be cancelled online."); return; }
+    setSavingChange(true);
+    try {
+      const updated = await patchPublicBooking(booking.modifyToken, { action: "cancel" });
+      cacheBookingLocally(updated);
+      setBooking(updated);
+      toast.success("Booking cancelled");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not cancel the booking");
+    } finally {
+      setSavingChange(false);
     }
   }, [booking]);
 
-  const handleReschedule = useCallback(() => {
+  const handleReschedule = useCallback(async () => {
     if (!booking || !selectedDate || !selectedTime) return;
+    if (!booking.modifyToken) { toast.error("This booking cannot be changed online."); return; }
     const dateStr = toDateStr(selectedDate);
-    if (isSlotBooked(dateStr, selectedTime, booking.duration, booking.id)) { toast.error("Slot just taken, pick another."); return; }
-    const updated = { ...booking, date: dateStr, time: selectedTime };
-    updateBooking(updated);
-    setBooking(updated);
-    // Push reschedule to Google Calendar — update existing event if we have its ID
-    syncBookingToCalendar(updated).then(res => {
-      if (res?.eventId) updateBooking({ ...updated, gcalEventId: res.eventId });
-    }).catch(() => {});
-    setMode("done");
-  }, [booking, selectedDate, selectedTime]);
+    if (availabilityLoading || availableSlots === null || !timeSlots.includes(selectedTime)) {
+      toast.error("That time is no longer available. Please choose another.");
+      setSelectedTime(null);
+      setAvailabilityRetry(retry => retry + 1);
+      return;
+    }
+    setSavingChange(true);
+    try {
+      const updated = await patchPublicBooking(booking.modifyToken, {
+        date: dateStr,
+        time: selectedTime,
+      });
+      cacheBookingLocally(updated);
+      setBooking(updated);
+      setMode("done");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not reschedule the booking");
+      setSelectedTime(null);
+      setAvailabilityRetry(retry => retry + 1);
+    } finally {
+      setSavingChange(false);
+    }
+  }, [booking, selectedDate, selectedTime, availabilityLoading, availableSlots, timeSlots]);
 
   const copyToClipboard = (text: string, field: string) => {
     navigator.clipboard.writeText(text);
@@ -235,25 +307,53 @@ export default function BookingModify() {
   const depositAmt = booking.depositAmount ?? 0;
   const totalAmt = booking.paymentAmount ?? et.price ?? 0;
   const remainingAmt = Math.max(0, totalAmt - depositAmt);
-  const isDepositPaid = booking.paymentStatus === "deposit-paid";
-  const isPaidInFull = booking.paymentStatus === "paid" || booking.paymentStatus === "cash";
+  const isDepositPaid = booking.paymentStatus === "deposit-paid" || !!booking.depositPaidAt;
+  const isPaidInFull = booking.paymentStatus === "paid" || booking.paymentStatus === "cash" || !!booking.paidAt;
   const isBankPending = booking.paymentStatus === "pending-confirmation";
   const isFree = totalAmt === 0;
   const depositEnabled = booking.depositRequired && depositAmt > 0;
-  const depositMethods = et.depositMethods || ["stripe", "bank"];
-  const bankTransfer = settings.bankTransfer;
+  const bankTransfer = booking.tenantSlug
+    ? tenantBankTransfer ?? { enabled: false, accountName: null, bsb: null, accountNumber: null, payId: null, payIdType: null, instructions: null }
+    : settings.bankTransfer;
   const bookingDate = (() => { const [y,mo,d] = booking.date.split("-").map(Number); return new Date(y,mo-1,d); })();
 
   const handleStripePayment = async (amount: number) => {
+    if (isPaidInFull || amount <= 0) {
+      toast.info("This booking is already paid in full.");
+      return;
+    }
+    if (!booking.modifyToken) {
+      toast.error("This booking cannot be verified for payment. Please reopen your booking link.");
+      return;
+    }
     setProcessingPayment(true);
-    const result = await createBookingCheckout({ bookingId: booking.id, clientName: booking.clientName, clientEmail: booking.clientEmail, amount, eventTitle: et.title });
+    const modifyPath = `/booking/modify/${encodeURIComponent(booking.modifyToken)}`;
+    const successUrl = `${window.location.origin}${modifyPath}?checkout=success`;
+    const cancelUrl = `${window.location.origin}${modifyPath}?checkout=cancelled`;
+    const result = booking.tenantSlug
+      ? await createTenantBookingCheckout(booking.tenantSlug, {
+          bookingId: booking.id,
+          modifyToken: booking.modifyToken,
+          successUrl,
+          cancelUrl,
+        })
+      : await createBookingCheckout({
+          bookingId: booking.id,
+          modifyToken: booking.modifyToken,
+          clientName: booking.clientName,
+          clientEmail: booking.clientEmail,
+          amount,
+          eventTitle: et.title,
+          successUrl,
+          cancelUrl,
+        });
     setProcessingPayment(false);
     if (result.url) window.location.href = result.url;
     else toast.error(result.error || "Payment failed");
   };
 
   // ── Rescheduled confirmation ──
-  if (mode === "done" && selectedDate && selectedTime) {
+  if (mode === "done") {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center p-4" style={{ paddingTop: "env(safe-area-inset-top)" }}>
         <div className="glass-panel rounded-xl p-8 text-center max-w-md w-full">
@@ -261,12 +361,12 @@ export default function BookingModify() {
           <h2 className="font-display text-xl text-foreground mb-6">Booking Rescheduled!</h2>
           <div className="border-t border-border/50 pt-4 space-y-2 text-left">
             <div className="flex justify-between text-sm font-body"><span className="text-muted-foreground">Event</span><span className="text-foreground">{et.title}</span></div>
-            <div className="flex justify-between text-sm font-body"><span className="text-muted-foreground">New Date</span><span className="text-foreground">{formatDateNice(toDateStr(selectedDate))}</span></div>
-            <div className="flex justify-between text-sm font-body"><span className="text-muted-foreground">New Time</span><span className="text-primary font-medium">{formatTime12(selectedTime)}</span></div>
+            <div className="flex justify-between text-sm font-body"><span className="text-muted-foreground">New Date</span><span className="text-foreground">{formatDateNice(booking.date)}</span></div>
+            <div className="flex justify-between text-sm font-body"><span className="text-muted-foreground">New Time</span><span className="text-primary font-medium">{formatTime12(booking.time)}</span></div>
           </div>
-          <a href={buildGoogleCalendarUrl(et, selectedDate, selectedTime, booking.duration)} target="_blank" rel="noopener noreferrer" className="block mt-4">
-            <Button variant="outline" className="w-full font-body text-xs gap-2"><CalendarIcon className="w-4 h-4" /> Update Google Calendar <ExternalLink className="w-3 h-3" /></Button>
-          </a>
+          <Button asChild variant="outline" className="w-full mt-4 font-body text-xs gap-2">
+            <a aria-label={`Add rescheduled ${et.title} on ${booking.date} at ${booking.time} to Google Calendar`} href={buildBookingCalendarUrl({ title: et.title, date: booking.date, time: booking.time, durationMinutes: booking.duration, timeZone: bookingTimezone, details: et.description, location: et.location })} target="_blank" rel="noopener noreferrer"><CalendarIcon className="w-4 h-4" /> Add Updated Time to Calendar <ExternalLink className="w-3 h-3" /></a>
+          </Button>
           <Button onClick={handleBookAnother} variant="outline" className="w-full mt-2 font-body text-xs gap-2"><CalendarDays className="w-4 h-4" /> Book Another Session</Button>
           <Button onClick={() => setMode("status")} variant="ghost" className="w-full mt-2 font-body text-xs text-muted-foreground">Back to Booking</Button>
         </div>
@@ -283,6 +383,21 @@ export default function BookingModify() {
             <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="max-w-md mx-auto">
               <div className="glass-panel rounded-xl p-8 mb-4">
 
+                {checkoutResult === "success" && (
+                  <div role="status" className={`mb-5 rounded-lg border p-3 text-sm font-body ${isPaidInFull || isDepositPaid ? "border-green-500/30 bg-green-500/10 text-green-400" : "border-amber-500/30 bg-amber-500/10 text-amber-300"}`}>
+                    {isPaidInFull
+                      ? "Card payment confirmed. This booking is paid in full."
+                      : isDepositPaid
+                      ? "Card deposit confirmed. Any remaining balance is shown below."
+                      : "Stripe checkout returned successfully. Payment confirmation is still processing; refresh shortly if the status below has not updated."}
+                  </div>
+                )}
+                {checkoutResult === "cancelled" && (
+                  <div role="status" className="mb-5 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm font-body text-amber-300">
+                    Checkout was cancelled. Refer to the payment status below before trying again.
+                  </div>
+                )}
+
                 {/* Header icon + title */}
                 <div className="text-center mb-6">
                   {booking.status === "cancelled"
@@ -295,6 +410,7 @@ export default function BookingModify() {
                 <div className="border-t border-border/50 pt-4 space-y-2.5">
                   <div className="flex justify-between text-sm font-body"><span className="text-muted-foreground">Event</span><span className="text-foreground font-medium">{et.title}</span></div>
                   <div className="flex justify-between text-sm font-body"><span className="text-muted-foreground">Duration</span><span className="text-foreground">{formatDuration(booking.duration)}</span></div>
+                  {!!et.bufferMinutes && et.bufferMinutes > 0 && <div className="flex justify-between text-sm font-body"><span className="text-muted-foreground">Turnaround buffer</span><span className="text-foreground">{formatDuration(et.bufferMinutes)}</span></div>}
                   <div className="flex justify-between text-sm font-body"><span className="text-muted-foreground">Date</span><span className="text-foreground">{formatDateNice(booking.date)}</span></div>
                   <div className="flex justify-between text-sm font-body"><span className="text-muted-foreground">Time</span><span className="text-primary font-medium">{formatTime12(booking.time)}</span></div>
                   {et.location && <div className="flex justify-between text-sm font-body"><span className="text-muted-foreground">Location</span><span className="text-foreground">{et.location}</span></div>}
@@ -379,12 +495,12 @@ export default function BookingModify() {
                 {/* Actions */}
                 {booking.status !== "cancelled" && (
                   <div className="flex flex-col gap-3 mt-6 border-t border-border/50 pt-5">
-                    <a href={buildGoogleCalendarUrl(et, bookingDate, booking.time, booking.duration)} target="_blank" rel="noopener noreferrer">
-                      <Button variant="outline" className="w-full font-body text-xs tracking-wider uppercase gap-2"><CalendarIcon className="w-4 h-4" /> Add to Google Calendar <ExternalLink className="w-3 h-3" /></Button>
-                    </a>
+                    <Button asChild variant="outline" className="w-full font-body text-xs tracking-wider uppercase gap-2">
+                      <a aria-label={`Add ${et.title} on ${booking.date} at ${booking.time} to Google Calendar`} href={buildBookingCalendarUrl({ title: et.title, date: booking.date, time: booking.time, durationMinutes: booking.duration, timeZone: bookingTimezone, details: et.description, location: et.location })} target="_blank" rel="noopener noreferrer"><CalendarIcon className="w-4 h-4" /> Add to Google Calendar <ExternalLink className="w-3 h-3" /></a>
+                    </Button>
                     <Button onClick={handleBookAnother} variant="outline" className="w-full font-body text-xs tracking-wider uppercase gap-2"><CalendarDays className="w-4 h-4" /> Book Another Session</Button>
                     <Button onClick={() => setMode("reschedule")} className="w-full bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2"><CalendarDays className="w-4 h-4" /> Change Date / Time</Button>
-                    <Button onClick={handleCancel} variant="outline" className="w-full font-body text-xs tracking-wider uppercase border-destructive text-destructive hover:bg-destructive/10 gap-2"><XCircle className="w-4 h-4" /> Cancel Booking</Button>
+                    <Button onClick={() => void handleCancel()} disabled={savingChange} variant="outline" className="w-full font-body text-xs tracking-wider uppercase border-destructive text-destructive hover:bg-destructive/10 gap-2"><XCircle className="w-4 h-4" /> {savingChange ? "Cancelling…" : "Cancel Booking"}</Button>
                   </div>
                 )}
               </div>
@@ -403,8 +519,8 @@ export default function BookingModify() {
                     <div className="flex items-center justify-between mb-5">
                       <h3 className="font-display text-base text-foreground"><span className="text-primary">{currentMonth.toLocaleDateString("en-US",{month:"long"})}</span> {year}</h3>
                       <div className="flex gap-1">
-                        <button onClick={() => setCurrentMonth(new Date(year,month-1))} className="p-1.5 rounded-lg hover:bg-secondary text-muted-foreground hover:text-foreground"><ChevronLeft className="w-4 h-4" /></button>
-                        <button onClick={() => setCurrentMonth(new Date(year,month+1))} className="p-1.5 rounded-lg hover:bg-secondary text-muted-foreground hover:text-foreground"><ChevronRight className="w-4 h-4" /></button>
+                        <button type="button" aria-label="Previous month" onClick={() => setCurrentMonth(new Date(year,month-1))} className="p-1.5 rounded-lg hover:bg-secondary text-muted-foreground hover:text-foreground"><ChevronLeft className="w-4 h-4" /></button>
+                        <button type="button" aria-label="Next month" onClick={() => setCurrentMonth(new Date(year,month+1))} className="p-1.5 rounded-lg hover:bg-secondary text-muted-foreground hover:text-foreground"><ChevronRight className="w-4 h-4" /></button>
                       </div>
                     </div>
                     <div className="grid grid-cols-7 gap-1 mb-2">{["MON","TUE","WED","THU","FRI","SAT","SUN"].map(d=><div key={d} className="text-center text-[10px] font-body tracking-wider uppercase text-muted-foreground py-2">{d}</div>)}</div>
@@ -413,10 +529,10 @@ export default function BookingModify() {
                       {days.map(day=>{
                         const date=new Date(year,month,day);
                         const isSelected=selectedDate?.getDate()===day&&selectedDate?.getMonth()===month&&selectedDate?.getFullYear()===year;
-                        const isPast=date<new Date(new Date().setHours(0,0,0,0));
+                        const isPast=isPastBookingDate(toDateStr(date),bookingTimezone);
                         const isAvail=!isPast&&getAvailabilityForDate(et,date).length>0;
                         const isToday=toDateStr(date)===toDateStr(new Date());
-                        return <button key={day} disabled={!isAvail} onClick={()=>{setSelectedDate(date);setSelectedTime(null);}} className={`aspect-square rounded-lg text-sm font-body transition-all relative ${isSelected?"bg-primary text-primary-foreground ring-2 ring-primary ring-offset-2 ring-offset-background":isAvail?"text-foreground hover:bg-secondary":"text-muted-foreground/20 cursor-not-allowed"}`}>{day}{isToday&&!isSelected&&<span className="absolute bottom-1 left-1/2 -translate-x-1/2 w-1 h-1 rounded-full bg-primary"/>}</button>;
+                        return <button key={day} type="button" aria-label={`${date.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" })}${isAvail ? ", available" : ", unavailable"}`} aria-pressed={isSelected} disabled={!isAvail} onClick={()=>{setSelectedDate(date);setSelectedTime(null);}} className={`aspect-square rounded-lg text-sm font-body transition-all relative ${isSelected?"bg-primary text-primary-foreground ring-2 ring-primary ring-offset-2 ring-offset-background":isAvail?"text-foreground hover:bg-secondary":"text-muted-foreground/20 cursor-not-allowed"}`}>{day}{isToday&&!isSelected&&<span className="absolute bottom-1 left-1/2 -translate-x-1/2 w-1 h-1 rounded-full bg-primary"/>}</button>;
                       })}
                     </div>
                   </div>
@@ -426,18 +542,20 @@ export default function BookingModify() {
                         <div className="flex items-center justify-between mb-3">
                           <p className="text-sm font-body font-medium text-foreground">{selectedDate.toLocaleDateString("en-US",{weekday:"short"})} {selectedDate.getDate()}</p>
                           <div className="flex rounded-md border border-border overflow-hidden">
-                            <button onClick={()=>setUse24h(false)} className={`px-2 py-0.5 text-[10px] font-body ${!use24h?"bg-secondary text-foreground":"text-muted-foreground"}`}>12h</button>
-                            <button onClick={()=>setUse24h(true)} className={`px-2 py-0.5 text-[10px] font-body ${use24h?"bg-secondary text-foreground":"text-muted-foreground"}`}>24h</button>
+                            <button type="button" aria-pressed={!use24h} onClick={()=>setUse24h(false)} className={`px-2 py-0.5 text-[10px] font-body ${!use24h?"bg-secondary text-foreground":"text-muted-foreground"}`}>12h</button>
+                            <button type="button" aria-pressed={use24h} onClick={()=>setUse24h(true)} className={`px-2 py-0.5 text-[10px] font-body ${use24h?"bg-secondary text-foreground":"text-muted-foreground"}`}>24h</button>
                           </div>
                         </div>
                         <div className="space-y-1.5 max-h-[320px] overflow-y-auto pr-1">
-                          {timeSlots.length>0?timeSlots.map(t=>(
+                          {availabilityLoading ? <p className="text-sm font-body text-muted-foreground text-center py-8" role="status">Checking availability…</p> : availabilityError ? (
+                            <div className="text-center py-6 space-y-3" role="alert"><p className="text-sm font-body text-destructive">Live availability couldn't be loaded.</p><Button type="button" variant="outline" size="sm" onClick={() => setAvailabilityRetry(retry => retry + 1)}>Try again</Button></div>
+                          ) : timeSlots.length>0?timeSlots.map(t=>(
                             <button key={t} onClick={()=>setSelectedTime(t)} className={`w-full text-sm font-body py-2.5 px-4 rounded-lg border transition-all text-center ${selectedTime===t?"bg-primary text-primary-foreground border-primary":"border-border text-foreground hover:border-primary/50"}`}>
                               <span className="flex items-center justify-center gap-2"><span className="w-1.5 h-1.5 rounded-full bg-green-400"/>{use24h?t:formatTime12(t)}</span>
                             </button>
                           )):<p className="text-sm font-body text-muted-foreground/50 text-center py-8">No slots available</p>}
                         </div>
-                        {selectedTime && <motion.div initial={{opacity:0,y:10}} animate={{opacity:1,y:0}} className="mt-3"><Button onClick={handleReschedule} className="w-full bg-primary text-primary-foreground font-body tracking-wider uppercase text-xs py-5">Confirm New Time</Button></motion.div>}
+                        {selectedTime && <motion.div initial={{opacity:0,y:10}} animate={{opacity:1,y:0}} className="mt-3"><Button disabled={savingChange} onClick={() => void handleReschedule()} className="w-full bg-primary text-primary-foreground font-body tracking-wider uppercase text-xs py-5">{savingChange ? "Saving…" : "Confirm New Time"}</Button></motion.div>}
                       </motion.div>
                     ) : (
                       <div className="text-center py-12"><CalendarDays className="w-8 h-8 text-muted-foreground/30 mx-auto mb-3"/><p className="text-xs font-body text-muted-foreground/50">Select a date</p></div>

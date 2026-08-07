@@ -4,36 +4,43 @@
  * When running without backend (e.g. Lovable preview), falls back silently to localStorage-only.
  */
 
+import { Capacitor } from "@capacitor/core";
+
 let serverAvailable: boolean | null = null;
 
 export const NATIVE_API_ORIGIN = "https://book.zacmclients.photos";
+export const ADMIN_API_TOKEN_KEY = "wv_admin_api_token";
+
+export function getAdminApiToken(): string {
+  try { return localStorage.getItem(ADMIN_API_TOKEN_KEY) || ""; } catch { return ""; }
+}
+
+export function clearAdminApiToken(): void {
+  try {
+    localStorage.removeItem(ADMIN_API_TOKEN_KEY);
+    // Remove password-equivalent credentials left by older native builds.
+    localStorage.removeItem("wv_admin");
+    localStorage.removeItem("wv_admin_session_hash");
+  } catch { /* storage may be unavailable */ }
+}
+
+function persistNativeAdminToken(token: unknown): void {
+  if (!Capacitor.isNativePlatform() || typeof token !== "string" || !token) return;
+  try {
+    localStorage.setItem(ADMIN_API_TOKEN_KEY, token);
+    localStorage.removeItem("wv_tenant_api_token");
+    localStorage.removeItem("wv_admin");
+    localStorage.removeItem("wv_admin_session_hash");
+  } catch { /* storage may be unavailable */ }
+}
 
 /**
- * Returns Authorization header for admin-protected endpoints.
- * Reads stored credentials synchronously so it can be used inline.
- *
- * The server expects Basic auth where the password field is the SHA-256 hash
- * of the user's password (NOT the bcrypt hash stored in wv_admin). After login,
- * LoginPage stores the sha256 hash in localStorage under "wv_admin_session_hash"
- * so we can reconstruct the correct credential here.
+ * Browser admins use the HttpOnly session cookie. Native capture uses the
+ * short-lived, purpose-bound bearer returned by the server after login.
  */
-function adminAuthHeaders(): Record<string, string> {
-  try {
-    // Read username from localStorage (synced from server, always available after login)
-    const raw = localStorage.getItem("wv_admin");
-    if (!raw) return {};
-    const creds = JSON.parse(raw) as { username: string; passwordHash: string };
-    if (!creds?.username) return {};
-
-    // Prefer the sha256 hash stored in localStorage at login time — this is what
-    // the server's verifyPasswordHash() expects as the "incoming" value.
-    // Falls back to creds.passwordHash only if the hash was never stored (pre-fix sessions).
-    const sessionHash = localStorage.getItem("wv_admin_session_hash");
-    const passwordHash = sessionHash || (creds.passwordHash?.startsWith("$2") ? "" : creds.passwordHash);
-    if (!passwordHash) return {};
-
-    return { Authorization: "Basic " + btoa(`${creds.username}:${passwordHash}`) };
-  } catch { return {}; }
+export function adminAuthHeaders(): Record<string, string> {
+  const token = getAdminApiToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
 /**
@@ -61,6 +68,10 @@ async function fetchWithRetry(url: string, options?: RequestInit, maxRetries = 2
 }
 
 async function readJson<T = unknown>(res: Response, fallback: T): Promise<T> {
+  // Any HTTP response from our API proves the backend is reachable. Public
+  // gallery routes intentionally skip the startup health check, so recording
+  // this here prevents them from incorrectly falling back to local-only paths.
+  serverAvailable = true;
   const contentType = res.headers.get("content-type") || "";
   if (!res.ok || !contentType.toLowerCase().includes("application/json")) return fallback;
   try {
@@ -85,7 +96,6 @@ async function checkServer(): Promise<boolean> {
 // These are fetched synchronously during app startup.
 const CRITICAL_STORE_KEYS = [
   "wv_setup_complete",
-  "wv_admin",
   "wv_profile",
   "wv_settings",
   "wv_event_types",
@@ -117,6 +127,14 @@ function _applyStoreData(data: Record<string, unknown>): void {
   for (const [key, value] of Object.entries(data)) {
     // Never restore session from server — auth must always be re-done per browser
     if (key === SESSION_KEY) continue;
+    // Web admins authenticate with an HttpOnly cookie. Never copy the stored
+    // password verifier into browser storage; native capture retains its
+    // explicitly-scoped Basic-auth fallback until it has a dedicated token.
+    if (key === "wv_admin" && !Capacitor.isNativePlatform()) {
+      localStorage.removeItem(key);
+      localStorage.removeItem("wv_admin_session_hash");
+      continue;
+    }
     const cleanValue = sanitizePersistedStoreValue(key, value);
 
     // For the photo library, merge server data with any locally-added photos that
@@ -145,6 +163,66 @@ function _applyStoreData(data: Record<string, unknown>): void {
 
     // Server store values are often already JSON strings
     localStorage.setItem(key, typeof cleanValue === "string" ? cleanValue : JSON.stringify(cleanValue));
+  }
+}
+
+export type PublicAppSettings = Partial<import("./types").AppSettings> & {
+  /** Returned inside settings by /api/public/config. */
+  setupComplete?: boolean;
+};
+
+export type PublicAppConfig = {
+  /** Legacy deployments returned this at the top level. */
+  setupComplete?: boolean;
+  profile?: Partial<import("./types").ProfileSettings>;
+  settings?: PublicAppSettings;
+  eventTypes?: import("./types").EventType[];
+};
+
+/** Load the allowlisted configuration needed by public booking pages. */
+export async function fetchPublicConfig(): Promise<PublicAppConfig | null> {
+  try {
+    const res = await fetch("/api/public/config", { cache: "no-store" });
+    const data = await readJson<PublicAppConfig | null>(res, null);
+    return res.ok && data ? data : null;
+  } catch {
+    return null;
+  }
+}
+
+export type SetupStatus = {
+  setupComplete: boolean;
+  licenseKeyRequired: boolean;
+  setupTokenRequired: boolean;
+};
+
+export async function getSetupStatus(): Promise<SetupStatus | null> {
+  try {
+    const res = await fetch("/api/setup/status", { cache: "no-store" });
+    return await readJson<SetupStatus | null>(res, null);
+  } catch {
+    return null;
+  }
+}
+
+export async function claimInitialSetup(params: {
+  username: string;
+  passwordHash: string;
+  setupToken?: string;
+  licenseKey?: string;
+}): Promise<{ ok: boolean; sessionToken?: string; expiresIn?: number; error?: string }> {
+  try {
+    const res = await fetch("/api/setup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(params),
+    });
+    const body = await readJson<{ ok?: boolean; sessionToken?: string; expiresIn?: number; error?: string }>(res, {});
+    const ok = res.ok && body.ok !== false;
+    if (ok) persistNativeAdminToken(body.sessionToken);
+    return { ok, sessionToken: body.sessionToken, expiresIn: body.expiresIn, error: body.error || (res.ok ? undefined : `Setup failed (${res.status})`) };
+  } catch {
+    return { ok: false, error: "Could not reach the server" };
   }
 }
 
@@ -178,7 +256,10 @@ async function _fetchStoreKeys(keys: string[]): Promise<boolean> {
 export async function syncFromServer(options: { awaitLazy?: boolean } = {}): Promise<boolean> {
   if (!(await checkServer())) return false;
   // Phase 1 — critical keys only (fast)
-  const ok = await _fetchStoreKeys(CRITICAL_STORE_KEYS);
+  const criticalKeys = Capacitor.isNativePlatform()
+    ? CRITICAL_STORE_KEYS
+    : CRITICAL_STORE_KEYS.filter(key => key !== "wv_admin");
+  const ok = await _fetchStoreKeys(criticalKeys);
   if (!ok) return false;
   console.log("✅ Synced critical keys from server");
   // Phase 2 — heavy keys in background (non-blocking)
@@ -214,13 +295,23 @@ async function _flushQueue() {
   }
   while (_writeQueue.length > 0) {
     const item = _writeQueue.shift()!;
-    fetch(`/api/store/${encodeURIComponent(item.key)}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
-      body: JSON.stringify({ value: item.value }),
-    }).catch(() => {});
+    try {
+      const res = await fetch(`/api/store/${encodeURIComponent(item.key)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
+        body: JSON.stringify({ value: item.value }),
+      });
+      if (!res.ok) {
+        _writeQueue.unshift(item);
+        break;
+      }
+    } catch {
+      _writeQueue.unshift(item);
+      break;
+    }
   }
   _flushScheduled = false;
+  if (_writeQueue.length > 0) _scheduleStoreFlush(5000);
 }
 
 // Separate queue for album writes (use the per-album PUT endpoint)
@@ -246,14 +337,24 @@ async function _flushAlbumQueue() {
   }
   while (_albumWriteQueue.length > 0) {
     const item = _albumWriteQueue.shift()!;
-    fetch(`/api/albums/${encodeURIComponent(item.albumId)}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(item.album),
-      keepalive: true,
-    }).catch(() => {});
+    try {
+      const res = await fetch(`/api/albums/${encodeURIComponent(item.albumId)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
+        body: JSON.stringify(item.album),
+        keepalive: true,
+      });
+      if (!res.ok) {
+        _albumWriteQueue.unshift(item);
+        break;
+      }
+    } catch {
+      _albumWriteQueue.unshift(item);
+      break;
+    }
   }
   _albumFlushScheduled = false;
+  if (_albumWriteQueue.length > 0) _scheduleAlbumFlush(5000);
 }
 
 /** Fire-and-forget persist a key to the server.
@@ -268,7 +369,19 @@ export function persistToServer(key: string, value: unknown): void {
       headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
       body: JSON.stringify({ value }),
       keepalive: true,
-    }).catch(() => {});
+    }).then((res) => {
+      if (!res.ok) {
+        const existing = _writeQueue.findIndex(w => w.key === key);
+        if (existing >= 0) _writeQueue[existing].value = value;
+        else _writeQueue.push({ key, value });
+        _scheduleStoreFlush(5000);
+      }
+    }).catch(() => {
+      const existing = _writeQueue.findIndex(w => w.key === key);
+      if (existing >= 0) _writeQueue[existing].value = value;
+      else _writeQueue.push({ key, value });
+      _scheduleStoreFlush(5000);
+    });
     return;
   }
 
@@ -292,10 +405,22 @@ export function persistAlbumToServer(albumId: string, album: import("./types").A
   if (serverAvailable === true) {
     fetch(`/api/albums/${encodeURIComponent(albumId)}`, {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
       body: JSON.stringify(album),
       keepalive: true,
-    }).catch(() => {});
+    }).then((res) => {
+      if (!res.ok) {
+        const existing = _albumWriteQueue.findIndex(w => w.albumId === albumId);
+        if (existing >= 0) _albumWriteQueue[existing].album = album;
+        else _albumWriteQueue.push({ albumId, album });
+        _scheduleAlbumFlush(5000);
+      }
+    }).catch(() => {
+      const existing = _albumWriteQueue.findIndex(w => w.albumId === albumId);
+      if (existing >= 0) _albumWriteQueue[existing].album = album;
+      else _albumWriteQueue.push({ albumId, album });
+      _scheduleAlbumFlush(5000);
+    });
     return;
   }
   // Server availability is unknown or was previously false. Queue and retry so
@@ -316,7 +441,7 @@ export async function saveAlbumToServer(albumId: string, album: import("./types"
   try {
     const res = await fetch(`/api/albums/${encodeURIComponent(albumId)}`, {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
       body: JSON.stringify(album),
     });
     if (!res.ok) {
@@ -337,6 +462,7 @@ export function deleteAlbumFromServer(albumId: string): void {
   if (serverAvailable !== true) return;
   fetch(`/api/albums/${encodeURIComponent(albumId)}`, {
     method: "DELETE",
+    headers: adminAuthHeaders(),
     keepalive: true,
   }).catch(() => {});
 }
@@ -346,6 +472,7 @@ export function deleteFromServer(key: string): void {
   if (serverAvailable !== true) return;
   fetch(`/api/store/${encodeURIComponent(key)}`, {
     method: "DELETE",
+    headers: adminAuthHeaders(),
   }).catch(() => {});
 }
 
@@ -526,7 +653,7 @@ export async function uploadPhotosToServer(
       const form = new FormData();
       batch.forEach((f) => form.append("photos", f));
       try {
-        const res = await fetch(uploadUrl, { method: "POST", body: form });
+        const res = await fetch(uploadUrl, { method: "POST", headers: adminAuthHeaders(), body: form });
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
           throw new Error(body?.error || `Upload failed (${res.status})`);
@@ -571,11 +698,12 @@ export async function uploadPhotosToServer(
 }
 
 /** Delete a photo file from the server */
-export function deletePhotoFromServer(url: string): void {
+export function deletePhotoFromServer(url: string, tenantSlug?: string): void {
   if (serverAvailable !== true) return;
   const filename = url.split("?")[0].split("/").pop();
   if (!filename) return;
-  fetch(`/api/upload/${encodeURIComponent(filename)}`, { method: "DELETE" }).catch(() => {});
+  const tenantQuery = tenantSlug ? `?tenant=${encodeURIComponent(tenantSlug)}` : "";
+  fetch(`/api/upload/${encodeURIComponent(filename)}${tenantQuery}`, { method: "DELETE", headers: adminAuthHeaders() }).catch(() => {});
 }
 
 export async function autoCullAlbum(
@@ -805,7 +933,7 @@ export type CacheBreakdown = {
 export async function getCacheStats(): Promise<{ total: number; breakdown: CacheBreakdown } | null> {
   if (!(await checkServer())) return null;
   try {
-    const res = await fetch("/api/cache/stats");
+    const res = await fetch("/api/cache/stats", { headers: adminAuthHeaders() });
     if (!res.ok) return null;
     return await res.json();
   } catch {
@@ -823,7 +951,7 @@ export async function warmCache(
 ): Promise<{ ok: boolean; generated: number; skipped: number; failed: number } | null> {
   if (!(await checkServer())) return null;
   try {
-    const res = await fetch(`/api/cache/warm?mode=${mode}`, { method: "POST" });
+    const res = await fetch(`/api/cache/warm?mode=${mode}`, { method: "POST", headers: adminAuthHeaders() });
     if (!res.ok || !res.body) return null;
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
@@ -888,9 +1016,12 @@ export async function createBookingCheckout(params: {
   clientEmail: string;
   amount: number;
   eventTitle: string;
-  modifyToken?: string;   // used to build the Stripe success redirect URL
+  /** Server-verified capability for this booking. */
+  modifyToken: string;
   paymentKind?: "deposit" | "balance" | "full";
-}): Promise<{ url?: string; error?: string }> {
+  successUrl?: string;
+  cancelUrl?: string;
+}): Promise<{ url?: string; sessionId?: string; error?: string }> {
   try {
     const res = await fetch("/api/stripe/checkout/booking", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(params),
@@ -926,7 +1057,7 @@ export async function createAlbumCheckout(params: {
 export async function getEmailStatus(): Promise<{ configured: boolean; host: string | null; user: string | null; from: string | null }> {
   if (!(await checkServer())) return { configured: false, host: null, user: null, from: null };
   try {
-    const res = await fetch("/api/email/status");
+    const res = await fetch("/api/email/status", { headers: adminAuthHeaders() });
     if (!res.ok) return { configured: false, host: null, user: null, from: null };
     return await res.json();
   } catch {
@@ -936,7 +1067,7 @@ export async function getEmailStatus(): Promise<{ configured: boolean; host: str
 
 export async function testEmailConnection(): Promise<{ ok: boolean; error?: string }> {
   try {
-    const res = await fetch("/api/email/test", { method: "POST" });
+    const res = await fetch("/api/email/test", { method: "POST", headers: adminAuthHeaders() });
     return await res.json();
   } catch {
     return { ok: false, error: "Network error" };
@@ -947,7 +1078,7 @@ export async function sendEmail(to: string, subject: string, html?: string, text
   try {
     const res = await fetch("/api/email/send", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
       body: JSON.stringify({ to, subject, html, text }),
     });
     return await res.json();
@@ -1040,7 +1171,7 @@ export async function previewEmailAutomation(rule: import("./types").EmailAutoma
 export async function getGoogleCalendarStatus(): Promise<{ configured: boolean; connected: boolean; email: string | null }> {
   if (!(await checkServer())) return { configured: false, connected: false, email: null };
   try {
-    const res = await fetch("/api/integrations/googlecalendar/status");
+    const res = await fetch("/api/integrations/googlecalendar/status", { headers: adminAuthHeaders() });
     if (!res.ok) return { configured: false, connected: false, email: null };
     return await res.json();
   } catch {
@@ -1050,7 +1181,7 @@ export async function getGoogleCalendarStatus(): Promise<{ configured: boolean; 
 
 export async function startGoogleCalendarAuth(): Promise<string | null> {
   try {
-    const res = await fetch("/api/integrations/googlecalendar/auth");
+    const res = await fetch("/api/integrations/googlecalendar/auth", { headers: adminAuthHeaders() });
     if (!res.ok) return null;
     const data = await res.json();
     return data.url || null;
@@ -1061,7 +1192,7 @@ export async function startGoogleCalendarAuth(): Promise<string | null> {
 
 export async function disconnectGoogleCalendar(): Promise<boolean> {
   try {
-    const res = await fetch("/api/integrations/googlecalendar/disconnect", { method: "POST" });
+    const res = await fetch("/api/integrations/googlecalendar/disconnect", { method: "POST", headers: adminAuthHeaders() });
     return res.ok;
   } catch {
     return false;
@@ -1070,7 +1201,7 @@ export async function disconnectGoogleCalendar(): Promise<boolean> {
 
 export async function getGoogleCalendars(): Promise<{ id: string; summary: string; primary?: boolean }[]> {
   try {
-    const res = await fetch("/api/integrations/googlecalendar/calendars");
+    const res = await fetch("/api/integrations/googlecalendar/calendars", { headers: adminAuthHeaders() });
     if (!res.ok) return [];
     const data = await res.json();
     return data.calendars || [];
@@ -1083,7 +1214,7 @@ export async function syncBookingToCalendar(booking: unknown, calendarId = "prim
   try {
     const res = await fetch("/api/integrations/googlecalendar/event", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
       body: JSON.stringify({ booking, calendarId }),
     });
     return await res.json();
@@ -1096,7 +1227,7 @@ export async function syncAllBookingsToCalendar(bookings: unknown[], calendarId 
   try {
     const res = await fetch("/api/integrations/googlecalendar/sync-all", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
       body: JSON.stringify({ bookings, calendarId }),
     });
     return await res.json();
@@ -1116,7 +1247,7 @@ export async function sendBookingConfirmationEmail(params: {
   price: number;
   depositAmount?: number;
   paymentMethod: "stripe" | "bank" | "none";
-  modifyToken?: string;
+  modifyToken: string;
   bookingId: string;
 }): Promise<{ ok: boolean; messageId?: string; error?: string }> {
   if (!(await checkServer())) return { ok: false, error: "Server unavailable" };
@@ -1140,7 +1271,7 @@ export async function getBookingEmailLog(bookingId: string): Promise<{
 }[]> {
   if (!(await checkServer())) return [];
   try {
-    const res = await fetch(`/api/email/log/${encodeURIComponent(bookingId)}`);
+    const res = await fetch(`/api/email/log/${encodeURIComponent(bookingId)}`, { headers: adminAuthHeaders() });
     if (!res.ok) return [];
     const data = await res.json();
     return data.log || [];
@@ -1153,7 +1284,7 @@ export async function sendBookingReminder(bookingId: string, reminderType: "paym
   try {
     const res = await fetch("/api/email/reminder", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
       body: JSON.stringify({ bookingId, reminderType }),
     });
     return await res.json();
@@ -1166,7 +1297,7 @@ export async function sendCustomEmail(to: string, subject: string, html: string,
   try {
     const res = await fetch("/api/email/send", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
       body: JSON.stringify({ to, subject, html, text, bookingId }),
     });
     return await res.json();
@@ -1187,7 +1318,7 @@ export async function sendEnquiryReceivedEmail(params: {
   try {
     const res = await fetch("/api/email/enquiry-received", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
       body: JSON.stringify(params),
     });
     return await res.json();
@@ -1209,7 +1340,7 @@ export async function sendEnquiryAcceptedEmail(params: {
   try {
     const res = await fetch("/api/email/enquiry-accepted", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
       body: JSON.stringify(params),
     });
     return await res.json();
@@ -1226,7 +1357,7 @@ export async function sendEnquiryDeclinedEmail(params: {
   try {
     const res = await fetch("/api/email/enquiry-declined", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
       body: JSON.stringify(params),
     });
     return await res.json();
@@ -1237,7 +1368,7 @@ export async function sendEnquiryDeclinedEmail(params: {
  *  Booking page uses this to grey out already-occupied slots. */
 export async function getGoogleBusyTimes(date: string): Promise<{ start: string; end: string }[]> {
   try {
-    const res = await fetch(`/api/integrations/googlecalendar/busy?date=${encodeURIComponent(date)}`);
+    const res = await fetch(`/api/integrations/googlecalendar/busy?date=${encodeURIComponent(date)}`, { headers: adminAuthHeaders() });
     if (!res.ok) return [];
     return (await res.json()).busy || [];
   } catch { return []; }
@@ -1248,7 +1379,7 @@ export async function updateCalendarEvent(eventId: string, booking: unknown, cal
   try {
     const res = await fetch(`/api/integrations/googlecalendar/event/${encodeURIComponent(eventId)}`, {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
       body: JSON.stringify({ booking, calendarId }),
     });
     return await res.json();
@@ -1260,6 +1391,7 @@ export async function deleteCalendarEvent(eventId: string, calendarId = "primary
   try {
     const res = await fetch(`/api/integrations/googlecalendar/event/${encodeURIComponent(eventId)}?calendarId=${encodeURIComponent(calendarId)}`, {
       method: "DELETE",
+      headers: adminAuthHeaders(),
     });
     return await res.json();
   } catch { return { ok: false }; }
@@ -1270,7 +1402,7 @@ export async function saveCalendarSettings(settings: { autoSync?: boolean; calen
   try {
     const res = await fetch("/api/integrations/googlecalendar/settings", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
       body: JSON.stringify(settings),
     });
     return await res.json();
@@ -1348,7 +1480,7 @@ export async function bulkDeleteFiles(filenames: string[]): Promise<{ ok: boolea
       const chunk = filenames.slice(i, i + BULK_DELETE_CHUNK_SIZE);
       const res = await fetch("/api/upload/bulk-delete", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
         body: JSON.stringify({ filenames: chunk }),
       });
       if (!res.ok) throw new Error(`Server error: ${res.status}`);
@@ -1364,7 +1496,7 @@ export async function bulkDeleteFiles(filenames: string[]): Promise<{ ok: boolea
 export async function getSheetsStatus(): Promise<{ connected: boolean; spreadsheetId: string | null; spreadsheetUrl: string | null }> {
   if (!(await checkServer())) return { connected: false, spreadsheetId: null, spreadsheetUrl: null };
   try {
-    const res = await fetch("/api/integrations/sheets/status");
+    const res = await fetch("/api/integrations/sheets/status", { headers: adminAuthHeaders() });
     if (!res.ok) return { connected: false, spreadsheetId: null, spreadsheetUrl: null };
     return await res.json();
   } catch { return { connected: false, spreadsheetId: null, spreadsheetUrl: null }; }
@@ -1374,7 +1506,7 @@ export async function syncBookingsToSheet(bookings: unknown[], eventTypes?: unkn
   try {
     const res = await fetch("/api/integrations/sheets/sync", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
       body: JSON.stringify({ bookings, eventTypes: eventTypes || [] }),
     });
     return await readJson(res, { ok: false, error: res.ok ? "Invalid server response" : `Request failed (${res.status})` });
@@ -1429,7 +1561,7 @@ export async function notifyDiscord(payload: Record<string, unknown>): Promise<v
   try {
     await fetch("/api/discord/notify", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
       body: JSON.stringify(payload),
     });
   } catch { /* non-critical, swallow errors */ }
@@ -1440,7 +1572,7 @@ export async function notifyTenantDiscord(slug: string, payload: Record<string, 
   try {
     await fetch("/api/discord/notify", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
       body: JSON.stringify({ ...payload, tenantSlug: slug }),
     });
   } catch { /* non-critical, swallow errors */ }
@@ -1474,8 +1606,26 @@ export async function getSuperAdminWebhooks(): Promise<{
 
 // ── Invoices ───────────────────────────────────────────────────
 
+export type PublicBankTransfer = {
+  enabled: boolean;
+  accountName?: string | null;
+  bsb?: string | null;
+  accountNumber?: string | null;
+  payId?: string | null;
+  payIdType?: string | null;
+  instructions?: string | null;
+};
+
+export type PublicInvoice = Omit<import("./types").Invoice, "shareToken" | "emailLog" | "bookingId" | "stripeSessionId"> & {
+  tenantSlug: string | null;
+  cardPaymentAvailable: boolean;
+  bankTransfer: PublicBankTransfer | null;
+  albumAccessUrl?: string | null;
+  albumProtected?: boolean;
+};
+
 /** Fetch a public invoice by its share token (server-only). */
-export async function getInvoiceByToken(token: string): Promise<{ invoice?: import("./types").Invoice; error?: string }> {
+export async function getInvoiceByToken(token: string): Promise<{ invoice?: PublicInvoice; error?: string }> {
   try {
     const res = await fetch(`/api/invoice/share/${encodeURIComponent(token)}`);
     if (!res.ok) return { error: "Invoice not found" };
@@ -1612,7 +1762,7 @@ export async function getTenants(): Promise<import("./types").Tenant[]> {
 /** Create a tenant. */
 export async function createTenant(data: {
   slug: string; displayName: string; email: string;
-  bio?: string; timezone?: string; licenseKey?: string; passwordHash?: string;
+  bio?: string; timezone?: string; licenseKey: string; passwordHash?: string;
 }): Promise<{ tenant?: import("./types").Tenant; error?: string }> {
   try {
     const res = await fetch("/api/tenants", {
@@ -1657,9 +1807,23 @@ export async function getTenantByDomain(domain: string): Promise<{ slug: string;
   } catch { return null; }
 }
 
+export type PublicTenant = Pick<
+  import("./types").Tenant,
+  "slug" | "displayName" | "bio" | "timezone" | "active" | "customDomain"
+>;
+
+export type PrivateTenantProfile = PublicTenant & {
+  email: string;
+  createdAt?: string;
+  licenseKeySet?: boolean;
+  extraEventSlotRequestEnabled?: boolean;
+  extraEventPrice?: number;
+  keyPurchaseEnabled?: boolean;
+};
+
 /** Fetch a tenant's public data (event types + profile) for the booking page. */
 export async function getTenantPublicData(slug: string): Promise<{
-  tenant: import("./types").Tenant;
+  tenant: PublicTenant;
   eventTypes: import("./types").EventType[];
   bookingLimitReached?: boolean;
   enquiryEnabled?: boolean;
@@ -1712,6 +1876,7 @@ export async function createTenantBooking(slug: string, booking: {
   cosplayCharacter?: string;
   cosplayCostume?: string;
   conventionName?: string;
+  paymentMethod: "stripe" | "bank" | "contact" | "none";
 }): Promise<{ ok: boolean; booking?: import("./types").Booking; error?: string; statusCode?: number }> {
   try {
     const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/booking`, {
@@ -1750,19 +1915,11 @@ export async function setTenantEventTypes(slug: string, eventTypes: import("./ty
 
 // ── Super Admin ────────────────────────────────────────────────
 
-/** Get the super admin username configured via env vars. */
-export async function getSuperAdminInfo(): Promise<{ superAdminUsername: string | null }> {
-  try {
-    const res = await fetch("/api/super-admin/info");
-    if (!res.ok) return { superAdminUsername: null };
-    return await res.json();
-  } catch { return { superAdminUsername: null }; }
-}
-
 /** Get aggregate cross-tenant stats (super admin only). */
 export async function getSuperStats(): Promise<{
   tenantCount: number; totalBookings: number; mainBookings: number;
-  tenants: (import("./types").Tenant & { bookingCount: number; pendingBookings: number })[];
+  archivedBookings?: number; retainedBookings?: number;
+  tenants: (import("./types").Tenant & { bookingCount: number; pendingBookings: number; archivedBookings?: number })[];
 } | null> {
   try {
     const res = await fetch("/api/super/stats", { headers: adminAuthHeaders() });
@@ -1792,7 +1949,9 @@ export async function verifyAdminCredentials(username: string, passwordHash: str
     });
     if (!res.ok) return false;
     const json = await res.json();
-    return !!json.ok;
+    const ok = !!json.ok;
+    if (ok) persistNativeAdminToken(json.sessionToken);
+    return ok;
   } catch { return false; }
 }
 
@@ -1800,6 +1959,7 @@ export async function verifyAdminCredentials(username: string, passwordHash: str
 export async function tenantLogin(slug: string, passwordHash: string): Promise<{
   ok: boolean;
   tenant?: { slug: string; displayName: string; email: string; timezone?: string };
+  sessionToken?: string;
   error?: string;
 }> {
   try {
@@ -1809,8 +1969,124 @@ export async function tenantLogin(slug: string, passwordHash: string): Promise<{
       body: JSON.stringify({ passwordHash }),
     });
     const json = await res.json().catch(() => ({}));
-    return { ok: !!res.ok && !!json.ok, tenant: json.tenant, error: json.error || (res.ok ? undefined : `Login failed (${res.status})`) };
+    const ok = !!res.ok && !!json.ok;
+    const sessionToken = typeof json.sessionToken === "string" ? json.sessionToken : undefined;
+    if (ok && sessionToken && Capacitor.isNativePlatform()) {
+      try {
+        localStorage.setItem("wv_tenant_api_token", sessionToken);
+        localStorage.removeItem(ADMIN_API_TOKEN_KEY);
+        localStorage.removeItem("wv_admin");
+        localStorage.removeItem("wv_admin_session_hash");
+      } catch { /* storage may be unavailable */ }
+    }
+    return { ok, tenant: json.tenant, sessionToken, error: json.error || (res.ok ? undefined : `Login failed (${res.status})`) };
   } catch (err: any) { return { ok: false, error: err?.message || "Network error" }; }
+}
+
+export type BookingArchiveMutationResult = {
+  ok: boolean;
+  archived: boolean;
+  updated: import("./types").Booking[];
+  changedIds: string[];
+  unchangedIds: string[];
+  skipped: { id: string; reason: "active-booking" | "not-found" | string }[];
+  error?: string;
+};
+
+/** Archive or restore canonical bookings without replacing the bookings store. */
+export async function setBookingArchiveState(bookingIds: string[], archived: boolean): Promise<BookingArchiveMutationResult> {
+  try {
+    const res = await fetch("/api/admin/bookings/archive", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
+      body: JSON.stringify({ bookingIds, archived }),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok || !json?.ok) {
+      return { ok: false, archived, updated: [], changedIds: [], unchangedIds: [], skipped: json?.skipped || [], error: json?.error || "Unable to update booking archive" };
+    }
+    return {
+      ok: true,
+      archived: json.archived === true,
+      updated: Array.isArray(json.updated) ? json.updated : [],
+      changedIds: Array.isArray(json.changedIds) ? json.changedIds : [],
+      unchangedIds: Array.isArray(json.unchangedIds) ? json.unchangedIds : [],
+      skipped: Array.isArray(json.skipped) ? json.skipped : [],
+    };
+  } catch {
+    return { ok: false, archived, updated: [], changedIds: [], unchangedIds: [], skipped: [], error: "Network error" };
+  }
+}
+
+/** Clear the signed HttpOnly admin session on the server. */
+export async function adminLogout(): Promise<void> {
+  try {
+    await fetch("/api/auth/logout", { method: "POST", headers: adminAuthHeaders() });
+  } catch {
+    // Local logout still proceeds if the server cannot be reached.
+  } finally {
+    clearAdminApiToken();
+  }
+}
+
+export type AdminSession = { ok: true; username: string; isSuperAdmin: boolean };
+
+/** Read the current authenticated admin identity from the server. */
+export async function getAdminSession(): Promise<AdminSession | null> {
+  try {
+    const res = await fetch("/api/auth/session", { cache: "no-store", headers: adminAuthHeaders() });
+    if (!res.ok) return null;
+    const json = await res.json().catch(() => null);
+    return json?.ok === true && typeof json.username === "string"
+      ? { ok: true, username: json.username, isSuperAdmin: json.isSuperAdmin === true }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Validate the current server-backed admin session before rendering cached data. */
+export async function verifyAdminSession(): Promise<boolean> {
+  return !!(await getAdminSession());
+}
+
+/** End a tenant admin session and clear its HttpOnly cookie server-side. */
+export async function tenantLogout(slug: string): Promise<void> {
+  try {
+    await fetch(`/api/tenant/${encodeURIComponent(slug)}/logout`, { method: "POST" });
+  } catch {
+    // Local session cleanup can still proceed when the server is unreachable.
+  } finally {
+    try { localStorage.removeItem("wv_tenant_api_token"); } catch { /* storage may be unavailable */ }
+  }
+}
+
+/** Validate that the cookie or native bearer session owns this tenant slug. */
+export async function verifyTenantSession(slug: string): Promise<boolean> {
+  try {
+    const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/session`, { cache: "no-store" });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/** Update the signed-in tenant's own allowlisted profile fields. */
+export async function updateTenantProfile(
+  slug: string,
+  data: Pick<Partial<import("./types").Tenant>, "displayName" | "email" | "bio" | "timezone" | "passwordHash">,
+): Promise<{ ok: boolean; tenant?: PrivateTenantProfile; error?: string }> {
+  try {
+    const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/profile`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+    const json = await readJson<{ ok?: boolean; tenant?: PrivateTenantProfile; error?: string }>(res, {});
+    return { ok: res.ok && json.ok !== false, tenant: json.tenant, error: json.error };
+  } catch {
+    return { ok: false, error: "Network error" };
+  }
 }
 
 /** Fetch bookings + albums for a tenant (mobile app use). */
@@ -1877,15 +2153,6 @@ export async function saveTenantAlbum(slug: string, album: import("./types").Alb
 
 // ── License Plans ──────────────────────────────────────────────
 
-/** Fetch all active license plans (public, for tenant self-service). */
-export async function getActiveLicensePlans(): Promise<import("./types").LicensePlan[]> {
-  try {
-    const res = await fetch("/api/license-plans");
-    if (!res.ok) return [];
-    return await res.json();
-  } catch { return []; }
-}
-
 /** Fetch all license plans (admin). */
 export async function getLicensePlans(): Promise<import("./types").LicensePlan[]> {
   try {
@@ -1934,20 +2201,6 @@ export async function deleteLicensePlan(id: string): Promise<{ ok: boolean; erro
   } catch { return { ok: false, error: "Network error" }; }
 }
 
-/** Create a Stripe checkout session for a license plan purchase. */
-export async function getLicensePlanCheckout(planId: string, buyerEmail: string, buyerName?: string): Promise<{ url?: string; error?: string }> {
-  try {
-    const res = await fetch(`/api/license-plans/${encodeURIComponent(planId)}/checkout`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ buyerEmail, buyerName }),
-    });
-    const json = await res.json();
-    if (!res.ok) return { error: json.error || "Checkout failed" };
-    return { url: json.url };
-  } catch { return { error: "Network error" }; }
-}
-
 /** Get all license plan purchases (admin only). */
 export async function getLicensePurchases(): Promise<import("./types").LicensePurchase[]> {
   try {
@@ -1955,32 +2208,6 @@ export async function getLicensePurchases(): Promise<import("./types").LicensePu
     if (!res.ok) return [];
     return await res.json();
   } catch { return []; }
-}
-
-/** Activate a pending bank-transfer license purchase (admin: confirm payment received). */
-export async function activateBankPurchase(purchaseId: string): Promise<{ ok: boolean; key?: string; error?: string }> {
-  try {
-    const res = await fetch(`/api/license-plans/purchases/${encodeURIComponent(purchaseId)}/activate`, {
-      method: "POST",
-      headers: adminAuthHeaders(),
-    });
-    const json = await res.json();
-    return { ok: !!json.ok, key: json.key, error: json.error };
-  } catch { return { ok: false, error: "Network error" }; }
-}
-
-/** Create a pending bank-transfer license purchase (buyer pays manually; admin activates). */
-export async function createBankLicensePurchase(planId: string, buyerEmail: string, buyerName?: string): Promise<{ ok: boolean; purchase?: import("./types").LicensePurchase; error?: string }> {
-  try {
-    const res = await fetch(`/api/license-plans/${encodeURIComponent(planId)}/bank-purchase`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ buyerEmail, buyerName }),
-    });
-    const json = await res.json();
-    if (!res.ok) return { ok: false, error: json.error || "Failed to create bank purchase" };
-    return { ok: true, purchase: json.purchase };
-  } catch { return { ok: false, error: "Network error" }; }
 }
 
 // ── Tenant Settings ────────────────────────────────────────────
@@ -2026,9 +2253,18 @@ export async function saveTenantSettings(
 }
 
 /** Fetch global FTP settings (password is masked — only ftpPasswordSet boolean is returned). */
-export async function getGlobalFtpSettings(): Promise<{ ftpEnabled?: boolean; ftpHost?: string; ftpPort?: number; ftpUser?: string; ftpRemotePath?: string; ftpPasswordSet?: boolean }> {
+export async function getGlobalFtpSettings(): Promise<{
+  ftpEnabled?: boolean;
+  ftpHost?: string;
+  ftpPort?: number;
+  ftpUser?: string;
+  ftpRemotePath?: string;
+  ftpPasswordSet?: boolean;
+  ftpOrganizeByAlbum?: boolean;
+  ftpStarredFolder?: boolean;
+}> {
   try {
-    const res = await fetch("/api/settings/ftp");
+    const res = await fetch("/api/settings/ftp", { headers: adminAuthHeaders() });
     if (!res.ok) return {};
     return await res.json();
   } catch { return {}; }
@@ -2042,13 +2278,15 @@ export async function saveGlobalFtpSettings(settings: {
   ftpUser?: string;
   ftpPassword?: string;
   ftpRemotePath?: string;
+  ftpOrganizeByAlbum?: boolean;
+  ftpStarredFolder?: boolean;
 }): Promise<{ ok: boolean; error?: string }> {
   try {
     const payload = { ...settings } as Record<string, unknown>;
     delete payload["ftpPasswordSet"];
     const res = await fetch("/api/settings/ftp", {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
       body: JSON.stringify(payload),
     });
     const json = await res.json();
@@ -2059,7 +2297,7 @@ export async function saveGlobalFtpSettings(settings: {
 /** Test the saved FTP connection. Uses credentials stored on the server (password is never sent to the browser). */
 export async function testFtpConnection(): Promise<{ ok: boolean; error?: string }> {
   try {
-    const res = await fetch("/api/settings/ftp/test", { method: "POST" });
+    const res = await fetch("/api/settings/ftp/test", { method: "POST", headers: adminAuthHeaders() });
     const json = await res.json();
     return { ok: !!json.ok, error: json.error };
   } catch { return { ok: false, error: "Network error" }; }
@@ -2089,7 +2327,7 @@ export async function ftpUploadAlbum(
     : `/api/ftp/upload-album/${encodeURIComponent(albumSlug)}`;
 
   try {
-    const res = await fetch(url, { method: "POST" });
+    const res = await fetch(url, { method: "POST", headers: adminAuthHeaders() });
 
     // Non-SSE fast responses (errors, empty albums)
     const contentType = res.headers.get("content-type") || "";
@@ -2156,7 +2394,7 @@ export async function ftpMoveToStarred(params: {
   try {
     const res = await fetch("/api/ftp/move-starred", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
       body: JSON.stringify(params),
     });
     const json = await res.json();
@@ -2165,12 +2403,35 @@ export async function ftpMoveToStarred(params: {
 }
 
 /** Get the Stripe publishable key and configured status for a tenant. */
-export async function getTenantStripeStatus(slug: string): Promise<{ configured: boolean; publishableKey?: string }> {
+export async function getTenantStripeStatus(slug: string): Promise<{ configured: boolean; publishableKey?: string | null; usingFallback?: boolean }> {
   try {
     const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/stripe/status`);
     if (!res.ok) return { configured: false };
     return await res.json();
   } catch { return { configured: false }; }
+}
+
+/** Create a server-priced Stripe checkout session for a tenant booking. */
+export async function createTenantBookingCheckout(slug: string, params: {
+  bookingId: string;
+  modifyToken: string;
+  successUrl?: string;
+  cancelUrl?: string;
+}): Promise<{ url?: string; sessionId?: string; error?: string }> {
+  try {
+    const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/stripe/checkout/booking`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(params),
+    });
+    if (!res.ok) {
+      try { const error = await res.json(); return { error: error.error || `Request failed (${res.status})` }; }
+      catch { return { error: `Request failed (${res.status})` }; }
+    }
+    return await res.json();
+  } catch {
+    return { error: "Network error" };
+  }
 }
 
 /** Create a Stripe checkout session for a tenant album purchase. */
@@ -2305,7 +2566,7 @@ export async function saveTenantStoreKey(slug: string, key: string, value: unkno
 }
 
 /** Submit a request for an extra event type slot (tenant). */
-export async function submitEventSlotRequest(slug: string, paymentMethod: "stripe" | "bank"): Promise<{ ok: boolean; request?: import("./types").EventSlotRequest; error?: string }> {
+export async function submitEventSlotRequest(slug: string, paymentMethod: "bank"): Promise<{ ok: boolean; request?: import("./types").EventSlotRequest; error?: string }> {
   try {
     const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/event-slot-request`, {
       method: "POST",
@@ -2327,22 +2588,10 @@ export async function getTenantEventSlotRequest(slug: string): Promise<import(".
   } catch { return null; }
 }
 
-/** Create a Stripe checkout session for an event slot purchase (tenant). */
-export async function createEventSlotCheckout(slug: string, successUrl?: string, cancelUrl?: string): Promise<{ url?: string; sessionId?: string; error?: string }> {
-  try {
-    const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/stripe/checkout/event-slot`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ successUrl, cancelUrl }),
-    });
-    return await res.json();
-  } catch { return { error: "Network error" }; }
-}
-
 /** Get all event slot requests (super admin). */
 export async function getEventSlotRequests(): Promise<(import("./types").EventSlotRequest & { tenantDisplayName?: string })[]> {
   try {
-    const res = await fetch("/api/super/event-slot-requests");
+    const res = await fetch("/api/super/event-slot-requests", { headers: adminAuthHeaders() });
     if (!res.ok) return [];
     return res.json();
   } catch { return []; }
@@ -2353,7 +2602,7 @@ export async function confirmEventSlotRequest(id: string, confirmedBy?: string):
   try {
     const res = await fetch(`/api/super/event-slot-requests/${encodeURIComponent(id)}/confirm`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
       body: JSON.stringify({ confirmedBy }),
     });
     const json = await res.json();
@@ -2366,7 +2615,7 @@ export async function rejectEventSlotRequest(id: string, rejectedBy?: string, no
   try {
     const res = await fetch(`/api/super/event-slot-requests/${encodeURIComponent(id)}/reject`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
       body: JSON.stringify({ rejectedBy, notes }),
     });
     const json = await res.json();
@@ -2404,19 +2653,30 @@ export function tenantPhotoSrc(src: string, slug: string): string {
   return `${src}${sep}tenant=${encodeURIComponent(slug)}`;
 }
 
-/** Fetch an album by slug/id from any store (main or tenant). Private galleries are authorized server-side. */
-export async function fetchPublicAlbum(albumSlug: string, access: { token?: string | null; pin?: string; sessionKey?: string } = {}): Promise<{ album: import("./types").Album; tenantSlug: string | null; protected?: boolean } | null> {
+/** Fetch an album by slug/id from any store (main or tenant). Private gallery
+ * credentials are sent in the request body so they never enter access logs,
+ * browser history, referrers, or analytics URLs. */
+export async function fetchPublicAlbum(
+  albumSlug: string,
+  access: { token?: string | null; pin?: string; sessionKey?: string } = {},
+): Promise<{ album?: import("./types").Album; tenantSlug: string | null; protected?: boolean; error?: string } | null> {
   try {
-    // Use no-store so the browser never serves a cached copy — gallery photo
-    // changes (additions, deletions) must always reflect the current server state.
-    const params = new URLSearchParams();
-    if (access.token) params.set("token", access.token);
-    if (access.pin) params.set("pin", access.pin);
-    if (access.sessionKey) params.set("sessionKey", access.sessionKey);
-    const suffix = params.toString() ? `?${params}` : "";
-    const res = await fetch(`/api/public-album/${encodeURIComponent(albumSlug)}${suffix}`, { cache: 'no-store' });
+    const res = await fetch(`/api/public-album/${encodeURIComponent(albumSlug)}/access`, {
+      method: "POST",
+      cache: "no-store",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...(access.token ? { token: access.token } : {}),
+        ...(access.pin ? { pin: access.pin } : {}),
+        ...(access.sessionKey ? { sessionKey: access.sessionKey } : {}),
+      }),
+    });
+    serverAvailable = true;
     if (!res.ok && res.status !== 401) return null;
-    return await res.json();
+    if (res.status === 401) {
+      try { return await res.json(); } catch { return { tenantSlug: null, protected: true }; }
+    }
+    return await readJson(res, null);
   } catch { return null; }
 }
 
@@ -2470,7 +2730,13 @@ export async function ensurePublicAlbumAvailable(album: import("./types").Album,
 }
 
 /** Get storage stats for a tenant's files (total bytes and file count). */
-export async function getTenantStorageStats(slug: string): Promise<{ ok: boolean; totalBytes: number; fileCount: number; albumCount: number } | null> {
+export async function getTenantStorageStats(slug: string): Promise<{
+  ok: boolean;
+  totalBytes: number;
+  fileCount: number;
+  albumCount: number;
+  allFileNames?: string[];
+} | null> {
   try {
     const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/storage-stats`);
     if (!res.ok) return null;
@@ -2502,7 +2768,7 @@ export async function upsertTenantBookingAdmin(slug: string, booking: import("./
 export async function fetchAlbumStubs(): Promise<import("./types").Album[] | null> {
   if (serverAvailable !== true) return null;
   try {
-    const res = await fetch("/api/albums/stubs");
+    const res = await fetch("/api/albums/stubs", { headers: adminAuthHeaders() });
     return await readJson<import("./types").Album[] | null>(res, null);
   } catch {
     return null;
@@ -2519,7 +2785,7 @@ export async function fetchAlbumStubs(): Promise<import("./types").Album[] | nul
 export async function fetchAlbumPhotos(albumId: string): Promise<import("./types").Photo[] | null> {
   if (serverAvailable !== true) return null;
   try {
-    const res = await fetch(`/api/albums/${encodeURIComponent(albumId)}/photos`);
+    const res = await fetch(`/api/albums/${encodeURIComponent(albumId)}/photos`, { headers: adminAuthHeaders() });
     const data = await readJson<{ photos?: import("./types").Photo[] } | null>(res, null);
     return Array.isArray(data?.photos) ? sanitizePersistedPhotos(data.photos) : null;
   } catch {
@@ -2586,6 +2852,9 @@ export async function deleteExpense(id: string): Promise<boolean> {
 
 // ─── Quotes ───────────────────────────────────────────────────────────────────
 
+export type PublicQuote = Omit<import("./types").Quote, "shareToken" | "bookingId" | "convertedInvoiceId">;
+export type PublicQuoteResponse = Partial<PublicQuote> & Pick<PublicQuote, "status">;
+
 export async function getQuotes(): Promise<import("./types").Quote[]> {
   try {
     const res = await fetch("/api/quotes", { headers: adminAuthHeaders() });
@@ -2625,7 +2894,7 @@ export async function deleteQuote(id: string): Promise<boolean> {
   } catch { return false; }
 }
 
-export async function getPublicQuote(token: string): Promise<import("./types").Quote | null> {
+export async function getPublicQuote(token: string): Promise<PublicQuote | null> {
   try {
     const res = await fetch(`/api/quotes/share/${encodeURIComponent(token)}`);
     if (!res.ok) return null;
@@ -2633,9 +2902,31 @@ export async function getPublicQuote(token: string): Promise<import("./types").Q
   } catch { return null; }
 }
 
-export async function respondToQuote(token: string, action: "accept" | "decline"): Promise<import("./types").Quote | null> {
+export function respondToQuote(
+  token: string,
+  action: "accept",
+  acceptedByName: string,
+): Promise<PublicQuoteResponse | null>;
+export function respondToQuote(
+  token: string,
+  action: "decline",
+): Promise<PublicQuoteResponse | null>;
+export async function respondToQuote(
+  token: string,
+  action: "accept" | "decline",
+  acceptedByName?: string,
+): Promise<PublicQuoteResponse | null> {
   try {
-    const res = await fetch(`/api/quotes/share/${encodeURIComponent(token)}/respond`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action }) });
+    const normalizedName = acceptedByName?.trim() || "";
+    if (action === "accept" && !normalizedName) return null;
+    const res = await fetch(`/api/quotes/share/${encodeURIComponent(token)}/respond`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action,
+        ...(action === "accept" ? { acceptedByName: normalizedName } : {}),
+      }),
+    });
     if (!res.ok) return null;
     return res.json();
   } catch { return null; }
@@ -2829,7 +3120,11 @@ export async function createContract(formData: FormData): Promise<import("./type
   } catch { return null; }
 }
 
-export async function getContractByToken(token: string): Promise<Pick<import("./types").BookingContract, "id" | "title" | "status" | "bookingId" | "pdfPath"> | null> {
+export type PublicContractInfo = Pick<import("./types").BookingContract, "id" | "title" | "status" | "bookingId"> & {
+  pdfUrl?: string | null;
+};
+
+export async function getContractByToken(token: string): Promise<PublicContractInfo | null> {
   try {
     const res = await fetch(`/api/contracts/sign/${encodeURIComponent(token)}`);
     if (!res.ok) return null;
@@ -2899,17 +3194,18 @@ export async function deliverAlbum(albumId: string): Promise<{ ok: boolean; deli
 
 // ─── PWA Push Subscriptions ───────────────────────────────────────────────────
 
-export async function subscribePush(subscription: PushSubscription, tenantSlug?: string): Promise<boolean> {
+export async function subscribePush(subscription: PushSubscription, tenantSlug?: string): Promise<{ ok: boolean; subscriptionId?: string }> {
   try {
     const sub = subscription.toJSON();
     const res = await fetch("/api/push/subscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ endpoint: sub.endpoint, keys: sub.keys, tenantSlug }) });
-    return res.ok;
-  } catch { return false; }
+    const data = await readJson<{ ok?: boolean; subscriptionId?: string }>(res, {});
+    return { ok: res.ok && data.ok === true, subscriptionId: typeof data.subscriptionId === "string" ? data.subscriptionId : undefined };
+  } catch { return { ok: false }; }
 }
 
-export async function unsubscribePush(endpoint: string): Promise<boolean> {
+export async function unsubscribePush(subscriptionId: string): Promise<boolean> {
   try {
-    const res = await fetch("/api/push/unsubscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ endpoint }) });
+    const res = await fetch("/api/push/unsubscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ subscriptionId }) });
     return res.ok;
   } catch { return false; }
 }

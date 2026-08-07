@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ChevronLeft, ChevronRight, CheckCircle2, Star } from "lucide-react";
+import { ChevronLeft, ChevronRight, CheckCircle2, Star, X } from "lucide-react";
 
 const DEMO_PHOTOS = [
   "/portfolio/curated/cosplay-smash-auditorium.jpg",
@@ -16,7 +16,8 @@ export default function ProofingDemo() {
   const [active, setActive] = useState<number | null>(null);
   const toggle = (index: number) => setPicks(previous => {
     const next = new Set(previous);
-    next.has(index) ? next.delete(index) : next.add(index);
+    if (next.has(index)) next.delete(index);
+    else next.add(index);
     return next;
   });
   const photo = active === null ? null : DEMO_PHOTOS[active];
@@ -45,9 +46,9 @@ export default function ProofingDemo() {
           {DEMO_PHOTOS.map((src, index) => (
             <article key={src} className={`group relative aspect-[4/5] overflow-hidden rounded-2xl bg-stone-900 ${picks.has(index) ? "ring-2 ring-amber-300 ring-offset-2 ring-offset-[#121110]" : ""}`}>
               <button onClick={() => setActive(index)} className="absolute inset-0 w-full" aria-label={`Open photo ${index + 1}`}>
-                <img src={src} alt={`Cosplay proof ${index + 1}`} className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105" />
+                <img src={src} alt={`Cosplay proof ${index + 1}`} loading="lazy" decoding="async" className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105" />
               </button>
-              <button onClick={() => toggle(index)} className={`absolute top-3 right-3 w-11 h-11 rounded-full grid place-items-center shadow-lg transition-transform active:scale-90 ${picks.has(index) ? "bg-amber-300 text-stone-950" : "bg-black/55 text-white backdrop-blur"}`} aria-label={picks.has(index) ? "Remove from picks" : "Add to picks"}>
+              <button onClick={() => toggle(index)} className={`absolute top-3 right-3 w-11 h-11 rounded-full grid place-items-center shadow-lg transition-transform active:scale-90 ${picks.has(index) ? "bg-amber-300 text-stone-950" : "bg-black/55 text-white backdrop-blur"}`} aria-label={picks.has(index) ? "Remove from picks" : "Add to picks"} aria-pressed={picks.has(index)}>
                 <Star className={`w-5 h-5 ${picks.has(index) ? "fill-current" : ""}`} />
               </button>
               <span className="absolute bottom-3 left-3 rounded-full bg-black/55 px-2 py-1 text-[10px] tracking-wider text-white/85">PHOTO {String(index + 1).padStart(2, "0")}</span>
@@ -63,11 +64,12 @@ export default function ProofingDemo() {
         </div>
       </div>
 
-      {photo && active !== null && <div className="fixed inset-0 z-50 bg-black/95 p-3 sm:p-8 flex items-center justify-center" onClick={() => setActive(null)}>
-        <button onClick={e => { e.stopPropagation(); setActive((active + DEMO_PHOTOS.length - 1) % DEMO_PHOTOS.length); }} className="absolute left-3 sm:left-8 rounded-full p-3 bg-white/10"><ChevronLeft /></button>
+      {photo && active !== null && <div role="dialog" aria-modal="true" aria-label={`Photo ${active + 1} viewer`} className="fixed inset-0 z-50 bg-black/95 p-3 sm:p-8 flex items-center justify-center" onClick={() => setActive(null)}>
+        <button aria-label="Close photo viewer" onClick={e => { e.stopPropagation(); setActive(null); }} className="absolute top-3 right-3 rounded-full p-3 bg-white/10"><X /></button>
+        <button aria-label="Previous photo" onClick={e => { e.stopPropagation(); setActive((active + DEMO_PHOTOS.length - 1) % DEMO_PHOTOS.length); }} className="absolute left-3 sm:left-8 rounded-full p-3 bg-white/10"><ChevronLeft /></button>
         <img src={photo} alt="Selected cosplay proof" className="max-w-full max-h-[78vh] object-contain rounded-xl" onClick={e => e.stopPropagation()} />
-        <button onClick={e => { e.stopPropagation(); setActive((active + 1) % DEMO_PHOTOS.length); }} className="absolute right-3 sm:right-8 rounded-full p-3 bg-white/10"><ChevronRight /></button>
-        <div className="absolute bottom-7 flex items-center gap-3"><span className="text-sm text-white/60">Photo {active + 1} of {DEMO_PHOTOS.length}</span><button onClick={e => { e.stopPropagation(); toggle(active); }} className={`rounded-full px-5 py-3 inline-flex gap-2 items-center font-semibold ${picks.has(active) ? "bg-amber-300 text-stone-950" : "bg-white text-stone-950"}`}><Star className={`w-4 h-4 ${picks.has(active) ? "fill-current" : ""}`} />{picks.has(active) ? "Selected" : "Select photo"}</button></div>
+        <button aria-label="Next photo" onClick={e => { e.stopPropagation(); setActive((active + 1) % DEMO_PHOTOS.length); }} className="absolute right-3 sm:right-8 rounded-full p-3 bg-white/10"><ChevronRight /></button>
+        <div className="absolute bottom-7 flex items-center gap-3"><span className="text-sm text-white/60">Photo {active + 1} of {DEMO_PHOTOS.length}</span><button aria-pressed={picks.has(active)} onClick={e => { e.stopPropagation(); toggle(active); }} className={`rounded-full px-5 py-3 inline-flex gap-2 items-center font-semibold ${picks.has(active) ? "bg-amber-300 text-stone-950" : "bg-white text-stone-950"}`}><Star className={`w-4 h-4 ${picks.has(active) ? "fill-current" : ""}`} />{picks.has(active) ? "Selected" : "Select photo"}</button></div>
       </div>}
     </main>
   );

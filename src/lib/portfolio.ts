@@ -1,3 +1,5 @@
+import { adminAuthHeaders } from "./api";
+
 export type PortfolioProject = {
   id: string;
   title: string;
@@ -300,16 +302,6 @@ export const defaultPortfolioSite: PortfolioSite = {
   enquiryEventTypes: ["Wedding / engagement", "Corporate event", "Party", "Live music", "Sports / race coverage", "Convention / cosplay", "Brand / business shoot", "Other"],
 };
 
-function adminHeaders(): Record<string, string> {
-  try {
-    const creds = JSON.parse(localStorage.getItem("wv_admin") || "null") as { username?: string; passwordHash?: string } | null;
-    const hash = localStorage.getItem("wv_admin_session_hash") || (creds?.passwordHash?.startsWith("$2") ? "" : creds?.passwordHash);
-    return creds?.username && hash ? { Authorization: `Basic ${btoa(`${creds.username}:${hash}`)}` } : {};
-  } catch {
-    return {};
-  }
-}
-
 export async function fetchPublishedPortfolio(): Promise<PortfolioSite> {
   try {
     const response = await fetch("/api/portfolio", { cache: "no-store" });
@@ -319,7 +311,7 @@ export async function fetchPublishedPortfolio(): Promise<PortfolioSite> {
 }
 
 export async function fetchPortfolioDraft(): Promise<{ draft: PortfolioSite; publishedAt?: string }> {
-  const response = await fetch("/api/admin/portfolio", { headers: adminHeaders(), cache: "no-store" });
+  const response = await fetch("/api/admin/portfolio", { headers: adminAuthHeaders(), cache: "no-store" });
   if (!response.ok) throw new Error("Could not load website settings");
   const data = await response.json();
   return { draft: { ...defaultPortfolioSite, ...(data.draft || {}) }, publishedAt: data.publishedAt };
@@ -328,7 +320,7 @@ export async function fetchPortfolioDraft(): Promise<{ draft: PortfolioSite; pub
 export async function uploadPortfolioImage(file: File): Promise<string> {
   const form = new FormData();
   form.append("image", file);
-  const response = await fetch("/api/admin/portfolio/media", { method: "POST", headers: adminHeaders(), body: form });
+  const response = await fetch("/api/admin/portfolio/media", { method: "POST", headers: adminAuthHeaders(), body: form });
   const data = await response.json().catch(() => ({}));
   if (!response.ok || !data.url) throw new Error(data.error || "Image upload failed");
   return data.url;
@@ -337,7 +329,7 @@ export async function uploadPortfolioImage(file: File): Promise<string> {
 export async function testPortfolioWebhook(webhookUrl: string): Promise<void> {
   const response = await fetch("/api/admin/portfolio/webhook/test", {
     method: "POST",
-    headers: { "Content-Type": "application/json", ...adminHeaders() },
+    headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
     body: JSON.stringify({ webhookUrl }),
   });
   const data = await response.json().catch(() => ({}));
@@ -362,14 +354,14 @@ export async function submitPortfolioEnquiry(enquiry: PortfolioEnquiry): Promise
 export async function savePortfolioDraft(draft: PortfolioSite): Promise<void> {
   const response = await fetch("/api/admin/portfolio/draft", {
     method: "PUT",
-    headers: { "Content-Type": "application/json", ...adminHeaders() },
+    headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
     body: JSON.stringify({ draft }),
   });
   if (!response.ok) throw new Error("Could not save website draft");
 }
 
 export async function publishPortfolio(): Promise<{ publishedAt: string }> {
-  const response = await fetch("/api/admin/portfolio/publish", { method: "POST", headers: adminHeaders() });
+  const response = await fetch("/api/admin/portfolio/publish", { method: "POST", headers: adminAuthHeaders() });
   if (!response.ok) throw new Error("Could not publish website");
   return response.json();
 }

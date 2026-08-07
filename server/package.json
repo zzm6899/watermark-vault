@@ -2,8 +2,12 @@
   "name": "photoflow-server",
   "version": "1.0.0",
   "private": true,
+  "engines": {
+    "node": ">=20.19.0"
+  },
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "test": "node --test"
   },
   "dependencies": {
     "archiver": "^7.0.1",
@@ -15,8 +19,8 @@
     "express-rate-limit": "^7.5.0",
     "googleapis": "^171.4.0",
     "multer": "^1.4.5-lts.2",
-    "nodemailer": "^8.0.7",
-    "sharp": "^0.33.4",
+    "nodemailer": "^9.0.5",
+    "sharp": "^0.35.3",
     "stripe": "^17.5.0"
   }
 }

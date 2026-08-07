@@ -1,5 +1,8 @@
 const nodemailer = require("nodemailer");
 const { randomUUID } = require("crypto");
+const rateLimit = require("express-rate-limit");
+const express = require("express");
+const { timingSafeTextEqual } = require("./security-core");
 
 let transporter = null;
 
@@ -53,84 +56,271 @@ function buildGoogleCalendarUrl({ title, date, time, duration, description = "",
 }
 
 function formatDateNice(dateStr) {
-  const [year, month, day] = dateStr.split("-").map(Number);
-  return new Date(year, month - 1, day).toLocaleDateString("en-AU", {
+  const [year, month, day] = String(dateStr || "").split("-").map(Number);
+  const date = new Date(year, month - 1, day);
+  if (![year, month, day].every(Number.isFinite) || !Number.isFinite(date.getTime())) return String(dateStr || "");
+  return date.toLocaleDateString("en-AU", {
     weekday: "long", year: "numeric", month: "long", day: "numeric",
   });
 }
 
 function formatTime12(t) {
-  const [h, m] = t.split(":").map(Number);
+  const [h, m] = String(t || "").split(":").map(Number);
+  if (![h, m].every(Number.isFinite)) return String(t || "");
   return `${h % 12 || 12}:${m.toString().padStart(2, "0")} ${h >= 12 ? "PM" : "AM"}`;
 }
 
 function formatDuration(mins) {
+  mins = Math.max(0, Number(mins) || 0);
   if (mins >= 60) { const h = Math.floor(mins / 60); const rm = mins % 60; return rm > 0 ? `${h}h ${rm}m` : `${h}h`; }
   return `${mins}m`;
+}
+
+function escapeHtml(value) {
+  return String(value == null ? "" : value)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+const DEFAULT_EMAIL_BRAND = process.env.EMAIL_BRAND_NAME || "PhotoFlow";
+
+function storeBrandName(store) {
+  try {
+    const profile = store?.get?.("wv_profile") || {};
+    return profile.businessName || profile.brandName || profile.name || DEFAULT_EMAIL_BRAND;
+  } catch {
+    return DEFAULT_EMAIL_BRAND;
+  }
+}
+
+function cleanPlainText(value) {
+  return String(value == null ? "" : value).replace(/\r\n?/g, "\n").replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "");
+}
+
+function cleanEmailSubject(value, fallback = "Message") {
+  return cleanPlainText(value).replace(/\n+/g, " ").trim().slice(0, 200) || fallback;
+}
+
+function safeHttpUrl(value) {
+  try {
+    const parsed = new URL(String(value || ""));
+    return parsed.protocol === "https:" || parsed.protocol === "http:" ? parsed.toString() : "";
+  } catch {
+    return "";
+  }
+}
+
+function formatMoney(value, currency = "AUD") {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return "—";
+  try {
+    return new Intl.NumberFormat("en-AU", { style: "currency", currency, minimumFractionDigits: 2 }).format(amount);
+  } catch {
+    return `$${amount.toFixed(2)}`;
+  }
+}
+
+function buildSummaryCard(rows = []) {
+  const visibleRows = rows.filter(row => row && row.value !== undefined && row.value !== null && String(row.value) !== "");
+  if (!visibleRows.length) return "";
+  return `<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="width:100%;border-collapse:separate;border-spacing:0;background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;margin:0 0 24px;">
+    ${visibleRows.map((row, index) => `<tr>
+      <td style="padding:${index === 0 ? "16px" : "10px"} 16px ${index === visibleRows.length - 1 ? "16px" : "10px"};color:#64748b;font-family:Arial,sans-serif;font-size:13px;line-height:1.45;${index ? "border-top:1px solid #e2e8f0;" : ""}">${escapeHtml(row.label)}</td>
+      <td align="right" style="padding:${index === 0 ? "16px" : "10px"} 16px ${index === visibleRows.length - 1 ? "16px" : "10px"};color:${row.tone === "success" ? "#15803d" : row.tone === "warning" ? "#a16207" : "#0f172a"};font-family:Arial,sans-serif;font-size:13px;font-weight:${row.emphasis ? "700" : "600"};line-height:1.45;text-align:right;${index ? "border-top:1px solid #e2e8f0;" : ""}">${escapeHtml(row.value)}</td>
+    </tr>`).join("")}
+  </table>`;
+}
+
+function buildCallout(title, message, tone = "info") {
+  const palette = tone === "success"
+    ? { background: "#f0fdf4", border: "#bbf7d0", title: "#166534", body: "#166534" }
+    : tone === "warning"
+      ? { background: "#fffbeb", border: "#fde68a", title: "#92400e", body: "#92400e" }
+      : { background: "#f5f3ff", border: "#ddd6fe", title: "#5b21b6", body: "#5b21b6" };
+  return `<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="width:100%;border-collapse:separate;border-spacing:0;background:${palette.background};border:1px solid ${palette.border};border-radius:12px;margin:0 0 24px;"><tr><td style="padding:16px;font-family:Arial,sans-serif;">
+    <p style="margin:0 0 4px;color:${palette.title};font-size:14px;font-weight:700;line-height:1.4;">${escapeHtml(title)}</p>
+    <p style="margin:0;color:${palette.body};font-size:13px;line-height:1.6;">${escapeHtml(message).replace(/\n/g, "<br>")}</p>
+  </td></tr></table>`;
+}
+
+function buildEmailButton(label, url, secondary = false) {
+  const href = safeHttpUrl(url);
+  if (!href) return "";
+  return `<table role="presentation" cellspacing="0" cellpadding="0" style="border-collapse:separate;margin:${secondary ? "10px" : "0"} auto 0;"><tr><td bgcolor="${secondary ? "#ffffff" : "#6d28d9"}" style="border:${secondary ? "1px solid #cbd5e1" : "1px solid #6d28d9"};border-radius:8px;text-align:center;"><a href="${escapeHtml(href)}" style="display:inline-block;padding:12px 20px;color:${secondary ? "#334155" : "#ffffff"};font-family:Arial,sans-serif;font-size:14px;font-weight:700;line-height:1.2;text-decoration:none;">${escapeHtml(label)}</a></td></tr></table>`;
+}
+
+function buildEmailDocument({
+  title,
+  preheader = "",
+  greeting = "",
+  intro = "",
+  bodyHtml = "",
+  primaryAction = null,
+  secondaryAction = null,
+  reference = "",
+  brandName = DEFAULT_EMAIL_BRAND,
+  footerNote = "Questions? Reply to this email and we’ll be happy to help.",
+  unsubscribeUrl = "",
+  trackingPixelUrl = "",
+}) {
+  const primaryButton = primaryAction ? buildEmailButton(primaryAction.label, primaryAction.url) : "";
+  const secondaryButton = secondaryAction ? buildEmailButton(secondaryAction.label, secondaryAction.url, true) : "";
+  const unsubscribeHref = safeHttpUrl(unsubscribeUrl);
+  const trackingHref = safeHttpUrl(trackingPixelUrl);
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="x-apple-disable-message-reformatting"><title>${escapeHtml(title)}</title>
+<style>@media only screen and (max-width:620px){.email-shell{width:100%!important}.email-pad{padding-left:20px!important;padding-right:20px!important}.email-outer{padding:12px!important}}a[x-apple-data-detectors]{color:inherit!important;text-decoration:none!important}</style></head>
+<body style="margin:0;padding:0;background:#f1f5f9;-webkit-text-size-adjust:100%;-ms-text-size-adjust:100%;">
+  <div style="display:none;max-height:0;overflow:hidden;opacity:0;color:transparent;mso-hide:all;">${escapeHtml(preheader || intro || title)}</div>
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" bgcolor="#f1f5f9" style="width:100%;border-collapse:collapse;background:#f1f5f9;"><tr><td class="email-outer" align="center" style="padding:32px 16px;">
+    <table role="presentation" width="600" cellspacing="0" cellpadding="0" class="email-shell" data-photoflow-email="true" style="width:600px;max-width:600px;border-collapse:separate;border-spacing:0;background:#ffffff;border:1px solid #e2e8f0;border-radius:16px;overflow:hidden;">
+      <tr><td class="email-pad" bgcolor="#18181b" style="padding:24px 32px;background:#18181b;border-bottom:4px solid #7c3aed;">
+        <p style="margin:0 0 10px;color:#c4b5fd;font-family:Arial,sans-serif;font-size:11px;font-weight:700;letter-spacing:1.8px;line-height:1.2;text-transform:uppercase;">${escapeHtml(brandName)}</p>
+        <h1 style="margin:0;color:#ffffff;font-family:Arial,sans-serif;font-size:26px;font-weight:700;line-height:1.25;">${escapeHtml(title)}</h1>
+      </td></tr>
+      <tr><td class="email-pad" style="padding:30px 32px;color:#334155;font-family:Arial,sans-serif;">
+        ${greeting ? `<p style="margin:0 0 12px;color:#0f172a;font-size:16px;font-weight:700;line-height:1.5;">${escapeHtml(greeting)}</p>` : ""}
+        ${intro ? `<p style="margin:0 0 24px;color:#475569;font-size:15px;line-height:1.7;">${escapeHtml(intro).replace(/\n/g, "<br>")}</p>` : ""}
+        ${bodyHtml}
+        ${(primaryButton || secondaryButton) ? `<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="width:100%;border-collapse:collapse;margin-top:8px;"><tr><td align="center">${primaryButton}${secondaryButton}</td></tr></table>` : ""}
+      </td></tr>
+      <tr><td class="email-pad" bgcolor="#f8fafc" style="padding:20px 32px;background:#f8fafc;border-top:1px solid #e2e8f0;text-align:center;">
+        <p style="margin:0;color:#64748b;font-family:Arial,sans-serif;font-size:12px;line-height:1.6;">${escapeHtml(footerNote)}</p>
+        ${reference ? `<p style="margin:6px 0 0;color:#94a3b8;font-family:Arial,sans-serif;font-size:11px;line-height:1.5;">Reference: ${escapeHtml(reference)}</p>` : ""}
+        ${unsubscribeHref ? `<p style="margin:8px 0 0;font-family:Arial,sans-serif;font-size:11px;line-height:1.5;"><a href="${escapeHtml(unsubscribeHref)}" style="color:#64748b;text-decoration:underline;">Unsubscribe from booking emails</a></p>` : ""}
+      </td></tr>
+    </table>
+  </td></tr></table>
+  ${trackingHref ? `<img src="${escapeHtml(trackingHref)}" width="1" height="1" style="display:none;border:0;" alt="">` : ""}
+</body></html>`;
+}
+
+function buildEmailText({ title, greeting = "", intro = "", rows = [], sections = [], actions = [], reference = "", footerNote = "Questions? Reply to this email.", unsubscribeUrl = "" }) {
+  return cleanPlainText([
+    title,
+    greeting,
+    intro,
+    ...rows.filter(row => row && row.value !== undefined && row.value !== null && String(row.value) !== "").map(row => `${row.label}: ${row.value}`),
+    ...sections,
+    ...actions.map(action => `${action.label}: ${safeHttpUrl(action.url)}`).filter(line => !line.endsWith(": ")),
+    reference ? `Reference: ${reference}` : "",
+    footerNote,
+    safeHttpUrl(unsubscribeUrl) ? `Unsubscribe: ${safeHttpUrl(unsubscribeUrl)}` : "",
+  ].filter(Boolean).join("\n\n"));
+}
+
+function decodeHtmlText(value) {
+  return String(value || "")
+    .replace(/&nbsp;/gi, " ").replace(/&amp;/gi, "&").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">").replace(/&quot;/gi, '"').replace(/&#39;|&apos;/gi, "'")
+    .replace(/&#(\d+);/g, (_match, code) => String.fromCodePoint(Math.min(Number(code) || 0, 0x10ffff)))
+    .replace(/&#x([\da-f]+);/gi, (_match, code) => String.fromCodePoint(Math.min(parseInt(code, 16) || 0, 0x10ffff)));
+}
+
+function htmlToPlainText(html) {
+  const htmlWithLinks = String(html || "").replace(/<a\b[^>]*\bhref\s*=\s*(["'])(.*?)\1[^>]*>([\s\S]*?)<\/a>/gi, (_match, _quote, href, label) => {
+    const safeHref = safeHttpUrl(decodeHtmlText(href));
+    return safeHref ? `${label} (${safeHref})` : label;
+  });
+  return cleanPlainText(decodeHtmlText(htmlWithLinks
+    .replace(/<(style|script)[^>]*>[\s\S]*?<\/\1>/gi, "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>|<\/div>|<\/tr>|<\/li>|<\/h[1-6]>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/\n{3,}/g, "\n\n").trim()));
+}
+
+function prepareCustomEmail({ subject, html, text, brandName = DEFAULT_EMAIL_BRAND }) {
+  const plainText = cleanPlainText(text || htmlToPlainText(html));
+  const sourceHtml = String(html || "");
+  const isProfessionalDocument = /^\s*<!doctype html>/i.test(sourceHtml)
+    && sourceHtml.includes('class="email-shell" data-photoflow-email="true"');
+  if (isProfessionalDocument) return { html: sourceHtml, text: plainText };
+  const bodyHtml = html
+    ? `<div style="color:#334155;font-family:Arial,sans-serif;font-size:15px;line-height:1.7;">${html}</div>`
+    : cleanPlainText(text).split(/\n{2,}/).filter(Boolean).map(paragraph => `<p style="margin:0 0 16px;color:#334155;font-family:Arial,sans-serif;font-size:15px;line-height:1.7;">${escapeHtml(paragraph).replace(/\n/g, "<br>")}</p>`).join("");
+  return {
+    html: buildEmailDocument({ title: String(subject || "Message"), preheader: plainText.slice(0, 140), bodyHtml, brandName }),
+    text: plainText,
+  };
 }
 
 // ── Email HTML builder ────────────────────────────────────────
 function buildBookingEmailHtml({ clientName, eventTitle, date, time, duration, location,
   price, depositAmount, paymentMethod, remainingAmount, isFree, modifyUrl, bookingId,
-  calendarUrl, trackingPixelUrl, unsubscribeUrl }) {
+  calendarUrl, trackingPixelUrl, unsubscribeUrl, status, paymentKind, brandName }) {
+  const rows = bookingSummaryRows({ eventTitle, date, time, duration, location, price, depositAmount, paymentMethod, remainingAmount, isFree, paymentKind });
+  const isConfirmed = status === "confirmed";
+  const bankNote = paymentMethod === "bank"
+    ? buildCallout("Bank transfer pending", `Use booking reference ${bookingId} as the payment description. Your booking will be confirmed once payment is received.`, "warning")
+    : "";
+  return buildEmailDocument({
+    title: isConfirmed ? "Booking confirmed" : "Booking received",
+    preheader: `${eventTitle} on ${formatDateNice(date)} at ${formatTime12(time)}`,
+    greeting: `Hi ${clientName || "there"},`,
+    intro: isConfirmed
+      ? "Your session is confirmed. Keep this email handy for the date, time, payment status and booking link."
+      : "We’ve received your booking. The summary below shows the current details and payment status.",
+    bodyHtml: `${buildSummaryCard(rows)}${bankNote}`,
+    primaryAction: safeHttpUrl(modifyUrl)
+      ? { label: "View or manage booking", url: modifyUrl }
+      : safeHttpUrl(calendarUrl) ? { label: "Add to Google Calendar", url: calendarUrl } : null,
+    secondaryAction: safeHttpUrl(modifyUrl) && safeHttpUrl(calendarUrl)
+      ? { label: "Add to Google Calendar", url: calendarUrl }
+      : null,
+    reference: bookingId,
+    brandName,
+    unsubscribeUrl,
+    trackingPixelUrl,
+  });
+}
 
-  const paymentRows = () => {
-    if (isFree) return `<tr><td style="padding:6px 0;color:#9ca3af;font-size:14px;border-top:1px solid #1f1f1f;">Payment</td><td style="padding:6px 0;color:#22c55e;font-size:14px;text-align:right;font-weight:600;border-top:1px solid #1f1f1f;">Free ✓</td></tr>`;
-    if (paymentMethod === "stripe" && depositAmount > 0) return `
-      <tr><td style="padding:6px 0;color:#9ca3af;font-size:14px;border-top:1px solid #1f1f1f;">Deposit Paid</td><td style="padding:6px 0;color:#22c55e;font-size:14px;text-align:right;font-weight:600;border-top:1px solid #1f1f1f;">$${depositAmount} ✓ Card</td></tr>
-      ${remainingAmount > 0 ? `<tr><td style="padding:6px 0;color:#9ca3af;font-size:14px;">Remaining (due on day)</td><td style="padding:6px 0;color:#facc15;font-size:14px;text-align:right;font-weight:600;">$${remainingAmount}</td></tr>` : ""}`;
-    if (paymentMethod === "bank" && depositAmount > 0) return `
-      <tr><td style="padding:6px 0;color:#9ca3af;font-size:14px;border-top:1px solid #1f1f1f;">Deposit</td><td style="padding:6px 0;color:#facc15;font-size:14px;text-align:right;font-weight:600;border-top:1px solid #1f1f1f;">$${depositAmount} · Bank Transfer Pending</td></tr>
-      ${remainingAmount > 0 ? `<tr><td style="padding:6px 0;color:#9ca3af;font-size:14px;">Remaining (due on day)</td><td style="padding:6px 0;color:#facc15;font-size:14px;text-align:right;font-weight:600;">$${remainingAmount}</td></tr>` : ""}`;
-    if (paymentMethod === "stripe") return `<tr><td style="padding:6px 0;color:#9ca3af;font-size:14px;border-top:1px solid #1f1f1f;">Payment</td><td style="padding:6px 0;color:#22c55e;font-size:14px;text-align:right;font-weight:600;border-top:1px solid #1f1f1f;">$${price} ✓ Paid in Full</td></tr>`;
-    if (paymentMethod === "bank") return `<tr><td style="padding:6px 0;color:#9ca3af;font-size:14px;border-top:1px solid #1f1f1f;">Payment</td><td style="padding:6px 0;color:#facc15;font-size:14px;text-align:right;font-weight:600;border-top:1px solid #1f1f1f;">$${price} · Bank Transfer Pending</td></tr>`;
-    return `<tr><td style="padding:6px 0;color:#9ca3af;font-size:14px;border-top:1px solid #1f1f1f;">Payment</td><td style="padding:6px 0;color:#9ca3af;font-size:14px;text-align:right;border-top:1px solid #1f1f1f;">—</td></tr>`;
-  };
+function bookingSummaryRows({ eventTitle, date, time, duration, location, price, depositAmount, paymentMethod, remainingAmount, isFree, paymentKind }) {
+  const money = value => `$${Number(value) || 0}`;
+  const rows = [
+    { label: "Session", value: eventTitle || "Booking", emphasis: true },
+    { label: "Date", value: formatDateNice(date) },
+    { label: "Time", value: formatTime12(time), emphasis: true },
+    { label: "Duration", value: formatDuration(duration) },
+    location ? { label: "Location", value: location } : null,
+  ];
+  if (isFree) rows.push({ label: "Payment", value: "Free ✓", tone: "success", emphasis: true });
+  else if (paymentMethod === "stripe" && paymentKind === "deposit" && Number(depositAmount) > 0) {
+    rows.push({ label: "Deposit Paid", value: `${money(depositAmount)} ✓ Card`, tone: "success", emphasis: true });
+    if (Number(remainingAmount) > 0) rows.push({ label: "Remaining Balance", value: money(remainingAmount), tone: "warning", emphasis: true });
+  } else if (paymentMethod === "stripe" && paymentKind === "balance") {
+    rows.push({ label: "Remaining Balance Paid", value: `${money(remainingAmount)} ✓ Card`, tone: "success", emphasis: true });
+  } else if (paymentMethod === "bank" && Number(depositAmount) > 0) {
+    rows.push({ label: "Deposit", value: `${money(depositAmount)} · Bank transfer pending`, tone: "warning", emphasis: true });
+    if (Number(remainingAmount) > 0) rows.push({ label: "Remaining balance", value: money(remainingAmount), tone: "warning" });
+  } else if (paymentMethod === "stripe") {
+    rows.push({ label: "Payment", value: `${money(price)} ✓ Paid in Full`, tone: "success", emphasis: true });
+  } else if (paymentMethod === "bank") {
+    rows.push({ label: "Payment", value: `${money(price)} · Bank transfer pending`, tone: "warning", emphasis: true });
+  } else {
+    rows.push({ label: "Payment", value: "Not required or not yet selected" });
+  }
+  return rows.filter(Boolean);
+}
 
-  const bankNote = paymentMethod === "bank" ? `
-    <div style="background:#451a03;border:1px solid #78350f;border-radius:8px;padding:14px;margin:20px 0;">
-      <p style="color:#fbbf24;font-size:13px;margin:0;line-height:1.5;">
-        <strong>⏳ Bank Transfer Pending</strong><br>
-        Please use booking ref <strong style="color:#f59e0b;">${bookingId}</strong> as the payment description.
-        Your booking will be confirmed once payment is received.
-      </p>
-    </div>` : "";
-
-  const isConfirmed = paymentMethod === "stripe" || paymentMethod === "none";
-
-  return `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
-<body style="margin:0;padding:0;background:#0a0a0a;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;">
-  <div style="max-width:560px;margin:40px auto;background:#111111;border-radius:16px;overflow:hidden;border:1px solid #1f1f1f;">
-    <div style="background:linear-gradient(135deg,#1a1a2e 0%,#16213e 100%);padding:32px 32px 24px;text-align:center;border-bottom:1px solid #1f1f1f;">
-      <div style="width:52px;height:52px;background:rgba(139,92,246,0.2);border-radius:50%;display:inline-flex;align-items:center;justify-content:center;margin-bottom:16px;font-size:24px;">📷</div>
-      <h1 style="color:#e5e7eb;font-size:22px;font-weight:700;margin:0 0 6px;">${isConfirmed ? "Booking Confirmed!" : "Booking Received!"}</h1>
-      <p style="color:#6b7280;font-size:14px;margin:0;">Hi ${clientName}, here's your booking summary.</p>
-    </div>
-    <div style="padding:28px 32px;">
-      <table style="width:100%;border-collapse:collapse;">
-        <tbody>
-          <tr><td style="padding:6px 0;color:#9ca3af;font-size:14px;border-top:1px solid #1f1f1f;">Event</td><td style="padding:6px 0;color:#e5e7eb;font-size:14px;text-align:right;font-weight:600;border-top:1px solid #1f1f1f;">${eventTitle}</td></tr>
-          <tr><td style="padding:6px 0;color:#9ca3af;font-size:14px;">Duration</td><td style="padding:6px 0;color:#e5e7eb;font-size:14px;text-align:right;">${formatDuration(duration)}</td></tr>
-          <tr><td style="padding:6px 0;color:#9ca3af;font-size:14px;">Date</td><td style="padding:6px 0;color:#e5e7eb;font-size:14px;text-align:right;">${formatDateNice(date)}</td></tr>
-          <tr><td style="padding:6px 0;color:#9ca3af;font-size:14px;">Time</td><td style="padding:6px 0;color:#8b5cf6;font-size:14px;text-align:right;font-weight:600;">${formatTime12(time)}</td></tr>
-          ${location ? `<tr><td style="padding:6px 0;color:#9ca3af;font-size:14px;">Location</td><td style="padding:6px 0;color:#e5e7eb;font-size:14px;text-align:right;">${location}</td></tr>` : ""}
-          ${paymentRows()}
-        </tbody>
-      </table>
-      ${bankNote}
-      <div style="margin-top:24px;">
-        <a href="${calendarUrl}" style="display:block;background:#8b5cf6;color:#ffffff;text-decoration:none;text-align:center;padding:14px 20px;border-radius:10px;font-size:14px;font-weight:600;margin-bottom:10px;">📅 Add to Google Calendar</a>
-        ${modifyUrl ? `<a href="${modifyUrl}" style="display:block;background:transparent;color:#9ca3af;text-decoration:none;text-align:center;padding:12px 20px;border-radius:10px;font-size:13px;border:1px solid #374151;">View Booking &amp; Manage →</a>` : ""}
-      </div>
-    </div>
-    <div style="padding:20px 32px;border-top:1px solid #1f1f1f;text-align:center;">
-      <p style="color:#4b5563;font-size:12px;margin:0;">Questions? Simply reply to this email.<br>Ref: <span style="color:#6b7280;">${bookingId}</span></p>
-      ${unsubscribeUrl ? `<p style="margin:10px 0 0;font-size:11px;color:#374151;"><a href="${unsubscribeUrl}" style="color:#4b5563;text-decoration:underline;">Unsubscribe from booking emails</a></p>` : ""}
-    </div>
-  </div>
-  ${trackingPixelUrl ? `<img src="${trackingPixelUrl}" width="1" height="1" style="display:none;" alt="">` : ""}
-</body></html>`;
+function buildBookingEmailText(params) {
+  const isConfirmed = params.status === "confirmed";
+  const rows = bookingSummaryRows(params);
+  const sections = params.paymentMethod === "bank"
+    ? [`Bank transfer pending. Use booking reference ${params.bookingId} as the payment description. Your booking will be confirmed once payment is received.`]
+    : [];
+  return buildEmailText({
+    title: isConfirmed ? "Booking confirmed" : "Booking received",
+    greeting: `Hi ${params.clientName || "there"},`,
+    intro: isConfirmed ? "Your session is confirmed." : "We’ve received your booking.",
+    rows,
+    sections,
+    actions: [
+      safeHttpUrl(params.modifyUrl) ? { label: "View or manage booking", url: params.modifyUrl } : null,
+      safeHttpUrl(params.calendarUrl) ? { label: "Add to Google Calendar", url: params.calendarUrl } : null,
+    ].filter(Boolean),
+    reference: params.bookingId,
+    unsubscribeUrl: params.unsubscribeUrl,
+  });
 }
 
 // ── Write email log entry to booking storage ──────────────────
@@ -152,9 +342,11 @@ function appendEmailLog(store, bookingId, logEntry) {
 async function sendBookingConfirmationEmail({
   to, clientName, eventTitle, date, time, duration, location = "",
   price = 0, depositAmount = 0, paymentMethod = "none",
-  modifyToken, bookingId, appBaseUrl, store,
+  paymentKind = null,
+  modifyToken, bookingId, appBaseUrl, store, status = "pending", paymentStatus = "unpaid",
+  transport = null, fromAddress = null, brandName = DEFAULT_EMAIL_BRAND,
 }) {
-  const t = getTransporter();
+  const t = transport || getTransporter();
   if (!t) { console.warn("📧 SMTP not configured"); return { ok: false, reason: "not_configured" }; }
 
   const isFree = price === 0;
@@ -170,20 +362,24 @@ async function sendBookingConfirmationEmail({
   const trackingId = randomUUID();
   const trackingPixelUrl = baseUrl ? `${baseUrl}/api/email/open/${trackingId}` : null;
 
-  const subject = paymentMethod === "bank"
-    ? `Booking Received — ${eventTitle} (payment pending)`
-    : `Booking Confirmed — ${eventTitle}`;
+  const subject = cleanEmailSubject(status === "confirmed"
+    ? `Booking Confirmed — ${eventTitle}`
+    : `Booking Received — ${eventTitle}${paymentStatus === "pending-confirmation" || paymentStatus === "unpaid" ? " (payment pending)" : ""}`);
 
-  const unsubscribeUrl = baseUrl ? `${baseUrl}/api/email/unsubscribe/${bookingId}` : null;
+  const unsubscribeUrl = baseUrl && modifyToken
+    ? `${baseUrl}/api/email/unsubscribe/${encodeURIComponent(bookingId)}?token=${encodeURIComponent(modifyToken)}`
+    : null;
 
-  const html = buildBookingEmailHtml({
+  const messageParams = {
     clientName, eventTitle, date, time, duration, location,
     price, depositAmount, paymentMethod, remainingAmount,
-    isFree, modifyUrl, bookingId, calendarUrl, trackingPixelUrl, unsubscribeUrl,
-  });
+    isFree, modifyUrl, bookingId, calendarUrl, trackingPixelUrl, unsubscribeUrl, status, paymentKind, brandName,
+  };
+  const html = buildBookingEmailHtml(messageParams);
+  const text = buildBookingEmailText(messageParams);
 
   try {
-    const info = await t.sendMail({ from: getFromAddress(), to, subject, html });
+    const info = await t.sendMail({ from: fromAddress || getFromAddress(), to, subject, html, text });
     console.log(`📧 Confirmation sent to ${to}: ${info.messageId}`);
 
     // Write log entry to booking
@@ -205,34 +401,85 @@ async function sendBookingConfirmationEmail({
 }
 
 // ── Routes ─────────────────────────────────────────────────────
-function registerRoutes(app, store) {
-  app.get("/api/email/status", (_req, res) => {
+function registerRoutes(app, store, options = {}) {
+  const requireAuth = options.requireAuth || ((_req, _res, next) => next());
+  const bookingConfirmationLimiter = rateLimit({
+    windowMs: 15 * 60_000,
+    max: 10,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { ok: false, error: "Too many confirmation requests" },
+  });
+  app.get("/api/email/status", requireAuth, (_req, res) => {
     const configured = !!(process.env.EMAIL_SERVER_HOST && process.env.EMAIL_SERVER_USER && process.env.EMAIL_SERVER_PASSWORD);
     res.json({ configured, host: process.env.EMAIL_SERVER_HOST, user: process.env.EMAIL_SERVER_USER, from: getFromAddress() });
   });
 
-  app.post("/api/email/test", async (_req, res) => {
+  app.post("/api/email/test", requireAuth, async (_req, res) => {
     const t = getTransporter();
     if (!t) return res.status(400).json({ ok: false, error: "SMTP not configured" });
     try { await t.verify(); res.json({ ok: true }); }
     catch (err) { res.status(500).json({ ok: false, error: err.message }); }
   });
 
-  app.post("/api/email/send", async (req, res) => {
+  app.post("/api/email/send", requireAuth, async (req, res) => {
     const t = getTransporter();
     if (!t) return res.status(400).json({ ok: false, error: "SMTP not configured" });
-    const { to, subject, html, text } = req.body;
+    const { to, subject, html, text, bookingId } = req.body;
     if (!to || !subject) return res.status(400).json({ ok: false, error: "Missing to/subject" });
+    const recipient = String(to).trim().toLowerCase();
+    if (recipient.length > 254 || !/^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/.test(recipient)) {
+      return res.status(400).json({ ok: false, error: "A single valid recipient is required" });
+    }
+    if (String(html || "").length > 100_000 || String(text || "").length > 100_000) {
+      return res.status(413).json({ ok: false, error: "Email content is too large" });
+    }
+    const safeSubject = cleanEmailSubject(subject, "");
+    if (!safeSubject) return res.status(400).json({ ok: false, error: "Invalid subject" });
+    const message = prepareCustomEmail({ subject: safeSubject, html, text, brandName: storeBrandName(store) });
     try {
-      const info = await t.sendMail({ from: getFromAddress(), to, subject, html, text });
+      const info = await t.sendMail({ from: getFromAddress(), to: recipient, subject: safeSubject, ...message });
+      if (bookingId && store) {
+        appendEmailLog(store, bookingId, {
+          id: randomUUID(),
+          type: "custom-email",
+          sentAt: new Date().toISOString(),
+          subject: safeSubject,
+          to: recipient,
+        });
+      }
       res.json({ ok: true, messageId: info.messageId });
     } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
   });
 
   // Called by frontend after bank transfer or by Stripe webhook after card payment
-  app.post("/api/email/booking-confirmation", async (req, res) => {
-    const appBaseUrl = req.body.appBaseUrl || `${req.protocol}://${req.get("host")}`;
-    const result = await sendBookingConfirmationEmail({ ...req.body, appBaseUrl, store });
+  app.post("/api/email/booking-confirmation", bookingConfirmationLimiter, async (req, res) => {
+    const bookings = store?.get("wv_bookings") || [];
+    const booking = bookings.find(item => item.id === req.body?.bookingId && timingSafeTextEqual(item.modifyToken, req.body?.modifyToken));
+    if (!booking) return res.status(401).json({ ok: false, error: "A valid booking capability is required" });
+    const configuredBaseUrl = String(process.env.APP_BASE_URL || "").trim().replace(/\/$/, "");
+    const appHost = String(process.env.APP_HOSTS || "book.zacmclients.photos").split(",")[0].trim();
+    const appBaseUrl = configuredBaseUrl || `https://${appHost}`;
+    const result = await sendBookingConfirmationEmail({
+      to: booking.clientEmail,
+      clientName: booking.clientName,
+      eventTitle: booking.type,
+      date: booking.date,
+      time: booking.time,
+      duration: booking.duration,
+      location: booking.location || "",
+      price: booking.paymentAmount || 0,
+      depositAmount: booking.depositAmount || 0,
+      paymentMethod: booking.paymentMethod || booking.depositMethod || "none",
+      paymentKind: booking.lastPaymentKind || (booking.paymentStatus === "deposit-paid" ? "deposit" : booking.paymentStatus === "paid" ? "full" : null),
+      modifyToken: booking.modifyToken,
+      bookingId: booking.id,
+      appBaseUrl,
+      store,
+      status: booking.status,
+      paymentStatus: booking.paymentStatus,
+      brandName: storeBrandName(store),
+    });
     if (!result.ok && result.reason === "not_configured") return res.status(503).json({ ok: false, error: "SMTP not configured" });
     if (!result.ok) return res.status(500).json({ ok: false, error: result.error });
     res.json({ ok: true, messageId: result.messageId });
@@ -269,36 +516,39 @@ function registerRoutes(app, store) {
   });
 
   // ── Email unsubscribe ──────────────────────────────────────────────────────
-  // Linked from every booking email footer.  Sets emailsDisabled=true on the
-  // booking so future reminder/update emails are suppressed for that client.
-  app.get("/api/email/unsubscribe/:bookingId", (req, res) => {
+  const unsubscribeLimiter = rateLimit({ windowMs: 15 * 60_000, max: 20, standardHeaders: true, legacyHeaders: false });
+  const unsubscribePage = ({ bookingId, token, complete = false }) => `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="robots" content="noindex"><title>${complete ? "Unsubscribed" : "Confirm unsubscribe"}</title>
+<style>body{font-family:Georgia,serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#0a0a0a;color:#d1d5db}.card{max-width:420px;text-align:center;padding:48px 32px;border:1px solid #1f2937;border-radius:12px;background:#111827}h1{font-size:1.5rem;margin-bottom:.5rem;color:#f9fafb}p{font-size:.9rem;line-height:1.6;color:#9ca3af}button{padding:12px 20px;border:0;border-radius:8px;background:#7c3aed;color:white;font-weight:700;cursor:pointer}</style></head>
+<body><div class="card"><h1>${complete ? "You've been unsubscribed" : "Stop booking emails?"}</h1><p>${complete ? "You won't receive any more booking update emails for this session." : "Confirm that you no longer want reminders or updates for this booking."}</p>${complete ? "" : `<form method="post" action="/api/email/unsubscribe/${encodeURIComponent(bookingId)}"><input type="hidden" name="token" value="${escapeHtml(token)}"><button type="submit">Confirm unsubscribe</button></form>`}</div></body></html>`;
+
+  // GET is deliberately read-only so email security scanners cannot unsubscribe.
+  app.get("/api/email/unsubscribe/:bookingId", unsubscribeLimiter, (req, res) => {
     const { bookingId } = req.params;
-    if (store) {
-      try {
-        const bookings = store.get("wv_bookings") || [];
-        const idx = bookings.findIndex(b => b.id === bookingId);
-        if (idx !== -1 && !bookings[idx].emailsDisabled) {
-          bookings[idx].emailsDisabled = true;
-          store.set("wv_bookings", bookings);
-          console.log(`📧 Unsubscribe: disabled emails for booking ${bookingId}`);
-        }
-      } catch (e) {
-        console.warn("Unsubscribe error:", e.message);
-      }
+    const bookings = store?.get("wv_bookings") || [];
+    const booking = bookings.find(item => item.id === bookingId);
+    const token = String(req.query.token || "");
+    if (!booking || !token || !timingSafeTextEqual(token, booking.modifyToken)) return res.status(404).send("Unsubscribe link is invalid or expired");
+    res.set({ "Content-Type": "text/html", "Cache-Control": "no-store" });
+    res.send(unsubscribePage({ bookingId, token }));
+  });
+
+  app.post("/api/email/unsubscribe/:bookingId", unsubscribeLimiter, express.urlencoded({ extended: false, limit: "2kb" }), (req, res) => {
+    const { bookingId } = req.params;
+    const bookings = store?.get("wv_bookings") || [];
+    const index = bookings.findIndex(item => item.id === bookingId);
+    const token = String(req.body?.token || "");
+    if (index < 0 || !token || !timingSafeTextEqual(token, bookings[index].modifyToken)) return res.status(404).send("Unsubscribe link is invalid or expired");
+    if (!bookings[index].emailsDisabled) {
+      bookings[index].emailsDisabled = true;
+      store.set("wv_bookings", bookings);
+      console.log(`📧 Unsubscribe: disabled emails for booking ${bookingId}`);
     }
-    // Serve a plain confirmation page — no redirect needed
-    res.set("Content-Type", "text/html");
-    res.send(`<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>Unsubscribed</title>
-<style>body{font-family:Georgia,serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#0a0a0a;color:#d1d5db;}
-.card{max-width:420px;text-align:center;padding:48px 32px;border:1px solid #1f2937;border-radius:12px;background:#111827;}
-h1{font-size:1.5rem;margin-bottom:0.5rem;color:#f9fafb;}p{font-size:0.9rem;line-height:1.6;color:#9ca3af;}</style></head>
-<body><div class="card"><h1>You've been unsubscribed</h1>
-<p>You won't receive any more booking update emails for this session.</p>
-<p style="margin-top:1.5rem;font-size:0.75rem;">If this was a mistake, please contact the photographer directly.</p></div></body></html>`);
+    res.set({ "Content-Type": "text/html", "Cache-Control": "no-store" });
+    res.send(unsubscribePage({ bookingId, token, complete: true }));
   });
 
   // Get email log for a booking (used by Admin page)
-  app.get("/api/email/log/:bookingId", (req, res) => {
+  app.get("/api/email/log/:bookingId", requireAuth, (req, res) => {
     const { bookingId } = req.params;
     if (!store) return res.json({ log: [] });
     try {
@@ -309,7 +559,7 @@ h1{font-size:1.5rem;margin-bottom:0.5rem;color:#f9fafb;}p{font-size:0.9rem;line-
   });
 
   // Send a reminder email for a booking
-  app.post("/api/email/reminder", async (req, res) => {
+  app.post("/api/email/reminder", requireAuth, async (req, res) => {
     const t = getTransporter();
     if (!t) return res.status(400).json({ ok: false, error: "SMTP not configured" });
 
@@ -338,11 +588,13 @@ h1{font-size:1.5rem;margin-bottom:0.5rem;color:#f9fafb;}p{font-size:0.9rem;line-
     const isPaymentReminder = reminderType === "payment";
     const remaining = (booking.paymentAmount || 0) - (booking.depositAmount || 0);
 
-    const subject = isPaymentReminder
+    const subject = cleanEmailSubject(isPaymentReminder
       ? `Payment Reminder — ${booking.type || "Booking"}`
-      : `Booking Reminder — ${booking.type || "Booking"} on ${formatDateNice(booking.date)}`;
+      : `Booking Reminder — ${booking.type || "Booking"} on ${formatDateNice(booking.date)}`);
 
-    const html = buildReminderEmailHtml({
+    const trackingId = randomUUID();
+    const trackingPixelUrl = appBaseUrl ? `${appBaseUrl}/api/email/open/${trackingId}` : null;
+    const reminderParams = {
       clientName: booking.clientName,
       eventTitle: booking.type || "Booking",
       date: booking.date,
@@ -356,14 +608,14 @@ h1{font-size:1.5rem;margin-bottom:0.5rem;color:#f9fafb;}p{font-size:0.9rem;line-
       bookingId: booking.id,
       modifyUrl,
       calendarUrl,
-    });
-
-    const trackingId = randomUUID();
-    const trackingPixelUrl = appBaseUrl ? `${appBaseUrl}/api/email/open/${trackingId}` : null;
-    const finalHtml = html + (trackingPixelUrl ? `<img src="${trackingPixelUrl}" width="1" height="1" style="display:none;" alt="">` : "");
+      trackingPixelUrl,
+      brandName: storeBrandName(store),
+    };
+    const html = buildReminderEmailHtml(reminderParams);
+    const text = buildReminderEmailText(reminderParams);
 
     try {
-      const info = await t.sendMail({ from: getFromAddress(), to: booking.clientEmail, subject, html: finalHtml });
+      const info = await t.sendMail({ from: getFromAddress(), to: booking.clientEmail, subject, html, text });
       console.log(`📧 Reminder sent to ${booking.clientEmail}: ${info.messageId}`);
 
       appendEmailLog(store, bookingId, {
@@ -384,14 +636,16 @@ h1{font-size:1.5rem;margin-bottom:0.5rem;color:#f9fafb;}p{font-size:0.9rem;line-
   // ── Enquiry email notifications ──────────────────────────────
 
   // Auto-reply to client when enquiry is submitted
-  app.post("/api/email/enquiry-received", async (req, res) => {
+  app.post("/api/email/enquiry-received", requireAuth, async (req, res) => {
     const t = getTransporter();
     if (!t) return res.status(503).json({ ok: false, error: "SMTP not configured" });
     const { to, clientName, eventTitle, preferredDate, preferredStartTime, preferredEndTime, message } = req.body;
     if (!to || !clientName) return res.status(400).json({ ok: false, error: "Missing required fields" });
-    const html = buildEnquiryReceivedHtml({ clientName, eventTitle, preferredDate, preferredStartTime, preferredEndTime, message: message || "" });
+    const params = { clientName, eventTitle, preferredDate, preferredStartTime, preferredEndTime, message: message || "", brandName: storeBrandName(store) };
+    const html = buildEnquiryReceivedHtml(params);
+    const text = buildEnquiryEmailText("received", params);
     try {
-      const info = await t.sendMail({ from: getFromAddress(), to, subject: "We've received your enquiry!", html });
+      const info = await t.sendMail({ from: getFromAddress(), to, subject: "We've received your enquiry!", html, text });
       console.log(`📧 Enquiry received auto-reply sent to ${to}: ${info.messageId}`);
       res.json({ ok: true, messageId: info.messageId });
     } catch (err) {
@@ -401,16 +655,18 @@ h1{font-size:1.5rem;margin-bottom:0.5rem;color:#f9fafb;}p{font-size:0.9rem;line-
   });
 
   // Notify client when enquiry is accepted and booking created
-  app.post("/api/email/enquiry-accepted", async (req, res) => {
+  app.post("/api/email/enquiry-accepted", requireAuth, async (req, res) => {
     const t = getTransporter();
     if (!t) return res.status(503).json({ ok: false, error: "SMTP not configured" });
     const { to, clientName, eventTitle, preferredDate, preferredStartTime, preferredEndTime, bookingId, modifyToken } = req.body;
     if (!to || !clientName) return res.status(400).json({ ok: false, error: "Missing required fields" });
     const appBaseUrl = req.body.appBaseUrl || `${req.protocol}://${req.get("host")}`;
     const modifyUrl = modifyToken && appBaseUrl ? `${appBaseUrl}/booking/modify/${modifyToken}` : null;
-    const html = buildEnquiryAcceptedHtml({ clientName, eventTitle, preferredDate, preferredStartTime, preferredEndTime, bookingId, modifyUrl });
+    const params = { clientName, eventTitle, preferredDate, preferredStartTime, preferredEndTime, bookingId, modifyUrl, brandName: storeBrandName(store) };
+    const html = buildEnquiryAcceptedHtml(params);
+    const text = buildEnquiryEmailText("accepted", params);
     try {
-      const info = await t.sendMail({ from: getFromAddress(), to, subject: "Your enquiry has been accepted!", html });
+      const info = await t.sendMail({ from: getFromAddress(), to, subject: "Your enquiry has been accepted!", html, text });
       console.log(`📧 Enquiry accepted email sent to ${to}: ${info.messageId}`);
       res.json({ ok: true, messageId: info.messageId });
     } catch (err) {
@@ -420,14 +676,16 @@ h1{font-size:1.5rem;margin-bottom:0.5rem;color:#f9fafb;}p{font-size:0.9rem;line-
   });
 
   // Notify client when enquiry is declined
-  app.post("/api/email/enquiry-declined", async (req, res) => {
+  app.post("/api/email/enquiry-declined", requireAuth, async (req, res) => {
     const t = getTransporter();
     if (!t) return res.status(503).json({ ok: false, error: "SMTP not configured" });
     const { to, clientName, adminNote } = req.body;
     if (!to || !clientName) return res.status(400).json({ ok: false, error: "Missing required fields" });
-    const html = buildEnquiryDeclinedHtml({ clientName, adminNote: adminNote || "" });
+    const params = { clientName, adminNote: adminNote || "", brandName: storeBrandName(store) };
+    const html = buildEnquiryDeclinedHtml(params);
+    const text = buildEnquiryEmailText("declined", params);
     try {
-      const info = await t.sendMail({ from: getFromAddress(), to, subject: "Update on your photography enquiry", html });
+      const info = await t.sendMail({ from: getFromAddress(), to, subject: "Update on your photography enquiry", html, text });
       console.log(`📧 Enquiry declined email sent to ${to}: ${info.messageId}`);
       res.json({ ok: true, messageId: info.messageId });
     } catch (err) {
@@ -440,173 +698,157 @@ h1{font-size:1.5rem;margin-bottom:0.5rem;color:#f9fafb;}p{font-size:0.9rem;line-
 // ── Reminder Email HTML ───────────────────────────────────
 function buildReminderEmailHtml({ clientName, eventTitle, date, time, duration,
   isPaymentReminder, paymentStatus, totalPrice, depositPaid, remaining,
-  bookingId, modifyUrl, calendarUrl }) {
+  bookingId, modifyUrl, calendarUrl, trackingPixelUrl, brandName }) {
+  const due = Number(remaining) > 0 ? Number(remaining) : Number(totalPrice) || 0;
+  const rows = [
+    { label: "Session", value: eventTitle || "Booking", emphasis: true },
+    { label: "Date", value: formatDateNice(date) },
+    { label: "Time", value: formatTime12(time), emphasis: true },
+    { label: "Duration", value: formatDuration(duration) },
+    isPaymentReminder ? { label: "Total", value: formatMoney(totalPrice) } : null,
+    isPaymentReminder && Number(depositPaid) > 0 ? { label: "Deposit received", value: formatMoney(depositPaid), tone: "success" } : null,
+    isPaymentReminder ? { label: "Amount due", value: formatMoney(due), tone: "warning", emphasis: true } : null,
+  ].filter(Boolean);
+  const callout = isPaymentReminder
+    ? buildCallout("Payment outstanding", `Please use booking reference ${bookingId} as the payment description. If you’ve already paid, no action is needed.`, "warning")
+    : buildCallout("Your session is coming up", "We’re looking forward to seeing you. Please review the date and time below and arrive ready for your session.", "success");
+  return buildEmailDocument({
+    title: isPaymentReminder ? "Payment reminder" : "Booking reminder",
+    preheader: isPaymentReminder ? `${formatMoney(due)} remains due for ${eventTitle}` : `${eventTitle} is coming up on ${formatDateNice(date)}`,
+    greeting: `Hi ${clientName || "there"},`,
+    intro: isPaymentReminder
+      ? "This is a friendly reminder that payment is still outstanding for your booking."
+      : "A quick reminder with the details for your upcoming photography session.",
+    bodyHtml: `${buildSummaryCard(rows)}${callout}`,
+    primaryAction: safeHttpUrl(modifyUrl)
+      ? { label: isPaymentReminder ? "View payment and booking" : "View or manage booking", url: modifyUrl }
+      : safeHttpUrl(calendarUrl) ? { label: "Add to Google Calendar", url: calendarUrl } : null,
+    secondaryAction: !isPaymentReminder && safeHttpUrl(modifyUrl) && safeHttpUrl(calendarUrl)
+      ? { label: "Add to Google Calendar", url: calendarUrl }
+      : null,
+    reference: bookingId,
+    trackingPixelUrl,
+    brandName,
+  });
+}
 
-  const paymentSection = isPaymentReminder ? `
-    <div style="background:#451a03;border:1px solid #78350f;border-radius:8px;padding:14px;margin:20px 0;">
-      <p style="color:#fbbf24;font-size:13px;margin:0;line-height:1.5;">
-        <strong>💰 Payment Outstanding</strong><br>
-        Total: <strong>$${totalPrice}</strong>${depositPaid > 0 ? ` · Deposit paid: <strong>$${depositPaid}</strong>` : ""}<br>
-        <strong style="color:#f59e0b;">Amount due: $${remaining > 0 ? remaining : totalPrice}</strong><br>
-        Please use booking ref <strong>${bookingId}</strong> as the payment description.
-      </p>
-    </div>` : "";
-
-  const bookingSection = !isPaymentReminder ? `
-    <div style="background:#1a2e1a;border:1px solid #166534;border-radius:8px;padding:14px;margin:20px 0;">
-      <p style="color:#86efac;font-size:13px;margin:0;line-height:1.5;">
-        <strong>📅 Your session is coming up!</strong><br>
-        We look forward to seeing you. Please arrive on time.
-      </p>
-    </div>` : "";
-
-  return `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
-<body style="margin:0;padding:0;background:#0a0a0a;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;">
-  <div style="max-width:560px;margin:40px auto;background:#111111;border-radius:16px;overflow:hidden;border:1px solid #1f1f1f;">
-    <div style="background:linear-gradient(135deg,#1a1a2e 0%,#16213e 100%);padding:32px 32px 24px;text-align:center;border-bottom:1px solid #1f1f1f;">
-      <div style="width:52px;height:52px;background:rgba(139,92,246,0.2);border-radius:50%;display:inline-flex;align-items:center;justify-content:center;margin-bottom:16px;font-size:24px;">${isPaymentReminder ? "💰" : "📷"}</div>
-      <h1 style="color:#e5e7eb;font-size:22px;font-weight:700;margin:0 0 6px;">${isPaymentReminder ? "Payment Reminder" : "Booking Reminder"}</h1>
-      <p style="color:#6b7280;font-size:14px;margin:0;">Hi ${clientName}, this is a friendly reminder.</p>
-    </div>
-    <div style="padding:28px 32px;">
-      <table style="width:100%;border-collapse:collapse;">
-        <tbody>
-          <tr><td style="padding:6px 0;color:#9ca3af;font-size:14px;border-top:1px solid #1f1f1f;">Event</td><td style="padding:6px 0;color:#e5e7eb;font-size:14px;text-align:right;font-weight:600;border-top:1px solid #1f1f1f;">${eventTitle}</td></tr>
-          <tr><td style="padding:6px 0;color:#9ca3af;font-size:14px;">Date</td><td style="padding:6px 0;color:#e5e7eb;font-size:14px;text-align:right;">${formatDateNice(date)}</td></tr>
-          <tr><td style="padding:6px 0;color:#9ca3af;font-size:14px;">Time</td><td style="padding:6px 0;color:#8b5cf6;font-size:14px;text-align:right;font-weight:600;">${formatTime12(time)}</td></tr>
-          <tr><td style="padding:6px 0;color:#9ca3af;font-size:14px;">Duration</td><td style="padding:6px 0;color:#e5e7eb;font-size:14px;text-align:right;">${formatDuration(duration)}</td></tr>
-        </tbody>
-      </table>
-      ${paymentSection}
-      ${bookingSection}
-      <div style="margin-top:24px;">
-        ${!isPaymentReminder ? `<a href="${calendarUrl}" style="display:block;background:#8b5cf6;color:#ffffff;text-decoration:none;text-align:center;padding:14px 20px;border-radius:10px;font-size:14px;font-weight:600;margin-bottom:10px;">📅 Add to Google Calendar</a>` : ""}
-        ${isPaymentReminder && modifyUrl ? `<a href="${modifyUrl}" style="display:block;background:#8b5cf6;color:#ffffff;text-decoration:none;text-align:center;padding:14px 20px;border-radius:10px;font-size:14px;font-weight:600;margin-bottom:10px;">💳 Pay Now Securely</a>` : ""}
-        ${modifyUrl ? `<a href="${modifyUrl}" style="display:block;background:transparent;color:#9ca3af;text-decoration:none;text-align:center;padding:12px 20px;border-radius:10px;font-size:13px;border:1px solid #374151;">${isPaymentReminder ? "View Booking &amp; Manage" : "View Booking &amp; Manage →"}</a>` : ""}
-      </div>
-    </div>
-    <div style="padding:20px 32px;border-top:1px solid #1f1f1f;text-align:center;">
-      <p style="color:#4b5563;font-size:12px;margin:0;">Questions? Simply reply to this email.<br>Ref: <span style="color:#6b7280;">${bookingId}</span></p>
-    </div>
-  </div>
-</body></html>`;
+function buildReminderEmailText(params) {
+  const due = Number(params.remaining) > 0 ? Number(params.remaining) : Number(params.totalPrice) || 0;
+  const rows = [
+    { label: "Session", value: params.eventTitle || "Booking" },
+    { label: "Date", value: formatDateNice(params.date) },
+    { label: "Time", value: formatTime12(params.time) },
+    { label: "Duration", value: formatDuration(params.duration) },
+    params.isPaymentReminder ? { label: "Total", value: formatMoney(params.totalPrice) } : null,
+    params.isPaymentReminder && Number(params.depositPaid) > 0 ? { label: "Deposit received", value: formatMoney(params.depositPaid) } : null,
+    params.isPaymentReminder ? { label: "Amount due", value: formatMoney(due) } : null,
+  ].filter(Boolean);
+  return buildEmailText({
+    title: params.isPaymentReminder ? "Payment reminder" : "Booking reminder",
+    greeting: `Hi ${params.clientName || "there"},`,
+    intro: params.isPaymentReminder ? "Payment is still outstanding for your booking." : "Your photography session is coming up.",
+    rows,
+    sections: params.isPaymentReminder ? [`Please use booking reference ${params.bookingId} as the payment description.`] : [],
+    actions: [
+      safeHttpUrl(params.modifyUrl) ? { label: "View or manage booking", url: params.modifyUrl } : null,
+      !params.isPaymentReminder && safeHttpUrl(params.calendarUrl) ? { label: "Add to Google Calendar", url: params.calendarUrl } : null,
+    ].filter(Boolean),
+    reference: params.bookingId,
+  });
 }
 
 // ── Enquiry Email HTML builders ───────────────────────────────
 
-function buildEnquiryReceivedHtml({ clientName, eventTitle, preferredDate, preferredStartTime, preferredEndTime, message }) {
-  const detailRows = [
-    eventTitle ? `<tr><td style="padding:6px 0;color:#9ca3af;font-size:14px;border-top:1px solid #1f1f1f;">Event type</td><td style="padding:6px 0;color:#e5e7eb;font-size:14px;text-align:right;font-weight:600;border-top:1px solid #1f1f1f;">${eventTitle}</td></tr>` : "",
-    preferredDate ? `<tr><td style="padding:6px 0;color:#9ca3af;font-size:14px;">Preferred date</td><td style="padding:6px 0;color:#e5e7eb;font-size:14px;text-align:right;">${formatDateNice(preferredDate)}</td></tr>` : "",
-    (preferredStartTime || preferredEndTime) ? `<tr><td style="padding:6px 0;color:#9ca3af;font-size:14px;">Preferred time</td><td style="padding:6px 0;color:#8b5cf6;font-size:14px;text-align:right;font-weight:600;">${[preferredStartTime, preferredEndTime].filter(Boolean).map(formatTime12).join(" – ")}</td></tr>` : "",
-  ].filter(Boolean).join("");
-
-  return `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
-<body style="margin:0;padding:0;background:#0a0a0a;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;">
-  <div style="max-width:560px;margin:40px auto;background:#111111;border-radius:16px;overflow:hidden;border:1px solid #1f1f1f;">
-    <div style="background:linear-gradient(135deg,#1a1a2e 0%,#16213e 100%);padding:32px 32px 24px;text-align:center;border-bottom:1px solid #1f1f1f;">
-      <div style="width:52px;height:52px;background:rgba(139,92,246,0.2);border-radius:50%;display:inline-flex;align-items:center;justify-content:center;margin-bottom:16px;font-size:24px;">📬</div>
-      <h1 style="color:#e5e7eb;font-size:22px;font-weight:700;margin:0 0 6px;">Enquiry Received!</h1>
-      <p style="color:#6b7280;font-size:14px;margin:0;">Hi ${clientName}, we've received your enquiry and will get back to you shortly.</p>
-    </div>
-    <div style="padding:28px 32px;">
-      ${detailRows ? `<table style="width:100%;border-collapse:collapse;margin-bottom:20px;"><tbody>${detailRows}</tbody></table>` : ""}
-      <div style="background:#1a1a2e;border:1px solid #2d2d4e;border-radius:8px;padding:14px;margin-bottom:20px;">
-        <p style="color:#9ca3af;font-size:12px;margin:0 0 6px;text-transform:uppercase;letter-spacing:0.05em;">Your message</p>
-        <p style="color:#e5e7eb;font-size:13px;margin:0;white-space:pre-line;">${message}</p>
-      </div>
-      <div style="background:#1a2e1a;border:1px solid #166534;border-radius:8px;padding:14px;">
-        <p style="color:#86efac;font-size:13px;margin:0;line-height:1.5;">
-          <strong>✅ What happens next?</strong><br>
-          We'll review your enquiry and reach out to confirm availability and next steps.
-        </p>
-      </div>
-    </div>
-    <div style="padding:20px 32px;border-top:1px solid #1f1f1f;text-align:center;">
-      <p style="color:#4b5563;font-size:12px;margin:0;">Questions? Simply reply to this email.</p>
-    </div>
-  </div>
-</body></html>`;
+function buildEnquiryReceivedHtml({ clientName, eventTitle, preferredDate, preferredStartTime, preferredEndTime, message, brandName }) {
+  const rows = enquirySummaryRows({ eventTitle, preferredDate, preferredStartTime, preferredEndTime });
+  return buildEmailDocument({
+    title: "Enquiry received",
+    preheader: "We’ve received your photography enquiry.",
+    greeting: `Hi ${clientName || "there"},`,
+    intro: "Thanks for getting in touch. We’ve received your enquiry and will review the details shortly.",
+    bodyHtml: `${buildSummaryCard(rows)}${message ? buildCallout("Your message", message) : ""}${buildCallout("What happens next", "We’ll confirm availability and contact you with the next steps.", "success")}`,
+    brandName,
+  });
 }
 
-function buildEnquiryAcceptedHtml({ clientName, eventTitle, preferredDate, preferredStartTime, preferredEndTime, bookingId, modifyUrl }) {
-  const detailRows = [
-    eventTitle ? `<tr><td style="padding:6px 0;color:#9ca3af;font-size:14px;border-top:1px solid #1f1f1f;">Event type</td><td style="padding:6px 0;color:#e5e7eb;font-size:14px;text-align:right;font-weight:600;border-top:1px solid #1f1f1f;">${eventTitle}</td></tr>` : "",
-    preferredDate ? `<tr><td style="padding:6px 0;color:#9ca3af;font-size:14px;">Date</td><td style="padding:6px 0;color:#e5e7eb;font-size:14px;text-align:right;">${formatDateNice(preferredDate)}</td></tr>` : "",
-    (preferredStartTime || preferredEndTime) ? `<tr><td style="padding:6px 0;color:#9ca3af;font-size:14px;">Time</td><td style="padding:6px 0;color:#8b5cf6;font-size:14px;text-align:right;font-weight:600;">${[preferredStartTime, preferredEndTime].filter(Boolean).map(formatTime12).join(" – ")}</td></tr>` : "",
-  ].filter(Boolean).join("");
-
-  return `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
-<body style="margin:0;padding:0;background:#0a0a0a;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;">
-  <div style="max-width:560px;margin:40px auto;background:#111111;border-radius:16px;overflow:hidden;border:1px solid #1f1f1f;">
-    <div style="background:linear-gradient(135deg,#1a1a2e 0%,#16213e 100%);padding:32px 32px 24px;text-align:center;border-bottom:1px solid #1f1f1f;">
-      <div style="width:52px;height:52px;background:rgba(34,197,94,0.15);border-radius:50%;display:inline-flex;align-items:center;justify-content:center;margin-bottom:16px;font-size:24px;">✅</div>
-      <h1 style="color:#e5e7eb;font-size:22px;font-weight:700;margin:0 0 6px;">Enquiry Accepted!</h1>
-      <p style="color:#6b7280;font-size:14px;margin:0;">Hi ${clientName}, great news — we'd love to work with you!</p>
-    </div>
-    <div style="padding:28px 32px;">
-      ${detailRows ? `<table style="width:100%;border-collapse:collapse;margin-bottom:20px;"><tbody>${detailRows}</tbody></table>` : ""}
-      <div style="background:#1a2e1a;border:1px solid #166534;border-radius:8px;padding:14px;margin-bottom:20px;">
-        <p style="color:#86efac;font-size:13px;margin:0;line-height:1.5;">
-          <strong>🎉 Your booking has been created!</strong><br>
-          We'll be in touch shortly to confirm all the details and arrange payment.
-        </p>
-      </div>
-      ${modifyUrl ? `<a href="${modifyUrl}" style="display:block;background:#8b5cf6;color:#ffffff;text-decoration:none;text-align:center;padding:14px 20px;border-radius:10px;font-size:14px;font-weight:600;">View Your Booking →</a>` : ""}
-    </div>
-    <div style="padding:20px 32px;border-top:1px solid #1f1f1f;text-align:center;">
-      <p style="color:#4b5563;font-size:12px;margin:0;">Questions? Simply reply to this email.${bookingId ? `<br>Ref: <span style="color:#6b7280;">${bookingId}</span>` : ""}</p>
-    </div>
-  </div>
-</body></html>`;
+function buildEnquiryAcceptedHtml({ clientName, eventTitle, preferredDate, preferredStartTime, preferredEndTime, bookingId, modifyUrl, brandName }) {
+  const rows = enquirySummaryRows({ eventTitle, preferredDate, preferredStartTime, preferredEndTime });
+  return buildEmailDocument({
+    title: "Enquiry accepted",
+    preheader: "Good news — your enquiry has been accepted.",
+    greeting: `Hi ${clientName || "there"},`,
+    intro: "Good news — we’d love to work with you. Your booking has been created with the details below.",
+    bodyHtml: `${buildSummaryCard(rows)}${buildCallout("Next steps", "We’ll be in touch to confirm the remaining details and payment arrangements.", "success")}`,
+    primaryAction: safeHttpUrl(modifyUrl) ? { label: "View your booking", url: modifyUrl } : null,
+    reference: bookingId,
+    brandName,
+  });
 }
 
-function buildEnquiryDeclinedHtml({ clientName, adminNote }) {
-  return `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
-<body style="margin:0;padding:0;background:#0a0a0a;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;">
-  <div style="max-width:560px;margin:40px auto;background:#111111;border-radius:16px;overflow:hidden;border:1px solid #1f1f1f;">
-    <div style="background:linear-gradient(135deg,#1a1a2e 0%,#16213e 100%);padding:32px 32px 24px;text-align:center;border-bottom:1px solid #1f1f1f;">
-      <div style="width:52px;height:52px;background:rgba(107,114,128,0.15);border-radius:50%;display:inline-flex;align-items:center;justify-content:center;margin-bottom:16px;font-size:24px;">📋</div>
-      <h1 style="color:#e5e7eb;font-size:22px;font-weight:700;margin:0 0 6px;">Enquiry Update</h1>
-      <p style="color:#6b7280;font-size:14px;margin:0;">Hi ${clientName}, thank you for reaching out.</p>
-    </div>
-    <div style="padding:28px 32px;">
-      <p style="color:#9ca3af;font-size:14px;line-height:1.6;margin:0 0 16px;">
-        Unfortunately we're unable to accommodate your enquiry at this time.
-      </p>
-      ${adminNote ? `
-      <div style="background:#1f1f1f;border:1px solid #374151;border-radius:8px;padding:14px;margin-bottom:20px;">
-        <p style="color:#9ca3af;font-size:12px;margin:0 0 6px;text-transform:uppercase;letter-spacing:0.05em;">Note from us</p>
-        <p style="color:#e5e7eb;font-size:13px;margin:0;white-space:pre-line;">${adminNote}</p>
-      </div>` : ""}
-      <p style="color:#9ca3af;font-size:13px;line-height:1.6;margin:0;">
-        We hope to work with you in the future. Feel free to reach out again for different dates or requirements.
-      </p>
-    </div>
-    <div style="padding:20px 32px;border-top:1px solid #1f1f1f;text-align:center;">
-      <p style="color:#4b5563;font-size:12px;margin:0;">Questions? Simply reply to this email.</p>
-    </div>
-  </div>
-</body></html>`;
+function buildEnquiryDeclinedHtml({ clientName, adminNote, brandName }) {
+  return buildEmailDocument({
+    title: "An update on your enquiry",
+    preheader: "An update from the photography team.",
+    greeting: `Hi ${clientName || "there"},`,
+    intro: "Thank you for considering us. Unfortunately, we’re unable to accommodate your enquiry at this time.",
+    bodyHtml: `${adminNote ? buildCallout("A note from us", adminNote) : ""}<p style="margin:0;color:#475569;font-family:Arial,sans-serif;font-size:14px;line-height:1.7;">We hope to work with you in the future. You’re welcome to contact us again with different dates or requirements.</p>`,
+    brandName,
+  });
+}
+
+function enquirySummaryRows({ eventTitle, preferredDate, preferredStartTime, preferredEndTime }) {
+  return [
+    eventTitle ? { label: "Session", value: eventTitle, emphasis: true } : null,
+    preferredDate ? { label: "Preferred date", value: formatDateNice(preferredDate) } : null,
+    preferredStartTime || preferredEndTime
+      ? { label: "Preferred time", value: [preferredStartTime, preferredEndTime].filter(Boolean).map(formatTime12).join(" – ") }
+      : null,
+  ].filter(Boolean);
+}
+
+function buildEnquiryEmailText(kind, params) {
+  const rows = enquirySummaryRows(params);
+  if (kind === "received") return buildEmailText({
+    title: "Enquiry received",
+    greeting: `Hi ${params.clientName || "there"},`,
+    intro: "Thanks for getting in touch. We’ve received your enquiry and will contact you with the next steps.",
+    rows,
+    sections: params.message ? [`Your message:\n${cleanPlainText(params.message)}`] : [],
+  });
+  if (kind === "accepted") return buildEmailText({
+    title: "Enquiry accepted",
+    greeting: `Hi ${params.clientName || "there"},`,
+    intro: "Good news — we’d love to work with you. Your booking has been created.",
+    rows,
+    actions: safeHttpUrl(params.modifyUrl) ? [{ label: "View your booking", url: params.modifyUrl }] : [],
+    reference: params.bookingId,
+  });
+  return buildEmailText({
+    title: "An update on your enquiry",
+    greeting: `Hi ${params.clientName || "there"},`,
+    intro: "Thank you for considering us. Unfortunately, we’re unable to accommodate your enquiry at this time.",
+    sections: params.adminNote ? [`A note from us:\n${cleanPlainText(params.adminNote)}`] : [],
+  });
 }
 
 // ── Invoice Paid Confirmation Email ──────────────────────────
-function escapeHtml(str) {
-  return String(str || "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
 async function sendInvoicePaidEmail(invoice, shareUrl) {
   const t = getTransporter();
   if (!t || !invoice?.to?.email) return { ok: false, reason: "not_configured" };
+
+  const message = buildInvoicePaidEmail(invoice, shareUrl);
+
+  try {
+    const info = await t.sendMail({ from: getFromAddress(), to: invoice.to.email, ...message });
+    console.log(`📧 Invoice paid confirmation sent to ${invoice.to.email}: ${info.messageId}`);
+    return { ok: true, messageId: info.messageId };
+  } catch (err) {
+    console.error("📧 Invoice paid email error:", err.message);
+    return { ok: false, error: err.message };
+  }
+}
+
+function buildInvoicePaidEmail(invoice, shareUrl) {
 
   const sub = (invoice.items || []).reduce((s, it) => s + it.quantity * it.unitPrice, 0);
   const disc = invoice.discount || 0;
@@ -618,43 +860,237 @@ async function sendInvoicePaidEmail(invoice, shareUrl) {
     ? new Date(invoice.paidAt).toLocaleDateString("en-AU", { day: "numeric", month: "long", year: "numeric" })
     : new Date().toLocaleDateString("en-AU", { day: "numeric", month: "long", year: "numeric" });
 
-  // Validate shareUrl to only allow known-safe https:// links
-  const safeShareUrl = shareUrl && /^https?:\/\//.test(shareUrl) ? shareUrl : null;
+  const safeShareUrl = safeHttpUrl(shareUrl);
+  const clientName = invoice.to?.name || "there";
+  const invoiceNumber = String(invoice.number || "");
+  const currency = String(invoice.currency || "AUD").toUpperCase().slice(0, 3);
+  const rows = [
+    { label: "Invoice", value: invoiceNumber, emphasis: true },
+    { label: "Paid on", value: paidAt },
+    { label: "Total paid", value: formatMoney(total, currency), tone: "success", emphasis: true },
+  ];
+  const subject = cleanEmailSubject(`Payment Received — ${invoiceNumber}`);
+  const html = buildEmailDocument({
+    title: "Payment received",
+    preheader: `${formatMoney(total, currency)} received for invoice ${invoiceNumber}`,
+    greeting: `Hi ${clientName},`,
+    intro: "Thank you. We’ve received your payment and marked the invoice as paid.",
+    bodyHtml: `${buildSummaryCard(rows)}${buildCallout("Payment complete", "No further action is required. Keep this email for your records.", "success")}`,
+    primaryAction: safeShareUrl ? { label: "View invoice", url: safeShareUrl } : null,
+    reference: invoiceNumber,
+    brandName: invoice.from?.name || DEFAULT_EMAIL_BRAND,
+  });
+  const text = buildEmailText({
+    title: "Payment received",
+    greeting: `Hi ${clientName},`,
+    intro: "Thank you. We’ve received your payment and marked the invoice as paid.",
+    rows,
+    actions: safeShareUrl ? [{ label: "View invoice", url: safeShareUrl }] : [],
+    reference: invoiceNumber,
+  });
+  return { subject, html, text };
+}
 
-  const clientName = escapeHtml(invoice.to?.name || "there");
-  const invoiceNumber = escapeHtml(invoice.number || "");
+function buildBookingUpdateEmail({
+  updateType,
+  clientName,
+  eventTitle,
+  date,
+  time,
+  duration,
+  location,
+  bookingId,
+  modifyUrl,
+  previousDate,
+  previousTime,
+  brandName = DEFAULT_EMAIL_BRAND,
+}) {
+  const cancelled = updateType === "cancel" || updateType === "cancelled";
+  const title = cancelled ? "Booking cancelled" : "Booking rescheduled";
+  const rows = [
+    { label: "Session", value: eventTitle || "Booking", emphasis: true },
+    !cancelled && previousDate ? { label: "Previous date", value: formatDateNice(previousDate) } : null,
+    !cancelled && previousTime ? { label: "Previous time", value: formatTime12(previousTime) } : null,
+    { label: cancelled ? "Cancelled session date" : "New date", value: formatDateNice(date) },
+    { label: cancelled ? "Cancelled session time" : "New time", value: formatTime12(time), emphasis: !cancelled },
+    Number(duration) > 0 ? { label: "Duration", value: formatDuration(duration) } : null,
+    location ? { label: "Location", value: location } : null,
+  ].filter(Boolean);
+  const intro = cancelled
+    ? "Your booking has been cancelled. The session details are included below for your records."
+    : "Your booking has been moved. Please review the updated date and time below.";
+  const callout = cancelled
+    ? buildCallout("Cancellation confirmed", "No further action is required. If a payment was made, reply to this email with any refund questions.", "warning")
+    : buildCallout("Schedule updated", "Please update any personal calendar entries. The booking link always shows the latest details.", "success");
+  const subject = cleanEmailSubject(`${title} — ${eventTitle || "Booking"}`);
+  return {
+    subject,
+    html: buildEmailDocument({
+      title,
+      preheader: cancelled ? `${eventTitle || "Your session"} has been cancelled.` : `${eventTitle || "Your session"} is now ${formatDateNice(date)} at ${formatTime12(time)}.`,
+      greeting: `Hi ${clientName || "there"},`,
+      intro,
+      bodyHtml: `${buildSummaryCard(rows)}${callout}`,
+      primaryAction: safeHttpUrl(modifyUrl) ? { label: "View booking details", url: modifyUrl } : null,
+      reference: bookingId,
+      brandName,
+    }),
+    text: buildEmailText({
+      title,
+      greeting: `Hi ${clientName || "there"},`,
+      intro,
+      rows,
+      actions: safeHttpUrl(modifyUrl) ? [{ label: "View booking details", url: modifyUrl }] : [],
+      reference: bookingId,
+    }),
+  };
+}
 
-  const subject = `Payment Received — ${invoice.number}`;
-  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
-<body style="margin:0;padding:0;background:#0a0a0a;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;">
-  <div style="max-width:560px;margin:40px auto;background:#111111;border-radius:16px;overflow:hidden;border:1px solid #1f1f1f;">
-    <div style="background:linear-gradient(135deg,#052e16 0%,#14532d 100%);padding:32px 32px 24px;text-align:center;border-bottom:1px solid #166534;">
-      <div style="width:52px;height:52px;background:rgba(34,197,94,0.2);border-radius:50%;display:inline-flex;align-items:center;justify-content:center;margin-bottom:16px;font-size:28px;">✅</div>
-      <h1 style="color:#22c55e;font-size:22px;font-weight:700;margin:0 0 6px;">Payment Received</h1>
-      <p style="color:#86efac;font-size:14px;margin:0;">Thank you — your invoice has been paid.</p>
-    </div>
-    <div style="padding:28px 32px;">
-      <p style="color:#9ca3af;font-size:14px;margin:0 0 20px;">Hi ${clientName},<br>We've received your payment for invoice <strong style="color:#e5e7eb;">${invoiceNumber}</strong>. Paid on ${escapeHtml(paidAt)}.</p>
-      <table style="width:100%;border-collapse:collapse;background:#1a1a1a;border-radius:8px;overflow:hidden;margin-bottom:24px;">
-        <tr><td style="padding:10px 16px;color:#9ca3af;font-size:14px;">Invoice</td><td style="padding:10px 16px;color:#e5e7eb;font-size:14px;text-align:right;">${invoiceNumber}</td></tr>
-        <tr style="border-top:1px solid #333;"><td style="padding:10px 16px;color:#9ca3af;font-size:14px;font-weight:bold;">Total Paid</td><td style="padding:10px 16px;color:#22c55e;font-size:18px;font-weight:bold;text-align:right;">$${total.toFixed(2)}</td></tr>
-      </table>
-      ${safeShareUrl ? `<a href="${safeShareUrl}" style="display:inline-block;padding:12px 24px;background:#7c3aed;color:#ffffff;text-decoration:none;border-radius:10px;font-size:14px;font-weight:600;">View Invoice →</a>` : ""}
-    </div>
-    <div style="padding:20px 32px;border-top:1px solid #1f1f1f;text-align:center;">
-      <p style="color:#4b5563;font-size:12px;margin:0;">Questions? Simply reply to this email.<br>Ref: <span style="color:#6b7280;">${invoiceNumber}</span></p>
-    </div>
-  </div>
-</body></html>`;
-
+async function sendBookingUpdateEmail({ transport = null, fromAddress = null, to, store = null, ...params }) {
+  const t = transport || getTransporter();
+  if (!t) return { ok: false, reason: "not_configured" };
+  const message = buildBookingUpdateEmail(params);
   try {
-    const info = await t.sendMail({ from: getFromAddress(), to: invoice.to.email, subject, html });
-    console.log(`📧 Invoice paid confirmation sent to ${invoice.to.email}: ${info.messageId}`);
+    const info = await t.sendMail({ from: fromAddress || getFromAddress(), to, ...message });
+    if (store && params.bookingId) {
+      appendEmailLog(store, params.bookingId, {
+        id: randomUUID(),
+        type: params.updateType === "cancel" || params.updateType === "cancelled" ? "booking-cancelled" : "booking-rescheduled",
+        sentAt: new Date().toISOString(),
+        subject: message.subject,
+        to,
+      });
+    }
     return { ok: true, messageId: info.messageId };
-  } catch (err) {
-    console.error("📧 Invoice paid email error:", err.message);
-    return { ok: false, error: err.message };
+  } catch (error) {
+    return { ok: false, error: error?.message || "Email delivery failed" };
   }
+}
+
+function buildGalleryDeliveryEmail({ clientName, albumTitle, galleryUrl, accessCode = "", photoCount, brandName = DEFAULT_EMAIL_BRAND }) {
+  const safeGalleryUrl = safeHttpUrl(galleryUrl);
+  const rows = [
+    { label: "Gallery", value: albumTitle || "Photo gallery", emphasis: true },
+    Number(photoCount) > 0 ? { label: "Photos", value: String(Math.floor(Number(photoCount))) } : null,
+    accessCode ? { label: "Access code", value: accessCode, emphasis: true } : null,
+  ].filter(Boolean);
+  const subject = cleanEmailSubject(`Your gallery is ready — ${albumTitle || "Photo gallery"}`);
+  return {
+    subject,
+    html: buildEmailDocument({
+      title: "Your gallery is ready",
+      preheader: `${albumTitle || "Your photo gallery"} is ready to view.`,
+      greeting: `Hi ${clientName || "there"},`,
+      intro: "Your photographs are ready. Use the secure gallery link below to view and download the available images.",
+      bodyHtml: `${buildSummaryCard(rows)}${accessCode ? buildCallout("Keep your access code private", "Enter the code shown above when the gallery asks for it. Please do not post it publicly.") : ""}`,
+      primaryAction: safeGalleryUrl ? { label: "View and download gallery", url: safeGalleryUrl } : null,
+      brandName,
+    }),
+    text: buildEmailText({
+      title: "Your gallery is ready",
+      greeting: `Hi ${clientName || "there"},`,
+      intro: "Your photographs are ready to view and download.",
+      rows,
+      actions: safeGalleryUrl ? [{ label: "Open gallery", url: safeGalleryUrl }] : [],
+    }),
+  };
+}
+
+function buildClientPortalEmail({ albums = [], brandName = DEFAULT_EMAIL_BRAND }) {
+  const safeAlbums = albums.map(album => ({ title: String(album?.title || "Photo gallery"), url: safeHttpUrl(album?.url) })).filter(album => album.url);
+  const linksHtml = safeAlbums.length
+    ? `<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="width:100%;border-collapse:separate;border-spacing:0;background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;">${safeAlbums.map((album, index) => `<tr><td style="padding:14px 16px;${index ? "border-top:1px solid #e2e8f0;" : ""}"><a href="${escapeHtml(album.url)}" style="color:#6d28d9;font-family:Arial,sans-serif;font-size:14px;font-weight:700;line-height:1.5;text-decoration:none;">${escapeHtml(album.title)} →</a></td></tr>`).join("")}</table>`
+    : buildCallout("No active galleries", "There are currently no active galleries available from this photographer.");
+  const subject = cleanEmailSubject(`Your galleries from ${brandName}`);
+  return {
+    subject,
+    html: buildEmailDocument({
+      title: "Your client galleries",
+      preheader: `${safeAlbums.length} secure ${safeAlbums.length === 1 ? "gallery is" : "galleries are"} available.`,
+      intro: "Use the secure links below to return to your available galleries. These links are intended only for you.",
+      bodyHtml: linksHtml,
+      brandName,
+      footerNote: "If you did not request these links, you can safely ignore this email.",
+    }),
+    text: buildEmailText({
+      title: "Your client galleries",
+      intro: "Use the secure links below to return to your available galleries. These links are intended only for you.",
+      actions: safeAlbums.map(album => ({ label: album.title, url: album.url })),
+      footerNote: "If you did not request these links, you can safely ignore this email.",
+    }),
+  };
+}
+
+function buildWaitlistEmail({ clientName, eventTitle, date, bookingUrl, brandName = DEFAULT_EMAIL_BRAND }) {
+  const safeBookingUrl = safeHttpUrl(bookingUrl);
+  const rows = [
+    { label: "Session", value: eventTitle || "Requested session", emphasis: true },
+    date ? { label: "Date", value: formatDateNice(date) || date } : null,
+  ].filter(Boolean);
+  const subject = cleanEmailSubject(`A spot opened up for ${eventTitle || "your session"}`);
+  return {
+    subject,
+    html: buildEmailDocument({
+      title: "A spot is available",
+      preheader: `Availability opened for ${eventTitle || "your requested session"}.`,
+      greeting: `Hi ${clientName || "there"},`,
+      intro: "A spot has opened for a session you joined the waitlist for. Availability may be limited and is not held until booking is completed.",
+      bodyHtml: buildSummaryCard(rows),
+      primaryAction: safeBookingUrl ? { label: "Check availability and book", url: safeBookingUrl } : null,
+      brandName,
+    }),
+    text: buildEmailText({
+      title: "A spot is available",
+      greeting: `Hi ${clientName || "there"},`,
+      intro: "A spot has opened for a session you joined the waitlist for. Availability is not held until booking is completed.",
+      rows,
+      actions: safeBookingUrl ? [{ label: "Check availability and book", url: safeBookingUrl }] : [],
+    }),
+  };
+}
+
+function buildAdminAlertEmail({ title, intro = "", rows = [], message = "", actionUrl = "", actionLabel = "Open in admin", brandName = DEFAULT_EMAIL_BRAND }) {
+  const safeActionUrl = safeHttpUrl(actionUrl);
+  return {
+    html: buildEmailDocument({
+      title: title || "New notification",
+      preheader: intro || title,
+      intro,
+      bodyHtml: `${buildSummaryCard(rows)}${message ? buildCallout("Message", message) : ""}`,
+      primaryAction: safeActionUrl ? { label: actionLabel, url: safeActionUrl } : null,
+      brandName,
+      footerNote: "This administrative notification was generated by your photography platform.",
+    }),
+    text: buildEmailText({
+      title: title || "New notification",
+      intro,
+      rows,
+      sections: message ? [`Message:\n${cleanPlainText(message)}`] : [],
+      actions: safeActionUrl ? [{ label: actionLabel, url: safeActionUrl }] : [],
+      footerNote: "This administrative notification was generated by your photography platform.",
+    }),
+  };
+}
+
+function buildAutomationEmail({ subject, body, booking = {}, brandName = DEFAULT_EMAIL_BRAND }) {
+  const safeSubject = cleanEmailSubject(subject || "Booking update", "Booking update");
+  const safeBody = cleanPlainText(body || `Hi ${booking.clientName || "there"}, this is a reminder about your ${booking.type || "booking"}.`);
+  const rows = [
+    booking.type ? { label: "Session", value: booking.type, emphasis: true } : null,
+    booking.date ? { label: "Date", value: formatDateNice(booking.date) } : null,
+    booking.time ? { label: "Time", value: formatTime12(booking.time) } : null,
+  ].filter(Boolean);
+  return {
+    subject: safeSubject,
+    html: buildEmailDocument({
+      title: safeSubject,
+      preheader: safeBody.slice(0, 140),
+      bodyHtml: `${buildCallout("Message", safeBody)}${buildSummaryCard(rows)}`,
+      reference: booking.id,
+      brandName,
+    }),
+    text: buildEmailText({ title: safeSubject, sections: [safeBody], rows, reference: booking.id }),
+  };
 }
 
 /**
@@ -674,13 +1110,48 @@ async function sendEmail(smtpConfig, message) {
     secure: !!secure,
     auth: { user, pass },
   });
+  const subject = cleanEmailSubject(message?.subject || "Message");
+  const prepared = prepareCustomEmail({
+    subject,
+    html: message?.html,
+    text: message?.text,
+    brandName: smtpConfig?.brandName || DEFAULT_EMAIL_BRAND,
+  });
   return transporter.sendMail({
     from: from || user,
-    to: message.to,
-    subject: message.subject,
-    html: message.html,
-    text: message.text,
+    to: message?.to,
+    subject,
+    ...prepared,
   });
 }
 
-module.exports = { registerRoutes, getTransporter, getFromAddress, buildTenantTransporter, getTenantFromAddress, sendBookingConfirmationEmail, sendInvoicePaidEmail, buildReminderEmailHtml, sendEmail };
+module.exports = {
+  registerRoutes,
+  getTransporter,
+  getFromAddress,
+  buildTenantTransporter,
+  getTenantFromAddress,
+  escapeHtml,
+  safeHttpUrl,
+  buildEmailDocument,
+  prepareCustomEmail,
+  buildBookingEmailHtml,
+  buildBookingEmailText,
+  sendBookingConfirmationEmail,
+  buildReminderEmailHtml,
+  buildReminderEmailText,
+  buildEnquiryReceivedHtml,
+  buildEnquiryAcceptedHtml,
+  buildEnquiryDeclinedHtml,
+  buildEnquiryEmailText,
+  buildInvoicePaidEmail,
+  sendInvoicePaidEmail,
+  buildBookingUpdateEmail,
+  sendBookingUpdateEmail,
+  buildGalleryDeliveryEmail,
+  buildClientPortalEmail,
+  buildWaitlistEmail,
+  buildAdminAlertEmail,
+  buildAutomationEmail,
+  sendEmail,
+};

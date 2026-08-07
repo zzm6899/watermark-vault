@@ -13,6 +13,7 @@ import {
   ArrowUpDown, MoreHorizontal, TrendingUp, TrendingDown, Key, Globe, Wifi,
   Maximize2, Check, PlusCircle, Pencil, Tags, CalendarDays, Share2, ClipboardList,
   RadioTower, Smartphone, CalendarPlus, ImagePlus,
+  Archive, ArchiveRestore,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -26,13 +27,14 @@ import {
   getProfile, setProfile, getEventTypes, setEventTypes, addEventType,
   deleteEventType, updateEventType, getBookings, addBooking, deleteBooking,
   updateBooking, getSettings, setSettings, logout, isLoggedIn, isSetupComplete,
+  cacheBookingLocally,
   getAlbums, addAlbum, updateAlbum, deleteAlbum,
   getPhotoLibrary, setPhotoLibrary,
   getEmailTemplates, addEmailTemplate, updateEmailTemplate, deleteEmailTemplate,
   getInvoices, setInvoices as saveInvoices, addInvoice, updateInvoice, deleteInvoice, getNextInvoiceNumber,
   getContacts, setContacts as saveContacts, addContact, updateContact, deleteContact,
   getEnquiries, updateEnquiry, deleteEnquiry,
-  isSuperAdmin, setSuperAdmin, getAdminCredentials, hashPassword,
+  hashPassword,
   isSlotBooked,
 } from "@/lib/storage";
 import { compressImage, formatBytes, formatSpeed, getLocalStorageUsage, generateThumbnail } from "@/lib/image-utils";
@@ -88,7 +90,7 @@ import {
   createTenant,
   updateTenant,
   deleteTenant,
-  getSuperAdminInfo,
+  getAdminSession,
   getSuperStats,
   getAllBookings,
   getLicensePlans,
@@ -96,8 +98,6 @@ import {
   updateLicensePlan,
   deleteLicensePlan,
   getLicensePurchases,
-  activateBankPurchase,
-  getLicensePlanCheckout,
   getTenantSettings,
   saveTenantSettings,
   getSuperAdminWebhooks,
@@ -141,9 +141,13 @@ import {
   ensurePublicAlbumAvailable,
   saveAlbumToServer,
   autoCullAlbum,
+  adminLogout,
+  adminAuthHeaders,
+  setBookingArchiveState,
 } from "@/lib/api";
 import type { CacheBreakdown, EmailAutomationPreview, ManualEditParams, PresetEditParams, XmpPreset, PhotoEditRequest } from "@/lib/api";
 import RichTextEditor, { RichTextDisplay } from "@/components/RichTextEditor";
+import { richTextToPlainText } from "@/lib/rich-text";
 import LoginPage from "@/pages/LoginPage";
 import type {
   EventType, QuestionField, AvailabilitySlot,
@@ -153,11 +157,12 @@ import type {
   Enquiry, EnquiryStatus, LicenseKey, Tenant, LicensePlan, LicensePurchase, TenantSettings, EventSlotRequest,
   Expense, Quote, Tag, BookingTask, BookingSource, EmailAutomationRule, EmailAutomationReminderType, EmailAutomationTrigger,
 } from "@/lib/types";
-import WatermarkedImage from "@/components/WatermarkedImage";
 import ProgressiveImg from "@/components/ProgressiveImg";
 import PortfolioEditor from "@/components/admin/PortfolioEditor";
 import ZipOperationsPanel from "@/components/admin/ZipOperationsPanel";
 import { useBackfillThumbnails } from "@/hooks/use-backfill-thumbnails";
+import { generateCapabilityToken } from "@/lib/capability-token";
+import { drawServerAlignedWatermark } from "@/lib/watermark-render";
 import { Slider } from "@/components/ui/slider";
 import sampleLandscape from "@/assets/sample-landscape.jpg";
 import samplePortrait from "@/assets/sample-portrait.jpg";
@@ -525,31 +530,6 @@ async function loadOptionalImage(src?: string): Promise<HTMLImageElement | null>
   });
 }
 
-function computeWatermarkRect(
-  position: WatermarkPosition,
-  canvasWidth: number,
-  canvasHeight: number,
-  drawWidth: number,
-  drawHeight: number,
-) {
-  const padX = Math.max(16, canvasWidth * 0.03);
-  const padY = Math.max(16, canvasHeight * 0.03);
-
-  switch (position) {
-    case "top-left":
-      return { x: padX, y: padY };
-    case "top-right":
-      return { x: canvasWidth - drawWidth - padX, y: padY };
-    case "bottom-left":
-      return { x: padX, y: canvasHeight - drawHeight - padY };
-    case "bottom-right":
-      return { x: canvasWidth - drawWidth - padX, y: canvasHeight - drawHeight - padY };
-    case "center":
-    default:
-      return { x: (canvasWidth - drawWidth) / 2, y: (canvasHeight - drawHeight) / 2 };
-  }
-}
-
 async function bakeWatermarkedAsset(
   src: string,
   settings: WatermarkBakeSettings,
@@ -576,83 +556,7 @@ async function bakeWatermarkedAsset(
   if (!ctx) throw new Error("Canvas not available");
 
   ctx.drawImage(baseImg, 0, 0, width, height);
-
-  const opacity = Math.max(0.05, Math.min(0.95, (settings.watermarkOpacity ?? 15) / 100));
-  const sizePct = Math.max(10, Math.min(100, settings.watermarkSize ?? 40));
-  const position = settings.watermarkPosition ?? "center";
-  const shortSide = Math.min(width, height);
-
-  ctx.save();
-  ctx.globalAlpha = opacity;
-
-  if (position === "tiled") {
-    ctx.translate(width / 2, height / 2);
-    ctx.rotate((-30 * Math.PI) / 180);
-    ctx.translate(-width / 2, -height / 2);
-
-    const stepX = Math.max(140, width * 0.18);
-    const stepY = Math.max(110, height * 0.16);
-
-    if (watermarkImg) {
-      const tileH = Math.max(24, shortSide * (sizePct / 100) * 0.18);
-      const tileW = watermarkImg.width * (tileH / watermarkImg.height);
-      for (let y = -height * 0.4; y < height * 1.4; y += stepY) {
-        for (let x = -width * 0.4; x < width * 1.4; x += stepX) {
-          ctx.drawImage(watermarkImg, x, y, tileW, tileH);
-        }
-      }
-    } else {
-      ctx.fillStyle = "white";
-      ctx.strokeStyle = "rgba(0,0,0,0.22)";
-      ctx.lineWidth = Math.max(1, shortSide * 0.002);
-      ctx.textAlign = "left";
-      ctx.textBaseline = "top";
-      ctx.font = `600 ${Math.max(18, shortSide * (sizePct / 100) * 0.055)}px serif`;
-      const text = settings.watermarkText || "ZACMPHOTOS";
-      for (let y = -height * 0.4; y < height * 1.4; y += stepY) {
-        for (let x = -width * 0.4; x < width * 1.4; x += stepX) {
-          ctx.strokeText(text, x, y);
-          ctx.fillText(text, x, y);
-        }
-      }
-    }
-  } else if (watermarkImg) {
-    const drawWidth = Math.max(80, width * (sizePct / 100) * (position === "center" ? 0.55 : 0.3));
-    const drawHeight = drawWidth * (watermarkImg.height / watermarkImg.width);
-    const rect = computeWatermarkRect(position, width, height, drawWidth, drawHeight);
-    if (position === "center") {
-      ctx.translate(width / 2, height / 2);
-      ctx.rotate((-30 * Math.PI) / 180);
-      ctx.drawImage(watermarkImg, -drawWidth / 2, -drawHeight / 2, drawWidth, drawHeight);
-    } else {
-      ctx.drawImage(watermarkImg, rect.x, rect.y, drawWidth, drawHeight);
-    }
-  } else {
-    const text = settings.watermarkText || "ZACMPHOTOS";
-    const fontSize = Math.max(20, shortSide * (sizePct / 100) * (position === "center" ? 0.08 : 0.05));
-    ctx.font = `600 ${fontSize}px serif`;
-    ctx.textBaseline = "top";
-    ctx.fillStyle = "white";
-    ctx.strokeStyle = "rgba(0,0,0,0.28)";
-    ctx.lineWidth = Math.max(1, fontSize * 0.08);
-
-    const metrics = ctx.measureText(text);
-    const drawWidth = metrics.width;
-    const drawHeight = fontSize;
-    const rect = computeWatermarkRect(position, width, height, drawWidth, drawHeight);
-
-    if (position === "center") {
-      ctx.translate(width / 2, height / 2);
-      ctx.rotate((-30 * Math.PI) / 180);
-      ctx.strokeText(text, -drawWidth / 2, -drawHeight / 2);
-      ctx.fillText(text, -drawWidth / 2, -drawHeight / 2);
-    } else {
-      ctx.strokeText(text, rect.x, rect.y);
-      ctx.fillText(text, rect.x, rect.y);
-    }
-  }
-
-  ctx.restore();
+  drawServerAlignedWatermark(ctx, width, height, watermarkImg, settings);
 
   let quality = cfg.quality;
   let out = canvas.toDataURL("image/jpeg", quality);
@@ -661,6 +565,23 @@ async function bakeWatermarkedAsset(
     out = canvas.toDataURL("image/jpeg", quality);
   }
   return out;
+}
+
+async function renderWatermarkPreviewAsset(src: string, settings: WatermarkBakeSettings): Promise<string> {
+  const baseImg = await loadImageFromSrc(src);
+  const watermarkImg = await loadOptionalImage(settings.watermarkImage || undefined);
+  // Public medium previews are rendered at 1400px wide without enlargement.
+  const scale = Math.min(1, 1400 / Math.max(1, baseImg.width));
+  const width = Math.max(1, Math.round(baseImg.width * scale));
+  const height = Math.max(1, Math.round(baseImg.height * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Canvas not available");
+  ctx.drawImage(baseImg, 0, 0, width, height);
+  drawServerAlignedWatermark(ctx, width, height, watermarkImg, settings);
+  return canvas.toDataURL("image/jpeg", 0.9);
 }
 
 function persistPhotoVariants(photoId: string, patch: Record<string, any>) {
@@ -723,21 +644,15 @@ export default function Admin() {
   const [activeTab, setActiveTabState] = useState<Tab>(resolvedTab);
   const [authed, setAuthed] = useState(() => isLoggedIn());
   const [prefillBookingId, setPrefillBookingId] = useState<string | null>(null);
-  const [superAdminFlag, setSuperAdminFlag] = useState(() => isSuperAdmin());
+  const [superAdminFlag, setSuperAdminFlag] = useState(false);
   // Per-tab scroll position memory: save before leaving, restore after switching.
   const scrollPositions = useRef<Partial<Record<Tab, number>>>({});
 
-  // Detect if the logged-in user is the super admin (configured via SUPER_ADMIN_USERNAME env var)
+  // The server is authoritative for platform-owner role detection. Browser
+  // credential material is intentionally absent from localStorage.
   useEffect(() => {
     if (!isLoggedIn()) return;
-    getSuperAdminInfo().then(({ superAdminUsername }) => {
-      if (!superAdminUsername) return;
-      const creds = getAdminCredentials();
-      if (creds?.username && creds.username === superAdminUsername) {
-        setSuperAdmin(true);
-        setSuperAdminFlag(true);
-      }
-    });
+    getAdminSession().then(session => setSuperAdminFlag(session?.isSuperAdmin === true));
   }, []);
 
   useEffect(() => {
@@ -755,9 +670,6 @@ export default function Admin() {
 
   usePageTitle(authed ? `${getProfile().name || "Admin"} — ${ADMIN_TAB_LABELS[activeTab]}` : "Admin Login");
 
-  if (!isSetupComplete()) return null;
-  if (!authed) return <LoginPage onLogin={() => setAuthed(true)} />;
-  
   const setActiveTab = (tab: Tab) => {
     // Save current tab's scroll position
     const main = document.getElementById("admin-main");
@@ -772,6 +684,7 @@ export default function Admin() {
   };
 
   const handleLogout = () => {
+    void adminLogout();
     logout();
     navigate("/admin");
   };
@@ -797,6 +710,7 @@ export default function Admin() {
     }, SESSION_TIMEOUT_MS);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
   React.useEffect(() => {
+    if (!authed) return;
     resetSessionTimer();
     const events = ["mousemove", "keydown", "pointerdown", "scroll"];
     events.forEach(e => window.addEventListener(e, resetSessionTimer, { passive: true }));
@@ -805,7 +719,7 @@ export default function Admin() {
       if (sessionTimerRef.current) clearTimeout(sessionTimerRef.current);
       if (sessionWarnRef.current)  clearTimeout(sessionWarnRef.current);
     };
-  }, [resetSessionTimer]);
+  }, [authed, resetSessionTimer]);
   // Tick down the seconds counter when the warning banner is showing
   React.useEffect(() => {
     if (sessionTimeLeft === null) return;
@@ -813,6 +727,9 @@ export default function Admin() {
     const id = setTimeout(() => setSessionTimeLeft(t => (t ?? 1) - 1), 1000);
     return () => clearTimeout(id);
   }, [sessionTimeLeft]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (!isSetupComplete()) return null;
+  if (!authed) return <LoginPage onLogin={() => setAuthed(true)} />;
 
   // Needed for tab badges and nav-level UI
   const settings = getSettings();
@@ -867,7 +784,7 @@ export default function Admin() {
                     : tab.id === "enquiries"
                       ? getEnquiries().filter(e => e.status === "pending").length
                       : tab.id === "bookings"
-                        ? getBookings().filter(b => b.status === "pending").length
+                        ? getBookings().filter(b => b.archived !== true && b.status === "pending").length
                         : 0;
               return (
                 <button key={tab.id} onClick={() => setActiveTab(tab.id)}
@@ -1157,7 +1074,7 @@ function ShootDayCommandCenterView() {
       clientEmail: booking.clientEmail,
       instagramHandle: booking.instagramHandle,
       bookingId: booking.id,
-      clientToken: `ct-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+      clientToken: generateCapabilityToken("ct"),
       status: "editing",
       proofingEnabled: !!settings.proofingEnabled,
       proofingStage: "not-started",
@@ -1173,7 +1090,7 @@ function ShootDayCommandCenterView() {
 
   const ensureShootDayClientToken = (album: Album): Album => {
     if (album.clientToken) return album;
-    const updated = { ...album, clientToken: `ct-${Date.now()}-${Math.random().toString(36).slice(2, 10)}` };
+    const updated = { ...album, clientToken: generateCapabilityToken("ct") };
     updateAlbum(updated);
     setRefreshTick((tick) => tick + 1);
     window.dispatchEvent(new CustomEvent("storage-synced"));
@@ -1182,7 +1099,7 @@ function ShootDayCommandCenterView() {
 
   const shootDayGalleryPath = (album: Album, absolute = false): string => {
     const target = album.slug || album.id;
-    const path = `/gallery/${target}${album.clientToken ? `?token=${encodeURIComponent(album.clientToken)}` : ""}`;
+    const path = `/gallery/${target}${album.clientToken ? `#token=${encodeURIComponent(album.clientToken)}` : ""}`;
     return absolute ? `${window.location.origin}${path}` : path;
   };
 
@@ -1729,13 +1646,15 @@ function DashboardView() {
   let totalSessionMins = 0;
   let totalBookingCount = 0;
   for (const booking of bookings) {
-    if (booking.status !== "cancelled") totalBookingCount += 1;
-    totalSessionMins += booking.duration || 0;
+    if (booking.archived !== true) {
+      if (booking.status !== "cancelled") totalBookingCount += 1;
+      totalSessionMins += booking.duration || 0;
+    }
     if (booking.paymentStatus === "paid" || booking.paymentStatus === "cash") {
       totalRevenue += booking.paymentAmount || 0;
     } else if (booking.paymentStatus === "deposit-paid") {
       totalRevenue += booking.depositAmount || 0;
-    } else if (!booking.paymentStatus || booking.paymentStatus === "unpaid") {
+    } else if (booking.archived !== true && (!booking.paymentStatus || booking.paymentStatus === "unpaid")) {
       unpaidIncome += booking.depositRequired && booking.depositAmount ? booking.depositAmount : (booking.paymentAmount || 0);
     }
   }
@@ -2757,7 +2676,7 @@ function BookingEditor({ booking, onSave, onCancel }: {
         </div>
         <div>
           <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Payment</label>
-          <select value={paymentStatus} onChange={e => setPaymentStatus(e.target.value)} className="w-full bg-secondary border border-border text-foreground font-body text-sm rounded-md px-3 py-2">
+          <select value={paymentStatus} onChange={e => setPaymentStatus(e.target.value as Booking["paymentStatus"])} className="w-full bg-secondary border border-border text-foreground font-body text-sm rounded-md px-3 py-2">
             <option value="unpaid">Unpaid</option>
             <option value="paid">Paid</option>
             <option value="cash">Cash</option>
@@ -2830,6 +2749,8 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
   const [bookingSearch, setBookingSearch] = useState(() => new URLSearchParams(location.search).get("search") || "");
   const [statusFilter, setStatusFilter] = useState<"all" | "pending" | "confirmed" | "completed" | "cancelled">("all");
   const [paymentFilter, setPaymentFilter] = useState<"all" | PaymentStatus>(() => new URLSearchParams(location.search).get("payment") === "unpaid" ? "unpaid" : "all");
+  const [archiveFilter, setArchiveFilter] = useState<"active" | "archived" | "all">("active");
+  const [archivingBookingIds, setArchivingBookingIds] = useState<Set<string>>(new Set());
   const [showCancelled, setShowCancelled] = useState(false);
   const albums = getAlbums();
   const [emailLogs, setEmailLogs] = useState<Record<string, { id: string; type: string; sentAt: string; openedAt?: string; subject: string; to: string }[]>>({});
@@ -2902,7 +2823,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
     let changed = 0;
     for (const id of selectedBookingIds) {
       const bk = all.find(b => b.id === id);
-      if (bk && bk.status !== status) {
+      if (bk && bk.archived !== true && bk.status !== status) {
         updateBooking({ ...bk, status });
         changed++;
       }
@@ -2910,6 +2831,41 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
     setBookingsState(getBookings());
     setSelectedBookingIds(new Set());
     toast.success(`${changed} booking(s) ${label}`);
+  };
+
+  const handleArchiveChange = async (bookingIds: string[], archived: boolean) => {
+    const ids = [...new Set(bookingIds)].filter(Boolean);
+    if (!ids.length) return;
+    setArchivingBookingIds(prev => new Set([...prev, ...ids]));
+    const result = await setBookingArchiveState(ids, archived);
+    setArchivingBookingIds(prev => {
+      const next = new Set(prev);
+      ids.forEach(id => next.delete(id));
+      return next;
+    });
+    if (!result.ok) {
+      toast.error(result.error || "Unable to update booking archive");
+      return;
+    }
+    if (result.updated.length) {
+      const updates = new Map(result.updated.map(booking => [booking.id, booking]));
+      setBookingsState(prev => prev.map(booking => updates.get(booking.id) || booking));
+      result.updated.forEach(cacheBookingLocally);
+    }
+    setSelectedBookingIds(prev => {
+      const next = new Set(prev);
+      result.changedIds.forEach(id => next.delete(id));
+      return next;
+    });
+    if (result.changedIds.length) {
+      toast.success(`${result.changedIds.length} booking${result.changedIds.length === 1 ? "" : "s"} ${archived ? "archived" : "restored"}`);
+    }
+    if (result.skipped.length) {
+      const activeCount = result.skipped.filter(item => item.reason === "active-booking").length;
+      toast.warning(activeCount
+        ? `${activeCount} active booking${activeCount === 1 ? " was" : "s were"} kept visible. Complete, cancel, or wait until the session/hold has elapsed before archiving.`
+        : `${result.skipped.length} booking${result.skipped.length === 1 ? " was" : "s were"} not found.`);
+    }
   };
 
   const handlePaymentChange = async (bk: Booking, paymentStatus: PaymentStatus) => {
@@ -2966,8 +2922,10 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
   };
 
   const filteredBookings = bookings.filter(bk => {
+    if (archiveFilter === "active" && bk.archived === true) return false;
+    if (archiveFilter === "archived" && bk.archived !== true) return false;
     if (statusFilter !== "all" && bk.status !== statusFilter) return false;
-    if (statusFilter === "all" && bk.status === "cancelled" && !showCancelled) return false;
+    if (archiveFilter === "active" && statusFilter === "all" && bk.status === "cancelled" && !showCancelled) return false;
     if (paymentFilter !== "all" && (bk.paymentStatus || "unpaid") !== paymentFilter) return false;
     if (!bookingSearch) return true;
     const q = bookingSearch.toLowerCase();
@@ -2987,11 +2945,12 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
   const nextWeek = new Date();
   nextWeek.setDate(nextWeek.getDate() + 7);
   const nextWeekStr = localDateString(nextWeek);
+  const operationalBookings = bookings.filter(b => b.archived !== true);
   const bookingSummary = {
-    pending: bookings.filter(b => b.status === "pending").length,
-    today: bookings.filter(b => b.date === today && b.status !== "cancelled").length,
-    next7: bookings.filter(b => b.date >= today && b.date <= nextWeekStr && b.status !== "cancelled").length,
-    needsPayment: bookings.filter(b => b.status !== "cancelled" && !["paid", "cash"].includes(b.paymentStatus || "unpaid")).length,
+    pending: operationalBookings.filter(b => b.status === "pending").length,
+    today: operationalBookings.filter(b => b.date === today && b.status !== "cancelled").length,
+    next7: operationalBookings.filter(b => b.date >= today && b.date <= nextWeekStr && b.status !== "cancelled").length,
+    needsPayment: operationalBookings.filter(b => b.status !== "cancelled" && !["paid", "cash"].includes(b.paymentStatus || "unpaid")).length,
   };
 
   const sortedBookings = [...filteredBookings].sort((a, b) => {
@@ -3007,6 +2966,10 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
       default: return 0;
     }
   });
+  const selectedBookings = bookings.filter(booking => selectedBookingIds.has(booking.id));
+  const selectedArchivedCount = selectedBookings.filter(booking => booking.archived === true).length;
+  const selectedActiveCount = selectedBookings.length - selectedArchivedCount;
+  const selectedEmailCount = selectedBookings.filter(booking => booking.archived !== true && !!booking.clientEmail).length;
 
   const SortBtn = ({ k, label }: { k: BookingSortKey; label: string }) => (
     <button onClick={() => toggleSort(k)} className={`text-[10px] font-body tracking-wider uppercase px-2 py-1 rounded transition-colors ${sortKey === k ? "bg-primary/15 text-primary" : "text-muted-foreground hover:text-foreground"}`}>
@@ -3065,7 +3028,12 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
       )}
 
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
-        <h2 className="font-display text-2xl text-foreground">Bookings</h2>
+        <div>
+          <h2 className="font-display text-2xl text-foreground">Bookings</h2>
+          <p className="text-xs font-body text-muted-foreground mt-1">
+            {operationalBookings.length} active · {bookings.length - operationalBookings.length} archived
+          </p>
+        </div>
         <div className="flex items-center gap-2 flex-wrap">
           <Button size="sm" onClick={() => { setShowCreateBooking(true); setEditingBooking(null); }}
             className="gap-1.5 bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase">
@@ -3081,30 +3049,44 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
               </Button>
               {selectMode && (
                 <Button size="sm" variant="outline" onClick={() => {
-                  const allIds = new Set(sortedBookings.filter(b => b.clientEmail).map(b => b.id));
+                  const allIds = new Set(sortedBookings.map(b => b.id));
                   setSelectedBookingIds(prev => prev.size === allIds.size ? new Set() : allIds);
                 }} className="gap-1.5 font-body text-xs">
-                  {selectedBookingIds.size === sortedBookings.filter(b => b.clientEmail).length ? "Deselect All" : "Select All"}
+                  {selectedBookingIds.size === sortedBookings.length ? "Deselect All" : "Select All"}
                 </Button>
               )}
             </>
           )}
           {selectedBookingIds.size > 0 && (
             <>
-              <Button size="sm" variant="outline" onClick={() => handleBulkStatusChange("confirmed")}
+              <Button size="sm" variant="outline" onClick={() => handleBulkStatusChange("confirmed")} disabled={selectedActiveCount === 0}
                 className="gap-1.5 font-body text-xs border-green-500/40 text-green-600 hover:bg-green-500/10">
-                <Check className="w-3.5 h-3.5" /> Confirm ({selectedBookingIds.size})
+                <Check className="w-3.5 h-3.5" /> Confirm ({selectedActiveCount})
               </Button>
-              <Button size="sm" variant="outline" onClick={() => handleBulkStatusChange("cancelled")}
+              <Button size="sm" variant="outline" onClick={() => handleBulkStatusChange("cancelled")} disabled={selectedActiveCount === 0}
                 className="gap-1.5 font-body text-xs border-red-500/40 text-red-500 hover:bg-red-500/10">
-                <X className="w-3.5 h-3.5" /> Cancel ({selectedBookingIds.size})
+                <X className="w-3.5 h-3.5" /> Cancel ({selectedActiveCount})
               </Button>
+              {selectedActiveCount > 0 && (
+                <Button size="sm" variant="outline" onClick={() => handleArchiveChange(selectedBookings.filter(booking => booking.archived !== true).map(booking => booking.id), true)}
+                  disabled={selectedBookings.some(booking => archivingBookingIds.has(booking.id))}
+                  className="gap-1.5 font-body text-xs border-border text-muted-foreground hover:text-foreground">
+                  <Archive className="w-3.5 h-3.5" /> Archive ({selectedActiveCount})
+                </Button>
+              )}
+              {selectedArchivedCount > 0 && (
+                <Button size="sm" variant="outline" onClick={() => handleArchiveChange(selectedBookings.filter(booking => booking.archived === true).map(booking => booking.id), false)}
+                  disabled={selectedBookings.some(booking => archivingBookingIds.has(booking.id))}
+                  className="gap-1.5 font-body text-xs border-primary/30 text-primary hover:bg-primary/10">
+                  <ArchiveRestore className="w-3.5 h-3.5" /> Restore ({selectedArchivedCount})
+                </Button>
+              )}
             </>
           )}
-          {selectedBookingIds.size > 0 && isServerMode() && (
+          {selectedEmailCount > 0 && isServerMode() && (
             <Button size="sm" variant="outline" onClick={() => setBulkEmailOpen(!bulkEmailOpen)}
               className="gap-1.5 font-body text-xs border-primary/30 text-primary hover:bg-primary/10">
-              <Mail className="w-3.5 h-3.5" /> Bulk Email ({selectedBookingIds.size})
+              <Mail className="w-3.5 h-3.5" /> Bulk Email ({selectedEmailCount})
             </Button>
           )}
           {bookings.length > 0 && isServerMode() && (
@@ -3140,11 +3122,11 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
       )}
 
       {/* Bulk Email Panel */}
-      {bulkEmailOpen && selectedBookingIds.size > 0 && (
+      {bulkEmailOpen && selectedEmailCount > 0 && (
         <div className="glass-panel rounded-xl p-4 mb-4 space-y-3">
           <div className="flex items-center justify-between">
             <p className="text-xs font-body text-muted-foreground">
-              Bulk email to <span className="text-foreground font-medium">{selectedBookingIds.size} clients</span>
+              Bulk email to <span className="text-foreground font-medium">{selectedEmailCount} active clients</span>
             </p>
             <Button size="sm" variant="ghost" onClick={() => setBulkEmailOpen(false)} className="h-7 w-7 p-0">
               <X className="w-3.5 h-3.5" />
@@ -3173,7 +3155,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
 
           {/* Bulk Live Preview — cycles through selected recipients */}
           {showBulkPreview && bulkEmailSubject.trim() && bulkEmailBody.trim() && (() => {
-            const selectedArr = bookings.filter(b => selectedBookingIds.has(b.id));
+            const selectedArr = bookings.filter(b => selectedBookingIds.has(b.id) && b.archived !== true && !!b.clientEmail);
             if (selectedArr.length === 0) return null;
             const safeIdx = Math.max(0, Math.min(bulkPreviewIndex, selectedArr.length - 1));
             const sample = selectedArr[safeIdx];
@@ -3228,7 +3210,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
             <Button size="sm" disabled={sendingBulkEmail || !bulkEmailSubject.trim() || !bulkEmailBody.trim()}
               className="gap-1.5 bg-primary text-primary-foreground font-body text-xs"
               onClick={async () => {
-                const selected = bookings.filter(b => selectedBookingIds.has(b.id) && b.clientEmail);
+                const selected = bookings.filter(b => selectedBookingIds.has(b.id) && b.archived !== true && b.clientEmail);
                 if (selected.length === 0) return;
                 if (!confirm(`Send email to ${selected.length} clients?`)) return;
                 setSendingBulkEmail(true);
@@ -3251,7 +3233,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                 setBulkEmailBody("");
               }}>
               <Send className="w-3 h-3" />
-              {sendingBulkEmail ? "Sending…" : `Send to ${selectedBookingIds.size} Clients`}
+              {sendingBulkEmail ? "Sending…" : `Send to ${selectedEmailCount} Clients`}
             </Button>
           </div>
         </div>
@@ -3268,6 +3250,18 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
             <div className="relative flex-1 max-w-xs">
               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
               <Input value={bookingSearch} onChange={e => setBookingSearch(e.target.value)} placeholder="Search bookings…" className="pl-8 h-8 text-xs font-body" />
+            </div>
+            <div className="inline-flex items-center rounded-lg border border-border/60 bg-secondary/30 p-0.5" aria-label="Booking archive view">
+              {([
+                { id: "active" as const, label: "Active", count: operationalBookings.length },
+                { id: "archived" as const, label: "Archived", count: bookings.length - operationalBookings.length },
+                { id: "all" as const, label: "All", count: bookings.length },
+              ]).map(option => (
+                <button key={option.id} onClick={() => { setArchiveFilter(option.id); setSelectedBookingIds(new Set()); }}
+                  className={`text-[10px] font-body tracking-wider uppercase px-2 py-1 rounded-md transition-colors ${archiveFilter === option.id ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}>
+                  {option.label} <span className="opacity-60">{option.count}</span>
+                </button>
+              ))}
             </div>
             <div className="flex items-center gap-1 flex-wrap overflow-x-auto">
               <span className="text-[10px] font-body text-muted-foreground/50 mr-1">Filter:</span>
@@ -3313,7 +3307,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
             const remaining = Math.max(0, (bk.paymentAmount || 0) - (bk.depositAmount || 0));
             const showBalance = remaining > 0 && !["paid", "cash"].includes(bk.paymentStatus || "unpaid");
             return (
-              <div key={bk.id} className={`glass-panel rounded-xl overflow-hidden${bk.status === "cancelled" ? " opacity-50" : ""}`}>
+              <div key={bk.id} className={`glass-panel rounded-xl overflow-hidden${bk.status === "cancelled" ? " opacity-50" : ""}${bk.archived ? " border border-dashed border-border/70" : ""}`}>
                 <div className="p-4 cursor-pointer hover:bg-secondary/20 transition-colors" onClick={() => {
                     const willExpand = expandedId !== bk.id;
                     setExpandedId(willExpand ? bk.id : null);
@@ -3347,6 +3341,11 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                         <div className="flex items-center gap-2 flex-wrap">
                           <h3 className={`text-sm font-body text-foreground font-medium${bk.status === "cancelled" ? " line-through" : ""}`}>{bk.clientName}</h3>
                           <span className="text-[10px] font-mono text-primary/80 bg-primary/10 px-1.5 py-0.5 rounded">{bookingPaymentReference(bk)}</span>
+                          {bk.archived && (
+                            <span className="inline-flex items-center gap-1 text-[10px] font-body px-2 py-0.5 rounded-full border border-border bg-secondary text-muted-foreground">
+                              <Archive className="w-2.5 h-2.5" /> Archived
+                            </span>
+                          )}
                           {bk.instagramHandle && <span className="text-xs font-body text-primary">@{bk.instagramHandle.replace("@", "")}</span>}
                           {albums.some(a => a.bookingId === bk.id || (a.clientName && a.clientName === bk.clientName)) && (
                             <span className="text-[10px] font-body px-2 py-0.5 rounded-full border border-green-500/30 bg-green-500/10 text-green-400">📷 Gallery sent</span>
@@ -3366,7 +3365,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                         bk.status === "cancelled" ? "text-red-400 border-red-500/30 bg-red-500/10" :
                         "text-yellow-400 border-yellow-500/30 bg-yellow-500/10"
                       }`}>{bk.status}</span>
-                      <select value={bk.status} onChange={(e) => handleStatusChange(bk, e.target.value as Booking["status"])}
+                      <select value={bk.status} onChange={(e) => handleStatusChange(bk, e.target.value as Booking["status"])} disabled={bk.archived === true}
                         aria-label="Booking status"
                         className="hidden sm:block text-xs font-body px-2.5 py-1 rounded-full bg-secondary border border-border text-foreground cursor-pointer sm:mr-3">
                         <option value="pending">Pending</option>
@@ -3374,7 +3373,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                         <option value="completed">Completed</option>
                         <option value="cancelled">Cancelled</option>
                       </select>
-                      <select value={bk.paymentStatus || "unpaid"} onChange={(e) => handlePaymentChange(bk, e.target.value as PaymentStatus)}
+                      <select value={bk.paymentStatus || "unpaid"} onChange={(e) => handlePaymentChange(bk, e.target.value as PaymentStatus)} disabled={bk.archived === true}
                         aria-label="Payment status"
                         className="hidden sm:block text-xs font-body px-2.5 py-1 rounded-full bg-secondary border border-border text-foreground cursor-pointer">
                         <option value="unpaid">Unpaid</option>
@@ -3388,13 +3387,13 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                           ${remaining.toFixed(0)} due
                         </span>
                       )}
-                      <Button variant="ghost" size="icon" aria-label="Edit booking" className="h-8 w-8 text-muted-foreground hover:text-foreground" onClick={() => { setEditingBooking(bk); setShowCreateBooking(false); setExpandedId(null); }}>
+                      <Button variant="ghost" size="icon" aria-label="Edit booking" disabled={bk.archived === true} className="h-8 w-8 text-muted-foreground hover:text-foreground" onClick={() => { setEditingBooking(bk); setShowCreateBooking(false); setExpandedId(null); }}>
                         <Edit className="w-4 h-4" />
                       </Button>
-                      <Button variant="ghost" size="icon" aria-label="Copy booking link" className="h-8 w-8 text-muted-foreground hover:text-foreground" onClick={() => {
+                      <Button variant="ghost" size="icon" aria-label="Copy booking link" disabled={bk.archived === true} className="h-8 w-8 text-muted-foreground hover:text-foreground" onClick={() => {
                         let token = bk.modifyToken;
                         if (!token) {
-                          token = `mod-${crypto.randomUUID()}`;
+                          token = generateCapabilityToken("mod");
                           const relinked = { ...bk, modifyToken: token };
                           updateBooking(relinked);
                           setBookingsState(getBookings());
@@ -3404,6 +3403,14 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                           .catch(() => toast.error("Failed to copy link"));
                       }}>
                         <Link2 className="w-4 h-4" />
+                      </Button>
+                      <Button variant="ghost" size="icon"
+                        aria-label={bk.archived ? "Restore booking" : "Archive booking"}
+                        title={bk.archived ? "Restore to the active booking list" : "Archive completed, cancelled, elapsed, or expired bookings"}
+                        disabled={archivingBookingIds.has(bk.id)}
+                        className="h-8 w-8 text-muted-foreground hover:text-foreground"
+                        onClick={() => handleArchiveChange([bk.id], !bk.archived)}>
+                        {bk.archived ? <ArchiveRestore className="w-4 h-4" /> : <Archive className="w-4 h-4" />}
                       </Button>
                       <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-destructive" onClick={() => handleDelete(bk.id)}>
                         <Trash2 className="w-4 h-4" />
@@ -3416,14 +3423,14 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                   <div className="px-4 pb-4 border-t border-border/50 pt-3 space-y-3">
                     {/* Mobile-only: status/payment selects in expanded section */}
                     <div className="flex gap-2 sm:hidden" onClick={e => e.stopPropagation()}>
-                      <select value={bk.status} onChange={(e) => handleStatusChange(bk, e.target.value as Booking["status"])}
+                      <select value={bk.status} onChange={(e) => handleStatusChange(bk, e.target.value as Booking["status"])} disabled={bk.archived === true}
                         className="flex-1 text-xs font-body px-2.5 py-2 rounded-lg bg-secondary border border-border text-foreground cursor-pointer">
                         <option value="pending">Pending</option>
                         <option value="confirmed">Confirmed</option>
                         <option value="completed">Completed</option>
                         <option value="cancelled">Cancelled</option>
                       </select>
-                      <select value={bk.paymentStatus || "unpaid"} onChange={(e) => handlePaymentChange(bk, e.target.value as PaymentStatus)}
+                      <select value={bk.paymentStatus || "unpaid"} onChange={(e) => handlePaymentChange(bk, e.target.value as PaymentStatus)} disabled={bk.archived === true}
                         className="flex-1 text-xs font-body px-2.5 py-2 rounded-lg bg-secondary border border-border text-foreground cursor-pointer">
                         <option value="unpaid">Unpaid</option>
                         <option value="deposit-paid">Deposit Paid</option>
@@ -3504,6 +3511,22 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                       </div>
                     )}
 
+                    {(bk.archiveHistory && bk.archiveHistory.length > 0) && (
+                      <div>
+                        <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-2 flex items-center gap-1.5">
+                          <Archive className="w-3 h-3" /> Archive History
+                        </p>
+                        <div className="space-y-1.5">
+                          {bk.archiveHistory.map((entry, i) => (
+                            <div key={`${entry.changedAt}-${i}`} className="flex items-center justify-between gap-3 text-[10px] font-body rounded-md bg-secondary/30 px-2.5 py-2">
+                              <span className="text-foreground">{entry.archived ? "Archived" : "Restored"}</span>
+                              <span className="text-muted-foreground">{new Date(entry.changedAt).toLocaleString()} · {entry.changedBy}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
                     {/* Email Log — fetched from server */}
                     {(() => {
                       const logs = emailLogs[bk.id] || bk.emailLog || [];
@@ -3552,7 +3575,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
 
                     <div className="flex items-center gap-2 pt-1 flex-wrap">
                       {/* Reminder buttons */}
-                      {bk.clientEmail && isServerMode() && (
+                      {bk.archived !== true && bk.clientEmail && isServerMode() && (
                         <>
                           {(bk.paymentStatus !== "paid" && (bk.paymentAmount || 0) > 0) && (
                             <Button size="sm" variant="outline" disabled={sendingReminder === bk.id}
@@ -3712,7 +3735,11 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                     </div>
 
                     {/* ── Task Checklist ───────────────────────────────── */}
-                    <BookingTaskChecklist bookingId={bk.id} initialTasks={bk.tasks || []} />
+                    {bk.archived ? (
+                      <p className="text-[10px] font-body text-muted-foreground">Restore this booking before changing its checklist or operational details.</p>
+                    ) : (
+                      <BookingTaskChecklist bookingId={bk.id} initialTasks={bk.tasks || []} />
+                    )}
                   </div>
                 )}
               </div>
@@ -3881,7 +3908,12 @@ function EventTypesView() {
                       {et.durations.map((d) => formatDuration(d)).join(", ")}
                     </span>
                   </div>
-                  {et.description && <p className="text-sm font-body text-muted-foreground mt-1 line-clamp-2">{et.description}</p>}
+                  {et.description && (
+                    <RichTextDisplay
+                      html={richTextToPlainText(et.description)}
+                      className="mt-1 line-clamp-2"
+                    />
+                  )}
                   <div className="flex items-center gap-3 mt-2 flex-wrap">
                     {et.price > 0 && <p className="text-sm font-body text-primary font-medium">${et.price}</p>}
                     <span className="text-xs font-body text-muted-foreground">{et.questions.length} questions</span>
@@ -4208,7 +4240,7 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
                     <option value="textarea">Long Text</option>
                     <option value="select">Select</option>
                     <option value="boolean">Yes/No</option>
-                    <option value="image-upload">Image Upload</option>
+                    <option value="image-upload" disabled>Image Upload (not yet supported)</option>
                     <option value="instagram">Instagram Handle</option>
                   </select>
                   <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-destructive" onClick={() => setQuestions(questions.filter((_, i) => i !== idx))}>
@@ -4425,7 +4457,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
   const galleryUrlForAlbum = (album: Album) => {
     const target = album.slug || album.id;
     const tok = album.clientToken;
-    return `${window.location.origin}/gallery/${target}${tok ? `?token=${encodeURIComponent(tok)}` : ""}`;
+    return `${window.location.origin}/gallery/${target}${tok ? `#token=${encodeURIComponent(tok)}` : ""}`;
   };
 
   const copyLink = async (album: Album) => {
@@ -4725,6 +4757,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                         <TooltipTrigger asChild>
                           <div>
                             <Switch
+                              aria-label={`${alb.enabled !== false ? "Disable" : "Enable"} ${alb.title}`}
                               checked={alb.enabled !== false}
                               onCheckedChange={(v) => {
                                 updateAlbum({ ...alb, enabled: v });
@@ -4738,7 +4771,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                       </Tooltip>
                       <Tooltip>
                         <TooltipTrigger asChild>
-                          <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary" onClick={() => copyLink(alb)}>
+                          <Button aria-label={`Copy gallery link for ${alb.title}`} variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary" onClick={() => copyLink(alb)}>
                             <Copy className="w-3.5 h-3.5" />
                           </Button>
                         </TooltipTrigger>
@@ -4746,7 +4779,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                       </Tooltip>
                       <Tooltip>
                         <TooltipTrigger asChild>
-                          <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary" onClick={() => handleSendNotification(alb)}>
+                          <Button aria-label={`Send gallery notification for ${alb.title}`} variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary" onClick={() => handleSendNotification(alb)}>
                             <Send className="w-3.5 h-3.5" />
                           </Button>
                         </TooltipTrigger>
@@ -4754,7 +4787,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                       </Tooltip>
                       <Tooltip>
                         <TooltipTrigger asChild>
-                          <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary" onClick={() => openPublicGallery(alb)}>
+                          <Button aria-label={`Open gallery ${alb.title}`} variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary" onClick={() => openPublicGallery(alb)}>
                             <ExternalLink className="w-3.5 h-3.5" />
                           </Button>
                         </TooltipTrigger>
@@ -4768,6 +4801,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                             <TooltipTrigger asChild>
                               <Button
                                 variant="ghost" size="icon"
+                                aria-label={`Export starred photos from ${alb.title}`}
                                 className="h-7 w-7 text-yellow-500 hover:text-yellow-400"
                                 onClick={() => {
                                   const lines = [
@@ -4804,6 +4838,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                           <TooltipTrigger asChild>
                             <Button
                               variant="ghost" size="icon"
+                              aria-label={`Fix thumbnail for ${alb.title}`}
                               className="h-7 w-7 text-muted-foreground hover:text-primary"
                               onClick={() => {
                                 const firstPhoto = alb.photos[0];
@@ -4823,7 +4858,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                       <div className="flex-1" />
                       <Tooltip>
                         <TooltipTrigger asChild>
-                          <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-foreground" onClick={() => setEditing(alb)}>
+                          <Button aria-label={`Edit album ${alb.title}`} variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-foreground" onClick={() => setEditing(alb)}>
                             <Edit className="w-3.5 h-3.5" />
                           </Button>
                         </TooltipTrigger>
@@ -4831,7 +4866,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                       </Tooltip>
                       <Tooltip>
                         <TooltipTrigger asChild>
-                          <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={() => handleDelete(alb.id)}>
+                          <Button aria-label={`Delete album ${alb.title}`} variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={() => handleDelete(alb.id)}>
                             <Trash2 className="w-3.5 h-3.5" />
                           </Button>
                         </TooltipTrigger>
@@ -5157,7 +5192,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
   const copyLink = async (alb: Album) => {
     if (!(await ensurePublicShareReady(alb, "copy this gallery link"))) return;
     const tok = alb.clientToken;
-    const url = `${window.location.origin}/gallery/${alb.slug || alb.id}${tok ? `?token=${encodeURIComponent(tok)}` : ""}`;
+    const url = `${window.location.origin}/gallery/${alb.slug || alb.id}${tok ? `#token=${encodeURIComponent(tok)}` : ""}`;
     await navigator.clipboard.writeText(url);
     toast.success("Gallery link copied!");
   };
@@ -5273,10 +5308,10 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
   };
 
   const setCullStatus = async (photoId: string, status: "pick" | "review" | "reject") => {
-    const updatedPhotos = photos.map(photo => photo.id !== photoId ? photo : {
+    const updatedPhotos: Photo[] = photos.map(photo => photo.id !== photoId ? photo : {
       ...photo,
       starred: status === "pick",
-      cull: { ...photo.cull, status, recommendedAction: status === "reject" ? "hold-back" : "keep", reasons: ["manual selection"] },
+      cull: { ...photo.cull, status, recommendedAction: status === "reject" ? "hold-back" as const : "keep" as const, reasons: ["manual selection"] },
       cullMetadata: { ...photo.cullMetadata, status, reasons: ["manual selection"] },
     });
     setPhotos(updatedPhotos);
@@ -5374,7 +5409,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
       notes: settings.invoiceNotes || "",
       dueDate: due.toISOString().slice(0, 10),
       createdAt: now.toISOString(),
-      shareToken: Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2),
+      shareToken: generateCapabilityToken("inv"),
       emailLog: [],
       bookingId: bookingId || undefined,
       albumId: album.id,
@@ -5558,7 +5593,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
               });
             }} />
           </div>
-          <p className="text-[10px] font-body text-muted-foreground/50 mt-1">When enabled, all photos can be downloaded. Watermarks still apply unless disabled below.</p>
+          <p className="text-[10px] font-body text-muted-foreground/50 mt-1">When enabled, every client can download the original photos. Use the watermark setting below for previews and free-download galleries.</p>
 
           {(allUnlocked || freeDownloads > 0) && (
             <div className="mt-4 border-t border-border/50 pt-4">
@@ -5721,7 +5756,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
             ? Math.max(1, parseInt(expiryInput.value, 10) || 48)
             : (liveAlbum!.proofingExpiryHours ?? settings.defaultProofingExpiryHours ?? 48);
           const proofingExpiresAt = new Date(Date.now() + expiryHours * 3600 * 1000).toISOString();
-          const clientToken = liveAlbum!.clientToken || `ct-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+          const clientToken = liveAlbum!.clientToken || generateCapabilityToken("ct");
           const newRound = { roundNumber: rounds.length + 1, sentAt: new Date().toISOString(), selectedPhotoIds: [], adminNote: note || undefined };
           // Every photo is sent to the client for proofing by default, including
           // unscored / "review later" photos uploaded from desktop or mobile.
@@ -5734,9 +5769,9 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
           let inviteSent = false;
           if (clientEmail) {
             if (await ensurePublicShareReady(updated, "send this proofing invite")) {
-              const galleryUrl = `${window.location.origin}/gallery/${updated.slug || updated.id}?token=${encodeURIComponent(clientToken)}`;
+              const galleryUrl = `${window.location.origin}/gallery/${updated.slug || updated.id}#token=${encodeURIComponent(clientToken)}`;
               const expiryDateStr = new Date(proofingExpiresAt).toLocaleString("en-AU", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
-              fetch("/api/email/send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ to: clientEmail, subject: `📸 Your proofing gallery is ready — ${liveAlbum!.title}`, html: buildProofingEmailHtml(galleryUrl, expiryDateStr, note || undefined) }) }).catch(() => {});
+              fetch("/api/email/send", { method: "POST", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify({ to: clientEmail, subject: `📸 Your proofing gallery is ready — ${liveAlbum!.title}`, html: buildProofingEmailHtml(galleryUrl, expiryDateStr, note || undefined) }) }).catch(() => {});
               inviteSent = true;
             }
           }
@@ -5748,11 +5783,11 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
           if (!clientEmail) return;
           if (!(await ensurePublicShareReady(liveAlbum!, "resend this proofing invite"))) return;
           const tok = liveAlbum!.clientToken;
-          const galleryUrl = `${window.location.origin}/gallery/${liveAlbum!.slug || liveAlbum!.id}${tok ? `?token=${encodeURIComponent(tok)}` : ""}`;
+          const galleryUrl = `${window.location.origin}/gallery/${liveAlbum!.slug || liveAlbum!.id}${tok ? `#token=${encodeURIComponent(tok)}` : ""}`;
           const expiryDateStr = liveAlbum!.proofingExpiresAt
             ? new Date(liveAlbum!.proofingExpiresAt as string).toLocaleString("en-AU", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })
             : "";
-          fetch("/api/email/send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ to: clientEmail, subject: `📸 Your proofing gallery is ready — ${liveAlbum!.title}`, html: buildProofingEmailHtml(galleryUrl, expiryDateStr, latest?.adminNote) }) }).catch(() => {});
+          fetch("/api/email/send", { method: "POST", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify({ to: clientEmail, subject: `📸 Your proofing gallery is ready — ${liveAlbum!.title}`, html: buildProofingEmailHtml(galleryUrl, expiryDateStr, latest?.adminNote) }) }).catch(() => {});
           toast.success("Proofing invite resent to client");
         };
 
@@ -5770,8 +5805,8 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
           if (!clientEmail) { toast.error("No client email on file"); return; }
           if (!(await ensurePublicShareReady(liveAlbum!, "send this gallery link"))) return;
           const tok = liveAlbum!.clientToken;
-          const galleryUrl = `${window.location.origin}/gallery/${liveAlbum!.slug || liveAlbum!.id}${tok ? `?token=${encodeURIComponent(tok)}` : ""}`;
-          await fetch("/api/email/send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ to: clientEmail, subject: `✏️ Your photos are being edited — ${liveAlbum!.title}`, html: `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;"><h2 style="margin:0 0 16px;font-size:20px;">Your photos are being edited ✏️</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${liveAlbum!.clientName || "there"},</p><p style="color:#9ca3af;margin:0 0 20px;">Your selections for <strong style="color:#e5e7eb;">${liveAlbum!.title}</strong> are confirmed and editing has begun. We'll send you another email as soon as your final photos are ready.</p><a href="${galleryUrl}" style="display:inline-block;background:#374151;color:#e5e7eb;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">Preview Gallery →</a></div>` }) }).catch(() => {});
+          const galleryUrl = `${window.location.origin}/gallery/${liveAlbum!.slug || liveAlbum!.id}${tok ? `#token=${encodeURIComponent(tok)}` : ""}`;
+          await fetch("/api/email/send", { method: "POST", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify({ to: clientEmail, subject: `✏️ Your photos are being edited — ${liveAlbum!.title}`, html: `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;"><h2 style="margin:0 0 16px;font-size:20px;">Your photos are being edited ✏️</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${liveAlbum!.clientName || "there"},</p><p style="color:#9ca3af;margin:0 0 20px;">Your selections for <strong style="color:#e5e7eb;">${liveAlbum!.title}</strong> are confirmed and editing has begun. We'll send you another email as soon as your final photos are ready.</p><a href="${galleryUrl}" style="display:inline-block;background:#374151;color:#e5e7eb;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">Preview Gallery →</a></div>` }) }).catch(() => {});
           toast.success("Editing notification sent to client");
         };
 
@@ -5785,8 +5820,8 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
               return;
             }
             const tok = liveAlbum!.clientToken;
-            const galleryUrl = `${window.location.origin}/gallery/${updated.slug || updated.id}${tok ? `?token=${encodeURIComponent(tok)}` : ""}`;
-            fetch("/api/email/send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ to: clientEmail, subject: `✨ Your final photos are ready — ${liveAlbum!.title}`, html: free ? `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;"><h2 style="margin:0 0 16px;font-size:20px;">Your edited photos are ready! ✨</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${liveAlbum!.clientName || "there"},</p><p style="color:#9ca3af;margin:0 0 20px;">Your final edited photos for <strong style="color:#e5e7eb;">${liveAlbum!.title}</strong> are ready — no payment needed, they're all yours to download!</p><a href="${galleryUrl}" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">Download Your Photos →</a></div>` : `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;"><h2 style="margin:0 0 16px;font-size:20px;">Your edited photos are ready! ✨</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${liveAlbum!.clientName || "there"},</p><p style="color:#9ca3af;margin:0 0 20px;">Your final edited photos for <strong style="color:#e5e7eb;">${liveAlbum!.title}</strong> are now available to view and download.</p><a href="${galleryUrl}" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">View &amp; Download Photos →</a></div>` }) }).catch(() => {});
+            const galleryUrl = `${window.location.origin}/gallery/${updated.slug || updated.id}${tok ? `#token=${encodeURIComponent(tok)}` : ""}`;
+            fetch("/api/email/send", { method: "POST", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify({ to: clientEmail, subject: `✨ Your final photos are ready — ${liveAlbum!.title}`, html: free ? `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;"><h2 style="margin:0 0 16px;font-size:20px;">Your edited photos are ready! ✨</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${liveAlbum!.clientName || "there"},</p><p style="color:#9ca3af;margin:0 0 20px;">Your final edited photos for <strong style="color:#e5e7eb;">${liveAlbum!.title}</strong> are ready — no payment needed, they're all yours to download!</p><a href="${galleryUrl}" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">Download Your Photos →</a></div>` : `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;"><h2 style="margin:0 0 16px;font-size:20px;">Your edited photos are ready! ✨</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${liveAlbum!.clientName || "there"},</p><p style="color:#9ca3af;margin:0 0 20px;">Your final edited photos for <strong style="color:#e5e7eb;">${liveAlbum!.title}</strong> are now available to view and download.</p><a href="${galleryUrl}" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">View &amp; Download Photos →</a></div>` }) }).catch(() => {});
           }
           toast.success("Finals delivered!" + (clientEmail ? " — client notified" : ""));
         };
@@ -6463,6 +6498,7 @@ function uploadFileName(src?: string): string {
 }
 
 function PhotosView() {
+  const settings = getSettings();
   const [libraryPhotos, setLibraryPhotosState] = useState<Photo[]>(getPhotoLibrary());
   const [albums, setAlbumsState] = useState<Album[]>(getAlbums());
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -6518,7 +6554,7 @@ function PhotosView() {
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [lightboxPhoto]);
+  }, [lightboxPhoto, setLbSliderOpen]);
 
   // Load XMP presets when the XMP tab is first opened
   useEffect(() => {
@@ -6526,7 +6562,7 @@ function PhotosView() {
       setXmpLoading(true);
       listXmpPresets().then(p => { setXmpPresets(p); setXmpLoading(false); }).catch(() => setXmpLoading(false));
     }
-  }, [lbEditOpen, lbEditTab]);
+  }, [lbEditOpen, lbEditTab, xmpLoading, xmpPresets.length]);
 
   // Expand upload dropzone when files are dragged into the page
   useEffect(() => {
@@ -6639,7 +6675,7 @@ function PhotosView() {
 
       // 3. Fetch the photo library directly from server to get the cross-device authoritative list
       try {
-        const res = await fetch("/api/store/wv_photo_library");
+        const res = await fetch("/api/store/wv_photo_library", { headers: adminAuthHeaders() });
         if (!res.ok || cancelled) return;
         const data = await res.json();
         if (data?.value != null && !cancelled) {
@@ -6685,7 +6721,7 @@ function PhotosView() {
       // otherwise cause all album photo files to be deleted as "orphaned".
       let serverAlbums: Album[] = [];
       try {
-        const res = await fetch("/api/store/wv_albums");
+        const res = await fetch("/api/store/wv_albums", { headers: adminAuthHeaders() });
         if (res.ok) {
           const data = await res.json();
           const raw = data?.value;
@@ -7120,7 +7156,7 @@ function PhotosView() {
       const originalFilename = originalSrc.split("/").pop() ?? "enhanced.jpg";
       const formData = new FormData();
       formData.append("photos", blob, originalFilename);
-      const uploadRes = await fetch("/api/upload", { method: "POST", body: formData });
+      const uploadRes = await fetch("/api/upload", { method: "POST", headers: adminAuthHeaders(), body: formData });
       if (!uploadRes.ok) {
         URL.revokeObjectURL(blobUrl);
         throw new Error("Upload failed — could not save enhancement");
@@ -7973,7 +8009,7 @@ function EnquiriesView() {
 
   const handleAccept = (enq: Enquiry) => {
     const now = new Date().toISOString();
-    const modifyToken = `mod-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const modifyToken = generateCapabilityToken("mod");
     const matchedEvent = enq.eventTypeId ? eventTypes.find(e => e.id === enq.eventTypeId) : null;
     const booking: Booking = {
       id: `bk-${Date.now()}`,
@@ -8337,7 +8373,7 @@ function InvoicesView() {
       notes: settings.invoiceNotes || "",
       dueDate: due.toISOString().slice(0, 10),
       createdAt: now.toISOString(),
-      shareToken: Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2),
+      shareToken: generateCapabilityToken("inv"),
       emailLog: [],
       paymentMethods: [],
     };
@@ -8360,7 +8396,7 @@ function InvoicesView() {
       sentAt: undefined,
       paidAt: undefined,
       stripeSessionId: undefined,
-      shareToken: Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2),
+      shareToken: generateCapabilityToken("inv"),
       emailLog: [],
     };
     addInvoice(cloned);
@@ -8488,11 +8524,9 @@ function InvoicesView() {
 
   const handleStripeCheckout = async (inv: Invoice) => {
     setProcessingPay(true);
-    const total = calcInvTotal(inv);
     const { url, error } = await createInvoiceCheckout({
-      invoiceId: inv.id, invoiceNumber: inv.number,
-      clientName: inv.to.name, clientEmail: inv.to.email,
-      amount: total, shareToken: inv.shareToken,
+      invoiceId: inv.id,
+      shareToken: inv.shareToken,
     });
     setProcessingPay(false);
     if (error || !url) { toast.error(error || "Stripe checkout failed"); return; }
@@ -9265,7 +9299,7 @@ function FinanceView() {
   const [downloadCaptureStats, setDownloadCaptureStats] = React.useState<any>(null);
   React.useEffect(() => { getExpenses().then(setFinanceExpenses).catch(() => {}); }, []);
   React.useEffect(() => {
-    fetch("/api/admin/download-email-stats")
+    fetch("/api/admin/download-email-stats", { headers: adminAuthHeaders() })
       .then(response => response.ok ? response.json() : null)
       .then(setDownloadCaptureStats)
       .catch(() => {});
@@ -9372,7 +9406,9 @@ function FinanceView() {
       clientName: booking.clientName || "Unknown",
       albumTitle: booking.type || "Booking",
       albumId: "",
-      method: booking.paymentStatus === "cash" ? "cash" : (booking.paymentMethod || booking.depositMethod || "stripe"),
+      method: booking.paymentStatus === "cash"
+        ? "cash"
+        : ((booking.paymentMethod || booking.depositMethod) === "bank" ? "bank-transfer" : "stripe"),
       amount,
       status: "completed",
       description: booking.paymentStatus === "deposit-paid" ? "Booking deposit" : "Booking paid in full",
@@ -9388,7 +9424,6 @@ function FinanceView() {
     return [payment.reference, payment.clientName, payment.purchaserEmail, payment.albumTitle, payment.description]
       .some(value => String(value || "").toLowerCase().includes(q));
   });
-
   const totalRevenue = payments.filter(p => p.status === "completed").reduce((s, p) => s + p.amount, 0);
   const pendingRevenue = payments.filter(p => p.status === "pending").reduce((s, p) => s + p.amount, 0);
   const stripeTotal = payments.filter(p => p.method === "stripe" && p.status === "completed").reduce((s, p) => s + p.amount, 0);
@@ -10308,7 +10343,7 @@ function QuotesPanel() {
                 </div>
                 <span className={`text-[10px] font-body px-2 py-0.5 rounded-full capitalize ${statusColor(q.status)}`}>{q.status}</span>
                 {q.status === "draft" && <button onClick={() => handleMarkSent(q)} className="text-[10px] font-body px-2 py-0.5 rounded bg-secondary hover:bg-secondary/80 text-muted-foreground">Mark Sent</button>}
-                {(q.status === "accepted" || q.status === "sent") && q.status !== "converted" && (
+                {(q.status === "accepted" || q.status === "sent") && (
                   <button onClick={() => handleConvert(q.id)} className="text-[10px] font-body px-2 py-0.5 rounded bg-primary/10 text-primary hover:bg-primary/20">→ Invoice</button>
                 )}
                 <button onClick={() => handleDelete(q.id)} className="text-muted-foreground hover:text-destructive transition-colors"><Trash2 className="w-3.5 h-3.5" /></button>
@@ -10820,11 +10855,22 @@ function ContactsView() {
 function SettingsView() {
   const [settings, setSettingsState] = useState<AppSettings>(getSettings());
   const [rebuildProgress, setRebuildProgress] = useState<{ running: boolean; done: number; total: number; stage: string } | null>(null);
+  const savedWatermarkRef = useRef({
+    text: settings.watermarkText,
+    image: settings.watermarkImage,
+    position: settings.watermarkPosition,
+    opacity: settings.watermarkOpacity,
+    size: settings.watermarkSize ?? 40,
+  });
+  const watermarkFileInputRef = useRef<HTMLInputElement | null>(null);
+  const [watermarkImageName, setWatermarkImageName] = useState(settings.watermarkImage ? "Saved watermark image" : "");
+  const [watermarkUploadError, setWatermarkUploadError] = useState("");
 
   // Global FTP settings (stored server-side; password is never returned to browser)
   const [ftpSettings, setFtpSettings] = useState<{
     ftpEnabled?: boolean; ftpHost?: string; ftpPort?: number; ftpUser?: string;
     ftpPassword?: string; ftpRemotePath?: string; ftpPasswordSet?: boolean;
+    ftpOrganizeByAlbum?: boolean; ftpStarredFolder?: boolean;
   }>({});
   const [ftpLoaded, setFtpLoaded] = useState(false);
   const [savingFtp, setSavingFtp] = useState(false);
@@ -10862,10 +10908,42 @@ function SettingsView() {
   const handleWatermarkImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    setWatermarkUploadError("");
+    if (!/^image\/(png|jpeg|webp)$/i.test(file.type)) {
+      setWatermarkUploadError("Use a PNG, JPEG, or WebP image. Transparent PNG works best.");
+      e.target.value = "";
+      return;
+    }
+    if (file.size > 3 * 1024 * 1024) {
+      setWatermarkUploadError("Watermark images must be 3 MB or smaller.");
+      e.target.value = "";
+      return;
+    }
     const reader = new FileReader();
-    reader.onload = () => setSettingsState({ ...settings, watermarkImage: reader.result as string });
+    reader.onload = () => {
+      if (typeof reader.result !== "string" || !reader.result.startsWith("data:image/")) {
+        setWatermarkUploadError("That image could not be read.");
+        return;
+      }
+      setSettingsState(current => ({ ...current, watermarkImage: reader.result as string }));
+      setWatermarkImageName(file.name);
+    };
+    reader.onerror = () => setWatermarkUploadError("That image could not be read.");
     reader.readAsDataURL(file);
   };
+
+  const removeWatermarkImage = () => {
+    setSettingsState(current => ({ ...current, watermarkImage: "" }));
+    setWatermarkImageName("");
+    setWatermarkUploadError("");
+    if (watermarkFileInputRef.current) watermarkFileInputRef.current.value = "";
+  };
+
+  const watermarkDirty = savedWatermarkRef.current.text !== settings.watermarkText
+    || savedWatermarkRef.current.image !== settings.watermarkImage
+    || savedWatermarkRef.current.position !== settings.watermarkPosition
+    || savedWatermarkRef.current.opacity !== settings.watermarkOpacity
+    || savedWatermarkRef.current.size !== (settings.watermarkSize ?? 40);
 
   const handleSave = async () => {
     const saved = getSettings() as AppSettings & { watermarkVersion?: number };
@@ -10885,6 +10963,13 @@ function SettingsView() {
 
     setSettings(nextSettings as AppSettings);
     setSettingsState(nextSettings as AppSettings);
+    savedWatermarkRef.current = {
+      text: nextSettings.watermarkText,
+      image: nextSettings.watermarkImage,
+      position: nextSettings.watermarkPosition,
+      opacity: nextSettings.watermarkOpacity,
+      size: nextSettings.watermarkSize ?? 40,
+    };
 
     if (isServerMode()) {
       if (!watermarkChanged) {
@@ -10895,7 +10980,7 @@ function SettingsView() {
       setRebuildProgress({ running: true, done: 0, total: 1, stage: "Clearing server image cache…" });
       writeWatermarkRebuildStatus({ running: true, mode: "save", done: 0, total: 1, stage: "Clearing server image cache…" });
       try {
-        const cacheRes = await fetch("/api/cache/clear", { method: "POST" });
+        const cacheRes = await fetch("/api/cache/clear", { method: "POST", headers: adminAuthHeaders() });
         const cacheData = cacheRes.ok ? await cacheRes.json() : null;
         const clearedMsg = formatClearedMsg(cacheData?.cleared);
         toast.success(`Settings saved — server cache cleared${clearedMsg}, gallery will serve fresh watermarked images.`);
@@ -10990,50 +11075,111 @@ function SettingsView() {
           </button>
         ))}
       </div>
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 max-w-4xl">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 max-w-6xl">
         {/* ── Watermark tab ── */}
-        {activeSettingsTab === "watermark" && <div id="settings-watermark" className="glass-panel rounded-xl p-6 space-y-4 lg:col-span-2">
-          <h3 className="font-display text-base text-foreground">Watermark</h3>
-          <div>
-            <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Watermark Text</label>
-            <Input value={settings.watermarkText} onChange={(e) => setSettingsState({ ...settings, watermarkText: e.target.value })} className="bg-secondary border-border text-foreground font-body" />
+        {activeSettingsTab === "watermark" && <div id="settings-watermark" className="glass-panel rounded-xl overflow-hidden lg:col-span-2">
+          <div className="px-5 sm:px-6 py-5 border-b border-border/50 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <h3 className="font-display text-lg text-foreground">Watermark appearance</h3>
+              <p className="text-xs font-body text-muted-foreground mt-1">Tune the protection clients see on gallery previews. Originals are not changed.</p>
+            </div>
+            <div className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-[10px] font-body uppercase tracking-wider ${
+              watermarkDirty ? "border-amber-500/30 bg-amber-500/10 text-amber-300" : "border-green-500/30 bg-green-500/10 text-green-400"
+            }`}>
+              <span className={`w-1.5 h-1.5 rounded-full ${watermarkDirty ? "bg-amber-400" : "bg-green-400"}`} />
+              {watermarkDirty ? "Unsaved preview" : "Saved and active"}
+            </div>
           </div>
-          <div>
-            <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-3 block">Watermark Image (optional, overrides text)</label>
-            <div className="flex items-center gap-4">
-              <label className="cursor-pointer">
-                <div className="w-20 h-12 rounded-md bg-secondary border-2 border-dashed border-border flex items-center justify-center overflow-hidden">
-                  {settings.watermarkImage ? <img src={settings.watermarkImage} alt="Watermark" className="w-full h-full object-contain" /> : <Upload className="w-4 h-4 text-muted-foreground/50" />}
+
+          <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,0.9fr)_minmax(380px,1.1fr)]">
+            <div className="p-5 sm:p-6 space-y-6 xl:border-r border-border/50">
+              <section className="space-y-3">
+                <div className="flex items-center justify-between gap-3">
+                  <label className="text-xs font-body tracking-wider uppercase text-muted-foreground">Watermark source</label>
+                  <span className="text-[10px] font-body text-primary">{settings.watermarkImage ? "Image logo active" : (settings.watermarkText || "").trim() ? "Text active" : "No visible watermark"}</span>
                 </div>
-                <input type="file" accept="image/*" onChange={handleWatermarkImageUpload} className="hidden" />
-              </label>
-              {settings.watermarkImage && <button onClick={() => setSettingsState({ ...settings, watermarkImage: "" })} className="text-xs font-body text-destructive hover:underline">Remove</button>}
+                <div>
+                  <label className="text-xs font-body text-foreground mb-1.5 block">Fallback text</label>
+                  <Input value={settings.watermarkText} maxLength={80} onChange={(e) => setSettingsState({ ...settings, watermarkText: e.target.value })}
+                    placeholder="Your studio name" className="bg-secondary border-border text-foreground font-body" />
+                  <p className="text-[10px] font-body text-muted-foreground mt-1.5">Used whenever no logo image is uploaded.</p>
+                </div>
+
+                <div className="rounded-xl border border-border/60 bg-secondary/20 p-3">
+                  <div className="flex items-center gap-3">
+                    <div className="w-24 h-16 rounded-lg border border-border overflow-hidden flex items-center justify-center shrink-0"
+                      style={{ backgroundColor: "#18181b", backgroundImage: "linear-gradient(45deg,#27272a 25%,transparent 25%),linear-gradient(-45deg,#27272a 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#27272a 75%),linear-gradient(-45deg,transparent 75%,#27272a 75%)", backgroundSize: "12px 12px", backgroundPosition: "0 0,0 6px,6px -6px,-6px 0" }}>
+                      {settings.watermarkImage
+                        ? <img src={settings.watermarkImage} alt="Current watermark logo" className="w-full h-full object-contain p-2" />
+                        : <ImagePlus className="w-5 h-5 text-muted-foreground/50" />}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-body text-foreground truncate">{settings.watermarkImage ? watermarkImageName || "Watermark image" : "Upload an optional logo"}</p>
+                      <p className="text-[10px] font-body text-muted-foreground mt-1">PNG with transparency recommended · JPEG/WebP accepted · 3 MB max</p>
+                      <div className="flex items-center gap-2 mt-2">
+                        <Button type="button" size="sm" variant="outline" className="h-7 gap-1.5 text-[10px] font-body" onClick={() => watermarkFileInputRef.current?.click()}>
+                          <Upload className="w-3 h-3" /> {settings.watermarkImage ? "Replace" : "Upload"}
+                        </Button>
+                        {settings.watermarkImage && (
+                          <Button type="button" size="sm" variant="ghost" className="h-7 text-[10px] font-body text-destructive hover:text-destructive" onClick={removeWatermarkImage}>Remove</Button>
+                        )}
+                      </div>
+                      <input ref={watermarkFileInputRef} type="file" accept="image/png,image/jpeg,image/webp" onChange={handleWatermarkImageUpload} className="hidden" />
+                    </div>
+                  </div>
+                  {watermarkUploadError && <p role="alert" className="text-[10px] font-body text-destructive mt-2">{watermarkUploadError}</p>}
+                </div>
+                {settings.watermarkImage && <p className="text-[10px] font-body text-muted-foreground">The uploaded image overrides the text. Remove it to return to text mode.</p>}
+              </section>
+
+              <section className="space-y-3">
+                <label className="text-xs font-body tracking-wider uppercase text-muted-foreground block">Position</label>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                  {watermarkOptions.map((opt) => (
+                    <button key={opt.value} type="button" onClick={() => setSettingsState({ ...settings, watermarkPosition: opt.value })}
+                      aria-pressed={settings.watermarkPosition === opt.value}
+                      className={`text-xs font-body py-2.5 px-3 rounded-lg border transition-all ${
+                        settings.watermarkPosition === opt.value ? "bg-primary/15 text-primary border-primary/50 ring-1 ring-primary/20" : "border-border text-muted-foreground hover:text-foreground hover:border-primary/40"
+                      }`}>{opt.label}</button>
+                  ))}
+                </div>
+              </section>
+
+              <section className="space-y-5 rounded-xl border border-border/60 bg-secondary/20 p-4">
+                <div>
+                  <div className="flex items-center justify-between gap-3 mb-3">
+                    <div>
+                      <label className="text-xs font-body text-foreground block">Opacity</label>
+                      <p className="text-[10px] font-body text-muted-foreground">Lower values are subtler; check both light and dark photos.</p>
+                    </div>
+                    <span className="text-xs font-mono text-primary tabular-nums">{settings.watermarkOpacity}%</span>
+                  </div>
+                  <Slider aria-label="Watermark opacity" value={[settings.watermarkOpacity]} onValueChange={(v) => setSettingsState({ ...settings, watermarkOpacity: v[0] })} min={5} max={80} step={1} />
+                </div>
+                <div>
+                  <div className="flex items-center justify-between gap-3 mb-3">
+                    <div>
+                      <label className="text-xs font-body text-foreground block">Scale / size</label>
+                      <p className="text-[10px] font-body text-muted-foreground">Logo width or text scale relative to the preview image.</p>
+                    </div>
+                    <span className="text-xs font-mono text-primary tabular-nums">{settings.watermarkSize ?? 40}%</span>
+                  </div>
+                  <Slider aria-label="Watermark scale" value={[settings.watermarkSize ?? 40]} onValueChange={(v) => setSettingsState({ ...settings, watermarkSize: v[0] })} min={10} max={100} step={1} />
+                </div>
+              </section>
             </div>
-          </div>
-          <div>
-            <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-3 block">Position</label>
-            <div className="grid grid-cols-3 gap-2">
-              {watermarkOptions.map((opt) => (
-                <button key={opt.value} onClick={() => setSettingsState({ ...settings, watermarkPosition: opt.value })}
-                  className={`text-xs font-body py-2.5 px-3 rounded-lg border transition-all ${
-                    settings.watermarkPosition === opt.value ? "bg-primary text-primary-foreground border-primary" : "border-border text-muted-foreground hover:border-primary/50"
-                  }`}
-                >{opt.label}</button>
-              ))}
+
+            <div className="p-5 sm:p-6 bg-background/20">
+              <div className="xl:sticky xl:top-4">
+                <WatermarkPreviewWithSamples settings={settings} dirty={watermarkDirty} />
+                <div className="mt-4 rounded-lg border border-border/50 bg-secondary/20 p-3 flex items-start gap-2">
+                  <AlertCircle className="w-3.5 h-3.5 text-primary mt-0.5 shrink-0" />
+                  <p className="text-[10px] font-body leading-relaxed text-muted-foreground">
+                    Save settings to clear generated preview caches. Existing source photos stay untouched; galleries receive newly rendered protected previews.
+                  </p>
+                </div>
+              </div>
             </div>
-          </div>
-          <div>
-            <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-3 block">Opacity ({settings.watermarkOpacity}%)</label>
-            <Slider value={[settings.watermarkOpacity]} onValueChange={(v) => setSettingsState({ ...settings, watermarkOpacity: v[0] })} min={5} max={80} step={1} className="mb-4" />
-          </div>
-          <div>
-            <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-3 block">Size ({settings.watermarkSize ?? 40}%)</label>
-            <Slider value={[settings.watermarkSize ?? 40]} onValueChange={(v) => setSettingsState({ ...settings, watermarkSize: v[0] })} min={10} max={100} step={1} className="mb-4" />
-          </div>
-          {/* Live Preview with Sample Image Selector */}
-          <div>
-            <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-3 block">Preview</label>
-            <WatermarkPreviewWithSamples settings={settings} />
           </div>
         </div>}
 
@@ -11276,7 +11422,7 @@ function SettingsView() {
                       try {
                         const res = await fetch("/api/discord/test", {
                           method: "POST",
-                          headers: { "Content-Type": "application/json" },
+                          headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
                           body: JSON.stringify({ webhookUrl: settings.discordWebhookUrl }),
                         });
                         const data = await res.json();
@@ -12344,24 +12490,12 @@ function PlatformView() {
   const [slotPriceInput, setSlotPriceInput] = useState("");
   const [savingSlot, setSavingSlot] = useState(false);
 
-  // Tenant key purchase toggle
-  const [editingKeyPurchaseSlug, setEditingKeyPurchaseSlug] = useState<string | null>(null);
-  const [keyPurchaseEnabled, setKeyPurchaseEnabled] = useState(false);
-  const [savingKeyPurchase, setSavingKeyPurchase] = useState(false);
-
   // Plan form state
   const [newPlanName, setNewPlanName] = useState("");
-  const [newPlanType, setNewPlanType] = useState<"one-time" | "monthly" | "yearly">("one-time");
   const [newPlanPrice, setNewPlanPrice] = useState("");
   const [newPlanDuration, setNewPlanDuration] = useState("365");
   const [newPlanDesc, setNewPlanDesc] = useState("");
   const [savingPlan, setSavingPlan] = useState(false);
-
-  // Checkout form
-  const [checkoutPlanId, setCheckoutPlanId] = useState("");
-  const [checkoutEmail, setCheckoutEmail] = useState("");
-  const [checkoutName, setCheckoutName] = useState("");
-  const [generatingCheckout, setGeneratingCheckout] = useState(false);
 
   // Webhooks section
   const [webhooks, setWebhooks] = useState<{
@@ -12398,17 +12532,18 @@ function PlatformView() {
 
   const handleCreatePlan = async () => {
     const price = parseFloat(newPlanPrice);
-    if (!newPlanName.trim() || isNaN(price) || price <= 0) {
-      toast.error("Name and a valid price are required");
+    const durationDays = parseInt(newPlanDuration, 10);
+    if (!newPlanName.trim() || isNaN(price) || price <= 0 || !Number.isFinite(durationDays) || durationDays <= 0) {
+      toast.error("Name, price, and a valid duration are required");
       return;
     }
     setSavingPlan(true);
     const { plan, error } = await createLicensePlan({
       name: newPlanName.trim(),
-      type: newPlanType,
+      type: "one-time",
       price,
       currency: "AUD",
-      durationDays: newPlanType === "one-time" ? parseInt(newPlanDuration) || 365 : undefined,
+      durationDays,
       description: newPlanDesc.trim() || undefined,
     });
     setSavingPlan(false);
@@ -12425,27 +12560,9 @@ function PlatformView() {
     else toast.error("Failed to delete");
   };
 
-  const handleGenerateCheckout = async () => {
-    if (!checkoutPlanId || !checkoutEmail.trim()) { toast.error("Select a plan and enter buyer email"); return; }
-    setGeneratingCheckout(true);
-    const { url, error } = await getLicensePlanCheckout(checkoutPlanId, checkoutEmail.trim(), checkoutName.trim() || undefined);
-    setGeneratingCheckout(false);
-    if (error || !url) { toast.error(error || "Failed to create checkout"); return; }
-    window.open(url, "_blank");
-    toast.success("Checkout opened — share with the buyer if needed");
-  };
-
-  const handleActivatePurchase = async (purchaseId: string) => {
-    const { ok, key, error } = await activateBankPurchase(purchaseId);
-    if (!ok) { toast.error(error || "Failed"); return; }
-    toast.success(`Key activated: ${key}`);
-    const updatedPurchases = await getLicensePurchases();
-    setPurchases(updatedPurchases);
-  };
-
   const handleCreateTenant = async () => {
-    if (!newTenantSlug.trim() || !newTenantName.trim()) {
-      toast.error("Slug and display name are required");
+    if (!newTenantSlug.trim() || !newTenantName.trim() || !newTenantLicenseKey.trim()) {
+      toast.error("Slug, display name, and an unclaimed licence key are required");
       return;
     }
     setCreatingTenant(true);
@@ -12453,11 +12570,11 @@ function PlatformView() {
       slug: newTenantSlug.trim().toLowerCase(),
       displayName: newTenantName.trim(),
       email: newTenantEmail.trim() || "",
-      licenseKey: newTenantLicenseKey.trim() || undefined,
+      licenseKey: newTenantLicenseKey.trim(),
     });
     setCreatingTenant(false);
     if (error || !tenant) { toast.error(error || "Failed to create tenant"); return; }
-    toast.success(`Tenant /${tenant.slug} created`);
+    toast.success(`Tenant /${tenant.slug} created — set a password before sharing the admin login`);
     setNewTenantSlug(""); setNewTenantName(""); setNewTenantEmail(""); setNewTenantLicenseKey("");
     loadAll();
   };
@@ -12516,16 +12633,6 @@ function PlatformView() {
     toast.success(`Event slot settings saved for /${slug}`);
     setEditingSlotSlug(null);
     setSlotPriceInput("");
-    loadAll();
-  };
-
-  const handleSaveKeyPurchase = async (slug: string) => {
-    setSavingKeyPurchase(true);
-    const { ok, error } = await updateTenant(slug, { keyPurchaseEnabled });
-    setSavingKeyPurchase(false);
-    if (!ok) { toast.error(error || "Failed to save key purchase setting"); return; }
-    toast.success(`Key purchase ${keyPurchaseEnabled ? "enabled" : "disabled"} for /${slug}`);
-    setEditingKeyPurchaseSlug(null);
     loadAll();
   };
 
@@ -12645,8 +12752,9 @@ function PlatformView() {
                 <Input type="email" value={newTenantEmail} onChange={e => setNewTenantEmail(e.target.value)} placeholder="jane@example.com" className="bg-secondary border-border text-foreground font-body" />
               </div>
               <div>
-                <label className="text-xs font-body text-muted-foreground mb-1 block">License Key (optional)</label>
+                <label className="text-xs font-body text-muted-foreground mb-1 block">Licence Key *</label>
                 <Input value={newTenantLicenseKey} onChange={e => setNewTenantLicenseKey(e.target.value)} placeholder="WV-XXXX-XXXX-XXXX-XXXX" className="bg-secondary border-border text-foreground font-body font-mono text-xs" />
+                <p className="text-[10px] font-body text-muted-foreground mt-0.5">Use an active, unclaimed key issued from the Licences section.</p>
               </div>
             </div>
             <Button onClick={handleCreateTenant} disabled={creatingTenant} className="bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2" size="sm">
@@ -12681,9 +12789,6 @@ function PlatformView() {
                           {t.extraEventSlotRequestEnabled && (
                             <p className="text-[10px] font-body text-amber-400 mt-0.5">🎟 Slots enabled{t.extraEventPrice != null ? ` — $${t.extraEventPrice}/slot` : ""}</p>
                           )}
-                          {t.keyPurchaseEnabled && (
-                            <p className="text-[10px] font-body text-green-400 mt-0.5">🛒 Key purchase enabled</p>
-                          )}
                         </div>
                         <div className="text-right shrink-0">
                           <p className="text-xs font-body text-foreground">{t.bookingCount} bookings</p>
@@ -12710,7 +12815,6 @@ function PlatformView() {
                             setSelectedTenantForSettings(null);
                             setEditingDomainSlug(null);
                             setEditingSlotSlug(null);
-                            setEditingKeyPurchaseSlug(null);
                           }}
                           className={`text-xs font-body px-2 py-1 rounded-md border transition-colors ${resettingSlug === t.slug ? "bg-yellow-500/10 text-yellow-400 border-yellow-500/30" : "border-border text-muted-foreground hover:text-foreground hover:border-foreground"}`}
                           title="Reset password"
@@ -12725,7 +12829,6 @@ function PlatformView() {
                             setResettingSlug(null);
                             setSelectedTenantForSettings(null);
                             setEditingSlotSlug(null);
-                            setEditingKeyPurchaseSlug(null);
                           }}
                           className={`text-xs font-body px-2 py-1 rounded-md border transition-colors ${editingDomainSlug === t.slug ? "bg-blue-500/10 text-blue-400 border-blue-500/30" : "border-border text-muted-foreground hover:text-foreground hover:border-foreground"}`}
                           title="Custom domain"
@@ -12741,7 +12844,6 @@ function PlatformView() {
                             setResettingSlug(null);
                             setSelectedTenantForSettings(null);
                             setEditingDomainSlug(null);
-                            setEditingKeyPurchaseSlug(null);
                           }}
                           className={`text-xs font-body px-2 py-1 rounded-md border transition-colors ${editingSlotSlug === t.slug ? "bg-amber-500/10 text-amber-400 border-amber-500/30" : "border-border text-muted-foreground hover:text-foreground hover:border-foreground"}`}
                           title="Event slot request settings"
@@ -12750,24 +12852,8 @@ function PlatformView() {
                         </button>
                         <button
                           onClick={() => {
-                            const opening = editingKeyPurchaseSlug !== t.slug;
-                            setEditingKeyPurchaseSlug(opening ? t.slug : null);
-                            setKeyPurchaseEnabled(opening ? (t.keyPurchaseEnabled ?? false) : false);
-                            setResettingSlug(null);
-                            setSelectedTenantForSettings(null);
-                            setEditingDomainSlug(null);
-                            setEditingSlotSlug(null);
-                          }}
-                          className={`text-xs font-body px-2 py-1 rounded-md border transition-colors ${editingKeyPurchaseSlug === t.slug ? "bg-green-500/10 text-green-400 border-green-500/30" : "border-border text-muted-foreground hover:text-foreground hover:border-foreground"}`}
-                          title="Key purchase settings"
-                        >
-                          🛒 Purchase
-                        </button>
-                        <button
-                          onClick={() => {
                             setSelectedTenantForSettings(selectedTenantForSettings?.slug === t.slug ? null : t);
                             setEditingSlotSlug(null);
-                            setEditingKeyPurchaseSlug(null);
                           }}
                           className={`text-xs font-body px-2 py-1 rounded-md border transition-colors ${selectedTenantForSettings?.slug === t.slug ? "bg-primary text-primary-foreground border-primary" : "border-border text-muted-foreground hover:text-foreground hover:border-foreground"}`}
                           title="Configure tenant settings"
@@ -12884,31 +12970,6 @@ function PlatformView() {
                         </div>
                       </div>
                     )}
-                    {editingKeyPurchaseSlug === t.slug && (
-                      <div className="mt-1 p-4 rounded-lg bg-green-500/5 border border-green-500/20 space-y-3">
-                        <p className="text-xs font-body text-green-400 font-medium">Key purchase setting for /{t.slug}</p>
-                        <p className="text-[11px] font-body text-muted-foreground">
-                          When enabled, this tenant can browse and purchase available license plans directly from their License panel — before hitting any plan limit.
-                        </p>
-                        <div className="flex items-center gap-3">
-                          <Switch checked={keyPurchaseEnabled} onCheckedChange={setKeyPurchaseEnabled} />
-                          <span className="text-xs font-body text-foreground">{keyPurchaseEnabled ? "Enabled" : "Disabled"}</span>
-                        </div>
-                        <div className="flex gap-2 items-center">
-                          <Button size="sm" onClick={() => handleSaveKeyPurchase(t.slug)} disabled={savingKeyPurchase}
-                            className="bg-green-600 hover:bg-green-700 text-white font-body text-xs gap-1 shrink-0">
-                            {savingKeyPurchase ? "Saving…" : "Save"}
-                          </Button>
-                          <Button size="sm" variant="ghost" onClick={() => setEditingKeyPurchaseSlug(null)}
-                            className="font-body text-xs text-muted-foreground">
-                            Cancel
-                          </Button>
-                          {t.keyPurchaseEnabled && (
-                            <span className="text-[10px] font-body text-green-400 ml-auto">Currently enabled</span>
-                          )}
-                        </div>
-                      </div>
-                    )}
                   </div>
                 ))}
               </div>
@@ -12970,23 +13031,18 @@ function PlatformView() {
                 <Input value={newPlanName} onChange={e => setNewPlanName(e.target.value)} placeholder="e.g. Starter, Pro" className="bg-secondary border-border text-foreground font-body" />
               </div>
               <div>
-                <label className="text-xs font-body text-muted-foreground mb-1 block">Type *</label>
-                <select value={newPlanType} onChange={e => setNewPlanType(e.target.value as any)} className="w-full bg-secondary border border-border text-foreground font-body text-sm rounded-md px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-ring">
-                  <option value="one-time">One-time (fixed period)</option>
-                  <option value="monthly">Monthly subscription</option>
-                  <option value="yearly">Yearly subscription</option>
-                </select>
+                <label className="text-xs font-body text-muted-foreground mb-1 block">Billing Model</label>
+                <div className="w-full bg-secondary border border-border text-foreground font-body text-sm rounded-md px-3 py-2.5">One-time purchase</div>
+                <p className="text-[10px] font-body text-muted-foreground mt-1">Monthly and yearly subscriptions are not offered because automated renewals and cancellations are not supported.</p>
               </div>
               <div>
                 <label className="text-xs font-body text-muted-foreground mb-1 block">Price (AUD) *</label>
                 <Input type="number" value={newPlanPrice} onChange={e => setNewPlanPrice(e.target.value)} placeholder="29.00" className="bg-secondary border-border text-foreground font-body" />
               </div>
-              {newPlanType === "one-time" && (
-                <div>
-                  <label className="text-xs font-body text-muted-foreground mb-1 block">Duration (days)</label>
-                  <Input type="number" value={newPlanDuration} onChange={e => setNewPlanDuration(e.target.value)} placeholder="365" className="bg-secondary border-border text-foreground font-body" />
-                </div>
-              )}
+              <div>
+                <label className="text-xs font-body text-muted-foreground mb-1 block">Duration (days)</label>
+                <Input type="number" min="1" value={newPlanDuration} onChange={e => setNewPlanDuration(e.target.value)} placeholder="365" className="bg-secondary border-border text-foreground font-body" />
+              </div>
               <div className="sm:col-span-2">
                 <label className="text-xs font-body text-muted-foreground mb-1 block">Description (optional)</label>
                 <Input value={newPlanDesc} onChange={e => setNewPlanDesc(e.target.value)} placeholder="What's included in this plan…" className="bg-secondary border-border text-foreground font-body" />
@@ -13001,7 +13057,7 @@ function PlatformView() {
           <div className="glass-panel rounded-xl p-6">
             <h3 className="font-display text-base text-foreground mb-4">Your Plans</h3>
             {plans.length === 0 ? (
-              <p className="text-sm font-body text-muted-foreground">No plans yet. Create one above to sell license keys.</p>
+              <p className="text-sm font-body text-muted-foreground">No plan templates yet. Create one above for manual licence administration.</p>
             ) : (
               <div className="space-y-3">
                 {plans.map(p => (
@@ -13009,7 +13065,9 @@ function PlatformView() {
                     <div className="flex-1">
                       <div className="flex items-center gap-2">
                         <span className="text-sm font-body text-foreground font-medium">{p.name}</span>
-                        <span className="text-[10px] font-body bg-primary/10 text-primary px-1.5 py-0.5 rounded-full">{p.type}</span>
+                        <span className={`text-[10px] font-body px-1.5 py-0.5 rounded-full ${p.type === "one-time" ? "bg-primary/10 text-primary" : "bg-orange-500/10 text-orange-400"}`}>
+                          {p.type === "one-time" ? "one-time" : `${p.type} · unsupported legacy`}
+                        </span>
                         {!p.active && <span className="text-[10px] font-body bg-muted text-muted-foreground px-1.5 py-0.5 rounded-full">Inactive</span>}
                       </div>
                       <p className="text-xs font-body text-muted-foreground mt-0.5">
@@ -13026,33 +13084,12 @@ function PlatformView() {
             )}
           </div>
 
-          {/* Generate Stripe checkout */}
-          {plans.filter(p => p.active !== false).length > 0 && (
-            <div className="glass-panel rounded-xl p-6 space-y-4">
-              <h3 className="font-display text-base text-foreground">Generate Checkout Link</h3>
-              <p className="text-xs font-body text-muted-foreground">Create a Stripe checkout link to send to a buyer. After payment, a license key is automatically generated.</p>
-              <div className="grid sm:grid-cols-3 gap-3">
-                <div>
-                  <label className="text-xs font-body text-muted-foreground mb-1 block">Plan *</label>
-                  <select value={checkoutPlanId} onChange={e => setCheckoutPlanId(e.target.value)} className="w-full bg-secondary border border-border text-foreground font-body text-sm rounded-md px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-ring">
-                    <option value="">Select plan…</option>
-                    {plans.filter(p => p.active !== false).map(p => <option key={p.id} value={p.id}>{p.name} — ${p.price}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label className="text-xs font-body text-muted-foreground mb-1 block">Buyer Email *</label>
-                  <Input value={checkoutEmail} onChange={e => setCheckoutEmail(e.target.value)} placeholder="buyer@example.com" className="bg-secondary border-border text-foreground font-body" />
-                </div>
-                <div>
-                  <label className="text-xs font-body text-muted-foreground mb-1 block">Buyer Name</label>
-                  <Input value={checkoutName} onChange={e => setCheckoutName(e.target.value)} placeholder="Jane Smith" className="bg-secondary border-border text-foreground font-body" />
-                </div>
-              </div>
-              <Button onClick={handleGenerateCheckout} disabled={generatingCheckout} className="bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2" size="sm">
-                <CreditCard className="w-3 h-3" /> {generatingCheckout ? "Opening…" : "Open Stripe Checkout"}
-              </Button>
-            </div>
-          )}
+          <div className="glass-panel rounded-xl p-6 space-y-2 border border-amber-500/20">
+            <h3 className="font-display text-base text-foreground">Licence fulfilment</h3>
+            <p className="text-xs font-body text-muted-foreground">
+              Online licence checkout is disabled until a verified payment can be applied atomically to a specific tenant. Issue and attach licence keys directly from the admin tools instead.
+            </p>
+          </div>
         </div>
       )}
 
@@ -13081,9 +13118,7 @@ function PlatformView() {
                     )}
                   </div>
                   {pur.status === "pending" && !pur.licenseKey && (
-                    <Button size="sm" onClick={() => handleActivatePurchase(pur.id)} className="bg-primary text-primary-foreground font-body text-xs gap-1 shrink-0">
-                      <CheckCircle2 className="w-3 h-3" /> Activate
-                    </Button>
+                    <span className="text-[10px] font-body text-amber-400 shrink-0">Manual review required</span>
                   )}
                 </div>
               ))}
@@ -13163,32 +13198,96 @@ const SAMPLE_IMAGES = [
   { src: sampleFood, label: "Food" },
 ];
 
-function WatermarkPreviewWithSamples({ settings }: { settings: AppSettings }) {
+function WatermarkPreviewWithSamples({ settings, dirty }: { settings: AppSettings; dirty: boolean }) {
   const [selectedSample, setSelectedSample] = useState(0);
   const currentSrc = SAMPLE_IMAGES[selectedSample].src;
+  const hasVisibleWatermark = !!settings.watermarkImage || !!(settings.watermarkText || "").trim();
+  const [renderedPreview, setRenderedPreview] = useState("");
+  const [previewRendering, setPreviewRendering] = useState(true);
+  const [previewError, setPreviewError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    const previewSettings: WatermarkBakeSettings = {
+      watermarkImage: settings.watermarkImage,
+      watermarkOpacity: settings.watermarkOpacity,
+      watermarkPosition: settings.watermarkPosition,
+      watermarkSize: settings.watermarkSize,
+      watermarkText: settings.watermarkText,
+    };
+    setRenderedPreview("");
+    setPreviewRendering(true);
+    setPreviewError("");
+    const timer = window.setTimeout(() => {
+      renderWatermarkPreviewAsset(currentSrc, previewSettings)
+        .then(result => {
+          if (!cancelled) setRenderedPreview(result);
+        })
+        .catch(() => {
+          if (!cancelled) setPreviewError("Preview rendering failed. Your saved source image was not changed.");
+        })
+        .finally(() => {
+          if (!cancelled) setPreviewRendering(false);
+        });
+    }, 180);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [currentSrc, settings.watermarkImage, settings.watermarkOpacity, settings.watermarkPosition, settings.watermarkSize, settings.watermarkText]);
 
   return (
-    <div className="space-y-3">
-      <div className="flex gap-2">
+    <div className="space-y-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-xs font-body tracking-wider uppercase text-muted-foreground">Live preview</p>
+          <p className="text-[10px] font-body text-muted-foreground mt-1">Switch photos to check contrast and placement.</p>
+        </div>
+        <span className={`text-[10px] font-body rounded-full px-2 py-1 ${dirty ? "bg-amber-500/10 text-amber-300" : "bg-green-500/10 text-green-400"}`}>
+          {dirty ? "Unsaved" : "Saved"}
+        </span>
+      </div>
+      <div className="flex gap-1.5 flex-wrap" role="group" aria-label="Preview photo">
         {SAMPLE_IMAGES.map((img, i) => (
-          <button key={i} onClick={() => setSelectedSample(i)}
-            className={`text-[10px] font-body px-2.5 py-1 rounded-full transition-all ${
-              selectedSample === i ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground hover:text-foreground"
+          <button key={img.label} type="button" onClick={() => setSelectedSample(i)} aria-pressed={selectedSample === i}
+            className={`text-[10px] font-body px-2.5 py-1 rounded-full border transition-all ${
+              selectedSample === i ? "bg-primary text-primary-foreground border-primary" : "bg-secondary/50 border-border text-muted-foreground hover:text-foreground"
             }`}>{img.label}</button>
         ))}
       </div>
-      <div className="rounded-lg overflow-hidden bg-secondary">
-        <WatermarkedImage
-          src={currentSrc}
-          title="Preview"
-          renderWatermarkOverlay={true}
-          watermarkPosition={settings.watermarkPosition}
-          watermarkText={settings.watermarkText}
-          watermarkImage={settings.watermarkImage}
-          watermarkOpacity={settings.watermarkOpacity}
-          watermarkSize={settings.watermarkSize ?? 40}
-          index={0}
-        />
+      <div className="rounded-xl border border-border/60 p-2 sm:p-3 shadow-inner"
+        style={{ backgroundColor: "#18181b", backgroundImage: "linear-gradient(45deg,#27272a 25%,transparent 25%),linear-gradient(-45deg,#27272a 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#27272a 75%),linear-gradient(-45deg,transparent 75%,#27272a 75%)", backgroundSize: "18px 18px", backgroundPosition: "0 0,0 9px,9px -9px,-9px 0" }}>
+        <div className="relative rounded-lg overflow-hidden bg-black shadow-xl min-h-52 flex items-center justify-center">
+          {renderedPreview ? (
+            <img src={renderedPreview} alt={`${SAMPLE_IMAGES[selectedSample].label} watermark preview`} className="block w-full h-auto" />
+          ) : (
+            <div className="aspect-[3/2] w-full flex flex-col items-center justify-center gap-2 text-muted-foreground bg-secondary/40">
+              <RefreshCw className={`w-5 h-5 ${previewRendering ? "animate-spin" : ""}`} />
+              <span className="text-[10px] font-body">{previewRendering ? "Rendering server-aligned preview…" : "Preview unavailable"}</span>
+            </div>
+          )}
+        </div>
+      </div>
+      {previewError && <p role="alert" className="text-[10px] font-body text-destructive">{previewError}</p>}
+      {!hasVisibleWatermark && (
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 flex items-start gap-2">
+          <AlertTriangle className="w-3.5 h-3.5 text-amber-300 shrink-0 mt-0.5" />
+          <p className="text-[10px] font-body text-amber-200">No text or image is set, so gallery previews will have no visible watermark.</p>
+        </div>
+      )}
+      <div className="grid grid-cols-3 gap-2">
+        <div className="rounded-lg bg-secondary/40 p-2 text-center">
+          <p className="text-[9px] font-body uppercase tracking-wider text-muted-foreground">Position</p>
+          <p className="text-[11px] font-body text-foreground mt-0.5 capitalize">{settings.watermarkPosition.replace("-", " ")}</p>
+        </div>
+        <div className="rounded-lg bg-secondary/40 p-2 text-center">
+          <p className="text-[9px] font-body uppercase tracking-wider text-muted-foreground">Opacity</p>
+          <p className="text-[11px] font-mono text-foreground mt-0.5">{settings.watermarkOpacity}%</p>
+        </div>
+        <div className="rounded-lg bg-secondary/40 p-2 text-center">
+          <p className="text-[9px] font-body uppercase tracking-wider text-muted-foreground">Scale</p>
+          <p className="text-[11px] font-mono text-foreground mt-0.5">{settings.watermarkSize ?? 40}%</p>
+        </div>
       </div>
     </div>
   );
@@ -13912,7 +14011,7 @@ function GoogleCalendarSection() {
 
   const handleSyncAll = async () => {
     setSyncing(true);
-    const bookings = getBookings();
+    const bookings = getBookings().filter(booking => booking.archived !== true);
     const result = await syncAllBookingsToCalendar(bookings, selectedCalendar);
     setSyncing(false);
     if (result.ok) {
@@ -14101,7 +14200,7 @@ function StorageView() {
       setLastClearStats(null);
       writeWatermarkRebuildStatus(jobState);
       try {
-        const cacheRes = await fetch("/api/cache/clear", { method: "POST", signal: ctrl.signal });
+        const cacheRes = await fetch("/api/cache/clear", { method: "POST", headers: adminAuthHeaders(), signal: ctrl.signal });
         const cacheData = cacheRes.ok ? await cacheRes.json() : null;
         const cleared: number = cacheData?.cleared ?? 0;
         const breakdown: CacheBreakdown | null = cacheData?.breakdown ?? null;
@@ -14285,7 +14384,7 @@ function StorageView() {
     if (deleteAllState !== "confirming") return;
     setDeleteAllState("deleting");
     try {
-      const res = await fetch("/api/upload/all", { method: "DELETE" });
+      const res = await fetch("/api/upload/all", { method: "DELETE", headers: adminAuthHeaders() });
       if (!res.ok) throw new Error("Server error");
       const { deleted } = await res.json();
       // Clear local state
@@ -14310,7 +14409,7 @@ function StorageView() {
       // Fetch authoritative album data from server
       let serverAlbums: Album[] = [];
       try {
-        const res = await fetch("/api/store/wv_albums");
+        const res = await fetch("/api/store/wv_albums", { headers: adminAuthHeaders() });
         if (res.ok) {
           const data = await res.json();
           const raw = data?.value;

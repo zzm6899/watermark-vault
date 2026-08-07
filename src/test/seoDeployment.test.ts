@@ -52,7 +52,7 @@ describe("portfolio technical SEO", () => {
     const compose = read("docker-compose.yml");
 
     for (const route of ["/portfolio", "/concerts", "/about", "/testimonials", "/enquire"]) {
-      expect(server).toContain(`\"${route}\": {`);
+      expect(server).toContain(`"${route}": {`);
     }
     expect(server).toContain('["/concert", "/concerts"]');
     expect(server).toContain('["/contact", "/enquire"]');

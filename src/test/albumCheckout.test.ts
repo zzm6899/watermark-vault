@@ -6,6 +6,13 @@ const { calculateAlbumCheckout } = require("../../server/stripe.js") as {
   calculateAlbumCheckout: (album: Record<string, unknown>, request: Record<string, unknown>) => Record<string, any>;
 };
 
+type AlbumFixturePhoto = {
+  id: string;
+  src: string;
+  hidden?: boolean;
+  cull?: { status: string };
+};
+
 function albumFixture() {
   return {
     id: "album-1",
@@ -14,7 +21,7 @@ function albumFixture() {
     freeDownloads: 2,
     pricePerPhoto: 5,
     priceFullAlbum: 120,
-    photos: Array.from({ length: 24 }, (_, index) => ({ id: `photo-${index + 1}`, src: `/uploads/${index + 1}.jpg` })),
+    photos: Array.from({ length: 24 }, (_, index): AlbumFixturePhoto => ({ id: `photo-${index + 1}`, src: `/uploads/${index + 1}.jpg` })),
     sessionPurchases: { viewer: { photoIds: ["photo-1"] } },
     usedFreeDownloads: { viewer: 1 },
   };

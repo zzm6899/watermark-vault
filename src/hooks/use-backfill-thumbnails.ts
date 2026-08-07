@@ -3,6 +3,20 @@ import { generateThumbnail } from "@/lib/image-utils";
 import { isServerMode, isSupportedPhotoSource } from "@/lib/api";
 import type { Photo } from "@/lib/types";
 
+export function cleanAdminThumbnailUrl(src: string): string {
+  if (!src || src.startsWith("data:")) return src;
+  try {
+    const url = new URL(src, window.location.origin);
+    url.searchParams.set("size", "thumb");
+    url.searchParams.set("wm", "0");
+    return src.startsWith("http://") || src.startsWith("https://")
+      ? url.toString()
+      : `${url.pathname}${url.search}${url.hash}`;
+  } catch {
+    return src;
+  }
+}
+
 /**
  * Background-generates missing thumbnails for photos that don't have them.
  * Calls onUpdate(photoId, thumbnailDataUrl) for each generated thumbnail.
@@ -34,7 +48,7 @@ export function useBackfillThumbnails(
       );
       for (const photo of toFix) {
         processedRef.current.add(photo.id);
-        onUpdate(photo.id, photo.src + "?size=thumb&wm=0");
+        onUpdate(photo.id, cleanAdminThumbnailUrl(photo.src));
       }
       return;
     }

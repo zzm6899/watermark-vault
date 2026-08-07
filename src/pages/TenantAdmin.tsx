@@ -18,30 +18,31 @@ import { Slider } from "@/components/ui/slider";
 import WatermarkedImage from "@/components/WatermarkedImage";
 import { toast } from "sonner";
 import { getMobileTenantSession, setMobileTenantSession, hashPassword } from "@/lib/storage";
+import type { MobileTenantSession } from "@/lib/storage";
 import { generateThumbnail, compressImage, formatBytes, formatSpeed } from "@/lib/image-utils";
+import { generateCapabilityToken } from "@/lib/capability-token";
 import {
   fetchTenantMobileData, getTenantSettings, saveTenantSettings,
   deleteTenantBooking, updateTenantBookingFull,
   getTenantLicenseInfo, deleteTenantAlbum,
-  getTenantStoreKey, saveTenantStoreKey, updateTenant,
+  getTenantStoreKey, saveTenantStoreKey, updateTenantProfile, tenantLogout,
   clearTenantImageCache, tenantPhotoSrc, saveTenantAlbum,
   uploadPhotosToServer, isSupportedUploadFile, isSupportedPhotoSource, isServerMode, notifyTenantDiscord,
   getSuperAdminWebhooks, sendTenantEmail,
-  getServerStorageStats, bulkDeleteFiles, deletePhotoFromServer,
-  getTenantGoogleCalendarStatus, startTenantGoogleCalendarAuth,
+  bulkDeleteFiles, deletePhotoFromServer,
+  getTenantGoogleCalendarStatus, startTenantGoogleCalendarAuth, verifyTenantSession,
   disconnectTenantGoogleCalendar, getTenantGoogleCalendars,
   saveTenantCalendarSettings, getTenantStorageStats, upsertTenantBookingAdmin,
   syncTenantBookingToCalendar,
   testTenantFtpConnection,
-  submitEventSlotRequest, getTenantEventSlotRequest, createEventSlotCheckout, ftpUploadAlbum, ftpMoveToStarred,
-  getActiveLicensePlans, getLicensePlanCheckout, createBankLicensePurchase,
+  submitEventSlotRequest, getTenantEventSlotRequest, ftpUploadAlbum, ftpMoveToStarred,
   generateTenantIcalToken, deleteTenantIcalToken,
 } from "@/lib/api";
 import ProgressiveImg from "@/components/ProgressiveImg";
 import RichTextEditor from "@/components/RichTextEditor";
 import type {
   Booking, Album, Photo, AlbumDisplaySize, EventType, Invoice, InvoiceItem, InvoiceParty,
-  Contact, TenantSettings, AvailabilitySlot, QuestionField, WatermarkPosition, SpecificDateSlot, EventSlotRequest, LicensePlan, EmailTemplate,
+  Contact, TenantSettings, AvailabilitySlot, QuestionField, WatermarkPosition, SpecificDateSlot, EventSlotRequest, EmailTemplate,
 } from "@/lib/types";
 import sampleLandscape from "@/assets/sample-landscape.jpg";
 import samplePortrait from "@/assets/sample-portrait.jpg";
@@ -97,18 +98,33 @@ export default function TenantAdmin() {
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<Tab>("dashboard");
   const [badgeCounts, setBadgeCounts] = useState<Record<string, number>>({});
+  const [sessionVerified, setSessionVerified] = useState(false);
 
   // Auth check
   const session = getMobileTenantSession();
+  const sessionSlug = session?.slug;
   useEffect(() => {
-    if (!session || session.slug !== slug) {
+    let cancelled = false;
+    setSessionVerified(false);
+    if (!sessionSlug || sessionSlug !== slug || !slug) {
       navigate("/login", { replace: true });
+      return () => { cancelled = true; };
     }
-  }, [session, slug, navigate]);
+    verifyTenantSession(slug).then(ok => {
+      if (cancelled) return;
+      if (!ok) {
+        setMobileTenantSession(null);
+        navigate("/login", { replace: true });
+        return;
+      }
+      setSessionVerified(true);
+    });
+    return () => { cancelled = true; };
+  }, [sessionSlug, slug, navigate]);
 
   // Load badge counts for bottom nav indicators
   useEffect(() => {
-    if (!slug) return;
+    if (!slug || !sessionVerified) return;
     const load = async () => {
       try {
         const [mobileData, invoiceData, enquiryData] = await Promise.all([
@@ -129,13 +145,17 @@ export default function TenantAdmin() {
       }
     };
     load();
-  }, [slug]);
+  }, [slug, sessionVerified]);
 
   usePageTitle(session ? `${session.displayName} — ${TENANT_TAB_LABELS[activeTab]}` : "Login");
 
   if (!session || session.slug !== slug) return null;
+  if (!sessionVerified) {
+    return <div className="min-h-screen bg-background flex items-center justify-center text-sm font-body text-muted-foreground animate-pulse">Verifying session…</div>;
+  }
 
   const handleLogout = () => {
+    void tenantLogout(slug!);
     setMobileTenantSession(null);
     navigate("/login", { replace: true });
   };
@@ -270,8 +290,8 @@ function TenantDashboard({ slug, session }: { slug: string; session: { displayNa
 
   useEffect(() => {
     fetchTenantMobileData(slug).then(data => {
-      setBookings(data.bookings || []);
-      setAlbums(data.albums || []);
+      setBookings(data?.bookings || []);
+      setAlbums(data?.albums || []);
       setLoading(false);
     });
   }, [slug]);
@@ -572,7 +592,7 @@ function TenantBookingEditor({ slug, booking, onSave, onCancel }: {
         </div>
         <div>
           <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Payment</label>
-          <select value={paymentStatus} onChange={e => setPaymentStatus(e.target.value)} className="w-full bg-secondary border border-border text-foreground font-body text-sm rounded-md px-3 py-2">
+          <select value={paymentStatus} onChange={e => setPaymentStatus(e.target.value as Booking["paymentStatus"])} className="w-full bg-secondary border border-border text-foreground font-body text-sm rounded-md px-3 py-2">
             <option value="unpaid">Unpaid</option>
             <option value="paid">Paid</option>
             <option value="cash">Cash</option>
@@ -603,7 +623,7 @@ function TenantBookings({ slug }: { slug: string }) {
   const [licInfo, setLicInfo] = useState<{ maxBookings?: number | null } | null>(null);
 
   const load = useCallback(() => {
-    fetchTenantMobileData(slug).then(d => { setBookings(d.bookings || []); setLoading(false); });
+    fetchTenantMobileData(slug).then(d => { setBookings(d?.bookings || []); setLoading(false); });
   }, [slug]);
 
   useEffect(() => {
@@ -847,7 +867,7 @@ function TenantBookings({ slug }: { slug: string }) {
                       onClick={async () => {
                         let token = bk.modifyToken;
                         if (!token) {
-                          token = `mod-${crypto.randomUUID()}`;
+                          token = generateCapabilityToken("mod");
                           const { ok } = await updateTenantBookingFull(slug, bk.id, { modifyToken: token });
                           if (!ok) { toast.error("Failed to generate booking link"); return; }
                           setBookings(prev => prev.map(b => b.id === bk.id ? { ...b, modifyToken: token! } : b));
@@ -890,8 +910,6 @@ function TenantEvents({ slug }: { slug: string }) {
   } | null>(null);
   const [pendingSlotRequest, setPendingSlotRequest] = useState<EventSlotRequest | null>(null);
   const [slotRequestLoading, setSlotRequestLoading] = useState(false);
-  const [showSlotPayment, setShowSlotPayment] = useState(false);
-  const [checkoutLoading, setCheckoutLoading] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -925,8 +943,7 @@ function TenantEvents({ slug }: { slug: string }) {
     const result = await saveTenantStoreKey(slug, "wv_event_types", ets);
     if (!result.ok) {
       if (result.limitReached && result.extraEventPrice != null) {
-        toast.error("Event type limit reached. Purchase an extra slot to add more.");
-        setShowSlotPayment(true);
+        toast.error("Event type limit reached. Request an extra slot from your platform administrator.");
       } else {
         toast.error(result.error || "Failed to save");
       }
@@ -961,24 +978,12 @@ function TenantEvents({ slug }: { slug: string }) {
     }
   };
 
-  const handleRequestSlot = async (paymentMethod: "stripe" | "bank") => {
+  const handleRequestSlot = async () => {
     setSlotRequestLoading(true);
-    const result = await submitEventSlotRequest(slug, paymentMethod);
+    const result = await submitEventSlotRequest(slug, "bank");
     if (!result.ok) { toast.error(result.error || "Failed to submit request"); setSlotRequestLoading(false); return; }
     setPendingSlotRequest(result.request!);
-    toast.success("Request submitted! You'll be notified once it's approved.");
-    if (paymentMethod === "stripe") {
-      setCheckoutLoading(true);
-      const checkout = await createEventSlotCheckout(slug);
-      setCheckoutLoading(false);
-      if (checkout.url) {
-        window.location.href = checkout.url;
-      } else {
-        toast.error(checkout.error || "Stripe checkout failed. Contact your administrator.");
-      }
-    } else {
-      setShowSlotPayment(false);
-    }
+    toast.success("Request submitted. Your administrator will provide payment instructions and approve the slot.");
     setSlotRequestLoading(false);
   };
 
@@ -996,24 +1001,10 @@ function TenantEvents({ slug }: { slug: string }) {
       {limitReached && !pendingSlotRequest && extraEventPrice != null && (
         <div className="mb-4 p-4 rounded-lg bg-amber-500/10 border border-amber-500/20 space-y-3">
           <p className="text-xs font-body text-amber-500 font-medium">Event type limit reached ({effectiveLimit})</p>
-          <p className="text-xs font-body text-muted-foreground">You can add an extra event type slot for <span className="text-foreground font-medium">{new Intl.NumberFormat("en-AU", { style: "currency", currency: "AUD" }).format(extraEventPrice)}</span>. Your platform administrator will approve the request.</p>
-          {showSlotPayment ? (
-            <div className="flex flex-col sm:flex-row gap-2">
-              <Button size="sm" onClick={() => handleRequestSlot("stripe")} disabled={slotRequestLoading || checkoutLoading} className="gap-2 bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase">
-                <CreditCard className="w-3.5 h-3.5" /> {checkoutLoading ? "Redirecting…" : "Pay by Card"}
-              </Button>
-              <Button size="sm" variant="outline" onClick={() => handleRequestSlot("bank")} disabled={slotRequestLoading} className="gap-2 font-body text-xs tracking-wider uppercase border-border">
-                <DollarSign className="w-3.5 h-3.5" /> Pay by Bank Transfer
-              </Button>
-              <Button size="sm" variant="ghost" onClick={() => setShowSlotPayment(false)} className="font-body text-xs text-muted-foreground">
-                Cancel
-              </Button>
-            </div>
-          ) : (
-            <Button size="sm" onClick={() => setShowSlotPayment(true)} className="gap-2 bg-amber-500 hover:bg-amber-600 text-white font-body text-xs tracking-wider uppercase">
-              <Plus className="w-3.5 h-3.5" /> Get Extra Slot — {new Intl.NumberFormat("en-AU", { style: "currency", currency: "AUD" }).format(extraEventPrice)}
-            </Button>
-          )}
+          <p className="text-xs font-body text-muted-foreground">Request an extra event type slot for <span className="text-foreground font-medium">{new Intl.NumberFormat("en-AU", { style: "currency", currency: "AUD" }).format(extraEventPrice)}</span>. Your platform administrator will provide payment instructions and approve it manually.</p>
+          <Button size="sm" onClick={handleRequestSlot} disabled={slotRequestLoading} className="gap-2 bg-amber-500 hover:bg-amber-600 text-white font-body text-xs tracking-wider uppercase">
+            <Plus className="w-3.5 h-3.5" /> {slotRequestLoading ? "Submitting…" : `Request Extra Slot — ${new Intl.NumberFormat("en-AU", { style: "currency", currency: "AUD" }).format(extraEventPrice)}`}
+          </Button>
         </div>
       )}
 
@@ -1027,9 +1018,9 @@ function TenantEvents({ slug }: { slug: string }) {
         <div className="mb-4 p-3 rounded-lg bg-blue-500/10 border border-blue-500/20 text-xs font-body space-y-1">
           <p className="text-blue-400 font-medium">Extra slot request pending approval</p>
           {pendingSlotRequest.paymentMethod === "bank" ? (
-            <p className="text-muted-foreground">Please transfer <span className="text-foreground font-medium">${pendingSlotRequest.amount}</span> via bank transfer and notify your administrator. Your slot will be granted once confirmed.</p>
+            <p className="text-muted-foreground">Contact your platform administrator for payment instructions for <span className="text-foreground font-medium">${pendingSlotRequest.amount}</span>. The slot is granted only after they confirm payment.</p>
           ) : (
-            <p className="text-muted-foreground">Payment {pendingSlotRequest.status === "paid" ? "received" : "submitted"}. Awaiting administrator approval.</p>
+            <p className="text-muted-foreground">Legacy card request awaiting administrator review. No slot is granted automatically.</p>
           )}
         </div>
       )}
@@ -1320,7 +1311,7 @@ function TenantEventEditor({ eventType, onSave, onCancel }: { eventType: EventTy
                     <option value="textarea">Long Text</option>
                     <option value="select">Select</option>
                     <option value="boolean">Yes/No</option>
-                    <option value="image-upload">Image Upload</option>
+                    <option value="image-upload" disabled>Image Upload (not yet supported)</option>
                     <option value="instagram">Instagram Handle</option>
                   </select>
                   <button onClick={() => setQuestions(questions.filter((_, i) => i !== idx))} className="p-1.5 text-muted-foreground hover:text-destructive"><X className="w-3.5 h-3.5" /></button>
@@ -1369,7 +1360,7 @@ function TenantAlbums({ slug }: { slug: string }) {
       fetchTenantMobileData(slug),
       getTenantSettings(slug).catch(() => ({} as TenantSettings)),
     ]);
-    setAlbums(data.albums || []);
+    setAlbums(data?.albums || []);
     setTenantSettings(settings);
     setLoading(false);
   }, [slug]);
@@ -1396,7 +1387,7 @@ function TenantAlbums({ slug }: { slug: string }) {
 
   const copyLink = (album: Album) => {
     const tok = album.clientToken;
-    const url = `${window.location.origin}/gallery/${album.slug}${tok ? `?token=${tok}` : ""}`;
+    const url = `${window.location.origin}/gallery/${album.slug}${tok ? `#token=${encodeURIComponent(tok)}` : ""}`;
     navigator.clipboard.writeText(url).then(() => toast.success("Gallery link copied!")).catch(() => {
       const ta = document.createElement("textarea");
       ta.value = url;
@@ -1411,7 +1402,7 @@ function TenantAlbums({ slug }: { slug: string }) {
   const handleSendNotification = async (alb: Album) => {
     if (!alb.clientEmail) { toast.error("No client email on this album"); return; }
     const tok = (alb as any).clientToken;
-    const link = `${window.location.origin}/gallery/${alb.slug}${tok ? `?token=${tok}` : ""}`;
+    const link = `${window.location.origin}/gallery/${alb.slug}${tok ? `#token=${encodeURIComponent(tok)}` : ""}`;
     const message = `Hey ${alb.clientName || "there"}, your photos are ready! Check them out here: ${link}`;
     const html = `<div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:32px;background:#0a0a0a;color:#f5f5f5;border-radius:12px;"><h2 style="font-size:22px;margin:0 0 16px;">📸 Your photos are ready!</h2><p style="color:#aaa;line-height:1.6;">${message.replace(link, "")}</p><a href="${link}" style="display:inline-block;margin-top:24px;padding:12px 28px;background:#fff;color:#000;border-radius:8px;text-decoration:none;font-weight:600;">View Your Gallery →</a><p style="margin-top:32px;font-size:11px;color:#555;">${link}</p></div>`;
     const result = await sendTenantEmail(slug, alb.clientEmail, `Your photos are ready — ${alb.clientName || "Gallery"}`, html, message);
@@ -1544,17 +1535,18 @@ function TenantAlbums({ slug }: { slug: string }) {
                     )}
                     <div className="flex items-center gap-2 pt-2 border-t border-border/50">
                       <Switch
+                        aria-label={`${alb.enabled !== false ? "Disable" : "Enable"} ${alb.title}`}
                         checked={alb.enabled !== false}
                         onCheckedChange={() => handleToggle(alb)}
                       />
-                      <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary" title="Copy gallery link" onClick={() => copyLink(alb)}>
+                      <Button aria-label={`Copy gallery link for ${alb.title}`} variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary" title="Copy gallery link" onClick={() => copyLink(alb)}>
                         <Copy className="w-3.5 h-3.5" />
                       </Button>
-                      <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary" title="Email client" onClick={() => handleSendNotification(alb)}>
+                      <Button aria-label={`Email client for ${alb.title}`} variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary" title="Email client" onClick={() => handleSendNotification(alb)}>
                         <Send className="w-3.5 h-3.5" />
                       </Button>
                       <a href={`/gallery/${alb.slug}`} target="_blank" rel="noopener noreferrer">
-                        <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary" title="View gallery">
+                        <Button aria-label={`View gallery ${alb.title}`} variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary" title="View gallery">
                           <ExternalLink className="w-3.5 h-3.5" />
                         </Button>
                       </a>
@@ -1564,6 +1556,7 @@ function TenantAlbums({ slug }: { slug: string }) {
                         return (
                           <Button
                             variant="ghost" size="icon"
+                            aria-label={`Export starred photos from ${alb.title}`}
                             className="h-7 w-7 text-yellow-500 hover:text-yellow-400"
                             title={`Export ${starredPhotos.length} starred filenames`}
                             onClick={() => {
@@ -1590,10 +1583,10 @@ function TenantAlbums({ slug }: { slug: string }) {
                         );
                       })()}
                       <div className="flex-1" />
-                      <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-foreground" onClick={() => setEditing(alb)}>
+                      <Button aria-label={`Edit album ${alb.title}`} variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-foreground" onClick={() => setEditing(alb)}>
                         <Edit className="w-3.5 h-3.5" />
                       </Button>
-                      <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={() => handleDelete(alb.id)}>
+                      <Button aria-label={`Delete album ${alb.title}`} variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={() => handleDelete(alb.id)}>
                         <Trash2 className="w-3.5 h-3.5" />
                       </Button>
                     </div>
@@ -1642,11 +1635,20 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
   const [ftpUploading, setFtpUploading] = useState(false);
   const uploadRef = useRef<HTMLInputElement>(null);
 
+  const copyLink = (targetAlbum: Album) => {
+    const token = targetAlbum.clientToken;
+    const url = `${window.location.origin}/gallery/${targetAlbum.slug}${token ? `#token=${encodeURIComponent(token)}` : ""}`;
+    navigator.clipboard.writeText(url)
+      .then(() => toast.success("Gallery link copied!"))
+      .catch(() => toast.error("Could not copy the gallery link"));
+  };
+
   // Poll for proofing stage changes while waiting for client picks.
   // The tenant admin has no background poll, so we add one here to detect
   // when a client submits their selections.
+  const polledAlbumId = album?.id;
   useEffect(() => {
-    if (!album?.id || !slug) return;
+    if (!polledAlbumId || !slug) return;
     if (liveAlbum?.proofingStage !== "proofing") return;
     let cancelled = false;
     let timerId: ReturnType<typeof setTimeout>;
@@ -1655,7 +1657,7 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
       try {
         const data = await fetchTenantMobileData(slug);
         if (cancelled || !data) { if (!cancelled) timerId = setTimeout(poll, 5000); return; }
-        const fresh = data.albums.find(a => a.id === album!.id);
+        const fresh = data.albums.find(a => a.id === polledAlbumId);
         if (fresh && fresh.proofingStage !== liveAlbum?.proofingStage) {
           setLiveAlbum(prev => {
             if (!prev) return fresh;
@@ -1677,7 +1679,7 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
     };
     timerId = setTimeout(poll, 5000);
     return () => { cancelled = true; clearTimeout(timerId); };
-  }, [album?.id, liveAlbum?.proofingStage, slug]);
+  }, [polledAlbumId, liveAlbum?.proofingStage, slug]);
 
   const updateLiveAlbum = async (updated: Album) => {
     const { ok, error } = await saveTenantAlbum(slug, updated);
@@ -1859,16 +1861,29 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
         <div className="p-4 rounded-lg bg-secondary/50 border border-border/50 space-y-3">
           <div className="flex items-center justify-between">
             <span className="text-xs font-body text-muted-foreground flex items-center gap-2"><Unlock className="w-3.5 h-3.5" /> All Downloads Unlocked</span>
-            <Switch checked={allUnlocked} onCheckedChange={setAllUnlocked} />
+            <Switch checked={allUnlocked} onCheckedChange={(checked) => {
+              setAllUnlocked(checked);
+              if (checked) setPurchasingDisabled(false);
+            }} />
           </div>
           <div className="flex items-center justify-between">
             <span className="text-xs font-body text-muted-foreground flex items-center gap-2"><Camera className="w-3.5 h-3.5" /> Watermarks Disabled</span>
-            <Switch checked={watermarkDisabled} onCheckedChange={setWatermarkDisabled} />
+            <Switch checked={watermarkDisabled} onCheckedChange={(checked) => {
+              setWatermarkDisabled(checked);
+              if (checked) setPurchasingDisabled(false);
+            }} />
           </div>
           <div className="flex items-center justify-between">
             <span className="text-xs font-body text-muted-foreground flex items-center gap-2"><CreditCard className="w-3.5 h-3.5" /> Purchasing Disabled</span>
-            <Switch checked={purchasingDisabled} onCheckedChange={setPurchasingDisabled} />
+            <Switch checked={purchasingDisabled} onCheckedChange={(checked) => {
+              setPurchasingDisabled(checked);
+              if (checked) {
+                setAllUnlocked(false);
+                setWatermarkDisabled(false);
+              }
+            }} />
           </div>
+          <p className="text-[10px] font-body text-muted-foreground/50">Unlocking grants original downloads. Purchasing Disabled locks every download and hides payment options.</p>
           {allUnlocked && (
             <div className="space-y-1 pt-2 border-t border-border/30">
               <label className="text-[10px] font-body tracking-wider uppercase text-muted-foreground block">Download Expires On <span className="text-muted-foreground/40 normal-case">(optional)</span></label>
@@ -1946,12 +1961,12 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
           const parsedInput = expiryEl?.value !== "" ? parseInt(expiryEl?.value, 10) : NaN;
           const expiryHours = !isNaN(parsedInput) ? Math.max(1, parsedInput) : defaultExpiry;
           const proofingExpiresAt = new Date(Date.now() + expiryHours * 3600 * 1000).toISOString();
-          const clientToken = liveAlbum.clientToken || `ct-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+          const clientToken = liveAlbum.clientToken || generateCapabilityToken("ct");
           const newRound = { roundNumber: rounds.length + 1, sentAt: new Date().toISOString(), selectedPhotoIds: [], adminNote: note || undefined };
           const updated = { ...liveAlbum, proofingEnabled: true, proofingStage: "proofing" as const, proofingRounds: [...rounds, newRound], clientToken, proofingExpiresAt, proofingExpiryHours: expiryHours };
           await updateLiveAlbum(updated);
           if (email) {
-            const galleryUrl = `${window.location.origin}/gallery/${liveAlbum.slug}?token=${clientToken}`;
+            const galleryUrl = `${window.location.origin}/gallery/${liveAlbum.slug}#token=${encodeURIComponent(clientToken)}`;
             const expiryDateStr = new Date(proofingExpiresAt).toLocaleString("en-AU", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
             sendTenantEmail(slug, email, `📸 Your proofing gallery is ready — ${liveAlbum.title}`, buildProofingEmailHtml(galleryUrl, expiryDateStr, note || undefined)).catch(() => {});
           }
@@ -1961,7 +1976,7 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
         const resendProofingEmail = () => {
           if (!email) return;
           const tok = liveAlbum.clientToken;
-          const galleryUrl = `${window.location.origin}/gallery/${liveAlbum.slug}${tok ? `?token=${tok}` : ""}`;
+          const galleryUrl = `${window.location.origin}/gallery/${liveAlbum.slug}${tok ? `#token=${encodeURIComponent(tok)}` : ""}`;
           const expiryDateStr = liveAlbum.proofingExpiresAt
             ? new Date(liveAlbum.proofingExpiresAt as string).toLocaleString("en-AU", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })
             : "";
@@ -1981,7 +1996,7 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
         const sendEditingEmail = async () => {
           if (!email) { toast.error("No client email on file"); return; }
           const tok = liveAlbum.clientToken;
-          const galleryUrl = `${window.location.origin}/gallery/${liveAlbum.slug}${tok ? `?token=${tok}` : ""}`;
+          const galleryUrl = `${window.location.origin}/gallery/${liveAlbum.slug}${tok ? `#token=${encodeURIComponent(tok)}` : ""}`;
           const html = `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;"><h2 style="margin:0 0 16px;font-size:20px;">Your photos are being edited ✏️</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${liveAlbum.clientName || "there"},</p><p style="color:#9ca3af;margin:0 0 20px;">Your selections for <strong style="color:#e5e7eb;">${liveAlbum.title}</strong> are confirmed and editing has begun.</p><a href="${galleryUrl}" style="display:inline-block;background:#374151;color:#e5e7eb;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">Preview Gallery →</a></div>`;
           await sendTenantEmail(slug, email, `✏️ Your photos are being edited — ${liveAlbum.title}`, html);
           toast.success("Editing notification sent");
@@ -1992,7 +2007,7 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
           await updateLiveAlbum(updated);
           if (email) {
             const tok = liveAlbum.clientToken;
-            const galleryUrl = `${window.location.origin}/gallery/${liveAlbum.slug}${tok ? `?token=${tok}` : ""}`;
+            const galleryUrl = `${window.location.origin}/gallery/${liveAlbum.slug}${tok ? `#token=${encodeURIComponent(tok)}` : ""}`;
             const html = `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;"><h2 style="margin:0 0 16px;font-size:20px;">Your edited photos are ready! ✨</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${liveAlbum.clientName || "there"},</p><p style="color:#9ca3af;margin:0 0 20px;">Your final edited photos for <strong style="color:#e5e7eb;">${liveAlbum.title}</strong> are now available.</p><a href="${galleryUrl}" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">${free ? "Download Your Photos →" : "View & Download Photos →"}</a></div>`;
             sendTenantEmail(slug, email, `✨ Your final photos are ready — ${liveAlbum.title}`, html).catch(() => {});
           }
@@ -2329,7 +2344,7 @@ function TenantPhotos({ slug }: { slug: string }) {
       fetchTenantMobileData(slug),
       getTenantStoreKey<Photo[]>(slug, "wv_photo_library"),
     ]);
-    setAlbums(mobileData.albums || []);
+    setAlbums(mobileData?.albums || []);
     setLibraryPhotos(Array.isArray(lib) ? lib : []);
     setLoading(false);
   }, [slug]);
@@ -2464,7 +2479,7 @@ function TenantPhotos({ slug }: { slug: string }) {
     if (!isServerMode()) { toast.error("Server not available"); return; }
     setSyncing(true);
     try {
-      const stats = await getServerStorageStats();
+      const stats = await getTenantStorageStats(slug);
       if (!stats || !stats.allFileNames) { toast.info("No storage data"); setSyncing(false); return; }
 
       const serverFileNames = new Set(stats.allFileNames);
@@ -2538,7 +2553,7 @@ function TenantPhotos({ slug }: { slug: string }) {
       // Delete file only if it isn't referenced by any album
       if (isServerMode()) {
         const usedInAlbum = albums.some(a => (a.photos || []).some(p => p.src === src));
-        if (!usedInAlbum) deletePhotoFromServer(src);
+        if (!usedInAlbum) deletePhotoFromServer(src, slug);
       }
     } else {
       const alb = albums.find(a => a.title === source);
@@ -2553,7 +2568,7 @@ function TenantPhotos({ slug }: { slug: string }) {
         if (isServerMode()) {
           const usedElsewhere = albums.some(a => a.id !== alb.id && (a.photos || []).some(p => p.src === src))
             || libraryPhotos.some(p => p.src === src);
-          if (!usedElsewhere) deletePhotoFromServer(src);
+          if (!usedElsewhere) deletePhotoFromServer(src, slug);
         }
       }
     }
@@ -2577,7 +2592,7 @@ function TenantPhotos({ slug }: { slug: string }) {
         // Delete file only if not referenced by any album
         if (lp && isServerMode()) {
           const usedInAlbum = albums.some(a => (a.photos || []).some(p => p.src === lp.src));
-          if (!usedInAlbum) deletePhotoFromServer(lp.src);
+          if (!usedInAlbum) deletePhotoFromServer(lp.src, slug);
         }
       } else {
         const alb = albums.find(a => a.title === photo.source);
@@ -2612,7 +2627,7 @@ function TenantPhotos({ slug }: { slug: string }) {
           for (const photo of (alb.photos || []).filter(p => photoIds.has(p.id))) {
             const usedElsewhere = albums.some(a => a.id !== alb.id && (a.photos || []).some(pp => pp.src === photo.src))
               || remainingLibSrcs.has(photo.src);
-            if (!usedElsewhere) deletePhotoFromServer(photo.src);
+            if (!usedElsewhere) deletePhotoFromServer(photo.src, slug);
           }
         }
       }
@@ -3079,15 +3094,15 @@ function TenantFinance({ slug }: { slug: string }) {
 
   useEffect(() => {
     fetchTenantMobileData(slug).then(d => {
-      setBookings(d.bookings || []);
+      setBookings(d?.bookings || []);
       setLoading(false);
     });
   }, [slug]);
 
   if (loading) return <div className="py-16 text-center text-muted-foreground font-body text-sm animate-pulse">Loading…</div>;
 
-  const paid = bookings.filter(b => b.paymentStatus === "paid");
-  const deposit = bookings.filter(b => b.paymentStatus === "deposit");
+  const paid = bookings.filter(b => b.paymentStatus === "paid" || b.paymentStatus === "cash");
+  const deposit = bookings.filter(b => b.paymentStatus === "deposit-paid");
   const unpaid = bookings.filter(b => !b.paymentStatus || b.paymentStatus === "unpaid");
 
   const totalPaid = paid.reduce((s, b) => s + (b.paymentAmount || 0), 0);
@@ -3124,7 +3139,7 @@ function TenantFinance({ slug }: { slug: string }) {
         ) : (
           <div className="space-y-2 max-h-[500px] overflow-y-auto">
             {[...bookings]
-              .filter(b => b.paymentStatus === "paid" || b.paymentStatus === "deposit")
+              .filter(b => b.paymentStatus === "paid" || b.paymentStatus === "cash" || b.paymentStatus === "deposit-paid")
               .sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""))
               .map(bk => (
                 <div key={bk.id} className="flex items-center gap-3 p-3 rounded-lg bg-secondary/40 border border-border/40">
@@ -3135,7 +3150,7 @@ function TenantFinance({ slug }: { slug: string }) {
                   <div className="text-right shrink-0">
                     <p className="text-sm font-body text-foreground">{curr(bk.paymentAmount || 0)}</p>
                     <span className={`text-[10px] font-body px-1.5 py-0.5 rounded-full ${
-                      bk.paymentStatus === "paid" ? "bg-green-500/10 text-green-400" : "bg-yellow-500/10 text-yellow-400"
+                      bk.paymentStatus === "paid" || bk.paymentStatus === "cash" ? "bg-green-500/10 text-green-400" : "bg-yellow-500/10 text-yellow-400"
                     }`}>{bk.paymentStatus}</span>
                   </div>
                 </div>
@@ -3287,7 +3302,7 @@ function TenantInvoices({ slug, session }: { slug: string; session: { displayNam
       notes: "",
       dueDate: due.toISOString().slice(0, 10),
       createdAt: now.toISOString(),
-      shareToken: Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2),
+      shareToken: generateCapabilityToken("inv"),
       emailLog: [],
       paymentMethods: [],
     });
@@ -3544,7 +3559,7 @@ function TenantContacts({ slug }: { slug: string }) {
 }
 
 // ─── Profile ─────────────────────────────────────────────────────────────────
-function TenantProfileView({ slug, session }: { slug: string; session: { displayName: string; email: string } }) {
+function TenantProfileView({ slug, session }: { slug: string; session: MobileTenantSession }) {
   const [displayName, setDisplayName] = useState(session.displayName);
   const [email, setEmail] = useState(session.email);
   const [bio, setBio] = useState("");
@@ -3567,9 +3582,12 @@ function TenantProfileView({ slug, session }: { slug: string; session: { display
   const handleSave = async () => {
     if (!displayName.trim()) { toast.error("Display name is required"); return; }
     setSavingProfile(true);
-    const { ok, error } = await updateTenant(slug, { displayName: displayName.trim(), email: email.trim(), bio: bio.trim() || undefined });
+    const nextDisplayName = displayName.trim();
+    const nextEmail = email.trim();
+    const { ok, error } = await updateTenantProfile(slug, { displayName: nextDisplayName, email: nextEmail, bio: bio.trim() || undefined });
     setSavingProfile(false);
     if (!ok) { toast.error(error || "Failed to save profile"); return; }
+    setMobileTenantSession({ ...session, displayName: nextDisplayName, email: nextEmail });
     toast.success("Profile updated");
   };
 
@@ -3587,7 +3605,7 @@ function TenantProfileView({ slug, session }: { slug: string; session: { display
       });
       if (!checkRes.ok) { toast.error("Current password is incorrect"); return; }
       const newHash = await hashPassword(newPassword);
-      const { ok, error } = await updateTenant(slug, { passwordHash: newHash });
+      const { ok, error } = await updateTenantProfile(slug, { passwordHash: newHash });
       if (!ok) { toast.error(error || "Failed to update password"); return; }
       toast.success("Password updated");
       setCurrentPassword(""); setNewPassword(""); setConfirmNewPassword("");
@@ -4595,7 +4613,7 @@ function TenantStorage({ slug }: { slug: string }) {
 
   const loadData = useCallback(async () => {
     const d = await fetchTenantMobileData(slug);
-    setAlbums(d.albums || []);
+    setAlbums(d?.albums || []);
     setLoading(false);
   }, [slug]);
 
@@ -4922,75 +4940,24 @@ function TenantLicense({ slug }: { slug: string }) {
   } | null>(null);
   const [bookingCount, setBookingCount] = useState(0);
   const [pendingSlotRequest, setPendingSlotRequest] = useState<EventSlotRequest | null>(null);
-  const [showSlotPayment, setShowSlotPayment] = useState(false);
   const [slotRequestLoading, setSlotRequestLoading] = useState(false);
-  const [checkoutLoading, setCheckoutLoading] = useState(false);
-  const [plans, setPlans] = useState<LicensePlan[]>([]);
-  const [selectedPlanId, setSelectedPlanId] = useState<string>("");
-  const [buyerEmail, setBuyerEmail] = useState("");
-  const [buyerName, setBuyerName] = useState("");
-  const [showPlanPurchase, setShowPlanPurchase] = useState(false);
-  const [planCheckoutLoading, setPlanCheckoutLoading] = useState(false);
-  const [showPlanPaymentOptions, setShowPlanPaymentOptions] = useState(false);
 
   useEffect(() => {
     getTenantLicenseInfo(slug).then(info => {
       setLicInfo(info);
-      if (info?.issuedTo) setBuyerName(info.issuedTo);
     });
-    fetchTenantMobileData(slug).then(d => setBookingCount((d.bookings || []).length));
+    fetchTenantMobileData(slug).then(d => setBookingCount((d?.bookings || []).length));
     getTenantEventSlotRequest(slug).then(setPendingSlotRequest);
-    getActiveLicensePlans().then(setPlans);
   }, [slug]);
-
-  const handleRequestSlot = async (paymentMethod: "stripe" | "bank") => {
+  const handleRequestSlot = async () => {
     setSlotRequestLoading(true);
-    const result = await submitEventSlotRequest(slug, paymentMethod);
+    const result = await submitEventSlotRequest(slug, "bank");
     if (!result.ok) { toast.error(result.error || "Failed to submit request"); setSlotRequestLoading(false); return; }
     setPendingSlotRequest(result.request!);
-    toast.success("Request submitted! You'll be notified once it's approved.");
-    if (paymentMethod === "stripe") {
-      setCheckoutLoading(true);
-      const checkout = await createEventSlotCheckout(slug);
-      setCheckoutLoading(false);
-      if (checkout.url) {
-        window.location.href = checkout.url;
-      } else {
-        toast.error(checkout.error || "Stripe checkout failed. Contact your administrator.");
-      }
-    } else {
-      setShowSlotPayment(false);
-    }
+    toast.success("Request submitted. Your administrator will provide payment instructions and approve the slot.");
     setSlotRequestLoading(false);
   };
 
-  const handlePlanStripeCheckout = async () => {
-    if (!selectedPlanId || !buyerEmail) { toast.error("Please enter your email address."); return; }
-    setPlanCheckoutLoading(true);
-    const result = await getLicensePlanCheckout(selectedPlanId, buyerEmail, buyerName || undefined);
-    setPlanCheckoutLoading(false);
-    if (result.url) {
-      window.location.href = result.url;
-    } else {
-      toast.error(result.error || "Checkout failed. Please try again.");
-    }
-  };
-
-  const handlePlanBankPurchase = async () => {
-    if (!selectedPlanId || !buyerEmail) { toast.error("Please enter your email address."); return; }
-    setPlanCheckoutLoading(true);
-    const result = await createBankLicensePurchase(selectedPlanId, buyerEmail, buyerName || undefined);
-    setPlanCheckoutLoading(false);
-    if (result.ok) {
-      toast.success("Bank transfer request submitted! Contact your administrator with payment confirmation.");
-      setShowPlanPurchase(false);
-      setShowPlanPaymentOptions(false);
-    } else {
-      toast.error(result.error || "Failed to submit request.");
-    }
-  };
-
-  const selectedPlan = plans.find(p => p.id === selectedPlanId);
   const extraEventPrice = licInfo?.extraEventPrice ?? null;
   const effectiveEventLimit = licInfo != null && licInfo.maxEvents != null
     ? licInfo.maxEvents + (licInfo.extraEventSlots ?? 0)
@@ -5008,51 +4975,6 @@ function TenantLicense({ slug }: { slug: string }) {
             <p className="font-body text-sm text-muted-foreground">No license key linked to your account.</p>
             <p className="font-body text-xs text-muted-foreground/60">Contact your platform administrator.</p>
           </div>
-          {plans.filter(p => p.active !== false).length > 0 && licInfo?.keyPurchaseEnabled && (
-            <div className="glass-panel rounded-xl p-5 space-y-4">
-              <div className="flex items-center gap-2">
-                <CreditCard className="w-4 h-4 text-primary" />
-                <p className="font-display text-base text-foreground">Purchase a License</p>
-              </div>
-              <p className="text-xs font-body text-muted-foreground">Choose a plan to get started.</p>
-              <div className="space-y-2">
-                {plans.filter(p => p.active !== false).map(plan => (
-                  <button key={plan.id} onClick={() => { setSelectedPlanId(plan.id); setShowPlanPurchase(true); setShowPlanPaymentOptions(false); }}
-                    className={`w-full text-left p-3 rounded-lg border transition-colors ${selectedPlanId === plan.id ? "border-primary bg-primary/10" : "border-border bg-secondary/50 hover:border-primary/50"}`}>
-                    <div className="flex items-center justify-between">
-                      <span className="font-display text-sm text-foreground">{plan.name}</span>
-                      <span className="font-mono text-sm text-primary">{new Intl.NumberFormat("en-AU", { style: "currency", currency: plan.currency || "AUD" }).format(plan.price)}{plan.type !== "one-time" ? `/${plan.type === "monthly" ? "mo" : "yr"}` : ""}</span>
-                    </div>
-                    {plan.description && <p className="text-xs font-body text-muted-foreground mt-0.5">{plan.description}</p>}
-                  </button>
-                ))}
-              </div>
-              {showPlanPurchase && selectedPlan && (
-                <div className="space-y-3 p-3 rounded-lg bg-secondary/50 border border-border/40">
-                  <p className="text-xs font-body text-muted-foreground font-medium">Your details</p>
-                  <Input value={buyerName} onChange={e => setBuyerName(e.target.value)} placeholder="Your name" className="bg-background border-border text-foreground font-body text-sm h-8" />
-                  <Input type="email" value={buyerEmail} onChange={e => setBuyerEmail(e.target.value)} placeholder="Your email address *" className="bg-background border-border text-foreground font-body text-sm h-8" />
-                  {showPlanPaymentOptions ? (
-                    <div className="flex flex-col sm:flex-row gap-2">
-                      <Button size="sm" onClick={handlePlanStripeCheckout} disabled={planCheckoutLoading || !buyerEmail} className="gap-2 bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase">
-                        <CreditCard className="w-3.5 h-3.5" /> {planCheckoutLoading ? "Redirecting…" : "Pay by Card"}
-                      </Button>
-                      <Button size="sm" variant="outline" onClick={handlePlanBankPurchase} disabled={planCheckoutLoading || !buyerEmail} className="gap-2 font-body text-xs tracking-wider uppercase border-border">
-                        <DollarSign className="w-3.5 h-3.5" /> Pay by Bank Transfer
-                      </Button>
-                      <Button size="sm" variant="ghost" onClick={() => { setShowPlanPaymentOptions(false); }} className="font-body text-xs text-muted-foreground">
-                        Cancel
-                      </Button>
-                    </div>
-                  ) : (
-                    <Button size="sm" onClick={() => setShowPlanPaymentOptions(true)} disabled={!buyerEmail} className="gap-2 bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase">
-                      <CreditCard className="w-3.5 h-3.5" /> Purchase {selectedPlan.name} — {new Intl.NumberFormat("en-AU", { style: "currency", currency: selectedPlan.currency || "AUD" }).format(selectedPlan.price)}
-                    </Button>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
         </div>
       ) : (
         <div className="space-y-4 max-w-lg">
@@ -5130,7 +5052,7 @@ function TenantLicense({ slug }: { slug: string }) {
             )}
           </div>
 
-          {/* Extra event slot purchase — available proactively before the limit is reached */}
+          {/* Extra event slot request — available proactively before the limit is reached */}
           {extraEventPrice != null && !pendingSlotRequest && (
             <div className="glass-panel rounded-xl p-5 space-y-3">
               <div className="flex items-center gap-2">
@@ -5138,28 +5060,14 @@ function TenantLicense({ slug }: { slug: string }) {
                 <p className="font-display text-base text-foreground">Extra Event Type Slot</p>
               </div>
               <p className="text-xs font-body text-muted-foreground">
-                Purchase an additional event type slot for{" "}
+                Request an additional event type slot for{" "}
                 <span className="text-foreground font-medium">
                   {new Intl.NumberFormat("en-AU", { style: "currency", currency: "AUD" }).format(extraEventPrice)}
-                </span>. Your administrator will approve the request.
+                </span>. Your platform administrator will provide payment instructions and approve it manually.
               </p>
-              {showSlotPayment ? (
-                <div className="flex flex-col sm:flex-row gap-2">
-                  <Button size="sm" onClick={() => handleRequestSlot("stripe")} disabled={slotRequestLoading || checkoutLoading} className="gap-2 bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase">
-                    <CreditCard className="w-3.5 h-3.5" /> {checkoutLoading ? "Redirecting…" : "Pay by Card"}
-                  </Button>
-                  <Button size="sm" variant="outline" onClick={() => handleRequestSlot("bank")} disabled={slotRequestLoading} className="gap-2 font-body text-xs tracking-wider uppercase border-border">
-                    <DollarSign className="w-3.5 h-3.5" /> Pay by Bank Transfer
-                  </Button>
-                  <Button size="sm" variant="ghost" onClick={() => setShowSlotPayment(false)} className="font-body text-xs text-muted-foreground">
-                    Cancel
-                  </Button>
-                </div>
-              ) : (
-                <Button size="sm" onClick={() => setShowSlotPayment(true)} className="gap-2 bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase">
-                  <Plus className="w-3.5 h-3.5" /> Get Extra Slot — {new Intl.NumberFormat("en-AU", { style: "currency", currency: "AUD" }).format(extraEventPrice)}
-                </Button>
-              )}
+              <Button size="sm" onClick={handleRequestSlot} disabled={slotRequestLoading} className="gap-2 bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase">
+                <Plus className="w-3.5 h-3.5" /> {slotRequestLoading ? "Submitting…" : `Request Extra Slot — ${new Intl.NumberFormat("en-AU", { style: "currency", currency: "AUD" }).format(extraEventPrice)}`}
+              </Button>
             </div>
           )}
 
@@ -5167,66 +5075,22 @@ function TenantLicense({ slug }: { slug: string }) {
             <div className="glass-panel rounded-xl p-4 space-y-1 border border-blue-500/20">
               <p className="text-xs font-body text-blue-400 font-medium">Extra slot request pending approval</p>
               {pendingSlotRequest.paymentMethod === "bank" ? (
-                <p className="text-xs font-body text-muted-foreground">Please transfer <span className="text-foreground font-medium">${pendingSlotRequest.amount}</span> via bank transfer and notify your administrator. Your slot will be granted once confirmed.</p>
+                <p className="text-xs font-body text-muted-foreground">Contact your platform administrator for payment instructions for <span className="text-foreground font-medium">${pendingSlotRequest.amount}</span>. The slot is granted only after they confirm payment.</p>
               ) : (
-                <p className="text-xs font-body text-muted-foreground">Payment {pendingSlotRequest.status === "paid" ? "received" : "submitted"}. Awaiting administrator approval.</p>
+                <p className="text-xs font-body text-muted-foreground">Legacy card request awaiting administrator review. No slot is granted automatically.</p>
               )}
             </div>
           )}
 
-          {/* License plan upgrade */}
-          {licInfo.keyPurchaseEnabled && plans.filter(p => p.active !== false).length > 0 && (
-            <div className="glass-panel rounded-xl p-5 space-y-4">
+          {licInfo.keyPurchaseEnabled && (
+            <div className="glass-panel rounded-xl p-5 space-y-2 border border-amber-500/20">
               <div className="flex items-center gap-2">
-                <CreditCard className="w-4 h-4 text-primary" />
-                <p className="font-display text-base text-foreground">Upgrade Your Plan</p>
+                <Key className="w-4 h-4 text-amber-400" />
+                <p className="font-display text-base text-foreground">Plan changes</p>
               </div>
-              <p className="text-xs font-body text-muted-foreground">Purchase a new license key to expand your limits.</p>
-              <div className="space-y-2">
-                {plans.filter(p => p.active !== false).map(plan => (
-                  <button key={plan.id} onClick={() => { setSelectedPlanId(plan.id); setShowPlanPurchase(true); setShowPlanPaymentOptions(false); }}
-                    className={`w-full text-left p-3 rounded-lg border transition-colors ${selectedPlanId === plan.id ? "border-primary bg-primary/10" : "border-border bg-secondary/50 hover:border-primary/50"}`}>
-                    <div className="flex items-center justify-between">
-                      <span className="font-display text-sm text-foreground">{plan.name}</span>
-                      <span className="font-mono text-sm text-primary">{new Intl.NumberFormat("en-AU", { style: "currency", currency: plan.currency || "AUD" }).format(plan.price)}{plan.type !== "one-time" ? `/${plan.type === "monthly" ? "mo" : "yr"}` : ""}</span>
-                    </div>
-                    {plan.description && <p className="text-xs font-body text-muted-foreground mt-0.5">{plan.description}</p>}
-                    {plan.features.length > 0 && (
-                      <ul className="mt-1.5 space-y-0.5">
-                        {plan.features.map((f, i) => (
-                          <li key={i} className="flex items-center gap-1.5 text-[11px] font-body text-muted-foreground">
-                            <CheckCircle2 className="w-3 h-3 text-green-400 shrink-0" /> {f}
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </button>
-                ))}
-              </div>
-              {showPlanPurchase && selectedPlan && (
-                <div className="space-y-3 p-3 rounded-lg bg-secondary/50 border border-border/40">
-                  <p className="text-xs font-body text-muted-foreground font-medium">Your details</p>
-                  <Input value={buyerName} onChange={e => setBuyerName(e.target.value)} placeholder="Your name" className="bg-background border-border text-foreground font-body text-sm h-8" />
-                  <Input type="email" value={buyerEmail} onChange={e => setBuyerEmail(e.target.value)} placeholder="Your email address *" className="bg-background border-border text-foreground font-body text-sm h-8" />
-                  {showPlanPaymentOptions ? (
-                    <div className="flex flex-col sm:flex-row gap-2">
-                      <Button size="sm" onClick={handlePlanStripeCheckout} disabled={planCheckoutLoading || !buyerEmail} className="gap-2 bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase">
-                        <CreditCard className="w-3.5 h-3.5" /> {planCheckoutLoading ? "Redirecting…" : "Pay by Card"}
-                      </Button>
-                      <Button size="sm" variant="outline" onClick={handlePlanBankPurchase} disabled={planCheckoutLoading || !buyerEmail} className="gap-2 font-body text-xs tracking-wider uppercase border-border">
-                        <DollarSign className="w-3.5 h-3.5" /> Pay by Bank Transfer
-                      </Button>
-                      <Button size="sm" variant="ghost" onClick={() => setShowPlanPaymentOptions(false)} className="font-body text-xs text-muted-foreground">
-                        Cancel
-                      </Button>
-                    </div>
-                  ) : (
-                    <Button size="sm" onClick={() => setShowPlanPaymentOptions(true)} disabled={!buyerEmail} className="gap-2 bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase">
-                      <CreditCard className="w-3.5 h-3.5" /> Purchase {selectedPlan.name} — {new Intl.NumberFormat("en-AU", { style: "currency", currency: selectedPlan.currency || "AUD" }).format(selectedPlan.price)}
-                    </Button>
-                  )}
-                </div>
-              )}
+              <p className="text-xs font-body text-muted-foreground">
+                Contact your platform administrator to change or renew this licence. Online licence checkout is unavailable until the new licence can be applied atomically to this account.
+              </p>
             </div>
           )}
         </div>

@@ -14,6 +14,15 @@ services:
       - PUBLIC_SITE_HOSTS=${PUBLIC_SITE_HOSTS:-zacmclients.photos,www.zacmclients.photos,zacmorganphotography.com,www.zacmorganphotography.com}
       - CANONICAL_PORTFOLIO_HOST=${CANONICAL_PORTFOLIO_HOST:-zacmorganphotography.com}
       - APP_HOSTS=${APP_HOSTS:-book.zacmclients.photos}
+      - APP_BASE_URL=${APP_BASE_URL:-https://book.zacmclients.photos}
+      # Keep false when port 5066 is directly exposed. Set to the exact trusted
+      # proxy hop count (commonly 1) only when every request passes that proxy.
+      - TRUST_PROXY=${TRUST_PROXY:-false}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-}
+      # Comma-separated Capacitor origins explicitly allowed to receive
+      # SameSite=None; Secure session cookies. Capacitor 8 Android uses the
+      # exact https://localhost origin with this repository's default config.
+      - NATIVE_APP_ORIGINS=${NATIVE_APP_ORIGINS:-https://localhost}
       - ZIP_READY_TTL_MS=${ZIP_READY_TTL_MS:-900000}
       - ZIP_TRANSFERRED_TTL_MS=${ZIP_TRANSFERRED_TTL_MS:-120000}
       # ── Super Admin (Overall Owner) ─────────────────────────────────────────
@@ -22,6 +31,10 @@ services:
       # Change the password immediately after first login.
       - SUPER_ADMIN_USERNAME=${SUPER_ADMIN_USERNAME:-admin}
       - SUPER_ADMIN_PASSWORD=${SUPER_ADMIN_PASSWORD:?Set SUPER_ADMIN_PASSWORD in .env before starting}
+      # Stable signing secret for admin, tenant, OAuth-state, and gallery cookies.
+      - SESSION_SECRET=${SESSION_SECRET:?Set a random SESSION_SECRET (at least 32 characters) in .env before starting}
+      # Required for the one-time remote setup claim; never expose this in frontend bundles.
+      - SETUP_TOKEN=${SETUP_TOKEN:?Set a random SETUP_TOKEN in .env before starting}
       # ── Email (SMTP) ─────────────────────────────────────────────────────────
       - EMAIL_FROM=${EMAIL_FROM:-Zac <zacmorganphotography@gmail.com>}
       - EMAIL_SERVER_HOST=${EMAIL_SERVER_HOST:-smtp.gmail.com}
@@ -32,7 +45,10 @@ services:
       # ── Stripe ───────────────────────────────────────────────────────────────
       - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY:-}
       - STRIPE_PUBLISHABLE_KEY=${STRIPE_PUBLISHABLE_KEY:-}
+      # Stripe is optional. When enabled, configure this secret; webhook requests
+      # fail closed at runtime when it is absent or the signature is invalid.
       - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET:-}
+      - ALLOW_UNSIGNED_STRIPE_WEBHOOKS=false
       # ── Google Integrations ───────────────────────────────────────────────────
       - GOOGLE_API_CREDENTIALS=${GOOGLE_API_CREDENTIALS:-}
     volumes:

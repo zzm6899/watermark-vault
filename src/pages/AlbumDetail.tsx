@@ -7,10 +7,9 @@ import Header from "@/components/Header";
 import Footer from "@/components/Footer";
 import WatermarkedImage from "@/components/WatermarkedImage";
 import PurchasePanel from "@/components/PurchasePanel";
-import { getAlbumBySlug, getSettings, updateAlbum } from "@/lib/storage";
-import { useBackfillThumbnails } from "@/hooks/use-backfill-thumbnails";
+import { getSettings } from "@/lib/storage";
 import { Badge } from "@/components/ui/badge";
-import { createAlbumCheckout, createTenantAlbumCheckout, getStripeStatus, getTenantStripeStatus, getTenantSettings, isServerMode, fetchPublicAlbum, tenantPhotoSrc, ftpMoveToStarred, saveTenantAlbum } from "@/lib/api";
+import { createAlbumCheckout, createTenantAlbumCheckout, getStripeStatus, getTenantStripeStatus, tenantPhotoSrc } from "@/lib/api";
 import { toast } from "sonner";
 import { resizeToTargetSize } from "@/lib/image-utils";
 import {
@@ -25,14 +24,172 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Label } from "@/components/ui/label";
-import type { Album, AlbumDownloadRecord, DownloadQuality, DownloadHistoryEntry, Photo } from "@/lib/types";
+import type { Album, DownloadQuality, Photo } from "@/lib/types";
+import { generateCapabilityToken } from "@/lib/capability-token";
 
-const TARGET_LIGHTBOX_BYTES = 600 * 1024; // ~600KB
 // Scroll wheel zoom sensitivity — smaller = slower zoom per scroll tick
 const ZOOM_WHEEL_SENSITIVITY = 0.002;
 // Gallery lazy-render batch sizes
 const GALLERY_INITIAL_BATCH = 36;
 const GALLERY_BATCH_SIZE = 24;
+const VIEWER_SESSION_PREFIX = "wv_gallery_viewer_";
+const LOCAL_FREE_USED_PREFIX = "wv_gallery_free_used_";
+const PENDING_CHECKOUT_PREFIX = "wv_pending_album_checkout_";
+const DISABLED_BANK_TRANSFER = {
+  enabled: false,
+  accountName: "",
+  bsb: "",
+  accountNumber: "",
+  payId: "",
+  payIdType: "email" as const,
+  instructions: "",
+};
+
+type PublicAlbumResult = {
+  album: Album;
+  tenantSlug: string | null;
+  protected?: boolean;
+  sessionKey?: string;
+  pinRequired?: boolean;
+  tokenRequired?: boolean;
+};
+type PublicAlbumFetch = { result: PublicAlbumResult | null; error: "not-found" | "network" | "expired" | null; unauthorized: boolean };
+type GalleryAccessRequirements = { pinRequired: boolean; tokenRequired: boolean; legacyFallback: boolean };
+type PendingAlbumCheckout = { sessionKey: string; fullAlbum: boolean; photoIds: string[]; startedAt: number };
+type PublicPurchaseSnapshot = {
+  purchase?: NonNullable<Album["sessionPurchases"]>[string] | null;
+  freeDownloadsUsed?: number;
+  requests?: Array<Record<string, unknown>>;
+};
+
+/** Stable, opaque browser identity for galleries that do not have an email or magic-link identity. */
+export function getOrCreateViewerSessionKey(albumId: string): string {
+  const storageKey = `${VIEWER_SESSION_PREFIX}${albumId}`;
+  let existing: string | null = null;
+  try {
+    existing = localStorage.getItem(storageKey);
+  } catch { /* storage may be unavailable in privacy mode */ }
+  if (existing?.startsWith("viewer-")) return existing;
+
+  const created = generateCapabilityToken("viewer");
+  try { localStorage.setItem(storageKey, created); } catch { /* keep the secure in-memory value */ }
+  return created;
+}
+
+export function isServerHostedPhotoSrc(src?: string): boolean {
+  if (!src) return false;
+  try {
+    return new URL(src, window.location.origin).pathname.startsWith("/uploads/");
+  } catch {
+    return false;
+  }
+}
+
+function parseGalleryExpiry(value?: string | null): Date | null {
+  if (!value) return null;
+  const normalized = /^\d{4}-\d{2}-\d{2}$/.test(value)
+    ? `${value}T23:59:59.999`
+    : value;
+  const parsed = new Date(normalized);
+  return Number.isFinite(parsed.getTime()) ? parsed : null;
+}
+
+/** Read a redacted gallery without placing credentials in URLs or access logs. */
+async function fetchPublicAlbumCompatible(
+  albumSlug: string,
+  access: { token?: string | null; pin?: string; sessionKey?: string } = {},
+): Promise<PublicAlbumFetch> {
+  const endpoint = `/api/public-album/${encodeURIComponent(albumSlug)}`;
+  try {
+    // Reuse an existing HttpOnly gallery session first. This is essential after
+    // payment redirects and reloads, when the PIN is intentionally no longer held.
+    const existingSession = await fetch(endpoint, { cache: "no-store" });
+    if (existingSession.ok) {
+      const contentType = existingSession.headers.get("content-type") || "";
+      if (!contentType.includes("application/json")) return { result: null, error: "network", unauthorized: false };
+      return { result: await existingSession.json(), error: null, unauthorized: false };
+    }
+    if (existingSession.status === 404) return { result: null, error: "not-found", unauthorized: false };
+    if (existingSession.status === 410) return { result: null, error: "expired", unauthorized: false };
+    if (existingSession.status !== 401) return { result: null, error: "network", unauthorized: false };
+
+    const post = await fetch(`${endpoint}/access`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(access),
+      cache: "no-store",
+    });
+    if (post.ok || post.status === 401) {
+      const contentType = post.headers.get("content-type") || "";
+      if (!contentType.includes("application/json")) return { result: null, error: "network", unauthorized: false };
+      return { result: await post.json(), error: null, unauthorized: post.status === 401 };
+    }
+    return { result: null, error: post.status === 404 ? "not-found" : post.status === 410 ? "expired" : "network", unauthorized: false };
+  } catch {
+    return { result: null, error: "network", unauthorized: false };
+  }
+}
+
+function resolveGalleryAccessRequirements(
+  result: PublicAlbumResult | null,
+  unauthorized: boolean,
+): GalleryAccessRequirements | null {
+  if (!unauthorized) return null;
+  const hasExplicitMode = typeof result?.pinRequired === "boolean" || typeof result?.tokenRequired === "boolean";
+  if (hasExplicitMode) {
+    return {
+      pinRequired: result?.pinRequired === true,
+      tokenRequired: result?.tokenRequired === true,
+      legacyFallback: false,
+    };
+  }
+  // Older servers exposed only `protected`. Preserve their historical PIN flow,
+  // while new servers can explicitly prevent a token-only gallery showing it.
+  return { pinRequired: result?.protected !== false, tokenRequired: false, legacyFallback: true };
+}
+
+function decorateTenantAlbum(result: PublicAlbumResult): Album {
+  const album = {
+    ...result.album,
+    // Match the server's canonical legacy quota. Older albums did not persist
+    // this field, and showing zero locally would disagree with authorization
+    // and pricing after a refresh.
+    freeDownloads: Number.isFinite(Number(result.album.freeDownloads))
+      ? Math.max(0, Math.floor(Number(result.album.freeDownloads)))
+      : 5,
+  };
+  if (!result.tenantSlug) return album;
+  const withTenant = (src: string) => tenantPhotoSrc(src, result.tenantSlug!);
+  return {
+    ...album,
+    photos: (album.photos || []).map((photo: Photo & Record<string, unknown>) => ({
+      ...photo,
+      src: withTenant(photo.src),
+      thumbnail: photo.thumbnail ? withTenant(photo.thumbnail) : photo.thumbnail,
+      thumbnailWatermarked: typeof photo.thumbnailWatermarked === "string" ? withTenant(photo.thumbnailWatermarked) : photo.thumbnailWatermarked,
+      mediumWatermarked: typeof photo.mediumWatermarked === "string" ? withTenant(photo.mediumWatermarked) : photo.mediumWatermarked,
+    })) as Photo[],
+    coverImage: album.coverImage ? withTenant(album.coverImage) : album.coverImage,
+  };
+}
+
+function applyPurchaseSnapshot(album: Album, sessionKey: string, snapshot: PublicPurchaseSnapshot): Album {
+  return {
+    ...album,
+    sessionPurchases: snapshot.purchase ? { [sessionKey]: snapshot.purchase } : {},
+    usedFreeDownloads: { [sessionKey]: Math.max(0, Number(snapshot.freeDownloadsUsed) || 0) },
+    downloadRequests: (snapshot.requests || []) as unknown as Album["downloadRequests"],
+  };
+}
+
+async function fetchPublicPurchaseSnapshot(albumSlug: string): Promise<PublicPurchaseSnapshot | null> {
+  try {
+    const response = await fetch(`/api/public-album/${encodeURIComponent(albumSlug)}/purchase`, { cache: "no-store" });
+    return response.ok ? await response.json() as PublicPurchaseSnapshot : null;
+  } catch {
+    return null;
+  }
+}
 
 /** Type for Stripe checkout params — defined at file level to avoid re-creation on every render. */
 type StripeCheckoutParams = Parameters<typeof createAlbumCheckout>[0];
@@ -47,8 +204,8 @@ function LightboxImage({ photo, cache, onCacheUpdate, wmDisabled, watermarkVersi
   albumId?: string;
   sessionKey?: string;
 }) {
-  const previewSrc = getPhotoVariantSrc(photo, "thumbnail", !!wmDisabled, albumId && sessionKey ? { albumId, sessionKey } : undefined);
-  const fullSrc = getPhotoVariantSrc(photo, "medium", !!wmDisabled, albumId && sessionKey ? { albumId, sessionKey } : undefined);
+  const previewSrc = getPhotoVariantSrc(photo, "thumbnail", !!wmDisabled, albumId && sessionKey ? { albumId } : undefined);
+  const fullSrc = getPhotoVariantSrc(photo, "medium", !!wmDisabled, albumId && sessionKey ? { albumId } : undefined);
   const cacheKey = `${photo.id}:${wmDisabled ? "clean" : "wm"}:v${watermarkVersion || 0}:${fullSrc}`;
 
   const [src, setSrc] = useState(cache[cacheKey] || previewSrc);
@@ -76,27 +233,19 @@ function LightboxImage({ photo, cache, onCacheUpdate, wmDisabled, watermarkVersi
     <img
       src={src}
       alt={photo.title}
+      width={photo.width}
+      height={photo.height}
       className="max-w-full max-h-full w-full h-full object-contain rounded-lg"
       loading="eager"
       decoding="async"
     />
   );
 }
-// Session key priority: client token (works across devices) > PIN > generic per-album fallback
-function getSessionKey(album: Album, pin: string, token?: string): string {
-  // Token is the most portable — same magic link URL works on any device
-  if (token && album.clientToken && token === album.clientToken) return `token-${token}`;
-  // PIN is device-agnostic if the client knows it
-  if (pin) return pin;
-  // Last resort — shared per-album (no auth = no per-client isolation possible)
-  return `session-${album.id}`;
-}
-
 function getFreeUsed(album: Album, sessionKey: string): number {
   return album.usedFreeDownloads?.[sessionKey] || 0;
 }
 
-function buildPhotoSrc(src: string, disableWatermark: boolean, access?: { albumId: string; sessionKey: string }): string {
+function buildPhotoSrc(src: string, disableWatermark: boolean, access?: { albumId: string }): string {
   if (!disableWatermark) return src;
   if (!src || src.startsWith("data:")) return src;
   const url = new URL(src, window.location.origin);
@@ -104,12 +253,11 @@ function buildPhotoSrc(src: string, disableWatermark: boolean, access?: { albumI
   if (access) {
     url.searchParams.set("paid", "1");
     url.searchParams.set("albumId", access.albumId);
-    url.searchParams.set("sessionKey", access.sessionKey);
   }
   return `${url.pathname}${url.search}`;
 }
 
-function getPhotoVariantSrc(photo: Photo, variant: "thumbnail" | "medium" | "full", disableWatermark: boolean, access?: { albumId: string; sessionKey: string }): string {
+function getPhotoVariantSrc(photo: Photo, variant: "thumbnail" | "medium" | "full", disableWatermark: boolean, access?: { albumId: string }): string {
   const p = photo as any;
 
   // Strip any legacy ?wm=0 from the thumbnail URL so server applies watermarks when needed
@@ -156,7 +304,7 @@ function getPhotoVariantSrc(photo: Photo, variant: "thumbnail" | "medium" | "ful
   return stripWm(p.fullWatermarked || p.mediumWatermarked || p.thumbnailWatermarked || photo.src);
 }
 
-function getGalleryPhotoSrc(photo: Photo, disableWatermark: boolean, access?: { albumId: string; sessionKey: string }): string {
+function getGalleryPhotoSrc(photo: Photo, disableWatermark: boolean, access?: { albumId: string }): string {
   return getPhotoVariantSrc(photo, "thumbnail", disableWatermark, access);
 }
 
@@ -181,28 +329,34 @@ type ZipProgressState = {
 
 type ZipDownloadResult = { ok: boolean; includedPhotoIds: string[]; skipped: number };
 
+class DownloadEmailRequiredError extends Error {}
+
+async function downloadResponseError(response: Response, fallback: string): Promise<Error> {
+  const result = await response.json().catch(() => ({})) as { error?: string; code?: string };
+  const message = result.error || fallback;
+  return response.status === 428 && result.code === "DOWNLOAD_EMAIL_REQUIRED"
+    ? new DownloadEmailRequiredError(message)
+    : new Error(message);
+}
+
 const wait = (ms: number) => new Promise(resolve => window.setTimeout(resolve, ms));
 
 export default function AlbumDetail() {
   const { albumId } = useParams();
-  const [album, setAlbumState] = useState(() => {
-    if (!albumId) return undefined;
-    const local = getAlbumBySlug(albumId);
-    // If the local copy only has stub data (photos stripped by background poll),
-    // return undefined so the server fetch below runs and loads the full photos.
-    return local?._photosStripped ? undefined : local;
-  });
+  const settings = getSettings();
+  const [album, setAlbumState] = useState<Album | undefined>(undefined);
   const [tenantSlug, setTenantSlug] = useState<string | null>(null);
   const [tenantDisplayName, setTenantDisplayName] = useState<string | null>(null);
-  const [tenantEmail, setTenantEmail] = useState<string | null>(null);
   const [tenantBankTransfer, setTenantBankTransfer] = useState<typeof settings.bankTransfer | null>(null);
-  const [albumLoading, setAlbumLoading] = useState(() => {
-    if (!albumId) return false;
-    const local = getAlbumBySlug(albumId);
-    // Show loading state when album is absent or only has stub data (no photos yet).
-    return !local || !!local._photosStripped;
+  const [albumFetchError, setAlbumFetchError] = useState<"network" | "not-found" | "expired" | null>(null);
+  const [fetchAttempt, setFetchAttempt] = useState(0);
+  const [albumLoading, setAlbumLoading] = useState(!!albumId);
+  const [viewerSessionKey] = useState(() => albumId ? getOrCreateViewerSessionKey(albumId) : generateCapabilityToken("viewer"));
+  const [gallerySessionKey, setGallerySessionKey] = useState(viewerSessionKey);
+  const [localFreeUsed, setLocalFreeUsed] = useState(() => {
+    if (!albumId) return 0;
+    try { return Number(localStorage.getItem(`${LOCAL_FREE_USED_PREFIX}${albumId}_${viewerSessionKey}`)) || 0; } catch { return 0; }
   });
-  const settings = getSettings();
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [showBankTransfer, setShowBankTransfer] = useState(false);
   const [showBankTransferRequest, setShowBankTransferRequest] = useState(false);
@@ -215,12 +369,37 @@ export default function AlbumDetail() {
   const [zipElapsedSeconds, setZipElapsedSeconds] = useState(0);
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [searchParams] = useSearchParams();
-  const urlToken = searchParams.get("token");
+  const [urlToken] = useState<string | null>(() => {
+    const hashToken = new URLSearchParams(window.location.hash.replace(/^#/, "")).get("token");
+    const tokenFromUrl = hashToken || searchParams.get("token");
+    if (!albumId) return tokenFromUrl;
+    try {
+      const storageKey = `wv_gallery_token_${albumId}`;
+      if (tokenFromUrl) sessionStorage.setItem(storageKey, tokenFromUrl);
+      return tokenFromUrl || sessionStorage.getItem(storageKey);
+    } catch {
+      return tokenFromUrl;
+    }
+  });
+  useEffect(() => {
+    const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+    const hasHashToken = hashParams.has("token");
+    if (!searchParams.has("token") && !hasHashToken) return;
+    const url = new URL(window.location.href);
+    url.searchParams.delete("token");
+    if (hasHashToken) {
+      hashParams.delete("token");
+      url.hash = hashParams.toString() ? `#${hashParams.toString()}` : "";
+    }
+    window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+  }, [searchParams]);
   // Token in URL grants access without PIN — verified against album.clientToken
   const tokenMatchesAlbum = !!(urlToken && album?.clientToken && urlToken === album.clientToken);
+  const [tokenAuthorized, setTokenAuthorized] = useState(tokenMatchesAlbum);
   const [accessGranted, setAccessGranted] = useState(!album?.accessCode || tokenMatchesAlbum);
+  const [accessRequirements, setAccessRequirements] = useState<GalleryAccessRequirements | null>(null);
   const [pinInput, setPinInput] = useState("");
-  const [usedPin, setUsedPin] = useState(tokenMatchesAlbum ? "__token__" : "");
+  const [unlocking, setUnlocking] = useState(false);
   const [registeredEmail, setRegisteredEmail] = useState<string>(() => {
     // Restore email from localStorage if previously registered for this album
     try { return localStorage.getItem(`wv_email_${albumId}`) || ""; } catch { return ""; }
@@ -229,6 +408,10 @@ export default function AlbumDetail() {
   const [showEmailCapture, setShowEmailCapture] = useState(false);
   const [clientNote, setClientNote] = useState("");
   const [lightboxPhotoId, setLightboxPhotoId] = useState<string | null>(null);
+  const lightboxOpen = lightboxPhotoId !== null;
+  const lightboxDialogRef = useRef<HTMLDivElement | null>(null);
+  const lightboxCloseRef = useRef<HTMLButtonElement | null>(null);
+  const lightboxPreviousFocusRef = useRef<HTMLElement | null>(null);
   const displayedPhotosRef = useRef<Photo[]>([]);
   const touchStartX = useRef<number | null>(null);
   // Callback ref for the gallery load-more sentinel. Using a callback ref instead
@@ -266,7 +449,7 @@ export default function AlbumDetail() {
   const [showGalleryFilters, setShowGalleryFilters] = useState(false);
   // Local display size — defaults to admin-set album size (or "medium" fallback)
   const [localDisplaySize, setLocalDisplaySize] = useState<string>(
-    () => (albumId ? getAlbumBySlug(albumId) : undefined)?.displaySize ?? "medium"
+    "medium"
   );
   useEffect(() => {
     if (album?.displaySize) setLocalDisplaySize(album.displaySize);
@@ -283,6 +466,15 @@ export default function AlbumDetail() {
   const [stripeAvailable, setStripeAvailable] = useState(false);
   const [processingStripe, setProcessingStripe] = useState(false);
   const [stripeSuccess, setStripeSuccess] = useState(() => searchParams.get("success") === "1");
+  const [stripeConfirmationDelayed, setStripeConfirmationDelayed] = useState(false);
+  // Consume the redirect marker immediately. React state keeps this polling run
+  // alive, while reloads cannot restart it indefinitely from a stale URL.
+  useEffect(() => {
+    if (searchParams.get("success") !== "1") return;
+    const url = new URL(window.location.href);
+    url.searchParams.delete("success");
+    window.history.replaceState(window.history.state, "", url.toString());
+  }, [searchParams]);
   // Handle Stripe cancel redirect — show a friendly message once and clean up URL
   useEffect(() => {
     if (searchParams.get("cancelled") === "1") {
@@ -322,6 +514,15 @@ export default function AlbumDetail() {
   const [proofingSubmitting, setProofingSubmitting] = useState(false);
   const [proofingSubmitted, setProofingSubmitted] = useState(false);
   const [showScrollTop, setShowScrollTop] = useState(false);
+  const [downloadEmailCaptureId, setDownloadEmailCaptureId] = useState<string>(() => {
+    try { return localStorage.getItem(`wv_download_capture_${albumId}`) || ""; } catch { return ""; }
+  });
+  const [downloadCaptureEmail, setDownloadCaptureEmail] = useState("");
+  const [showDownloadEmailCapture, setShowDownloadEmailCapture] = useState(false);
+  const [downloadEmailSkipped, setDownloadEmailSkipped] = useState(false);
+  const [pendingDownloadIntent, setPendingDownloadIntent] = useState<"all" | "free" | null>(null);
+  const [savingDownloadEmail, setSavingDownloadEmail] = useState(false);
+  const [bankTransferFullAlbum, setBankTransferFullAlbum] = useState(false);
 
   // Check Stripe availability from server — uses tenant Stripe (with fallback) when a tenant album
   useEffect(() => {
@@ -342,193 +543,148 @@ export default function AlbumDetail() {
         : "Gallery"
   );
 
-  // Fetch the album from the server.
-  // In server mode we always fetch even if a local copy exists so that any
-  // photo changes made on the admin side (added, deleted) are immediately
-  // visible to clients using the gallery/proofing link on other devices.
-  // The local copy (if present) keeps showing while the fetch is in flight.
+  // Public galleries always refresh through the redacted public endpoint. Never
+  // write that filtered response back to an admin album store: doing so can erase
+  // hidden photos and privileged fields from the photographer's canonical album.
   useEffect(() => {
     if (!albumId) return;
-    // Always attempt to fetch from the server — isServerMode() returns false when
-    // serverAvailable is still null (undetermined), which causes the fetch to be
-    // skipped on the very first page load and results in "Album Not Found" for
-    // albums that are not in localStorage (e.g. tenant albums, first visit from
-    // a different device).  fetchPublicAlbum handles network errors gracefully by
-    // returning null, so it is safe to call even when the server may be offline.
-    // Only show the loading spinner when we have no data at all yet.
-    if (!album) setAlbumLoading(true);
-    let savedViewerEmail = "";
-    try { savedViewerEmail = localStorage.getItem(`wv_email_${albumId}`) || ""; } catch { /* unavailable */ }
-    const savedSessionKey = savedViewerEmail ? `email-${savedViewerEmail.toLowerCase().trim()}` : undefined;
-    fetchPublicAlbum(albumId, { token: urlToken, sessionKey: savedSessionKey }).then(async result => {
+    let cancelled = false;
+    setAlbumLoading(true);
+    setAlbumState(undefined);
+    setAlbumFetchError(null);
+    setTenantSlug(null);
+    setTenantDisplayName(null);
+    setTenantBankTransfer(null);
+    setAccessRequirements(null);
+    void fetchPublicAlbumCompatible(albumId, { token: urlToken, sessionKey: viewerSessionKey }).then(async response => {
+      if (cancelled) return;
+      const result = response.result;
+      const requirements = resolveGalleryAccessRequirements(result, response.unauthorized);
+      setAccessRequirements(requirements);
       if (result?.album) {
-        const tSlug = result.tenantSlug;
+        const tSlug = result.tenantSlug || null;
         setTenantSlug(tSlug);
-        let loadedAlbum = result.album;
+        if (tSlug) setTenantBankTransfer(DISABLED_BANK_TRANSFER);
+        if (result.sessionKey) setGallerySessionKey(result.sessionKey);
+        const loadedAlbum = decorateTenantAlbum(result);
+        setAlbumState(loadedAlbum);
+        setAlbumFetchError(null);
+        setTokenAuthorized(!!urlToken && !response.unauthorized);
+        setAccessGranted(!response.unauthorized);
+        setAlbumLoading(false);
+        if (!response.unauthorized) {
+          const snapshot = await fetchPublicPurchaseSnapshot(albumId);
+          if (snapshot && !cancelled) {
+            const resolvedSessionKey = result.sessionKey || viewerSessionKey;
+            setAlbumState(previous => previous?.id === loadedAlbum.id
+              ? applyPurchaseSnapshot(previous, resolvedSessionKey, snapshot)
+              : previous);
+          }
+        }
         if (tSlug) {
-          // Add ?tenant=slug to all photo URLs so the server applies the right watermark
-          const withTenant = (src: string) => tenantPhotoSrc(src, tSlug);
-          loadedAlbum = {
-            ...result.album,
-            photos: (result.album.photos || []).map((p: any) => ({
-              ...p,
-              src: withTenant(p.src),
-              thumbnail: p.thumbnail ? withTenant(p.thumbnail) : p.thumbnail,
-              thumbnailWatermarked: p.thumbnailWatermarked ? withTenant(p.thumbnailWatermarked) : p.thumbnailWatermarked,
-              mediumWatermarked: p.mediumWatermarked ? withTenant(p.mediumWatermarked) : p.mediumWatermarked,
-            })),
-            coverImage: result.album.coverImage ? withTenant(result.album.coverImage) : result.album.coverImage,
-          };
-          // Fetch tenant display info and settings for header + bank transfer
+          // Fetch the tenant's explicitly public display and bank-transfer fields.
           try {
-            const [publicInfo, tenantSettings] = await Promise.all([
-              fetch(`/api/tenant/${encodeURIComponent(tSlug)}/public`).then(r => r.ok ? r.json() : null),
-              getTenantSettings(tSlug),
-            ]);
+            const publicInfo = await fetch(`/api/tenant/${encodeURIComponent(tSlug)}/public`).then(r => r.ok ? r.json() : null);
+            if (cancelled) return;
             if (publicInfo?.tenant?.displayName) {
               setTenantDisplayName(publicInfo.tenant.displayName);
             }
-            if (publicInfo?.tenant?.email) {
-              setTenantEmail(publicInfo.tenant.email);
-            }
-            if (tenantSettings) {
-              setTenantBankTransfer({
-                enabled: !!tenantSettings.bankTransferEnabled,
-                accountName: tenantSettings.bankAccountName || "",
-                bsb: tenantSettings.bankBsb || "",
-                accountNumber: tenantSettings.bankAccountNumber || "",
-                payId: tenantSettings.bankPayId || "",
-                payIdType: tenantSettings.bankPayIdType || "email",
-                instructions: tenantSettings.bankInstructions || "",
-              });
-            }
+            const publicBank = publicInfo?.bankTransfer;
+            setTenantBankTransfer({
+              enabled: publicBank?.enabled === true,
+              accountName: publicBank?.accountName || "",
+              bsb: publicBank?.bsb || "",
+              accountNumber: publicBank?.accountNumber || "",
+              payId: publicBank?.payId || "",
+              payIdType: publicBank?.payIdType || "email",
+              instructions: publicBank?.instructions || "",
+            });
           } catch {
             // Tenant info fetch failure is non-critical
           }
         }
-        setAlbumState(loadedAlbum);
-        // Reset access grant based on the server-loaded album's access code and URL token
-        const tokenGrantsAccess = !!(urlToken && loadedAlbum.clientToken && urlToken === loadedAlbum.clientToken);
-        setAccessGranted(!loadedAlbum.accessCode || tokenGrantsAccess);
+      } else if (response.unauthorized) {
+        // Access-mode fields are sufficient to render a safe gate even if a
+        // hardened server chooses not to include redacted album metadata.
+        setAlbumFetchError(null);
+        setAlbumState(undefined);
+        setTokenAuthorized(false);
+        setAccessGranted(false);
+        setAlbumLoading(false);
       } else {
-        const localAlbum = getAlbumBySlug(albumId);
-        if (localAlbum && !localAlbum._photosStripped) {
-          updateAlbum(localAlbum);
-          window.setTimeout(() => {
-            fetchPublicAlbum(albumId, { token: urlToken, sessionKey: savedSessionKey }).then(retryResult => {
-              if (retryResult?.album) {
-                setAlbumState(retryResult.album);
-                setTenantSlug(retryResult.tenantSlug);
-              }
-            }).catch(() => {});
-          }, 1000);
-        }
+        setAlbumFetchError(response.error || "not-found");
+        setAlbumState(undefined);
+        setAlbumLoading(false);
       }
-      setAlbumLoading(false);
     });
-  }, [albumId]); // eslint-disable-line react-hooks/exhaustive-deps
+    return () => { cancelled = true; };
+  }, [albumId, fetchAttempt, urlToken, viewerSessionKey]);
 
   const watermarkPosition = settings.watermarkPosition;
-  // Use tenant bank settings for tenant galleries, fall back to superuser settings
-  const bankTransfer = tenantBankTransfer ?? settings.bankTransfer;
+  // Tenant galleries must never fall back to the platform account details.
+  const bankTransfer = tenantSlug ? (tenantBankTransfer ?? DISABLED_BANK_TRANSFER) : settings.bankTransfer;
 
-  const persistCurrentAlbum = useCallback((updated: Album) => {
-    if (tenantSlug) {
-      saveTenantAlbum(tenantSlug, updated).then(result => {
-        if (!result.ok) console.warn("Failed to persist tenant album:", result.error);
-      }).catch(err => console.warn("Failed to persist tenant album:", err));
-      return;
-    }
-    updateAlbum(updated);
-  }, [tenantSlug]);
-
-  const refreshAlbum = useCallback(() => {
-    if (albumId && !tenantSlug) {
-      const fresh = getAlbumBySlug(albumId);
-      // Only update state from localStorage for main (non-tenant) albums.
-      // Tenant albums are not stored in the main wv_albums key, so fresh will be
-      // undefined or a stale same-slug shadow; don't overwrite tenant state.
-      if (fresh !== undefined) setAlbumState(fresh);
-    }
-  }, [albumId, tenantSlug]);
-
-  // Poll until Stripe webhook updates album (runs on stripeSuccess/pollingCount changes).
-  // We must fetch fresh data from the server because the webhook writes sessionPurchases
-  // directly to db.json — it never goes through the client's localStorage.
+  // Poll the public endpoint until the *specific* checkout entitlement appears.
+  // Existing purchases belonging to another viewer must never stop this poll.
   useEffect(() => {
-    if (!stripeSuccess) return;
-    if (pollingCount >= 15) {
-      toast.info("Payment received — refresh the page if photos don't unlock shortly.");
+    if (!stripeSuccess || !albumId) return;
+    if (pollingCount >= 30) {
+      toast.info("Payment is still processing and has not yet been confirmed. Check again shortly.");
       setStripeSuccess(false);
+      setStripeConfirmationDelayed(true);
+      setPollingCount(0);
+      // Retain the expected checkout in sessionStorage so a manual retry or page
+      // refresh can compare against the same purchase rather than any older one.
+      const url = new URL(window.location.href);
+      url.searchParams.delete("success");
+      window.history.replaceState(window.history.state, "", url.toString());
       return;
     }
-    const timer = setTimeout(async () => {
+    const timer = window.setTimeout(async () => {
+      let expected: PendingAlbumCheckout | null = null;
       try {
-        if (tenantSlug) {
-          // For tenant albums, fetch the tenant-specific album store so the
-          // webhook-written sessionPurchases are picked up by the stop-polling check.
-          const res = await fetch(`/api/store/t_${encodeURIComponent(tenantSlug)}_wv_albums`);
-          if (res.ok) {
-            const { value } = await res.json();
-            if (value != null) {
-              const albums: Album[] = typeof value === "string" ? JSON.parse(value) : value;
-              const serverAlbum = albums.find((a) => (album?.id !== undefined && a.id === album.id) || a.slug === albumId);
-              if (serverAlbum) {
-                // Merge purchase state from server into current React state (keeps
-                // already-transformed tenant photo URLs intact). If prev is falsy
-                // the album isn't loaded yet, so leave it as-is.
-                setAlbumState(prev => prev ? {
-                  ...prev,
-                  allUnlocked: serverAlbum.allUnlocked,
-                  paidPhotoIds: serverAlbum.paidPhotoIds,
-                  sessionPurchases: serverAlbum.sessionPurchases,
-                } : prev);
-              }
-            }
-          }
-        } else {
-          const res = await fetch("/api/store/wv_albums");
-          if (res.ok) {
-            const { value } = await res.json();
-            if (value != null) {
-              localStorage.setItem("wv_albums", typeof value === "string" ? value : JSON.stringify(value));
-            }
-          }
-          refreshAlbum();
+        const raw = sessionStorage.getItem(`${PENDING_CHECKOUT_PREFIX}${albumId}`);
+        expected = raw ? JSON.parse(raw) as PendingAlbumCheckout : null;
+      } catch { /* unavailable or corrupt */ }
+      const activeSessionKey = expected?.sessionKey || gallerySessionKey;
+      const response = await fetchPublicAlbumCompatible(albumId, { token: urlToken, sessionKey: activeSessionKey });
+      const result = response.result;
+      if (result?.album) {
+        const loadedAlbum = decorateTenantAlbum(result);
+        setAlbumState(previous => previous ? {
+          ...previous,
+          allUnlocked: loadedAlbum.allUnlocked,
+          paidPhotoIds: loadedAlbum.paidPhotoIds,
+          sessionPurchases: loadedAlbum.sessionPurchases || {},
+          usedFreeDownloads: loadedAlbum.usedFreeDownloads || previous.usedFreeDownloads,
+        } : loadedAlbum);
+        setTenantSlug(result.tenantSlug || null);
+        const resolvedSessionKey = result.sessionKey || activeSessionKey;
+        if (result.sessionKey) setGallerySessionKey(result.sessionKey);
+        const purchase = loadedAlbum.sessionPurchases?.[resolvedSessionKey];
+        const paidIds = new Set([...(purchase?.photoIds || []), ...(loadedAlbum.paidPhotoIds || [])]);
+        const expectedSatisfied = expected
+          ? expected.fullAlbum
+            ? loadedAlbum.allUnlocked === true || purchase?.fullAlbum === true
+            : expected.photoIds.length > 0 && expected.photoIds.every(id => paidIds.has(id))
+          : loadedAlbum.allUnlocked === true || purchase?.fullAlbum === true || !!purchase?.photoIds?.length;
+        if (expectedSatisfied) {
+          toast.success("Payment confirmed! Your photos are now unlocked.");
+          setStripeSuccess(false);
+          setStripeConfirmationDelayed(false);
+          setPollingCount(0);
+          try { sessionStorage.removeItem(`${PENDING_CHECKOUT_PREFIX}${albumId}`); } catch { /* unavailable */ }
+          const url = new URL(window.location.href);
+          url.searchParams.delete("success");
+          window.history.replaceState({}, "", url.toString());
+          if (!emailSkippedThisSession) setShowEmailReg(true);
+          return;
         }
-      } catch (err) {
-        console.error("Failed to fetch album data from server:", err);
       }
-      setPollingCount(n => n + 1);
+      setPollingCount(count => count + 1);
     }, 2000);
     return () => clearTimeout(timer);
-  }, [stripeSuccess, pollingCount, refreshAlbum, tenantSlug, album?.id, albumId]);
-
-  // Stop polling once paid data lands
-  useEffect(() => {
-    if (!stripeSuccess) return;
-    const hasPurchase = album && (
-      album.allUnlocked ||
-      album.paidPhotoIds?.length > 0 ||
-      Object.keys(album.sessionPurchases || {}).length > 0
-    );
-    if (hasPurchase) {
-      toast.success("Payment confirmed! Your photos are now unlocked.");
-      setStripeSuccess(false);
-      setPollingCount(0);
-      if (!emailSkippedThisSession) setShowEmailReg(true);
-    }
-  }, [album, stripeSuccess, emailSkippedThisSession]);
-
-  // Backfill missing thumbnails in background
-  useBackfillThumbnails(album?.photos || [], useCallback((photoId, thumb) => {
-    setAlbumState(prev => {
-      if (!prev) return prev;
-      const updated = { ...prev, photos: prev.photos.map(p => p.id === photoId ? { ...p, thumbnail: thumb } : p) };
-      persistCurrentAlbum(updated);
-      return updated;
-    });
-  }, [persistCurrentAlbum]));
+  }, [albumId, emailSkippedThisSession, gallerySessionKey, pollingCount, stripeSuccess, urlToken]);
 
   // Reset visible count when the photo list changes (filter / sort)
   useEffect(() => {
@@ -541,7 +697,17 @@ export default function AlbumDetail() {
     const handler = (e: KeyboardEvent) => {
       const lbPhotos = displayedPhotosRef.current;
       const currentIdx = lbPhotos.findIndex((p: any) => p.id === lightboxPhotoId);
-      if (e.key === "Escape") { setLightboxPhotoId(null); setLbZoom(1); setLbPan({ x: 0, y: 0 }); }
+      if (e.key === "Escape") { e.preventDefault(); setLightboxPhotoId(null); setLbZoom(1); setLbPan({ x: 0, y: 0 }); }
+      if (e.key === "Tab" && lightboxDialogRef.current) {
+        const focusable = Array.from(lightboxDialogRef.current.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), [href], input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        )).filter(element => !element.hasAttribute("aria-hidden"));
+        if (focusable.length === 0) { e.preventDefault(); return; }
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+        else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+      }
       if (e.key === "ArrowLeft" && currentIdx > 0) { setLightboxPhotoId(lbPhotos[currentIdx - 1].id); setLbZoom(1); setLbPan({ x: 0, y: 0 }); }
       if (e.key === "ArrowRight" && currentIdx >= 0 && currentIdx < lbPhotos.length - 1) { setLightboxPhotoId(lbPhotos[currentIdx + 1].id); setLbZoom(1); setLbPan({ x: 0, y: 0 }); }
       if ((e.key === "+" || e.key === "=") && !e.ctrlKey) setLbZoom(z => Math.min(4, +(z + 0.5).toFixed(1)));
@@ -551,6 +717,19 @@ export default function AlbumDetail() {
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [lightboxPhotoId]);
+
+  useEffect(() => {
+    if (!lightboxOpen) return;
+    lightboxPreviousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const frame = window.requestAnimationFrame(() => lightboxCloseRef.current?.focus());
+    return () => {
+      window.cancelAnimationFrame(frame);
+      document.body.style.overflow = previousOverflow;
+      lightboxPreviousFocusRef.current?.focus();
+    };
+  }, [lightboxOpen]);
 
   // Preload adjacent lightbox images when the lightbox photo changes.
   // We store album.watermarkDisabled in a ref so the effect stays stable
@@ -588,14 +767,11 @@ export default function AlbumDetail() {
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(purchaserEmail.trim())) { toast.error("Please enter a valid email address"); return; }
     setSavingEmail(true);
     try {
-      const emailKey = `email-${purchaserEmail.toLowerCase().trim()}`;
       const response = await fetch("/api/album/register-purchaser", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           albumId: album?.id,
-          sessionKey: emailKey,
-          currentSessionKey: album ? getSessionKey(album, usedPin, urlToken ?? undefined) : "",
           email: purchaserEmail,
         }),
       });
@@ -605,9 +781,12 @@ export default function AlbumDetail() {
       }
       try { localStorage.setItem(`wv_email_${albumId}`, purchaserEmail); } catch { /* localStorage may be unavailable */ }
       setRegisteredEmail(purchaserEmail);
-      const restored = await fetchPublicAlbum(albumId, { token: urlToken, sessionKey: emailKey });
-      const restoredPurchase = restored?.album?.sessionPurchases?.[emailKey];
+      const restoredResponse = await fetchPublicAlbumCompatible(albumId || "", { token: urlToken, sessionKey: gallerySessionKey });
+      const restored = restoredResponse.result;
+      const restoredSessionKey = restored?.sessionKey || gallerySessionKey;
+      const restoredPurchase = restored?.album?.sessionPurchases?.[restoredSessionKey];
       if (restored?.album) {
+        if (restored.sessionKey) setGallerySessionKey(restored.sessionKey);
         setAlbumState(previous => previous ? {
           ...previous,
           sessionPurchases: restored.album.sessionPurchases || {},
@@ -615,32 +794,113 @@ export default function AlbumDetail() {
         } : restored.album);
       }
       if (restoredPurchase?.fullAlbum) {
-        toast.success("Full album purchase restored — all photos are ready to download.");
+        toast.success("Email linked to this full-album purchase.");
       } else if (restoredPurchase?.photoIds?.length) {
         const count = restoredPurchase.photoIds.length;
-        toast.success(`${count} purchased photo${count === 1 ? "" : "s"} restored and ready to download.`);
+        toast.success(`Email linked to ${count} purchased photo${count === 1 ? "" : "s"} in this gallery session.`);
       } else {
-        toast.success("Email linked. No previous purchases were found for this gallery.");
+        toast.success("Email linked to this gallery session.");
       }
       setShowEmailReg(false);
       setPurchaserEmail("");
-      // If the user was mid-Stripe-checkout, resume it now with the email session key
+      // If the user was mid-checkout, resume with the opaque cookie-bound session.
       if (pendingStripeParams) {
-        const params = { ...pendingStripeParams, sessionKey: emailKey };
+        const params = { ...pendingStripeParams, sessionKey: gallerySessionKey, clientEmail: purchaserEmail.trim().toLowerCase() };
         setPendingStripeParams(null);
         setProcessingStripe(true);
         const result = tenantSlug
           ? await createTenantAlbumCheckout(tenantSlug, params)
           : await createAlbumCheckout(params);
         setProcessingStripe(false);
-        if (result.url) window.location.href = result.url;
+        if (result.url) {
+          try {
+            sessionStorage.setItem(`${PENDING_CHECKOUT_PREFIX}${albumId}`, JSON.stringify({
+              sessionKey: gallerySessionKey,
+              fullAlbum: params.isFullAlbum === true,
+              photoIds: params.photoIds || [],
+              startedAt: Date.now(),
+            } satisfies PendingAlbumCheckout));
+          } catch { /* unavailable */ }
+          window.location.href = result.url;
+        }
         else toast.error(result.error || "Failed to create checkout session");
+      } else if (requestedBankTransfer) {
+        setRequestedBankTransfer(false);
+        setShowBankTransferRequest(true);
       }
     } catch (error) { toast.error(error instanceof Error ? error.message : "Failed to save email"); }
     setSavingEmail(false);
-  }, [purchaserEmail, album, albumId, pendingStripeParams, tenantSlug, urlToken, usedPin]);
+  }, [purchaserEmail, album, albumId, gallerySessionKey, pendingStripeParams, requestedBankTransfer, tenantSlug, urlToken]);
 
-  if (!album || (album.enabled === false && !tokenMatchesAlbum)) {
+  const unlockGallery = async () => {
+    if (!albumId || !pinInput || unlocking) return;
+    setUnlocking(true);
+    const response = await fetchPublicAlbumCompatible(albumId, {
+      token: urlToken,
+      pin: pinInput,
+      sessionKey: gallerySessionKey,
+    });
+    const result = response.result;
+    if (!result?.album || response.unauthorized) {
+      setAccessRequirements(resolveGalleryAccessRequirements(result, response.unauthorized));
+      toast.error(response.error === "network" ? "Could not verify the PIN. Please try again." : "Incorrect PIN");
+      setUnlocking(false);
+      return;
+    }
+    const loadedAlbum = decorateTenantAlbum(result);
+    setAlbumState(loadedAlbum);
+    setTenantSlug(result.tenantSlug || null);
+    const resolvedSessionKey = result.sessionKey || gallerySessionKey;
+    if (result.sessionKey) setGallerySessionKey(result.sessionKey);
+    const snapshot = await fetchPublicPurchaseSnapshot(albumId);
+    if (snapshot) setAlbumState(previous => previous ? applyPurchaseSnapshot(previous, resolvedSessionKey, snapshot) : previous);
+    setAccessRequirements(null);
+    setAccessGranted(true);
+    setUnlocking(false);
+  };
+
+  const renderPrivateGalleryGate = () => {
+    const showPinEntry = accessRequirements?.pinRequired === true;
+    const tokenOnly = accessRequirements?.tokenRequired === true && !showPinEntry;
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center px-4">
+        <div className="glass-panel rounded-xl p-8 max-w-sm w-full text-center">
+          <Lock className="w-8 h-8 text-primary mx-auto mb-4" />
+          <h2 className="font-display text-xl text-foreground mb-2">
+            {tokenOnly ? "Private Link Required" : "Private Gallery"}
+          </h2>
+          {showPinEntry ? (
+            <>
+              <p className="text-sm font-body text-muted-foreground mb-4">Enter the PIN to access this gallery.</p>
+              <Input
+                type="password"
+                value={pinInput}
+                onChange={(event) => setPinInput(event.target.value)}
+                placeholder="Enter PIN"
+                aria-label="Gallery PIN"
+                className="bg-secondary border-border text-foreground font-body mb-3"
+                onKeyDown={(event) => { if (event.key === "Enter") void unlockGallery(); }}
+              />
+              <Button disabled={unlocking} onClick={() => void unlockGallery()} className="w-full bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs tracking-wider uppercase">
+                {unlocking ? "Checking…" : "Unlock Gallery"}
+              </Button>
+            </>
+          ) : (
+            <>
+              <p className="text-sm font-body text-muted-foreground">
+                {tokenOnly
+                  ? "This private gallery needs its complete access link. This link is missing, invalid, or no longer active."
+                  : "This private gallery link could not be verified."}
+              </p>
+              <p className="text-xs font-body text-muted-foreground/60 mt-3">Please ask your photographer for a new private link.</p>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  if (!album || (album.enabled === false && !tokenMatchesAlbum && !tokenAuthorized)) {
     if (albumLoading) {
       return (
         <div className="min-h-screen bg-background">
@@ -667,6 +927,33 @@ export default function AlbumDetail() {
         </div>
       );
     }
+    if (!accessGranted && accessRequirements) return renderPrivateGalleryGate();
+    if (!album && albumFetchError === "network") {
+      return (
+        <div className="min-h-screen bg-background">
+          <Header tenantSlug={null} tenantName={null} clientView />
+          <div className="min-h-[70vh] flex items-center justify-center px-4">
+            <div className="text-center max-w-sm">
+              <p className="font-display text-2xl text-foreground mb-2">Gallery unavailable</p>
+              <p className="text-muted-foreground font-body text-sm mb-5">We couldn't connect to the gallery. Check your connection and try again.</p>
+              <Button onClick={() => setFetchAttempt(attempt => attempt + 1)}>Try again</Button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+    if (!album && albumFetchError === "expired") {
+      return (
+        <div className="min-h-screen bg-background flex items-center justify-center px-4">
+          <div className="glass-panel rounded-xl p-8 max-w-sm w-full text-center">
+            <Lock className="w-8 h-8 text-muted-foreground/40 mx-auto mb-4" />
+            <h2 className="font-display text-xl text-foreground mb-2">Gallery Expired</h2>
+            <p className="text-sm font-body text-muted-foreground">This gallery is no longer available.</p>
+            <p className="text-xs font-body text-muted-foreground/60 mt-3">Please contact your photographer if you need access restored.</p>
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="text-center">
@@ -677,16 +964,11 @@ export default function AlbumDetail() {
     );
   }
 
-  // Gallery-level expiry check — block all access after expiresAt
-  // Use UTC timestamps for reliable timezone-independent comparison
-  if (album.expiresAt) {
-    const expiresAtDate = /^\d{4}-\d{2}-\d{2}$/.test(album.expiresAt)
-      ? new Date(`${album.expiresAt}T23:59:59.999`)
-      : new Date(album.expiresAt);
-    const now = new Date();
-    const expiresAtMs = expiresAtDate.getTime();
-    const nowMs = now.getTime();
-    const isExpired = nowMs >= expiresAtMs;
+  // The server resolves date-only values in the photographer's timezone and
+  // returns an ISO instant. Keep the date-only branch for older deployments.
+  const galleryExpiryDate = parseGalleryExpiry(album.expiresAt);
+  if (galleryExpiryDate) {
+    const isExpired = Date.now() >= galleryExpiryDate.getTime();
 
     if (isExpired) {
       return (
@@ -697,7 +979,7 @@ export default function AlbumDetail() {
             <p className="text-sm font-body text-muted-foreground">
               This gallery was available until{" "}
               <span className="text-foreground font-medium">
-                {expiresAtDate.toLocaleDateString("en-AU", { day: "numeric", month: "long", year: "numeric" })}
+                {galleryExpiryDate.toLocaleDateString("en-AU", { day: "numeric", month: "long", year: "numeric" })}
               </span>
               {" "}and is no longer accessible.
             </p>
@@ -709,59 +991,18 @@ export default function AlbumDetail() {
   }
 
   if (!accessGranted) {
-    const unlockGallery = async () => {
-      if (!albumId || !pinInput) return;
-      let savedViewerEmail = "";
-      try { savedViewerEmail = localStorage.getItem(`wv_email_${albumId}`) || ""; } catch { /* unavailable */ }
-      const result = await fetchPublicAlbum(albumId, {
-        token: urlToken,
-        pin: pinInput,
-        sessionKey: savedViewerEmail ? `email-${savedViewerEmail.toLowerCase().trim()}` : pinInput,
-      });
-      if (!result?.album || result.protected) {
-        toast.error("Incorrect PIN");
-        return;
-      }
-      const loadedAlbum = result.tenantSlug ? {
-        ...result.album,
-        photos: (result.album.photos || []).map((photo: any) => ({
-          ...photo,
-          src: tenantPhotoSrc(photo.src, result.tenantSlug!),
-          thumbnail: photo.thumbnail ? tenantPhotoSrc(photo.thumbnail, result.tenantSlug!) : photo.thumbnail,
-          thumbnailWatermarked: photo.thumbnailWatermarked ? tenantPhotoSrc(photo.thumbnailWatermarked, result.tenantSlug!) : photo.thumbnailWatermarked,
-          mediumWatermarked: photo.mediumWatermarked ? tenantPhotoSrc(photo.mediumWatermarked, result.tenantSlug!) : photo.mediumWatermarked,
-        })),
-      } : result.album;
-      setAlbumState(loadedAlbum);
-      setTenantSlug(result.tenantSlug);
-      setUsedPin(pinInput);
-      setAccessGranted(true);
-    };
-    return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
-        <div className="glass-panel rounded-xl p-8 max-w-sm w-full text-center">
-          <Lock className="w-8 h-8 text-primary mx-auto mb-4" />
-          <h2 className="font-display text-xl text-foreground mb-2">Private Gallery</h2>
-          <p className="text-sm font-body text-muted-foreground mb-4">Enter the PIN to access this gallery.</p>
-          <Input type="password" value={pinInput} onChange={(e) => setPinInput(e.target.value)} placeholder="Enter PIN" className="bg-secondary border-border text-foreground font-body mb-3" onKeyDown={(e) => { if (e.key === "Enter") void unlockGallery(); }} />
-          <Button onClick={() => void unlockGallery()} className="w-full bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs tracking-wider uppercase">
-            Unlock Gallery
-          </Button>
-        </div>
-      </div>
-    );
+    return renderPrivateGalleryGate();
   }
 
-  // Session key: email > token > PIN > generic fallback
-  const effectiveSessionKey = registeredEmail
-    ? `email-${registeredEmail.toLowerCase().trim()}`
-    : null;
-  const sessionKey = effectiveSessionKey || getSessionKey(album, usedPin, urlToken ?? undefined);
-  const freeUsed = getFreeUsed(album, sessionKey);
+  // The server-issued opaque identity is bound to an HttpOnly gallery cookie.
+  // Authentication credentials and email addresses are never reused as download identity.
+  const sessionKey = gallerySessionKey;
+  const freeUsed = Math.max(getFreeUsed(album, sessionKey), localFreeUsed);
   const freeRemaining = Math.max(0, album.freeDownloads - freeUsed);
   const isFullyUnlocked = album.allUnlocked === true; // admin-set only (proofing delivery, manual unlock)
   const isPurchasingLocked = album.purchasingDisabled === true;
-  const isExpired = !!(album.downloadExpiresAt && new Date(album.downloadExpiresAt + "T23:59:59") < new Date());
+  const downloadExpiryDate = parseGalleryExpiry(album.downloadExpiresAt);
+  const isExpired = !!downloadExpiryDate && Date.now() >= downloadExpiryDate.getTime();
   // Per-session purchase record for this viewer
   const sessionPurchase = album.sessionPurchases?.[sessionKey];
   const sessionFullAlbum = sessionPurchase?.fullAlbum === true;
@@ -769,10 +1010,13 @@ export default function AlbumDetail() {
   // Legacy global paidPhotoIds (kept for backwards compat with old purchases)
   const globalPaidSet = new Set<string>(album.paidPhotoIds || []);
   // Approved/completed bank transfer requests also unlock their photos
+  const approvedBankRequests = (album.downloadRequests || []).filter((request: any) =>
+    (request.status === "approved" || request.status === "completed") &&
+    (!request.sessionKey || request.sessionKey === sessionKey)
+  );
+  const bankFullAlbumUnlocked = approvedBankRequests.some((request: any) => request.fullAlbum === true);
   const bankPaidIds = new Set<string>(
-    (album.downloadRequests || [])
-      .filter((r: any) => r.status === "approved" || r.status === "completed")
-      .flatMap((r: any) => r.photoIds || [])
+    approvedBankRequests.flatMap((request: any) => request.photoIds || [])
   );
   const paidPhotoIdSet = new Set<string>([...sessionPaidIds, ...globalPaidSet, ...bankPaidIds]);
 
@@ -795,7 +1039,7 @@ export default function AlbumDetail() {
     proofingStage !== "not-started" &&
     proofingStage !== "finals-delivered");
 
-  const canDownload = (isFullyUnlocked || sessionFullAlbum) && !isExpired && !isDownloadLockedForProofing && !isPurchasingLocked;
+  const canDownload = (isFullyUnlocked || sessionFullAlbum || bankFullAlbumUnlocked) && !isExpired && !isDownloadLockedForProofing && !isPurchasingLocked;
   const showProofingGalleryControls = isProofing && !canDownload;
   const isPhotoPaid = (id: string) => !isPurchasingLocked && (canDownload || paidPhotoIdSet.has(id));
   const latestRound = album.proofingRounds?.[album.proofingRounds.length - 1];
@@ -820,26 +1064,19 @@ export default function AlbumDetail() {
       ? 1
       : 2;
   const _dpBase = showProofingGalleryControls && showStarredOnly ? clientFilteredPhotos.filter((p: any) => p.starred) : clientFilteredPhotos;
+  const originalPhotoOrder = new Map(_dpBase.map((photo, index) => [photo.id, index]));
   const displayedPhotos = [..._dpBase].sort((a: any, b: any) => {
     const _dA = new Date((a as any).takenAt || (a as any).uploadedAt || 0).getTime();
     const _dB = new Date((b as any).takenAt || (b as any).uploadedAt || 0).getTime();
     const _tCmp = a.title.localeCompare(b.title, undefined, { numeric: true });
     const _bestCmp = cullSortRank(a) - cullSortRank(b);
     if (sortOrder === "default") {
-      return showProofingGalleryControls ? (_bestCmp || (_dB - _dA) || _tCmp) : ((_dB - _dA) || _tCmp);
+      const originalOrder = (originalPhotoOrder.get(a.id) || 0) - (originalPhotoOrder.get(b.id) || 0);
+      return showProofingGalleryControls ? (_bestCmp || originalOrder) : originalOrder;
     }
     const _timeCmp = _dA !== _dB ? _dA - _dB : _tCmp;
     return sortOrder === "asc" ? _timeCmp : -_timeCmp;
   });
-  const [downloadEmailCaptureId, setDownloadEmailCaptureId] = useState<string>(() => {
-    try { return localStorage.getItem(`wv_download_capture_${albumId}`) || ""; } catch { return ""; }
-  });
-  const [downloadCaptureEmail, setDownloadCaptureEmail] = useState("");
-  const [showDownloadEmailCapture, setShowDownloadEmailCapture] = useState(false);
-  const [downloadEmailSkipped, setDownloadEmailSkipped] = useState(false);
-  const [pendingDownloadIntent, setPendingDownloadIntent] = useState<"all" | "free" | null>(null);
-  const [savingDownloadEmail, setSavingDownloadEmail] = useState(false);
-
   // Keep ref in sync with the current displayed photos without a useEffect (direct assignment
   // is safe here and avoids a conditional-hook violation: this code is reached only when
   // album is defined and the early-return guards above have not fired).
@@ -869,13 +1106,15 @@ export default function AlbumDetail() {
 
   const isCleanDownload = (photoId: string): boolean => {
     if (album.watermarkDisabled) return true;
+    if (isFullyUnlocked) return true;
     if (sessionFullAlbum) return true;
+    if (bankFullAlbumUnlocked) return true;
     if (paidPhotoIdSet.has(photoId)) return true;
     return album.photos.some((photo: any) => photo.id === photoId && photo.paid === true);
   };
 
   const estimateZipSeconds = (photos: Photo[]): number => {
-    const serverPhotos = photos.filter(p => p.src.startsWith("/uploads/"));
+    const serverPhotos = photos.filter(p => isServerHostedPhotoSrc(p.src));
     const cleanCount = serverPhotos.filter(p => isCleanDownload(p.id)).length;
     const watermarkedCount = serverPhotos.length - cleanCount;
     const localCount = photos.length - serverPhotos.length;
@@ -885,61 +1124,68 @@ export default function AlbumDetail() {
     return Math.max(3, Math.ceil(2 + cleanCount * 0.25 + watermarkedCount * 0.55 + localCount * 0.15));
   };
 
-  /** Returns the URL to use when downloading a photo.
-   *  Clean photos → authenticated /api/photo/original endpoint (no watermark).
-   *  Watermarked photos → plain /uploads/ URL so the server applies the watermark. */
-  const getDownloadSrc = (photo: { src: string; id: string }, captureId = downloadEmailCaptureId) => {
-    if (isServerMode() && photo.src?.startsWith("/uploads/")) {
-      // Strip query params (e.g. ?tenant=slug) to get the bare filename
-      const filename = photo.src.split("?")[0].split("/").pop() || "";
-      if (isCleanDownload(photo.id)) {
-        const captureQuery = captureId ? `&downloadEmailCaptureId=${encodeURIComponent(captureId)}` : "";
-        return `/api/photo/${encodeURIComponent(filename)}/original?sessionKey=${encodeURIComponent(sessionKey)}&albumId=${encodeURIComponent(album.id)}${captureQuery}`;
-      }
-      // Watermarked — the plain upload URL causes the server to apply the watermark
-      return photo.src;
+  /** Every server-hosted individual download goes through the cookie-bound
+   * entitlement endpoint. The server atomically claims any free quota and
+   * returns either the clean original or its canonical watermarked variant. */
+  const resolveDownloadSource = async (photo: { src: string; id: string }, captureId = downloadEmailCaptureId) => {
+    if (!isServerHostedPhotoSrc(photo.src)) {
+      return { src: photo.src, revoke: false };
     }
-    // localStorage / data-URL mode — no server watermarking, serve as-is
-    return photo.src;
+    const filename = new URL(photo.src, window.location.origin).pathname.split("/").pop() || "";
+    const response = await fetch(`/api/photo/${encodeURIComponent(filename)}/original/access`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        albumId: album.id,
+        downloadEmailCaptureId: captureId || undefined,
+      }),
+    });
+    if (!response.ok) {
+      throw await downloadResponseError(response, "This photo is not available for download");
+    }
+    return { src: URL.createObjectURL(await response.blob()), revoke: true };
   };
 
   const downloadPhoto = async (photo: { src: string; id: string; title: string }, quality: DownloadQuality, captureId = downloadEmailCaptureId) => {
-    const downloadSrc = getDownloadSrc(photo, captureId);
-    if (quality === "original") {
-      const link = document.createElement("a");
-      link.href = downloadSrc;
-      link.download = `${photo.title}.jpg`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-    } else {
-      const targetBytes = quality === "2mb" ? 2 * 1024 * 1024 : 5 * 1024 * 1024;
-      try {
-        const blob = await resizeToTargetSize(downloadSrc, targetBytes);
-        const url = URL.createObjectURL(blob);
+    const resolved = await resolveDownloadSource(photo, captureId);
+    try {
+      if (quality === "original") {
         const link = document.createElement("a");
-        link.href = url;
-        link.download = `${photo.title}_${quality}.jpg`;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        URL.revokeObjectURL(url);
-      } catch {
-        // Fallback to direct download
-        const link = document.createElement("a");
-        link.href = downloadSrc;
+        link.href = resolved.src;
         link.download = `${photo.title}.jpg`;
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
+      } else {
+        const targetBytes = quality === "2mb" ? 2 * 1024 * 1024 : 5 * 1024 * 1024;
+        try {
+          const blob = await resizeToTargetSize(resolved.src, targetBytes);
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement("a");
+          link.href = url;
+          link.download = `${photo.title}_${quality}.jpg`;
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          URL.revokeObjectURL(url);
+        } catch {
+          const link = document.createElement("a");
+          link.href = resolved.src;
+          link.download = `${photo.title}.jpg`;
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+        }
       }
+    } finally {
+      if (resolved.revoke) window.setTimeout(() => URL.revokeObjectURL(resolved.src), 1500);
     }
   };
 
   /** Downloads multiple photos as a single zip via the server zip endpoint. */
   const downloadZip = async (photos: Photo[], captureId = downloadEmailCaptureId): Promise<ZipDownloadResult> => {
-    const serverPhotos = photos.filter(p => p.src.startsWith("/uploads/"));
-    const localPhotos = photos.filter(p => !p.src.startsWith("/uploads/"));
+    const serverPhotos = photos.filter(p => isServerHostedPhotoSrc(p.src));
+    const localPhotos = photos.filter(p => !isServerHostedPhotoSrc(p.src));
 
     // Download local (data-URL) photos individually as fallback
     for (const p of localPhotos) {
@@ -970,8 +1216,7 @@ export default function AlbumDetail() {
           body: JSON.stringify({ files, sessionKey, albumId: album.id, quality: downloadQuality, downloadEmailCaptureId: captureId || undefined }),
         });
         if (!res.ok) {
-          const err = await res.json().catch(() => ({}));
-          throw new Error(err.error || "Server error");
+          throw await downloadResponseError(res, "Server error");
         }
         const blob = await res.blob();
         const url = URL.createObjectURL(blob);
@@ -986,8 +1231,7 @@ export default function AlbumDetail() {
         return { ok: true, includedPhotoIds: [...localPhotos.map(photo => photo.id), ...serverPhotos.slice(0, included).map(photo => photo.id)], skipped: Math.max(0, serverPhotos.length - included) };
       }
       if (!startRes.ok) {
-        const err = await startRes.json().catch(() => ({}));
-        throw new Error(err.error || "Server error");
+        throw await downloadResponseError(startRes, "Server error");
       }
 
       let job = await startRes.json();
@@ -1038,9 +1282,8 @@ export default function AlbumDetail() {
           ? job.includedPhotoIds
           : serverPhotos.map(photo => photo.id);
       return { ok: true, includedPhotoIds: [...localPhotos.map(photo => photo.id), ...includedIds], skipped: Number(job.skipped) || 0 };
-    } catch (err: any) {
-      toast.error(`Zip download failed: ${err.message || "unknown error"}`);
-      return { ok: false, includedPhotoIds: [], skipped: serverPhotos.length };
+    } catch (err) {
+      throw err instanceof Error ? err : new Error("Zip download failed");
     } finally {
       setZipProgress(null);
     }
@@ -1052,25 +1295,10 @@ export default function AlbumDetail() {
 
   // ── Proofing handlers ─────────────────────────────────────
   const toggleStar = (photoId: string) => {
-    if (!album) return;
-    const photo = album.photos.find((p: any) => p.id === photoId);
-    const nowStarred = photo ? !photo.starred : false;
-    const updated = {
-      ...album,
-      photos: album.photos.map((p: any) => p.id === photoId ? { ...p, starred: nowStarred } : p),
-    };
-    setAlbumState(updated);
-    persistCurrentAlbum(updated);
-    if (isServerMode() && photo) {
-      ftpMoveToStarred({
-        photoSrc: photo.src,
-        albumTitle: album.title,
-        albumSlug: album.slug,
-        ...(tenantSlug ? { tenantSlug } : {}),
-        originalName: (photo as any).originalName,
-        starred: nowStarred,
-      }).catch(() => {});
-    }
+    setAlbumState(previous => previous ? {
+      ...previous,
+      photos: previous.photos.map((photo: any) => photo.id === photoId ? { ...photo, starred: !photo.starred } : photo),
+    } : previous);
   };
 
   const handleSubmitSelections = async () => {
@@ -1085,7 +1313,13 @@ export default function AlbumDetail() {
       const res = await fetch("/api/proofing/submit", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ albumId: album.id, selectedPhotoIds: picked, clientNote: proofingClientNote }),
+        body: JSON.stringify({
+          albumId: album.id,
+          selectedPhotoIds: picked,
+          clientNote: proofingClientNote,
+          sessionKey: viewerSessionKey,
+          token: urlToken || undefined,
+        }),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -1122,6 +1356,44 @@ export default function AlbumDetail() {
     }).catch(() => {});
   };
 
+  const recordDownloadCompletion = async (
+    photoIds: string[],
+    method: "zip" | "individual",
+    captureId: string,
+    email: string,
+  ) => {
+    if (photoIds.length === 0) return;
+    const response = await fetch("/api/album/download-complete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        albumId: album.id,
+        sessionKey,
+        photoIds,
+        quality: downloadQuality,
+        method,
+        captureId: captureId || undefined,
+        email: email || undefined,
+      }),
+    }).catch(() => null);
+    if (response && !response.ok && response.status !== 404) {
+      console.warn("Download completed, but its audit record could not be saved.");
+    }
+  };
+
+  const handleDownloadFailure = (error: unknown, intent: "all" | "free") => {
+    if (error instanceof DownloadEmailRequiredError) {
+      setDownloadEmailCaptureId("");
+      try { localStorage.removeItem(`wv_download_capture_${albumId}`); } catch { /* unavailable */ }
+      setPendingDownloadIntent(intent);
+      setDownloadCaptureEmail(registeredEmail || "");
+      setShowDownloadEmailCapture(true);
+      toast.info("Please confirm your email again for this gallery session.");
+      return;
+    }
+    toast.error(error instanceof Error ? error.message : "Download failed. Please try again.");
+  };
+
   const executeDownloadFree = async (captureId = downloadEmailCaptureId, capturedEmail = registeredEmail) => {
     if (isPurchasingLocked) {
       toast.error("Downloads are locked for this gallery");
@@ -1139,44 +1411,36 @@ export default function AlbumDetail() {
     }
     setDownloading(true);
     const toDownload = [...alreadyPaid, ...notPaid.slice(0, canDownloadFree)];
-    const usedZip = isServerMode() && toDownload.length > 1 && !preferIndividualDownload;
+    const usedZip = toDownload.length > 1 && toDownload.some(photo => isServerHostedPhotoSrc(photo.src)) && !preferIndividualDownload;
     let downloaded = true;
     let completedPhotoIds = toDownload.map(photo => photo.id);
     let skippedCount = 0;
-    if (usedZip) {
-      const result = await downloadZip(toDownload as Photo[], captureId);
-      downloaded = result.ok;
-      completedPhotoIds = result.includedPhotoIds;
-      skippedCount = result.skipped;
-    } else {
-      for (const p of toDownload) {
-        await downloadPhoto(p, downloadQuality, captureId);
+    try {
+      if (usedZip) {
+        const result = await downloadZip(toDownload as Photo[], captureId);
+        downloaded = result.ok;
+        completedPhotoIds = result.includedPhotoIds;
+        skippedCount = result.skipped;
+      } else {
+        for (const p of toDownload) {
+          await downloadPhoto(p, downloadQuality, captureId);
+        }
+        await recordIndividualDownloadCapture(captureId, toDownload as Photo[]);
       }
-      await recordIndividualDownloadCapture(captureId, toDownload as Photo[]);
+    } catch (error) {
+      handleDownloadFailure(error, "free");
+      downloaded = false;
     }
     if (!downloaded) {
       setDownloading(false);
       return;
     }
 
-    const updated = { ...album };
     const completedFreeCount = completedPhotoIds.filter(id => !paidPhotoIdSet.has(id)).length;
-    updated.usedFreeDownloads = { ...(updated.usedFreeDownloads || {}), [sessionKey]: freeUsed + completedFreeCount };
-    // Track download history
-    const historyEntry: DownloadHistoryEntry = {
-      photoIds: completedPhotoIds,
-      downloadedAt: new Date().toISOString(),
-      quality: downloadQuality,
-      sessionKey,
-      email: capturedEmail || registeredEmail || undefined,
-      photoCount: completedPhotoIds.length,
-      method: usedZip ? "zip" : "individual",
-      skippedCount,
-    };
-    updated.downloadHistory = [...(updated.downloadHistory || []), historyEntry];
-    setAlbumState(updated);
-    persistCurrentAlbum(updated);
-    refreshAlbum();
+    const nextFreeUsed = freeUsed + completedFreeCount;
+    setLocalFreeUsed(previous => Math.max(previous, nextFreeUsed));
+    try { localStorage.setItem(`${LOCAL_FREE_USED_PREFIX}${albumId}_${sessionKey}`, String(nextFreeUsed)); } catch { /* unavailable */ }
+    await recordDownloadCompletion(completedPhotoIds, usedZip ? "zip" : "individual", captureId, capturedEmail || registeredEmail);
     setSelectedIds(new Set());
     setShowDownloadOptions(false);
     setDownloading(false);
@@ -1195,41 +1459,31 @@ export default function AlbumDetail() {
     const photos = selectedIds.size > 0
       ? clientDeliverablePhotos.filter(p => selectedIds.has(p.id))
       : clientDeliverablePhotos;
-    const usedZip = isServerMode() && photos.length > 1 && !preferIndividualDownload;
+    const usedZip = photos.length > 1 && photos.some(photo => isServerHostedPhotoSrc(photo.src)) && !preferIndividualDownload;
     let downloaded = true;
     let completedPhotoIds = photos.map(photo => photo.id);
     let skippedCount = 0;
-    if (usedZip) {
-      const result = await downloadZip(photos as Photo[], captureId);
-      downloaded = result.ok;
-      completedPhotoIds = result.includedPhotoIds;
-      skippedCount = result.skipped;
-    } else {
-      for (const p of photos) {
-        await downloadPhoto(p, downloadQuality, captureId);
+    try {
+      if (usedZip) {
+        const result = await downloadZip(photos as Photo[], captureId);
+        downloaded = result.ok;
+        completedPhotoIds = result.includedPhotoIds;
+        skippedCount = result.skipped;
+      } else {
+        for (const p of photos) {
+          await downloadPhoto(p, downloadQuality, captureId);
+        }
+        await recordIndividualDownloadCapture(captureId, photos as Photo[]);
       }
-      await recordIndividualDownloadCapture(captureId, photos as Photo[]);
+    } catch (error) {
+      handleDownloadFailure(error, "all");
+      downloaded = false;
     }
     if (!downloaded) {
       setDownloading(false);
       return;
     }
-    // Track download history
-    const updated = { ...album };
-    const historyEntry: DownloadHistoryEntry = {
-      photoIds: completedPhotoIds,
-      downloadedAt: new Date().toISOString(),
-      quality: downloadQuality,
-      sessionKey,
-      email: capturedEmail || registeredEmail || undefined,
-      photoCount: completedPhotoIds.length,
-      method: usedZip ? "zip" : "individual",
-      skippedCount,
-    };
-    updated.downloadHistory = [...(updated.downloadHistory || []), historyEntry];
-    setAlbumState(updated);
-    persistCurrentAlbum(updated);
-    refreshAlbum();
+    await recordDownloadCompletion(completedPhotoIds, usedZip ? "zip" : "individual", captureId, capturedEmail || registeredEmail);
     setSelectedIds(new Set());
     setShowDownloadOptions(false);
     setDownloading(false);
@@ -1292,13 +1546,31 @@ export default function AlbumDetail() {
     if (!registeredEmail && !emailSkippedThisSession) setTimeout(() => setShowEmailReg(true), 300);
   };
 
-  const handlePurchaseAlbum = () => {
-    // If full album is free (or already unlocked), just unlock and download
-    if (!album.priceFullAlbum || album.priceFullAlbum === 0) {
-      const updated = { ...album, allUnlocked: true };
-      setAlbumState(updated);
-      persistCurrentAlbum(updated);
-      toast.success("Album unlocked! You can now download all photos.");
+  const handlePurchaseAlbum = async () => {
+    // An explicitly free full album still needs a server-issued entitlement.
+    // Only show the all-photo download flow after that mutation succeeds.
+    if (album.priceFullAlbum === 0) {
+      try {
+        const response = await fetch("/api/album/free-unlock", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ albumId: album.id }),
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(result.error || "Could not unlock this album");
+        setAlbumState(previous => previous ? {
+          ...previous,
+          sessionPurchases: {
+            ...(previous.sessionPurchases || {}),
+            [sessionKey]: { ...(previous.sessionPurchases?.[sessionKey] || {}), fullAlbum: true },
+          },
+        } : previous);
+        setSelectedIds(new Set());
+        setShowDownloadOptions(true);
+        toast.success("Album unlocked! You can now download all photos.");
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "Could not unlock this album");
+      }
       return;
     }
     setRequestedFullAlbum(true);
@@ -1307,16 +1579,17 @@ export default function AlbumDetail() {
     if (!registeredEmail && !emailSkippedThisSession) setTimeout(() => setShowEmailReg(true), 300);
   };
 
-  const handleBankTransferRequest = (explicit = false) => {
+  const handleBankTransferRequest = (fullAlbumRequest = false) => {
     setEmailSkippedThisSession(false); // reset skip on new payment attempt
     const selected = clientDeliverablePhotos.filter(p => selectedIds.has(p.id));
     const unpaidSelected = selected.filter(p => !paidPhotoIdSet.has(p.id));
     const paidCount = Math.max(0, unpaidSelected.length - freeRemaining);
     // If nothing actually needs paying and the user didn't explicitly request bank transfer/full-album, just download
-    if (paidCount === 0 && !explicit && !requestedFullAlbum && !requestedBankTransfer) {
+    if (paidCount === 0 && !fullAlbumRequest && !requestedFullAlbum && !requestedBankTransfer) {
       handleDownloadFree();
       return;
     }
+    setBankTransferFullAlbum(fullAlbumRequest || requestedFullAlbum);
     // Reset explicit intent marker once we open the request
     setRequestedBankTransfer(false);
     setRequestedFullAlbum(false);
@@ -1324,6 +1597,7 @@ export default function AlbumDetail() {
   };
 
   const handleBankTransferClick = () => {
+    setBankTransferFullAlbum(false);
     setRequestedBankTransfer(true);
     setEmailSkippedThisSession(false);
     // Prompt email registration before bank transfer if needed
@@ -1344,39 +1618,64 @@ export default function AlbumDetail() {
       return;
     }
     setProcessingStripe(true);
+    const checkoutParams = { ...params, sessionKey, clientEmail: registeredEmail || params.clientEmail };
     const result = tenantSlug
-      ? await createTenantAlbumCheckout(tenantSlug, { ...params, sessionKey })
-      : await createAlbumCheckout({ ...params, sessionKey });
+      ? await createTenantAlbumCheckout(tenantSlug, checkoutParams)
+      : await createAlbumCheckout(checkoutParams);
     setProcessingStripe(false);
-    if (result.url) window.location.href = result.url;
+    if (result.url) {
+      try {
+        sessionStorage.setItem(`${PENDING_CHECKOUT_PREFIX}${albumId}`, JSON.stringify({
+          sessionKey,
+          fullAlbum: checkoutParams.isFullAlbum === true,
+          photoIds: checkoutParams.photoIds || [],
+          startedAt: Date.now(),
+        } satisfies PendingAlbumCheckout));
+      } catch { /* unavailable */ }
+      window.location.href = result.url;
+    }
     else toast.error(result.error || "Failed to create checkout session");
   };
 
-  const submitBankTransferRequest = () => {
+  const submitBankTransferRequest = async () => {
     const selected = clientDeliverablePhotos.filter(p => selectedIds.has(p.id) && !paidPhotoIdSet.has(p.id));
-    const record: AlbumDownloadRecord = {
-      photoIds: selected.map(p => p.id),
-      method: "bank-transfer",
-      status: "pending",
-      requestedAt: new Date().toISOString(),
-      clientNote: clientNote.trim() || undefined,
-    };
-    const updated = { ...album };
-    updated.downloadRequests = [...(updated.downloadRequests || []), record];
-    setAlbumState(updated);
-    persistCurrentAlbum(updated);
-    refreshAlbum();
-    setShowBankTransferRequest(false);
-    setShowBankTransfer(true);
-    setClientNote("");
-    setSelectedIds(new Set());
-    toast.success("Bank transfer request submitted! Pay using the details shown, then the photographer will unlock your photos.");
+    try {
+      const response = await fetch("/api/album/download-request", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          albumId: album.id,
+          sessionKey,
+          email: registeredEmail || undefined,
+          fullAlbum: bankTransferFullAlbum,
+          photoIds: bankTransferFullAlbum ? [] : selected.map(photo => photo.id),
+          amount: bankTransferFullAlbum ? priceFullAlbum : paidTotal,
+          clientNote: clientNote.trim() || undefined,
+        }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || "Could not submit the bank transfer request");
+      if (result.request) {
+        setAlbumState(previous => previous ? {
+          ...previous,
+          downloadRequests: [...(previous.downloadRequests || []), result.request],
+        } : previous);
+      }
+      setShowBankTransferRequest(false);
+      setShowBankTransfer(true);
+      setClientNote("");
+      setSelectedIds(new Set());
+      toast.success("Bank transfer request submitted! Pay using the details shown, then the photographer will unlock your photos.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not submit the bank transfer request");
+    }
   };
 
   const gridClass = localDisplaySize === "small" ? "masonry-grid-sm" : localDisplaySize === "large" ? "masonry-grid-lg" : localDisplaySize === "list" ? "masonry-grid-list" : "masonry-grid";
 
   const unpaidSelected = clientDeliverablePhotos.filter(p => selectedIds.has(p.id) && !paidPhotoIdSet.has(p.id));
-  const paidCount = Math.max(0, unpaidSelected.length - freeRemaining);
+  const billableSelected = unpaidSelected.slice(Math.min(freeRemaining, unpaidSelected.length));
+  const paidCount = billableSelected.length;
   const pricePerPhoto = Number(album.pricePerPhoto) || 0;
   const priceFullAlbum = Number(album.priceFullAlbum) || 0;
   const paidTotal = paidCount * pricePerPhoto;
@@ -1389,28 +1688,28 @@ export default function AlbumDetail() {
   const previewCheckoutAmount = previewIsFullAlbum ? priceFullAlbum : (previewPaidCount * pricePerPhoto);
 
 
-  const _expiryDaysLeft = album?.downloadExpiresAt
-    ? Math.ceil((new Date(album.downloadExpiresAt + "T23:59:59").getTime() - Date.now()) / 86400000)
+  const _expiryDaysLeft = downloadExpiryDate
+    ? Math.ceil((downloadExpiryDate.getTime() - Date.now()) / 86400000)
     : null;
   const _expiryBanner = (canDownload && album?.downloadExpiresAt && _expiryDaysLeft !== null && _expiryDaysLeft <= 14) ? (
     <div className="glass-panel rounded-xl p-4 border border-yellow-500/20 bg-yellow-500/5 flex items-center gap-3">
       <Clock className="w-4 h-4 text-yellow-400 shrink-0" />
       <p className="text-xs font-body text-muted-foreground">
         <span className="text-yellow-400 font-medium">Download expires in {_expiryDaysLeft} day{_expiryDaysLeft !== 1 ? "s" : ""}</span>
-        {" "}— {new Date(album.downloadExpiresAt + "T23:59:59").toLocaleDateString("en-AU", { day: "numeric", month: "long" })}
+        {" "}— {downloadExpiryDate?.toLocaleDateString("en-AU", { day: "numeric", month: "long" })}
       </p>
     </div>
   ) : null;
 
-  const _galleryExpiryDaysLeft = album?.expiresAt
-    ? Math.ceil((new Date(album.expiresAt + "T23:59:59").getTime() - Date.now()) / 86400000)
+  const _galleryExpiryDaysLeft = galleryExpiryDate
+    ? Math.ceil((galleryExpiryDate.getTime() - Date.now()) / 86400000)
     : null;
   const _galleryExpiryBanner = (album?.expiresAt && _galleryExpiryDaysLeft !== null && _galleryExpiryDaysLeft <= 14) ? (
     <div className="glass-panel rounded-xl p-4 border border-orange-500/20 bg-orange-500/5 flex items-center gap-3">
       <Clock className="w-4 h-4 text-orange-400 shrink-0" />
       <p className="text-xs font-body text-muted-foreground">
         <span className="text-orange-400 font-medium">Gallery access expires in {_galleryExpiryDaysLeft} day{_galleryExpiryDaysLeft !== 1 ? "s" : ""}</span>
-        {" "}— {new Date(album.expiresAt + "T23:59:59").toLocaleDateString("en-AU", { day: "numeric", month: "long", year: "numeric" })}
+        {" "}— {galleryExpiryDate?.toLocaleDateString("en-AU", { day: "numeric", month: "long", year: "numeric" })}
       </p>
     </div>
   ) : null;
@@ -1570,7 +1869,7 @@ export default function AlbumDetail() {
                     <div>
                       <p className="text-sm font-display text-foreground">Download access has expired</p>
                       <p className="text-xs font-body text-muted-foreground mt-1">
-                        This gallery's download period ended on {new Date(album.downloadExpiresAt! + "T23:59:59").toLocaleDateString("en-AU", { day: "numeric", month: "long", year: "numeric" })}. Contact your photographer to request an extension.
+                        This gallery's download period ended on {downloadExpiryDate?.toLocaleDateString("en-AU", { day: "numeric", month: "long", year: "numeric" })}. Contact your photographer to request an extension.
                       </p>
                     </div>
                   </div>
@@ -1624,7 +1923,7 @@ export default function AlbumDetail() {
                       ) : (
                         <button onClick={() => setShowEmailReg(true)} className="text-center hover:opacity-80 transition-opacity min-w-0">
                           <p className="text-lg font-display text-muted-foreground">@</p>
-                          <p className="text-[10px] font-body uppercase tracking-wider text-primary leading-tight">Restore Purchases</p>
+                          <p className="text-[10px] font-body uppercase tracking-wider text-primary leading-tight">Link Email</p>
                         </button>
                       )}
                     </div>
@@ -1633,7 +1932,11 @@ export default function AlbumDetail() {
                       <div className="pt-1">
                         {previewCheckoutAmount === 0 ? (
                           <Button
-                            onClick={() => { setShowPaymentChoice(false); handleDownloadFree(); }}
+                            onClick={() => {
+                              setShowPaymentChoice(false);
+                              if (previewIsFullAlbum && priceFullAlbum === 0) void handlePurchaseAlbum();
+                              else handleDownloadFree();
+                            }}
                             className="w-full sm:w-auto gap-3 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-sm h-12"
                           >
                             <Download className="w-5 h-5" />
@@ -1657,10 +1960,10 @@ export default function AlbumDetail() {
                                 launchStripe({
                                   albumId: album.id,
                                   albumTitle: album.title,
-                                  photoCount: isFullAlbumPurchase ? clientDeliverablePhotos.length : unpaidSelected.length,
+                                  photoCount: isFullAlbumPurchase ? clientDeliverablePhotos.length : billableSelected.length,
                                   amount: checkoutAmount,
                                   clientEmail: album.clientEmail,
-                                  photoIds: isFullAlbumPurchase ? [] : unpaidSelected.map(p => p.id),
+                                  photoIds: isFullAlbumPurchase ? [] : billableSelected.map(p => p.id),
                                   isFullAlbum: isFullAlbumPurchase,
                                   sessionKey,
                                 });
@@ -1814,11 +2117,12 @@ export default function AlbumDetail() {
 
           {clientDeliverablePhotos.length === 0 ? (
             <div className="glass-panel rounded-xl p-12 text-center">
-              <p className="text-sm font-body text-muted-foreground">No photos uploaded yet.</p>
+              <p className="text-sm font-body text-muted-foreground">No photos are available in this gallery yet.</p>
             </div>
           ) : displayedPhotos.length === 0 ? (
             <div className="glass-panel rounded-xl p-12 text-center">
-              <p className="text-sm font-body text-muted-foreground">{clientCullFilter === "best" ? "No priority photos yet." : "No photos available in this gallery."}</p>
+              <p className="text-sm font-body text-muted-foreground mb-4">{showStarredOnly ? "No starred photos yet." : clientCullFilter === "best" ? "No priority photos yet." : "No photos match these filters."}</p>
+              <Button variant="outline" size="sm" onClick={() => { setShowStarredOnly(false); setClientCullFilter("all"); }}>Clear filters</Button>
             </div>
           ) : (
             <>
@@ -1831,11 +2135,17 @@ export default function AlbumDetail() {
                     </span>
                   )}
                   <WatermarkedImage
-                src={getGalleryPhotoSrc(photo, isCleanDownload(photo.id), { albumId: album.id, sessionKey })}
-                  title={photo.title}
-                  selected={isProofing ? starredIds.has(photo.id) : selectedIds.has(photo.id)}
-                  onSelect={() => isProofing ? toggleStar(photo.id) : toggleSelect(photo.id)}
-                  locked={!isProofing && (isPurchasingLocked || (!isPhotoPaid(photo.id) && freeRemaining <= 0 && !selectedIds.has(photo.id)))}
+                src={getGalleryPhotoSrc(photo, isCleanDownload(photo.id), { albumId: album.id })}
+                   title={photo.title}
+                   width={photo.width}
+                   height={photo.height}
+                   selected={isProofing ? starredIds.has(photo.id) : selectedIds.has(photo.id)}
+                   onSelect={isProofing
+                     ? () => toggleStar(photo.id)
+                     : isPurchasingLocked || isExpired || isDownloadLockedForProofing
+                       ? undefined
+                       : () => toggleSelect(photo.id)}
+                   locked={!isProofing && (isPurchasingLocked || isExpired || isDownloadLockedForProofing || (!isPhotoPaid(photo.id) && freeRemaining <= 0 && !selectedIds.has(photo.id)))}
                   index={i}
                   showWatermark={false}
                   renderWatermarkOverlay={false}
@@ -1849,7 +2159,7 @@ export default function AlbumDetail() {
                   <button
                     onClick={e => { e.stopPropagation(); setLightboxPhotoId(photo.id); }}
                     aria-label={`Open ${((photo as any).originalName || photo.title).replace(/\.[^.]+$/, "")} in lightbox`}
-                    className="absolute top-2 left-2 w-7 h-7 rounded-full bg-black/60 backdrop-blur-sm text-white flex items-center justify-center [@media(hover:none)]:opacity-100 opacity-0 group-hover:opacity-100 transition-opacity z-10"
+                    className="absolute bottom-2 right-2 w-7 h-7 rounded-full bg-black/60 backdrop-blur-sm text-white flex items-center justify-center [@media(hover:none)]:opacity-100 opacity-0 group-hover:opacity-100 transition-opacity z-10"
                   >
                     <Maximize2 className="w-3 h-3" />
                   </button>
@@ -1906,6 +2216,23 @@ export default function AlbumDetail() {
         <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 glass-panel rounded-full px-5 py-2.5 border border-primary/30 flex items-center gap-2 shadow-lg">
           <div className="w-3 h-3 rounded-full border-2 border-primary border-t-transparent animate-spin" />
           <span className="text-xs font-body text-primary">Confirming payment…</span>
+        </div>
+      )}
+      {stripeConfirmationDelayed && !stripeSuccess && (
+        <div role="status" className="fixed top-4 left-1/2 -translate-x-1/2 z-50 glass-panel rounded-xl px-4 py-3 border border-primary/30 flex items-center gap-3 shadow-lg max-w-[calc(100vw-2rem)]">
+          <span className="text-xs font-body text-foreground">Payment is still processing and has not yet been confirmed.</span>
+          <Button
+            size="sm"
+            variant="outline"
+            className="shrink-0 text-xs"
+            onClick={() => {
+              setStripeConfirmationDelayed(false);
+              setPollingCount(0);
+              setStripeSuccess(true);
+            }}
+          >
+            Check again
+          </Button>
         </div>
       )}
 
@@ -2015,7 +2342,7 @@ export default function AlbumDetail() {
                     return [...paid, ...notPaid.slice(0, freeRemaining)];
                   })();
               const downloadCount = downloadPhotos.length;
-              const canUseZip = isServerMode() && downloadCount > 1;
+              const canUseZip = downloadCount > 1 && downloadPhotos.some(photo => isServerHostedPhotoSrc(photo.src));
               const useZip = canUseZip && !preferIndividualDownload;
               const estimatedZipSeconds = canUseZip ? estimateZipSeconds(downloadPhotos as Photo[]) : 0;
               const zipReadyCount = zipProgress ? Math.min(zipProgress.ready, zipProgress.total) : 0;
@@ -2153,7 +2480,6 @@ export default function AlbumDetail() {
 
       {/* Optional/required email capture for free album downloads */}
       <Dialog open={showDownloadEmailCapture} onOpenChange={(open) => {
-        if (!open && album.downloadEmailCapture === "required") return;
         setShowDownloadEmailCapture(open);
         if (!open) setPendingDownloadIntent(null);
       }}>
@@ -2189,6 +2515,12 @@ export default function AlbumDetail() {
                   if (intent === "all") void executeDownloadAll();
                   if (intent === "free") void executeDownloadFree();
                 }}>Not now</Button>
+              )}
+              {album.downloadEmailCapture === "required" && (
+                <Button variant="outline" onClick={() => {
+                  setPendingDownloadIntent(null);
+                  setShowDownloadEmailCapture(false);
+                }}>Cancel</Button>
               )}
             </div>
             <p className="text-[10px] font-body text-muted-foreground">Used for download records and gallery statistics. Your email is not shown publicly.</p>
@@ -2228,9 +2560,7 @@ export default function AlbumDetail() {
                     fullAlbumCheaper ||
                     selectedIds.size === 0 ||
                     selectedIds.size === clientDeliverablePhotos.length;
-                  const photosBeingPaid = isFullAlbumPurchase
-                    ? [] // server handles full album
-                    : clientDeliverablePhotos.filter(p => selectedIds.has(p.id) && !paidPhotoIdSet.has(p.id) && !( unpaidSelected.indexOf(p) < freeRemaining ));
+                  const photosBeingPaid = isFullAlbumPurchase ? [] : billableSelected;
                   // Recalculate amount using only truly unpaid photos
                   const checkoutAmount = isFullAlbumPurchase ? album.priceFullAlbum : paidTotal;
                   // If nothing actually needs paying, just download
@@ -2241,7 +2571,7 @@ export default function AlbumDetail() {
                   launchStripe({
                     albumId: album.id,
                     albumTitle: album.title,
-                    photoCount: isFullAlbumPurchase ? clientDeliverablePhotos.length : unpaidSelected.length,
+                    photoCount: isFullAlbumPurchase ? clientDeliverablePhotos.length : photosBeingPaid.length,
                     amount: checkoutAmount,
                     clientEmail: album.clientEmail,
                     photoIds: isFullAlbumPurchase ? [] : photosBeingPaid.map(p => p.id),
@@ -2261,12 +2591,14 @@ export default function AlbumDetail() {
               <Button
                 onClick={() => {
                   setShowPaymentChoice(false);
+                  const isFullAlbumRequest = requestedFullAlbum || fullAlbumCheaper || selectedIds.size === 0 || selectedIds.size === clientDeliverablePhotos.length;
+                  setBankTransferFullAlbum(isFullAlbumRequest);
                   // If user hasn't registered email, show email capture first and remember intent
                   if (!registeredEmail && !emailSkippedThisSession) {
                     setRequestedBankTransfer(true);
                     setShowEmailReg(true);
                   } else {
-                    handleBankTransferRequest(true);
+                    handleBankTransferRequest(isFullAlbumRequest);
                   }
                 }}
                 variant="outline"
@@ -2331,17 +2663,21 @@ export default function AlbumDetail() {
           </DialogHeader>
           <div className="space-y-4 mt-2">
             <p className="text-sm font-body text-muted-foreground">
-              You've selected <span className="text-primary font-medium">{selectedIds.size}</span> photo{selectedIds.size !== 1 ? "s" : ""}.
-              {paidCount > 0
+              {bankTransferFullAlbum ? (
+                <>You're requesting the <span className="text-primary font-medium">full album</span> ({clientDeliverablePhotos.length} photos).</>
+              ) : <>
+                You've selected <span className="text-primary font-medium">{selectedIds.size}</span> photo{selectedIds.size !== 1 ? "s" : ""}.
+              </>}
+              {!bankTransferFullAlbum && paidCount > 0
                 ? <> (<span className="text-primary font-medium">{Math.min(unpaidSelected.length, freeRemaining)} free</span>, <span className="text-primary font-medium">{paidCount} paid</span>)</>
-                : freeRemaining > 0 ? <> (all free)</> : null}
+                : !bankTransferFullAlbum && freeRemaining > 0 ? <> (all free)</> : null}
             </p>
             <div className="p-3 rounded-lg bg-secondary">
               <p className="text-xs font-body text-muted-foreground">Estimated total</p>
-              {fullAlbumCheaper ? (
+              {bankTransferFullAlbum || fullAlbumCheaper ? (
                 <div>
                   <p className="text-lg font-display text-green-400">${priceFullAlbum} <span className="text-xs font-body text-muted-foreground line-through">${paidTotal}</span></p>
-                  <p className="text-xs font-body text-green-400/80 mt-0.5">Full album price applied — better deal!</p>
+                  <p className="text-xs font-body text-green-400/80 mt-0.5">Full album price applied{fullAlbumCheaper ? " — better deal!" : ""}</p>
                 </div>
               ) : (
                 <p className="text-lg font-display text-foreground">${paidTotal}</p>
@@ -2363,15 +2699,15 @@ export default function AlbumDetail() {
         <DialogContent className="glass-panel border-border max-w-sm">
           <DialogHeader>
             <DialogTitle className="font-display text-xl text-foreground">
-              {pendingStripeParams ? "Email required for payment" : "Access your purchases"}
+              {pendingStripeParams ? "Email required for payment" : "Link your email"}
             </DialogTitle>
-            <DialogDescription className="sr-only">Enter the email used at checkout to restore purchased photos on this device.</DialogDescription>
+            <DialogDescription className="sr-only">Link an email address to this gallery session and its purchases.</DialogDescription>
           </DialogHeader>
           <div className="space-y-4 mt-2">
             <p className="text-sm font-body text-muted-foreground">
               {pendingStripeParams
-                ? "Enter your email so your purchase is logged and you can re-access your photos from any device."
-                : "Enter the email used for this gallery. Any full-album or individual-photo purchases will be restored on this device."}
+                ? "Enter your email so the photographer can associate it with this purchase."
+                : "Link an email address to purchases made in this secure gallery session."}
             </p>
             <input
               type="email"
@@ -2387,11 +2723,18 @@ export default function AlbumDetail() {
                 disabled={savingEmail}
                 className="flex-1 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-sm"
               >
-                {savingEmail ? "Checking…" : pendingStripeParams ? "Save & Pay" : "Restore Purchases"}
+                {savingEmail ? "Saving…" : pendingStripeParams ? "Save & Pay" : "Link Email"}
               </Button>
               {/* Don't offer Skip when Stripe payment is waiting — email is required */}
               {!pendingStripeParams && (
-                <Button variant="outline" onClick={() => { setShowEmailReg(false); setEmailSkippedThisSession(true); }} className="font-body text-sm border-border">
+                <Button variant="outline" onClick={() => {
+                  setShowEmailReg(false);
+                  setEmailSkippedThisSession(true);
+                  if (requestedBankTransfer) {
+                    setRequestedBankTransfer(false);
+                    setShowBankTransferRequest(true);
+                  }
+                }} className="font-body text-sm border-border">
                   Skip
                 </Button>
               )}
@@ -2404,6 +2747,10 @@ export default function AlbumDetail() {
       <AnimatePresence>
         {lbPhoto ? (
           <motion.div
+            ref={lightboxDialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-label={`Photo viewer: ${lbPhoto.title}`}
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
@@ -2432,7 +2779,7 @@ export default function AlbumDetail() {
             }}
           >
             {/* Close button */}
-            <button className="absolute top-3 right-3 sm:top-4 sm:right-4 z-10 w-11 h-11 rounded-full bg-white/15 backdrop-blur-sm flex items-center justify-center text-white hover:bg-white/25 transition-colors"
+            <button ref={lightboxCloseRef} className="absolute top-3 right-3 sm:top-4 sm:right-4 z-10 w-11 h-11 rounded-full bg-white/15 backdrop-blur-sm flex items-center justify-center text-white hover:bg-white/25 transition-colors"
               aria-label="Close lightbox"
               onClick={() => { setLightboxPhotoId(null); setLbZoom(1); setLbPan({ x: 0, y: 0 }); }}>
               <X className="w-5 h-5" />
@@ -2530,18 +2877,20 @@ export default function AlbumDetail() {
                 <div className="flex gap-2">
                   {isProofing && (
                     <Button
-                      size="default"
+                     size="default"
                       onClick={() => toggleStar(lbPhoto.id)}
+                      aria-pressed={(lbPhoto as any).starred === true}
                       className={`gap-2 font-body text-sm rounded-full px-4 ${(lbPhoto as any).starred ? "bg-yellow-400 text-yellow-950 hover:bg-yellow-300" : "bg-white text-black hover:bg-white/90"}`}
                     >
                       <Star className={`w-4 h-4 ${(lbPhoto as any).starred ? "fill-current" : ""}`} />
                       {(lbPhoto as any).starred ? "Selected" : "Select photo"}
                     </Button>
                   )}
-                  {!isProofing && <Button
+                  {!isProofing && !isPurchasingLocked && !isExpired && !isDownloadLockedForProofing && <Button
                     size="sm"
                     variant={selectedIds.has(lbPhoto.id) ? "default" : "outline"}
                     onClick={() => toggleSelect(lbPhoto.id)}
+                    aria-pressed={selectedIds.has(lbPhoto.id)}
                     className="gap-1.5 font-body text-xs"
                   >
                     {selectedIds.has(lbPhoto.id) ? (
@@ -2578,7 +2927,7 @@ export default function AlbumDetail() {
         ) : null}
       </AnimatePresence>
 
-      <Footer tenantName={tenantDisplayName ?? undefined} tenantEmail={tenantEmail ?? undefined} />
+      <Footer tenantName={tenantDisplayName ?? undefined} tenantSlug={tenantSlug ?? undefined} />
     </div>
   );
 }

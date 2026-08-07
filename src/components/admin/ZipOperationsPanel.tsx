@@ -1,19 +1,12 @@
 import { useEffect, useState } from "react";
 import { Archive, Clock3, Download, HardDrive, Images } from "lucide-react";
+import { adminAuthHeaders } from "@/lib/api";
 
 type ZipStats = {
   generated: number; downloaded: number; failed: number; photos: number; bytes: number;
   active: number; ready: number; averageBuildMs: number; readyTtlMs: number; transferredTtlMs: number;
   disk: { files: number; bytes: number };
 };
-
-function headers(): Record<string, string> {
-  try {
-    const creds = JSON.parse(localStorage.getItem("wv_admin") || "null");
-    const hash = localStorage.getItem("wv_admin_session_hash") || (creds?.passwordHash?.startsWith("$2") ? "" : creds?.passwordHash);
-    return creds?.username && hash ? { Authorization: `Basic ${btoa(`${creds.username}:${hash}`)}` } : {};
-  } catch { return {}; }
-}
 
 const bytes = (value: number) => value >= 1024 ** 3 ? `${(value / 1024 ** 3).toFixed(1)} GB` : value >= 1024 ** 2 ? `${(value / 1024 ** 2).toFixed(1)} MB` : `${Math.round(value / 1024)} KB`;
 const duration = (value: number) => value >= 60_000 ? `${Math.floor(value / 60_000)}m ${Math.round(value % 60_000 / 1000)}s` : `${(value / 1000).toFixed(1)}s`;
@@ -22,7 +15,7 @@ export default function ZipOperationsPanel() {
   const [stats, setStats] = useState<ZipStats | null>(null);
   useEffect(() => {
     let active = true;
-    const load = () => fetch("/api/admin/zip-stats", { headers: headers(), cache: "no-store" }).then(r => r.ok ? r.json() : null).then(data => { if (active && data) setStats(data); }).catch(() => {});
+    const load = () => fetch("/api/admin/zip-stats", { headers: adminAuthHeaders(), cache: "no-store" }).then(r => r.ok ? r.json() : null).then(data => { if (active && data) setStats(data); }).catch(() => {});
     load(); const timer = window.setInterval(load, 5000);
     return () => { active = false; window.clearInterval(timer); };
   }, []);

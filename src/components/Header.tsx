@@ -1,4 +1,4 @@
-import { Link, useLocation, useNavigate } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { Camera, Menu, X } from "lucide-react";
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
@@ -8,7 +8,6 @@ import { useCustomDomainSlug } from "@/lib/custom-domain-context";
 export default function Header({ tenantSlug, tenantName, clientView = false }: { tenantSlug?: string | null; tenantName?: string | null; clientView?: boolean }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const location = useLocation();
-  const navigate = useNavigate();
   const profile = getProfile();
   const customDomainSlug = useCustomDomainSlug();
 
@@ -19,15 +18,6 @@ export default function Header({ tenantSlug, tenantName, clientView = false }: {
     ? (customDomainSlug === tenantSlug ? "/" : `/book/${tenantSlug}`)
     : "/";
 
-  const handleLogoClick = (e: React.MouseEvent) => {
-    e.preventDefault();
-    if (window.history.state?.idx > 0) {
-      navigate(-1);
-    } else {
-      navigate(bookingPath);
-    }
-  };
-
   const navItems = [
     { label: "Book a Session", path: bookingPath },
   ];
@@ -35,7 +25,7 @@ export default function Header({ tenantSlug, tenantName, clientView = false }: {
   return (
     <header className="fixed top-0 left-0 right-0 z-50 border-b border-white/10 bg-background/72 backdrop-blur-2xl">
       <div className="container mx-auto flex items-center justify-between h-16 px-4">
-        <Link to={bookingPath} onClick={handleLogoClick} className="flex items-center gap-2.5 group">
+        <Link to={bookingPath} className="flex items-center gap-2.5 group">
           {!tenantSlug && profile.avatar ? (
             <img src={profile.avatar} alt="Logo" className="w-8 h-8 rounded-xl object-cover ring-1 ring-white/10" />
           ) : (
