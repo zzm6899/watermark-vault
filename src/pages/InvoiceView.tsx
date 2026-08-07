@@ -1,8 +1,8 @@
 import { useEffect, useState, useRef } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import { usePageTitle } from "@/hooks/use-page-title";
-import { getInvoiceByToken, createInvoiceCheckout, getStripeStatus } from "@/lib/api";
-import type { Invoice } from "@/lib/types";
+import { getInvoiceByToken, createInvoiceCheckout, getStripeStatus, fetchPublicConfig } from "@/lib/api";
+import type { PublicBankTransfer, PublicInvoice } from "@/lib/api";
 import { Loader2, CheckCircle2, Clock, AlertCircle, XCircle, CreditCard, Building2, Printer, ExternalLink, Copy } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
@@ -28,11 +28,11 @@ function CopyButton({ value, fieldKey, copiedField, onCopy }: {
   );
 }
 
-function calcSubtotal(items: Invoice["items"]) {
+function calcSubtotal(items: PublicInvoice["items"]) {
   return items.reduce((sum, it) => sum + it.quantity * it.unitPrice, 0);
 }
 
-function calcTotals(invoice: Invoice) {
+function calcTotals(invoice: PublicInvoice) {
   const sub = calcSubtotal(invoice.items);
   const disc = invoice.discount ?? 0;
   const taxRate = invoice.tax ?? 0;
@@ -40,7 +40,7 @@ function calcTotals(invoice: Invoice) {
   return { sub, disc, taxAmt, taxRate, total: sub - disc + taxAmt };
 }
 
-function formatInvoiceMoney(invoice: Invoice, amount: number) {
+function formatInvoiceMoney(invoice: PublicInvoice, amount: number) {
   return new Intl.NumberFormat("en-AU", {
     style: "currency",
     currency: invoice.currency || "AUD",
@@ -48,7 +48,7 @@ function formatInvoiceMoney(invoice: Invoice, amount: number) {
   }).format(amount);
 }
 
-const STATUS_STYLES: Record<Invoice["status"], { label: string; icon: React.ReactNode; className: string }> = {
+const STATUS_STYLES: Record<PublicInvoice["status"], { label: string; icon: React.ReactNode; className: string }> = {
   draft:     { label: "Draft",                    icon: <Clock className="w-4 h-4" />,        className: "text-gray-400 bg-gray-500/15"   },
   sent:      { label: "Sent – Awaiting Payment",  icon: <Clock className="w-4 h-4" />,        className: "text-yellow-400 bg-yellow-500/15"},
   paid:      { label: "Paid",                     icon: <CheckCircle2 className="w-4 h-4" />, className: "text-green-400 bg-green-500/15" },
@@ -63,13 +63,14 @@ export default function InvoiceView() {
   const { token } = useParams<{ token: string }>();
   const [searchParams] = useSearchParams();
   const isPrintMode = searchParams.get("print") === "1";
-  const justPaid = searchParams.get("paid") === "1";
+  const returnedFromCheckout = searchParams.get("paid") === "1";
 
-  const [invoice, setInvoice] = useState<Invoice | null>(null);
+  const [invoice, setInvoice] = useState<PublicInvoice | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [stripeAvailable, setStripeAvailable] = useState(false);
   const [payingStripe, setPayingStripe] = useState(false);
+  const [paymentProcessing, setPaymentProcessing] = useState(returnedFromCheckout);
   // Poll for paid status after Stripe redirect
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -82,11 +83,21 @@ export default function InvoiceView() {
       setInvoice(inv);
       setLoading(false);
       // Check Stripe availability if needed
-      if ((inv.paymentMethods || []).includes("stripe") && inv.status !== "paid" && !justPaid) {
+      setPaymentProcessing(returnedFromCheckout && inv.status !== "paid");
+      if (inv.cardPaymentAvailable === true && (inv.paymentMethods || []).includes("stripe") && inv.status !== "paid") {
         getStripeStatus().then(s => setStripeAvailable(s.configured));
       }
     });
-  }, [token, justPaid]);
+  }, [token, returnedFromCheckout]);
+
+  // `paid=1` means only that Stripe redirected back. Remove the untrusted hint
+  // from the address bar immediately; the invoice status remains authoritative.
+  useEffect(() => {
+    if (!returnedFromCheckout) return;
+    const url = new URL(window.location.href);
+    url.searchParams.delete("paid");
+    window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+  }, [returnedFromCheckout]);
 
   // Auto-trigger print dialog when ?print=1
   useEffect(() => {
@@ -98,28 +109,30 @@ export default function InvoiceView() {
 
   // Poll for paid status after Stripe success redirect
   useEffect(() => {
-    if (!justPaid || !token || !invoice || invoice.status === "paid") return;
+    if (!returnedFromCheckout || !paymentProcessing || !token || !invoice || invoice.status === "paid") return;
     let attempts = 0;
     pollRef.current = setInterval(async () => {
       attempts++;
       const { invoice: updated } = await getInvoiceByToken(token);
       if (updated?.status === "paid") {
         setInvoice(updated);
+        setPaymentProcessing(false);
         if (pollRef.current) clearInterval(pollRef.current);
       }
       if (attempts >= 10) {
         if (pollRef.current) clearInterval(pollRef.current);
+        setPaymentProcessing(false);
       }
     }, 2000);
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, [justPaid, token, invoice]);
+  }, [returnedFromCheckout, paymentProcessing, token, invoice]);
 
   const handleStripePayment = async () => {
-    if (!invoice) return;
+    if (!invoice || !token || invoice.cardPaymentAvailable !== true) return;
     setPayingStripe(true);
     const { url, error: err } = await createInvoiceCheckout({
       invoiceId: invoice.id,
-      shareToken: invoice.shareToken,
+      shareToken: token,
     });
     if (err || !url) {
       toast.error(err || "Could not start payment");
@@ -150,13 +163,20 @@ export default function InvoiceView() {
 
   const { sub, disc, taxAmt, taxRate, total } = calcTotals(invoice);
   const amountDue = Math.max(0, total - (invoice.amountPaid || 0));
-  const methods = invoice.paymentMethods || [];
+  const methods = (invoice.paymentMethods || []).filter(method =>
+    method === "stripe"
+      ? invoice.cardPaymentAvailable === true
+      : invoice.bankTransfer?.enabled === true || invoice.tenantSlug === null
+  );
   const statusInfo = invoice.status === "sent" && methods.length === 0
     ? { ...STATUS_STYLES.sent, label: "Sent" }
     : STATUS_STYLES[invoice.status];
-  const canPay = !justPaid && invoice.status !== "paid" && invoice.status !== "cancelled" && methods.length > 0;
-  const paidAlbumUrl = invoice.showAlbumLinkAfterPayment && invoice.status === "paid" && (invoice.albumSlug || invoice.albumId)
+  const canPay = !paymentProcessing && invoice.status !== "paid" && invoice.status !== "cancelled" && methods.length > 0;
+  const legacyUnprotectedAlbumUrl = invoice.albumProtected === false && (invoice.albumSlug || invoice.albumId)
     ? `/gallery/${invoice.albumSlug || invoice.albumId}`
+    : "";
+  const paidAlbumUrl = invoice.showAlbumLinkAfterPayment && invoice.status === "paid"
+    ? invoice.albumAccessUrl || legacyUnprotectedAlbumUrl
     : "";
 
   return (
@@ -214,7 +234,7 @@ export default function InvoiceView() {
           </div>
 
           {/* ── Paid confirmation banner ── */}
-          {(justPaid || invoice.status === "paid") && (
+          {invoice.status === "paid" && (
             <div className="mb-6 rounded-xl bg-green-500/10 border border-green-500/30 p-4 flex items-center gap-3">
               <CheckCircle2 className="w-5 h-5 text-green-400 shrink-0" />
               <div>
@@ -224,6 +244,16 @@ export default function InvoiceView() {
                     Paid on {new Date(invoice.paidAt).toLocaleDateString("en-AU", { day: "numeric", month: "long", year: "numeric" })}
                   </p>
                 )}
+              </div>
+            </div>
+          )}
+
+          {paymentProcessing && invoice.status !== "paid" && (
+            <div className="no-print mb-6 rounded-xl bg-amber-500/10 border border-amber-500/30 p-4 flex items-center gap-3">
+              <Loader2 className="w-5 h-5 text-amber-400 shrink-0 animate-spin" />
+              <div>
+                <p className="text-sm font-body text-amber-300 font-medium">Confirming your payment…</p>
+                <p className="text-xs font-body text-amber-300/70 mt-0.5">This page will update when the payment provider confirms it.</p>
               </div>
             </div>
           )}
@@ -459,20 +489,30 @@ export default function InvoiceView() {
 }
 
 // ─── Bank Transfer Panel (fetches bank details from server settings) ──────────
-function BankTransferPanel({ invoice }: { invoice: Invoice }) {
-  const [bank, setBank] = useState<{ accountName?: string; bsb?: string; accountNumber?: string; payId?: string; payIdType?: string; instructions?: string } | null>(null);
+function BankTransferPanel({ invoice }: { invoice: PublicInvoice }) {
+  const [bank, setBank] = useState<PublicBankTransfer | null>(
+    invoice.bankTransfer?.enabled ? invoice.bankTransfer : null,
+  );
   const [copiedField, setCopiedField] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch("/api/store/wv_settings")
-      .then(r => r.json())
-      .then(raw => {
-        const stored = raw?.value ?? raw;
-        const s = typeof stored === "string" ? JSON.parse(stored) : stored;
-        if (s?.bankTransfer?.enabled) setBank(s.bankTransfer);
+    if (invoice.bankTransfer?.enabled) {
+      setBank(invoice.bankTransfer);
+      return;
+    }
+
+    setBank(null);
+    // A tenant invoice must never fall back to the platform account. Only an
+    // explicitly main-scoped invoice may use the legacy public-config fallback.
+    if (invoice.tenantSlug !== null) return;
+
+    fetchPublicConfig()
+      .then(config => {
+        const publicBank = config?.settings?.bankTransfer;
+        if (publicBank?.enabled) setBank(publicBank);
       })
       .catch(() => {});
-  }, []);
+  }, [invoice.bankTransfer, invoice.tenantSlug]);
 
   const copyToClipboard = (value: string, field: string) => {
     navigator.clipboard.writeText(value).then(() => {

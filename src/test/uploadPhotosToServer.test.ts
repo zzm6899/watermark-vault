@@ -125,12 +125,12 @@ async function uploadPhotosToServer(
 // ---------------------------------------------------------------------------
 describe("uploadPhotosToServer (concurrent implementation)", () => {
   let calls: number[];
-  let mockFetch: ReturnType<typeof vi.fn>;
+  let mockFetch: ReturnType<typeof vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>>;
 
   beforeEach(() => {
     calls = [];
-    mockFetch = vi.fn(async (_url: string, opts: any) => {
-      const form: FormData = opts.body;
+    mockFetch = vi.fn(async (_url: RequestInfo | URL, opts?: RequestInit) => {
+      const form = opts?.body as FormData;
       const count = (form.getAll("photos") as File[]).length;
       calls.push(count);
       const files: UploadResult[] = (form.getAll("photos") as File[]).map((f, i) => ({

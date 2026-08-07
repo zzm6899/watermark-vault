@@ -30,7 +30,12 @@ describe("Pixieset import", () => {
     const first = parsePixiesetPayload(JSON.stringify(payload), { from: { name: "Photo Co" } });
     const second = parsePixiesetPayload(payload, { from: { name: "Photo Co" } });
 
-    expect(first).toEqual(second);
+    expect(first.contacts).toEqual(second.contacts);
+    expect(first.summary).toEqual(second.summary);
+    expect(first.invoices.map(invoice => ({ ...invoice, shareToken: "[secure]" })))
+      .toEqual(second.invoices.map(invoice => ({ ...invoice, shareToken: "[secure]" })));
+    expect(first.invoices[0].shareToken).toMatch(/^inv-[a-f\d]{48}$/);
+    expect(second.invoices[0].shareToken).not.toBe(first.invoices[0].shareToken);
     expect(first.skipped).toEqual({ contacts: 0, invoices: 0 });
     expect(first.contacts[0]).toMatchObject({
       name: "Ada Lovelace",

@@ -18,15 +18,12 @@ import {
   importPixiesetJson,
   type PixiesetContact,
   type PixiesetInvoice,
+  type PixiesetUiImportResult,
 } from "@/lib/pixiesetImport";
 import { getPixiesetImportAudit, setPixiesetImportAudit } from "@/lib/storage";
 import type { Contact, Invoice, PixiesetCurrencySummary, PixiesetImportAudit } from "@/lib/types";
 
-type ImportResult = {
-  contacts: Contact[];
-  invoices: Invoice[];
-  importedAt?: string;
-};
+type ImportResult = PixiesetUiImportResult;
 
 type CurrencyStats = {
   currency: string;

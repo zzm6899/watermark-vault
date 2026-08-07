@@ -16,15 +16,25 @@ const {
   rankBestShots,
   scoreReview,
 } = require("./auto-cull-engine");
-const { registerRoutes: registerGoogleCalendarRoutes } = require("./google-calendar");
+const {
+  registerRoutes: registerGoogleCalendarRoutes,
+  getAuthenticatedClient: getMainGoogleCalendarClient,
+  loadCalSettings: loadMainCalendarSettings,
+} = require("./google-calendar");
 const {
   registerRoutes: registerEmailRoutes,
   getTransporter,
   getFromAddress,
   buildTenantTransporter,
   getTenantFromAddress,
-  buildReminderEmailHtml,
-  sendEmail,
+  buildAdminAlertEmail,
+  buildAutomationEmail,
+  buildClientPortalEmail,
+  buildGalleryDeliveryEmail,
+  buildWaitlistEmail,
+  prepareCustomEmail,
+  sendBookingConfirmationEmail,
+  sendBookingUpdateEmail,
 } = require("./email");
 const {
   DEFAULT_AUTOMATION_GRACE_MS,
@@ -35,11 +45,18 @@ const {
   normalizeAutomationRule: normalizeAutomationRuleCore,
   renderAutomationSubject,
 } = require("./email-automation-core");
-const { registerRoutes: registerStripeRoutes, registerTenantStripeRoutes } = require("./stripe");
+const {
+  registerRoutes: registerStripeRoutes,
+  registerTenantStripeRoutes,
+  expireBookingCheckout,
+  calculateAlbumSelectionPricing,
+  mainStripeReady,
+  safeCheckoutReturnUrl,
+  tenantStripeReady,
+} = require("./stripe");
 const { registerRoutes: registerGoogleSheetsRoutes } = require("./google-sheets");
 const {
   buildDownloadCaptureRecord,
-  freeAccessRequiresCapture,
   normalizeDownloadEmail,
   normalizeDownloadEmailPolicy,
   recordMatchesRequest,
@@ -54,6 +71,41 @@ const {
   notifyProofingSubmission,
   notifyInvoice,
 } = require("./discord");
+const {
+  applyBookingArchiveState,
+  albumAllowsFreeFullUnlock,
+  albumAccessWindow,
+  bookingAllowsCapabilityMutation,
+  bookingBlocksAvailability,
+  collectUploadFileNames,
+  galleryPhotoDownloadEntitlement,
+  galleryShareLinkAccess,
+  generateAvailableSlots,
+  isExplicitNativeOrigin,
+  isValidSlug,
+  normalizeClientPortalEmail,
+  parseCookies,
+  parseDate,
+  parseTime,
+  planFreePhotoClaims,
+  resolveContainedPath,
+  resolveUploadOwnerScope,
+  safeUploadFilenameFromSrc,
+  safeTenantPrivateDto,
+  safeTenantPublicDto,
+  safeGalleryAlbumDto,
+  safeGalleryPurchaseDto,
+  selectClientPortalAlbumGroups,
+  signSession,
+  timingSafeTextEqual,
+  tenantLicenseState,
+  tenantSelfServiceStoreKeyAllowed,
+  uploadBelongsToScope,
+  uploadPreviewVariant,
+  validateEventTypeIdentityChange,
+  validateBookingRequest,
+  verifySession,
+} = require("./security-core");
 
 // ── DB key constants ──────────────────────────────────────────────────────────
 const DB_KEYS = {
@@ -81,6 +133,7 @@ const DB_KEYS = {
   LICENSE_KEYS:  "wv_license_keys",
   LICENSE_PLANS: "wv_license_plans",
   LICENSE_PURCHASES: "wv_license_purchases",
+  CALENDAR_SYNC_QUEUE: "wv_calendar_sync_queue",
   SLOT_REQUESTS: "wv_event_slot_requests",
   PORTFOLIO_DRAFT: "wv_portfolio_draft",
   PORTFOLIO_PUBLISHED: "wv_portfolio_published",
@@ -118,9 +171,18 @@ function dbGet(db, key, fallback = null) {
 }
 
 const app = express();
-// Required for express-rate-limit to correctly identify clients behind a reverse proxy
-// (nginx / Coolify / TrueNAS) that sets X-Forwarded-For.
-app.set("trust proxy", 1);
+// Do not trust caller-supplied X-Forwarded-For on directly exposed deployments.
+// Operators behind a known proxy can explicitly set a hop count (for example
+// TRUST_PROXY=1) or an Express/proxy-addr subnet expression.
+function configuredTrustProxy(value) {
+  const raw = String(value || "").trim();
+  if (!raw || /^(?:false|off|no|0)$/i.test(raw)) return false;
+  if (/^[1-9]\d*$/.test(raw)) return Math.min(10, Number(raw));
+  if (/^(?:loopback|linklocal|uniquelocal)(?:\s*,\s*(?:loopback|linklocal|uniquelocal))*$/i.test(raw)) return raw;
+  if (/^[a-f\d.:/]+(?:\s*,\s*[a-f\d.:/]+)*$/i.test(raw)) return raw;
+  return false;
+}
+app.set("trust proxy", configuredTrustProxy(process.env.TRUST_PROXY));
 const PORT = process.env.PORT || 5066;
 const DEFAULT_PUBLIC_SITE_HOSTS = "zacmclients.photos,www.zacmclients.photos,zacmorganphotography.com,www.zacmorganphotography.com";
 const publicSiteHosts = () => String(process.env.PUBLIC_SITE_HOSTS || DEFAULT_PUBLIC_SITE_HOSTS)
@@ -326,11 +388,66 @@ try {
 } catch {}
 if (!fs.existsSync(DB_FILE)) fs.writeFileSync(DB_FILE, JSON.stringify({}));
 
+function writeJsonFileAtomicSync(targetFile, value) {
+  const tempFile = `${targetFile}.${process.pid}.${crypto.randomBytes(6).toString("hex")}.tmp`;
+  try {
+    fs.writeFileSync(tempFile, JSON.stringify(value, null, 2), { encoding: "utf8", flag: "wx" });
+    fs.renameSync(tempFile, targetFile);
+  } catch (err) {
+    try { fs.unlinkSync(tempFile); } catch {}
+    throw err;
+  }
+}
+
 // ── Super Admin Bootstrap ──────────────────────────────────────────────────
 // If SUPER_ADMIN_USERNAME + SUPER_ADMIN_PASSWORD are set in the environment
 // (e.g. via docker-compose.yml / TrueNAS app YAML), pre-seed the admin account
 // so the Setup wizard is skipped on first run.
 const crypto = require("crypto");
+const configuredSessionSeed = String(process.env.SESSION_SECRET || process.env.SUPER_ADMIN_PASSWORD || "");
+const SESSION_SECRET = configuredSessionSeed
+  ? crypto.createHash("sha256").update(configuredSessionSeed, "utf8").digest("base64url")
+  : crypto.randomBytes(32).toString("base64url");
+if (!configuredSessionSeed) {
+  console.warn("⚠️  SESSION_SECRET is not configured; login sessions will be invalidated whenever the server restarts.");
+}
+const ADMIN_SESSION_COOKIE = "wv_admin_session";
+const TENANT_SESSION_COOKIE = "wv_tenant_session";
+const ADMIN_SESSION_TTL_SECONDS = 12 * 60 * 60;
+const ADMIN_NATIVE_TOKEN_TTL_SECONDS = 2 * 60 * 60;
+const TENANT_SESSION_TTL_SECONDS = 12 * 60 * 60;
+const GALLERY_SESSION_TTL_SECONDS = 7 * 24 * 60 * 60;
+const NATIVE_APP_ORIGINS = String(process.env.NATIVE_APP_ORIGINS || "")
+  .split(",")
+  .map(origin => origin.trim())
+  .filter(Boolean);
+
+function requestUsesHttps(req) {
+  return req.secure || String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim().toLowerCase() === "https";
+}
+
+function setHttpOnlyCookie(req, res, name, value, maxAgeSeconds) {
+  const nativeCrossSite = isExplicitNativeOrigin(req.headers.origin, NATIVE_APP_ORIGINS);
+  const secure = nativeCrossSite || (process.env.COOKIE_SECURE === "false" ? false : (process.env.NODE_ENV === "production" || requestUsesHttps(req)));
+  const parts = [
+    `${name}=${encodeURIComponent(value)}`,
+    "Path=/",
+    "HttpOnly",
+    `SameSite=${nativeCrossSite ? "None" : "Lax"}`,
+    `Max-Age=${Math.max(0, Math.floor(maxAgeSeconds))}`,
+  ];
+  if (secure) parts.push("Secure");
+  res.append("Set-Cookie", parts.join("; "));
+}
+
+function clearHttpOnlyCookie(req, res, name) {
+  setHttpOnlyCookie(req, res, name, "", 0);
+}
+
+function galleryCookieName(albumId) {
+  return `wv_gallery_${crypto.createHash("sha256").update(String(albumId)).digest("hex").slice(0, 16)}`;
+}
+
 let bcrypt;
 try {
   bcrypt = require("bcryptjs");
@@ -339,12 +456,16 @@ try {
   process.exit(1);
 }
 const BCRYPT_ROUNDS = 12;
+const DUMMY_TENANT_PASSWORD_HASH = "$2a$12$r49pvUqjm51reqkO/3NYyOVEsKQYBhdavAWIOhXm/ZuFNSQA..1FS";
 function sha256(str) {
   return crypto.createHash("sha256").update(str, "utf8").digest("hex");
 }
 /** Hash a value with bcrypt, storing it as "$2b$..." so we can detect the scheme. */
 async function bcryptHash(value) {
   return bcrypt.hash(value, BCRYPT_ROUNDS);
+}
+function credentialVersion(storedHash) {
+  return crypto.createHash("sha256").update(String(storedHash || ""), "utf8").digest("base64url").slice(0, 22);
 }
 /** Verify an incoming SHA-256 hash against a stored hash (bcrypt or legacy plain sha256). */
 async function verifyPasswordHash(incoming, stored) {
@@ -368,22 +489,36 @@ async function verifyPasswordHash(incoming, stored) {
  * Shared authentication helper used by both requireAuth middleware and /api/storage.
  * Returns true if the Basic auth header contains valid admin credentials, false otherwise.
  */
-async function authenticateAdmin(req) {
+async function authenticatedAdminUsername(req) {
   const authHeader = req.headers.authorization || "";
-  if (!authHeader.startsWith("Basic ")) return false;
-  try {
-    const decoded = Buffer.from(authHeader.slice(6), "base64").toString("utf-8");
-    const colonIdx = decoded.indexOf(":");
-    if (colonIdx === -1) return false;
-    const user = decoded.slice(0, colonIdx);
-    const hash = decoded.slice(colonIdx + 1);
-    const db = readDb();
-    const adminCreds = dbGet(db, DB_KEYS.ADMIN);
-    if (!adminCreds || String(adminCreds.username || "").toLowerCase() !== String(user || "").toLowerCase()) return false;
-    return verifyPasswordHash(hash, adminCreds.passwordHash);
-  } catch {
-    return false;
+  if (authHeader.startsWith("Basic ")) {
+    try {
+      const decoded = Buffer.from(authHeader.slice(6), "base64").toString("utf-8");
+      const colonIdx = decoded.indexOf(":");
+      if (colonIdx === -1) return null;
+      const user = decoded.slice(0, colonIdx);
+      const hash = decoded.slice(colonIdx + 1);
+      const db = readDb();
+      const adminCreds = dbGet(db, DB_KEYS.ADMIN);
+      if (!adminCreds || String(adminCreds.username || "").toLowerCase() !== String(user || "").toLowerCase()) return null;
+      return await verifyPasswordHash(hash, adminCreds.passwordHash) ? String(adminCreds.username) : null;
+    } catch {
+      return null;
+    }
   }
+  const token = authHeader.startsWith("Bearer ")
+    ? authHeader.slice(7).trim()
+    : parseCookies(req.headers.cookie)[ADMIN_SESSION_COOKIE];
+  const session = verifySession(token, SESSION_SECRET, { purpose: "admin" });
+  if (!session?.sub) return null;
+  const adminCreds = dbGet(readDb(), DB_KEYS.ADMIN);
+  return adminCreds && session.cv === credentialVersion(adminCreds.passwordHash) && String(adminCreds.username || "").toLowerCase() === String(session.sub).toLowerCase()
+    ? String(adminCreds.username)
+    : null;
+}
+
+async function authenticateAdmin(req) {
+  return !!(await authenticatedAdminUsername(req));
 }
 async function seedSuperAdminIfNeeded() {
   const username = (process.env.SUPER_ADMIN_USERNAME || "").trim();
@@ -402,15 +537,14 @@ async function seedSuperAdminIfNeeded() {
   console.log(`✅ Super admin '${username}' bootstrapped from SUPER_ADMIN_USERNAME env var`);
 }
 function readDbDirect() {
-  let dbData;
   try {
-    dbData = JSON.parse(fs.readFileSync(DB_FILE, "utf-8"));
+    const dbData = JSON.parse(fs.readFileSync(DB_FILE, "utf-8"));
+    if (!dbData || typeof dbData !== "object" || Array.isArray(dbData)) throw new Error("Database root must be an object");
+    return dbData;
   } catch (err) {
     console.error("Error reading database file:", err);
-    // Try to recover partial data
-    dbData = {};
+    throw new Error("Database is unreadable; refusing to replace it with empty data", { cause: err });
   }
-  return dbData;
 }
 
 // ── In-memory DB cache (avoids disk reads on every request) ──
@@ -430,7 +564,7 @@ function readDb() {
   } catch (err) {
     // Log the full error so administrators are aware of database read issues
     console.error("readDb error:", err);
-    return _dbCache || {};
+    throw new Error("Database is unavailable", { cause: err });
   }
 }
 
@@ -442,18 +576,32 @@ function readDb() {
 // prevents the synchronous I/O from blocking the Node.js event loop.
 let _writeDebounceTimer = null;
 let _writePending = false;
+let _writeGeneration = 0;
+let _flushedGeneration = 0;
+let _flushInProgress = false;
 
-function _flushDbToDisk() {
-  _writePending = false;
+async function _flushDbToDisk() {
   _writeDebounceTimer = null;
-  const snapshot = _dbCache;
-  if (!snapshot) return;
+  if (_flushInProgress || !_dbCache) return;
+  _flushInProgress = true;
+  const generation = _writeGeneration;
+  const snapshot = JSON.stringify(_dbCache);
+  const tempFile = `${DB_FILE}.${process.pid}.${generation}.tmp`;
   // Use compact JSON (no indentation) — reduces file size by ~30-40 % compared
   // to the previous pretty-printed format, which directly speeds up reads and
   // network transfer of the /api/store endpoint.
-  fs.writeFile(DB_FILE, JSON.stringify(snapshot), (err) => {
-    if (err) console.error("writeDb error:", err);
-  });
+  try {
+    await fs.promises.writeFile(tempFile, snapshot, { encoding: "utf8", flag: "wx" });
+    await fs.promises.rename(tempFile, DB_FILE);
+    _flushedGeneration = Math.max(_flushedGeneration, generation);
+  } catch (err) {
+    console.error("writeDb error:", err);
+    try { await fs.promises.unlink(tempFile); } catch {}
+  } finally {
+    _flushInProgress = false;
+    _writePending = _flushedGeneration < _writeGeneration;
+    if (_writePending && !_writeDebounceTimer) _writeDebounceTimer = setTimeout(_flushDbToDisk, 50);
+  }
 }
 
 function writeDb(data) {
@@ -461,6 +609,7 @@ function writeDb(data) {
   // consistent with the mutation that just happened.
   _dbCache = data;
   _dbCacheTime = Date.now();
+  _writeGeneration += 1;
   // Schedule (or re-schedule) the debounced async disk write.
   _writePending = true;
   if (_writeDebounceTimer) clearTimeout(_writeDebounceTimer);
@@ -474,7 +623,15 @@ function _flushDbSync() {
       clearTimeout(_writeDebounceTimer);
       _writeDebounceTimer = null;
     }
-    try { fs.writeFileSync(DB_FILE, JSON.stringify(_dbCache)); } catch (e) { console.error("Failed to flush database to disk on shutdown:", e); }
+    const tempFile = `${DB_FILE}.${process.pid}.shutdown.tmp`;
+    try {
+      fs.writeFileSync(tempFile, JSON.stringify(_dbCache), { encoding: "utf8", flag: "w" });
+      fs.renameSync(tempFile, DB_FILE);
+      _flushedGeneration = _writeGeneration;
+    } catch (e) {
+      console.error("Failed to flush database to disk on shutdown:", e);
+      try { fs.unlinkSync(tempFile); } catch {}
+    }
     _writePending = false;
   }
 }
@@ -483,16 +640,17 @@ process.on("SIGTERM", () => { _flushDbSync(); process.exit(0); });
 process.on("SIGINT",  () => { _flushDbSync(); process.exit(0); });
 
 // Bootstrap super admin from env vars (runs after writeDb is available)
-seedSuperAdminIfNeeded().catch(err => console.error("seedSuperAdminIfNeeded error:", err));
+const bootstrapPromise = seedSuperAdminIfNeeded();
 
 // CORS — restrict to explicitly allowed origins via ALLOWED_ORIGINS env var.
 // Defaults to false (no CORS headers) when the variable is unset, which is
 // the safe default for a self-hosted app accessed from the same origin.
 // Set ALLOWED_ORIGINS=https://yourdomain.com,https://other.com to allow specific origins.
-const corsOrigins = process.env.ALLOWED_ORIGINS
-  ? process.env.ALLOWED_ORIGINS.split(",").map(o => o.trim()).filter(Boolean)
-  : false;
-app.use(cors({ origin: corsOrigins, credentials: true }));
+const corsOrigins = [...new Set([
+  ...String(process.env.ALLOWED_ORIGINS || "").split(","),
+  ...NATIVE_APP_ORIGINS,
+].map(origin => origin.trim()).filter(Boolean))];
+app.use(cors({ origin: corsOrigins.length ? corsOrigins : false, credentials: true }));
 // Compress all responses (JSON, HTML, JS, CSS, etc.) — reduces transfer size by ~70-90%
 app.use(compression());
 app.use((req, res, next) => {
@@ -532,17 +690,30 @@ app.use((req, res, next) => {
 });
 // Skip JSON body parsing for the Stripe webhook route — it requires the raw Buffer for
 // signature verification.  The route itself applies express.raw() instead.
+const authenticatedLargeJson = express.json({ limit: "20mb" });
+function usesAuthenticatedLargeJson(req) {
+  if (req.method !== "PUT") return false;
+  return /^\/api\/store\/[^/]+$/.test(req.path)
+    || /^\/api\/albums\/[^/]+$/.test(req.path)
+    || /^\/api\/tenant\/[^/]+\/albums\/[^/]+$/.test(req.path);
+}
 app.use((req, res, next) => {
   if (req.path === "/api/stripe/webhook") return next();
   if (req.path.startsWith("/api/tenant/") && req.path.endsWith("/stripe/webhook")) return next();
-  express.json({ limit: "50mb" })(req, res, next);
+  if (usesAuthenticatedLargeJson(req)) return next();
+  express.json({ limit: "256kb" })(req, res, next);
 });
 
 // ── Health check ──────────────────────────────────────
 // Intentionally lightweight – just confirms the server is alive.
 // Heavy storage stats are available via /api/storage.
 app.get("/api/health", (_req, res) => {
-  res.json({ ok: true });
+  try {
+    readDb();
+    res.json({ ok: true, uptimeSeconds: Math.floor(process.uptime()) });
+  } catch {
+    res.status(503).json({ ok: false, error: "Database unavailable" });
+  }
 });
 
 function getStorageUsage() {
@@ -673,14 +844,21 @@ app.get("/api/waitlist", requireAuth, (_req, res) => {
   res.json({ entries: Array.isArray(entries) ? entries : [] });
 });
 
-app.post("/api/waitlist/join", (req, res) => {
-  const { eventTypeId, eventTypeTitle, date, clientName, clientEmail, note } = req.body || {};
+const waitlistJoinLimiter = rateLimit({ windowMs: 15 * 60_000, max: 10, standardHeaders: true, legacyHeaders: false, message: { error: "Too many waitlist requests" } });
+app.post("/api/waitlist/join", waitlistJoinLimiter, (req, res) => {
+  const { eventTypeId, date, clientName, clientEmail, note } = req.body || {};
   if (!eventTypeId || !date || !clientName || !clientEmail) {
     return res.status(400).json({ ok: false, error: "eventTypeId, date, clientName and clientEmail are required" });
   }
   const db = readDb();
+  const eventType = dbGet(db, DB_KEYS.EVENT_TYPES, []).find?.(item => item.id === eventTypeId && item.active !== false);
+  if (!eventType || !parseDate(date)) return res.status(400).json({ ok: false, error: "A valid event type and date are required" });
   const entries = dbGet(db, DB_KEYS.WAITLIST, []);
   const email = String(clientEmail).trim().toLowerCase();
+  if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || !String(clientName).trim() || String(clientName).trim().length > 160) {
+    return res.status(400).json({ ok: false, error: "A valid name and email are required" });
+  }
+  if (!Array.isArray(entries) || entries.length >= 5000) return res.status(429).json({ ok: false, error: "The waitlist is temporarily full" });
   const duplicate = Array.isArray(entries) && entries.some(e =>
     String(e.eventTypeId || "") === String(eventTypeId) &&
     String(e.date || "") === String(date) &&
@@ -691,11 +869,11 @@ app.post("/api/waitlist/join", (req, res) => {
   const entry = {
     id: crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString("hex"),
     eventTypeId: String(eventTypeId),
-    eventTypeTitle: String(eventTypeTitle || ""),
+    eventTypeTitle: String(eventType.title || ""),
     date: String(date),
-    clientName: String(clientName).trim(),
-    clientEmail: String(clientEmail).trim(),
-    note: note ? String(note).slice(0, 1000) : undefined,
+    clientName: String(clientName).trim().slice(0, 160),
+    clientEmail: email,
+    note: note ? String(note).trim().slice(0, 1000) : undefined,
     createdAt: new Date().toISOString(),
   };
   db[DB_KEYS.WAITLIST] = [...(Array.isArray(entries) ? entries : []), entry];
@@ -776,26 +954,11 @@ function _mergePhotoArrays(existingPhotos, incomingPhotos) {
   return merged;
 }
 
-function _albumPhotoCount(album) {
-  if (Array.isArray(album?.photos)) return album.photos.length;
-  const count = Number(album?.photoCount);
-  return Number.isFinite(count) ? count : 0;
-}
-
 function _chooseAlbumStoreMatch(mainMatch, tenantMatches) {
-  const bestTenant = (tenantMatches || []).reduce((best, match) => {
-    if (!best) return match;
-    return _albumPhotoCount(match.album) > _albumPhotoCount(best.album) ? match : best;
-  }, null);
-
-  if (mainMatch && bestTenant) {
-    const mainPhotoCount = _albumPhotoCount(mainMatch.album);
-    const tenantPhotoCount = _albumPhotoCount(bestTenant.album);
-    if (mainPhotoCount === 0 && tenantPhotoCount > 0) return bestTenant;
-    return mainMatch;
-  }
-
-  return mainMatch || bestTenant || null;
+  const matches = [mainMatch, ...(tenantMatches || [])].filter(Boolean);
+  // Album IDs/slugs are public capabilities. Never guess between stores when a
+  // collision exists, otherwise one tenant can shadow another tenant's gallery.
+  return matches.length === 1 ? matches[0] : null;
 }
 
 function _ensurePhotoProofIdentity(photo) {
@@ -865,7 +1028,18 @@ function _appendUploadedFilesToAlbum(db, tenantSlug, albumId, uploadedFiles, ftp
 }
 
 function uploadFilenameFromSrc(src) {
-  return (src || "").split("?")[0].split("/").pop() || "";
+  const filename = safeUploadFilenameFromSrc(src);
+  return filename && !isIgnoredSystemFileName(filename) ? filename : "";
+}
+
+function resolveExistingUploadPath(filename) {
+  const candidate = resolveContainedPath(UPLOADS_DIR, filename);
+  if (!candidate || !fs.existsSync(candidate)) return null;
+  try {
+    const root = fs.realpathSync(UPLOADS_DIR);
+    const real = fs.realpathSync(candidate);
+    return real.startsWith(`${root}${path.sep}`) && real !== root ? real : null;
+  } catch { return null; }
 }
 
 function _resolveAlbumStore(db, tenantSlug, albumId) {
@@ -1170,81 +1344,303 @@ app.post("/api/auth/verify", authLimiter, async (req, res) => {
     return res.json({ ok: false });
   }
   const ok = await verifyPasswordHash(passwordHash, adminCreds.passwordHash);
-  res.json({ ok });
+  let nativeSessionToken;
+  if (ok) {
+    const token = signSession({ purpose: "admin", sub: String(adminCreds.username || username), cv: credentialVersion(adminCreds.passwordHash) }, SESSION_SECRET, { ttlSeconds: ADMIN_SESSION_TTL_SECONDS });
+    setHttpOnlyCookie(req, res, ADMIN_SESSION_COOKIE, token, ADMIN_SESSION_TTL_SECONDS);
+    if (isExplicitNativeOrigin(req.headers.origin, NATIVE_APP_ORIGINS)) {
+      nativeSessionToken = signSession({ purpose: "admin", sub: String(adminCreds.username || username), cv: credentialVersion(adminCreds.passwordHash) }, SESSION_SECRET, { ttlSeconds: ADMIN_NATIVE_TOKEN_TTL_SECONDS });
+    }
+  }
+  res.setHeader("Cache-Control", "no-store");
+  res.json(ok && nativeSessionToken ? { ok: true, sessionToken: nativeSessionToken, expiresIn: ADMIN_NATIVE_TOKEN_TTL_SECONDS } : { ok });
+});
+
+app.post("/api/auth/logout", (req, res) => {
+  clearHttpOnlyCookie(req, res, ADMIN_SESSION_COOKIE);
+  res.json({ ok: true });
+});
+
+app.get("/api/auth/session", requireAuth, (req, res) => {
+  const username = String(req.authContext?.username || "");
+  const configuredSuperAdmin = String(process.env.SUPER_ADMIN_USERNAME || "").trim();
+  res.setHeader("Cache-Control", "no-store");
+  res.json({
+    ok: true,
+    username,
+    isSuperAdmin: !configuredSuperAdmin || username.toLowerCase() === configuredSuperAdmin.toLowerCase(),
+  });
 });
 
 // ── requireAuth middleware ─────────────────────────────────────────────────
 // Validates Basic auth header containing base64(username:passwordHash).
 // Used to protect admin-only API routes.
 async function requireAuth(req, res, next) {
-  if (await authenticateAdmin(req)) return next();
+  const username = await authenticatedAdminUsername(req);
+  if (username) {
+    req.authContext = { type: "admin", username };
+    return next();
+  }
   return res.status(401).json({ error: "Authentication required" });
 }
 
 // Bookings must never be replaced by an unauthenticated browser's local list.
 // Public booking creation uses the dedicated endpoint below, which validates the
 // event and checks the live schedule before writing.
-const SENSITIVE_STORE_KEYS = new Set(["wv_contacts", "wv_invoices", "wv_pixieset_import_audit", DB_KEYS.BOOKINGS, DB_KEYS.DOWNLOAD_EMAIL_CAPTURES]);
-function isSensitiveStoreKey(key) {
-  return SENSITIVE_STORE_KEYS.has(String(key || ""));
-}
-async function requireSensitiveStoreAuth(req, res) {
-  if (!isSensitiveStoreKey(req.params.key)) return true;
-  if (await authenticateAdmin(req)) return true;
-  res.status(401).json({ error: "Authentication required" });
-  return false;
+function sanitizePublicProfile(profile) {
+  if (!profile || typeof profile !== "object") return {};
+  const allowed = ["name", "bio", "avatar", "timezone", "logo", "brandName", "website", "email", "phone", "instagram"];
+  return Object.fromEntries(allowed.filter(key => profile[key] !== undefined).map(key => [key, profile[key]]));
 }
 
-app.get("/api/store", async (req, res) => {
+function sanitizePublicSettings(settings, setupComplete) {
+  const source = settings && typeof settings === "object" ? settings : {};
+  return {
+    setupComplete: setupComplete === true,
+    stripeEnabled: source.stripeEnabled === true && mainStripeReady(),
+    bookingTimerMinutes: Math.max(1, Math.min(120, Number(source.bookingTimerMinutes) || 15)),
+    instagramFieldEnabled: source.instagramFieldEnabled === true,
+    enquiryEnabled: source.enquiryEnabled !== false,
+    enquiryLabel: typeof source.enquiryLabel === "string" ? source.enquiryLabel : undefined,
+    brandColor: typeof source.brandColor === "string" ? source.brandColor : undefined,
+    bankTransfer: source.bankTransfer && typeof source.bankTransfer === "object" ? {
+      enabled: source.bankTransfer.enabled === true,
+      accountName: String(source.bankTransfer.accountName || ""),
+      bsb: String(source.bankTransfer.bsb || ""),
+      accountNumber: String(source.bankTransfer.accountNumber || ""),
+      payId: String(source.bankTransfer.payId || ""),
+      payIdType: String(source.bankTransfer.payIdType || ""),
+      instructions: String(source.bankTransfer.instructions || ""),
+    } : { enabled: false },
+  };
+}
+
+function sanitizePublicEventType(eventType) {
+  const allowed = [
+    "id", "title", "description", "durations", "color", "price", "active", "requiresConfirmation",
+    "questions", "availability", "location", "depositEnabled", "depositAmount", "depositType", "depositMethods",
+    "prices", "maxAttendees", "bufferMinutes", "isPackage", "packageEventIds", "durationPrices",
+  ];
+  return Object.fromEntries(allowed.filter(key => eventType?.[key] !== undefined).map(key => [key, eventType[key]]));
+}
+
+app.get("/api/public/config", (_req, res) => {
+  const db = readDb();
+  const profile = dbGet(db, DB_KEYS.PROFILE, {});
+  const eventTypes = dbGet(db, DB_KEYS.EVENT_TYPES, []);
+  const settings = dbGet(db, DB_KEYS.SETTINGS, {});
+  const setupComplete = dbGet(db, DB_KEYS.SETUP, false) === true;
+  res.setHeader("Cache-Control", SHORT_CACHE);
+  res.json({
+    profile: sanitizePublicProfile(profile),
+    eventTypes: (Array.isArray(eventTypes) ? eventTypes : []).filter(item => item?.active !== false).map(sanitizePublicEventType),
+    settings: sanitizePublicSettings(settings, setupComplete),
+  });
+});
+
+function isLoopbackRequest(req) {
+  const address = String(req.socket?.remoteAddress || "").replace(/^::ffff:/, "");
+  return address === "::1" || address === "127.0.0.1" || address.startsWith("127.");
+}
+
+function setupTokenIsRequired(req) {
+  return process.env.NODE_ENV === "production" || !isLoopbackRequest(req);
+}
+
+app.get("/api/setup/status", authLimiter, (req, res) => {
+  const db = readDb();
+  const setupComplete = !!dbGet(db, DB_KEYS.ADMIN) || dbGet(db, DB_KEYS.SETUP, false) === true;
+  const licenseKeyRequired = !setupComplete && readLicenseKeys().some(key => !key.usedAt && !key.revokedAt && key.revoked !== true && (!key.expiresAt || new Date(key.expiresAt).getTime() > Date.now()));
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ setupComplete, licenseKeyRequired, setupTokenRequired: setupTokenIsRequired(req) });
+});
+
+app.post("/api/setup", authLimiter, async (req, res) => {
+  const username = String(req.body?.username || "").trim();
+  const passwordHash = String(req.body?.passwordHash || "");
+  if (setupTokenIsRequired(req)) {
+    const configuredToken = String(process.env.SETUP_TOKEN || "");
+    const suppliedToken = String(req.body?.setupToken || req.headers["x-setup-token"] || "");
+    if (!configuredToken) return res.status(503).json({ ok: false, error: "SETUP_TOKEN must be configured before remote setup" });
+    if (!timingSafeTextEqual(configuredToken, suppliedToken)) return res.status(403).json({ ok: false, error: "Invalid setup token" });
+  }
+  if (!/^[\w.@+-]{3,64}$/.test(username) || passwordHash.length < 32 || passwordHash.length > 256) {
+    return res.status(400).json({ ok: false, error: "A valid username and password hash are required" });
+  }
+  let db = readDb();
+  if (dbGet(db, DB_KEYS.ADMIN) || dbGet(db, DB_KEYS.SETUP, false) === true) {
+    return res.status(409).json({ ok: false, error: "Setup has already been completed" });
+  }
+  let keys = readLicenseKeys();
+  const usableKeys = keys.filter(key => !key.usedAt && !key.revokedAt && key.revoked !== true && (!key.expiresAt || new Date(key.expiresAt).getTime() > Date.now()));
+  const suppliedLicenseKey = String(req.body?.licenseKey || "").trim().toUpperCase();
+  let licenseKeyIndex = -1;
+  if (usableKeys.length > 0) {
+    licenseKeyIndex = keys.findIndex(key => timingSafeTextEqual(String(key.key || "").toUpperCase(), suppliedLicenseKey));
+    if (licenseKeyIndex < 0 || keys[licenseKeyIndex].usedAt || keys[licenseKeyIndex].revokedAt || keys[licenseKeyIndex].revoked === true || (keys[licenseKeyIndex].expiresAt && new Date(keys[licenseKeyIndex].expiresAt).getTime() <= Date.now())) {
+      return res.status(403).json({ ok: false, error: "A valid unused license key is required" });
+    }
+  }
+  const storedHash = await bcryptHash(passwordHash);
+  db = readDb();
+  if (dbGet(db, DB_KEYS.ADMIN) || dbGet(db, DB_KEYS.SETUP, false) === true) {
+    return res.status(409).json({ ok: false, error: "Setup has already been completed" });
+  }
+  if (licenseKeyIndex >= 0) {
+    keys = readLicenseKeys();
+    licenseKeyIndex = keys.findIndex(key => timingSafeTextEqual(String(key.key || "").toUpperCase(), suppliedLicenseKey));
+    if (licenseKeyIndex < 0 || keys[licenseKeyIndex].usedAt || keys[licenseKeyIndex].revokedAt || keys[licenseKeyIndex].revoked === true || (keys[licenseKeyIndex].expiresAt && Date.parse(keys[licenseKeyIndex].expiresAt) <= Date.now())) {
+      return res.status(409).json({ ok: false, error: "The licence key was claimed while setup was in progress" });
+    }
+    keys[licenseKeyIndex] = { ...keys[licenseKeyIndex], usedAt: new Date().toISOString(), usedBy: username, setupToken: undefined };
+    writeLicenseKeys(keys);
+  }
+  db[DB_KEYS.ADMIN] = JSON.stringify({ username, passwordHash: storedHash });
+  db[DB_KEYS.SETUP] = "true";
+  writeDb(db);
+  const token = signSession({ purpose: "admin", sub: username, cv: credentialVersion(storedHash) }, SESSION_SECRET, { ttlSeconds: ADMIN_SESSION_TTL_SECONDS });
+  setHttpOnlyCookie(req, res, ADMIN_SESSION_COOKIE, token, ADMIN_SESSION_TTL_SECONDS);
+  res.setHeader("Cache-Control", "no-store");
+  if (isExplicitNativeOrigin(req.headers.origin, NATIVE_APP_ORIGINS)) {
+    const sessionToken = signSession({ purpose: "admin", sub: username, cv: credentialVersion(storedHash) }, SESSION_SECRET, { ttlSeconds: ADMIN_NATIVE_TOKEN_TTL_SECONDS });
+    return res.status(201).json({ ok: true, sessionToken, expiresIn: ADMIN_NATIVE_TOKEN_TTL_SECONDS });
+  }
+  res.status(201).json({ ok: true });
+});
+
+const STORE_OMITTED_SECRET_KEYS = new Set([DB_KEYS.ADMIN, "wv_gcal_tokens", "wv_google_sheets_tokens", "wv_oauth_tokens"]);
+const GLOBAL_STORE_SECRET_FIELDS = ["discordWebhookUrl", "smtpPassword", "stripeSecretKey", "stripeWebhookSecret", "googleApiCredentials", "ftpPassword"];
+function parseStoreObject(value) {
+  if (value && typeof value === "object" && !Array.isArray(value)) return value;
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+    } catch { return null; }
+  }
+  return null;
+}
+function withMaskedFields(value, fields) {
+  const parsed = parseStoreObject(value);
+  if (!parsed) return value;
+  const masked = { ...parsed };
+  for (const field of fields) {
+    masked[`${field}Set`] = !!masked[field];
+    delete masked[field];
+  }
+  return typeof value === "string" ? JSON.stringify(masked) : masked;
+}
+function safeStoreResponseValue(key, value) {
+  if (STORE_OMITTED_SECRET_KEYS.has(key)) return undefined;
+  const lean = stripBakedFields(key, value);
+  if (key === "wv_ftp_settings") return withMaskedFields(lean, GLOBAL_FTP_SECRET_FIELDS);
+  if (key === DB_KEYS.SETTINGS) return withMaskedFields(lean, GLOBAL_STORE_SECRET_FIELDS);
+  if (key.startsWith("t_") && key.endsWith("_wv_tenant_settings")) return withMaskedFields(lean, TENANT_SECRET_FIELDS);
+  return lean;
+}
+function mergePreservingStoreSecrets(key, existingValue, incomingValue) {
+  const fields = key === "wv_ftp_settings"
+    ? GLOBAL_FTP_SECRET_FIELDS
+    : key === DB_KEYS.SETTINGS
+      ? GLOBAL_STORE_SECRET_FIELDS
+      : key.startsWith("t_") && key.endsWith("_wv_tenant_settings")
+        ? TENANT_SECRET_FIELDS
+        : [];
+  if (!fields.length) return incomingValue;
+  const existing = parseStoreObject(existingValue) || {};
+  const incoming = parseStoreObject(incomingValue);
+  if (!incoming) return incomingValue;
+  const merged = { ...incoming };
+  for (const field of fields) {
+    delete merged[`${field}Set`];
+    if (merged[field] == null || merged[field] === "") {
+      if (existing[field] != null && existing[field] !== "") merged[field] = existing[field];
+      else delete merged[field];
+    }
+  }
+  return typeof incomingValue === "string" ? JSON.stringify(merged) : merged;
+}
+
+app.get("/api/store", requireAuth, (req, res) => {
   const db = readDb();
   if (req.query.keys) {
     const requested = String(req.query.keys).split(",").map(k => k.trim()).filter(Boolean);
-    const canReadSensitive = requested.some(isSensitiveStoreKey) ? await authenticateAdmin(req) : false;
     const subset = {};
     for (const k of requested) {
-      if (isSensitiveStoreKey(k) && !canReadSensitive) continue;
-      if (Object.prototype.hasOwnProperty.call(db, k)) subset[k] = stripBakedFields(k, db[k]);
+      if (!Object.prototype.hasOwnProperty.call(db, k)) continue;
+      const safeValue = safeStoreResponseValue(k, db[k]);
+      if (safeValue !== undefined) subset[k] = safeValue;
     }
     return res.json(subset);
   }
   // Strip baked fields from every key in the full-dump path too, so that
   // any existing inflated databases are immediately lean on the wire.
-  const canReadSensitive = await authenticateAdmin(req);
   const result = {};
   for (const [k, v] of Object.entries(db)) {
-    if (isSensitiveStoreKey(k) && !canReadSensitive) continue;
-    result[k] = stripBakedFields(k, v);
+    const safeValue = safeStoreResponseValue(k, v);
+    if (safeValue !== undefined) result[k] = safeValue;
   }
   res.json(result);
 });
-app.get("/api/store/:key", async (req, res) => {
-  if (!(await requireSensitiveStoreAuth(req, res))) return;
+app.get("/api/store/:key", requireAuth, (req, res) => {
   const db = readDb();
   const key = req.params.key;
-  res.json({ value: key in db ? stripBakedFields(key, db[key]) : null });
+  const safeValue = key in db ? safeStoreResponseValue(key, db[key]) : undefined;
+  res.json({ value: safeValue === undefined ? null : safeValue });
 });
-app.put("/api/store/:key", async (req, res) => {
-  if (!(await requireSensitiveStoreAuth(req, res))) return;
+app.put("/api/store/:key", requireAuth, authenticatedLargeJson, async (req, res) => {
   const db = readDb();
   const key = req.params.key;
   let value = stripBakedFields(key, req.body.value);
-  // Upgrade super admin password hash to bcrypt on every write to wv_admin
-  if (key === "wv_admin" && bcrypt) {
-    try {
-      let creds = value;
-      if (typeof creds === "string") { try { creds = JSON.parse(creds); } catch { /* noop */ } }
-      if (creds && typeof creds === "object" && typeof creds.passwordHash === "string" && !creds.passwordHash.startsWith("$2")) {
-        creds.passwordHash = await bcryptHash(creds.passwordHash);
-        value = JSON.stringify(creds);
+  value = mergePreservingStoreSecrets(key, db[key], value);
+  let calendarCreates = [];
+  if (key === DB_KEYS.BOOKINGS) {
+    const asString = typeof value === "string";
+    let bookings;
+    try { bookings = asString ? JSON.parse(value) : value; } catch { return res.status(400).json({ error: "Invalid bookings payload" }); }
+    if (!Array.isArray(bookings)) return res.status(400).json({ error: "Bookings must be an array" });
+    const settings = dbGet(db, DB_KEYS.SETTINGS, {});
+    const previousById = new Map(getStoredArray(db, DB_KEYS.BOOKINGS).map(booking => [booking.id, booking]));
+    bookings = bookings.map(booking => {
+      if (!booking || typeof booking !== "object") return booking;
+      const normalized = { ...booking };
+      if (["confirmed", "completed"].includes(normalized.status) || ["paid", "deposit-paid"].includes(normalized.paymentStatus)) {
+        delete normalized.holdExpiresAt;
+      } else if (Number(normalized.paymentAmount) > 0 && !normalized.holdExpiresAt) {
+        normalized.holdExpiresAt = unconfirmedBookingHoldExpiresAt(settings, normalized.paymentPath || normalized.paymentMethod || "contact");
       }
-    } catch { /* noop — store as-is if hashing fails */ }
+      return normalized;
+    });
+    calendarCreates = bookings.filter(booking => bookingReadyForCalendar(booking) && !booking.gcalEventId && !bookingReadyForCalendar(previousById.get(booking.id)));
+    value = asString ? JSON.stringify(bookings) : bookings;
+  }
+  let updatedAdminCreds = null;
+  // Upgrade super admin password hash to bcrypt on every write to wv_admin
+  if (key === DB_KEYS.ADMIN) {
+    let creds = value;
+    if (typeof creds === "string") {
+      try { creds = JSON.parse(creds); } catch { return res.status(400).json({ error: "Invalid admin credentials" }); }
+    }
+    if (!creds || typeof creds !== "object" || !/^[\w.@+-]{3,64}$/.test(String(creds.username || "")) || typeof creds.passwordHash !== "string" || creds.passwordHash.length < 32 || creds.passwordHash.length > 256) {
+      return res.status(400).json({ error: "Invalid admin credentials" });
+    }
+    if (!creds.passwordHash.startsWith("$2")) creds.passwordHash = await bcryptHash(creds.passwordHash);
+    updatedAdminCreds = { username: String(creds.username), passwordHash: creds.passwordHash };
+    value = JSON.stringify(updatedAdminCreds);
   }
   db[key] = value;
   writeDb(db);
+  for (const booking of calendarCreates) queueInitialBookingCalendarSync(booking);
+  if (updatedAdminCreds) {
+    const token = signSession({ purpose: "admin", sub: String(updatedAdminCreds.username), cv: credentialVersion(updatedAdminCreds.passwordHash) }, SESSION_SECRET, { ttlSeconds: ADMIN_SESSION_TTL_SECONDS });
+    setHttpOnlyCookie(req, res, ADMIN_SESSION_COOKIE, token, ADMIN_SESSION_TTL_SECONDS);
+  }
   res.json({ ok: true });
 });
-app.delete("/api/store/:key", async (req, res) => {
-  if (!(await requireSensitiveStoreAuth(req, res))) return;
+app.delete("/api/store/:key", requireAuth, (req, res) => {
+  if ([DB_KEYS.ADMIN, DB_KEYS.SETUP].includes(req.params.key)) {
+    return res.status(403).json({ error: "Authentication bootstrap keys cannot be deleted through the generic store" });
+  }
   const db = readDb();
   delete db[req.params.key];
   writeDb(db);
@@ -1273,14 +1669,14 @@ function _parseAlbumsFromDb(raw) {
 }
 
 // GET /api/albums/stubs — all main albums without photos
-app.get("/api/albums/stubs", (req, res) => {
+app.get("/api/albums/stubs", requireAuth, (req, res) => {
   const db = readDb();
   const albums = _parseAlbumsFromDb(db[ALBUMS_KEY]);
   res.json(albums.map(_makeAlbumStub));
 });
 
 // GET /api/albums/:albumId/photos — photos for a single album, on demand
-app.get("/api/albums/:albumId/photos", (req, res) => {
+app.get("/api/albums/:albumId/photos", requireAuth, (req, res) => {
   const db = readDb();
   const albums = _parseAlbumsFromDb(db[ALBUMS_KEY]);
   const album = albums.find(a => a.id === req.params.albumId || a.slug === req.params.albumId);
@@ -1294,7 +1690,7 @@ app.get("/api/albums/:albumId/photos", (req, res) => {
 // POST /api/albums/:id/auto-cull?tenant=<slug>
 // Server-side analysis only: scores blur/exposure/contrast, groups near-duplicates,
 // and writes cull metadata back to the album photo records without deleting files.
-app.post("/api/albums/:id/auto-cull", async (req, res) => {
+app.post("/api/albums/:id/auto-cull", requireAdminOrScopedTenant, async (req, res) => {
   const tenantSlug = req.query.tenant ? String(req.query.tenant).trim() : null;
   if (tenantSlug && !SLUG_RE.test(tenantSlug)) {
     return res.status(400).json({ error: "Invalid tenant slug" });
@@ -1620,7 +2016,7 @@ app.post("/api/albums/:id/auto-cull", async (req, res) => {
 // PUT /api/albums/:albumId — update a single album without touching other albums.
 // This prevents the full-array write via PUT /api/store/wv_albums from overwriting
 // other albums' photos with stub (empty) data when only one album's metadata has changed.
-app.put("/api/albums/:albumId", (req, res) => {
+app.put("/api/albums/:albumId", requireAuth, authenticatedLargeJson, (req, res) => {
   const { albumId } = req.params;
   const db = readDb();
   const albums = _parseAlbumsFromDb(db[ALBUMS_KEY]);
@@ -1645,11 +2041,11 @@ app.put("/api/albums/:albumId", (req, res) => {
   } else if (incoming.photos) {
     incoming.photos = _stripBakedFromPhotos(incoming.photos).map(_ensurePhotoProofIdentity);
   }
-  if (idx >= 0) {
-    albums[idx] = { ...albums[idx], ...incoming };
-  } else {
-    albums.push(incoming);
-  }
+  const candidate = idx >= 0 ? { ...albums[idx], ...incoming } : incoming;
+  const invalidUploads = invalidAlbumUploadReferences(db, candidate, null);
+  if (invalidUploads.length) return res.status(409).json({ error: "One or more uploads do not belong to this album scope" });
+  if (idx >= 0) albums[idx] = candidate;
+  else albums.push(candidate);
   db[ALBUMS_KEY] = JSON.stringify(albums);
   writeDb(db);
   res.json({ ok: true });
@@ -1658,7 +2054,7 @@ app.put("/api/albums/:albumId", (req, res) => {
 // DELETE /api/albums/:albumId — remove a single album without touching other albums.
 // Using a per-album delete avoids the full-array write via PUT /api/store/wv_albums which
 // would overwrite other albums' photos with stale stub data.
-app.delete("/api/albums/:albumId", (req, res) => {
+app.delete("/api/albums/:albumId", requireAuth, (req, res) => {
   const { albumId } = req.params;
   const db = readDb();
   const albums = _parseAlbumsFromDb(db[ALBUMS_KEY]);
@@ -1682,14 +2078,14 @@ function maskFtpSettings(settings) {
   return masked;
 }
 
-app.get("/api/settings/ftp", (req, res) => {
+app.get("/api/settings/ftp", requireAuth, (req, res) => {
   const db = readDb();
   const raw = db["wv_ftp_settings"];
   const settings = raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : {};
   res.json(maskFtpSettings(settings));
 });
 
-app.put("/api/settings/ftp", (req, res) => {
+app.put("/api/settings/ftp", requireAuth, (req, res) => {
   const db = readDb();
   const existing = (() => {
     const raw = db["wv_ftp_settings"];
@@ -1720,7 +2116,7 @@ app.put("/api/settings/ftp", (req, res) => {
   res.json({ ok: true, settings: maskFtpSettings(updated) });
 });
 
-app.post("/api/settings/ftp/test", async (req, res) => {
+app.post("/api/settings/ftp/test", requireAuth, async (req, res) => {
   const db = readDb();
   const raw = db["wv_ftp_settings"];
   const settings = raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : {};
@@ -1731,7 +2127,7 @@ app.post("/api/settings/ftp/test", async (req, res) => {
   res.json(result);
 });
 
-app.post("/api/tenant/:slug/settings/ftp/test", async (req, res) => {
+app.post("/api/tenant/:slug/settings/ftp/test", requireTenant, async (req, res) => {
   const { slug } = req.params;
   const db = readDb();
   const raw = db[`t_${slug}_wv_tenant_settings`];
@@ -1747,7 +2143,7 @@ app.post("/api/tenant/:slug/settings/ftp/test", async (req, res) => {
 // POST /api/ftp/upload-album/:albumSlug?tenant=<slug>
 // Uploads all photos from an album to FTP, streaming progress events to the client.
 const ftpUploadAlbumLimiter = rateLimit({ windowMs: 60_000, max: 100, standardHeaders: true, legacyHeaders: false, message: { error: "Too many FTP upload requests — please wait" } });
-app.post("/api/ftp/upload-album/:albumSlug", ftpUploadAlbumLimiter, async (req, res) => {
+app.post("/api/ftp/upload-album/:albumSlug", ftpUploadAlbumLimiter, requireAdminOrScopedTenant, async (req, res) => {
   const { albumSlug } = req.params;
   const tenantSlug = req.query.tenant ? String(req.query.tenant) : null;
 
@@ -1781,23 +2177,24 @@ app.post("/api/ftp/upload-album/:albumSlug", ftpUploadAlbumLimiter, async (req, 
 
   const photos = album.photos || [];
   // Include photoIdx so we can mark successfully-uploaded photos in the DB afterward
-  const ftpEntries = photos
-    .map((p, photoIdx) => {
-      const src = typeof p === "string" ? p : p.src;
-      if (!src) return null;
+  const ftpEntries = [];
+  for (let photoIdx = 0; photoIdx < photos.length; photoIdx += 1) {
+      const p = photos[photoIdx];
+      const src = typeof p === "string" ? p : p?.src;
+      if (!src) continue;
       const filename = uploadFilenameFromSrc(src);
-      if (!filename || filename.startsWith("_cache")) return null;
-      const localPath = path.join(UPLOADS_DIR, filename);
-      if (!fs.existsSync(localPath)) return null;
+      const localPath = filename ? resolveExistingUploadPath(filename) : null;
+      if (!filename || !localPath || !uploadMatchesAlbumScope(db, filename, tenantSlug)) {
+        return res.status(409).json({ ok: false, error: "Album contains an invalid or cross-scope upload reference" });
+      }
       // Use stored originalName first, then fall back to reconstructing from title + extension.
       // sanitizeRemoteFilename strips any embedded path separators to prevent STOR from
       // trying to navigate a non-existent sub-directory (which returns 550 on many servers).
       const ext = path.extname(filename);
-      const rawName = p.originalName || ((p.title && ext) ? `${p.title}${ext}` : filename);
+      const rawName = p?.originalName || ((p?.title && ext) ? `${p.title}${ext}` : filename);
       const remoteFilename = sanitizeRemoteFilename(rawName);
-      return { localPath, remoteFilename, starred: !!p.starred, photoIdx };
-    })
-    .filter(Boolean);
+      ftpEntries.push({ localPath, remoteFilename, starred: !!p?.starred, photoIdx });
+  }
 
   if (ftpEntries.length === 0) {
     return res.json({ ok: true, done: 0, total: 0, message: "No local photos to upload." });
@@ -1917,7 +2314,7 @@ app.post("/api/ftp/upload-album/:albumSlug", ftpUploadAlbumLimiter, async (req, 
 // ── FTP: Move a starred photo to the "{albumName}-starred" sub-folder ────────
 // POST /api/ftp/move-starred
 const ftpMoveStarredLimiter = rateLimit({ windowMs: 60_000, max: 60, standardHeaders: true, legacyHeaders: false, message: { error: "Too many FTP move requests — please wait" } });
-app.post("/api/ftp/move-starred", ftpMoveStarredLimiter, async (req, res) => {
+app.post("/api/ftp/move-starred", ftpMoveStarredLimiter, requireAdminOrScopedTenant, async (req, res) => {
   const { photoSrc, albumTitle, albumSlug, tenantSlug, originalName, starred = true } = req.body || {};
 
   if (!photoSrc) return res.json({ ok: false, error: "photoSrc is required" });
@@ -1944,10 +2341,13 @@ app.post("/api/ftp/move-starred", ftpMoveStarredLimiter, async (req, res) => {
   // Derive local file path from photoSrc
   const localFilename = uploadFilenameFromSrc(photoSrc);
   if (!localFilename) return res.json({ ok: false, error: "Could not determine filename from photoSrc." });
-  const localFilePath = path.join(UPLOADS_DIR, localFilename);
+  const localFilePath = resolveExistingUploadPath(localFilename);
+  if (!localFilePath || !uploadMatchesAlbumScope(db, localFilename, tenantSlug || null)) {
+    return res.status(409).json({ ok: false, error: "Photo does not belong to this FTP scope" });
+  }
 
   // The FTP filename is the original name when available, otherwise the local filename
-  const ftpFilename = originalName || localFilename;
+  const ftpFilename = sanitizeRemoteFilename(originalName || localFilename);
 
   const folderBase = sanitizeFolderName(albumTitle || albumSlug);
   const remotePath = ftpSettings.ftpRemotePath || "/";
@@ -1967,7 +2367,7 @@ app.post("/api/ftp/move-starred", ftpMoveStarredLimiter, async (req, res) => {
   const toPath = starred ? starredPath : albumPath;
 
   const result = await moveFileOnFtp(
-    fs.existsSync(localFilePath) ? localFilePath : null,
+    localFilePath,
     fromPath,
     toPath,
     ftpSettings
@@ -2057,7 +2457,7 @@ function getAvailableDiskBytes() {
 }
 
 const uploadLimiter = rateLimit({ windowMs: 60_000, max: 60, standardHeaders: true, legacyHeaders: false, message: "Too many upload requests — please wait 60 seconds." });
-app.post("/api/upload", uploadLimiter, upload.array("photos", 100), async (req, res) => {
+app.post("/api/upload", uploadLimiter, requireAdminOrScopedTenant, upload.array("photos", 100), async (req, res) => {
   const ignoredUploadFiles = Array.isArray(req.ignoredUploadFiles) ? req.ignoredUploadFiles : [];
   if ((req.files || []).length === 0) {
     return res.status(400).json({
@@ -2140,6 +2540,12 @@ app.post("/api/upload", uploadLimiter, upload.array("photos", 100), async (req, 
   const albumFolder = req.query.albumFolder ? String(req.query.albumFolder) : null;
   const albumId = req.query.albumId ? String(req.query.albumId) : null;
   const db = readDb();
+  const uploadOwners = dbGet(db, "wv_upload_owners", {});
+  for (const file of uploadedFiles) {
+    const filename = path.basename(String(file.url || ""));
+    if (filename) uploadOwners[filename] = tenantSlug ? { tenantSlug: String(tenantSlug), uploadedAt: new Date().toISOString() } : { admin: true, uploadedAt: new Date().toISOString() };
+  }
+  db["wv_upload_owners"] = uploadOwners;
 
   if (tenantSlug) {
     const raw = db[`t_${tenantSlug}_wv_tenant_settings`];
@@ -2179,6 +2585,9 @@ app.post("/api/upload", uploadLimiter, upload.array("photos", 100), async (req, 
       albumPersistError = err.message || "Album update failed";
     }
   }
+
+  // Persist ownership even when an upload is not immediately attached to an album.
+  writeDb(db);
 
   res.json({ files, albumPersisted, albumPersistError, ignoredFileCount: ignoredUploadFiles.length, rejectedInvalidCount });
 
@@ -2372,7 +2781,7 @@ app.post("/api/lightroom/albums/:albumId/finals", requireLightroomAdmin, lightro
 
 // ── Delete ALL uploaded photos from disk ───────────────
 const deleteAllLimiter = rateLimit({ windowMs: 10_000, max: 1, standardHeaders: true, legacyHeaders: false, message: { error: "Too many requests — please wait before retrying" } });
-app.delete("/api/upload/all", deleteAllLimiter, async (_req, res) => {
+app.delete("/api/upload/all", deleteAllLimiter, requireAuth, async (_req, res) => {
   try {
     const files = fs.readdirSync(UPLOADS_DIR);
     let deleted = 0;
@@ -2398,6 +2807,7 @@ app.delete("/api/upload/all", deleteAllLimiter, async (_req, res) => {
     for (const key of photoLibKeys) {
       db[key] = JSON.stringify([]);
     }
+    db["wv_upload_owners"] = {};
     writeDb(db);
 
     res.json({ ok: true, deleted });
@@ -2408,12 +2818,66 @@ app.delete("/api/upload/all", deleteAllLimiter, async (_req, res) => {
 });
 
 const uploadDeleteLimiter = rateLimit({ windowMs: 60_000, max: 120, standardHeaders: true, legacyHeaders: false, message: { error: "Too many delete requests — please wait" } });
-app.delete("/api/upload/:filename", uploadDeleteLimiter, (req, res) => {
+
+function uploadReferenceKeys(db, filename) {
+  const safeName = path.basename(String(filename || ""));
+  if (!safeName) return [];
+  const relevantKeys = Object.keys(db).filter(key =>
+    key === DB_KEYS.ALBUMS || key === DB_KEYS.PHOTO_LIB ||
+    (key.startsWith("t_") && (key.endsWith(TENANT_ALBUMS_SUFFIX) || key.endsWith(TENANT_PHOTO_LIB_SUFFIX)))
+  );
+  return relevantKeys.filter(key => {
+    const value = dbGet(db, key, []);
+    return JSON.stringify(value).includes(`/uploads/${safeName}`);
+  });
+}
+
+function uploadMatchesAlbumScope(db, filename, tenantSlug) {
+  const safeName = path.basename(String(filename || ""));
+  if (!safeName) return false;
+  const owner = dbGet(db, "wv_upload_owners", {})?.[safeName];
+  return uploadBelongsToScope(owner, uploadReferenceKeys(db, safeName), tenantSlug || null);
+}
+
+function invalidAlbumUploadReferences(db, album, tenantSlug) {
+  const names = collectUploadFileNames({ coverImage: album?.coverImage, photos: album?.photos || [] });
+  return [...names].filter(filename => !uploadMatchesAlbumScope(db, filename, tenantSlug));
+}
+
+function purgeCacheVariantsForUpload(filename) {
+  const baseName = path.basename(String(filename || ""), path.extname(String(filename || "")));
+  if (!baseName) return 0;
+  let purged = 0;
+  try {
+    for (const cacheName of fs.readdirSync(CACHE_DIR)) {
+      if (cacheName.startsWith(`${baseName}_`) || cacheName.startsWith(`${baseName}-`)) {
+        try { fs.unlinkSync(path.join(CACHE_DIR, cacheName)); purged++; } catch {}
+      }
+    }
+  } catch {}
+  return purged;
+}
+
+app.delete("/api/upload/:filename", uploadDeleteLimiter, requireAdminOrScopedTenant, (req, res) => {
   const safeName = path.basename(req.params.filename);
   const filepath = path.join(UPLOADS_DIR, safeName);
   try {
+    const db = readDb();
+    const references = uploadReferenceKeys(db, safeName);
+    if (references.length > 0) return res.status(409).json({ error: "File is still referenced by an album or photo library", referenceKeys: references });
+    if (req.authContext?.type === "tenant") {
+      const owner = dbGet(db, "wv_upload_owners", {})?.[safeName];
+      if (!owner || owner.tenantSlug !== req.authContext.slug) return res.status(403).json({ error: "This file is not owned by the authenticated tenant" });
+    }
     if (fs.existsSync(filepath)) fs.unlinkSync(filepath);
-    res.json({ ok: true });
+    const purgedCacheFiles = purgeCacheVariantsForUpload(safeName);
+    const owners = dbGet(db, "wv_upload_owners", {});
+    if (owners[safeName]) {
+      delete owners[safeName];
+      db["wv_upload_owners"] = owners;
+      writeDb(db);
+    }
+    res.json({ ok: true, purgedCacheFiles });
   } catch {
     res.status(500).json({ error: "Failed to delete file" });
   }
@@ -2456,6 +2920,8 @@ function getWatermarkSettings(tenantSlug) {
 }
 
 async function buildWatermarkOverlay(imgWidth, imgHeight, wm) {
+  const watermarkScale = Math.min(100, Math.max(10, Number(wm?.size) || 40));
+  const watermarkOpacity = Math.min(1, Math.max(0, Number(wm?.opacity) || 0));
   // If watermark is an image (base64 data URL)
   if (wm.imageBase64 && wm.imageBase64.startsWith("data:image/")) {
     try {
@@ -2463,11 +2929,19 @@ async function buildWatermarkOverlay(imgWidth, imgHeight, wm) {
       const wmBuf = Buffer.from(base64Data, "base64");
       // For tiled: cap watermark size to reasonable max regardless of image resolution
       // CSS preview uses fixed h-8 (32px) tiles — scale proportionally but cap it
+      const positionedPadding = wm.position === "center" ? 0 : 40;
+      const maxPositionedWidth = Math.max(1, imgWidth - positionedPadding);
+      const maxPositionedHeight = Math.max(1, imgHeight - positionedPadding);
       const wmSize = wm.position === "tiled"
-        ? Math.min(200, Math.round(imgWidth * 0.12))  // max 200px, ~12% width for tiled
-        : Math.round(imgWidth * (wm.size / 100));     // use actual size% for positioned
+        ? Math.min(400, Math.max(24, Math.round(imgWidth * 0.12 * (watermarkScale / 40))))
+        : Math.min(maxPositionedWidth, Math.max(1, Math.round(imgWidth * (watermarkScale / 100))));
+      const resizeOptions = wm.position === "tiled"
+        ? { width: wmSize, fit: "inside" }
+        : { width: wmSize, height: maxPositionedHeight, fit: "inside" };
       const wmResized = await sharp(wmBuf)
-        .resize(wmSize, null, { fit: "inside" })
+        .resize(resizeOptions)
+        .ensureAlpha()
+        .linear([1, 1, 1, watermarkOpacity], [0, 0, 0, 0])
         .png()
         .toBuffer();
       const wmMeta = await sharp(wmResized).metadata();
@@ -2491,7 +2965,7 @@ async function buildWatermarkOverlay(imgWidth, imgHeight, wm) {
           create: { width: imgWidth, height: imgHeight, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } }
         });
         const tiled = await canvas.composite(tiles).png().toBuffer();
-        return { input: tiled, blend: "over", opacity: wm.opacity };
+        return { input: tiled, blend: "over" };
       } else {
         // Single positioned watermark
         const positions = {
@@ -2511,10 +2985,11 @@ async function buildWatermarkOverlay(imgWidth, imgHeight, wm) {
 
   // Text watermark via SVG
   // Keep font size modest relative to image — ~3% of width, min 18px, max 48px
-  const fontSize = Math.min(48, Math.max(18, Math.round(imgWidth * 0.03)));
+  const baseFontSize = Math.min(48, Math.max(18, Math.round(imgWidth * 0.03)));
+  const fontSize = Math.min(120, Math.max(10, Math.round(baseFontSize * (watermarkScale / 40))));
   // Escape text for safe SVG embedding — prevents SVG injection via malicious watermark text
   const text = (wm.text || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
-  const alpha = Math.round(wm.opacity * 255).toString(16).padStart(2, "0");
+  const alpha = Math.round(watermarkOpacity * 255).toString(16).padStart(2, "0");
 
   if (wm.position === "tiled") {
     // Widely spaced diagonal tiles — one instance per ~350x180px cell
@@ -2571,6 +3046,7 @@ function findAlbumById(db, albumId) {
   for (const key of Object.keys(db)) {
     if (!key.startsWith("t_") || !key.endsWith("_wv_albums")) continue;
     const tSlug = key.slice(2, key.length - "_wv_albums".length);
+    if (!licensedTenantBySlug(tSlug)) continue;
     const raw = db[key];
     const parsed = raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : [];
     if (Array.isArray(parsed)) {
@@ -2584,13 +3060,16 @@ function findAlbumById(db, albumId) {
 
 const purchaserRegistrationLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHeaders: true, legacyHeaders: false, message: { error: "Too many registration attempts" } });
 app.post("/api/album/register-purchaser", purchaserRegistrationLimiter, (req, res) => {
-  const { albumId, email, sessionKey, currentSessionKey } = req.body || {};
-  if (!albumId || !sessionKey || !currentSessionKey || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email || ""))) {
-    return res.status(400).json({ error: "Album, current gallery session and a valid email are required" });
+  const { albumId, email } = req.body || {};
+  if (!albumId || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email || ""))) {
+    return res.status(400).json({ error: "Album and a valid email are required" });
   }
   const db = readDb();
   const found = findAlbumById(db, albumId);
   if (!found) return res.status(404).json({ error: "Album not found" });
+  if (albumAccessWindow(found.album, Date.now(), galleryTimezone(db, found.tenantSlug)).galleryExpired) return res.status(410).json({ error: "This gallery has expired" });
+  const gallerySession = getGallerySessionForAlbum(req, found.album);
+  if (!gallerySession || gallerySession.tenantSlug !== found.tenantSlug) return res.status(401).json({ error: "A valid gallery session is required" });
   const storeKey = found.tenantSlug ? `t_${found.tenantSlug}_wv_albums` : "wv_albums";
   const albumsRaw = db[storeKey];
   const albums = albumsRaw ? (typeof albumsRaw === "string" ? JSON.parse(albumsRaw) : albumsRaw) : [];
@@ -2598,27 +3077,20 @@ app.post("/api/album/register-purchaser", purchaserRegistrationLimiter, (req, re
   if (index < 0) return res.status(404).json({ error: "Album not found" });
 
   const album = albums[index];
+  const sessionKey = gallerySession.sessionKey;
   const purchases = { ...(album.sessionPurchases || {}) };
-  const current = purchases[currentSessionKey] || {};
   const existing = purchases[sessionKey] || {};
   purchases[sessionKey] = {
     ...existing,
-    ...current,
-    fullAlbum: existing.fullAlbum === true || current.fullAlbum === true,
-    photoIds: [...new Set([...(existing.photoIds || []), ...(current.photoIds || [])])],
+    fullAlbum: existing.fullAlbum === true,
+    photoIds: [...new Set(existing.photoIds || [])],
     purchaserEmail: String(email).trim().toLowerCase(),
   };
   album.sessionPurchases = purchases;
-  if (album.usedFreeDownloads?.[currentSessionKey] != null) {
-    album.usedFreeDownloads = {
-      ...album.usedFreeDownloads,
-      [sessionKey]: Math.max(Number(album.usedFreeDownloads[sessionKey] || 0), Number(album.usedFreeDownloads[currentSessionKey] || 0)),
-    };
-  }
   albums[index] = album;
   db[storeKey] = typeof albumsRaw === "string" ? JSON.stringify(albums) : albums;
   writeDb(db);
-  res.json({ ok: true });
+  res.json({ ok: true, sessionKey });
 });
 
 const IMPORTED_PORTFOLIO_GALLERY = [
@@ -2907,7 +3379,7 @@ app.get("/api/site-context", (req, res) => {
   const appHosts = String(process.env.APP_HOSTS || "book.zacmclients.photos").split(",").map(v => v.trim().toLowerCase());
   if (portfolioHosts.includes(hostname)) return res.json({ role: "portfolio" });
   if (appHosts.includes(hostname)) return res.json({ role: "platform" });
-  const tenant = readTenants().find(t => t.active !== false && String(t.customDomain || "").toLowerCase() === hostname);
+  const tenant = readTenants().find(t => tenantIsLicensed(t) && String(t.customDomain || "").toLowerCase() === hostname);
   return res.json(tenant ? { role: "tenant-booking", tenantSlug: tenant.slug } : { role: "platform" });
 });
 
@@ -2986,39 +3458,33 @@ const portfolioEnquiryLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 12, s
 async function emailPortfolioEnquiry(recipient, enquiry) {
   const transporter = getTransporter();
   if (!transporter || !recipient) return false;
-  const safe = (value) => escapeHtml(String(value || ""));
-  const subject = `New website enquiry: ${enquiry.eventTypeTitle} - ${enquiry.name}`;
-  const text = [
-    `New portfolio website enquiry from ${enquiry.name}`,
-    `Email: ${enquiry.email}`,
-    enquiry.phone ? `Phone: ${enquiry.phone}` : "",
-    `Type: ${enquiry.eventTypeTitle}`,
-    enquiry.preferredDate ? `Preferred date: ${enquiry.preferredDate}` : "",
-    "",
-    enquiry.message,
-    "",
-    `Open enquiries: ${(process.env.APP_BASE_URL || "https://book.zacmclients.photos").replace(/\/$/, "")}/admin/enquiries`,
-  ].filter((line, index, lines) => line || (index > 0 && lines[index - 1])).join("\n");
-  const html = `<!doctype html><html><body style="font-family:Arial,sans-serif;color:#171717;line-height:1.5">
-    <h1 style="font-size:22px">New website enquiry</h1>
-    <p><strong>${safe(enquiry.name)}</strong> submitted an enquiry through the portfolio website.</p>
-    <table style="border-collapse:collapse">
-      <tr><td style="padding:4px 18px 4px 0;color:#666">Email</td><td><a href="mailto:${safe(enquiry.email)}">${safe(enquiry.email)}</a></td></tr>
-      ${enquiry.phone ? `<tr><td style="padding:4px 18px 4px 0;color:#666">Phone</td><td>${safe(enquiry.phone)}</td></tr>` : ""}
-      <tr><td style="padding:4px 18px 4px 0;color:#666">Type</td><td>${safe(enquiry.eventTypeTitle)}</td></tr>
-      ${enquiry.preferredDate ? `<tr><td style="padding:4px 18px 4px 0;color:#666">Preferred date</td><td>${safe(enquiry.preferredDate)}</td></tr>` : ""}
-    </table>
-    <div style="margin:20px 0;padding:16px;background:#f5f5f5;white-space:pre-wrap">${safe(enquiry.message)}</div>
-    <p><a href="${safe((process.env.APP_BASE_URL || "https://book.zacmclients.photos").replace(/\/$/, ""))}/admin/enquiries">Open enquiries in admin</a></p>
-  </body></html>`;
+  const subject = `New website enquiry: ${enquiry.eventTypeTitle} - ${enquiry.name}`.replace(/[\r\n]+/g, " ").slice(0, 200);
+  const profile = dbGet(readDb(), DB_KEYS.PROFILE, {});
+  const brandName = profile.businessName || profile.brandName || profile.name || "PhotoFlow";
+  const adminUrl = `${(process.env.APP_BASE_URL || "https://book.zacmclients.photos").replace(/\/$/, "")}/admin/enquiries`;
+  const message = buildAdminAlertEmail({
+    title: "New website enquiry",
+    intro: `${enquiry.name} submitted an enquiry through the portfolio website.`,
+    rows: [
+      { label: "Name", value: enquiry.name },
+      { label: "Email", value: enquiry.email },
+      enquiry.phone ? { label: "Phone", value: enquiry.phone } : null,
+      { label: "Session", value: enquiry.eventTypeTitle },
+      enquiry.preferredDate ? { label: "Preferred date", value: enquiry.preferredDate } : null,
+      enquiry.venue ? { label: "Venue", value: enquiry.venue } : null,
+    ].filter(Boolean),
+    message: enquiry.message,
+    actionUrl: adminUrl,
+    actionLabel: "Open enquiries in admin",
+    brandName,
+  });
   try {
     await transporter.sendMail({
       from: getFromAddress(),
       to: recipient,
       replyTo: enquiry.email,
       subject,
-      text,
-      html,
+      ...message,
     });
     return true;
   } catch (error) {
@@ -3105,48 +3571,80 @@ function getPhotoDownloadAccess(filename, sessionKey, albumId) {
     if (!found) return { accessible: false, clean: false, reason: "album-not-found" };
     const album = found.album;
 
-    if (album.purchasingDisabled) return { accessible: false, clean: false, reason: "purchasing-disabled" };
-    if (album.lockDownloadsDuringProofing && album.proofingEnabled) {
-      const stage = album.proofingStage || "not-started";
-      if (stage !== "not-started" && stage !== "finals-delivered") {
-        return { accessible: false, clean: false, reason: "proofing-locked" };
-      }
-    }
-
     const photo = album.photos?.find(p => {
       const url = p.url || p.src || "";
       const urlBasename = url.split("?")[0].split("/").pop() || "";
       return urlBasename === filename;
     });
     if (!photo) return { accessible: false, clean: false, reason: "photo-not-found" };
-
-    const albumClean = album.watermarkDisabled === true;
-    const sessionPurchase = album.sessionPurchases?.[sessionKey];
-    // Paid entitlements always win over a free album-wide unlock and receive
-    // originals. The global unlock can still intentionally remain watermarked.
-    if (sessionPurchase?.fullAlbum === true) return { accessible: true, clean: true, reason: "paid-album" };
-    if (photo.paid) return { accessible: true, clean: true, reason: "paid-photo" };
-    if (sessionPurchase?.photoIds?.includes(photo.id)) return { accessible: true, clean: true, reason: "paid-photo" };
-    if (Array.isArray(album.paidPhotoIds) && album.paidPhotoIds.includes(photo.id)) return { accessible: true, clean: true, reason: "paid-photo" };
-
-    const bankApproved = (album.downloadRequests || []).some(
-      r => (r.status === "approved" || r.status === "completed") &&
-           Array.isArray(r.photoIds) && r.photoIds.includes(photo.id)
-    );
-    if (bankApproved) return { accessible: true, clean: true, reason: "approved-request" };
-    if (album.allUnlocked) return { accessible: true, clean: albumClean, reason: "album-unlock" };
-
+    if (!uploadMatchesAlbumScope(db, filename, found.tenantSlug)) {
+      return { accessible: false, clean: false, reason: "upload-scope-mismatch", photoId: photo.id };
+    }
+    const purchase = album.sessionPurchases?.[sessionKey];
+    if (purchase?.source === "share-link") {
+      const shareAccess = galleryShareLinkAccess(album, purchase.shareLinkId, Date.now(), galleryTimezone(db, found.tenantSlug));
+      if (!shareAccess.active || !shareAccess.allowDownload) {
+        return { accessible: false, clean: false, reason: "share-link-revoked", photoId: photo.id };
+      }
+    }
     const sessionData = db[`wv_session_${sessionKey}_${albumId}`];
     const sessionParsed = typeof sessionData === "string" ? JSON.parse(sessionData) : sessionData;
-    if (sessionParsed?.unlockedPhotoIds?.includes(photo.id)) return { accessible: true, clean: albumClean, reason: "session-unlock" };
-
-    const sessionFreeUsed = album.usedFreeDownloads?.[sessionKey] || 0;
-    const freeQuota = typeof album.freeDownloads === "number" ? album.freeDownloads : 5;
-    if (sessionFreeUsed < freeQuota) return { accessible: true, clean: albumClean, reason: "free-quota" };
-
-    return { accessible: false, clean: false, reason: "payment-required" };
+    return galleryPhotoDownloadEntitlement({
+      album,
+      photo,
+      sessionKey,
+      unlockedPhotoIds: Array.isArray(sessionParsed?.unlockedPhotoIds) ? sessionParsed.unlockedPhotoIds : [],
+      timeZone: galleryTimezone(db, found.tenantSlug),
+    });
   } catch {
     return { accessible: false, clean: false, reason: "access-error" };
+  }
+}
+
+/** Atomically persist any new free entitlements before issuing bytes/jobs. */
+function claimFreePhotoDownloads(albumId, sessionKey, requestedPhotoIds) {
+  try {
+    const db = readDb();
+    const found = findAlbumById(db, albumId);
+    if (!found) return { ok: false, status: 404, error: "Album not found" };
+    const storeKey = found.tenantSlug ? `t_${found.tenantSlug}_wv_albums` : DB_KEYS.ALBUMS;
+    const albums = getStoredArray(db, storeKey);
+    const albumIndex = albums.findIndex(album => album.id === found.album.id);
+    if (albumIndex < 0) return { ok: false, status: 409, error: "Album store is inconsistent" };
+    const album = albums[albumIndex];
+    const requested = [...new Set((Array.isArray(requestedPhotoIds) ? requestedPhotoIds : []).map(String).filter(Boolean))];
+    const deliverableIds = new Set(deliverableAlbumPhotos(album).map(photo => String(photo.id)));
+    if (!requested.length || requested.some(id => !deliverableIds.has(id))) {
+      return { ok: false, status: 400, error: "One or more photos are unavailable" };
+    }
+    const sessionStoreKey = `wv_session_${sessionKey}_${album.id}`;
+    const sessionData = dbGet(db, sessionStoreKey, {});
+    const alreadyClaimedPhotoIds = Array.isArray(sessionData?.unlockedPhotoIds) ? sessionData.unlockedPhotoIds : [];
+    const nonQuotaPhotoIds = requested.filter(id => hasNonQuotaPhotoEntitlement(album, id, sessionKey));
+    const quota = Number.isFinite(Number(album.freeDownloads)) ? Number(album.freeDownloads) : 5;
+    const claim = planFreePhotoClaims({
+      requestedPhotoIds: requested,
+      alreadyClaimedPhotoIds,
+      nonQuotaPhotoIds,
+      quota,
+      used: album.usedFreeDownloads?.[sessionKey] || 0,
+    });
+    if (!claim.ok) return { ok: false, status: 403, error: claim.error, ...claim };
+    if (claim.newlyClaimedPhotoIds.length) {
+      db[sessionStoreKey] = {
+        ...(sessionData && typeof sessionData === "object" ? sessionData : {}),
+        unlockedPhotoIds: claim.claimedPhotoIds,
+        updatedAt: new Date().toISOString(),
+      };
+      album.usedFreeDownloads = { ...(album.usedFreeDownloads || {}), [sessionKey]: claim.used };
+      albums[albumIndex] = album;
+      db[storeKey] = JSON.stringify(albums);
+      writeDb(db);
+    }
+    return { ok: true, ...claim, album };
+  } catch (error) {
+    console.error("Failed to claim free photo entitlements:", error?.message || error);
+    return { ok: false, status: 500, error: "Unable to reserve download entitlement" };
   }
 }
 
@@ -3312,20 +3810,39 @@ app.get("/uploads/:filename", imageServeLimiter, async (req, res) => {
     return res.status(404).send("Not found");
   }
 
-  const sizeParam = req.query.size; // 'thumb' | 'medium' | undefined
-  // Optional tenant slug — when provided, use that tenant's watermark settings
-  const tenantSlug = (req.query.tenant && typeof req.query.tenant === "string" && /^(?:[a-z0-9][a-z0-9-]{0,28}[a-z0-9]$|[a-z0-9]{1,2}$)/.test(req.query.tenant))
-    ? req.query.tenant
-    : null;
-
-  // Resize target widths
-  const targetWidth = sizeParam === "thumb" ? THUMB_WIDTH : sizeParam === "medium" ? MEDIUM_WIDTH : null;
+  const requestedSize = req.query.size === "thumb" || req.query.size === "medium" ? req.query.size : null;
+  const ownershipDb = readDb();
+  const ownerScope = resolveUploadOwnerScope(dbGet(ownershipDb, "wv_upload_owners", {})?.[safeName], uploadReferenceKeys(ownershipDb, safeName));
+  if (!ownerScope.ok) return res.status(409).send("Upload ownership is ambiguous");
+  const suppliedTenant = typeof req.query.tenant === "string" && req.query.tenant.trim() ? req.query.tenant.trim() : null;
+  if (suppliedTenant !== null && suppliedTenant !== ownerScope.tenantSlug) return res.status(403).send("Tenant scope does not match this upload");
+  const tenantSlug = ownerScope.tenantSlug;
+  if (tenantSlug && !licensedTenantBySlug(tenantSlug)) return res.status(404).send("Not found");
 
   // Check paid access via query params
-  const { sessionKey, albumId, paid } = req.query;
-  const hasAccess = paid === "1" && sessionKey && albumId
-    ? isPhotoAccessible(safeName, sessionKey, albumId)
+  if (req.query.sessionKey) return res.status(400).send("Session credentials are not accepted in URLs");
+  const { albumId, paid } = req.query;
+  const albumMatch = albumId ? findAlbumById(readDb(), albumId) : null;
+  const gallerySession = albumMatch ? getGallerySessionForAlbum(req, albumMatch.album) : null;
+  let hasAccess = paid === "1" && gallerySession && gallerySession.tenantSlug === albumMatch.tenantSlug
+    ? isPhotoAccessible(safeName, gallerySession.sessionKey, albumId)
     : false;
+
+  let authenticatedOwner = false;
+  if (req.query.wm === "0") {
+    authenticatedOwner = await authenticateAdmin(req);
+    if (!authenticatedOwner && ownerScope.tenantSlug) {
+      const tenantSession = getTenantSession(req);
+      const tenant = tenantSession ? licensedTenantBySlug(ownerScope.tenantSlug)?.tenant : null;
+      authenticatedOwner = !!tenant && tenantSession.sub === ownerScope.tenantSlug && tenantSession.cv === credentialVersion(tenant.passwordHash);
+    }
+    if (authenticatedOwner) hasAccess = true;
+  }
+
+  // Anonymous/gallery image URLs are previews, never full-resolution download
+  // endpoints. Owners can still request their clean original with wm=0.
+  const previewVariant = uploadPreviewVariant(requestedSize, authenticatedOwner);
+  const targetWidth = previewVariant.targetWidth;
 
   // A bare `wm=0` is not an entitlement. Clean delivery requires the same
   // album/session check as the protected original endpoint.
@@ -3333,6 +3850,7 @@ app.get("/uploads/:filename", imageServeLimiter, async (req, res) => {
 
   // Fast path: no resize, no watermark → serve original file directly
   if (!targetWidth && !shouldWatermark) {
+    res.setHeader("Cache-Control", "private, no-store");
     try {
       const stat = fs.statSync(filepath);
       // Honour conditional GET so repeat requests return 304
@@ -3351,9 +3869,10 @@ app.get("/uploads/:filename", imageServeLimiter, async (req, res) => {
   // ── File-based cache ────────────────────────────────────────
   const cacheDir = CACHE_DIR;
   const baseName = path.basename(safeName, path.extname(safeName));
-  const sizeLabel = sizeParam || "full";
+  const sizeLabel = previewVariant.sizeLabel;
   // Include tenantSlug in cache filename so each tenant gets their own cached variant
-  const cacheFile = path.join(cacheDir, getCacheFilename(baseName, sizeLabel, shouldWatermark, tenantSlug));
+  const cacheFile = resolveContainedPath(cacheDir, getCacheFilename(baseName, sizeLabel, shouldWatermark, tenantSlug));
+  if (!cacheFile) return res.status(409).send("Invalid cache scope");
 
   try {
     if (fs.existsSync(cacheFile)) {
@@ -3454,15 +3973,19 @@ app.get("/api/photo/:filename/original", async (req, res) => {
     return res.status(404).send("Not found");
   }
 
-  const { sessionKey, albumId } = req.query;
-  if (!sessionKey || !albumId) return res.status(403).send("Forbidden");
+  if (req.query.sessionKey) return res.status(400).send("Session credentials are not accepted in URLs");
+  const { albumId } = req.query;
+  const albumMatch = albumId ? findAlbumById(readDb(), albumId) : null;
+  const gallerySession = albumMatch ? getGallerySessionForAlbum(req, albumMatch.album) : null;
+  if (!gallerySession || gallerySession.tenantSlug !== albumMatch.tenantSlug) return res.status(403).send("Forbidden");
+  const sessionKey = gallerySession.sessionKey;
 
   const access = getPhotoDownloadAccess(safeName, sessionKey, albumId);
   if (!access.accessible || !access.clean) {
-    return res.status(403).send("Forbidden");
+    return res.status(["gallery-expired", "downloads-expired"].includes(access.reason) ? 410 : 403).send("Forbidden");
   }
 
-  if (FREE_DOWNLOAD_REASONS.has(access.reason)) {
+  {
     const albumMatch = findAlbumById(readDb(), albumId);
     const policy = normalizeDownloadEmailPolicy(albumMatch?.album?.downloadEmailCapture);
     if (policy === "required") {
@@ -3475,7 +3998,7 @@ app.get("/api/photo/:filename/original", async (req, res) => {
       );
       if (!validCapture) {
         return res.status(428).json({
-          error: "Email address required before downloading this free album",
+          error: "Email address required before downloading this gallery",
           code: "DOWNLOAD_EMAIL_REQUIRED",
           policy,
         });
@@ -3483,7 +4006,44 @@ app.get("/api/photo/:filename/original", async (req, res) => {
     }
   }
 
+  const claim = claimFreePhotoDownloads(albumId, sessionKey, [access.photoId]);
+  if (!claim.ok) return res.status(claim.status || 403).json({ error: claim.error });
+
+  res.setHeader("Cache-Control", "private, no-store");
   res.sendFile(filepath);
+});
+
+app.post("/api/photo/:filename/original/access", imageServeLimiter, async (req, res) => {
+  const safeName = path.basename(String(req.params.filename || "").split("?")[0]);
+  const filepath = path.join(UPLOADS_DIR, safeName);
+  if (isIgnoredSystemFileName(safeName) || !isSupportedImageFilename(safeName) || !fs.existsSync(filepath)) return res.status(404).send("Not found");
+  try {
+    const realFilepath = fs.realpathSync(filepath);
+    const realUploadsDir = fs.realpathSync(UPLOADS_DIR);
+    if (!realFilepath.startsWith(realUploadsDir + path.sep)) return res.status(403).send("Forbidden");
+  } catch { return res.status(404).send("Not found"); }
+  const albumId = String(req.body?.albumId || "");
+  const albumMatch = findAlbumById(readDb(), albumId);
+  const gallerySession = albumMatch ? getGallerySessionForAlbum(req, albumMatch.album) : null;
+  if (!gallerySession || gallerySession.tenantSlug !== albumMatch.tenantSlug) return res.status(403).send("Forbidden");
+  const access = getPhotoDownloadAccess(safeName, gallerySession.sessionKey, albumId);
+  if (!access.accessible) return res.status(["gallery-expired", "downloads-expired"].includes(access.reason) ? 410 : 403).send("Forbidden");
+  if (normalizeDownloadEmailPolicy(albumMatch.album.downloadEmailCapture) === "required") {
+    const captureId = String(req.body?.downloadEmailCaptureId || "").slice(0, 120);
+    const validCapture = captureId && readDownloadEmailCaptures().some(record => record.id === captureId && recordMatchesRequest(record, albumId, gallerySession.sessionKey, DOWNLOAD_CAPTURE_SECRET));
+    if (!validCapture) return res.status(428).json({ error: "Email address required before downloading this gallery", code: "DOWNLOAD_EMAIL_REQUIRED" });
+  }
+  const claim = claimFreePhotoDownloads(albumId, gallerySession.sessionKey, [access.photoId]);
+  if (!claim.ok) return res.status(claim.status || 403).json({ error: claim.error });
+  res.setHeader("Cache-Control", "private, no-store");
+  if (access.clean) return res.sendFile(filepath);
+  try {
+    const watermarkedPath = await getWatermarkedZipFilePath(safeName, filepath, albumMatch.tenantSlug);
+    return res.sendFile(watermarkedPath);
+  } catch (error) {
+    console.error(`Protected watermarked download failed for ${safeName}:`, error?.message || error);
+    return res.status(500).json({ error: "Unable to prepare the protected download" });
+  }
 });
 
 // (Legacy processPhotoForAI / processPhotoAI helpers removed — logic now inline in the GET endpoint below)
@@ -3850,6 +4410,7 @@ async function computeAdobeAutoParams(filepath) {
 }
 
 app.get("/api/photo/:filename/ai-enhanced", aiEnhanceLimiter, requireAuth, async (req, res) => {
+  res.setHeader("Cache-Control", "private, no-store");
   // Strip any query-string that may have been incorporated into the filename (e.g. "photo.jpg?tenant=slug")
   const safeName = path.basename(req.params.filename.split("?")[0]);
   const filepath = path.join(UPLOADS_DIR, safeName);
@@ -3939,7 +4500,7 @@ app.get("/api/photo/:filename/ai-enhanced", aiEnhanceLimiter, requireAuth, async
 
       const cachedPathAuto = path.join(CACHE_DIR, `${photoId}-edit-${cacheKey}.jpg`);
       if (!force && fs.existsSync(cachedPathAuto)) {
-        res.set({ "Cache-Control": "public, max-age=3600", "Content-Type": "image/jpeg" });
+        res.set({ "Cache-Control": "private, no-store", "Content-Type": "image/jpeg" });
         return res.sendFile(cachedPathAuto);
       }
       if (fs.existsSync(cachedPathAuto)) try { fs.unlinkSync(cachedPathAuto); } catch {}
@@ -3967,26 +4528,26 @@ app.get("/api/photo/:filename/ai-enhanced", aiEnhanceLimiter, requireAuth, async
         .jpeg({ quality: 92, progressive: true })
         .toFile(cachedPathAuto);
       console.log(`[AI-auto] ${safeName}: brightness=${meanBrightness.toFixed(1)} std=${meanStd.toFixed(1)}`);
-      res.set({ "Cache-Control": "public, max-age=3600", "Content-Type": "image/jpeg" });
+      res.set({ "Cache-Control": "private, no-store", "Content-Type": "image/jpeg" });
       return res.sendFile(cachedPathAuto);
     }
 
     // ── Shared path for preset / prompt / manual ──────────────────────────
     const cachedPathEdit = path.join(CACHE_DIR, `${photoId}-edit-${cacheKey}.jpg`);
     if (!force && fs.existsSync(cachedPathEdit)) {
-      res.set({ "Cache-Control": "public, max-age=3600", "Content-Type": "image/jpeg" });
+      res.set({ "Cache-Control": "private, no-store", "Content-Type": "image/jpeg" });
       return res.sendFile(cachedPathEdit);
     }
     if (fs.existsSync(cachedPathEdit)) try { fs.unlinkSync(cachedPathEdit); } catch {}
 
     await applyEditParams(filepath, editParams, cachedPathEdit);
     console.log(`[AI-${mode}] ${safeName}: ${JSON.stringify(editParams)}`);
-    res.set({ "Cache-Control": "public, max-age=3600", "Content-Type": "image/jpeg" });
+    res.set({ "Cache-Control": "private, no-store", "Content-Type": "image/jpeg" });
     res.sendFile(cachedPathEdit);
 
   } catch (err) {
     console.error(`AI edit failed for ${safeName}:`, err.message);
-    res.set({ "Cache-Control": "no-cache", "Content-Type": "image/jpeg" });
+    res.set({ "Cache-Control": "private, no-store", "Content-Type": "image/jpeg" });
     res.sendFile(filepath);
   }
 });
@@ -4085,7 +4646,7 @@ function clearImageCache() {
   return { cleared, breakdown: before };
 }
 
-app.post("/api/cache/clear", (_req, res) => {
+app.post("/api/cache/clear", requireAuth, (_req, res) => {
   if ([...zipJobs.values()].some(job => job.status === "preparing")) {
     return res.status(409).json({ error: "A ZIP download is being prepared. Try clearing the image cache again when it finishes." });
   }
@@ -4094,14 +4655,14 @@ app.post("/api/cache/clear", (_req, res) => {
 });
 
 // ── Cache stats (counts without clearing) ──────────────
-app.get("/api/cache/stats", (_req, res) => {
+app.get("/api/cache/stats", requireAuth, (_req, res) => {
   const breakdown = getCacheBreakdown(CACHE_DIR);
   const total = breakdown.thumb_wm + breakdown.thumb_clean + breakdown.medium_wm + breakdown.medium_clean + breakdown.full_wm + breakdown.full_clean + breakdown.other;
   res.json({ ok: true, total, breakdown });
 });
 
 // ── Bulk-delete specific files (orphan cleanup) ──────────────
-app.post("/api/upload/bulk-delete", uploadDeleteLimiter, async (req, res) => {
+app.post("/api/upload/bulk-delete", uploadDeleteLimiter, requireAuth, async (req, res) => {
   const { filenames } = req.body;
   if (!Array.isArray(filenames)) {
     return res.status(400).json({ error: "filenames array required" });
@@ -4111,17 +4672,25 @@ app.post("/api/upload/bulk-delete", uploadDeleteLimiter, async (req, res) => {
     return res.status(400).json({ error: "Too many filenames in a single request (max 500)" });
   }
   let deleted = 0;
+  const skippedReferenced = [];
+  const db = readDb();
+  const owners = dbGet(db, "wv_upload_owners", {});
   for (const name of filenames) {
     const safeName = path.basename(String(name));
+    if (uploadReferenceKeys(db, safeName).length > 0) {
+      skippedReferenced.push(safeName);
+      continue;
+    }
     const filepath = path.join(UPLOADS_DIR, safeName);
     try {
       if (fs.existsSync(filepath)) { fs.unlinkSync(filepath); deleted++; }
+      delete owners[safeName];
+      purgeCacheVariantsForUpload(safeName);
       // Remove any cached variants for this file (including tenant-specific variants).
       // getCacheFilename takes an optional tenantSlug 4th arg; passing null covers the
       // global cache and we also scan for any t_<slug> variants present on disk.
       const base = path.basename(safeName, path.extname(safeName));
       // Collect tenant slugs from the database so we can wipe their caches too.
-      const db = readDb();
       const tenantSlugs = [null, ...Object.keys(db)
         .filter(k => k.startsWith("t_") && k.endsWith("_wv_tenant_settings"))
         .map(k => k.slice(2, k.length - "_wv_tenant_settings".length))
@@ -4136,7 +4705,9 @@ app.post("/api/upload/bulk-delete", uploadDeleteLimiter, async (req, res) => {
       }
     } catch { /* skip individual failures */ }
   }
-  res.json({ ok: true, deleted });
+  db["wv_upload_owners"] = owners;
+  writeDb(db);
+  res.json({ ok: true, deleted, skippedReferenced });
 });
 
 // ── Download original photos as a zip (authenticated) ──────────
@@ -4206,8 +4777,6 @@ function createOrReuseDownloadEmailCapture({ email, albumMatch, sessionKey, req 
 
 function resolveDownloadEmailCapture(req, albumId, sessionKey, accessibleFiles) {
   const freeFiles = accessibleFiles.filter(file => FREE_DOWNLOAD_REASONS.has(file.accessReason));
-  if (freeFiles.length === 0) return { ok: true, record: null, freeFiles };
-
   const albumMatch = findAlbumById(readDb(), albumId);
   if (!albumMatch) return { ok: false, status: 404, error: "Album not found" };
   const policy = normalizeDownloadEmailPolicy(albumMatch.album.downloadEmailCapture);
@@ -4235,11 +4804,11 @@ function resolveDownloadEmailCapture(req, albumId, sessionKey, accessibleFiles) 
     record = result.record;
   }
 
-  if (freeAccessRequiresCapture(policy, true, !!record)) {
+  if (policy === "required" && !record) {
     return {
       ok: false,
       status: 428,
-      error: "Email address required before downloading this free album",
+      error: "Email address required before downloading this gallery",
       code: "DOWNLOAD_EMAIL_REQUIRED",
       policy,
     };
@@ -4268,10 +4837,13 @@ function recordCapturedDownload(record, { requested, accessibleFiles, quality })
 }
 
 app.post("/api/download/email-capture", downloadEmailLimiter, (req, res) => {
-  const { albumId, sessionKey, email } = req.body || {};
-  if (!albumId || !sessionKey) return res.status(400).json({ error: "albumId and sessionKey are required" });
+  const { albumId, email } = req.body || {};
+  if (!albumId) return res.status(400).json({ error: "albumId is required" });
   const albumMatch = findAlbumById(readDb(), albumId);
   if (!albumMatch) return res.status(404).json({ error: "Album not found" });
+  const gallerySession = getGallerySessionForAlbum(req, albumMatch.album);
+  if (!gallerySession || gallerySession.tenantSlug !== albumMatch.tenantSlug) return res.status(401).json({ error: "A valid gallery session is required" });
+  const sessionKey = gallerySession.sessionKey;
   const policy = normalizeDownloadEmailPolicy(albumMatch.album.downloadEmailCapture);
   if (policy === "off") return res.status(409).json({ error: "Email capture is not enabled for this album", policy });
   const result = createOrReuseDownloadEmailCapture({ email, albumMatch, sessionKey, req });
@@ -4285,8 +4857,12 @@ app.post("/api/download/email-capture", downloadEmailLimiter, (req, res) => {
 });
 
 app.post("/api/download/email-capture/complete", downloadEmailLimiter, (req, res) => {
-  const { captureId, albumId, sessionKey } = req.body || {};
-  if (!captureId || !albumId || !sessionKey) return res.status(400).json({ error: "captureId, albumId and sessionKey are required" });
+  const { captureId, albumId } = req.body || {};
+  if (!captureId || !albumId) return res.status(400).json({ error: "captureId and albumId are required" });
+  const albumMatch = findAlbumById(readDb(), albumId);
+  const gallerySession = albumMatch ? getGallerySessionForAlbum(req, albumMatch.album) : null;
+  if (!gallerySession || gallerySession.tenantSlug !== albumMatch.tenantSlug) return res.status(401).json({ error: "A valid gallery session is required" });
+  const sessionKey = gallerySession.sessionKey;
   const record = readDownloadEmailCaptures().find(candidate =>
     candidate.id === String(captureId).slice(0, 120)
     && recordMatchesRequest(candidate, albumId, sessionKey, DOWNLOAD_CAPTURE_SECRET)
@@ -4353,28 +4929,55 @@ app.get("/api/admin/zip-stats", requireAuth, (_req, res) => {
 });
 
 function normalizeZipFileList(filenames, files) {
-  if (Array.isArray(files)) return files.map(f => ({ filename: String(f.filename || ""), clean: f.clean === true }));
-  if (Array.isArray(filenames)) return filenames.map(n => ({ filename: String(n), clean: true }));
-  return null;
+  const source = Array.isArray(files)
+    ? files.map(f => ({ filename: String(f.filename || ""), clean: f.clean === true }))
+    : Array.isArray(filenames)
+      ? filenames.map(n => ({ filename: String(n), clean: true }))
+      : null;
+  if (!source) return null;
+  const unique = new Map();
+  for (const item of source) {
+    const safeName = path.basename(item.filename.split("?")[0]);
+    if (!safeName) continue;
+    const existing = unique.get(safeName);
+    unique.set(safeName, { filename: safeName, clean: item.clean || existing?.clean === true });
+  }
+  return [...unique.values()];
 }
 
 function validateZipRequest(req, res) {
-  const { filenames, files, sessionKey, albumId } = req.body;
+  const { filenames, files, albumId } = req.body;
+  const rawCount = Array.isArray(files) ? files.length : Array.isArray(filenames) ? filenames.length : 0;
+  if (rawCount > MAX_ZIP_FILES) {
+    res.status(400).json({ error: `Too many files in a single zip request (max ${MAX_ZIP_FILES})` });
+    return null;
+  }
   const quality = ["2mb", "5mb", "original"].includes(req.body.quality) ? req.body.quality : "original";
   const fileList = normalizeZipFileList(filenames, files);
   if (!fileList) {
-    res.status(400).json({ error: "files array (or filenames), sessionKey and albumId required" });
+    res.status(400).json({ error: "files array (or filenames) and albumId required" });
     return null;
   }
-  if (!sessionKey || !albumId) {
-    res.status(400).json({ error: "sessionKey and albumId required" });
+  if (!albumId) {
+    res.status(400).json({ error: "albumId required" });
+    return null;
+  }
+  const db = readDb();
+  const albumMatch = findAlbumById(db, albumId);
+  if (albumMatch && albumAccessWindow(albumMatch.album, Date.now(), galleryTimezone(db, albumMatch.tenantSlug)).downloadsExpired) {
+    res.status(410).json({ error: "Gallery downloads have expired" });
+    return null;
+  }
+  const gallerySession = albumMatch ? getGallerySessionForAlbum(req, albumMatch.album) : null;
+  if (!gallerySession || gallerySession.tenantSlug !== albumMatch.tenantSlug) {
+    res.status(401).json({ error: "A valid gallery session is required" });
     return null;
   }
   if (fileList.length > MAX_ZIP_FILES) {
     res.status(400).json({ error: `Too many files in a single zip request (max ${MAX_ZIP_FILES})` });
     return null;
   }
-  return { fileList, sessionKey, albumId, quality };
+  return { fileList, sessionKey: gallerySession.sessionKey, albumId, quality };
 }
 
 function uniqueZipEntryName(preferredName, fallbackName, quality, usedNames) {
@@ -4413,8 +5016,8 @@ function collectAccessibleZipFiles(fileList, sessionKey, albumId, quality = "ori
   let downgradedCount = 0;
   for (const { filename, clean } of fileList) {
     const safeName = path.basename(filename.split("?")[0]);
-    const filepath = path.join(UPLOADS_DIR, safeName);
-    if (!fs.existsSync(filepath)) {
+    const filepath = resolveExistingUploadPath(safeName);
+    if (!filepath) {
       missingCount++;
       continue;
     }
@@ -4435,7 +5038,7 @@ function collectAccessibleZipFiles(fileList, sessionKey, albumId, quality = "ori
       tenantSlug,
       quality,
       archiveName,
-      photoId: photo?.id || null,
+      photoId: access.photoId || photo?.id || null,
       accessReason: access.reason,
     });
   }
@@ -4567,6 +5170,9 @@ app.post("/api/download/zip/start", downloadZipLimiter, async (req, res) => {
     });
   }
 
+  const entitlementClaim = claimFreePhotoDownloads(albumId, sessionKey, accessibleFiles.map(file => file.photoId));
+  if (!entitlementClaim.ok) return res.status(entitlementClaim.status || 403).json({ error: entitlementClaim.error });
+
   const albumName = getZipAlbumName(albumId);
   const jobId = crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString("hex");
   const job = {
@@ -4589,6 +5195,7 @@ app.post("/api/download/zip/start", downloadZipLimiter, async (req, res) => {
     updatedAt: Date.now(),
   };
   zipJobs.set(jobId, job);
+  res.setHeader("Cache-Control", "private, no-store");
   res.status(202).json(publicZipJob(job));
   setImmediate(() => buildZipJob(job, accessibleFiles));
 });
@@ -4596,6 +5203,7 @@ app.post("/api/download/zip/start", downloadZipLimiter, async (req, res) => {
 app.get("/api/download/zip/:jobId/status", (req, res) => {
   const job = zipJobs.get(req.params.jobId);
   if (!job) return res.status(404).json({ error: "Zip job not found or expired" });
+  res.setHeader("Cache-Control", "private, no-store");
   res.json(publicZipJob(job));
 });
 
@@ -4605,6 +5213,7 @@ app.get("/api/download/zip/:jobId/file", (req, res) => {
   if (job.status === "failed") return res.status(500).json({ error: job.error || "Failed to create zip" });
   if (job.status !== "done" || !fs.existsSync(job.filepath)) return res.status(409).json(publicZipJob(job));
 
+  res.setHeader("Cache-Control", "private, no-store");
   res.download(job.filepath, job.filename, (err) => {
     if (err) console.error("Zip job download error:", err.message);
     else if (!job.downloadRecorded) {
@@ -4647,8 +5256,12 @@ app.post("/api/download/zip", downloadZipLimiter, async (req, res) => {
     });
   }
 
+  const entitlementClaim = claimFreePhotoDownloads(albumId, sessionKey, accessibleFiles.map(file => file.photoId));
+  if (!entitlementClaim.ok) return res.status(entitlementClaim.status || 403).json({ error: entitlementClaim.error });
+
   const albumName = getZipAlbumName(albumId);
 
+  res.setHeader("Cache-Control", "private, no-store");
   res.setHeader("Content-Type", "application/zip");
   res.setHeader("Content-Disposition", `attachment; filename="${albumName}.zip"`);
   res.setHeader("X-Zip-Requested", String(fileList.length));
@@ -4697,7 +5310,7 @@ app.post("/api/download/zip", downloadZipLimiter, async (req, res) => {
 
 // ── Discord webhook endpoints ─────────────────────────
 /** Test a Discord webhook URL by sending a sample embed. */
-app.post("/api/discord/test", async (req, res) => {
+app.post("/api/discord/test", requireAuth, async (req, res) => {
   const { webhookUrl } = req.body || {};
   if (!webhookUrl || typeof webhookUrl !== "string") {
     return res.status(400).json({ ok: false, error: "webhookUrl required" });
@@ -4723,7 +5336,7 @@ app.post("/api/discord/test", async (req, res) => {
 });
 
 /** Generic Discord notification endpoint — used by frontend for custom events. */
-app.post("/api/discord/notify", async (req, res) => {
+app.post("/api/discord/notify", requireAuth, async (req, res) => {
   const db = readDb();
 
   // Support tenant-scoped notifications: if tenantSlug is provided, use that tenant's
@@ -4796,25 +5409,9 @@ app.post("/api/discord/notify", async (req, res) => {
  *  (matching how the rest of the app handles admin auth via hashed credentials). */
 app.get("/api/super-admin/webhooks", async (req, res) => {
   if (!process.env.SUPER_ADMIN_USERNAME) return res.status(403).json({ ok: false, error: "Super admin not configured" });
-
-  // Verify caller provides the super admin credentials via Basic auth header
-  // Frontend sends: Authorization: Basic base64(username:passwordHash)
-  const authHeader = req.headers.authorization || "";
-  if (!authHeader.startsWith("Basic ")) return res.status(401).json({ ok: false, error: "Authentication required" });
-  try {
-    const decoded = Buffer.from(authHeader.slice(6), "base64").toString("utf-8");
-    const [user, ...rest] = decoded.split(":");
-    const hash = rest.join(":");
-    const db = readDb();
-    const adminRaw = db["wv_admin"];
-    const adminCreds = adminRaw ? (typeof adminRaw === "string" ? JSON.parse(adminRaw) : adminRaw) : null;
-    const passwordOk = adminCreds ? await verifyPasswordHash(hash, adminCreds.passwordHash) : false;
-    const isAdmin = adminCreds?.username === user && passwordOk;
-    const isSuperAdminUser = user === process.env.SUPER_ADMIN_USERNAME;
-    if (!isAdmin || !isSuperAdminUser) return res.status(403).json({ ok: false, error: "Forbidden" });
-  } catch {
-    return res.status(401).json({ ok: false, error: "Invalid authorization" });
-  }
+  const username = await authenticatedAdminUsername(req);
+  if (!username) return res.status(401).json({ ok: false, error: "Authentication required" });
+  if (username.toLowerCase() !== String(process.env.SUPER_ADMIN_USERNAME).toLowerCase()) return res.status(403).json({ ok: false, error: "Forbidden" });
 
   function maskWebhookUrl(url) {
     if (!url) return null;
@@ -4865,6 +5462,15 @@ app.post("/api/proofing/submit", async (req, res) => {
     if (!found) return res.status(404).json({ ok: false, error: "Album not found" });
 
     const { album, tenantSlug } = found;
+    const timeZone = galleryTimezone(db, tenantSlug);
+    if (albumAccessWindow(album, Date.now(), timeZone).galleryExpired) return res.status(410).json({ ok: false, error: "This gallery has expired" });
+    const gallerySession = getGallerySessionForAlbum(req, album);
+    if (!gallerySession || gallerySession.tenantSlug !== tenantSlug) return res.status(401).json({ ok: false, error: "A valid gallery session is required" });
+    const normalizedSelectedIds = [...new Set(selectedPhotoIds.map(String).filter(Boolean))];
+    const selectableIds = new Set(deliverableAlbumPhotos(album).map(photo => String(photo.id)));
+    if (normalizedSelectedIds.length > selectableIds.size || normalizedSelectedIds.some(id => !selectableIds.has(id))) {
+      return res.status(400).json({ ok: false, error: "One or more selected photos are unavailable" });
+    }
     const storeKey = tenantSlug ? `t_${tenantSlug}_wv_albums` : "wv_albums";
     const raw = db[storeKey];
     const parsed = raw ? (typeof raw === "string" ? JSON.parse(raw) : (Array.isArray(raw) ? raw : [])) : [];
@@ -4879,7 +5485,7 @@ app.post("/api/proofing/submit", async (req, res) => {
     }
 
     // Reject submissions after the proofing window has closed
-    if (album.proofingExpiresAt && new Date() > new Date(album.proofingExpiresAt)) {
+    if (albumAccessWindow({ expiresAt: album.proofingExpiresAt }, Date.now(), timeZone).galleryExpired) {
       return res.status(403).json({ ok: false, error: "Proofing window has expired" });
     }
 
@@ -4889,13 +5495,15 @@ app.post("/api/proofing/submit", async (req, res) => {
     }
 
     // Mark starred photos and record the round
+    const selectedSet = new Set(normalizedSelectedIds);
     const updatedPhotos = (album.photos || []).map(p => ({
       ...p,
-      starred: selectedPhotoIds.includes(p.id),
+      starred: selectedSet.has(String(p.id)),
     }));
 
     const rounds = album.proofingRounds || [];
-    const submissionData = { selectedPhotoIds, clientNote: clientNote || undefined, submittedAt: new Date().toISOString() };
+    const normalizedClientNote = typeof clientNote === "string" ? clientNote.trim().slice(0, 5000) : "";
+    const submissionData = { selectedPhotoIds: normalizedSelectedIds, clientNote: normalizedClientNote || undefined, submittedAt: new Date().toISOString() };
     let updatedRounds;
     if (rounds.length > 0) {
       // Update the most recent round with the client's selections
@@ -4966,10 +5574,10 @@ app.post("/api/proofing/submit", async (req, res) => {
       discordNotify = settingsParsed?.discordNotifyProofing !== false;
     }
     if (discordUrl && discordNotify) {
-      notifyProofingSubmission(discordUrl, updatedAlbum, selectedPhotoIds.length, clientNote).catch(() => {});
+      notifyProofingSubmission(discordUrl, updatedAlbum, normalizedSelectedIds.length, normalizedClientNote).catch(() => {});
     }
 
-    res.json({ ok: true, album: updatedAlbum });
+    res.json({ ok: true, album: publicAlbumDto(updatedAlbum, gallerySession) });
   } catch (err) {
     console.error("Proofing submit error:", err.message);
     res.status(500).json({ ok: false, error: "Failed to save proofing picks" });
@@ -4980,7 +5588,7 @@ app.post("/api/proofing/submit", async (req, res) => {
 // mode=warm  → thumb variants only, skip files that already exist in cache
 // mode=force → all variants (thumb + medium + full), overwrite everything
 const cacheWarmLimiter = rateLimit({ windowMs: 60_000, max: 1, standardHeaders: true, legacyHeaders: false, message: { error: "A cache warm job is already running — please wait" } });
-app.post("/api/cache/warm", cacheWarmLimiter, async (req, res) => {
+app.post("/api/cache/warm", cacheWarmLimiter, requireAuth, async (req, res) => {
   const mode = (req.query.mode || req.body?.mode || "warm");
   const forceAll = mode === "force";
   const sizesToRender = forceAll ? ["thumb", "medium", "full"] : ["thumb"];
@@ -5073,17 +5681,122 @@ const store = {
   },
 };
 
+function sendMainBookingReceipt(booking) {
+  const profile = dbGet(readDb(), DB_KEYS.PROFILE, {});
+  return sendBookingConfirmationEmail({
+    to: booking.clientEmail,
+    clientName: booking.clientName,
+    eventTitle: booking.type,
+    date: booking.date,
+    time: booking.time,
+    duration: booking.duration,
+    location: booking.location || "",
+    price: booking.paymentAmount || 0,
+    depositAmount: booking.depositAmount || 0,
+    paymentMethod: booking.paymentMethod || booking.depositMethod || booking.paymentPath || (booking.paymentAmount ? "stripe" : "none"),
+    paymentStatus: booking.paymentStatus,
+    status: booking.status,
+    modifyToken: booking.modifyToken,
+    bookingId: booking.id,
+    appBaseUrl: String(process.env.APP_BASE_URL || `https://${String(process.env.APP_HOSTS || "book.zacmclients.photos").split(",")[0].trim()}`).replace(/\/$/, ""),
+    store,
+    brandName: profile.businessName || profile.brandName || profile.name || "PhotoFlow",
+  });
+}
+
+async function sendTenantBookingReceipt(booking, eventKey, options = {}) {
+  const db = readDb();
+  const settings = dbGet(db, `t_${booking.tenantSlug}_wv_tenant_settings`, {});
+  const tenant = readTenants().find(item => item.slug === booking.tenantSlug);
+  const transport = buildTenantTransporter(settings);
+  if (!transport) return { ok: false, reason: "not_configured" };
+  const bookings = getStoredArray(db, DB_KEYS.BOOKINGS);
+  const index = bookings.findIndex(item => item.id === booking.id && item.tenantSlug === booking.tenantSlug);
+  if (index < 0) return { ok: false, reason: "not_found" };
+  const events = Array.isArray(bookings[index].receiptEmailEvents) ? bookings[index].receiptEmailEvents : [];
+  if (events.some(event => event.key === eventKey)) return { ok: true, duplicate: true };
+  events.push({ key: eventKey, status: "queued", createdAt: new Date().toISOString() });
+  bookings[index].receiptEmailEvents = events;
+  db[DB_KEYS.BOOKINGS] = JSON.stringify(bookings);
+  writeDb(db);
+  const result = await sendBookingConfirmationEmail({
+    to: booking.clientEmail,
+    clientName: booking.clientName,
+    eventTitle: booking.type,
+    date: booking.date,
+    time: booking.time,
+    duration: booking.duration,
+    location: booking.location || "",
+    price: booking.paymentAmount || 0,
+    depositAmount: booking.depositAmount || 0,
+    paymentMethod: booking.paymentMethod || booking.depositMethod || booking.paymentPath || (booking.paymentAmount ? "stripe" : "none"),
+    paymentStatus: booking.paymentStatus,
+    status: booking.status,
+    paymentKind: booking.lastPaymentKind || options.paymentKind,
+    modifyToken: booking.modifyToken,
+    bookingId: booking.id,
+    appBaseUrl: String(process.env.APP_BASE_URL || `https://${String(process.env.APP_HOSTS || "book.zacmclients.photos").split(",")[0].trim()}`).replace(/\/$/, ""),
+    transport,
+    fromAddress: getTenantFromAddress(settings),
+    brandName: settings.businessName || settings.brandName || tenant?.displayName || "PhotoFlow",
+  });
+  const resultDb = readDb();
+  const resultBookings = getStoredArray(resultDb, DB_KEYS.BOOKINGS);
+  const resultIndex = resultBookings.findIndex(item => item.id === booking.id && item.tenantSlug === booking.tenantSlug);
+  if (resultIndex >= 0) {
+    resultBookings[resultIndex].receiptEmailEvents = (resultBookings[resultIndex].receiptEmailEvents || []).map(event =>
+      event.key === eventKey ? { ...event, status: result.ok ? "sent" : "failed", completedAt: new Date().toISOString(), error: result.ok ? undefined : String(result.error || result.reason || "unknown").slice(0, 500) } : event
+    );
+    resultDb[DB_KEYS.BOOKINGS] = JSON.stringify(resultBookings);
+    writeDb(resultDb);
+  }
+  return result;
+}
+
+async function sendBookingUpdateReceipt(booking, updateType, previousBooking) {
+  if (!booking?.clientEmail || booking.emailsDisabled) return { ok: false, reason: "unsubscribed_or_missing_email" };
+  const db = readDb();
+  const profile = dbGet(db, DB_KEYS.PROFILE, {});
+  const tenant = booking.tenantSlug ? readTenants().find(item => item.slug === booking.tenantSlug) : null;
+  const settings = booking.tenantSlug ? dbGet(db, `t_${booking.tenantSlug}_wv_tenant_settings`, {}) : null;
+  const transport = booking.tenantSlug ? buildTenantTransporter(settings) : getTransporter();
+  const fromAddress = booking.tenantSlug ? getTenantFromAddress(settings) : getFromAddress();
+  if (!transport || !fromAddress) return { ok: false, reason: "not_configured" };
+  const appBaseUrl = String(process.env.APP_BASE_URL || `https://${String(process.env.APP_HOSTS || "book.zacmclients.photos").split(",")[0].trim()}`).replace(/\/$/, "");
+  return sendBookingUpdateEmail({
+    transport,
+    fromAddress,
+    to: booking.clientEmail,
+    store,
+    updateType,
+    clientName: booking.clientName,
+    eventTitle: booking.type,
+    date: booking.date,
+    time: booking.time,
+    duration: booking.duration,
+    location: booking.location || "",
+    bookingId: booking.id,
+    modifyUrl: booking.modifyToken && appBaseUrl
+      ? `${appBaseUrl}/booking/modify/${encodeURIComponent(booking.modifyToken)}`
+      : "",
+    previousDate: previousBooking?.date,
+    previousTime: previousBooking?.time,
+    brandName: settings?.businessName || settings?.brandName || tenant?.displayName || profile.businessName || profile.brandName || profile.name || "PhotoFlow",
+  });
+}
+
 // ── Integrations ──────────────────────────────────────
-registerGoogleCalendarRoutes(app);
-registerEmailRoutes(app, store);
-registerStripeRoutes(app, { readDb, writeDb });
-registerTenantStripeRoutes(app, { readDb, writeDb, readTenants: () => {
-  try {
-    if (!fs.existsSync(path.join(DATA_DIR, "tenants.json"))) return [];
-    return JSON.parse(fs.readFileSync(path.join(DATA_DIR, "tenants.json"), "utf-8"));
-  } catch { return []; }
-}, readLicenseKeys, getLicKeyLimits, readEventSlotRequests, writeEventSlotRequests});
-registerGoogleSheetsRoutes(app);
+registerGoogleCalendarRoutes(app, {
+  requireAuth,
+  readDb,
+  writeDb,
+  createOAuthState: () => signSession({ purpose: "admin-gcal", sub: "admin" }, SESSION_SECRET, { ttlSeconds: 10 * 60 }),
+  verifyOAuthState: state => !!verifySession(state, SESSION_SECRET, { purpose: "admin-gcal" }),
+});
+registerEmailRoutes(app, store, { requireAuth });
+registerStripeRoutes(app, { readDb, writeDb, readLicenseKeys, writeLicenseKeys, getGallerySession: getGallerySessionForAlbum, onBookingPaid: queueInitialBookingCalendarSync });
+registerTenantStripeRoutes(app, { readDb, writeDb, readTenants, readLicenseKeys, getLicKeyLimits, readEventSlotRequests, writeEventSlotRequests, requireTenant, getGallerySession: getGallerySessionForAlbum, sendTenantBookingReceipt, onBookingPaid: queueInitialBookingCalendarSync, isTenantLicensed: tenantIsLicensed });
+registerGoogleSheetsRoutes(app, { requireAuth });
 
 const tenantLimiter = rateLimit({ windowMs: 60_000, max: 60, standardHeaders: true, legacyHeaders: false, message: { error: "Too many requests" } });
 const tenantPublicLimiter = rateLimit({ windowMs: 60_000, max: 120, standardHeaders: true, legacyHeaders: false, message: { error: "Too many requests" } });
@@ -5156,7 +5869,7 @@ const tenantBookingLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHead
   }
 
   // Status
-  app.get("/api/tenant/:slug/integrations/googlecalendar/status", tenantLimiter, (req, res) => {
+  app.get("/api/tenant/:slug/integrations/googlecalendar/status", tenantLimiter, requireTenant, (req, res) => {
     const { slug } = req.params;
     const tokens   = loadTenantTokens(slug);
     const settings = loadTenantCalSettings(slug);
@@ -5171,7 +5884,7 @@ const tenantBookingLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHead
   });
 
   // Start OAuth — redirects browser to Google consent screen
-  app.get("/api/tenant/:slug/integrations/googlecalendar/auth", tenantLimiter, (req, res) => {
+  app.get("/api/tenant/:slug/integrations/googlecalendar/auth", tenantLimiter, requireTenant, (req, res) => {
     const { slug } = req.params;
     const client = getTenantOAuth2Client(slug);
     if (!client) return res.status(400).json({ error: "Google credentials not configured for this account" });
@@ -5182,16 +5895,18 @@ const tenantBookingLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHead
         "https://www.googleapis.com/auth/calendar",
         "https://www.googleapis.com/auth/userinfo.email",
       ],
-      state: slug, // pass slug through so callback knows which tenant to save tokens for
+      state: signSession({ purpose: "tenant-gcal", sub: slug }, SESSION_SECRET, { ttlSeconds: 10 * 60 }),
     });
     res.json({ url });
   });
 
   // OAuth callback — saves tokens and redirects back to tenant admin
-  app.get("/api/tenant/:slug/integrations/googlecalendar/callback", tenantLimiter, async (req, res) => {
+  app.get("/api/tenant/:slug/integrations/googlecalendar/callback", tenantLimiter, requireTenant, async (req, res) => {
     const { slug } = req.params;
-    const { code } = req.query;
+    const { code, state } = req.query;
     if (!code) return res.status(400).send("Missing code");
+    const oauthState = verifySession(String(state || ""), SESSION_SECRET, { purpose: "tenant-gcal" });
+    if (!oauthState || oauthState.sub !== slug) return res.status(400).send("Invalid or expired OAuth state");
     const client = getTenantOAuth2Client(slug);
     if (!client) return res.status(400).send("Google credentials not configured");
     try {
@@ -5208,13 +5923,13 @@ const tenantBookingLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHead
   });
 
   // Disconnect
-  app.post("/api/tenant/:slug/integrations/googlecalendar/disconnect", tenantLimiter, (req, res) => {
+  app.post("/api/tenant/:slug/integrations/googlecalendar/disconnect", tenantLimiter, requireTenant, (req, res) => {
     clearTenantTokens(req.params.slug);
     res.json({ ok: true });
   });
 
   // List calendars
-  app.get("/api/tenant/:slug/integrations/googlecalendar/calendars", tenantLimiter, async (req, res) => {
+  app.get("/api/tenant/:slug/integrations/googlecalendar/calendars", tenantLimiter, requireTenant, async (req, res) => {
     const auth = getAuthenticatedTenantClient(req.params.slug);
     if (!auth) return res.status(401).json({ error: "Not connected" });
     try {
@@ -5224,13 +5939,13 @@ const tenantBookingLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHead
   });
 
   // Save calendar settings (autoSync, calendarId)
-  app.post("/api/tenant/:slug/integrations/googlecalendar/settings", tenantLimiter, (req, res) => {
+  app.post("/api/tenant/:slug/integrations/googlecalendar/settings", tenantLimiter, requireTenant, (req, res) => {
     saveTenantCalSettings(req.params.slug, req.body);
     res.json({ ok: true });
   });
 
   // Sync a single booking
-  app.post("/api/tenant/:slug/integrations/googlecalendar/event", tenantLimiter, async (req, res) => {
+  app.post("/api/tenant/:slug/integrations/googlecalendar/event", tenantLimiter, requireTenant, async (req, res) => {
     const { slug } = req.params;
     const auth = getAuthenticatedTenantClient(slug);
     if (!auth) return res.status(401).json({ error: "Not connected" });
@@ -5277,23 +5992,111 @@ const tenantBookingLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHead
 
 // ── Invoice share endpoint (public — no auth required) ────────
 const invoiceShareLimiter = rateLimit({ windowMs: 60_000, max: 60, standardHeaders: true, legacyHeaders: false, message: { error: "Too many requests" } });
+function safeInvoiceParty(party) {
+  const source = party && typeof party === "object" ? party : {};
+  return Object.fromEntries(["name", "email", "address", "abn", "taxNumber", "vatId"]
+    .filter(key => source[key] != null).map(key => [key, String(source[key]).slice(0, 1000)]));
+}
+
+function safePublicInvoiceDto(invoice, tenantSlug, bankTransfer) {
+  return {
+    id: invoice.id,
+    number: invoice.number,
+    status: invoice.status,
+    from: safeInvoiceParty(invoice.from),
+    to: safeInvoiceParty(invoice.to),
+    items: (Array.isArray(invoice.items) ? invoice.items : []).slice(0, 500).map(item => ({
+      id: item.id,
+      description: String(item.description || "").slice(0, 2000),
+      subdescription: item.subdescription ? String(item.subdescription).slice(0, 2000) : undefined,
+      quantity: Number(item.quantity) || 0,
+      unitPrice: Number(item.unitPrice) || 0,
+    })),
+    currency: invoice.currency || "AUD",
+    notes: String(invoice.notes || "").slice(0, 10_000),
+    dueDate: invoice.dueDate,
+    serviceDate: invoice.serviceDate,
+    serviceDateNote: invoice.serviceDateNote,
+    receiptAttachmentNote: invoice.receiptAttachmentNote,
+    createdAt: invoice.createdAt,
+    sentAt: invoice.sentAt,
+    paidAt: invoice.paidAt,
+    tax: invoice.tax,
+    discount: invoice.discount,
+    amountPaid: invoice.amountPaid,
+    albumId: invoice.albumId,
+    albumSlug: invoice.albumSlug,
+    albumTitle: invoice.albumTitle,
+    albumProtected: invoice.albumProtected,
+    albumAccessUrl: invoice.albumAccessUrl || null,
+    showAlbumLinkAfterPayment: invoice.showAlbumLinkAfterPayment === true,
+    paymentMethods: tenantSlug
+      ? (bankTransfer?.enabled ? ["bank"] : [])
+      : (Array.isArray(invoice.paymentMethods) ? invoice.paymentMethods.filter(method => ["stripe", "bank"].includes(method)) : undefined),
+    tenantSlug,
+    cardPaymentAvailable: !tenantSlug && mainStripeReady() && (!Array.isArray(invoice.paymentMethods) || invoice.paymentMethods.includes("stripe")),
+    bankTransfer,
+  };
+}
+
+function findSharedInvoice(db, token) {
+  const matches = [];
+  const main = dbGet(db, DB_KEYS.INVOICES, []);
+  for (const invoice of Array.isArray(main) ? main : []) if (timingSafeTextEqual(invoice.shareToken, token)) matches.push({ invoice, tenantSlug: null });
+  const active = new Set(readTenants().filter(tenant => tenantIsLicensed(tenant)).map(tenant => tenant.slug));
+  for (const slug of active) {
+    const invoices = dbGet(db, `t_${slug}_wv_invoices`, []);
+    for (const invoice of Array.isArray(invoices) ? invoices : []) if (timingSafeTextEqual(invoice.shareToken, token)) matches.push({ invoice, tenantSlug: slug });
+  }
+  return matches.length === 1 ? matches[0] : null;
+}
+
 app.get("/api/invoice/share/:token", invoiceShareLimiter, (req, res) => {
   const db = readDb();
-  const raw = db["wv_invoices"];
-  const invoices = raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : [];
-  const invoice = invoices.find(inv => inv.shareToken === req.params.token);
-  if (!invoice) return res.status(404).json({ error: "Invoice not found" });
-  const enriched = { ...invoice };
+  const match = findSharedInvoice(db, req.params.token);
+  if (!match) return res.status(404).json({ error: "Invoice not found" });
+  const enriched = { ...match.invoice };
+  let linkedAlbum = null;
   if (enriched.albumId && (!enriched.albumSlug || !enriched.albumTitle)) {
-    const albumsRaw = db["wv_albums"];
-    const albums = albumsRaw ? (typeof albumsRaw === "string" ? JSON.parse(albumsRaw) : albumsRaw) : [];
-    const album = Array.isArray(albums) ? albums.find(a => a.id === enriched.albumId) : null;
-    if (album) {
-      enriched.albumSlug = enriched.albumSlug || album.slug || album.id;
-      enriched.albumTitle = enriched.albumTitle || album.title || "Client gallery";
+    const albums = dbGet(db, match.tenantSlug ? `t_${match.tenantSlug}_wv_albums` : DB_KEYS.ALBUMS, []);
+    linkedAlbum = Array.isArray(albums) ? albums.find(a => a.id === enriched.albumId) : null;
+    if (linkedAlbum) {
+      enriched.albumSlug = enriched.albumSlug || linkedAlbum.slug || linkedAlbum.id;
+      enriched.albumTitle = enriched.albumTitle || linkedAlbum.title || "Client gallery";
+    }
+  } else if (enriched.albumId) {
+    const albums = dbGet(db, match.tenantSlug ? `t_${match.tenantSlug}_wv_albums` : DB_KEYS.ALBUMS, []);
+    linkedAlbum = Array.isArray(albums) ? albums.find(album => album.id === enriched.albumId) : null;
+  }
+  if (linkedAlbum) {
+    enriched.albumProtected = !!linkedAlbum.accessCode || !!linkedAlbum.clientToken;
+    if (enriched.status === "paid" && enriched.showAlbumLinkAfterPayment === true) {
+      enriched.albumAccessUrl = `/gallery/${encodeURIComponent(linkedAlbum.slug || linkedAlbum.id)}${linkedAlbum.clientToken ? `#token=${encodeURIComponent(linkedAlbum.clientToken)}` : ""}`;
     }
   }
-  res.json(enriched);
+  const tenantSettings = match.tenantSlug ? dbGet(db, `t_${match.tenantSlug}_wv_tenant_settings`, {}) : null;
+  const globalSettings = dbGet(db, DB_KEYS.SETTINGS, {});
+  const bankTransfer = match.tenantSlug
+    ? (tenantSettings?.bankTransferEnabled ? {
+      enabled: true,
+      accountName: tenantSettings.bankAccountName || null,
+      bsb: tenantSettings.bankBsb || null,
+      accountNumber: tenantSettings.bankAccountNumber || null,
+      payId: tenantSettings.bankPayId || null,
+      payIdType: tenantSettings.bankPayIdType || null,
+      instructions: tenantSettings.bankInstructions || null,
+    } : null)
+    : (globalSettings?.bankTransfer?.enabled ? {
+      enabled: true,
+      accountName: globalSettings.bankTransfer.accountName || null,
+      bsb: globalSettings.bankTransfer.bsb || null,
+      accountNumber: globalSettings.bankTransfer.accountNumber || null,
+      payId: globalSettings.bankTransfer.payId || null,
+      payIdType: globalSettings.bankTransfer.payIdType || null,
+      instructions: globalSettings.bankTransfer.instructions || null,
+    } : null);
+  res.setHeader("Cache-Control", "private, no-store");
+  res.json(safePublicInvoiceDto(enriched, match.tenantSlug, bankTransfer));
 });
 
 // ── Tenants ──────────────────────────────────────────
@@ -5305,19 +6108,148 @@ const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,28}[a-z0-9]$|^[a-z0-9]{1,2}$/;
 function readTenants() {
   try {
     if (!fs.existsSync(TENANTS_FILE)) return [];
-    return JSON.parse(fs.readFileSync(TENANTS_FILE, "utf-8"));
-  } catch {
-    return [];
+    const tenants = JSON.parse(fs.readFileSync(TENANTS_FILE, "utf-8"));
+    if (!Array.isArray(tenants)) throw new Error("Tenant database must contain an array");
+    return tenants;
+  } catch (err) {
+    console.error("Unable to read tenants database:", err.message);
+    throw err;
   }
 }
 
+function galleryTimezone(db, tenantSlug) {
+  if (tenantSlug) {
+    const tenant = readTenants().find(item => item.slug === tenantSlug);
+    if (tenant?.timezone) return tenant.timezone;
+    const tenantSettings = dbGet(db, `t_${tenantSlug}_wv_tenant_settings`, {});
+    if (tenantSettings?.timezone) return tenantSettings.timezone;
+  }
+  return dbGet(db, DB_KEYS.PROFILE, {})?.timezone || process.env.TZ || "Australia/Sydney";
+}
+
 function writeTenants(tenants) {
-  fs.writeFileSync(TENANTS_FILE, JSON.stringify(tenants, null, 2));
+  writeJsonFileAtomicSync(TENANTS_FILE, tenants);
+}
+
+function licensedTenantBySlug(slug, tenants = readTenants(), keys = readLicenseKeys()) {
+  const tenant = tenants.find(item => item.slug === slug);
+  const state = tenantLicenseState(tenant, keys);
+  return state.active ? { tenant, license: state.license } : null;
+}
+
+function tenantIsLicensed(tenantOrSlug) {
+  const slug = typeof tenantOrSlug === "string" ? tenantOrSlug : tenantOrSlug?.slug;
+  return !!slug && !!licensedTenantBySlug(slug);
+}
+
+function claimTenantLicense(keys, tenants, slug, requestedKey, currentKey = "") {
+  const normalized = String(requestedKey || "").trim().toUpperCase();
+  const previous = String(currentKey || "").trim().toUpperCase();
+  if (normalized === previous) {
+    const currentTenant = tenants.find(item => item.slug === slug);
+    const state = tenantLicenseState(currentTenant, keys);
+    if (state.active) return { ok: true, keys };
+    const referencedElsewhere = tenants.some(item => item.slug !== slug && String(item.licenseKey || "").trim().toUpperCase() === normalized);
+    const keyIndex = keys.findIndex(item => String(item.key || "").trim().toUpperCase() === normalized);
+    const legacyKey = keyIndex >= 0 ? keys[keyIndex] : null;
+    const expiry = Date.parse(legacyKey?.expiresAt || "");
+    const safelyClaimable = !!legacyKey
+      && !referencedElsewhere
+      && !legacyKey.revokedAt && legacyKey.revoked !== true && legacyKey.status !== "revoked"
+      && (!legacyKey.expiresAt || (Number.isFinite(expiry) && expiry > Date.now()))
+      && (!legacyKey.usedBy || String(legacyKey.usedBy) === slug);
+    if (!safelyClaimable) return { ok: false, status: 409, error: "The current licence is not active or uniquely claimable" };
+    const repairedKeys = keys.map(item => ({ ...item }));
+    repairedKeys[keyIndex] = {
+      ...legacyKey,
+      usedAt: legacyKey.usedAt || new Date().toISOString(),
+      usedBy: slug,
+      setupToken: undefined,
+    };
+    return { ok: true, keys: repairedKeys };
+  }
+  const nextKeys = keys.map(item => ({ ...item }));
+  if (previous) {
+    const previousIndex = nextKeys.findIndex(item => String(item.key || "").toUpperCase() === previous && String(item.usedBy || "") === slug);
+    if (previousIndex >= 0) {
+      const { usedAt: _usedAt, usedBy: _usedBy, ...released } = nextKeys[previousIndex];
+      nextKeys[previousIndex] = {
+        ...released,
+        releasedAt: new Date().toISOString(),
+        setupToken: crypto.randomBytes(32).toString("hex"),
+      };
+    }
+  }
+  if (!normalized) return { ok: true, keys: nextKeys };
+  if (tenants.some(item => item.slug !== slug && String(item.licenseKey || "").trim().toUpperCase() === normalized)) {
+    return { ok: false, status: 409, error: "That licence is already assigned to another tenant" };
+  }
+  const keyIndex = nextKeys.findIndex(item => String(item.key || "").trim().toUpperCase() === normalized);
+  if (keyIndex < 0) return { ok: false, status: 400, error: "Licence key not found" };
+  const key = nextKeys[keyIndex];
+  if (key.revokedAt || key.revoked === true || key.status === "revoked") return { ok: false, status: 409, error: "That licence has been revoked" };
+  if (key.expiresAt && (!Number.isFinite(Date.parse(key.expiresAt)) || Date.parse(key.expiresAt) <= Date.now())) return { ok: false, status: 409, error: "That licence has expired or is invalid" };
+  if (key.usedAt || key.usedBy) return { ok: false, status: 409, error: "That licence is already claimed" };
+  nextKeys[keyIndex] = {
+    ...key,
+    usedAt: new Date().toISOString(),
+    usedBy: slug,
+    setupToken: undefined,
+    releasedAt: undefined,
+  };
+  return { ok: true, keys: nextKeys };
+}
+
+function getTenantSession(req) {
+  const cookieToken = parseCookies(req.headers.cookie)[TENANT_SESSION_COOKIE];
+  const authorization = String(req.headers.authorization || "");
+  const bearerToken = authorization.startsWith("Bearer ") ? authorization.slice(7).trim() : "";
+  for (const token of [bearerToken, cookieToken]) {
+    const session = verifySession(token, SESSION_SECRET, { purpose: "tenant" });
+    if (session?.sub && isValidSlug(session.sub)) return session;
+  }
+  return null;
+}
+
+async function requireTenant(req, res, next) {
+  if (await authenticateAdmin(req)) {
+    req.authContext = { type: "admin" };
+    return next();
+  }
+  const session = getTenantSession(req);
+  const requestedSlug = String(req.params.slug || "");
+  if (!session || session.sub !== requestedSlug) {
+    return res.status(401).json({ error: "Tenant authentication required" });
+  }
+  const licensed = licensedTenantBySlug(requestedSlug);
+  const tenant = licensed?.tenant;
+  if (!tenant) return res.status(403).json({ error: "Tenant account or licence is inactive" });
+  if (session.cv !== credentialVersion(tenant.passwordHash)) return res.status(401).json({ error: "Tenant session has expired" });
+  req.authContext = { type: "tenant", slug: requestedSlug, tenant };
+  next();
+}
+
+async function requireAdminOrScopedTenant(req, res, next) {
+  if (await authenticateAdmin(req)) {
+    req.authContext = { type: "admin" };
+    return next();
+  }
+  const requestedSlug = String(req.params.slug || req.query.tenant || req.body?.tenantSlug || "");
+  const session = getTenantSession(req);
+  if (!requestedSlug || !session || session.sub !== requestedSlug) {
+    return res.status(401).json({ error: "Authentication required" });
+  }
+  const licensed = licensedTenantBySlug(requestedSlug);
+  const tenant = licensed?.tenant;
+  if (!tenant) return res.status(403).json({ error: "Tenant account or licence is inactive" });
+  if (session.cv !== credentialVersion(tenant.passwordHash)) return res.status(401).json({ error: "Tenant session has expired" });
+  req.authContext = { type: "tenant", slug: requestedSlug, tenant };
+  next();
 }
 
 // List all tenants
 app.get("/api/tenants", tenantLimiter, requireAuth, (_req, res) => {
-  res.json(readTenants());
+  res.json(readTenants().map(safeTenantPrivateDto));
 });
 
 // Create tenant
@@ -5329,31 +6261,44 @@ app.post("/api/tenants", tenantLimiter, requireAuth, (req, res) => {
   if (!displayName || typeof displayName !== "string" || !displayName.trim()) {
     return res.status(400).json({ error: "displayName is required" });
   }
+  if (!licenseKey || typeof licenseKey !== "string") return res.status(400).json({ error: "An unclaimed active licence key is required" });
   const tenants = readTenants();
   if (tenants.find(t => t.slug === slug)) {
     return res.status(409).json({ error: "Slug already in use" });
   }
+  const claimed = claimTenantLicense(readLicenseKeys(), tenants, slug, licenseKey);
+  if (!claimed.ok) return res.status(claimed.status).json({ error: claimed.error });
   const tenant = {
     slug,
     displayName: displayName.trim(),
     email: (email || "").trim(),
     bio: (bio || "").trim() || undefined,
     timezone: timezone || "Australia/Sydney",
-    licenseKey: licenseKey || undefined,
+    licenseKey: String(licenseKey).trim().toUpperCase(),
     active: true,
     createdAt: new Date().toISOString(),
   };
+  writeLicenseKeys(claimed.keys);
   tenants.push(tenant);
   writeTenants(tenants);
-  res.json(tenant);
+  res.json(safeTenantPrivateDto(tenant));
 });
 
 // Update tenant
-app.put("/api/tenants/:slug", tenantLimiter, requireAuth, (req, res) => {
-  const tenants = readTenants();
-  const idx = tenants.findIndex(t => t.slug === req.params.slug);
+app.put("/api/tenants/:slug", tenantLimiter, requireAuth, async (req, res) => {
+  let tenants = readTenants();
+  let idx = tenants.findIndex(t => t.slug === req.params.slug);
   if (idx === -1) return res.status(404).json({ error: "Tenant not found" });
   const { slug: _ignoreSlug, createdAt: _ignoreCreatedAt, ...updates } = req.body || {};
+  if (updates.passwordHash !== undefined) {
+    if (typeof updates.passwordHash !== "string" || updates.passwordHash.length < 32 || updates.passwordHash.length > 256) {
+      return res.status(400).json({ error: "A valid password hash is required" });
+    }
+    updates.passwordHash = await bcryptHash(updates.passwordHash);
+    tenants = readTenants();
+    idx = tenants.findIndex(t => t.slug === req.params.slug);
+    if (idx === -1) return res.status(404).json({ error: "Tenant not found" });
+  }
   // Validate and normalise customDomain when provided
   if (updates.customDomain !== undefined) {
     if (updates.customDomain === "" || updates.customDomain === null) {
@@ -5377,19 +6322,76 @@ app.put("/api/tenants/:slug", tenantLimiter, requireAuth, (req, res) => {
       updates.customDomain = normalizedDomain;
     }
   }
+  let updatedLicenseKeys = null;
+  if (Object.prototype.hasOwnProperty.call(updates, "licenseKey")) {
+    const requestedLicense = String(updates.licenseKey || "").trim().toUpperCase();
+    const assignment = claimTenantLicense(readLicenseKeys(), tenants, req.params.slug, requestedLicense, tenants[idx].licenseKey);
+    if (!assignment.ok) return res.status(assignment.status).json({ error: assignment.error });
+    updatedLicenseKeys = assignment.keys;
+    updates.licenseKey = requestedLicense || undefined;
+    if (!requestedLicense) updates.active = false;
+  }
   tenants[idx] = { ...tenants[idx], ...updates, slug: req.params.slug };
+  if (updatedLicenseKeys) writeLicenseKeys(updatedLicenseKeys);
   writeTenants(tenants);
-  res.json(tenants[idx]);
+  res.json(safeTenantPrivateDto(tenants[idx]));
 });
 
 // Delete tenant
 app.delete("/api/tenants/:slug", tenantLimiter, requireAuth, (req, res) => {
   const tenants = readTenants();
   const slug = req.params.slug;
+  const deletedTenant = tenants.find(t => t.slug === slug);
   const filtered = tenants.filter(t => t.slug !== slug);
   if (filtered.length === tenants.length) return res.status(404).json({ error: "Tenant not found" });
+  const db = readDb();
+  const prefix = `t_${slug}_`;
+  const removedKeys = Object.keys(db).filter(key => key.startsWith(prefix));
+  const owners = dbGet(db, "wv_upload_owners", {});
+  const tenantFiles = new Set();
+  for (const key of removedKeys) collectUploadFileNames(dbGet(db, key, db[key]), tenantFiles);
+  for (const [filename, owner] of Object.entries(owners)) {
+    if (owner?.tenantSlug === slug) tenantFiles.add(path.basename(filename));
+  }
+  for (const key of removedKeys) delete db[key];
+  const bookings = dbGet(db, DB_KEYS.BOOKINGS, []);
+  if (Array.isArray(bookings)) db[DB_KEYS.BOOKINGS] = JSON.stringify(bookings.filter(booking => booking.tenantSlug !== slug));
+
+  let deletedFiles = 0;
+  let purgedCacheFiles = 0;
+  for (const filename of tenantFiles) {
+    const safeName = path.basename(filename);
+    if (!safeName || uploadReferenceKeys(db, safeName).length > 0) continue;
+    const filepath = path.join(UPLOADS_DIR, safeName);
+    let removedOrMissing = !fs.existsSync(filepath);
+    if (!removedOrMissing) {
+      try { fs.unlinkSync(filepath); deletedFiles++; removedOrMissing = true; }
+      catch (err) { console.error(`Unable to delete tenant upload ${safeName}:`, err.message); }
+    }
+    if (!removedOrMissing) continue;
+    delete owners[safeName];
+    const baseName = path.basename(safeName, path.extname(safeName));
+    try {
+      for (const cacheName of fs.readdirSync(CACHE_DIR)) {
+        if (cacheName.startsWith(`${baseName}_`) || cacheName.startsWith(`${baseName}-`)) {
+          try { fs.unlinkSync(path.join(CACHE_DIR, cacheName)); purgedCacheFiles++; } catch {}
+        }
+      }
+    } catch {}
+  }
+  db["wv_upload_owners"] = owners;
+  writeDb(db);
   writeTenants(filtered);
-  res.json({ ok: true });
+  if (deletedTenant?.licenseKey) {
+    const keys = readLicenseKeys();
+    const keyIndex = keys.findIndex(item => String(item.key || "").toUpperCase() === String(deletedTenant.licenseKey).toUpperCase() && String(item.usedBy || "") === slug);
+    if (keyIndex >= 0 && !keys[keyIndex].revokedAt && keys[keyIndex].revoked !== true) {
+      const { usedAt: _usedAt, usedBy: _usedBy, ...released } = keys[keyIndex];
+      keys[keyIndex] = { ...released, releasedAt: new Date().toISOString(), setupToken: crypto.randomBytes(32).toString("hex") };
+      writeLicenseKeys(keys);
+    }
+  }
+  res.json({ ok: true, removedKeys: removedKeys.length, deletedFiles, purgedCacheFiles });
 });
 
 // Resolve a hostname to a tenant slug — used by the frontend for custom-domain support
@@ -5401,7 +6403,7 @@ app.get("/api/tenant/by-domain", tenantPublicLimiter, (req, res) => {
   const normalized = domain.toLowerCase().trim();
   const tenants = readTenants();
   const tenant = tenants.find(
-    t => t.active !== false && t.customDomain && t.customDomain.toLowerCase() === normalized
+    t => tenantIsLicensed(t) && t.customDomain && t.customDomain.toLowerCase() === normalized
   );
   if (!tenant) return res.json({});
   res.json({ slug: tenant.slug, displayName: tenant.displayName });
@@ -5416,7 +6418,7 @@ app.get("/api/caddy/verify-domain", tenantPublicLimiter, (req, res) => {
   if (publicSiteHosts().includes(normalized)) return res.status(200).end();
   const tenants = readTenants();
   const found = tenants.some(
-    t => t.active !== false && t.customDomain && t.customDomain.toLowerCase() === normalized
+    t => tenantIsLicensed(t) && t.customDomain && t.customDomain.toLowerCase() === normalized
   );
   res.status(found ? 200 : 404).end();
 });
@@ -5424,8 +6426,7 @@ app.get("/api/caddy/verify-domain", tenantPublicLimiter, (req, res) => {
 // Public tenant data for booking page — returns event types + profile
 app.get("/api/tenant/:slug/public", tenantPublicLimiter, (req, res) => {
   const slug = req.params.slug;
-  const tenants = readTenants();
-  const tenant = tenants.find(t => t.slug === slug && t.active !== false);
+  const tenant = licensedTenantBySlug(slug)?.tenant;
   if (!tenant) return res.status(404).json({ error: "Tenant not found" });
   const db = readDb();
   // Try tenant-specific event types only — do not fall back to main admin's event types
@@ -5446,7 +6447,7 @@ app.get("/api/tenant/:slug/public", tenantPublicLimiter, (req, res) => {
       if (limits.maxBookings !== null) {
         const rawBks = db["wv_bookings"];
         const existingBookings = rawBks ? (typeof rawBks === "string" ? JSON.parse(rawBks) : (Array.isArray(rawBks) ? rawBks : [])) : [];
-        const tenantBookingCount = existingBookings.filter(b => b.tenantSlug === slug).length;
+        const tenantBookingCount = existingBookings.filter(b => b.tenantSlug === slug && bookingCountsTowardTenantLimit(b)).length;
         bookingLimitReached = tenantBookingCount >= limits.maxBookings;
       }
     }
@@ -5474,59 +6475,68 @@ app.get("/api/tenant/:slug/public", tenantPublicLimiter, (req, res) => {
 
   // Allow browsers and CDNs to cache for 60 s; revalidate after that.
   res.setHeader("Cache-Control", SHORT_CACHE);
-  res.json({ tenant, eventTypes, bookingLimitReached, enquiryEnabled, enquiryLabel, brandColor,
+  res.json({ tenant: safeTenantPublicDto(tenant), eventTypes: eventTypes.map(sanitizePublicEventType), bookingLimitReached, enquiryEnabled, enquiryLabel, brandColor,
     cosplayFieldsEnabled, conventionFieldEnabled, bankTransfer });
 });
 
+const TENANT_SERVER_MANAGED_STORE_KEYS = new Set([
+  "wv_event_counter", "wv_extra_event_slots", "wv_license_keys", "wv_license_plans",
+  "wv_event_ids_seen", "wv_gcal_tokens", "wv_gcal_settings", "wv_upload_owners", "wv_stripe_processed_events",
+]);
+function tenantStoreKeyIsAllowed(key) {
+  return tenantSelfServiceStoreKeyAllowed(key) && !TENANT_SERVER_MANAGED_STORE_KEYS.has(String(key || ""));
+}
+
 // Get tenant-scoped store key (for main admin to manage tenant data)
-app.get("/api/tenant/:slug/store/:key", tenantLimiter, (req, res) => {
+app.get("/api/tenant/:slug/store/:key", tenantLimiter, requireTenant, (req, res) => {
+  if (!tenantStoreKeyIsAllowed(req.params.key)) return res.status(403).json({ error: "This tenant store key is not available through the generic store" });
   const db = readDb();
   const fullKey = `t_${req.params.slug}_${req.params.key}`;
   res.json({ value: db[fullKey] ?? null });
 });
 
 // Set tenant-scoped store key
-app.put("/api/tenant/:slug/store/:key", tenantLimiter, (req, res) => {
+app.put("/api/tenant/:slug/store/:key", tenantLimiter, requireTenant, (req, res) => {
   const slug = req.params.slug;
+  if (!tenantStoreKeyIsAllowed(req.params.key)) {
+    return res.status(403).json({ error: "This tenant store key is not available through the generic store" });
+  }
   const db = readDb();
 
   // ── License key enforcement for event types ────────────────────────────
   if (req.params.key === "wv_event_types") {
-    const tenants = readTenants();
-    const tenant = tenants.find(t => t.slug === slug);
-    if (tenant && tenant.licenseKey) {
-      const allKeys = readLicenseKeys();
-      const licKey = allKeys.find(k => k.key === tenant.licenseKey);
-      if (licKey) {
-        const limits = getLicKeyLimits(licKey);
-        if (limits.maxEvents !== null) {
-          const newEventTypes = Array.isArray(req.body.value) ? req.body.value : [];
-          // Get current stored array to detect newly added events
-          const currentRaw = db[`t_${slug}_wv_event_types`];
-          const currentEventTypes = currentRaw ? (typeof currentRaw === "string" ? JSON.parse(currentRaw) : (Array.isArray(currentRaw) ? currentRaw : [])) : [];
-          const currentLength = currentEventTypes.length;
-          // Lifetime counter — never decremented when events are deleted.
-          // Bootstrap to currentLength the first time this tenant saves event types.
-          const counterKey = `t_${slug}_wv_event_counter`;
-          const counter = typeof db[counterKey] === "number" ? db[counterKey] : (db[counterKey] = currentLength);
-          if (newEventTypes.length > currentLength) {
-            const newlyAdded = newEventTypes.length - currentLength;
-            const newCounter = counter + newlyAdded;
-            const extraSlotsKey = `t_${slug}_wv_extra_event_slots`;
-            const extraSlots = typeof db[extraSlotsKey] === "number" ? db[extraSlotsKey] : 0;
-            const effectiveLimit = limits.maxEvents + extraSlots;
-            if (newCounter > effectiveLimit) {
-              const extraPrice = limits.extraEventPrice;
-              const msg = extraPrice != null
-                ? `Event type limit reached (${effectiveLimit}). You can purchase extra slots for $${extraPrice} each.`
-                : `Event type limit reached (${effectiveLimit}). Contact your platform administrator to upgrade your plan.`;
-              return res.status(403).json({ error: msg, limitReached: true, extraEventPrice: extraPrice });
-            }
-            db[counterKey] = newCounter;
-          }
-        }
+    const licensed = licensedTenantBySlug(slug);
+    if (!licensed) return res.status(403).json({ error: "Tenant account or licence is inactive" });
+    const newEventTypes = Array.isArray(req.body.value) ? req.body.value : [];
+    const currentEventTypes = getStoredArray(db, `t_${slug}_wv_event_types`);
+    const identity = validateEventTypeIdentityChange(currentEventTypes, newEventTypes);
+    if (!identity.ok) return res.status(400).json({ error: identity.error });
+    const seenKey = `t_${slug}_wv_event_ids_seen`;
+    const persistedSeen = dbGet(db, seenKey, []);
+    const seenIds = new Set([
+      ...(Array.isArray(persistedSeen) ? persistedSeen.map(String) : []),
+      ...currentEventTypes.map(item => String(item?.id || "")).filter(Boolean),
+    ]);
+    const introducedIds = newEventTypes.map(item => String(item.id)).filter(id => !seenIds.has(id));
+    const counterKey = `t_${slug}_wv_event_counter`;
+    const counter = Math.max(Number(db[counterKey]) || 0, seenIds.size);
+    const newCounter = counter + introducedIds.length;
+    const limits = getLicKeyLimits(licensed.license);
+    if (limits.maxEvents !== null) {
+      const extraSlotsKey = `t_${slug}_wv_extra_event_slots`;
+      const extraSlots = typeof db[extraSlotsKey] === "number" ? db[extraSlotsKey] : 0;
+      const effectiveLimit = limits.maxEvents + extraSlots;
+      if (newCounter > effectiveLimit) {
+        const extraPrice = limits.extraEventPrice;
+        const msg = extraPrice != null
+          ? `Event type limit reached (${effectiveLimit}). You can purchase extra slots for $${extraPrice} each.`
+          : `Event type limit reached (${effectiveLimit}). Contact your platform administrator to upgrade your plan.`;
+        return res.status(403).json({ error: msg, limitReached: true, extraEventPrice: extraPrice });
       }
     }
+    introducedIds.forEach(id => seenIds.add(id));
+    db[counterKey] = newCounter;
+    db[seenKey] = [...seenIds];
   }
 
   const fullKey = `t_${slug}_${req.params.key}`;
@@ -5536,7 +6546,7 @@ app.put("/api/tenant/:slug/store/:key", tenantLimiter, (req, res) => {
 });
 
 // Clear only the tenant-specific watermark cache entries for a given slug
-app.post("/api/tenant/:slug/cache/clear", tenantLimiter, (req, res) => {
+app.post("/api/tenant/:slug/cache/clear", tenantLimiter, requireTenant, (req, res) => {
   const slug = req.params.slug;
   const tenants = readTenants();
   if (!tenants.find(t => t.slug === slug)) return res.status(404).json({ error: "Tenant not found" });
@@ -5560,7 +6570,7 @@ app.post("/api/tenant/:slug/cache/clear", tenantLimiter, (req, res) => {
 });
 
 // Return cache stats for a tenant (file count + total size)
-app.get("/api/tenant/:slug/cache/stats", tenantLimiter, (req, res) => {
+app.get("/api/tenant/:slug/cache/stats", tenantLimiter, requireTenant, (req, res) => {
   const slug = req.params.slug;
   const slugPattern = new RegExp(`_t_${slug.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}_`);
   let count = 0;
@@ -5584,21 +6594,571 @@ app.get("/api/tenant/:slug/cache/stats", tenantLimiter, (req, res) => {
 // Public endpoint: look up a booking by its modifyToken or id (used by the reschedule page)
 // Rate-limited to prevent enumeration of booking IDs
 const bookingLookupLimiter = rateLimit({ windowMs: 60_000, max: 30, standardHeaders: true, legacyHeaders: false, message: { error: "Too many requests" } });
+const publicBookingLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHeaders: true, legacyHeaders: false, message: { error: "Too many booking attempts — please wait" } });
+
+function publicBookingDto(booking) {
+  const allowed = [
+    "id", "paymentReference", "clientName", "clientEmail", "phone", "date", "time", "eventTypeId", "type",
+    "duration", "status", "notes", "answers", "answerLabels", "createdAt", "paymentStatus", "paymentAmount",
+    "instagramHandle", "modifyToken", "depositRequired", "depositAmount", "depositMethod", "depositPaidAt", "paidAt",
+    "requiresConfirmation", "tenantSlug", "statusHistory",
+  ];
+  return Object.fromEntries(allowed.filter(key => booking?.[key] !== undefined).map(key => [key, booking[key]]));
+}
+
+function getStoredArray(db, key) {
+  const value = dbGet(db, key, []);
+  return Array.isArray(value) ? value : [];
+}
+
+function bookingCountsTowardTenantLimit(booking, nowMs = Date.now()) {
+  return bookingBlocksAvailability(booking, nowMs);
+}
+
+function unconfirmedBookingHoldExpiresAt(settings, paymentPath) {
+  if (paymentPath === "stripe") {
+    return new Date(Date.now() + Math.max(1, Math.min(120, Number(settings?.bookingTimerMinutes) || 15)) * 60_000).toISOString();
+  }
+  const hours = Math.max(1, Math.min(168, Number(settings?.unconfirmedBookingHoldHours) || 48));
+  return new Date(Date.now() + hours * 60 * 60_000).toISOString();
+}
+
+function bookingValidationContext(db, tenantSlug, eventTypes, timezone, excludeBookingId, additionalBookings = []) {
+  return {
+    eventTypes,
+    bookings: [...getStoredArray(db, DB_KEYS.BOOKINGS), ...additionalBookings],
+    tenantSlug,
+    timezone: timezone || "Australia/Sydney",
+    excludeBookingId,
+  };
+}
+
+function zonedDateTimeToUtc(dateValue, timeValue, timeZone) {
+  const [year, month, day] = dateValue.split("-").map(Number);
+  const [hour, minute] = timeValue.split(":").map(Number);
+  let utcMs = Date.UTC(year, month - 1, day, hour, minute);
+  for (let i = 0; i < 3; i++) {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone,
+      year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+    }).formatToParts(new Date(utcMs));
+    const get = type => Number(parts.find(part => part.type === type)?.value);
+    const representedAsUtc = Date.UTC(get("year"), get("month") - 1, get("day"), get("hour"), get("minute"));
+    utcMs -= representedAsUtc - Date.UTC(year, month - 1, day, hour, minute);
+  }
+  return new Date(utcMs);
+}
+
+function busyPeriodToBooking(period, dateValue, timeZone, tenantSlug, index) {
+  const toLocal = value => {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone,
+      year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+    }).formatToParts(new Date(value));
+    const get = type => parts.find(part => part.type === type)?.value;
+    return { date: `${get("year")}-${get("month")}-${get("day")}`, minutes: Number(get("hour")) * 60 + Number(get("minute")) };
+  };
+  const start = toLocal(period.start);
+  const end = toLocal(period.end);
+  if (start.date > dateValue || end.date < dateValue) return null;
+  const startMinutes = start.date < dateValue ? 0 : start.minutes;
+  const endMinutes = end.date > dateValue ? 24 * 60 : end.minutes;
+  if (endMinutes <= startMinutes) return null;
+  return {
+    id: `gcal-busy-${index}`,
+    date: dateValue,
+    time: `${String(Math.floor(startMinutes / 60)).padStart(2, "0")}:${String(startMinutes % 60).padStart(2, "0")}`,
+    duration: endMinutes - startMinutes,
+    status: "confirmed",
+    tenantSlug: tenantSlug || undefined,
+  };
+}
+
+async function getGoogleBusyBookings(tenantSlug, dateValue, timeZone) {
+  let client;
+  let calendarId = "primary";
+  if (tenantSlug) {
+    const db = readDb();
+    const settings = dbGet(db, `t_${tenantSlug}_wv_tenant_settings`, {});
+    const tokens = dbGet(db, `t_${tenantSlug}_wv_gcal_tokens`, null);
+    let credentials;
+    try { credentials = settings.googleApiCredentials ? JSON.parse(settings.googleApiCredentials) : null; } catch { credentials = null; }
+    if (!credentials?.web || !tokens?.access_token) return [];
+    const { google } = require("googleapis");
+    const { client_id, client_secret, redirect_uris } = credentials.web;
+    client = new google.auth.OAuth2(client_id, client_secret, (redirect_uris || []).find(uri => uri.includes("googlecalendar")) || redirect_uris?.[0]);
+    client.setCredentials(tokens);
+    client.on("tokens", fresh => {
+      const latestDb = readDb();
+      latestDb[`t_${tenantSlug}_wv_gcal_tokens`] = { ...tokens, ...fresh };
+      writeDb(latestDb);
+    });
+    calendarId = dbGet(db, `t_${tenantSlug}_wv_gcal_settings`, {})?.calendarId || settings.googleCalendarId || "primary";
+  } else {
+    client = getMainGoogleCalendarClient();
+    if (!client) return [];
+    calendarId = loadMainCalendarSettings()?.calendarId || "primary";
+  }
+  const { google } = require("googleapis");
+  const dayStart = zonedDateTimeToUtc(dateValue, "00:00", timeZone);
+  const nextDate = new Date(`${dateValue}T00:00:00Z`);
+  nextDate.setUTCDate(nextDate.getUTCDate() + 1);
+  const dayEndValue = nextDate.toISOString().slice(0, 10);
+  const dayEnd = zonedDateTimeToUtc(dayEndValue, "00:00", timeZone);
+  const { data } = await google.calendar({ version: "v3", auth: client }).freebusy.query({
+    requestBody: { timeMin: dayStart.toISOString(), timeMax: dayEnd.toISOString(), timeZone, items: [{ id: calendarId }] },
+  });
+  return (data.calendars?.[calendarId]?.busy || []).map((period, index) => busyPeriodToBooking(period, dateValue, timeZone, tenantSlug, index)).filter(Boolean);
+}
+
+function getBookingGoogleCalendarConnection(tenantSlug) {
+  if (!tenantSlug) {
+    const client = getMainGoogleCalendarClient();
+    return client ? { client, calendarId: loadMainCalendarSettings()?.calendarId || "primary", timezone: process.env.TZ || "Australia/Sydney" } : null;
+  }
+  const db = readDb();
+  const settings = dbGet(db, `t_${tenantSlug}_wv_tenant_settings`, {});
+  const tokens = dbGet(db, `t_${tenantSlug}_wv_gcal_tokens`, null);
+  let credentials = settings.googleApiCredentials;
+  if (typeof credentials === "string") {
+    try { credentials = JSON.parse(credentials); } catch { credentials = null; }
+  }
+  if (!credentials?.web || !tokens?.access_token) return null;
+  const { google } = require("googleapis");
+  const { client_id, client_secret, redirect_uris } = credentials.web;
+  const client = new google.auth.OAuth2(client_id, client_secret, (redirect_uris || []).find(uri => uri.includes("googlecalendar")) || redirect_uris?.[0]);
+  client.setCredentials(tokens);
+  client.on("tokens", fresh => {
+    const latestDb = readDb();
+    latestDb[`t_${tenantSlug}_wv_gcal_tokens`] = { ...tokens, ...fresh };
+    writeDb(latestDb);
+  });
+  const tenant = readTenants().find(item => item.slug === tenantSlug);
+  return {
+    client,
+    calendarId: dbGet(db, `t_${tenantSlug}_wv_gcal_settings`, {})?.calendarId || settings.googleCalendarId || "primary",
+    timezone: tenant?.timezone || "Australia/Sydney",
+  };
+}
+
+function buildBookingCalendarEvent(booking, timezone) {
+  const start = zonedDateTimeToUtc(booking.date, booking.time, timezone);
+  const end = new Date(start.getTime() + Math.max(1, Number(booking.duration) || 60) * 60_000);
+  return {
+    summary: `📸 ${booking.type || "Session"} — ${booking.clientName || "Client"}`,
+    description: [
+      booking.clientEmail ? `Email: ${booking.clientEmail}` : "",
+      booking.phone ? `Phone: ${booking.phone}` : "",
+      `Duration: ${Math.max(1, Number(booking.duration) || 60)}min`,
+      booking.notes ? `Notes: ${booking.notes}` : "",
+      `Ref: ${booking.id}`,
+    ].filter(Boolean).join("\n"),
+    start: { dateTime: start.toISOString(), timeZone: timezone },
+    end: { dateTime: end.toISOString(), timeZone: timezone },
+    extendedProperties: { private: { watermarkVaultBookingId: booking.id } },
+  };
+}
+
+function bookingReadyForCalendar(booking) {
+  return !!booking && booking.archived !== true && booking.status !== "cancelled" && (
+    ["confirmed", "completed"].includes(booking.status)
+    || ["paid", "deposit-paid"].includes(booking.paymentStatus)
+  );
+}
+
+async function syncBookingCalendarMutation(booking, action) {
+  if (!booking?.id) return "not-linked";
+  if (action !== "create" && !booking.gcalEventId) return "not-linked";
+  if (action === "create" && (!bookingBlocksAvailability(booking) || !bookingReadyForCalendar(booking))) return "not-eligible";
+  const connection = getBookingGoogleCalendarConnection(booking.tenantSlug || null);
+  if (!connection) return "not-configured";
+  const { google } = require("googleapis");
+  const calendar = google.calendar({ version: "v3", auth: connection.client });
+  if (action === "create") {
+    let eventId = booking.gcalEventId;
+    if (!eventId) {
+      const existing = await calendar.events.list({
+        calendarId: connection.calendarId,
+        privateExtendedProperty: [`watermarkVaultBookingId=${booking.id}`],
+        singleEvents: true,
+        showDeleted: false,
+        maxResults: 2,
+      });
+      eventId = existing.data.items?.find(item => item.status !== "cancelled")?.id || null;
+    }
+    if (eventId) {
+      await calendar.events.update({ calendarId: connection.calendarId, eventId, requestBody: buildBookingCalendarEvent(booking, connection.timezone) });
+    } else {
+      const created = await calendar.events.insert({ calendarId: connection.calendarId, requestBody: buildBookingCalendarEvent(booking, connection.timezone) });
+      eventId = created.data.id;
+    }
+    if (!eventId) throw new Error("Google Calendar did not return an event ID");
+    persistBookingCalendarEventLink(booking.id, eventId);
+    return "synced";
+  }
+  if (action === "cancel") {
+    try {
+      await calendar.events.delete({ calendarId: connection.calendarId, eventId: booking.gcalEventId });
+    } catch (err) {
+      const status = Number(err?.code || err?.response?.status);
+      if (status !== 404 && status !== 410) throw err;
+    }
+    return "synced";
+  }
+  await calendar.events.update({
+    calendarId: connection.calendarId,
+    eventId: booking.gcalEventId,
+    requestBody: buildBookingCalendarEvent(booking, connection.timezone),
+  });
+  return "synced";
+}
+
+function persistBookingCalendarEventLink(bookingId, gcalEventId) {
+  const db = readDb();
+  const bookings = getStoredArray(db, DB_KEYS.BOOKINGS);
+  const index = bookings.findIndex(item => item.id === bookingId);
+  if (index < 0) return;
+  bookings[index] = { ...bookings[index], gcalEventId };
+  db[DB_KEYS.BOOKINGS] = JSON.stringify(bookings);
+  writeDb(db);
+}
+
+function persistBookingCalendarSyncState(bookingId, state, action, errorMessage) {
+  const db = readDb();
+  const bookings = getStoredArray(db, DB_KEYS.BOOKINGS);
+  const index = bookings.findIndex(item => item.id === bookingId);
+  if (index < 0) return;
+  const changedAt = new Date().toISOString();
+  bookings[index] = {
+    ...bookings[index],
+    calendarSyncStatus: state,
+    calendarSyncAction: action,
+    calendarSyncUpdatedAt: changedAt,
+    calendarSyncError: errorMessage ? String(errorMessage).slice(0, 500) : undefined,
+    ...(state === "synced" && action === "cancel" ? { gcalEventId: undefined } : {}),
+  };
+  db[DB_KEYS.BOOKINGS] = JSON.stringify(bookings);
+  writeDb(db);
+}
+
+function enqueueBookingCalendarSync(booking, action, err) {
+  const db = readDb();
+  const queue = getStoredArray(db, DB_KEYS.CALENDAR_SYNC_QUEUE).filter(item => item.bookingId !== booking.id);
+  queue.push({
+    id: `gcal-sync-${crypto.randomUUID()}`,
+    bookingId: booking.id,
+    action,
+    attempts: 0,
+    nextAttemptAt: new Date(Date.now() + 30_000).toISOString(),
+    lastError: String(err?.message || err || "Calendar sync failed").slice(0, 500),
+    createdAt: new Date().toISOString(),
+  });
+  db[DB_KEYS.CALENDAR_SYNC_QUEUE] = JSON.stringify(queue);
+  writeDb(db);
+  persistBookingCalendarSyncState(booking.id, "queued", action, err?.message || err);
+}
+
+function queueInitialBookingCalendarSync(booking) {
+  setImmediate(async () => {
+    try {
+      const current = getStoredArray(readDb(), DB_KEYS.BOOKINGS).find(item => item.id === booking.id);
+      if (!current) return;
+      const result = await syncBookingCalendarMutation(current, "create");
+      if (result === "synced") persistBookingCalendarSyncState(current.id, "synced", "create");
+    } catch (err) {
+      console.error(`Google Calendar create failed for booking ${booking.id}; queued for retry:`, err.message);
+      const current = getStoredArray(readDb(), DB_KEYS.BOOKINGS).find(item => item.id === booking.id);
+      if (current && current.status !== "cancelled") enqueueBookingCalendarSync(current, "create", err);
+    }
+  });
+}
+
+let bookingCalendarSyncWorkerRunning = false;
+async function processBookingCalendarSyncQueue() {
+  if (bookingCalendarSyncWorkerRunning) return;
+  bookingCalendarSyncWorkerRunning = true;
+  try {
+    const db = readDb();
+    const queue = getStoredArray(db, DB_KEYS.CALENDAR_SYNC_QUEUE);
+    const bookings = getStoredArray(db, DB_KEYS.BOOKINGS);
+    const remaining = [];
+    const now = Date.now();
+    for (const booking of bookings.filter(item => item.gcalEventId && !bookingBlocksAvailability(item, now))) {
+      try {
+        const result = await syncBookingCalendarMutation(booking, "cancel");
+        if (result === "synced") persistBookingCalendarSyncState(booking.id, "synced", "cancel");
+      } catch (error) {
+        enqueueBookingCalendarSync(booking, "cancel", error);
+      }
+    }
+    for (const item of queue) {
+      if (Date.parse(item.nextAttemptAt || 0) > now) { remaining.push(item); continue; }
+      const booking = bookings.find(candidate => candidate.id === item.bookingId);
+      if (!booking) continue;
+      try {
+        const result = await syncBookingCalendarMutation(booking, item.action);
+        if (result === "synced") persistBookingCalendarSyncState(booking.id, "synced", item.action);
+      } catch (err) {
+        const attempts = Number(item.attempts || 0) + 1;
+        console.error(`Google Calendar ${item.action} retry failed for booking ${booking.id}:`, err.message);
+        remaining.push({
+          ...item,
+          attempts,
+          lastError: String(err.message || err).slice(0, 500),
+          nextAttemptAt: new Date(Date.now() + Math.min(6 * 60 * 60_000, 30_000 * (2 ** Math.min(attempts, 9)))).toISOString(),
+        });
+      }
+    }
+    const latestDb = readDb();
+    const snapshotIds = new Set(queue.map(item => item.id));
+    const appendedWhileRunning = getStoredArray(latestDb, DB_KEYS.CALENDAR_SYNC_QUEUE).filter(item => !snapshotIds.has(item.id));
+    const merged = new Map();
+    for (const item of [...remaining, ...appendedWhileRunning]) merged.set(`${item.bookingId}:${item.action}`, item);
+    latestDb[DB_KEYS.CALENDAR_SYNC_QUEUE] = JSON.stringify([...merged.values()]);
+    writeDb(latestDb);
+  } finally {
+    bookingCalendarSyncWorkerRunning = false;
+  }
+}
+
+const bookingCalendarSyncTimer = setInterval(() => {
+  processBookingCalendarSyncQueue().catch(err => console.error("Google Calendar sync queue failed:", err.message));
+}, 30_000);
+bookingCalendarSyncTimer.unref?.();
+
+app.get("/api/availability", bookingLookupLimiter, async (req, res) => {
+  const db = readDb();
+  const eventTypes = getStoredArray(db, DB_KEYS.EVENT_TYPES).filter(eventType => eventType?.active !== false);
+  const eventType = eventTypes.find(item => item.id === req.query.eventTypeId);
+  const date = String(req.query.date || "");
+  if (!eventType || !parseDate(date)) return res.status(400).json({ ok: false, error: "A valid date and eventTypeId are required" });
+  const profile = dbGet(db, DB_KEYS.PROFILE, {});
+  const timezone = profile?.timezone || process.env.TZ || "Australia/Sydney";
+  let googleBusy;
+  try { googleBusy = await getGoogleBusyBookings(null, date, timezone); }
+  catch (err) {
+    console.error("Google Calendar availability check failed:", err.message);
+    return res.status(503).json({ ok: false, error: "Calendar availability is temporarily unavailable" });
+  }
+  const slots = generateAvailableSlots({
+    eventType,
+    date,
+    duration: req.query.duration,
+    eventTypes,
+    bookings: [...getStoredArray(db, DB_KEYS.BOOKINGS), ...googleBusy],
+    tenantSlug: null,
+    timezone,
+  });
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ ok: true, date, eventTypeId: eventType.id, timezone, slots });
+});
+
+app.get("/api/tenant/:slug/availability", tenantPublicLimiter, async (req, res) => {
+  const tenant = licensedTenantBySlug(req.params.slug)?.tenant;
+  if (!tenant) return res.status(404).json({ ok: false, error: "Tenant not found" });
+  const db = readDb();
+  const eventTypes = getStoredArray(db, `t_${tenant.slug}_wv_event_types`).filter(eventType => eventType?.active !== false);
+  const eventType = eventTypes.find(item => item.id === req.query.eventTypeId);
+  const date = String(req.query.date || "");
+  if (!eventType || !parseDate(date)) return res.status(400).json({ ok: false, error: "A valid date and eventTypeId are required" });
+  const timezone = tenant.timezone || "Australia/Sydney";
+  let googleBusy;
+  try { googleBusy = await getGoogleBusyBookings(tenant.slug, date, timezone); }
+  catch (err) {
+    console.error(`Tenant ${tenant.slug} Google Calendar availability check failed:`, err.message);
+    return res.status(503).json({ ok: false, error: "Calendar availability is temporarily unavailable" });
+  }
+  const slots = generateAvailableSlots({
+    eventType,
+    date,
+    duration: req.query.duration,
+    eventTypes,
+    bookings: [...getStoredArray(db, DB_KEYS.BOOKINGS), ...googleBusy],
+    tenantSlug: tenant.slug,
+    timezone,
+  });
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ ok: true, date, eventTypeId: eventType.id, timezone, slots });
+});
+
 app.get("/api/booking/:token", bookingLookupLimiter, (req, res) => {
   const { token } = req.params;
   if (!token || typeof token !== "string") return res.status(400).json({ error: "Invalid token" });
   const db = readDb();
   const raw = db["wv_bookings"];
   const bookings = raw ? (typeof raw === "string" ? JSON.parse(raw) : (Array.isArray(raw) ? raw : [])) : [];
-  const booking = bookings.find(b => b.modifyToken === token || b.id === token);
+  const booking = bookings.find(b => timingSafeTextEqual(b.modifyToken, token));
   if (!booking) return res.status(404).json({ error: "Booking not found" });
-  res.json({ booking });
+  if (!bookingAllowsCapabilityMutation(booking)) return res.status(410).json({ error: "This booking has been archived" });
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ ok: true, booking: publicBookingDto(booking) });
+});
+
+app.patch("/api/booking/:token", bookingLookupLimiter, async (req, res) => {
+  const token = String(req.params.token || "");
+  const initialDb = readDb();
+  const initialBookings = getStoredArray(initialDb, DB_KEYS.BOOKINGS);
+  const initialIndex = initialBookings.findIndex(booking => timingSafeTextEqual(booking.modifyToken, token));
+  if (initialIndex < 0) return res.status(404).json({ ok: false, error: "Booking not found" });
+  const booking = initialBookings[initialIndex];
+  if (!bookingAllowsCapabilityMutation(booking)) return res.status(409).json({ ok: false, error: "This booking is archived; contact the photographer to restore it" });
+  const calendarAction = req.body?.action === "cancel" || req.body?.status === "cancelled" ? "cancel" : "reschedule";
+  let googleBusy = [];
+  if (calendarAction === "cancel") {
+    if (["cancelled", "completed"].includes(booking.status)) return res.status(409).json({ ok: false, error: `This booking is already ${booking.status}` });
+  } else {
+    if (booking.status === "cancelled" || booking.status === "completed") return res.status(409).json({ ok: false, error: `This booking cannot be rescheduled because it is ${booking.status}` });
+    if (!bookingBlocksAvailability(booking)) return res.status(409).json({ ok: false, error: "This booking hold has expired" });
+    const tenant = booking.tenantSlug ? licensedTenantBySlug(booking.tenantSlug)?.tenant : null;
+    if (booking.tenantSlug && !tenant) return res.status(409).json({ ok: false, error: "The photographer account is unavailable" });
+    const eventTypes = booking.tenantSlug
+      ? getStoredArray(initialDb, `t_${booking.tenantSlug}_wv_event_types`)
+      : getStoredArray(initialDb, DB_KEYS.EVENT_TYPES);
+    try { googleBusy = await getGoogleBusyBookings(booking.tenantSlug || null, String(req.body?.date || ""), tenant?.timezone || dbGet(initialDb, DB_KEYS.PROFILE, {})?.timezone || "Australia/Sydney"); }
+    catch (err) {
+      console.error("Google Calendar reschedule check failed:", err.message);
+      return res.status(503).json({ ok: false, error: "Calendar availability is temporarily unavailable" });
+    }
+    if (booking.gcalEventId && String(req.body?.date || "") === booking.date) {
+      googleBusy = googleBusy.filter(period => !(
+        period.date === booking.date
+        && period.time === booking.time
+        && Number(period.duration) === Number(booking.duration)
+      ));
+    }
+    const validation = validateBookingRequest({
+      eventTypeId: booking.eventTypeId,
+      date: req.body?.date,
+      time: req.body?.time,
+      duration: booking.duration,
+    }, bookingValidationContext(initialDb, booking.tenantSlug || null, eventTypes, tenant?.timezone || dbGet(initialDb, DB_KEYS.PROFILE, {})?.timezone, booking.id, googleBusy));
+    if (!validation.ok) return res.status(validation.status).json({ ok: false, error: validation.error });
+  }
+
+  // The Google check above yields to the event loop. Re-read and revalidate
+  // against the canonical current array before committing so another booking
+  // mutation cannot be overwritten or double-claim the requested slot.
+  const commitDb = readDb();
+  const commitBookings = getStoredArray(commitDb, DB_KEYS.BOOKINGS);
+  const commitIndex = commitBookings.findIndex(item => item.id === booking.id && timingSafeTextEqual(item.modifyToken, token));
+  if (commitIndex < 0) return res.status(404).json({ ok: false, error: "Booking not found" });
+  const current = commitBookings[commitIndex];
+  if (!bookingAllowsCapabilityMutation(current)) return res.status(409).json({ ok: false, error: "This booking is archived; contact the photographer to restore it" });
+  const changedAt = new Date().toISOString();
+  let updatedBooking;
+  if (calendarAction === "cancel") {
+    if (["cancelled", "completed"].includes(current.status)) return res.status(409).json({ ok: false, error: `This booking is already ${current.status}` });
+    updatedBooking = {
+      ...current,
+      status: "cancelled",
+      holdExpiresAt: undefined,
+      cancelledAt: changedAt,
+      statusHistory: [...(Array.isArray(current.statusHistory) ? current.statusHistory : []), { status: "cancelled", changedAt, note: "Cancelled by client" }],
+    };
+  } else {
+    if (["cancelled", "completed"].includes(current.status)) return res.status(409).json({ ok: false, error: `This booking cannot be rescheduled because it is ${current.status}` });
+    if (!bookingBlocksAvailability(current)) return res.status(409).json({ ok: false, error: "This booking hold has expired" });
+    const currentTenant = current.tenantSlug ? licensedTenantBySlug(current.tenantSlug)?.tenant : null;
+    if (current.tenantSlug && !currentTenant) return res.status(409).json({ ok: false, error: "The photographer account is unavailable" });
+    const currentEventTypes = current.tenantSlug
+      ? getStoredArray(commitDb, `t_${current.tenantSlug}_wv_event_types`)
+      : getStoredArray(commitDb, DB_KEYS.EVENT_TYPES);
+    const timezone = currentTenant?.timezone || dbGet(commitDb, DB_KEYS.PROFILE, {})?.timezone || "Australia/Sydney";
+    let currentGoogleBusy = googleBusy;
+    if (current.gcalEventId && String(req.body?.date || "") === current.date) {
+      currentGoogleBusy = currentGoogleBusy.filter(period => !(
+        period.date === current.date && period.time === current.time && Number(period.duration) === Number(current.duration)
+      ));
+    }
+    const finalValidation = validateBookingRequest({
+      eventTypeId: current.eventTypeId,
+      date: req.body?.date,
+      time: req.body?.time,
+      duration: current.duration,
+    }, bookingValidationContext(commitDb, current.tenantSlug || null, currentEventTypes, timezone, current.id, currentGoogleBusy));
+    if (!finalValidation.ok) return res.status(finalValidation.status).json({ ok: false, error: finalValidation.error });
+    updatedBooking = {
+      ...current,
+      date: finalValidation.normalized.date,
+      time: finalValidation.normalized.time,
+      rescheduledAt: changedAt,
+      statusHistory: [...(Array.isArray(current.statusHistory) ? current.statusHistory : []), { status: current.status, changedAt, note: "Rescheduled by client" }],
+    };
+  }
+  commitBookings[commitIndex] = updatedBooking;
+  commitDb[DB_KEYS.BOOKINGS] = JSON.stringify(commitBookings);
+  writeDb(commitDb);
+  if (calendarAction === "cancel") {
+    try {
+      const tenantSettings = updatedBooking.tenantSlug ? dbGet(commitDb, `t_${updatedBooking.tenantSlug}_wv_tenant_settings`, {}) : null;
+      await expireBookingCheckout(updatedBooking, tenantSettings);
+    } catch (err) {
+      console.error(`Unable to expire Stripe checkout for cancelled booking ${updatedBooking.id}:`, err.message);
+    }
+  }
+  try {
+    const syncState = await syncBookingCalendarMutation(updatedBooking, calendarAction);
+    if (syncState === "synced") persistBookingCalendarSyncState(updatedBooking.id, "synced", calendarAction);
+  } catch (err) {
+    console.error(`Google Calendar ${calendarAction} failed for booking ${updatedBooking.id}; queued for retry:`, err.message);
+    enqueueBookingCalendarSync(updatedBooking, calendarAction, err);
+  }
+  if (calendarAction === "cancel" || current.date !== updatedBooking.date || current.time !== updatedBooking.time) {
+    setImmediate(() => sendBookingUpdateReceipt(updatedBooking, calendarAction, current).catch(error => {
+      console.error(`Booking ${calendarAction} email failed for ${updatedBooking.id}:`, error?.message || error);
+    }));
+  }
+  res.json({ ok: true, booking: publicBookingDto(updatedBooking) });
+});
+
+app.post("/api/enquiry", publicBookingLimiter, (req, res) => {
+  const db = readDb();
+  const settings = dbGet(db, DB_KEYS.SETTINGS, {});
+  if (settings?.enquiryEnabled === false) return res.status(403).json({ ok: false, error: "Enquiries are not currently enabled" });
+  const name = String(req.body?.name || "").trim();
+  const email = String(req.body?.email || "").trim().toLowerCase();
+  const message = String(req.body?.message || "").trim();
+  if (!name || name.length > 160 || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || !message || message.length > 5000) {
+    return res.status(400).json({ ok: false, error: "Name, valid email, and message are required" });
+  }
+  const eventTypes = getStoredArray(db, DB_KEYS.EVENT_TYPES);
+  const eventType = req.body?.eventTypeId ? eventTypes.find(item => item.id === req.body.eventTypeId && item.active !== false) : null;
+  if (req.body?.eventTypeId && !eventType) return res.status(400).json({ ok: false, error: "Event type is unavailable" });
+  const preferredDate = req.body?.preferredDate ? String(req.body.preferredDate) : undefined;
+  const preferredStartTime = req.body?.preferredStartTime ? String(req.body.preferredStartTime) : undefined;
+  const preferredEndTime = req.body?.preferredEndTime ? String(req.body.preferredEndTime) : undefined;
+  if ((preferredDate && !parseDate(preferredDate)) || (preferredStartTime && !parseTime(preferredStartTime)) || (preferredEndTime && !parseTime(preferredEndTime))) {
+    return res.status(400).json({ ok: false, error: "Preferred date or time is invalid" });
+  }
+  const enquiries = getStoredArray(db, DB_KEYS.ENQUIRIES);
+  const recentCutoff = Date.now() - 60 * 60_000;
+  const duplicate = enquiries.find(item => item.email === email && item.message === message && Date.parse(item.createdAt || 0) >= recentCutoff);
+  if (duplicate) return res.status(202).json({ ok: true, enquiry: duplicate });
+  if (enquiries.length >= 5000) return res.status(429).json({ ok: false, error: "Enquiries are temporarily unavailable" });
+  const enquiry = {
+    id: `enq-${crypto.randomUUID()}`,
+    name,
+    email,
+    phone: String(req.body?.phone || "").trim().slice(0, 40) || undefined,
+    eventTypeId: eventType?.id,
+    eventTypeTitle: eventType?.title,
+    preferredDate,
+    preferredStartTime,
+    preferredEndTime,
+    message,
+    status: "pending",
+    createdAt: new Date().toISOString(),
+  };
+  enquiries.push(enquiry);
+  db[DB_KEYS.ENQUIRIES] = JSON.stringify(enquiries);
+  writeDb(db);
+  if (settings?.discordWebhookUrl && settings?.discordNotifyBookings !== false) notifyNewEnquiry(settings.discordWebhookUrl, enquiry).catch(() => {});
+  res.status(201).json({ ok: true, enquiry });
 });
 
 // Create a main-site booking.  This is intentionally separate from the generic
 // store API: public visitors must not be able to overwrite the bookings list.
-const publicBookingLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHeaders: true, legacyHeaders: false, message: { error: "Too many booking attempts — please wait" } });
-app.post("/api/booking", publicBookingLimiter, (req, res) => {
+app.post("/api/booking", publicBookingLimiter, async (req, res) => {
   const input = req.body || {};
   const { clientName, clientEmail, phone, date, time, eventTypeId, duration, answers, paymentMethod, payInFull } = input;
   if (!clientName || typeof clientName !== "string" || !clientName.trim()) return res.status(400).json({ error: "clientName is required" });
@@ -5606,80 +7166,92 @@ app.post("/api/booking", publicBookingLimiter, (req, res) => {
   if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date) || !time || !/^\d{2}:\d{2}$/.test(time)) return res.status(400).json({ error: "A valid date and time are required" });
 
   const db = readDb();
-  const eventTypesRaw = db[DB_KEYS.EVENT_TYPES];
-  const eventTypes = eventTypesRaw ? (typeof eventTypesRaw === "string" ? JSON.parse(eventTypesRaw) : eventTypesRaw) : [];
-  const eventType = Array.isArray(eventTypes) ? eventTypes.find(event => event.id === eventTypeId && event.active !== false) : null;
-  if (!eventType) return res.status(400).json({ error: "This session type is no longer available" });
-  const bookingDuration = Number(duration);
-  if (!Number.isFinite(bookingDuration) || bookingDuration <= 0 || !Array.isArray(eventType.durations) || !eventType.durations.includes(bookingDuration)) {
-    return res.status(400).json({ error: "Invalid session duration" });
+  const eventTypes = getStoredArray(db, DB_KEYS.EVENT_TYPES);
+  const profile = dbGet(db, DB_KEYS.PROFILE, {});
+  let googleBusy;
+  try { googleBusy = await getGoogleBusyBookings(null, date, profile?.timezone || "Australia/Sydney"); }
+  catch (err) {
+    console.error("Google Calendar booking check failed:", err.message);
+    return res.status(503).json({ error: "Calendar availability is temporarily unavailable" });
   }
+  const validation = validateBookingRequest({ eventTypeId, date, time, duration }, bookingValidationContext(db, null, eventTypes, profile?.timezone, undefined, googleBusy));
+  if (!validation.ok) return res.status(validation.status).json({ error: validation.error });
+  const { eventType, normalized } = validation;
+  const totalPrice = normalized.paymentAmount;
+  const settings = dbGet(db, DB_KEYS.SETTINGS, {});
   const allowedMethods = new Set(["stripe", "bank", "none"]);
   if (!allowedMethods.has(paymentMethod)) return res.status(400).json({ error: "Invalid payment method" });
-  const totalPrice = Number(eventType.prices?.[bookingDuration] ?? eventType.price ?? 0);
-  if (!Number.isFinite(totalPrice) || totalPrice < 0) return res.status(400).json({ error: "Invalid session price" });
   if (totalPrice === 0 && paymentMethod !== "none") return res.status(400).json({ error: "This session does not require payment" });
   if (totalPrice > 0 && paymentMethod === "none") return res.status(400).json({ error: "A payment method is required" });
-
-  const depositEnabled = !!eventType.depositEnabled && Number(eventType.depositAmount) > 0;
-  const calculatedDeposit = depositEnabled
-    ? (eventType.depositType === "percentage" ? Math.round(totalPrice * Number(eventType.depositAmount) / 100) : Number(eventType.depositAmount))
-    : 0;
-  const depositAmount = Math.max(0, Math.min(totalPrice, calculatedDeposit));
-  const depositRequired = totalPrice > 0 && depositEnabled && !payInFull;
-  const [requestedHour, requestedMinute] = time.split(":").map(Number);
-  const requestedStart = requestedHour * 60 + requestedMinute;
-  const requestedEnd = requestedStart + bookingDuration;
-  const rawBookings = db[DB_KEYS.BOOKINGS];
-  const bookings = rawBookings ? (typeof rawBookings === "string" ? JSON.parse(rawBookings) : (Array.isArray(rawBookings) ? rawBookings : [])) : [];
-  const conflict = bookings.find(booking => {
-    if (booking.tenantSlug || booking.date !== date || booking.status === "cancelled" || !/^\d{2}:\d{2}$/.test(booking.time || "")) return false;
-    const [hour, minute] = booking.time.split(":").map(Number);
-    const start = hour * 60 + minute;
-    const end = start + (Number(booking.duration) > 0 ? Number(booking.duration) : 60);
-    return requestedStart < end && requestedEnd > start;
-  });
-  if (conflict) return res.status(409).json({ error: "This time slot has just been booked. Please choose a different time." });
-
-  const safeAnswers = answers && typeof answers === "object" && !Array.isArray(answers) ? answers : {};
+  if (paymentMethod === "stripe" && (!mainStripeReady() || settings?.stripeEnabled === false)) return res.status(400).json({ error: "Stripe is not available" });
+  if (paymentMethod === "bank" && settings?.bankTransfer?.enabled !== true) return res.status(400).json({ error: "Bank transfer is not available" });
+  if (Array.isArray(eventType.depositMethods) && eventType.depositMethods.length > 0 && paymentMethod !== "none" && !eventType.depositMethods.includes(paymentMethod)) {
+    return res.status(400).json({ error: "That payment method is not available for this session" });
+  }
+  const answerInput = answers && typeof answers === "object" && !Array.isArray(answers) ? answers : {};
+  const safeAnswers = {};
+  for (const question of Array.isArray(eventType.questions) ? eventType.questions : []) {
+    const value = answerInput[question.id];
+    if (question.required && (value === undefined || value === null || String(value).trim() === "")) {
+      return res.status(400).json({ error: `${question.label || "A required question"} is required` });
+    }
+    if (value !== undefined && value !== null) safeAnswers[question.id] = String(value).slice(0, 2000);
+  }
+  const depositRequired = totalPrice > 0 && normalized.depositRequired && payInFull !== true;
+  // Re-read and validate immediately before the synchronous write. Concurrent
+  // requests may both pass the earlier Google/network check; this final check
+  // serializes them through Node's event loop and prevents lost/double bookings.
+  const commitDb = readDb();
+  const commitEventTypes = getStoredArray(commitDb, DB_KEYS.EVENT_TYPES);
+  const commitValidation = validateBookingRequest({ eventTypeId, date, time, duration }, bookingValidationContext(commitDb, null, commitEventTypes, profile?.timezone, undefined, googleBusy));
+  if (!commitValidation.ok) return res.status(commitValidation.status).json({ error: commitValidation.error });
+  if (JSON.stringify(commitValidation.eventType) !== JSON.stringify(eventType)) {
+    return res.status(409).json({ error: "Booking configuration changed; please refresh and try again" });
+  }
+  const bookings = getStoredArray(commitDb, DB_KEYS.BOOKINGS);
   const answerLabels = Array.isArray(eventType.questions) ? Object.fromEntries(eventType.questions.map(question => [question.id, question.label])) : {};
-  const id = `bk-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const id = `bk-${crypto.randomUUID()}`;
   const booking = {
     id,
-    modifyToken: `mod-${require("crypto").randomUUID()}`,
+    modifyToken: `mod-${crypto.randomBytes(32).toString("base64url")}`,
+    paymentReference: `PF-${id.slice(-8).toUpperCase()}`,
     clientName: clientName.trim().slice(0, 160), clientEmail: clientEmail.trim().slice(0, 254),
     phone: typeof phone === "string" ? phone.trim().slice(0, 40) : "",
-    date, time, eventTypeId: eventType.id, type: eventType.title || "Session", duration: bookingDuration,
-    status: eventType.requiresConfirmation || (depositRequired && paymentMethod !== "none") ? "pending" : "confirmed",
-    requiresConfirmation: !!eventType.requiresConfirmation,
+    date: normalized.date, time: normalized.time, eventTypeId: eventType.id, type: eventType.title || "Session", duration: normalized.duration,
+    status: normalized.requiresConfirmation || totalPrice > 0 ? "pending" : "confirmed",
+    requiresConfirmation: normalized.requiresConfirmation,
     notes: "", answers: safeAnswers, answerLabels, createdAt: new Date().toISOString(),
-    paymentStatus: paymentMethod === "bank" ? "pending-confirmation" : "unpaid",
-    paymentAmount: totalPrice, depositRequired, depositAmount: depositRequired ? depositAmount : 0,
+    paymentStatus: totalPrice === 0 ? "paid" : paymentMethod === "bank" ? "pending-confirmation" : "unpaid",
+    paymentAmount: totalPrice, depositRequired, depositAmount: depositRequired ? normalized.depositAmount : 0,
+    holdExpiresAt: totalPrice > 0 ? unconfirmedBookingHoldExpiresAt(settings, paymentMethod) : undefined,
     // Bank transfer is selected at booking time. Stripe is only recorded after
     // Stripe successfully creates a checkout session (see stripe.js).
     depositMethod: paymentMethod === "bank" ? "bank" : undefined,
     paymentMethod: paymentMethod === "bank" ? "bank" : undefined,
   };
   bookings.push(booking);
-  db[DB_KEYS.BOOKINGS] = JSON.stringify(bookings);
-  writeDb(db);
+  commitDb[DB_KEYS.BOOKINGS] = JSON.stringify(bookings);
+  writeDb(commitDb);
 
   try {
-    const settingsRaw = db[DB_KEYS.SETTINGS];
+    const settingsRaw = commitDb[DB_KEYS.SETTINGS];
     const settings = typeof settingsRaw === "string" ? JSON.parse(settingsRaw) : (settingsRaw || {});
     if (settings.discordWebhookUrl && settings.discordNotifyBookings !== false) notifyNewBooking(settings.discordWebhookUrl, booking).catch(() => {});
   } catch {}
-  res.status(201).json({ ok: true, booking });
+  if (paymentMethod !== "stripe") {
+    sendMainBookingReceipt(booking).catch(error => console.error(`Booking receipt email failed for ${booking.id}:`, error?.message || error));
+    queueInitialBookingCalendarSync(booking);
+  }
+  res.status(201).json({ ok: true, booking: publicBookingDto(booking) });
 });
 
 // Create a booking on behalf of a tenant
-app.post("/api/tenant/:slug/booking", tenantBookingLimiter, (req, res) => {
+app.post("/api/tenant/:slug/booking", tenantBookingLimiter, async (req, res) => {
   const slug = req.params.slug;
-  const tenants = readTenants();
-  const tenant = tenants.find(t => t.slug === slug && t.active !== false);
+  const tenant = licensedTenantBySlug(slug)?.tenant;
   if (!tenant) return res.status(404).json({ error: "Tenant not found" });
 
-  const { clientName, clientEmail, phone, date, time, eventTypeId, type, duration, notes, answers,
+  const { clientName, clientEmail, phone, date, time, eventTypeId, type, duration, notes, answers, paymentMethod,
     cosplayCharacter, cosplayCostume, conventionName } = req.body || {};
   if (!clientName || typeof clientName !== "string" || !clientName.trim()) {
     return res.status(400).json({ error: "clientName is required" });
@@ -5694,6 +7266,44 @@ app.post("/api/tenant/:slug/booking", tenantBookingLimiter, (req, res) => {
     return res.status(400).json({ error: "time (HH:MM) is required" });
   }
 
+  const db = readDb();
+  const eventTypes = getStoredArray(db, `t_${slug}_wv_event_types`);
+  let googleBusy;
+  try { googleBusy = await getGoogleBusyBookings(slug, date, tenant.timezone || "Australia/Sydney"); }
+  catch (err) {
+    console.error(`Tenant ${slug} Google Calendar booking check failed:`, err.message);
+    return res.status(503).json({ error: "Calendar availability is temporarily unavailable" });
+  }
+  const validation = validateBookingRequest({ eventTypeId, date, time, duration }, bookingValidationContext(db, slug, eventTypes, tenant.timezone, undefined, googleBusy));
+  if (!validation.ok) return res.status(validation.status).json({ error: validation.error });
+  const { eventType, normalized } = validation;
+  const tenantSettings = dbGet(db, `t_${slug}_wv_tenant_settings`, {});
+  const selectedPaymentMethod = normalized.paymentAmount > 0 ? String(paymentMethod || "contact") : "none";
+  if (!["stripe", "bank", "contact", "none"].includes(selectedPaymentMethod) || (normalized.paymentAmount > 0 && selectedPaymentMethod === "none")) {
+    return res.status(400).json({ error: "A valid payment path is required" });
+  }
+  if (selectedPaymentMethod === "stripe" && !tenantStripeReady(tenantSettings)) return res.status(400).json({ error: "Stripe is not available" });
+  if (selectedPaymentMethod === "bank" && tenantSettings.bankTransferEnabled !== true) return res.status(400).json({ error: "Bank transfer is not available" });
+  const answerInput = answers && typeof answers === "object" && !Array.isArray(answers) ? answers : {};
+  const safeAnswers = {};
+  const answerLabels = {};
+  for (const question of Array.isArray(eventType.questions) ? eventType.questions : []) {
+    const value = answerInput[question.id];
+    answerLabels[question.id] = question.label;
+    if (question.required && (value === undefined || value === null || String(value).trim() === "")) {
+      return res.status(400).json({ error: `${question.label || "A required question"} is required` });
+    }
+    if (value !== undefined && value !== null) safeAnswers[question.id] = String(value).slice(0, 2000);
+  }
+
+  const commitDb = readDb();
+  const commitEventTypes = getStoredArray(commitDb, `t_${slug}_wv_event_types`);
+  const commitValidation = validateBookingRequest({ eventTypeId, date, time, duration }, bookingValidationContext(commitDb, slug, commitEventTypes, tenant.timezone, undefined, googleBusy));
+  if (!commitValidation.ok) return res.status(commitValidation.status).json({ error: commitValidation.error });
+  if (JSON.stringify(commitValidation.eventType) !== JSON.stringify(eventType)) {
+    return res.status(409).json({ error: "Booking configuration changed; please refresh and try again" });
+  }
+
   // ── License key booking limit enforcement ──────────────────────────────
   if (tenant.licenseKey) {
     const allKeys = readLicenseKeys();
@@ -5701,10 +7311,8 @@ app.post("/api/tenant/:slug/booking", tenantBookingLimiter, (req, res) => {
     if (licKey) {
       const limits = getLicKeyLimits(licKey);
       if (limits.maxBookings !== null) {
-        const db = readDb();
-        const rawBks = db["wv_bookings"];
-        const existingBookings = rawBks ? (typeof rawBks === "string" ? JSON.parse(rawBks) : (Array.isArray(rawBks) ? rawBks : [])) : [];
-        const tenantBookingCount = existingBookings.filter(b => b.tenantSlug === slug).length;
+        const existingBookings = getStoredArray(commitDb, DB_KEYS.BOOKINGS);
+        const tenantBookingCount = existingBookings.filter(b => b.tenantSlug === slug && bookingCountsTowardTenantLimit(b)).length;
         if (tenantBookingCount >= limits.maxBookings) {
           return res.status(403).json({ error: `Booking limit reached (${limits.maxBookings} bookings). Contact your platform administrator to upgrade your plan.` });
         }
@@ -5712,63 +7320,47 @@ app.post("/api/tenant/:slug/booking", tenantBookingLimiter, (req, res) => {
     }
   }
 
-  const bookingDuration = typeof duration === "number" && duration > 0 ? duration : 60;
-
-  // ── Slot conflict check (prevents double-booking the same slot) ────────────
-  // Two bookings conflict when their time ranges overlap for the same tenant.
-  // We read from the live db (not cache) to minimise race window.
-  const dbForCheck = readDb();
-  const rawForCheck = dbForCheck["wv_bookings"];
-  const existingForCheck = rawForCheck ? (typeof rawForCheck === "string" ? JSON.parse(rawForCheck) : (Array.isArray(rawForCheck) ? rawForCheck : [])) : [];
-  const [reqH, reqM] = time.split(":").map(Number);
-  const reqStart = reqH * 60 + reqM;
-  const reqEnd = reqStart + bookingDuration;
-  const conflict = existingForCheck.find(b => {
-    if (b.tenantSlug !== slug) return false;
-    if (b.date !== date) return false;
-    if (b.status === "cancelled") return false;
-    const [bH, bM] = (b.time || "0:0").split(":").map(Number);
-    const bStart = bH * 60 + bM;
-    const bEnd = bStart + (typeof b.duration === "number" && b.duration > 0 ? b.duration : 60);
-    return reqStart < bEnd && reqEnd > bStart;
-  });
-  if (conflict) {
-    return res.status(409).json({ error: "This time slot has just been booked. Please choose a different time." });
-  }
-
   const booking = {
-    id: `bk-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-    modifyToken: `mod-${crypto.randomUUID()}`,
-    clientName: clientName.trim(),
-    clientEmail: clientEmail.trim(),
+    id: `bk-${crypto.randomUUID()}`,
+    modifyToken: `mod-${crypto.randomBytes(32).toString("base64url")}`,
+    clientName: clientName.trim().slice(0, 160),
+    clientEmail: clientEmail.trim().toLowerCase().slice(0, 254),
     phone: typeof phone === "string" ? phone.trim().slice(0, 40) : "",
-    date,
-    time,
-    eventTypeId: eventTypeId || "",
-    type: type || "",
-    duration: bookingDuration,
-    status: "pending",
-    notes: (notes || "").trim(),
-    answers: (answers && typeof answers === "object") ? answers : {},
-    cosplayCharacter: (cosplayCharacter || "").trim() || undefined,
-    cosplayCostume: (cosplayCostume || "").trim() || undefined,
-    conventionName: (conventionName || "").trim() || undefined,
+    date: normalized.date,
+    time: normalized.time,
+    eventTypeId: eventType.id,
+    type: eventType.title,
+    duration: normalized.duration,
+    status: normalized.paymentAmount === 0 && !normalized.requiresConfirmation ? "confirmed" : "pending",
+    requiresConfirmation: normalized.requiresConfirmation,
+    notes: String(notes || "").trim().slice(0, 5000),
+    answers: safeAnswers,
+    answerLabels,
+    cosplayCharacter: String(cosplayCharacter || "").trim().slice(0, 160) || undefined,
+    cosplayCostume: String(cosplayCostume || "").trim().slice(0, 500) || undefined,
+    conventionName: String(conventionName || "").trim().slice(0, 160) || undefined,
     createdAt: new Date().toISOString(),
     tenantSlug: slug,
+    paymentAmount: normalized.paymentAmount,
+    depositRequired: normalized.depositRequired,
+    depositAmount: normalized.depositAmount,
+    paymentStatus: normalized.paymentAmount === 0 ? "paid" : selectedPaymentMethod === "bank" ? "pending-confirmation" : "unpaid",
+    paymentMethod: selectedPaymentMethod === "contact" || selectedPaymentMethod === "none" ? undefined : selectedPaymentMethod,
+    depositMethod: ["stripe", "bank"].includes(selectedPaymentMethod) ? selectedPaymentMethod : undefined,
+    paymentPath: selectedPaymentMethod,
+    holdExpiresAt: normalized.paymentAmount > 0 ? unconfirmedBookingHoldExpiresAt(tenantSettings, selectedPaymentMethod) : undefined,
   };
 
-  const db = readDb();
-  const raw = db["wv_bookings"];
-  const bookings = raw ? (typeof raw === "string" ? JSON.parse(raw) : (Array.isArray(raw) ? raw : [])) : [];
+  const bookings = getStoredArray(commitDb, DB_KEYS.BOOKINGS);
   bookings.push(booking);
-  db["wv_bookings"] = JSON.stringify(bookings);
-  writeDb(db);
+  commitDb["wv_bookings"] = JSON.stringify(bookings);
+  writeDb(commitDb);
 
   // Fire Discord notification — use tenant-specific webhook if configured, else fall back to global
   try {
-    const tenantSettingsRaw = db[`t_${slug}_wv_tenant_settings`];
+    const tenantSettingsRaw = commitDb[`t_${slug}_wv_tenant_settings`];
     const tenantSettings = tenantSettingsRaw ? (typeof tenantSettingsRaw === "string" ? JSON.parse(tenantSettingsRaw) : tenantSettingsRaw) : {};
-    const settingsRaw = db["wv_settings"];
+    const settingsRaw = commitDb["wv_settings"];
     const globalSettings = typeof settingsRaw === "string" ? JSON.parse(settingsRaw) : (settingsRaw || {});
     // Prefer tenant-specific settings when a tenant webhook is configured
     const useTenantSettings = !!tenantSettings?.discordWebhookUrl;
@@ -5780,14 +7372,18 @@ app.post("/api/tenant/:slug/booking", tenantBookingLimiter, (req, res) => {
     }
   } catch {}
 
-  res.json({ ok: true, booking });
+  if (selectedPaymentMethod !== "stripe") {
+    sendTenantBookingReceipt(booking, "created").catch(error => console.error(`Tenant booking receipt failed for ${booking.id}:`, error?.message || error));
+    queueInitialBookingCalendarSync(booking);
+  }
+
+  res.status(201).json({ ok: true, booking: publicBookingDto(booking) });
 });
 
 // Submit an enquiry to a tenant (public — rate-limited)
 app.post("/api/tenant/:slug/enquiry", tenantBookingLimiter, (req, res) => {
   const slug = req.params.slug;
-  const tenants = readTenants();
-  const tenant = tenants.find(t => t.slug === slug && t.active !== false);
+  const tenant = licensedTenantBySlug(slug)?.tenant;
   if (!tenant) return res.status(404).json({ error: "Tenant not found" });
 
   // Check that enquiry mode is enabled for this tenant
@@ -5798,20 +7394,26 @@ app.post("/api/tenant/:slug/enquiry", tenantBookingLimiter, (req, res) => {
     return res.status(403).json({ error: "Enquiry mode is not enabled for this photographer" });
   }
 
-  const { name, email, phone, eventTypeId, eventTypeTitle, preferredDate, preferredStartTime, preferredEndTime, message } = req.body || {};
-  if (!name || typeof name !== "string" || !name.trim()) return res.status(400).json({ error: "name is required" });
-  if (!email || typeof email !== "string" || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+  const { name, email, phone, eventTypeId, preferredDate, preferredStartTime, preferredEndTime, message } = req.body || {};
+  if (!name || typeof name !== "string" || !name.trim() || name.trim().length > 160) return res.status(400).json({ error: "A valid name is required" });
+  if (!email || typeof email !== "string" || email.trim().length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
     return res.status(400).json({ error: "Valid email is required" });
   }
-  if (!message || typeof message !== "string" || !message.trim()) return res.status(400).json({ error: "message is required" });
+  if (!message || typeof message !== "string" || !message.trim() || message.length > 5000) return res.status(400).json({ error: "message is required and must be under 5000 characters" });
+  const eventTypes = getStoredArray(db, `t_${slug}_wv_event_types`);
+  const eventType = eventTypeId ? eventTypes.find(item => item.id === eventTypeId && item.active !== false) : null;
+  if (eventTypeId && !eventType) return res.status(400).json({ error: "Event type is unavailable" });
+  if ((preferredDate && !parseDate(preferredDate)) || (preferredStartTime && !parseTime(preferredStartTime)) || (preferredEndTime && !parseTime(preferredEndTime))) {
+    return res.status(400).json({ error: "Preferred date or time is invalid" });
+  }
 
   const enquiry = {
     id: `enq-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-    name: name.trim(),
-    email: email.trim(),
-    phone: phone?.trim() || undefined,
-    eventTypeId: eventTypeId || undefined,
-    eventTypeTitle: eventTypeTitle || undefined,
+    name: name.trim().slice(0, 160),
+    email: email.trim().toLowerCase().slice(0, 254),
+    phone: String(phone || "").trim().slice(0, 40) || undefined,
+    eventTypeId: eventType?.id,
+    eventTypeTitle: eventType?.title,
     preferredDate: preferredDate || undefined,
     preferredStartTime: preferredStartTime || undefined,
     preferredEndTime: preferredEndTime || undefined,
@@ -5825,6 +7427,9 @@ app.post("/api/tenant/:slug/enquiry", tenantBookingLimiter, (req, res) => {
   const enquiryKey = `t_${slug}_wv_enquiries`;
   const existingRaw = db[enquiryKey];
   const existing = existingRaw ? (typeof existingRaw === "string" ? JSON.parse(existingRaw) : (Array.isArray(existingRaw) ? existingRaw : [])) : [];
+  if (!Array.isArray(existing) || existing.length >= 5000) return res.status(429).json({ error: "Enquiries are temporarily unavailable" });
+  const duplicate = existing.find(item => item.email === enquiry.email && item.message === enquiry.message && Date.parse(item.createdAt || 0) >= Date.now() - 60 * 60_000);
+  if (duplicate) return res.status(202).json({ ok: true, enquiry: duplicate });
   existing.push(enquiry);
   db[enquiryKey] = existing;
   writeDb(db);
@@ -5847,7 +7452,7 @@ app.post("/api/tenant/:slug/enquiry", tenantBookingLimiter, (req, res) => {
 // ── Super Admin Info ──────────────────────────────────
 // Returns the username that is considered the super admin (set via env var).
 // The client uses this to unlock the Platform tab for cross-tenant visibility.
-app.get("/api/super-admin/info", (_req, res) => {
+app.get("/api/super-admin/info", requireAuth, (_req, res) => {
   res.json({ superAdminUsername: process.env.SUPER_ADMIN_USERNAME || null });
 });
 
@@ -5855,42 +7460,85 @@ app.get("/api/super-admin/info", (_req, res) => {
 const superLimiter = rateLimit({ windowMs: 60_000, max: 60, standardHeaders: true, legacyHeaders: false, message: { error: "Too many requests" } });
 
 // Aggregate stats: tenant count, total bookings, etc.
-app.get("/api/super/stats", superLimiter, (_req, res) => {
+app.get("/api/super/stats", superLimiter, requireAuth, (_req, res) => {
   const db = readDb();
   const tenants = readTenants();
   const mainRaw = db["wv_bookings"];
   const allBookings = mainRaw ? (typeof mainRaw === "string" ? JSON.parse(mainRaw) : (Array.isArray(mainRaw) ? mainRaw : [])) : [];
-  const mainBookings = allBookings.filter(b => !b.tenantSlug);
+  const operationalBookings = allBookings.filter(b => b?.archived !== true);
+  const mainBookings = operationalBookings.filter(b => !b.tenantSlug);
   const tenantStats = tenants.map(t => {
-    const tenantBookings = allBookings.filter(b => b.tenantSlug === t.slug);
+    const tenantBookings = operationalBookings.filter(b => b.tenantSlug === t.slug);
+    const archivedBookings = allBookings.filter(b => b.tenantSlug === t.slug && b.archived === true).length;
     const tenantEtRaw = db[`t_${t.slug}_wv_event_types`];
     const tenantEventTypes = tenantEtRaw ? (typeof tenantEtRaw === "string" ? JSON.parse(tenantEtRaw) : tenantEtRaw) : null;
     return {
       ...t,
       bookingCount: tenantBookings.length,
       pendingBookings: tenantBookings.filter(b => b.status === "pending").length,
+      archivedBookings,
       hasCustomEventTypes: !!tenantEventTypes,
     };
   });
   res.json({
     tenantCount: tenants.length,
-    totalBookings: allBookings.length,
+    totalBookings: operationalBookings.length,
     mainBookings: mainBookings.length,
+    archivedBookings: allBookings.length - operationalBookings.length,
+    retainedBookings: allBookings.length,
     tenants: tenantStats,
   });
 });
 
 // All bookings across all tenants
-app.get("/api/super/all-bookings", superLimiter, (_req, res) => {
+app.get("/api/super/all-bookings", superLimiter, requireAuth, (_req, res) => {
   const db = readDb();
   const raw = db["wv_bookings"];
   const bookings = raw ? (typeof raw === "string" ? JSON.parse(raw) : (Array.isArray(raw) ? raw : [])) : [];
   res.json(bookings);
 });
 
+// Archive/unarchive one or more retained bookings without allowing the browser
+// to replace the canonical bookings collection. Archiving is limited to
+// terminal, elapsed, or expired unpaid holds so it cannot release a live slot.
+app.patch("/api/admin/bookings/archive", superLimiter, requireAuth, (req, res) => {
+  const archived = req.body?.archived;
+  const bookingIds = req.body?.bookingIds;
+  if (typeof archived !== "boolean" || !Array.isArray(bookingIds)) {
+    return res.status(400).json({ ok: false, error: "bookingIds and archived are required" });
+  }
+  const normalizedIds = [...new Set(bookingIds.map(id => String(id || "").trim()))].filter(Boolean);
+  if (!normalizedIds.length || normalizedIds.length > 200 || normalizedIds.some(id => id.length > 128)) {
+    return res.status(400).json({ ok: false, error: "Provide between 1 and 200 valid booking IDs" });
+  }
+  const db = readDb();
+  const bookings = getStoredArray(db, DB_KEYS.BOOKINGS);
+  const mainTimezone = dbGet(db, DB_KEYS.PROFILE, {})?.timezone || "Australia/Sydney";
+  const tenantTimezones = new Map(readTenants().map(tenant => [tenant.slug, tenant.timezone || "Australia/Sydney"]));
+  const result = applyBookingArchiveState(bookings, normalizedIds, archived, {
+    actor: req.authContext?.username || "admin",
+    timezoneForBooking: booking => booking?.tenantSlug ? tenantTimezones.get(booking.tenantSlug) || "Australia/Sydney" : mainTimezone,
+  });
+  if (result.changedIds.length) {
+    db[DB_KEYS.BOOKINGS] = JSON.stringify(result.bookings);
+    writeDb(db);
+  }
+  const requested = new Set(normalizedIds);
+  const updated = result.bookings.filter(booking => requested.has(String(booking?.id || "")));
+  res.setHeader("Cache-Control", "no-store");
+  return res.json({
+    ok: true,
+    archived,
+    updated,
+    changedIds: result.changedIds,
+    unchangedIds: result.unchangedIds,
+    skipped: result.skipped,
+  });
+});
+
 // ── Super Admin: Event Slot Requests ──────────────────
 // List all event slot purchase requests
-app.get("/api/super/event-slot-requests", superLimiter, (_req, res) => {
+app.get("/api/super/event-slot-requests", superLimiter, requireAuth, (_req, res) => {
   const requests = readEventSlotRequests();
   const tenants = readTenants();
   const result = requests.map(r => {
@@ -5901,12 +7549,13 @@ app.get("/api/super/event-slot-requests", superLimiter, (_req, res) => {
 });
 
 // Confirm an event slot request — grants the tenant one extra event slot
-app.post("/api/super/event-slot-requests/:id/confirm", superLimiter, (req, res) => {
+app.post("/api/super/event-slot-requests/:id/confirm", superLimiter, requireAuth, (req, res) => {
   const { id } = req.params;
   const { confirmedBy } = req.body || {};
   const requests = readEventSlotRequests();
   const idx = requests.findIndex(r => r.id === id);
   if (idx < 0) return res.status(404).json({ error: "Request not found" });
+  if (!licensedTenantBySlug(requests[idx].tenantSlug)) return res.status(409).json({ error: "Tenant licence is not active" });
   if (!["pending", "paid"].includes(requests[idx].status)) {
     return res.status(400).json({ error: "Request is not in a confirmable state" });
   }
@@ -5922,7 +7571,7 @@ app.post("/api/super/event-slot-requests/:id/confirm", superLimiter, (req, res) 
 });
 
 // Reject an event slot request
-app.post("/api/super/event-slot-requests/:id/reject", superLimiter, (req, res) => {
+app.post("/api/super/event-slot-requests/:id/reject", superLimiter, requireAuth, (req, res) => {
   const { id } = req.params;
   const { rejectedBy, notes } = req.body || {};
   const requests = readEventSlotRequests();
@@ -5942,14 +7591,14 @@ app.post("/api/super/event-slot-requests/:id/reject", superLimiter, (req, res) =
 
 // ── Tenant Event Slot Requests ──────────────────────────
 // Submit a request for an extra event slot (bank or stripe payment)
-app.post("/api/tenant/:slug/event-slot-request", tenantLimiter, (req, res) => {
+app.post("/api/tenant/:slug/event-slot-request", tenantLimiter, requireTenant, (req, res) => {
   const slug = req.params.slug;
   const tenants = readTenants();
   const tenant = tenants.find(t => t.slug === slug && t.active !== false);
   if (!tenant) return res.status(404).json({ error: "Tenant not found" });
   const { paymentMethod } = req.body || {};
-  if (!paymentMethod || !["stripe", "bank"].includes(paymentMethod)) {
-    return res.status(400).json({ error: "paymentMethod must be 'stripe' or 'bank'" });
+  if (paymentMethod !== "bank") {
+    return res.status(400).json({ error: "Extra event slots use bank/manual approval only" });
   }
   // Determine effective extra event price: tenant-level override takes priority
   let extraEventPrice = null;
@@ -5984,7 +7633,7 @@ app.post("/api/tenant/:slug/event-slot-request", tenantLimiter, (req, res) => {
 });
 
 // Get the active pending/paid event slot request for a tenant
-app.get("/api/tenant/:slug/event-slot-request/pending", tenantLimiter, (req, res) => {
+app.get("/api/tenant/:slug/event-slot-request/pending", tenantLimiter, requireTenant, (req, res) => {
   const slug = req.params.slug;
   const requests = readEventSlotRequests();
   const pending = requests.find(r => r.tenantSlug === slug && ["pending", "paid"].includes(r.status));
@@ -5995,26 +7644,80 @@ app.get("/api/tenant/:slug/event-slot-request/pending", tenantLimiter, (req, res
 app.post("/api/tenant/:slug/login", tenantLimiter, async (req, res) => {
   const tenants = readTenants();
   const identifier = String(req.params.slug || "").trim().toLowerCase();
-  const tenant = tenants.find(t => t.active !== false && (
+  const candidate = tenants.find(t => (
     String(t.slug || "").toLowerCase() === identifier ||
     String(t.email || "").toLowerCase() === identifier ||
     String(t.displayName || "").toLowerCase() === identifier
   ));
-  if (!tenant) return res.status(404).json({ ok: false, error: "Tenant not found" });
-  if (!tenant.passwordHash) return res.status(400).json({ ok: false, error: "No password set for this tenant — ask the admin to set one" });
+  const tenant = candidate && tenantLicenseState(candidate, readLicenseKeys()).active ? candidate : null;
   const { passwordHash } = req.body || {};
-  if (!passwordHash || typeof passwordHash !== "string") {
-    return res.status(400).json({ ok: false, error: "passwordHash is required" });
-  }
-  const ok = await verifyPasswordHash(passwordHash, tenant.passwordHash);
-  if (!ok) {
+  const suppliedHash = typeof passwordHash === "string" ? passwordHash : "";
+  const ok = await verifyPasswordHash(suppliedHash, tenant?.passwordHash || DUMMY_TENANT_PASSWORD_HASH);
+  if (!tenant || !tenant.passwordHash || !suppliedHash || !ok) {
     return res.status(401).json({ ok: false, error: "Invalid credentials" });
   }
-  res.json({ ok: true, tenant: { slug: tenant.slug, displayName: tenant.displayName, email: tenant.email, timezone: tenant.timezone } });
+  const token = signSession({ purpose: "tenant", sub: tenant.slug, cv: credentialVersion(tenant.passwordHash) }, SESSION_SECRET, { ttlSeconds: TENANT_SESSION_TTL_SECONDS });
+  setHttpOnlyCookie(req, res, TENANT_SESSION_COOKIE, token, TENANT_SESSION_TTL_SECONDS);
+  res.setHeader("Cache-Control", "no-store");
+  res.json({
+    ok: true,
+    tenant: safeTenantPrivateDto(tenant),
+    ...(isExplicitNativeOrigin(req.headers.origin, NATIVE_APP_ORIGINS) ? { sessionToken: token, expiresIn: TENANT_SESSION_TTL_SECONDS } : {}),
+  });
+});
+
+app.post("/api/tenant/:slug/logout", tenantLimiter, (req, res) => {
+  clearHttpOnlyCookie(req, res, TENANT_SESSION_COOKIE);
+  res.json({ ok: true });
+});
+
+app.get("/api/tenant/:slug/session", tenantLimiter, requireTenant, (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ ok: true, tenant: safeTenantPrivateDto(req.authContext.tenant) });
+});
+
+app.put("/api/tenant/:slug/profile", tenantLimiter, requireTenant, async (req, res) => {
+  const tenants = readTenants();
+  const index = tenants.findIndex(tenant => tenant.slug === req.params.slug);
+  if (index < 0) return res.status(404).json({ ok: false, error: "Tenant not found" });
+  const updates = {};
+  if (req.body?.displayName !== undefined) {
+    const displayName = String(req.body.displayName).trim();
+    if (!displayName || displayName.length > 120) return res.status(400).json({ ok: false, error: "A valid display name is required" });
+    updates.displayName = displayName;
+  }
+  if (req.body?.email !== undefined) {
+    const email = String(req.body.email).trim().toLowerCase();
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ ok: false, error: "A valid email is required" });
+    updates.email = email;
+  }
+  if (req.body?.bio !== undefined) updates.bio = String(req.body.bio).trim().slice(0, 2000) || undefined;
+  if (req.body?.timezone !== undefined) {
+    const timezone = String(req.body.timezone).trim();
+    try { new Intl.DateTimeFormat("en", { timeZone: timezone }).format(); } catch { return res.status(400).json({ ok: false, error: "Invalid timezone" }); }
+    updates.timezone = timezone;
+  }
+  if (req.body?.passwordHash !== undefined) {
+    const passwordHash = String(req.body.passwordHash);
+    if (passwordHash.length < 32 || passwordHash.length > 256) return res.status(400).json({ ok: false, error: "Invalid password hash" });
+    updates.passwordHash = await bcryptHash(passwordHash);
+  }
+  tenants[index] = { ...tenants[index], ...updates };
+  writeTenants(tenants);
+  let sessionToken;
+  if (updates.passwordHash) {
+    sessionToken = signSession({ purpose: "tenant", sub: tenants[index].slug, cv: credentialVersion(tenants[index].passwordHash) }, SESSION_SECRET, { ttlSeconds: TENANT_SESSION_TTL_SECONDS });
+    setHttpOnlyCookie(req, res, TENANT_SESSION_COOKIE, sessionToken, TENANT_SESSION_TTL_SECONDS);
+  }
+  res.json({
+    ok: true,
+    tenant: safeTenantPrivateDto(tenants[index]),
+    ...(sessionToken && isExplicitNativeOrigin(req.headers.origin, NATIVE_APP_ORIGINS) ? { sessionToken, expiresIn: TENANT_SESSION_TTL_SECONDS } : {}),
+  });
 });
 
 // ── Tenant Mobile Data (bookings + albums for mobile app) ─────────────────
-app.get("/api/tenant/:slug/mobile-data", tenantPublicLimiter, (req, res) => {
+app.get("/api/tenant/:slug/mobile-data", tenantLimiter, requireTenant, (req, res) => {
   const slug = req.params.slug;
   const tenants = readTenants();
   const tenant = tenants.find(t => t.slug === slug && t.active !== false);
@@ -6028,11 +7731,11 @@ app.get("/api/tenant/:slug/mobile-data", tenantPublicLimiter, (req, res) => {
   // Strip baked watermark blobs before sending to client — they are not needed
   // for admin views and would greatly inflate the response size.
   const leanAlbums = albums.map(a => ({ ...a, photos: _stripBakedFromPhotos((a.photos || []).map(_ensurePhotoProofIdentity)) }));
-  res.json({ tenant, bookings: tenantBookings, albums: leanAlbums });
+  res.json({ tenant: safeTenantPrivateDto(tenant), bookings: tenantBookings, albums: leanAlbums });
 });
 
 // Create or update a tenant album (used by mobile app in tenant mode)
-app.put("/api/tenant/:slug/albums/:albumId", tenantLimiter, (req, res) => {
+app.put("/api/tenant/:slug/albums/:albumId", tenantLimiter, requireTenant, authenticatedLargeJson, (req, res) => {
   const { slug, albumId } = req.params;
   const db = readDb();
   const key = `t_${slug}_wv_albums`;
@@ -6058,42 +7761,132 @@ app.put("/api/tenant/:slug/albums/:albumId", tenantLimiter, (req, res) => {
   } else if (incoming.photos) {
     incoming.photos = _stripBakedFromPhotos(incoming.photos).map(_ensurePhotoProofIdentity);
   }
-  if (idx >= 0) {
-    albums[idx] = { ...albums[idx], ...incoming };
-  } else {
-    albums.push(incoming);
-  }
+  const candidate = idx >= 0 ? { ...albums[idx], ...incoming } : incoming;
+  const invalidUploads = invalidAlbumUploadReferences(db, candidate, slug);
+  if (invalidUploads.length) return res.status(409).json({ error: "One or more uploads do not belong to this tenant" });
+  if (idx >= 0) albums[idx] = candidate;
+  else albums.push(candidate);
   db[key] = JSON.stringify(albums);
   writeDb(db);
   res.json({ ok: true });
 });
 
 // Upsert a booking that belongs to a tenant (create if new, update if existing; used by tenant admin)
-app.put("/api/tenant/:slug/bookings/:bookingId", tenantLimiter, (req, res) => {
+app.put("/api/tenant/:slug/bookings/:bookingId", tenantLimiter, requireTenant, async (req, res) => {
   const { slug, bookingId } = req.params;
-  const tenants = readTenants();
-  const tenant = tenants.find(t => t.slug === slug && t.active !== false);
+  const licensed = licensedTenantBySlug(slug);
+  const tenant = licensed?.tenant;
   if (!tenant) return res.status(404).json({ ok: false, error: "Tenant not found" });
-  const db = readDb();
-  const allBookingsRaw = db["wv_bookings"];
-  const allBookings = allBookingsRaw ? (typeof allBookingsRaw === "string" ? JSON.parse(allBookingsRaw) : (Array.isArray(allBookingsRaw) ? allBookingsRaw : [])) : [];
+  let db = readDb();
+  let allBookings = getStoredArray(db, DB_KEYS.BOOKINGS);
   const idx = allBookings.findIndex(b => b.id === bookingId && b.tenantSlug === slug);
-  // Allow full updates from tenant admin; always keep id and tenantSlug immutable
+  let shouldQueueCalendarCreate = false;
   const { id: _id, tenantSlug: _ts, ...updates } = req.body || {};
   if (idx < 0) {
-    // New booking — insert it
-    allBookings.push({ ...updates, id: bookingId, tenantSlug: slug });
+    const clientName = String(updates.clientName || "").trim();
+    const clientEmail = String(updates.clientEmail || "").trim().toLowerCase();
+    if (!clientName || clientName.length > 160 || clientEmail.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clientEmail)) {
+      return res.status(400).json({ ok: false, error: "A valid client name and email are required" });
+    }
+    const eventTypes = getStoredArray(db, `t_${slug}_wv_event_types`);
+    let googleBusy;
+    try { googleBusy = await getGoogleBusyBookings(slug, String(updates.date || ""), tenant.timezone || "Australia/Sydney"); }
+    catch (error) {
+      console.error(`Tenant ${slug} calendar check failed for admin booking:`, error.message);
+      return res.status(503).json({ ok: false, error: "Calendar availability is temporarily unavailable" });
+    }
+    db = readDb();
+    allBookings = getStoredArray(db, DB_KEYS.BOOKINGS);
+    if (allBookings.some(booking => booking.id === bookingId)) return res.status(409).json({ ok: false, error: "Booking id is already in use" });
+    const currentEventTypes = getStoredArray(db, `t_${slug}_wv_event_types`);
+    const validation = validateBookingRequest({
+      eventTypeId: updates.eventTypeId,
+      date: updates.date,
+      time: updates.time,
+      duration: updates.duration,
+    }, bookingValidationContext(db, slug, currentEventTypes, tenant.timezone, undefined, googleBusy));
+    if (!validation.ok) return res.status(validation.status).json({ ok: false, error: validation.error });
+    if (JSON.stringify(eventTypes.find(item => item.id === updates.eventTypeId)) !== JSON.stringify(validation.eventType)) {
+      return res.status(409).json({ ok: false, error: "Booking configuration changed; refresh and try again" });
+    }
+    const answerInput = updates.answers && typeof updates.answers === "object" && !Array.isArray(updates.answers) ? updates.answers : {};
+    const safeAnswers = {};
+    const answerLabels = {};
+    for (const question of Array.isArray(validation.eventType.questions) ? validation.eventType.questions : []) {
+      const value = answerInput[question.id];
+      answerLabels[question.id] = String(question.label || "").slice(0, 300);
+      if (question.required && (value == null || String(value).trim() === "")) {
+        return res.status(400).json({ ok: false, error: `${question.label || "A required question"} is required` });
+      }
+      if (value != null) safeAnswers[question.id] = String(value).slice(0, 2000);
+    }
+    const limits = getLicKeyLimits(licensed.license);
+    if (limits.maxBookings !== null && allBookings.filter(item => item.tenantSlug === slug && bookingCountsTowardTenantLimit(item)).length >= limits.maxBookings) {
+      return res.status(403).json({ ok: false, error: `Booking limit reached (${limits.maxBookings} bookings)` });
+    }
+    const requestedPaymentStatus = ["paid", "deposit-paid", "pending-confirmation", "unpaid"].includes(updates.paymentStatus)
+      ? updates.paymentStatus
+      : validation.normalized.paymentAmount > 0 ? "pending-confirmation" : "paid";
+    const requestedStatus = ["pending", "confirmed"].includes(updates.status)
+      ? updates.status
+      : validation.normalized.paymentAmount > 0 || validation.normalized.requiresConfirmation ? "pending" : "confirmed";
+    const settled = ["paid", "deposit-paid"].includes(requestedPaymentStatus) || requestedStatus === "confirmed";
+    const booking = {
+      id: bookingId,
+      tenantSlug: slug,
+      modifyToken: `mod-${crypto.randomBytes(32).toString("base64url")}`,
+      clientName,
+      clientEmail,
+      phone: String(updates.phone || "").trim().slice(0, 40),
+      date: validation.normalized.date,
+      time: validation.normalized.time,
+      duration: validation.normalized.duration,
+      eventTypeId: validation.eventType.id,
+      type: validation.eventType.title || "Session",
+      status: requestedStatus,
+      requiresConfirmation: validation.normalized.requiresConfirmation,
+      paymentStatus: requestedPaymentStatus,
+      paymentAmount: validation.normalized.paymentAmount,
+      depositRequired: validation.normalized.depositRequired,
+      depositAmount: validation.normalized.depositAmount,
+      notes: String(updates.notes || "").trim().slice(0, 5000),
+      answers: safeAnswers,
+      answerLabels,
+      createdAt: new Date().toISOString(),
+      ...(!settled && validation.normalized.paymentAmount > 0 ? { holdExpiresAt: unconfirmedBookingHoldExpiresAt(dbGet(db, `t_${slug}_wv_tenant_settings`, {}), "contact") } : {}),
+    };
+    allBookings.push(booking);
+    db[DB_KEYS.BOOKINGS] = JSON.stringify(allBookings);
+    writeDb(db);
+    queueInitialBookingCalendarSync(booking);
+    return res.json({ ok: true, booking: publicBookingDto(booking) });
   } else {
-    // Existing booking — update it
-    allBookings[idx] = { ...allBookings[idx], ...updates, id: bookingId, tenantSlug: slug };
+    const existing = allBookings[idx];
+    const {
+      modifyToken: _modifyToken,
+      stripeSessionId: _stripeSessionId,
+      stripeCheckoutSessionId: _stripeCheckoutSessionId,
+      stripeFulfilments: _stripeFulfilments,
+      receiptEmailEvents: _receiptEvents,
+      ...safeUpdates
+    } = updates;
+    const updated = { ...existing, ...safeUpdates, id: bookingId, tenantSlug: slug, modifyToken: existing.modifyToken };
+    if (["confirmed", "completed"].includes(updated.status) || ["paid", "deposit-paid"].includes(updated.paymentStatus)) {
+      delete updated.holdExpiresAt;
+    } else if (!updated.holdExpiresAt && updated.paymentAmount > 0) {
+      updated.holdExpiresAt = unconfirmedBookingHoldExpiresAt(dbGet(db, `t_${slug}_wv_tenant_settings`, {}), updated.paymentPath || "contact");
+    }
+    shouldQueueCalendarCreate = bookingReadyForCalendar(updated) && !updated.gcalEventId && !bookingReadyForCalendar(existing);
+    allBookings[idx] = updated;
   }
-  db["wv_bookings"] = JSON.stringify(allBookings);
+  db[DB_KEYS.BOOKINGS] = JSON.stringify(allBookings);
   writeDb(db);
-  res.json({ ok: true });
+  if (shouldQueueCalendarCreate) queueInitialBookingCalendarSync(allBookings[idx]);
+  res.json({ ok: true, booking: publicBookingDto(allBookings[idx]) });
 });
 
 // Delete a booking that belongs to a tenant (tenant admin)
-app.delete("/api/tenant/:slug/bookings/:bookingId", tenantLimiter, (req, res) => {
+app.delete("/api/tenant/:slug/bookings/:bookingId", tenantLimiter, requireTenant, (req, res) => {
   const { slug, bookingId } = req.params;
   const tenants = readTenants();
   const tenant = tenants.find(t => t.slug === slug && t.active !== false);
@@ -6109,7 +7902,7 @@ app.delete("/api/tenant/:slug/bookings/:bookingId", tenantLimiter, (req, res) =>
 });
 
 // Delete a tenant album (tenant admin)
-app.delete("/api/tenant/:slug/albums/:albumId", tenantLimiter, (req, res) => {
+app.delete("/api/tenant/:slug/albums/:albumId", tenantLimiter, requireTenant, (req, res) => {
   const { slug, albumId } = req.params;
   const db = readDb();
   const key = `t_${slug}_wv_albums`;
@@ -6123,7 +7916,7 @@ app.delete("/api/tenant/:slug/albums/:albumId", tenantLimiter, (req, res) => {
 });
 
 // Get license key info for a tenant (tenant admin — shows their own key details)
-app.get("/api/tenant/:slug/license-info", tenantLimiter, (req, res) => {
+app.get("/api/tenant/:slug/license-info", tenantLimiter, requireTenant, (req, res) => {
   const slug = req.params.slug;
   const tenants = readTenants();
   const tenant = tenants.find(t => t.slug === slug && t.active !== false);
@@ -6202,7 +7995,7 @@ function maskTenantSettings(settings) {
 
 // Get tenant settings (Discord, SMTP, Stripe, bank — per-tenant overrides)
 // Secret fields are never returned; boolean <field>Set indicators are sent instead.
-app.get("/api/tenant/:slug/settings", tenantLimiter, (req, res) => {
+app.get("/api/tenant/:slug/settings", tenantLimiter, requireTenant, (req, res) => {
   const slug = req.params.slug;
   const tenants = readTenants();
   if (!tenants.find(t => t.slug === slug)) return res.status(404).json({ error: "Tenant not found" });
@@ -6212,22 +8005,34 @@ app.get("/api/tenant/:slug/settings", tenantLimiter, (req, res) => {
   res.json(maskTenantSettings(settings));
 });
 
-// Send email via tenant's own SMTP settings
-app.post("/api/tenant/:slug/email/send", tenantLimiter, async (req, res) => {
+// Send email via the tenant's own SMTP settings only. Never relay arbitrary
+// tenant content through the platform owner's sender identity.
+const tenantEmailSendLimiter = rateLimit({ windowMs: 15 * 60_000, max: 20, standardHeaders: true, legacyHeaders: false, message: { error: "Too many email requests" } });
+app.post("/api/tenant/:slug/email/send", tenantEmailSendLimiter, requireTenant, async (req, res) => {
   const { slug } = req.params;
   const tenants = readTenants();
-  if (!tenants.find(t => t.slug === slug)) return res.status(404).json({ ok: false, error: "Tenant not found" });
+  const tenant = tenants.find(t => t.slug === slug);
+  if (!tenant) return res.status(404).json({ ok: false, error: "Tenant not found" });
   const db = readDb();
   const raw = db[`t_${slug}_wv_tenant_settings`];
   const tenantSettings = raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : {};
-  // Prefer tenant SMTP, fall back to global SMTP
-  const t = buildTenantTransporter(tenantSettings) || getTransporter();
-  const from = buildTenantTransporter(tenantSettings) ? getTenantFromAddress(tenantSettings) : getFromAddress();
-  if (!t) return res.status(400).json({ ok: false, error: "SMTP not configured" });
+  const t = buildTenantTransporter(tenantSettings);
+  const from = getTenantFromAddress(tenantSettings);
+  if (!t) return res.status(400).json({ ok: false, error: "Tenant SMTP is not configured" });
   const { to, subject, html, text } = req.body;
-  if (!to || !subject) return res.status(400).json({ ok: false, error: "Missing to/subject" });
+  const recipient = String(to || "").trim().toLowerCase();
+  const safeSubject = String(subject || "").trim();
+  if (recipient.length > 254 || !/^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/.test(recipient)) return res.status(400).json({ ok: false, error: "A single valid recipient is required" });
+  if (!safeSubject || safeSubject.length > 200 || /[\r\n]/.test(safeSubject)) return res.status(400).json({ ok: false, error: "A valid subject is required" });
+  if (String(html || "").length > 100_000 || String(text || "").length > 100_000) return res.status(413).json({ ok: false, error: "Email content is too large" });
+  const message = prepareCustomEmail({
+    subject: safeSubject,
+    html,
+    text,
+    brandName: tenantSettings.businessName || tenantSettings.brandName || tenant.displayName || "PhotoFlow",
+  });
   try {
-    const info = await t.sendMail({ from, to, subject, html, text });
+    const info = await t.sendMail({ from, to: recipient, subject: safeSubject, ...message });
     res.json({ ok: true, messageId: info.messageId });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
@@ -6240,7 +8045,7 @@ app.post("/api/tenant/:slug/email/send", tenantLimiter, async (req, res) => {
 // - Secret fields absent from the payload → preserve the existing stored value.
 // - <field>Set boolean indicators from the frontend are ignored (computed server-side).
 // The response never includes secret values; masked booleans are returned instead.
-app.put("/api/tenant/:slug/settings", tenantLimiter, (req, res) => {
+app.put("/api/tenant/:slug/settings", tenantLimiter, requireTenant, (req, res) => {
   const slug = req.params.slug;
   const tenants = readTenants();
   if (!tenants.find(t => t.slug === slug)) return res.status(404).json({ error: "Tenant not found" });
@@ -6280,6 +8085,9 @@ app.put("/api/tenant/:slug/settings", tenantLimiter, (req, res) => {
 
 
 const planLimiter = rateLimit({ windowMs: 60_000, max: 30, standardHeaders: true, legacyHeaders: false, message: { error: "Too many requests" } });
+// Self-service licence purchases are fail-closed until a checkout can be
+// cryptographically bound to an authenticated tenant and applied atomically.
+const LICENSE_SELF_SERVICE_PURCHASES_ENABLED = false;
 
 function readLicensePlans() {
   const db = readDb();
@@ -6294,16 +8102,16 @@ function writeLicensePlans(plans) {
 
 // List active plans (public — used on purchase/pricing page)
 app.get("/api/license-plans", planLimiter, (_req, res) => {
-  res.json(readLicensePlans().filter(p => p.active !== false));
+  res.json(readLicensePlans().filter(p => p.active !== false && p.type === "one-time"));
 });
 
 // List ALL plans including inactive (admin only)
-app.get("/api/license-plans/all", planLimiter, (_req, res) => {
+app.get("/api/license-plans/all", planLimiter, requireAuth, (_req, res) => {
   res.json(readLicensePlans());
 });
 
 // List all purchases
-app.get("/api/license-plans/purchases", planLimiter, (_req, res) => {
+app.get("/api/license-plans/purchases", planLimiter, requireAuth, (_req, res) => {
   const db = readDb();
   const raw = db["wv_license_purchases"];
   const purchases = raw ? (typeof raw === "string" ? JSON.parse(raw) : (Array.isArray(raw) ? raw : [])) : [];
@@ -6311,13 +8119,13 @@ app.get("/api/license-plans/purchases", planLimiter, (_req, res) => {
 });
 
 // Create a plan
-app.post("/api/license-plans", planLimiter, (req, res) => {
+app.post("/api/license-plans", planLimiter, requireAuth, (req, res) => {
   const { name, type, price, currency, durationDays, description, features } = req.body || {};
   if (!name || typeof name !== "string" || !name.trim()) {
     return res.status(400).json({ error: "name is required" });
   }
-  if (!["monthly", "yearly", "one-time"].includes(type)) {
-    return res.status(400).json({ error: "type must be monthly, yearly, or one-time" });
+  if (type !== "one-time") {
+    return res.status(400).json({ error: "Only one-time license plans are supported in this release" });
   }
   if (typeof price !== "number" || price <= 0) {
     return res.status(400).json({ error: "price must be a positive number" });
@@ -6341,18 +8149,19 @@ app.post("/api/license-plans", planLimiter, (req, res) => {
 });
 
 // Update a plan
-app.put("/api/license-plans/:id", planLimiter, (req, res) => {
+app.put("/api/license-plans/:id", planLimiter, requireAuth, (req, res) => {
   const plans = readLicensePlans();
   const idx = plans.findIndex(p => p.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: "Plan not found" });
   const { id: _ignoreId, createdAt: _ignoredAt, ...updates } = req.body || {};
+  if (updates.type && updates.type !== "one-time") return res.status(400).json({ error: "Only one-time license plans are supported in this release" });
   plans[idx] = { ...plans[idx], ...updates, id: req.params.id };
   writeLicensePlans(plans);
   res.json(plans[idx]);
 });
 
 // Delete a plan
-app.delete("/api/license-plans/:id", planLimiter, (req, res) => {
+app.delete("/api/license-plans/:id", planLimiter, requireAuth, (req, res) => {
   const plans = readLicensePlans();
   const filtered = plans.filter(p => p.id !== req.params.id);
   if (filtered.length === plans.length) return res.status(404).json({ error: "Plan not found" });
@@ -6362,9 +8171,11 @@ app.delete("/api/license-plans/:id", planLimiter, (req, res) => {
 
 // Create Stripe checkout for a license plan purchase
 app.post("/api/license-plans/:planId/checkout", planLimiter, async (req, res) => {
+  if (!LICENSE_SELF_SERVICE_PURCHASES_ENABLED) return res.status(410).json({ error: "Self-service licence purchases are temporarily unavailable" });
   const plans = readLicensePlans();
   const plan = plans.find(p => p.id === req.params.planId && p.active !== false);
   if (!plan) return res.status(404).json({ error: "Plan not found" });
+  if (plan.type !== "one-time") return res.status(409).json({ error: "Recurring license plans are not purchasable in this release" });
 
   const { buyerEmail, buyerName, successUrl, cancelUrl } = req.body || {};
   if (!buyerEmail || typeof buyerEmail !== "string" || !buyerEmail.trim()) {
@@ -6372,12 +8183,11 @@ app.post("/api/license-plans/:planId/checkout", planLimiter, async (req, res) =>
   }
 
   const stripeKey = process.env.STRIPE_SECRET_KEY;
-  if (!stripeKey) return res.status(400).json({ error: "Stripe not configured — add STRIPE_SECRET_KEY to your docker-compose.yml" });
+  if (!stripeKey || !mainStripeReady()) return res.status(503).json({ error: "Stripe checkout is unavailable until webhook verification is configured" });
 
   try {
     const Stripe = require("stripe");
     const stripe = Stripe(stripeKey);
-    const origin = req.headers.origin || `http://localhost:${PORT}`;
     const currency = (plan.currency || "AUD").toLowerCase();
 
     const session = await stripe.checkout.sessions.create({
@@ -6397,8 +8207,8 @@ app.post("/api/license-plans/:planId/checkout", planLimiter, async (req, res) =>
         quantity: 1,
       }],
       mode: (plan.type === "monthly" || plan.type === "yearly") ? "subscription" : "payment",
-      success_url: successUrl || `${origin}?plan_success=1`,
-      cancel_url: cancelUrl || `${origin}?plan_cancelled=1`,
+      success_url: safeCheckoutReturnUrl(req, successUrl, "/?plan_success=1"),
+      cancel_url: safeCheckoutReturnUrl(req, cancelUrl, "/?plan_cancelled=1"),
       metadata: {
         type: "license-plan",
         planId: plan.id,
@@ -6406,6 +8216,8 @@ app.post("/api/license-plans/:planId/checkout", planLimiter, async (req, res) =>
         buyerEmail: buyerEmail.trim(),
         buyerName: buyerName || "",
         durationDays: String(plan.durationDays || 365),
+        expectedAmountCents: String(Math.round(Number(plan.price) * 100)),
+        expectedCurrency: currency,
       },
     });
     res.json({ url: session.url, sessionId: session.id });
@@ -6417,9 +8229,11 @@ app.post("/api/license-plans/:planId/checkout", planLimiter, async (req, res) =>
 
 // Bank transfer: create a pending purchase (admin activates after manual payment)
 app.post("/api/license-plans/:planId/bank-purchase", planLimiter, (req, res) => {
+  if (!LICENSE_SELF_SERVICE_PURCHASES_ENABLED) return res.status(410).json({ error: "Self-service licence purchases are temporarily unavailable" });
   const plans = readLicensePlans();
   const plan = plans.find(p => p.id === req.params.planId && p.active !== false);
   if (!plan) return res.status(404).json({ error: "Plan not found" });
+  if (plan.type !== "one-time") return res.status(409).json({ error: "Recurring license plans are not purchasable in this release" });
   const { buyerEmail, buyerName } = req.body || {};
   if (!buyerEmail || typeof buyerEmail !== "string" || !buyerEmail.trim()) {
     return res.status(400).json({ error: "buyerEmail is required" });
@@ -6446,7 +8260,8 @@ app.post("/api/license-plans/:planId/bank-purchase", planLimiter, (req, res) => 
 });
 
 // Admin: activate a pending bank purchase (generates license key)
-app.post("/api/license-plans/purchases/:purchaseId/activate", planLimiter, (req, res) => {
+app.post("/api/license-plans/purchases/:purchaseId/activate", planLimiter, requireAuth, (req, res) => {
+  if (!LICENSE_SELF_SERVICE_PURCHASES_ENABLED) return res.status(410).json({ error: "Legacy licence purchases require manual review" });
   const db = readDb();
   const raw = db["wv_license_purchases"];
   const purchases = raw ? (typeof raw === "string" ? JSON.parse(raw) : (Array.isArray(raw) ? raw : [])) : [];
@@ -6491,25 +8306,33 @@ const EVENT_SLOT_REQUESTS_FILE = path.join(DATA_DIR, "event_slot_requests.json")
 function readLicenseKeys() {
   try {
     if (!fs.existsSync(LICENSE_KEYS_FILE)) return [];
-    return JSON.parse(fs.readFileSync(LICENSE_KEYS_FILE, "utf-8"));
-  } catch {
-    return [];
+    const keys = JSON.parse(fs.readFileSync(LICENSE_KEYS_FILE, "utf-8"));
+    if (!Array.isArray(keys)) throw new Error("License-key database must contain an array");
+    return keys;
+  } catch (err) {
+    console.error("Unable to read license-key database:", err.message);
+    throw err;
   }
 }
 
 function writeLicenseKeys(keys) {
-  fs.writeFileSync(LICENSE_KEYS_FILE, JSON.stringify(keys, null, 2));
+  writeJsonFileAtomicSync(LICENSE_KEYS_FILE, keys);
 }
 
 function readEventSlotRequests() {
   try {
     if (!fs.existsSync(EVENT_SLOT_REQUESTS_FILE)) return [];
-    return JSON.parse(fs.readFileSync(EVENT_SLOT_REQUESTS_FILE, "utf-8"));
-  } catch { return []; }
+    const requests = JSON.parse(fs.readFileSync(EVENT_SLOT_REQUESTS_FILE, "utf-8"));
+    if (!Array.isArray(requests)) throw new Error("Event-slot database must contain an array");
+    return requests;
+  } catch (err) {
+    console.error("Unable to read event-slot database:", err.message);
+    throw err;
+  }
 }
 
 function writeEventSlotRequests(requests) {
-  fs.writeFileSync(EVENT_SLOT_REQUESTS_FILE, JSON.stringify(requests, null, 2));
+  writeJsonFileAtomicSync(EVENT_SLOT_REQUESTS_FILE, requests);
 }
 
 /**
@@ -6535,12 +8358,12 @@ function generateKeyString() {
 const licenseKeyLimiter = rateLimit({ windowMs: 60_000, max: 30, standardHeaders: true, legacyHeaders: false, message: { error: "Too many requests" } });
 
 // List all keys
-app.get("/api/license-keys", licenseKeyLimiter, (_req, res) => {
+app.get("/api/license-keys", licenseKeyLimiter, requireAuth, (_req, res) => {
   res.json(readLicenseKeys());
 });
 
 // Generate a new key
-app.post("/api/license-keys/generate", licenseKeyLimiter, (req, res) => {
+app.post("/api/license-keys/generate", licenseKeyLimiter, requireAuth, (req, res) => {
   const { issuedTo, expiresAt, notes, isTrial, maxEvents, maxBookings, extraEventPrice } = req.body || {};
   if (!issuedTo || typeof issuedTo !== "string" || !issuedTo.trim()) {
     return res.status(400).json({ error: "issuedTo is required" });
@@ -6575,6 +8398,7 @@ app.post("/api/license-keys/validate", licenseKeyLimiter, (req, res) => {
   const keys = readLicenseKeys();
   const found = keys.find(k => k.key === key.trim().toUpperCase());
   if (!found) return res.json({ valid: false, error: "License key not found" });
+  if (found.revokedAt || found.revoked === true || found.status === "revoked") return res.json({ valid: false, error: "License key has been revoked" });
   if (found.usedAt) return res.json({ valid: false, error: "License key already used" });
   if (found.expiresAt && new Date(found.expiresAt) < new Date()) {
     return res.json({ valid: false, error: "License key has expired" });
@@ -6590,30 +8414,27 @@ app.post("/api/license-keys/validate", licenseKeyLimiter, (req, res) => {
 
 // Activate a key (mark as used after setup)
 app.post("/api/license-keys/activate", licenseKeyLimiter, (req, res) => {
-  const { key, usedBy } = req.body || {};
-  if (!key || typeof key !== "string") {
-    return res.status(400).json({ ok: false, error: "key is required" });
-  }
-  const keys = readLicenseKeys();
-  const idx = keys.findIndex(k => k.key === key.trim().toUpperCase());
-  if (idx === -1) return res.status(404).json({ ok: false, error: "License key not found" });
-  if (keys[idx].usedAt) return res.status(400).json({ ok: false, error: "License key already used" });
-  if (keys[idx].expiresAt && new Date(keys[idx].expiresAt) < new Date()) {
-    return res.status(400).json({ ok: false, error: "License key has expired" });
-  }
-  keys[idx] = { ...keys[idx], usedAt: new Date().toISOString(), ...(usedBy ? { usedBy } : {}) };
-  writeLicenseKeys(keys);
-  res.json({ ok: true });
+  res.status(410).json({ ok: false, error: "Standalone license activation is retired; use the atomic setup flow" });
 });
 
 // Revoke a key
-app.delete("/api/license-keys/:key", licenseKeyLimiter, (req, res) => {
+app.delete("/api/license-keys/:key", licenseKeyLimiter, requireAuth, (req, res) => {
   const keys = readLicenseKeys();
   const keyStr = decodeURIComponent(req.params.key).trim().toUpperCase();
-  const filtered = keys.filter(k => k.key !== keyStr);
-  if (filtered.length === keys.length) return res.status(404).json({ ok: false, error: "Key not found" });
-  writeLicenseKeys(filtered);
-  res.json({ ok: true });
+  const index = keys.findIndex(item => String(item.key || "").trim().toUpperCase() === keyStr);
+  if (index < 0) return res.status(404).json({ ok: false, error: "Key not found" });
+  const revokedAt = new Date().toISOString();
+  keys[index] = { ...keys[index], revoked: true, revokedAt, setupToken: undefined };
+  const tenants = readTenants();
+  let deactivatedTenants = 0;
+  for (let tenantIndex = 0; tenantIndex < tenants.length; tenantIndex += 1) {
+    if (String(tenants[tenantIndex].licenseKey || "").trim().toUpperCase() !== keyStr) continue;
+    tenants[tenantIndex] = { ...tenants[tenantIndex], active: false, licenseRevokedAt: revokedAt };
+    deactivatedTenants += 1;
+  }
+  writeLicenseKeys(keys);
+  if (deactivatedTenants) writeTenants(tenants);
+  res.json({ ok: true, deactivatedTenants });
 });
 
 // ── Tenant Setup (via setup token) ───────────────────
@@ -6628,6 +8449,7 @@ app.get("/api/tenant-setup/:token", tenantSetupLimiter, (req, res) => {
   const keys = readLicenseKeys();
   const found = keys.find(k => k.setupToken === token);
   if (!found) return res.status(404).json({ error: "Setup link not found or already used" });
+  if (found.revokedAt || found.revoked === true || found.status === "revoked") return res.status(410).json({ error: "This setup link is no longer active" });
   if (found.usedAt) return res.status(410).json({ error: "This setup link has already been used" });
   if (found.expiresAt && new Date(found.expiresAt) < new Date()) {
     return res.status(410).json({ error: "This setup link has expired" });
@@ -6643,7 +8465,7 @@ app.get("/api/tenant-setup/:token", tenantSetupLimiter, (req, res) => {
 });
 
 // Complete tenant setup: create tenant + activate license key
-app.post("/api/tenant-setup/:token/complete", tenantSetupLimiter, (req, res) => {
+app.post("/api/tenant-setup/:token/complete", tenantSetupLimiter, async (req, res) => {
   const { token } = req.params;
   if (!token || typeof token !== "string") {
     return res.status(400).json({ error: "Invalid token" });
@@ -6657,25 +8479,39 @@ app.post("/api/tenant-setup/:token/complete", tenantSetupLimiter, (req, res) => 
   if (!displayName || typeof displayName !== "string" || !displayName.trim()) {
     return res.status(400).json({ error: "Display name is required" });
   }
-  if (!passwordHash || typeof passwordHash !== "string") {
+  if (!passwordHash || typeof passwordHash !== "string" || passwordHash.length < 32 || passwordHash.length > 256) {
     return res.status(400).json({ error: "A password is required" });
   }
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email).trim())) return res.status(400).json({ error: "A valid email is required" });
 
   // Verify the setup token
-  const keys = readLicenseKeys();
-  const keyIdx = keys.findIndex(k => k.setupToken === token);
+  let keys = readLicenseKeys();
+  let keyIdx = keys.findIndex(k => k.setupToken === token);
   if (keyIdx === -1) return res.status(404).json({ error: "Setup link not found or already used" });
-  const licKey = keys[keyIdx];
+  let licKey = keys[keyIdx];
+  if (licKey.revokedAt || licKey.revoked === true || licKey.status === "revoked") return res.status(410).json({ error: "This setup link is no longer active" });
   if (licKey.usedAt) return res.status(410).json({ error: "This setup link has already been used" });
   if (licKey.expiresAt && new Date(licKey.expiresAt) < new Date()) {
     return res.status(410).json({ error: "This setup link has expired" });
   }
 
   // Check slug uniqueness
-  const tenants = readTenants();
+  let tenants = readTenants();
   if (tenants.find(t => t.slug === slug)) {
     return res.status(409).json({ error: "That URL slug is already taken — please choose another" });
   }
+
+  const storedPasswordHash = await bcryptHash(passwordHash);
+  // Re-check the one-time token and slug after the password hash yields to the
+  // event loop, closing the first-claim race between concurrent requests.
+  keys = readLicenseKeys();
+  keyIdx = keys.findIndex(k => k.setupToken === token);
+  if (keyIdx === -1 || keys[keyIdx].usedAt) return res.status(410).json({ error: "This setup link has already been used" });
+  licKey = keys[keyIdx];
+  if (licKey.revokedAt || licKey.revoked === true || licKey.status === "revoked") return res.status(410).json({ error: "This setup link is no longer active" });
+  if (licKey.expiresAt && new Date(licKey.expiresAt) < new Date()) return res.status(410).json({ error: "This setup link has expired" });
+  tenants = readTenants();
+  if (tenants.some(item => item.slug === slug)) return res.status(409).json({ error: "That URL slug is already taken — please choose another" });
 
   // Create the tenant
   const tenant = {
@@ -6685,7 +8521,7 @@ app.post("/api/tenant-setup/:token/complete", tenantSetupLimiter, (req, res) => 
     bio: (bio || "").trim() || undefined,
     timezone: timezone || "Australia/Sydney",
     licenseKey: licKey.key,
-    passwordHash,
+    passwordHash: storedPasswordHash,
     active: true,
     createdAt: new Date().toISOString(),
   };
@@ -6696,82 +8532,408 @@ app.post("/api/tenant-setup/:token/complete", tenantSetupLimiter, (req, res) => 
   keys[keyIdx] = { ...licKey, usedAt: new Date().toISOString(), usedBy: slug };
   writeLicenseKeys(keys);
 
-  res.json({ ok: true, tenant });
+  const sessionToken = signSession({ purpose: "tenant", sub: tenant.slug, cv: credentialVersion(tenant.passwordHash) }, SESSION_SECRET, { ttlSeconds: TENANT_SESSION_TTL_SECONDS });
+  setHttpOnlyCookie(req, res, TENANT_SESSION_COOKIE, sessionToken, TENANT_SESSION_TTL_SECONDS);
+  res.setHeader("Cache-Control", "no-store");
+  res.json({
+    ok: true,
+    tenant: safeTenantPrivateDto(tenant),
+    ...(isExplicitNativeOrigin(req.headers.origin, NATIVE_APP_ORIGINS) ? { sessionToken, expiresIn: TENANT_SESSION_TTL_SECONDS } : {}),
+  });
 });
+
+const CLIENT_PORTAL_ACCEPTED = Object.freeze({
+  ok: true,
+  message: "If galleries are available for that address, an email will arrive shortly.",
+});
+const clientPortalIpLimiter = rateLimit({
+  windowMs: 15 * 60_000,
+  max: 8,
+  standardHeaders: false,
+  legacyHeaders: false,
+  handler: (_req, res) => res.status(202).json(CLIENT_PORTAL_ACCEPTED),
+});
+const clientPortalEmailLimiter = rateLimit({
+  windowMs: 60 * 60_000,
+  max: 3,
+  standardHeaders: false,
+  legacyHeaders: false,
+  keyGenerator: req => crypto.createHash("sha256")
+    .update(normalizeClientPortalEmail(req.body?.email) || "invalid-email")
+    .digest("base64url"),
+  handler: (_req, res) => res.status(202).json(CLIENT_PORTAL_ACCEPTED),
+});
+
+function clientPortalGalleryLink(trustedBaseUrl, album) {
+  const identifier = encodeURIComponent(album.slug || album.id);
+  const url = new URL(`/gallery/${identifier}`, trustedBaseUrl).toString();
+  return album.clientToken ? `${url}#token=${encodeURIComponent(album.clientToken)}` : url;
+}
+
+async function sendClientPortalAlbumGroups({ email, groups, db, tenants, trustedBaseUrl }) {
+  const tenantBySlug = new Map(tenants.map(tenant => [tenant.slug, tenant]));
+  const profile = dbGet(db, DB_KEYS.PROFILE, {});
+  for (const group of groups) {
+    const tenant = group.tenantSlug ? tenantBySlug.get(group.tenantSlug) : null;
+    const tenantSettings = group.tenantSlug ? dbGet(db, `t_${group.tenantSlug}_wv_tenant_settings`, {}) : null;
+    const transport = group.tenantSlug ? buildTenantTransporter(tenantSettings) : getTransporter();
+    const from = group.tenantSlug ? getTenantFromAddress(tenantSettings) : getFromAddress();
+    if (!transport || !from || !group.albums.length || (group.tenantSlug && !tenant)) continue;
+    const senderName = String(tenant?.displayName || profile?.businessName || profile?.name || "Your photographer")
+      .replace(/[\r\n]+/g, " ").slice(0, 120);
+    const message = buildClientPortalEmail({
+      albums: group.albums.map(album => ({
+        title: album.title || "Photo gallery",
+        url: clientPortalGalleryLink(trustedBaseUrl, album),
+      })),
+      brandName: tenantSettings?.businessName || tenantSettings?.brandName || senderName,
+    });
+    try {
+      await transport.sendMail({
+        from,
+        to: email,
+        ...message,
+      });
+    } catch {
+      // The public response is deliberately independent of match and SMTP state.
+    }
+  }
+}
+
+app.post("/api/client-portal/request", clientPortalIpLimiter, clientPortalEmailLimiter, (req, res) => {
+  const email = normalizeClientPortalEmail(req.body?.email);
+  const trustedBaseUrl = safeCheckoutReturnUrl(req, null, "/");
+  res.status(202).json(CLIENT_PORTAL_ACCEPTED);
+  if (!email) return;
+  setImmediate(() => {
+    try {
+      const db = readDb();
+      const tenants = readTenants().filter(tenant => tenantIsLicensed(tenant));
+      const tenantAlbums = Object.fromEntries(tenants.map(tenant => [tenant.slug, dbGet(db, `t_${tenant.slug}_wv_albums`, [])]));
+      const timezones = Object.fromEntries([
+        ["", galleryTimezone(db, null)],
+        ...tenants.map(tenant => [tenant.slug, galleryTimezone(db, tenant.slug)]),
+      ]);
+      const groups = selectClientPortalAlbumGroups({
+        email,
+        mainAlbums: dbGet(db, DB_KEYS.ALBUMS, []),
+        tenantAlbums,
+        bookings: dbGet(db, DB_KEYS.BOOKINGS, []),
+        activeTenantSlugs: tenants.map(tenant => tenant.slug),
+        timezones,
+      }).map(group => ({
+        ...group,
+        albums: group.albums.filter(album => {
+          const resolved = findAlbumBySlugOrId(db, album.slug || album.id);
+          return !!resolved && resolved.tenantSlug === group.tenantSlug && resolved.album.id === album.id;
+        }),
+      })).filter(group => group.albums.length);
+      void sendClientPortalAlbumGroups({ email, groups, db, tenants, trustedBaseUrl }).catch(() => {});
+    } catch {
+      // Deliberately silent: this endpoint must never reveal DB or delivery state.
+    }
+  });
+});
+
+function findAlbumBySlugOrId(db, albumSlug) {
+  const findIn = arr => Array.isArray(arr) ? arr.find(album => album.slug === albumSlug || album.id === albumSlug) : null;
+  const mainAlbum = findIn(dbGet(db, DB_KEYS.ALBUMS, []));
+  const mainMatch = mainAlbum ? { album: mainAlbum, tenantSlug: null } : null;
+  const tenantMatches = [];
+  const activeTenantSlugs = new Set(readTenants().filter(tenant => tenantIsLicensed(tenant)).map(tenant => tenant.slug));
+  for (const key of Object.keys(db)) {
+    if (!key.startsWith("t_") || !key.endsWith(TENANT_ALBUMS_SUFFIX)) continue;
+    const tenantSlug = key.slice(2, -TENANT_ALBUMS_SUFFIX.length);
+    if (!activeTenantSlugs.has(tenantSlug)) continue;
+    const album = findIn(dbGet(db, key, []));
+    if (album) tenantMatches.push({ album, tenantSlug });
+  }
+  return _chooseAlbumStoreMatch(mainMatch, tenantMatches);
+}
+
+function getGallerySessionForAlbum(req, album) {
+  if (!album?.id || album.enabled === false) return null;
+  const token = parseCookies(req.headers.cookie)[galleryCookieName(album.id)];
+  const session = verifySession(token, SESSION_SECRET, { purpose: "gallery" });
+  if (!session || session.albumId !== album.id || typeof session.sessionKey !== "string" || session.sessionKey.length < 24) return null;
+  if (session.tenantSlug && !licensedTenantBySlug(session.tenantSlug)) return null;
+  const sharePurchase = album.sessionPurchases?.[session.sessionKey];
+  if (session.shareLinkId) {
+    if (!galleryShareLinkAccess(album, session.shareLinkId, Date.now(), galleryTimezone(readDb(), session.tenantSlug)).active) return null;
+  } else if (sharePurchase?.source === "share-link") {
+    // Legacy share sessions were not revocable; invalidate them on upgrade.
+    return null;
+  }
+  return session;
+}
+
+function publicAlbumDto(album, gallerySession) {
+  const sessionKey = gallerySession.sessionKey;
+  const db = readDb();
+  const safe = safeGalleryAlbumDto(album, sessionKey, galleryTimezone(db, gallerySession.tenantSlug));
+  safe.downloadEmailCapture = normalizeDownloadEmailPolicy(album.downloadEmailCapture);
+  return safe;
+}
+
+function establishGalleryAccess(req, res) {
+  const db = readDb();
+  const chosen = findAlbumBySlugOrId(db, req.params.albumSlug);
+  if (!chosen || chosen.album.enabled === false) return res.status(404).json({ error: "Album not found" });
+  if (albumAccessWindow(chosen.album, Date.now(), galleryTimezone(db, chosen.tenantSlug)).galleryExpired) return res.status(410).json({ error: "This gallery has expired" });
+  const suppliedToken = String(req.body?.token || "");
+  const suppliedPin = String(req.body?.pin || "");
+  const tokenValid = !!chosen.album.clientToken && timingSafeTextEqual(String(chosen.album.clientToken), suppliedToken);
+  const pinValid = !!chosen.album.accessCode && timingSafeTextEqual(String(chosen.album.accessCode), suppliedPin);
+  const protectedAlbum = !!chosen.album.clientToken || !!chosen.album.accessCode;
+  if (protectedAlbum && !tokenValid && !pinValid) {
+    return res.status(401).json({
+      protected: true,
+      pinRequired: !!chosen.album.accessCode,
+      tokenRequired: !!chosen.album.clientToken,
+      tenantSlug: chosen.tenantSlug,
+      album: { id: chosen.album.id, slug: chosen.album.slug, title: chosen.album.title, description: chosen.album.description, enabled: chosen.album.enabled, photos: [] },
+    });
+  }
+  const existing = getGallerySessionForAlbum(req, chosen.album);
+  const sessionKey = existing?.sessionKey || `gallery-${crypto.randomBytes(24).toString("base64url")}`;
+  const sessionToken = signSession({
+    purpose: "gallery",
+    albumId: chosen.album.id,
+    tenantSlug: chosen.tenantSlug,
+    sessionKey,
+  }, SESSION_SECRET, { ttlSeconds: GALLERY_SESSION_TTL_SECONDS });
+  setHttpOnlyCookie(req, res, galleryCookieName(chosen.album.id), sessionToken, GALLERY_SESSION_TTL_SECONDS);
+  const gallerySession = verifySession(sessionToken, SESSION_SECRET, { purpose: "gallery" });
+  res.setHeader("Cache-Control", "no-store");
+  return res.json({ album: publicAlbumDto(chosen.album, gallerySession), tenantSlug: chosen.tenantSlug, protected: protectedAlbum });
+}
+
+const galleryAccessLimiter = rateLimit({ windowMs: 60_000, max: 30, standardHeaders: true, legacyHeaders: false, message: { error: "Too many gallery access attempts" } });
+app.post("/api/public-album/:albumSlug/access", galleryAccessLimiter, establishGalleryAccess);
+// Compatibility alias for clients built against the earlier session contract.
+app.post("/api/public-album/:albumSlug/session", galleryAccessLimiter, establishGalleryAccess);
 
 // ── Public album lookup (cross-store, used by gallery) ─────────────────────
 app.get("/api/public-album/:albumSlug", (req, res) => {
-  const { albumSlug } = req.params;
+  if (req.query.token || req.query.pin || req.query.sessionKey || req.query.email) {
+    return res.status(400).json({ error: "Gallery credentials are not accepted in URLs; use the access endpoint" });
+  }
   const db = readDb();
-
-  // Helper: find by slug or id in an array
-  const findIn = (arr) => Array.isArray(arr) ? arr.find(a => a.slug === albumSlug || a.id === albumSlug) : null;
-
-  let mainMatch = null;
-  const tenantMatches = [];
-
-  const mainRaw = db["wv_albums"];
-  const main = mainRaw ? (typeof mainRaw === "string" ? JSON.parse(mainRaw) : mainRaw) : [];
-  const mainAlbum = findIn(main);
-  if (mainAlbum) {
-    mainMatch = { album: mainAlbum, tenantSlug: null };
-  }
-
-  for (const key of Object.keys(db)) {
-    if (!key.startsWith("t_") || !key.endsWith("_wv_albums")) continue;
-    const tSlug = key.slice(2, key.length - "_wv_albums".length);
-    const raw = db[key];
-    const parsed = raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : [];
-    const found = findIn(parsed);
-    if (found) {
-      tenantMatches.push({ album: found, tenantSlug: tSlug });
-    }
-  }
-
-  const chosen = _chooseAlbumStoreMatch(mainMatch, tenantMatches);
+  const chosen = findAlbumBySlugOrId(db, req.params.albumSlug);
   if (chosen) {
-    const suppliedToken = typeof req.query.token === "string" ? req.query.token : "";
-    const suppliedPin = typeof req.query.pin === "string" ? req.query.pin : "";
-    const storedTokenBuffer = Buffer.from(String(chosen.album.clientToken || ""));
-    const suppliedTokenBuffer = Buffer.from(suppliedToken);
-    const tokenValid = !!(storedTokenBuffer.length && storedTokenBuffer.length === suppliedTokenBuffer.length && crypto.timingSafeEqual(storedTokenBuffer, suppliedTokenBuffer));
-    const pinValid = !!(chosen.album.accessCode && suppliedPin && String(chosen.album.accessCode) === suppliedPin);
-    if (chosen.album.accessCode && !tokenValid && !pinValid) {
-      res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+    if (chosen.album.enabled === false) return res.status(404).json({ error: "Album not found" });
+    if (albumAccessWindow(chosen.album, Date.now(), galleryTimezone(db, chosen.tenantSlug)).galleryExpired) return res.status(410).json({ error: "This gallery has expired" });
+    const gallerySession = getGallerySessionForAlbum(req, chosen.album);
+    if (!gallerySession || gallerySession.tenantSlug !== chosen.tenantSlug) {
       return res.status(401).json({
-        protected: true,
+        protected: !!chosen.album.accessCode || !!chosen.album.clientToken,
+        pinRequired: !!chosen.album.accessCode,
+        tokenRequired: !!chosen.album.clientToken,
+        requiresSession: true,
         tenantSlug: chosen.tenantSlug,
-        album: { id: chosen.album.id, slug: chosen.album.slug, title: chosen.album.title, description: chosen.album.description, enabled: chosen.album.enabled, accessCode: "__server_protected__", photos: [] },
       });
     }
-    const requestedSessionKey = typeof req.query.sessionKey === "string" ? req.query.sessionKey.slice(0, 240) : "";
-    const viewerSessionKey = requestedSessionKey || (tokenValid ? `token-${suppliedToken}` : pinValid ? suppliedPin : `session-${chosen.album.id}`);
-    const viewerPurchase = chosen.album.sessionPurchases?.[viewerSessionKey];
-    const viewerFreeUsed = chosen.album.usedFreeDownloads?.[viewerSessionKey];
-    const visiblePhotos = (chosen.album.photos || []).filter(photo => !photo.hidden && (chosen.album.showCullRejectsToClient || photo.cull?.status !== "reject"));
-    const album = {
-      ...chosen.album,
-      downloadEmailCapture: normalizeDownloadEmailPolicy(chosen.album.downloadEmailCapture),
-      accessCode: "",
-      clientToken: tokenValid ? suppliedToken : undefined,
-      clientEmail: undefined,
-      sessionPurchases: viewerPurchase ? { [viewerSessionKey]: viewerPurchase } : {},
-      usedFreeDownloads: viewerFreeUsed == null ? {} : { [viewerSessionKey]: viewerFreeUsed },
-      downloadHistory: undefined,
-      downloadRequests: undefined,
-      photos: _stripBakedFromPhotos(visiblePhotos),
-    };
-    // Must not cache: photo additions/deletions in the admin must be
-    // reflected immediately when clients open the gallery link.
     res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-    return res.json({ album, tenantSlug: chosen.tenantSlug });
+    return res.json({ album: publicAlbumDto(chosen.album, gallerySession), tenantSlug: chosen.tenantSlug });
   }
 
   return res.status(404).json({ error: "Album not found" });
 });
 
+function resolveGalleryMutation(req, res, identifier, options = {}) {
+  const db = readDb();
+  const match = findAlbumBySlugOrId(db, String(identifier || ""));
+  if (!match || match.album.enabled === false) {
+    res.status(404).json({ ok: false, error: "Album not found" });
+    return null;
+  }
+  const accessWindow = albumAccessWindow(match.album, Date.now(), galleryTimezone(db, match.tenantSlug));
+  if (accessWindow.galleryExpired || (options.requireDownload && accessWindow.downloadsExpired)) {
+    res.status(410).json({ ok: false, error: accessWindow.galleryExpired ? "This gallery has expired" : "Gallery downloads have expired" });
+    return null;
+  }
+  const session = getGallerySessionForAlbum(req, match.album);
+  if (!session || session.tenantSlug !== match.tenantSlug) {
+    res.status(401).json({ ok: false, error: "A valid gallery session is required" });
+    return null;
+  }
+  const storeKey = match.tenantSlug ? `t_${match.tenantSlug}_${TENANT_ALBUMS_SUFFIX.slice(1)}` : DB_KEYS.ALBUMS;
+  const albums = getStoredArray(db, storeKey);
+  const index = albums.findIndex(album => album.id === match.album.id);
+  if (index < 0) {
+    res.status(409).json({ ok: false, error: "Album store is inconsistent" });
+    return null;
+  }
+  return { db, match, session, storeKey, albums, index, album: albums[index] };
+}
+
+function deliverableAlbumPhotos(album) {
+  return (Array.isArray(album?.photos) ? album.photos : []).filter(photo => !photo.hidden && (album.showCullRejectsToClient || photo.cull?.status !== "reject"));
+}
+
+function hasNonQuotaPhotoEntitlement(album, photoId, sessionKey) {
+  if (album.paidPhotoIds?.includes(photoId) || album.photos?.some(photo => photo.id === photoId && photo.paid === true)) return true;
+  const purchase = album.sessionPurchases?.[sessionKey];
+  if (purchase?.fullAlbum === true || purchase?.photoIds?.includes(photoId)) return true;
+  if (album.allUnlocked) return true;
+  return (album.downloadRequests || []).some(request =>
+    request.sessionKey === sessionKey && ["approved", "completed"].includes(request.status) &&
+    (request.fullAlbum === true || request.photoIds?.includes(photoId))
+  );
+}
+
+function saveGalleryAlbum(context) {
+  context.albums[context.index] = context.album;
+  context.db[context.storeKey] = JSON.stringify(context.albums);
+  writeDb(context.db);
+}
+
+app.patch("/api/public-album/:albumSlug/photos/:photoId/star", galleryAccessLimiter, (req, res) => {
+  const context = resolveGalleryMutation(req, res, req.params.albumSlug);
+  if (!context) return;
+  const album = context.album;
+  if (!album.proofingEnabled || album.proofingStage !== "proofing") return res.status(409).json({ ok: false, error: "This gallery is not accepting selections" });
+  if (albumAccessWindow({ expiresAt: album.proofingExpiresAt }, Date.now(), galleryTimezone(context.db, context.match.tenantSlug)).galleryExpired) return res.status(403).json({ ok: false, error: "The proofing window has expired" });
+  const deliverableIds = new Set(deliverableAlbumPhotos(album).map(photo => String(photo.id)));
+  const photoIndex = (album.photos || []).findIndex(photo => String(photo.id) === req.params.photoId && deliverableIds.has(String(photo.id)));
+  if (photoIndex < 0) return res.status(404).json({ ok: false, error: "Photo not found" });
+  album.photos[photoIndex] = { ...album.photos[photoIndex], starred: req.body?.starred === true };
+  saveGalleryAlbum(context);
+  res.json({ ok: true, photoId: req.params.photoId, starred: album.photos[photoIndex].starred });
+});
+
+app.post("/api/album/free-unlock", galleryAccessLimiter, (req, res) => {
+  const context = resolveGalleryMutation(req, res, req.body?.albumId, { requireDownload: true });
+  if (!context) return;
+  if (!albumAllowsFreeFullUnlock(context.album)) {
+    return res.status(409).json({ ok: false, error: "This album is not configured for a free full-album unlock" });
+  }
+  const sessionKey = context.session.sessionKey;
+  context.album.sessionPurchases = { ...(context.album.sessionPurchases || {}), [sessionKey]: {
+    ...(context.album.sessionPurchases?.[sessionKey] || {}),
+    fullAlbum: true,
+    photoIds: [],
+    unlockedAt: new Date().toISOString(),
+    method: "free",
+  } };
+  saveGalleryAlbum(context);
+  res.json({ ok: true, fullAlbum: true });
+});
+
+app.post("/api/album/download-complete", galleryAccessLimiter, (req, res) => {
+  const context = resolveGalleryMutation(req, res, req.body?.albumId, { requireDownload: true });
+  if (!context) return;
+  const sessionKey = context.session.sessionKey;
+  const requestedIds = [...new Set((Array.isArray(req.body?.photoIds) ? req.body.photoIds : []).map(String))];
+  if (requestedIds.length === 0 || requestedIds.length > MAX_ZIP_FILES) return res.status(400).json({ ok: false, error: "A valid photoIds array is required" });
+  const deliverableIds = new Set(deliverableAlbumPhotos(context.album).map(photo => photo.id));
+  if (requestedIds.some(id => !deliverableIds.has(id))) return res.status(400).json({ ok: false, error: "One or more photos are unavailable" });
+  const policy = normalizeDownloadEmailPolicy(context.album.downloadEmailCapture);
+  if (policy === "required") {
+    const captureId = String(req.body?.captureId || req.body?.downloadEmailCaptureId || "").slice(0, 120);
+    const validCapture = readDownloadEmailCaptures().some(record => record.id === captureId && recordMatchesRequest(record, context.album.id, sessionKey, DOWNLOAD_CAPTURE_SECRET));
+    if (!validCapture) return res.status(428).json({ ok: false, error: "Email address required before downloading", code: "DOWNLOAD_EMAIL_REQUIRED" });
+  }
+  const sessionStoreKey = `wv_session_${sessionKey}_${context.album.id}`;
+  const sessionData = dbGet(context.db, sessionStoreKey, {});
+  const previouslyClaimed = new Set(Array.isArray(sessionData.unlockedPhotoIds) ? sessionData.unlockedPhotoIds : []);
+  const quota = Math.max(0, Number.isFinite(Number(context.album.freeDownloads)) ? Number(context.album.freeDownloads) : 5);
+  const used = Math.max(Number(context.album.usedFreeDownloads?.[sessionKey] || 0), previouslyClaimed.size);
+  const unissuedIds = requestedIds.filter(id => !hasNonQuotaPhotoEntitlement(context.album, id, sessionKey) && !previouslyClaimed.has(id));
+  if (unissuedIds.length) {
+    return res.status(409).json({ ok: false, error: "Download entitlements must be reserved by the original or ZIP endpoint before completion is recorded" });
+  }
+  const quality = ["2mb", "5mb", "original"].includes(req.body?.quality) ? req.body.quality : "original";
+  const method = ["zip", "individual"].includes(req.body?.method) ? req.body.method : "individual";
+  context.album.downloadHistory = [...(context.album.downloadHistory || []), {
+    id: `download-${crypto.randomUUID()}`,
+    photoIds: requestedIds,
+    downloadedAt: new Date().toISOString(),
+    quality,
+    method,
+    sessionKey,
+    email: typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase().slice(0, 254) : undefined,
+    photoCount: requestedIds.length,
+  }];
+  saveGalleryAlbum(context);
+  const freeDownloadsUsed = used;
+  res.json({ ok: true, freeDownloadsUsed, freeDownloadsRemaining: Math.max(0, quota - freeDownloadsUsed) });
+});
+
+app.post("/api/album/download-request", galleryAccessLimiter, (req, res) => {
+  const context = resolveGalleryMutation(req, res, req.body?.albumId, { requireDownload: true });
+  if (!context) return;
+  const tenantSettings = context.match.tenantSlug ? dbGet(context.db, `t_${context.match.tenantSlug}_wv_tenant_settings`, {}) : null;
+  const globalSettings = dbGet(context.db, DB_KEYS.SETTINGS, {});
+  const bankEnabled = context.match.tenantSlug ? tenantSettings?.bankTransferEnabled === true : globalSettings?.bankTransfer?.enabled === true;
+  if (!bankEnabled || context.album.purchasingDisabled) return res.status(403).json({ ok: false, error: "Bank transfer is not available for this gallery" });
+  const sessionKey = context.session.sessionKey;
+  const deliverable = deliverableAlbumPhotos(context.album);
+  const deliverableById = new Map(deliverable.map(photo => [photo.id, photo]));
+  const fullAlbum = req.body?.fullAlbum === true;
+  const requestedIds = fullAlbum ? deliverable.map(photo => photo.id) : [...new Set((Array.isArray(req.body?.photoIds) ? req.body.photoIds : []).map(String))];
+  if (requestedIds.length === 0 || requestedIds.some(id => !deliverableById.has(id))) return res.status(400).json({ ok: false, error: "Select valid photos or request the full album" });
+  const sessionData = dbGet(context.db, `wv_session_${sessionKey}_${context.album.id}`, {});
+  const unlockedPhotoIds = Array.isArray(sessionData.unlockedPhotoIds) ? sessionData.unlockedPhotoIds.map(String) : [];
+  const entitledPhotoIds = requestedIds.filter(id => hasNonQuotaPhotoEntitlement(context.album, id, sessionKey));
+  const pricing = calculateAlbumSelectionPricing({
+    requestedPhotoIds: requestedIds,
+    entitledPhotoIds,
+    unlockedPhotoIds,
+    freeDownloads: context.album.freeDownloads,
+    usedFreeDownloads: context.album.usedFreeDownloads?.[sessionKey],
+    pricePerPhoto: context.album.pricePerPhoto,
+  });
+  const fullAlbumAlreadyEntitled = requestedIds.every(id => entitledPhotoIds.includes(id));
+  const amount = fullAlbum
+    ? (fullAlbumAlreadyEntitled ? 0 : Number(context.album.priceFullAlbum))
+    : pricing.amount;
+  if (!Number.isFinite(amount) || amount <= 0) return res.status(409).json({ ok: false, error: "This request does not require a bank transfer" });
+  const existing = (context.album.downloadRequests || []).find(request => request.sessionKey === sessionKey && request.status === "pending" && request.fullAlbum === fullAlbum && JSON.stringify([...(request.photoIds || [])].sort()) === JSON.stringify([...requestedIds].sort()));
+  if (existing) return res.json({ ok: true, request: existing, duplicate: true });
+  const request = {
+    id: `download-request-${crypto.randomUUID()}`,
+    sessionKey,
+    photoIds: requestedIds,
+    fullAlbum,
+    amount: Math.round(amount * 100) / 100,
+    method: "bank-transfer",
+    status: "pending",
+    requestedAt: new Date().toISOString(),
+    email: typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase().slice(0, 254) : undefined,
+    clientNote: typeof req.body?.clientNote === "string" ? req.body.clientNote.trim().slice(0, 2000) : undefined,
+  };
+  context.album.downloadRequests = [...(context.album.downloadRequests || []), request];
+  saveGalleryAlbum(context);
+  res.status(201).json({ ok: true, request });
+});
+
+app.get("/api/public-album/:albumSlug/purchase", galleryAccessLimiter, (req, res) => {
+  const context = resolveGalleryMutation(req, res, req.params.albumSlug, { requireDownload: true });
+  if (!context) return;
+  const sessionKey = context.session.sessionKey;
+  const quota = Math.max(0, Number.isFinite(Number(context.album.freeDownloads)) ? Number(context.album.freeDownloads) : 5);
+  const freeDownloadsUsed = Number(context.album.usedFreeDownloads?.[sessionKey] || 0);
+  res.setHeader("Cache-Control", "no-store");
+  res.json({
+    ok: true,
+    purchase: safeGalleryPurchaseDto(context.album.sessionPurchases?.[sessionKey]),
+    freeDownloadsUsed,
+    freeDownloadsRemaining: Math.max(0, quota - freeDownloadsUsed),
+    requests: (context.album.downloadRequests || []).filter(request => request.sessionKey === sessionKey).map(request => ({
+      id: request.id,
+      status: request.status,
+      fullAlbum: request.fullAlbum === true,
+      photoIds: request.photoIds || [],
+      amount: request.amount,
+      requestedAt: request.requestedAt,
+      approvedAt: request.approvedAt,
+    })),
+  });
+});
+
 // ── Tenant storage size (files referenced by this tenant) ──────────────────
-app.get("/api/tenant/:slug/storage-stats", tenantLimiter, (req, res) => {
+app.get("/api/tenant/:slug/storage-stats", tenantLimiter, requireTenant, (req, res) => {
   const { slug } = req.params;
   const db = readDb();
   const albumsRaw = db[`t_${slug}_wv_albums`];
@@ -6792,18 +8954,26 @@ app.get("/api/tenant/:slug/storage-stats", tenantLimiter, (req, res) => {
     addSrc(a.coverImage);
     (a.photos || []).forEach(p => { addSrc(p.src); addSrc(p.thumbnail); });
   });
+  const uploadOwners = dbGet(db, "wv_upload_owners", {});
+  for (const [filename, owner] of Object.entries(uploadOwners)) {
+    if (owner?.tenantSlug === slug) knownFiles.add(path.basename(filename));
+  }
 
   let totalBytes = 0;
   let fileCount = 0;
+  const allFileNames = [];
   for (const fn of knownFiles) {
     try {
       const stat = fs.statSync(path.join(UPLOADS_DIR, fn));
+      if (!stat.isFile()) continue;
       totalBytes += stat.size;
       fileCount++;
+      allFileNames.push(fn);
     } catch {}
   }
 
-  res.json({ ok: true, totalBytes, fileCount, albumCount: Array.isArray(albums) ? albums.length : 0 });
+  allFileNames.sort();
+  res.json({ ok: true, totalBytes, fileCount, albumCount: Array.isArray(albums) ? albums.length : 0, allFileNames });
 });
 
 // ── Serve React app ───────────────────────────────────
@@ -6897,42 +9067,20 @@ function buildAutomationPreview(rule, now = Date.now()) {
   return buildAutomationPreviewCore(rule, readAutomationBookings(), now, getAutomationOptions());
 }
 
-// Inline Basic auth check helper (reused for automation endpoints)
-async function checkAdminBasicAuth(req) {
-  const authHeader = req.headers.authorization || "";
-  if (!authHeader.startsWith("Basic ")) return false;
-  try {
-    const decoded = Buffer.from(authHeader.slice(6), "base64").toString("utf-8");
-    const colonIdx = decoded.indexOf(":");
-    if (colonIdx === -1) return false;
-    const user = decoded.slice(0, colonIdx);
-    const hash = decoded.slice(colonIdx + 1);
-    const db = readDb();
-    const adminRaw = db["wv_admin"];
-    const adminCreds = adminRaw ? (typeof adminRaw === "string" ? JSON.parse(adminRaw) : adminRaw) : null;
-    if (!adminCreds) return false;
-    const passwordOk = await verifyPasswordHash(hash, adminCreds.passwordHash);
-    return adminCreds.username === user && passwordOk;
-  } catch { return false; }
-}
-
 // GET automation rules
-app.get("/api/email-automations", async (req, res) => {
-  if (!(await checkAdminBasicAuth(req))) return res.status(401).json({ error: "Authentication required" });
+app.get("/api/email-automations", requireAuth, (_req, res) => {
   res.json({ rules: readAutomationRules() });
 });
 
 // POST automation dry-run preview
-app.post("/api/email-automations/preview", async (req, res) => {
-  if (!(await checkAdminBasicAuth(req))) return res.status(401).json({ error: "Authentication required" });
+app.post("/api/email-automations/preview", requireAuth, (req, res) => {
   const rule = req.body?.rule;
   if (!rule || typeof rule !== "object") return res.status(400).json({ error: "rule is required" });
   res.json({ ok: true, ...buildAutomationPreview(rule) });
 });
 
 // PUT (replace all) automation rules
-app.put("/api/email-automations", async (req, res) => {
-  if (!(await checkAdminBasicAuth(req))) return res.status(401).json({ error: "Authentication required" });
+app.put("/api/email-automations", requireAuth, (req, res) => {
   const { rules } = req.body;
   if (!Array.isArray(rules)) return res.status(400).json({ error: "rules must be an array" });
   // Ensure each rule has an id
@@ -6960,6 +9108,8 @@ async function runEmailAutomations() {
   if (!t) return; // SMTP not configured — skip silently
 
   const bookings = readAutomationBookings();
+  const automationProfile = dbGet(readDb(), DB_KEYS.PROFILE, {});
+  const automationBrandName = automationProfile.businessName || automationProfile.brandName || automationProfile.name || "PhotoFlow";
 
   const now = Date.now();
   let anyChange = false;
@@ -6982,54 +9132,25 @@ async function runEmailAutomations() {
 
       if (getAutomationDecision(rule, booking, now, getAutomationOptions()).status !== "due") continue;
 
-      // Build the email — use custom template if provided, otherwise a standard reminder
+      // Build the email — configured bodies remain plain text and are escaped by
+      // the shared renderer before being placed in the professional shell.
       const isPaymentReminder = rule.reminderType === "payment";
       const clientName = booking.clientName || "there";
       const eventTitle = booking.type || "Booking";
       const subject = renderAutomationSubject(rule, booking);
-
-      let html;
-      if (rule.templateBody) {
-        const body = rule.templateBody
-          .replace(/\{name\}/gi, clientName)
-          .replace(/\{event\}/gi, eventTitle)
-          .replace(/\{date\}/gi, booking.date || "")
-          .replace(/\{time\}/gi, booking.time || "");
-        // Wrap in minimal styled email shell
-        html = `<!DOCTYPE html><html><head><meta charset="utf-8"></head>
-<body style="margin:0;padding:0;background:#0a0a0a;font-family:'Helvetica Neue',Arial,sans-serif;">
-  <div style="max-width:560px;margin:40px auto;background:#111111;border-radius:16px;overflow:hidden;border:1px solid #1f1f1f;">
-    <div style="padding:32px;"><p style="color:#e5e7eb;font-size:15px;line-height:1.7;margin:0;white-space:pre-line;">${body.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</p></div>
-    <div style="padding:16px 32px;border-top:1px solid #1f1f1f;text-align:center;">
-      <p style="color:#4b5563;font-size:11px;margin:0;">Ref: ${booking.id}</p>
-    </div>
-  </div>
-</body></html>`;
-      } else {
-        // Fall back to the built-in reminder HTML builder from email.js
-        if (buildReminderEmailHtml) {
-          html = buildReminderEmailHtml({
-            clientName,
-            eventTitle,
-            date: booking.date,
-            time: booking.time,
-            duration: booking.duration || 60,
-            isPaymentReminder,
-            paymentStatus: booking.paymentStatus || "unpaid",
-            totalPrice: booking.paymentAmount || 0,
-            depositPaid: booking.depositPaidAt ? (booking.depositAmount || 0) : 0,
-            remaining: (booking.paymentAmount || 0) - (booking.depositAmount || 0),
-            bookingId: booking.id,
-            modifyUrl: null,
-            calendarUrl: null,
-          });
-        } else {
-          html = `<p>Hi ${clientName}, this is a reminder about your ${eventTitle}.</p>`;
-        }
-      }
+      const body = rule.templateBody
+        ? rule.templateBody
+            .replace(/\{name\}/gi, clientName)
+            .replace(/\{event\}/gi, eventTitle)
+            .replace(/\{date\}/gi, booking.date || "")
+            .replace(/\{time\}/gi, booking.time || "")
+        : isPaymentReminder
+          ? `Hi ${clientName}, this is a friendly reminder that payment is still pending for your ${eventTitle} booking on ${booking.date || "the scheduled date"}.`
+          : `Hi ${clientName}, this is a reminder about your ${eventTitle} session on ${booking.date || "the scheduled date"}${booking.time ? ` at ${booking.time}` : ""}.`;
+      const message = buildAutomationEmail({ subject, body, booking, brandName: automationBrandName });
 
       try {
-        const info = await t.sendMail({ from: getFromAddress(), to: booking.clientEmail, subject, html });
+        const info = await t.sendMail({ from: getFromAddress(), to: booking.clientEmail, ...message });
         console.log(`📧 [Automation ${rule.id}] Sent to ${booking.clientEmail}: ${info.messageId}`);
         sentThisRun++;
 
@@ -7156,7 +9277,7 @@ app.get("/api/ical/:token", (req, res) => {
     return res.send(cal);
   }
   // Check tenant ical tokens
-  const tenants = db["wv_tenants"] ? (typeof db["wv_tenants"] === "string" ? JSON.parse(db["wv_tenants"]) : db["wv_tenants"]) : [];
+  const tenants = readTenants().filter(tenant => tenantIsLicensed(tenant));
   for (const tenant of tenants) {
     const ts = db[`t_${tenant.slug}_wv_tenant_settings`] ? (typeof db[`t_${tenant.slug}_wv_tenant_settings`] === "string" ? JSON.parse(db[`t_${tenant.slug}_wv_tenant_settings`]) : db[`t_${tenant.slug}_wv_tenant_settings`]) : {};
     if (ts.icalToken && ts.icalToken === token) {
@@ -7191,7 +9312,7 @@ app.delete("/api/ical/token", requireAuth, (req, res) => {
 });
 
 // Tenant-scoped iCal token generate & delete (used by TenantAdmin)
-app.post("/api/tenant/:slug/ical/generate", tenantLimiter, (req, res) => {
+app.post("/api/tenant/:slug/ical/generate", tenantLimiter, requireTenant, (req, res) => {
   const { slug } = req.params;
   const tenants = readTenants();
   if (!tenants.find(t => t.slug === slug)) return res.status(404).json({ error: "Tenant not found" });
@@ -7204,7 +9325,7 @@ app.post("/api/tenant/:slug/ical/generate", tenantLimiter, (req, res) => {
   res.json({ icalToken: ts.icalToken });
 });
 
-app.delete("/api/tenant/:slug/ical/token", tenantLimiter, (req, res) => {
+app.delete("/api/tenant/:slug/ical/token", tenantLimiter, requireTenant, (req, res) => {
   const { slug } = req.params;
   const tenants = readTenants();
   if (!tenants.find(t => t.slug === slug)) return res.status(404).json({ error: "Tenant not found" });
@@ -7366,24 +9487,59 @@ app.delete("/api/quotes/:id", requireAuth, (req, res) => {
 });
 
 // Public quote view (share token)
-app.get("/api/quotes/share/:token", (req, res) => {
+const quoteShareLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 40, standardHeaders: true, legacyHeaders: false, message: { error: "Too many quote requests" } });
+function safePublicQuoteDto(quote) {
+  return {
+    id: quote.id,
+    number: quote.number,
+    status: quote.status,
+    from: safeInvoiceParty(quote.from),
+    to: safeInvoiceParty(quote.to),
+    items: (Array.isArray(quote.items) ? quote.items : []).slice(0, 500).map(item => ({
+      id: item.id,
+      description: String(item.description || "").slice(0, 2000),
+      subdescription: item.subdescription ? String(item.subdescription).slice(0, 2000) : undefined,
+      quantity: Number(item.quantity) || 0,
+      unitPrice: Number(item.unitPrice) || 0,
+    })),
+    notes: String(quote.notes || "").slice(0, 10_000),
+    expiryDate: quote.expiryDate,
+    createdAt: quote.createdAt,
+    sentAt: quote.sentAt,
+    acceptedAt: quote.acceptedAt,
+    declinedAt: quote.declinedAt,
+    acceptedByName: quote.acceptedByName,
+    tax: quote.tax,
+    discount: quote.discount,
+  };
+}
+
+app.get("/api/quotes/share/:token", quoteShareLimiter, (req, res) => {
   const db = readDb();
   const quotes = db["wv_quotes"] ? (typeof db["wv_quotes"] === "string" ? JSON.parse(db["wv_quotes"]) : db["wv_quotes"]) : [];
-  const quote = quotes.find(q => q.shareToken === req.params.token);
+  const quote = quotes.find(q => timingSafeTextEqual(q.shareToken, req.params.token));
   if (!quote) return res.status(404).json({ error: "Not found" });
-  res.json(quote);
+  if (!["sent", "accepted", "declined"].includes(quote.status)) return res.status(404).json({ error: "Not found" });
+  if (albumAccessWindow({ expiresAt: quote.expiryDate }).galleryExpired) return res.status(410).json({ error: "This quote has expired" });
+  res.setHeader("Cache-Control", "private, no-store");
+  res.json(safePublicQuoteDto(quote));
 });
 
 // Client accepts/declines quote via token
-app.post("/api/quotes/share/:token/respond", (req, res) => {
+app.post("/api/quotes/share/:token/respond", quoteShareLimiter, (req, res) => {
   const db = readDb();
   const quotes = db["wv_quotes"] ? (typeof db["wv_quotes"] === "string" ? JSON.parse(db["wv_quotes"]) : db["wv_quotes"]) : [];
-  const idx = quotes.findIndex(q => q.shareToken === req.params.token);
+  const idx = quotes.findIndex(q => timingSafeTextEqual(q.shareToken, req.params.token));
   if (idx === -1) return res.status(404).json({ error: "Not found" });
+  if (quotes[idx].status !== "sent") return res.status(409).json({ error: "This quote has already been actioned or is unavailable" });
+  if (albumAccessWindow({ expiresAt: quotes[idx].expiryDate }).galleryExpired) return res.status(410).json({ error: "This quote has expired" });
   const { action } = req.body; // "accept" or "decline"
   if (action === "accept") {
+    const acceptedByName = String(req.body?.acceptedByName || "").trim();
+    if (!acceptedByName) return res.status(400).json({ error: "acceptedByName is required" });
     quotes[idx].status = "accepted";
     quotes[idx].acceptedAt = new Date().toISOString();
+    quotes[idx].acceptedByName = acceptedByName.slice(0, 160);
   } else if (action === "decline") {
     quotes[idx].status = "declined";
     quotes[idx].declinedAt = new Date().toISOString();
@@ -7392,7 +9548,7 @@ app.post("/api/quotes/share/:token/respond", (req, res) => {
   }
   db["wv_quotes"] = quotes;
   writeDb(db);
-  res.json(quotes[idx]);
+  res.json(safePublicQuoteDto(quotes[idx]));
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -7561,32 +9717,45 @@ app.delete("/api/albums/:id/share-links/:linkId", requireAuth, (req, res) => {
   const idx = albums.findIndex(a => a.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: "Album not found" });
   albums[idx].shareLinks = (albums[idx].shareLinks || []).filter(l => l.id !== req.params.linkId);
+  if (albums[idx].sessionPurchases && typeof albums[idx].sessionPurchases === "object") {
+    for (const [sessionKey, purchase] of Object.entries(albums[idx].sessionPurchases)) {
+      if (purchase?.source === "share-link" && purchase?.shareLinkId === req.params.linkId) delete albums[idx].sessionPurchases[sessionKey];
+    }
+  }
   db["wv_albums"] = albums;
   writeDb(db);
   res.json({ ok: true });
 });
 
 // Public share link access — resolves a token to album data (view-only)
-app.get("/api/gallery/share/:token", (req, res) => {
+app.get("/api/gallery/share/:token", galleryAccessLimiter, (req, res) => {
   const db = readDb();
   const albums = db["wv_albums"] ? (typeof db["wv_albums"] === "string" ? JSON.parse(db["wv_albums"]) : db["wv_albums"]) : [];
   for (const album of albums) {
     const links = album.shareLinks || [];
-    const link = links.find(l => l.token === req.params.token);
+    const link = links.find(l => timingSafeTextEqual(l.token, req.params.token));
     if (link) {
-      // Check expiry
-      if (link.expiresAt && new Date(link.expiresAt) < new Date()) {
-        return res.status(403).json({ error: "This share link has expired" });
-      }
+      if (album.enabled === false) return res.status(404).json({ error: "Share link not found" });
+      const accessWindow = albumAccessWindow(album, Date.now(), galleryTimezone(db, null));
+      if (accessWindow.galleryExpired) return res.status(410).json({ error: "This gallery has expired" });
+      if (albumAccessWindow({ expiresAt: link.expiresAt }, Date.now(), galleryTimezone(db, null)).galleryExpired) return res.status(410).json({ error: "This share link has expired" });
       // Increment access counter
       link.accessCount = (link.accessCount || 0) + 1;
       link.lastAccessedAt = new Date().toISOString();
+      const sessionKey = `gallery-${crypto.randomBytes(24).toString("base64url")}`;
+      const sessionToken = signSession({ purpose: "gallery", albumId: album.id, tenantSlug: null, sessionKey, shareLinkId: link.id }, SESSION_SECRET, { ttlSeconds: GALLERY_SESSION_TTL_SECONDS });
+      setHttpOnlyCookie(req, res, galleryCookieName(album.id), sessionToken, GALLERY_SESSION_TTL_SECONDS);
+      const allowDownload = link.allowDownload === true && !accessWindow.downloadsExpired;
+      if (allowDownload) {
+        album.sessionPurchases = album.sessionPurchases || {};
+        album.sessionPurchases[sessionKey] = { fullAlbum: true, grantedAt: new Date().toISOString(), source: "share-link", shareLinkId: link.id };
+      }
       db["wv_albums"] = albums;
       writeDb(db);
-      // Return sanitised album (omit internal fields)
+      const gallerySession = verifySession(sessionToken, SESSION_SECRET, { purpose: "gallery" });
       return res.json({
-        album: { ...album, shareLinks: undefined, downloadRequests: undefined },
-        allowDownload: link.allowDownload,
+        album: publicAlbumDto(album, gallerySession),
+        allowDownload,
         linkLabel: link.label,
       });
     }
@@ -7608,8 +9777,9 @@ app.get("/api/albums/:albumId/photos/:photoId/comments", requireAuth, (req, res)
   res.json(photo.comments || []);
 });
 
-app.post("/api/albums/:albumId/photos/:photoId/comments", (req, res) => {
-  // Clients (public) can add comments too — auth optional
+// Legacy comments are no longer part of the public gallery DTO/UI. Keep the
+// admin workflow, but do not expose a second public gallery mutation surface.
+app.post("/api/albums/:albumId/photos/:photoId/comments", requireAuth, (req, res) => {
   const db = readDb();
   const albums = db["wv_albums"] ? (typeof db["wv_albums"] === "string" ? JSON.parse(db["wv_albums"]) : db["wv_albums"]) : [];
   const aIdx = albums.findIndex(a => a.id === req.params.albumId);
@@ -7617,15 +9787,17 @@ app.post("/api/albums/:albumId/photos/:photoId/comments", (req, res) => {
   const photos = albums[aIdx].photos || [];
   const pIdx = photos.findIndex(p => p.id === req.params.photoId);
   if (pIdx === -1) return res.status(404).json({ error: "Photo not found" });
+  const text = String(req.body.text || "").trim().slice(0, 5000);
+  if (!text) return res.status(400).json({ error: "Comment text is required" });
   const comment = {
     id: crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString("hex"),
     photoId: req.params.photoId,
     albumId: req.params.albumId,
-    authorName: req.body.authorName || "Client",
-    authorEmail: req.body.authorEmail || null,
-    text: req.body.text || "",
-    xPct: req.body.xPct ?? null,
-    yPct: req.body.yPct ?? null,
+    authorName: String(req.body.authorName || "Client").trim().slice(0, 120),
+    authorEmail: typeof req.body.authorEmail === "string" ? req.body.authorEmail.trim().slice(0, 254) : null,
+    text,
+    xPct: Number.isFinite(Number(req.body.xPct)) ? Math.max(0, Math.min(100, Number(req.body.xPct))) : null,
+    yPct: Number.isFinite(Number(req.body.yPct)) ? Math.max(0, Math.min(100, Number(req.body.yPct))) : null,
     createdAt: new Date().toISOString(),
   };
   if (!photos[pIdx].comments) photos[pIdx].comments = [];
@@ -7676,12 +9848,18 @@ app.delete("/api/albums/:albumId/photos/:photoId/comments/:commentId", requireAu
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const contractUpload = multer({ dest: UPLOADS_DIR, limits: { fileSize: 20 * 1024 * 1024 } });
+const contractPublicLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 60, standardHeaders: true, legacyHeaders: false });
 
 app.post("/api/contracts", requireAuth, contractUpload.single("pdf"), (req, res) => {
   const db = readDb();
   const contracts = db["wv_contracts"] ? (typeof db["wv_contracts"] === "string" ? JSON.parse(db["wv_contracts"]) : db["wv_contracts"]) : [];
   let pdfPath = null;
   if (req.file) {
+    const signature = fs.readFileSync(req.file.path).subarray(0, 5).toString("ascii");
+    if (signature !== "%PDF-") {
+      try { fs.unlinkSync(req.file.path); } catch {}
+      return res.status(400).json({ error: "A valid PDF file is required" });
+    }
     const dest = path.join(UPLOADS_DIR, `contract_${req.file.filename}.pdf`);
     fs.renameSync(req.file.path, dest);
     pdfPath = `contract_${req.file.filename}.pdf`;
@@ -7710,19 +9888,38 @@ app.get("/api/contracts", requireAuth, (req, res) => {
 });
 
 // Public contract view + sign (via token)
-app.get("/api/contracts/sign/:token", (req, res) => {
+app.get("/api/contracts/sign/:token/pdf", contractPublicLimiter, (req, res) => {
+  const contracts = dbGet(readDb(), "wv_contracts", []);
+  const contract = (Array.isArray(contracts) ? contracts : []).find(item => timingSafeTextEqual(item.token, req.params.token));
+  if (!contract?.pdfPath) return res.status(404).json({ error: "Contract PDF not found" });
+  const safeName = path.basename(String(contract.pdfPath));
+  if (!/^contract_[a-zA-Z0-9_-]+\.pdf$/.test(safeName)) return res.status(404).json({ error: "Contract PDF not found" });
+  const filePath = path.join(UPLOADS_DIR, safeName);
+  if (!fs.existsSync(filePath)) return res.status(404).json({ error: "Contract PDF not found" });
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Cache-Control", "private, no-store");
+  return res.sendFile(filePath);
+});
+
+app.get("/api/contracts/sign/:token", contractPublicLimiter, (req, res) => {
   const db = readDb();
   const contracts = db["wv_contracts"] ? (typeof db["wv_contracts"] === "string" ? JSON.parse(db["wv_contracts"]) : db["wv_contracts"]) : [];
-  const contract = contracts.find(c => c.token === req.params.token);
+  const contract = contracts.find(c => timingSafeTextEqual(c.token, req.params.token));
   if (!contract) return res.status(404).json({ error: "Contract not found" });
   // Return contract info without PDF binary (client fetches PDF separately)
-  res.json({ id: contract.id, title: contract.title, status: contract.status, bookingId: contract.bookingId, pdfPath: contract.pdfPath });
+  res.json({
+    id: contract.id,
+    title: contract.title,
+    status: contract.status,
+    bookingId: contract.bookingId,
+    pdfUrl: contract.pdfPath ? `/api/contracts/sign/${encodeURIComponent(req.params.token)}/pdf` : null,
+  });
 });
 
 app.post("/api/contracts/sign/:token", rateLimit({ windowMs: 15 * 60 * 1000, max: 10 }), (req, res) => {
   const db = readDb();
   const contracts = db["wv_contracts"] ? (typeof db["wv_contracts"] === "string" ? JSON.parse(db["wv_contracts"]) : db["wv_contracts"]) : [];
-  const idx = contracts.findIndex(c => c.token === req.params.token);
+  const idx = contracts.findIndex(c => timingSafeTextEqual(c.token, req.params.token));
   if (idx === -1) return res.status(404).json({ error: "Contract not found" });
   if (contracts[idx].status === "signed") return res.status(409).json({ error: "Already signed" });
   const { signedName } = req.body;
@@ -7909,26 +10106,22 @@ app.post("/api/albums/:id/deliver", requireAuth, async (req, res) => {
   const result = { ok: true, deliveredAt: now };
   if (album.clientEmail) {
     try {
-      // Validate origin header before using it in an email link — must be http(s)
-      const rawOrigin = req.headers.origin || "";
-      const safeOrigin = /^https?:\/\//.test(rawOrigin) ? rawOrigin : "";
-      const galleryUrl = `${safeOrigin}/gallery/${encodeURIComponent(album.id)}`;
-
-      // Escape user-supplied values before HTML interpolation to prevent XSS
-      const safeClientName = escapeHtml(album.clientName || "there");
-      const safeTitle      = escapeHtml(album.title || "");
-      const safeCode       = album.accessCode ? escapeHtml(album.accessCode) : "";
-      const accessCodeHtml = safeCode ? `<p style="margin-top:8px;">Access code: <code>${safeCode}</code></p>` : "";
-      const accessCodeText = safeCode ? `\nAccess code: ${album.accessCode}` : "";
-
+      const galleryUrl = `${safeCheckoutReturnUrl(req, null, `/gallery/${encodeURIComponent(album.slug || album.id)}`)}${album.clientToken ? `#token=${encodeURIComponent(album.clientToken)}` : ""}`;
       const transporter = getTransporter();
       if (transporter) {
+        const profile = dbGet(db, DB_KEYS.PROFILE, {});
+        const message = buildGalleryDeliveryEmail({
+          clientName: album.clientName,
+          albumTitle: album.title,
+          galleryUrl,
+          accessCode: album.accessCode || "",
+          photoCount: Array.isArray(album.photos) ? album.photos.length : album.photoCount,
+          brandName: profile.businessName || profile.brandName || profile.name || "PhotoFlow",
+        });
         await transporter.sendMail({
           from: getFromAddress(),
           to: album.clientEmail,
-          subject: `Your gallery is ready — ${album.title}`,
-          html: `<p>Hi ${safeClientName},</p><p>Your photo gallery "<strong>${safeTitle}</strong>" is ready for download.</p><p><a href="${galleryUrl}">View &amp; Download Gallery</a></p>${accessCodeHtml}`,
-          text: `Hi ${album.clientName || "there"},\n\nYour gallery "${album.title}" is ready!\n${galleryUrl}${accessCodeText}`,
+          ...message,
         });
         result.emailSent = true;
       }
@@ -7960,34 +10153,55 @@ app.patch("/api/bookings/:id/source", requireAuth, (req, res) => {
 // ── PWA Push Notifications ────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════════════
 
+const pushSubscriptionLimiter = rateLimit({ windowMs: 15 * 60_000, max: 30, standardHeaders: true, legacyHeaders: false, message: { error: "Too many push subscription requests" } });
+function validPushEndpoint(value) {
+  if (typeof value !== "string" || value.length > 2048) return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" || (url.protocol === "http:" && ["localhost", "127.0.0.1"].includes(url.hostname));
+  } catch { return false; }
+}
+function validPushKey(value) {
+  return typeof value === "string" && value.length >= 16 && value.length <= 256 && /^[A-Za-z0-9_-]+={0,2}$/.test(value);
+}
+
 // Subscribe
-app.post("/api/push/subscribe", (req, res) => {
+app.post("/api/push/subscribe", pushSubscriptionLimiter, requireAdminOrScopedTenant, (req, res) => {
   const db = readDb();
   const subs = db["wv_push_subscriptions"] ? (typeof db["wv_push_subscriptions"] === "string" ? JSON.parse(db["wv_push_subscriptions"]) : db["wv_push_subscriptions"]) : [];
   const { endpoint, keys, tenantSlug } = req.body;
-  if (!endpoint || !keys) return res.status(400).json({ error: "endpoint and keys required" });
+  if (!validPushEndpoint(endpoint) || !validPushKey(keys?.p256dh) || !validPushKey(keys?.auth)) return res.status(400).json({ error: "A valid push endpoint and keys are required" });
+  const scopedTenantSlug = req.authContext?.type === "tenant" ? req.authContext.slug : (tenantSlug ? String(tenantSlug) : null);
+  if (scopedTenantSlug && !licensedTenantBySlug(scopedTenantSlug)) return res.status(400).json({ error: "Tenant scope is invalid" });
   // Upsert by endpoint
-  const existing = subs.findIndex(s => s.endpoint === endpoint);
+  const existing = subs.findIndex(s => s.endpoint === endpoint && String(s.tenantSlug || "") === String(scopedTenantSlug || ""));
   const record = {
     id: existing >= 0 ? subs[existing].id : (crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString("hex")),
     endpoint,
-    keys,
-    tenantSlug: tenantSlug || null,
+    keys: { p256dh: keys.p256dh, auth: keys.auth },
+    tenantSlug: scopedTenantSlug,
     createdAt: existing >= 0 ? subs[existing].createdAt : new Date().toISOString(),
-    userAgent: req.headers["user-agent"] || null,
+    updatedAt: new Date().toISOString(),
+    userAgent: String(req.headers["user-agent"] || "").slice(0, 500) || null,
   };
   if (existing >= 0) subs[existing] = record;
   else subs.push(record);
-  db["wv_push_subscriptions"] = subs;
+  const capped = subs.sort((left, right) => Date.parse(left.updatedAt || left.createdAt || 0) - Date.parse(right.updatedAt || right.createdAt || 0)).slice(-2000);
+  db["wv_push_subscriptions"] = capped;
   writeDb(db);
-  res.json({ ok: true });
+  res.json({ ok: true, subscriptionId: record.id });
 });
 
 // Unsubscribe
-app.post("/api/push/unsubscribe", (req, res) => {
+app.post("/api/push/unsubscribe", pushSubscriptionLimiter, requireAdminOrScopedTenant, (req, res) => {
   const db = readDb();
   const subs = db["wv_push_subscriptions"] ? (typeof db["wv_push_subscriptions"] === "string" ? JSON.parse(db["wv_push_subscriptions"]) : db["wv_push_subscriptions"]) : [];
-  db["wv_push_subscriptions"] = subs.filter(s => s.endpoint !== req.body.endpoint);
+  const id = String(req.body?.subscriptionId || "");
+  if (!id) return res.status(400).json({ error: "subscriptionId is required" });
+  db["wv_push_subscriptions"] = subs.filter(subscription => {
+    if (subscription.id !== id) return true;
+    return req.authContext?.type === "tenant" && subscription.tenantSlug !== req.authContext.slug;
+  });
   writeDb(db);
   res.json({ ok: true });
 });
@@ -8007,27 +10221,36 @@ app.post("/api/booking/cancel-notify", requireAuth, async (req, res) => {
   if (candidates.length === 0) return res.json({ ok: true, notified: 0 });
 
   const transporter = getTransporter();
-  const safeOrigin = /^https?:\/\//.test(req.headers.origin || "") ? req.headers.origin : "";
-  const bookingUrl = safeOrigin ? `${safeOrigin}/booking` : "";
+  if (!transporter) return res.status(503).json({ ok: false, notified: 0, error: "SMTP not configured" });
+  const bookingUrl = safeCheckoutReturnUrl(req, null, "/booking");
+  const profile = dbGet(db, DB_KEYS.PROFILE, {});
+  const brandName = profile.businessName || profile.brandName || profile.name || "PhotoFlow";
   let notified = 0;
+  let failed = 0;
   for (const entry of candidates) {
-    if (transporter && entry.clientEmail) {
-      const safeName = escapeHtml(entry.clientName || "there");
-      const safeEvent = escapeHtml(entry.eventTypeTitle || booking.type || "your requested session");
-      const safeDate = escapeHtml(entry.date || booking.date);
+    try {
+      const message = buildWaitlistEmail({
+        clientName: entry.clientName,
+        eventTitle: entry.eventTypeTitle || booking.type || "your requested session",
+        date: entry.date || booking.date,
+        bookingUrl,
+        brandName,
+      });
       await transporter.sendMail({
         from: getFromAddress(),
         to: entry.clientEmail,
-        subject: `A spot opened up for ${entry.eventTypeTitle || booking.type || "your session"}`,
-        html: `<p>Hi ${safeName},</p><p>A spot opened up for <strong>${safeEvent}</strong> on ${safeDate}.</p>${bookingUrl ? `<p><a href="${bookingUrl}">Book this spot</a></p>` : ""}`,
-        text: `Hi ${entry.clientName || "there"},\n\nA spot opened up for ${entry.eventTypeTitle || booking.type || "your requested session"} on ${entry.date || booking.date}.${bookingUrl ? `\n\nBook here: ${bookingUrl}` : ""}`,
+        ...message,
       });
+      entry.notifiedAt = new Date().toISOString();
+      notified++;
+    } catch (error) {
+      failed++;
+      console.error(`Waitlist email failed for ${entry.id}:`, error?.message || error);
     }
-    entry.notifiedAt = new Date().toISOString();
-    notified++;
   }
   db[DB_KEYS.WAITLIST] = entries;
   writeDb(db);
+  if (failed) return res.status(502).json({ ok: false, notified, failed, error: "One or more waitlist emails could not be delivered" });
   res.json({ ok: true, notified });
 });
 
@@ -8082,8 +10305,13 @@ app.get("*", (req, res) => {
   ));
 });
 
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`🚀 PhotoFlow running on port ${PORT}`);
-  console.log(`📁 Data directory: ${DATA_DIR}`);
-  console.log(`🖼️  Uploads directory: ${UPLOADS_DIR}`);
+bootstrapPromise.then(() => {
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`🚀 PhotoFlow running on port ${PORT}`);
+    console.log(`📁 Data directory: ${DATA_DIR}`);
+    console.log(`🖼️  Uploads directory: ${UPLOADS_DIR}`);
+  });
+}).catch(err => {
+  console.error("Server bootstrap failed; refusing to listen:", err);
+  process.exitCode = 1;
 });

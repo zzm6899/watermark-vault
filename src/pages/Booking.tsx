@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { usePageTitle } from "@/hooks/use-page-title";
 import {
   Clock, ChevronLeft, ChevronRight, ArrowLeft, Globe,
-  CalendarDays, Upload, CheckCircle2, AlertCircle, Camera,
+  CalendarDays, CheckCircle2, AlertCircle, Camera,
   MapPin, Calendar as CalendarIcon, ExternalLink, XCircle, Edit,
   CreditCard, Bell, Users, Building2, Copy, Check as CheckIcon,
   MessageSquare, ChevronRight as ArrowRight, MessageCircle,
@@ -12,16 +12,32 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import Footer from "@/components/Footer";
+import BookingAvatar from "@/components/BookingAvatar";
 import { toast } from "sonner";
-import { getEventTypes, getProfile, cacheBookingLocally, getBookings, getSettings, isSlotBooked, addEnquiry, isDuplicateBooking } from "@/lib/storage";
-import { syncBookingToCalendar, createBookingCheckout, createPublicBooking, fetchBookingByToken, getStripeStatus, sendBookingConfirmationEmail, getGoogleBusyTimes, joinWaitlist, sendEnquiryReceivedEmail } from "@/lib/api";
-import type { EventType, QuestionField, Enquiry } from "@/lib/types";
+import { getEventTypes, getProfile, cacheBookingLocally, getBookings, getSettings } from "@/lib/storage";
+import { createBookingCheckout, createPublicBooking, fetchBookingByToken, getStripeStatus, joinWaitlist } from "@/lib/api";
+import type { AppSettings, EventType, ProfileSettings, QuestionField } from "@/lib/types";
+import {
+  buildBookingCalendarUrl,
+  contactQuestionRole,
+  filterFutureBookingSlots,
+  getAuthoritativeBookingCharge,
+  getAuthoritativeBookingPaymentState,
+  getPublicCustomQuestions,
+  hasAuthoritativeBookingCharge,
+  isPastBookingDate,
+  missingRequiredQuestions,
+  readAvailableSlots,
+} from "@/lib/booking-utils";
+import {
+  fetchPublicAvailability,
+  fetchPublicBookingConfig,
+  patchPublicBooking,
+  submitPublicEnquiry,
+} from "@/lib/booking-public-api";
 import { RichTextDisplay } from "@/components/RichTextEditor";
-
-function sendBookingEmail(payload: Parameters<typeof sendBookingConfirmationEmail>[0]) {
-  // Non-fatal — email failure should never break the booking flow
-  sendBookingConfirmationEmail(payload).catch(() => {});
-}
+import { richTextToPlainText } from "@/lib/rich-text";
+import { generateCapabilityToken } from "@/lib/capability-token";
 
 type Step = "event-select" | "datetime" | "questions" | "payment" | "confirmed" | "enquiry" | "enquiry-confirmed";
 
@@ -37,39 +53,6 @@ function formatDuration(mins: number) {
     return m > 0 ? `${h}h ${m}m` : `${h}h`;
   }
   return `${mins}m`;
-}
-
-function generateTimeSlots(startTime: string, endTime: string, duration: number): string[] {
-  const slots: string[] = [];
-  const [sh, sm] = startTime.split(":").map(Number);
-  const [eh, em] = endTime.split(":").map(Number);
-  const startMins = sh * 60 + sm;
-  const endMins = eh * 60 + em;
-  // Step by the booking duration — no gaps, no overlaps
-  for (let m = startMins; m + duration <= endMins; m += duration) {
-    const hh = Math.floor(m / 60).toString().padStart(2, "0");
-    const mm = (m % 60).toString().padStart(2, "0");
-    slots.push(`${hh}:${mm}`);
-  }
-  return slots;
-}
-
-/** Check if a slot overlaps with a Google Calendar busy period */
-function isSlotBusyOnGoogle(
-  time: string, duration: number,
-  busyPeriods: { start: string; end: string }[]
-): boolean {
-  const [h, m] = time.split(":").map(Number);
-  const slotStart = h * 60 + m;
-  const slotEnd   = slotStart + duration;
-  for (const b of busyPeriods) {
-    const bs = new Date(b.start);
-    const be = new Date(b.end);
-    const bStartMins = bs.getHours() * 60 + bs.getMinutes();
-    const bEndMins   = be.getHours() * 60 + be.getMinutes();
-    if (slotStart < bEndMins && slotEnd > bStartMins) return true;
-  }
-  return false;
 }
 
 /** Get the price for a given duration, with fallback to base price */
@@ -135,74 +118,71 @@ function isDayAvailable(et: EventType, date: Date): boolean {
   return getAvailabilityForDate(et, date).length > 0;
 }
 
-function buildGoogleCalendarUrl(event: EventType, date: Date, time: string, duration: number): string {
-  const [h, m] = time.split(":").map(Number);
-  const start = new Date(date.getFullYear(), date.getMonth(), date.getDate(), h, m);
-  const end = new Date(start.getTime() + duration * 60000);
-  const fmt = (d: Date) => d.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
-  const params = new URLSearchParams({
-    action: "TEMPLATE",
-    text: event.title,
-    dates: `${fmt(start)}/${fmt(end)}`,
-    details: event.description || "",
-    location: event.location || "",
-  });
-  return `https://calendar.google.com/calendar/render?${params.toString()}`;
-}
-
 // ─── Question Field Renderer ─────────────────────────────────
-function QuestionInput({ field, value, onChange }: { field: QuestionField; value: string; onChange: (val: string) => void }) {
+function QuestionInput({ field, value, onChange, inputId, labelId }: { field: QuestionField; value: string; onChange: (val: string) => void; inputId: string; labelId: string }) {
   switch (field.type) {
     case "text":
-      return <Input value={value} onChange={(e) => onChange(e.target.value)} placeholder={field.placeholder} className="bg-secondary border-border text-foreground placeholder:text-muted-foreground/50 font-body" />;
+      return <Input id={inputId} value={value} onChange={(e) => onChange(e.target.value)} placeholder={field.placeholder} className="bg-secondary border-border text-foreground placeholder:text-muted-foreground/50 font-body" />;
     case "textarea":
-      return <Textarea value={value} onChange={(e) => onChange(e.target.value)} placeholder={field.placeholder} className="bg-secondary border-border text-foreground placeholder:text-muted-foreground/50 font-body min-h-[80px]" />;
+      return <Textarea id={inputId} value={value} onChange={(e) => onChange(e.target.value)} placeholder={field.placeholder} className="bg-secondary border-border text-foreground placeholder:text-muted-foreground/50 font-body min-h-[80px]" />;
     case "instagram":
       return (
         <div className="relative">
           <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground font-body text-sm">@</span>
-          <Input value={value.replace(/^@/, "")} onChange={(e) => onChange(e.target.value.replace(/^@/, ""))} placeholder="yourusername" className="bg-secondary border-border text-foreground placeholder:text-muted-foreground/50 font-body pl-7" />
+          <Input id={inputId} value={value.replace(/^@/, "")} onChange={(e) => onChange(e.target.value.replace(/^@/, ""))} placeholder="yourusername" className="bg-secondary border-border text-foreground placeholder:text-muted-foreground/50 font-body pl-7" />
         </div>
       );
     case "select":
       return (
-        <select value={value} onChange={(e) => onChange(e.target.value)} className="w-full bg-secondary border border-border text-foreground font-body text-sm rounded-md px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-ring">
+        <select id={inputId} value={value} onChange={(e) => onChange(e.target.value)} className="w-full bg-secondary border border-border text-foreground font-body text-sm rounded-md px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-ring">
           <option value="">Select an option...</option>
           {field.options?.map((opt) => <option key={opt} value={opt}>{opt}</option>)}
         </select>
       );
     case "boolean":
       return (
-        <div className="flex gap-3">
+        <div className="flex gap-3" role="group" aria-labelledby={labelId}>
           {["Yes", "No"].map((opt) => (
-            <button key={opt} onClick={() => onChange(opt)} className={`flex-1 py-2.5 px-4 rounded-md border text-sm font-body transition-all ${value === opt ? "bg-primary text-primary-foreground border-primary" : "border-border text-muted-foreground hover:border-primary/50"}`}>
+            <button key={opt} type="button" aria-pressed={value === opt} onClick={() => onChange(opt)} className={`flex-1 py-2.5 px-4 rounded-md border text-sm font-body transition-all ${value === opt ? "bg-primary text-primary-foreground border-primary" : "border-border text-muted-foreground hover:border-primary/50"}`}>
               {opt}
             </button>
           ))}
         </div>
       );
     case "image-upload":
-      return (
-        <div className="border-2 border-dashed border-border rounded-lg p-6 text-center hover:border-primary/30 transition-colors cursor-pointer relative">
-          <Upload className="w-6 h-6 text-muted-foreground/50 mx-auto mb-2" />
-          <p className="text-xs font-body text-muted-foreground">{value ? "File selected" : "Click to upload or drag and drop"}</p>
-          <input type="file" accept="image/*" className="absolute inset-0 opacity-0 cursor-pointer" onChange={(e) => { const file = e.target.files?.[0]; if (file) onChange(file.name); }} />
-        </div>
-      );
+      return null;
     default:
       return null;
   }
 }
 
+export function BookingQuestionField({ field, value, onChange }: { field: QuestionField; value: string; onChange: (val: string) => void }) {
+  const inputId = `booking-question-${field.id}`;
+  const labelId = `${inputId}-label`;
+  return (
+    <div>
+      <label id={labelId} htmlFor={field.type === "boolean" ? undefined : inputId} className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-2 block">
+        {field.label} {field.required && <span className="text-destructive">*</span>}
+      </label>
+      <QuestionInput field={field} value={value} onChange={onChange} inputId={inputId} labelId={labelId} />
+    </div>
+  );
+}
+
 // ─── Timer Component ─────────────────────────────────────
-function BookingTimer({ minutes, onExpire }: { minutes: number; onExpire: () => void }) {
-  const [secondsLeft, setSecondsLeft] = useState(minutes * 60);
-  
+function BookingTimer({ expiresAt, onExpire }: { expiresAt: number; onExpire: () => void }) {
+  const [secondsLeft, setSecondsLeft] = useState(() => Math.max(0, Math.ceil((expiresAt - Date.now()) / 1000)));
+
   useEffect(() => {
-    if (secondsLeft <= 0) { onExpire(); return; }
-    const t = setTimeout(() => setSecondsLeft(s => s - 1), 1000);
-    return () => clearTimeout(t);
-  }, [secondsLeft, onExpire]);
+    const update = () => {
+      const next = Math.max(0, Math.ceil((expiresAt - Date.now()) / 1000));
+      setSecondsLeft(next);
+      if (next === 0) onExpire();
+    };
+    update();
+    const timer = window.setInterval(update, 1000);
+    return () => window.clearInterval(timer);
+  }, [expiresAt, onExpire]);
 
   const m = Math.floor(secondsLeft / 60);
   const s = secondsLeft % 60;
@@ -210,7 +190,7 @@ function BookingTimer({ minutes, onExpire }: { minutes: number; onExpire: () => 
 
   return (
     <div className={`text-xs font-body tabular-nums ${isLow ? "text-destructive" : "text-muted-foreground"}`}>
-      ⏱ {m}:{s.toString().padStart(2, "0")} remaining
+      ⏱ Complete within {m}:{s.toString().padStart(2, "0")} · your selection is not held until submitted
     </div>
   );
 }
@@ -256,9 +236,27 @@ function BookingSteps({ currentStep }: { currentStep: Step }) {
 
 // ─── Main Component ──────────────────────────────────────────
 export default function Booking() {
-  const profile = getProfile();
-  const eventTypes = getEventTypes().filter((e) => e.active);
-  const settings = getSettings();
+  const [profile, setProfile] = useState<ProfileSettings>(() => getProfile());
+  const [eventTypes, setEventTypes] = useState<EventType[]>(() => getEventTypes().filter(event => event.active));
+  const [settings, setSettings] = useState<AppSettings>(() => getSettings());
+  const [configLoading, setConfigLoading] = useState(true);
+  const [configError, setConfigError] = useState(false);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetchPublicBookingConfig(controller.signal).then(config => {
+      if (config.profile) setProfile(previous => ({ ...previous, ...config.profile }));
+      if (config.settings) setSettings(previous => ({ ...previous, ...config.settings }));
+      if (Array.isArray(config.eventTypes)) setEventTypes(config.eventTypes.filter(event => event.active));
+      setConfigError(false);
+    }).catch(error => {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      setConfigError(true);
+    }).finally(() => {
+      if (!controller.signal.aborted) setConfigLoading(false);
+    });
+    return () => controller.abort();
+  }, []);
 
   // ── Restore last booking from localStorage on page reload ──
   const restoredBookingId = (() => {
@@ -281,7 +279,6 @@ export default function Booking() {
   const [step, setStep] = useState<Step>(restoredBooking ? "confirmed" : "event-select");
   const [selectedEvent, setSelectedEvent] = useState<EventType | null>(restoredEventType || null);
   const [selectedDuration, setSelectedDuration] = useState<number | null>(restoredBooking?.duration || null);
-  const [gcalBusy, setGcalBusy] = useState<{ start: string; end: string }[]>([]);
   const [selectedDate, setSelectedDate] = useState<Date | null>(restoredDate);
   const [selectedTime, setSelectedTime] = useState<string | null>(restoredBooking?.time || null);
   const [currentMonth, setCurrentMonth] = useState(() => {
@@ -289,10 +286,28 @@ export default function Booking() {
     return new Date(now.getFullYear(), now.getMonth());
   });
   const [answers, setAnswers] = useState<Record<string, string>>(restoredBooking?.answers || {});
+  const [clientName, setClientName] = useState(restoredBooking?.clientName || "");
+  const [clientEmail, setClientEmail] = useState(restoredBooking?.clientEmail || "");
+  const [clientPhone, setClientPhone] = useState(() => {
+    const phoneQuestion = restoredEventType?.questions.find(question => contactQuestionRole(question) === "phone");
+    return phoneQuestion ? restoredBooking?.answers?.[phoneQuestion.id] || "" : "";
+  });
   const [use24h, setUse24h] = useState(false);
-  const [timerActive, setTimerActive] = useState(false);
+  const [timerExpiresAt, setTimerExpiresAt] = useState<number | null>(null);
+  const [availableSlots, setAvailableSlots] = useState<string[] | null>(null);
+  const [availabilityLoading, setAvailabilityLoading] = useState(false);
+  const [availabilityError, setAvailabilityError] = useState<string | null>(null);
+  const [availabilityTimezone, setAvailabilityTimezone] = useState(profile.timezone || "Australia/Sydney");
+  const [availabilityRetry, setAvailabilityRetry] = useState(0);
   const [lastBookingId, setLastBookingId] = useState<string | null>(restoredBookingId);
   const [, setBookingVersion] = useState(0);
+  const [cancellingBooking, setCancellingBooking] = useState(false);
+
+  useEffect(() => {
+    if (!selectedEvent) return;
+    const current = eventTypes.find(event => event.id === selectedEvent.id);
+    if (current && current !== selectedEvent) setSelectedEvent(current);
+  }, [eventTypes, selectedEvent]);
 
   // Stripe returns the client before webhook delivery can be guaranteed. Refresh
   // the authoritative booking shortly after returning so the confirmation page
@@ -324,6 +339,7 @@ export default function Booking() {
   const [showBankDeposit, setShowBankDeposit] = useState(false);
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [stripeAvailable, setStripeAvailable] = useState(false);
+  const [stripeChecked, setStripeChecked] = useState(false);
   const [processingPayment, setProcessingPayment] = useState(false);
   const [payFullInstead, setPayFullInstead] = useState(false);
 
@@ -357,7 +373,7 @@ export default function Booking() {
 
   // Check Stripe availability on mount
   useEffect(() => {
-    getStripeStatus().then(s => setStripeAvailable(s.configured));
+    getStripeStatus().then(s => setStripeAvailable(s.configured)).finally(() => setStripeChecked(true));
   }, []);
 
   const profileName = profile.name || "Book a Session";
@@ -366,7 +382,7 @@ export default function Booking() {
     "datetime": selectedEvent ? `${selectedEvent.title} — ${profileName}` : `Choose a Date — ${profileName}`,
     "questions": `Your Details — ${profileName}`,
     "payment": `Payment — ${profileName}`,
-    "confirmed": `Booking Confirmed — ${profileName}`,
+    "confirmed": `${lastBookingId && ["confirmed", "completed"].includes(getBookings().find(booking => booking.id === lastBookingId)?.status || "") ? "Booking Confirmed" : "Booking Received"} — ${profileName}`,
     "enquiry": `Send Enquiry — ${profileName}`,
     "enquiry-confirmed": `Enquiry Sent — ${profileName}`,
   };
@@ -380,58 +396,82 @@ export default function Booking() {
   const blanks = Array.from({ length: (firstDay + 6) % 7 }, (_, i) => i);
   const days = Array.from({ length: daysInMonth }, (_, i) => i + 1);
 
-  // Fetch Google Calendar busy times whenever date changes
+  // The server folds bookings, buffers, and external-calendar conflicts into
+  // this list. Never re-introduce a slot that the authoritative response omits.
   useEffect(() => {
-    if (!selectedDate) { setGcalBusy([]); return; }
-    getGoogleBusyTimes(toDateStr(selectedDate)).then(setGcalBusy).catch(() => setGcalBusy([]));
-  }, [selectedDate]);
+    if (!selectedDate || !selectedEvent) {
+      setAvailableSlots(null);
+      setAvailabilityError(null);
+      return;
+    }
+    const controller = new AbortController();
+    const date = toDateStr(selectedDate);
+    setAvailableSlots(null);
+    setAvailabilityLoading(true);
+    setAvailabilityError(null);
+    fetchPublicAvailability({ eventTypeId: selectedEvent.id, date, duration: selectedDuration || undefined, signal: controller.signal }).then(payload => {
+      const slots = readAvailableSlots(payload);
+      if (slots === null) throw new Error("Availability could not be read");
+      setAvailableSlots(slots);
+      if (payload.timezone) setAvailabilityTimezone(payload.timezone);
+    }).catch(error => {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      setAvailabilityError(error instanceof Error ? error.message : "Availability could not be loaded");
+    }).finally(() => {
+      if (!controller.signal.aborted) setAvailabilityLoading(false);
+    });
+    return () => controller.abort();
+  }, [selectedDate, selectedEvent, selectedDuration, availabilityRetry]);
 
   const timeSlots = useMemo(() => {
-    if (!selectedDate || !selectedDuration || !selectedEvent) return [];
+    if (!selectedDate || !selectedDuration || !selectedEvent || availableSlots === null) return [];
     const dateStr = toDateStr(selectedDate);
-    const ranges = getAvailabilityForDate(selectedEvent, selectedDate);
-    const allSlots: string[] = [];
-    for (const range of ranges) {
-      const slots = generateTimeSlots(range.startTime, range.endTime, selectedDuration);
-      for (const slot of slots) {
-        // Filter out already-booked slots and Google Calendar busy periods
-        if (!isSlotBooked(dateStr, slot, selectedDuration) &&
-            !isSlotBusyOnGoogle(slot, selectedDuration, gcalBusy)) {
-          allSlots.push(slot);
-        }
-      }
-    }
-    return allSlots;
-  }, [selectedDate, selectedDuration, selectedEvent, gcalBusy]);
+    return filterFutureBookingSlots(availableSlots, dateStr, availabilityTimezone || profile.timezone);
+  }, [selectedDate, selectedDuration, selectedEvent, availableSlots, availabilityTimezone, profile.timezone]);
 
   const hasAvailabilityThisMonth = useMemo(() => {
     if (!selectedEvent) return false;
-    const now = new Date(new Date().setHours(0, 0, 0, 0));
     for (let d = 1; d <= daysInMonth; d++) {
       const date = new Date(year, month, d);
-      if (date >= now && isDayAvailable(selectedEvent, date)) return true;
+      if (!isPastBookingDate(toDateStr(date), availabilityTimezone || profile.timezone) && isDayAvailable(selectedEvent, date)) return true;
     }
     return false;
-  }, [selectedEvent, year, month, daysInMonth]);
+  }, [selectedEvent, year, month, daysInMonth, availabilityTimezone, profile.timezone]);
+
+  const selectedQuestions = selectedEvent?.questions ?? [];
+  const customQuestions = useMemo(
+    () => getPublicCustomQuestions(selectedEvent?.questions),
+    [selectedEvent],
+  );
+  const hasRequiredUnsupportedUpload = selectedQuestions.some(question => question.type === "image-upload" && question.required);
+  const phoneRequired = selectedQuestions.some(question => contactQuestionRole(question) === "phone" && question.required);
 
   const handleSelectEvent = (ev: EventType) => {
     setSelectedEvent(ev);
     setSelectedDate(null);
     setSelectedTime(null);
     setAnswers({});
+    setClientName("");
+    setClientEmail("");
+    setClientPhone("");
+    setTimerExpiresAt(null);
     setSelectedDuration(ev.durations[0]);
     setStep("datetime");
   };
 
   const handleTimerExpire = useCallback(() => {
-    toast.error("Booking timer expired. Please select a new time.");
+    toast.error("Please select the time again before continuing.");
     setSelectedTime(null);
-    setTimerActive(false);
+    setTimerExpiresAt(null);
+    setStep(current => current === "questions" || current === "payment" ? "datetime" : current);
   }, []);
 
   const handleSelectTime = (time: string) => {
     setSelectedTime(time);
-    setTimerActive(true);
+    const minutes = Number.isFinite(settings.bookingTimerMinutes) && settings.bookingTimerMinutes > 0
+      ? settings.bookingTimerMinutes
+      : 10;
+    setTimerExpiresAt(Date.now() + minutes * 60_000);
   };
 
   const handleJoinWaitlist = async () => {
@@ -461,36 +501,23 @@ export default function Booking() {
 
   const handleSubmitQuestions = () => {
     if (!selectedEvent || !selectedDate || !selectedTime || !selectedDuration) return;
-    
-    // Validate email field
-    const emailQuestion = selectedEvent.questions.find(q => q.label.toLowerCase().includes("email"));
-    if (emailQuestion) {
-      const emailValue = answers[emailQuestion.id] || "";
-      if (!isValidEmail(emailValue)) {
-        toast.error("Please enter a valid email address");
-        return;
-      }
+    if (!clientName.trim()) { toast.error("Please enter your name"); return; }
+    if (!isValidEmail(clientEmail)) { toast.error("Please enter a valid email address"); return; }
+    if (phoneRequired && !clientPhone.trim()) { toast.error("Please enter your phone number"); return; }
+    if (hasRequiredUnsupportedUpload) {
+      toast.error("This booking form requires an upload that is not available online. Please contact the photographer.");
+      return;
     }
-
-    const missing = selectedEvent.questions.filter((q) => q.required && !answers[q.id]?.trim());
+    const missing = missingRequiredQuestions(customQuestions, answers);
     if (missing.length > 0) {
       toast.error(`Please fill in: ${missing.map((q) => q.label).join(", ")}`);
       return;
     }
-
-    // Double-check slot isn't taken
-    const dateStr = toDateStr(selectedDate);
-    if (isSlotBooked(dateStr, selectedTime, selectedDuration)) {
-      toast.error("This time slot was just booked by someone else. Please choose another.");
+    if (availabilityLoading || availableSlots === null || !timeSlots.includes(selectedTime)) {
+      toast.error("That time is no longer available. Please choose another.");
       setSelectedTime(null);
-      return;
-    }
-
-    // Guard against accidental duplicate submissions (same email + slot within 2 min)
-    const clientEmailAnswer = selectedEvent.questions.find(q => q.label.toLowerCase().includes("email"));
-    const clientEmail = clientEmailAnswer ? (answers[clientEmailAnswer.id] || "") : "";
-    if (clientEmail && isDuplicateBooking({ clientEmail, date: dateStr, time: selectedTime, eventTypeId: selectedEvent.id })) {
-      toast.error("It looks like this booking was already submitted. Please check your email for a confirmation.");
+      setStep("datetime");
+      setAvailabilityRetry(retry => retry + 1);
       return;
     }
 
@@ -504,7 +531,7 @@ export default function Booking() {
 
   const buildBookingRecord = (paymentMethod: "stripe" | "bank" | "none") => {
     if (!selectedEvent || !selectedDate || !selectedTime || !selectedDuration) return null;
-    const modifyToken = `mod-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const modifyToken = generateCapabilityToken("mod");
     const depositEnabled = selectedEvent.depositEnabled && selectedEvent.depositAmount && selectedEvent.depositAmount > 0;
     const depositAmt = depositEnabled
       ? selectedEvent.depositType === "percentage"
@@ -517,10 +544,17 @@ export default function Booking() {
     // Booking must stay "pending" until the deposit is actually received
     const awaitingDeposit = !skipDeposit && depositEnabled && (paymentMethod === "stripe" || paymentMethod === "bank");
     const dateStr = toDateStr(selectedDate);
+    const bookingAnswers = { ...answers };
+    selectedQuestions.forEach(question => {
+      const role = contactQuestionRole(question);
+      if (role === "name") bookingAnswers[question.id] = clientName.trim();
+      if (role === "email") bookingAnswers[question.id] = clientEmail.trim();
+      if (role === "phone") bookingAnswers[question.id] = clientPhone.trim();
+    });
     return {
       id: `bk-${Date.now()}`,
-      clientName: answers[selectedEvent.questions.find(q => q.label.toLowerCase().includes("name"))?.id || ""] || "Client",
-      clientEmail: answers[selectedEvent.questions.find(q => q.label.toLowerCase().includes("email"))?.id || ""] || "",
+      clientName: clientName.trim(),
+      clientEmail: clientEmail.trim(),
       date: dateStr,
       time: selectedTime,
       eventTypeId: selectedEvent.id,
@@ -529,14 +563,14 @@ export default function Booking() {
       status: (selectedEvent.requiresConfirmation || awaitingDeposit) ? "pending" as const : "confirmed" as const,
       requiresConfirmation: !!selectedEvent.requiresConfirmation,
       notes: "",
-      answers,
+      answers: bookingAnswers,
       answerLabels: Object.fromEntries(
-        selectedEvent.questions.map(q => [q.id, q.label])
+        selectedQuestions.map(q => [q.id, q.label])
       ),
       createdAt: new Date().toISOString(),
       paymentStatus: paymentMethod === "bank" ? "pending-confirmation" as const : paymentMethod === "none" ? "unpaid" as const : "unpaid" as const,
       paymentAmount: totalPrice,
-      instagramHandle: answers[selectedEvent.questions.find(q => q.type === "instagram" || q.label.toLowerCase().includes("instagram"))?.id || ""] || "",
+      instagramHandle: bookingAnswers[selectedQuestions.find(q => q.type === "instagram" || q.label.toLowerCase().includes("instagram"))?.id || ""] || "",
       modifyToken,
       depositRequired: skipDeposit ? false : (depositEnabled || false),
       depositAmount: skipDeposit ? 0 : depositAmt,
@@ -551,65 +585,53 @@ export default function Booking() {
       clientName: draft.clientName, clientEmail: draft.clientEmail, date: draft.date, time: draft.time,
       eventTypeId: selectedEvent.id, duration: draft.duration, answers: draft.answers,
       paymentMethod, payInFull: payFullInstead,
-      phone: answers[selectedEvent.questions.find(q => q.type === "phone" || q.label.toLowerCase().includes("phone"))?.id || ""] || "",
+      phone: clientPhone.trim(),
     });
     if (result.booking) cacheBookingLocally(result.booking);
     return result;
   };
 
   const handleCompletePaymentFree = async () => {
-    if (!selectedEvent) return;
+    if (!selectedEvent || processingPayment) return;
+    setProcessingPayment(true);
     const result = await createServerBooking("none");
-    if (!result.booking) { toast.error(result.error || "Could not save your booking"); return; }
-    const booking = result.booking;
-    // Save gcalEventId back to the booking so future syncs update rather than duplicate
-    syncBookingToCalendar(booking).then(res => { if (res?.eventId) cacheBookingLocally({ ...booking, gcalEventId: res.eventId }); }).catch(() => {});
-    if (booking.clientEmail) {
-      sendBookingEmail({
-        to: booking.clientEmail,
-        clientName: booking.clientName,
-        eventTitle: selectedEvent.title,
-        date: booking.date,
-        time: booking.time,
-        duration: booking.duration,
-        location: selectedEvent.location,
-        price: 0,
-        paymentMethod: "none",
-        modifyToken: booking.modifyToken,
-        bookingId: booking.id,
-      });
+    if (!result.booking) {
+      setProcessingPayment(false);
+      toast.error(result.error || "Could not save your booking");
+      if (/available|taken|conflict/i.test(result.error || "")) {
+        setSelectedTime(null);
+        setStep("datetime");
+        setAvailabilityRetry(retry => retry + 1);
+      }
+      return;
     }
+    const booking = result.booking;
     localStorage.setItem("lastBookingId", booking.id);
     setLastBookingId(booking.id);
-    setTimerActive(false);
+    setTimerExpiresAt(null);
+    setProcessingPayment(false);
     setStep("confirmed");
   };
 
   const handleCompletePayment = async (paymentMethod: "stripe" | "bank" | "none") => {
-    if (!selectedEvent || !selectedDate || !selectedTime || !selectedDuration) return;
+    if (!selectedEvent || !selectedDate || !selectedTime || !selectedDuration || processingPayment) return;
+    setProcessingPayment(true);
     const result = await createServerBooking(paymentMethod);
-    if (!result.booking) { toast.error(result.error || "Could not save your booking"); return; }
-    const booking = result.booking;
-    syncBookingToCalendar(booking).then(res => { if (res?.eventId) cacheBookingLocally({ ...booking, gcalEventId: res.eventId }); }).catch(() => {});
-    if (booking.clientEmail) {
-      sendBookingEmail({
-        to: booking.clientEmail,
-        clientName: booking.clientName,
-        eventTitle: selectedEvent.title,
-        date: booking.date,
-        time: booking.time,
-        duration: booking.duration,
-        location: selectedEvent.location,
-        price: getPriceForDuration(selectedEvent, booking.duration),
-        depositAmount: booking.depositAmount,
-        paymentMethod,
-        modifyToken: booking.modifyToken,
-        bookingId: booking.id,
-      });
+    if (!result.booking) {
+      setProcessingPayment(false);
+      toast.error(result.error || "Could not save your booking");
+      if (/available|taken|conflict/i.test(result.error || "")) {
+        setSelectedTime(null);
+        setStep("datetime");
+        setAvailabilityRetry(retry => retry + 1);
+      }
+      return;
     }
+    const booking = result.booking;
     localStorage.setItem("lastBookingId", booking.id);
     setLastBookingId(booking.id);
-    setTimerActive(false);
+    setTimerExpiresAt(null);
+    setProcessingPayment(false);
     setStep("confirmed");
   };
 
@@ -621,7 +643,10 @@ export default function Booking() {
     setSelectedDate(null);
     setSelectedTime(null);
     setAnswers({});
-    setTimerActive(false);
+    setClientName("");
+    setClientEmail("");
+    setClientPhone("");
+    setTimerExpiresAt(null);
     setLastBookingId(null);
     setShowBankDeposit(false);
     setProcessingPayment(false);
@@ -630,7 +655,6 @@ export default function Booking() {
 
   const handleNextAvailableMonth = useCallback(() => {
     if (!selectedEvent) return;
-    const now = new Date(new Date().setHours(0, 0, 0, 0));
     let searchYear = year;
     let searchMonth = month + 1;
     for (let i = 0; i < 24; i++) {
@@ -638,14 +662,14 @@ export default function Booking() {
       const daysInSearch = new Date(searchYear, searchMonth + 1, 0).getDate();
       for (let d = 1; d <= daysInSearch; d++) {
         const date = new Date(searchYear, searchMonth, d);
-        if (date >= now && isDayAvailable(selectedEvent, date)) {
+        if (!isPastBookingDate(toDateStr(date), availabilityTimezone || profile.timezone) && isDayAvailable(selectedEvent, date)) {
           setCurrentMonth(new Date(searchYear, searchMonth));
           return;
         }
       }
       searchMonth++;
     }
-  }, [selectedEvent, year, month]);
+  }, [selectedEvent, year, month, availabilityTimezone, profile.timezone]);
 
   // Open the enquiry form, optionally pre-filling event and/or date
   const handleOpenEnquiry = (prefillEventId?: string, prefillDate?: string) => {
@@ -660,39 +684,49 @@ export default function Booking() {
     setStep("enquiry");
   };
 
-  const handleSubmitEnquiry = () => {
+  const handleSubmitEnquiry = async () => {
     if (!enquiryName.trim()) { toast.error("Please enter your name"); return; }
     if (!isValidEmail(enquiryEmail)) { toast.error("Please enter a valid email address"); return; }
     if (!enquiryMessage.trim()) { toast.error("Please describe what you're looking for"); return; }
     setEnquirySubmitting(true);
     const matchedEvent = eventTypes.find(e => e.id === enquiryEventId);
-    const enquiry: Enquiry = {
-      id: `enq-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-      name: enquiryName.trim(),
-      email: enquiryEmail.trim(),
-      phone: enquiryPhone.trim() || undefined,
-      eventTypeId: enquiryEventId || undefined,
-      eventTypeTitle: matchedEvent?.title,
-      preferredDate: enquiryDate || undefined,
-      preferredStartTime: enquiryStartTime || undefined,
-      preferredEndTime: enquiryEndTime || undefined,
-      message: enquiryMessage.trim(),
-      status: "pending",
-      createdAt: new Date().toISOString(),
-    };
-    addEnquiry(enquiry);
-    notifyDiscord({ event: "new-enquiry", enquiry }).catch(() => {});
-    sendEnquiryReceivedEmail({
-      to: enquiry.email,
-      clientName: enquiry.name,
-      eventTitle: enquiry.eventTypeTitle,
-      preferredDate: enquiry.preferredDate,
-      preferredStartTime: enquiry.preferredStartTime,
-      preferredEndTime: enquiry.preferredEndTime,
-      message: enquiry.message,
-    }).catch(() => {});
-    setEnquirySubmitting(false);
-    setStep("enquiry-confirmed");
+    try {
+      await submitPublicEnquiry({
+        name: enquiryName.trim(),
+        email: enquiryEmail.trim(),
+        phone: enquiryPhone.trim() || undefined,
+        eventTypeId: enquiryEventId || undefined,
+        eventTypeTitle: matchedEvent?.title,
+        preferredDate: enquiryDate || undefined,
+        preferredStartTime: enquiryStartTime || undefined,
+        preferredEndTime: enquiryEndTime || undefined,
+        message: enquiryMessage.trim(),
+      });
+      setStep("enquiry-confirmed");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not send your enquiry. Please try again.");
+    } finally {
+      setEnquirySubmitting(false);
+    }
+  };
+
+  const handleCancelBooking = async (booking: import("@/lib/types").Booking) => {
+    if (!booking.modifyToken) {
+      toast.error("This booking cannot be cancelled online. Please contact the photographer.");
+      return;
+    }
+    if (!confirm("Are you sure you want to cancel this booking?")) return;
+    setCancellingBooking(true);
+    try {
+      const updated = await patchPublicBooking(booking.modifyToken, { action: "cancel" });
+      cacheBookingLocally(updated);
+      setBookingVersion(version => version + 1);
+      toast.success("Booking cancelled");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not cancel the booking");
+    } finally {
+      setCancellingBooking(false);
+    }
   };
 
   return (
@@ -708,13 +742,7 @@ export default function Booking() {
                 {/* Profile Card */}
                 <div className="glass-panel rounded-2xl p-6 sm:p-8 mb-5">
                   <div className="flex flex-col sm:flex-row sm:items-center gap-5">
-                    <div className="w-20 h-20 rounded-2xl bg-primary/15 flex items-center justify-center overflow-hidden shrink-0 ring-1 ring-primary/25 shadow-lg shadow-primary/10">
-                      {profile.avatar ? (
-                        <img src={profile.avatar} alt="Avatar" className="w-full h-full object-cover" />
-                      ) : (
-                        <Camera className="w-8 h-8 text-primary" />
-                      )}
-                    </div>
+                    <BookingAvatar src={profile.avatar} name={profile.name || "Photographer"} className="h-20 w-20 rounded-2xl shadow-lg shadow-primary/10" />
                     <div className="flex-1 min-w-0 pt-0.5">
                       <h1 className="font-display text-4xl sm:text-5xl leading-none text-foreground">{profile.name}</h1>
                       {profile.bio && (
@@ -724,7 +752,17 @@ export default function Booking() {
                   </div>
                 </div>
 
-                {eventTypes.length === 0 ? (
+                {configError && (
+                  <div className="mb-5 rounded-xl border border-yellow-500/30 bg-yellow-500/10 p-3 text-xs font-body text-yellow-200" role="status">
+                    Live booking settings couldn't be refreshed. Availability will still be checked before a time can be selected.
+                  </div>
+                )}
+
+                {configLoading ? (
+                  <div className="glass-panel rounded-xl p-12 text-center" role="status">
+                    <p className="text-sm font-body text-muted-foreground">Loading booking options…</p>
+                  </div>
+                ) : eventTypes.length === 0 ? (
                   <div className="glass-panel rounded-xl p-12 text-center">
                     <CalendarDays className="w-10 h-10 text-muted-foreground/30 mx-auto mb-3" />
                     <p className="text-sm font-body text-muted-foreground">No event types available yet.</p>
@@ -737,9 +775,9 @@ export default function Booking() {
                         : (ev.price ?? 0);
                       const isExpanded = !!expandedDescriptions[ev.id];
                       return (
-                        <button key={ev.id} onClick={() => handleSelectEvent(ev)} className="booking-service-card w-full text-left glass-panel rounded-2xl p-5 sm:p-6 hover:border-primary/50 hover:-translate-y-0.5 transition-all cursor-pointer group">
+                        <article key={ev.id} className="booking-service-card w-full text-left glass-panel rounded-2xl p-5 sm:p-6 hover:border-primary/50 hover:-translate-y-0.5 transition-all group">
                           <div className="flex items-start gap-4">
-                            <div className="w-11 h-11 rounded-xl bg-primary/15 flex items-center justify-center flex-shrink-0 mt-0.5 group-hover:bg-primary/25 transition-colors ring-1 ring-primary/20">
+                            <div className="w-11 h-11 rounded-xl bg-primary/15 flex items-center justify-center flex-shrink-0 mt-0.5 group-hover:bg-primary/25 transition-colors ring-1 ring-primary/20" aria-hidden="true">
                               <Camera className="w-4 h-4 text-primary" />
                             </div>
                             <div className="flex-1 min-w-0">
@@ -757,6 +795,7 @@ export default function Booking() {
                                     <RichTextDisplay html={ev.description} className="text-sm font-body text-muted-foreground" />
                                   </div>
                                   <button
+                                    type="button"
                                     onClick={(e) => { e.stopPropagation(); setExpandedDescriptions(prev => ({ ...prev, [ev.id]: !prev[ev.id] })); }}
                                     className="text-xs font-body text-primary/70 hover:text-primary mt-1"
                                   >
@@ -781,13 +820,13 @@ export default function Booking() {
                                 )}
                               </div>
                               <div className="flex justify-end mt-3">
-                                <span className="inline-flex items-center gap-1.5 text-xs font-body font-semibold bg-primary text-primary-foreground px-3.5 py-1.5 rounded-full">
+                                <button type="button" onClick={() => handleSelectEvent(ev)} className="inline-flex items-center gap-1.5 text-xs font-body font-semibold bg-primary text-primary-foreground px-3.5 py-1.5 rounded-full hover:bg-primary/90 transition-colors">
                                   Book <ArrowRight className="w-3 h-3" />
-                                </span>
+                                </button>
                               </div>
                             </div>
                           </div>
-                        </button>
+                        </article>
                       );
                     })}
                   </div>
@@ -830,25 +869,22 @@ export default function Booking() {
                     <ArrowLeft className="w-3.5 h-3.5" /> Back
                   </button>
 
-                  <div className="glass-panel rounded-xl overflow-hidden">
-                    <div className="grid lg:grid-cols-[320px_1fr_240px] divide-y lg:divide-y-0 lg:divide-x divide-border/50">
+                  <div className="glass-panel rounded-2xl overflow-hidden">
+                    <div className="grid min-w-0 lg:grid-cols-[minmax(0,1fr)_220px] xl:grid-cols-[280px_minmax(0,1fr)_220px]">
                       
                       {/* Left: Event Info */}
-                      <div className="p-6 space-y-4">
-                        <div className="flex items-center gap-3 mb-2">
-                          <div className="w-10 h-10 rounded-full bg-primary/20 flex items-center justify-center overflow-hidden flex-shrink-0">
-                            {profile.avatar ? (
-                              <img src={profile.avatar} alt="" className="w-full h-full object-cover" />
-                            ) : (
-                              <Camera className="w-5 h-5 text-primary" />
-                            )}
+                      <div className="min-w-0 p-5 sm:p-6 space-y-5 border-b border-border/50 lg:col-span-2 xl:col-span-1 xl:border-b-0 xl:border-r">
+                        <div className="flex items-center gap-3">
+                          <BookingAvatar src={profile.avatar} name={profile.name || "Photographer"} className="h-11 w-11 rounded-full" />
+                          <div className="min-w-0">
+                            <p className="text-[10px] font-body uppercase tracking-[0.16em] text-muted-foreground/70">Session with</p>
+                            <p className="truncate text-sm font-body font-medium text-foreground">{profile.name}</p>
                           </div>
-                          <span className="text-xs font-body text-muted-foreground">{profile.name}</span>
                         </div>
-                        <h2 className="font-display text-xl text-foreground">{selectedEvent.title}</h2>
+                        <h2 className="font-display text-2xl leading-tight text-foreground">{selectedEvent.title}</h2>
                         {selectedEvent.description && (
-                          <div className="text-sm font-body text-muted-foreground leading-relaxed max-h-48 overflow-y-auto pr-1">
-                            <RichTextDisplay html={selectedEvent.description} />
+                          <div className="min-w-0 rounded-xl border border-border/50 bg-secondary/25 p-4">
+                            <RichTextDisplay html={selectedEvent.description} className="text-sm" />
                           </div>
                         )}
                         
@@ -859,15 +895,15 @@ export default function Booking() {
                         )}
 
                         {/* Duration Selector */}
-                        <div className="flex items-center gap-2">
-                          <Clock className="w-3.5 h-3.5 text-muted-foreground" />
-                          <div className="flex rounded-full border border-border overflow-hidden">
+                        <div className="flex items-start gap-2">
+                          <Clock className="w-3.5 h-3.5 text-muted-foreground mt-2.5 shrink-0" />
+                          <div className="flex min-w-0 flex-wrap gap-2">
                             {selectedEvent.durations.map((d) => {
                               const dPrice = getPriceForDuration(selectedEvent, d);
                               return (
-                                <button key={d} onClick={() => { setSelectedDuration(d); setSelectedTime(null); }}
-                                  className={`px-4 py-2 text-xs font-body transition-all flex flex-col items-center ${
-                                    selectedDuration === d ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground hover:bg-secondary"
+                                <button key={d} type="button" aria-pressed={selectedDuration === d} onClick={() => { setSelectedDuration(d); setSelectedTime(null); setTimerExpiresAt(null); }}
+                                  className={`min-w-16 rounded-lg border px-3 py-2 text-xs font-body transition-all flex flex-col items-center ${
+                                    selectedDuration === d ? "border-primary bg-primary text-primary-foreground shadow-sm" : "border-border text-muted-foreground hover:text-foreground hover:border-primary/40 hover:bg-secondary"
                                   }`}
                                 >
                                   <span>{formatDuration(d)}</span>
@@ -884,23 +920,32 @@ export default function Booking() {
                           </div>
                         )}
 
+                        {!!selectedEvent.bufferMinutes && selectedEvent.bufferMinutes > 0 && (
+                          <div className="flex items-center gap-2 text-xs font-body text-muted-foreground">
+                            <Clock className="w-3.5 h-3.5" /> Includes a {formatDuration(selectedEvent.bufferMinutes)} turnaround buffer between sessions
+                          </div>
+                        )}
+
                         <div className="flex items-center gap-2 text-xs font-body text-muted-foreground">
                           <Globe className="w-3.5 h-3.5" /> {profile.timezone ? formatTimezone(profile.timezone) : ""}
                         </div>
                       </div>
 
                       {/* Center: Calendar */}
-                      <div className="p-6">
-                        <div className="flex items-center justify-between mb-5">
-                          <h3 className="font-display text-base text-foreground">
-                            <span className="text-primary">{currentMonth.toLocaleDateString("en-US", { month: "long" })}</span>{" "}
-                            {year}
-                          </h3>
+                      <div className="min-w-0 p-5 sm:p-6 lg:border-r lg:border-border/50">
+                        <div className="flex items-center justify-between gap-4 mb-5">
+                          <div>
+                            <p className="text-[10px] font-body uppercase tracking-[0.16em] text-muted-foreground/70 mb-1">Choose a date</p>
+                            <h3 className="font-display text-lg text-foreground">
+                              <span className="text-primary">{currentMonth.toLocaleDateString("en-US", { month: "long" })}</span>{" "}
+                              {year}
+                            </h3>
+                          </div>
                           <div className="flex items-center gap-1">
-                            <button onClick={() => setCurrentMonth(new Date(year, month - 1))} className="text-muted-foreground hover:text-foreground transition-colors p-1.5 rounded-lg hover:bg-secondary">
+                            <button type="button" aria-label="Previous month" onClick={() => setCurrentMonth(new Date(year, month - 1))} className="text-muted-foreground hover:text-foreground transition-colors p-1.5 rounded-lg hover:bg-secondary">
                               <ChevronLeft className="w-4 h-4" />
                             </button>
-                            <button onClick={() => setCurrentMonth(new Date(year, month + 1))} className="text-muted-foreground hover:text-foreground transition-colors p-1.5 rounded-lg hover:bg-secondary">
+                            <button type="button" aria-label="Next month" onClick={() => setCurrentMonth(new Date(year, month + 1))} className="text-muted-foreground hover:text-foreground transition-colors p-1.5 rounded-lg hover:bg-secondary">
                               <ChevronRight className="w-4 h-4" />
                             </button>
                           </div>
@@ -917,11 +962,11 @@ export default function Booking() {
                           {days.map((day) => {
                             const date = new Date(year, month, day);
                             const isSelected = selectedDate?.getDate() === day && selectedDate?.getMonth() === month && selectedDate?.getFullYear() === year;
-                            const isPast = date < new Date(new Date().setHours(0, 0, 0, 0));
+                            const isPast = isPastBookingDate(toDateStr(date), availabilityTimezone || profile.timezone);
                             const isAvailable = !isPast && isDayAvailable(selectedEvent, date);
                             const isToday = toDateStr(date) === toDateStr(new Date());
                             return (
-                              <button key={day} disabled={!isAvailable} onClick={() => { setSelectedDate(date); setSelectedTime(null); setTimerActive(false); setShowWaitlist(false); setWaitlistDone(false); setWaitlistName(""); setWaitlistEmail(""); setWaitlistNote(""); }}
+                              <button key={day} type="button" aria-label={`${date.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" })}${isAvailable ? ", available" : ", unavailable"}`} aria-pressed={isSelected} disabled={!isAvailable} onClick={() => { setSelectedDate(date); setSelectedTime(null); setTimerExpiresAt(null); setShowWaitlist(false); setWaitlistDone(false); setWaitlistName(""); setWaitlistEmail(""); setWaitlistNote(""); }}
                                 className={`aspect-square rounded-lg text-sm font-body transition-all relative ${
                                   isSelected ? "bg-primary text-primary-foreground font-medium ring-2 ring-primary ring-offset-2 ring-offset-background"
                                     : isAvailable ? "text-foreground font-medium hover:bg-amber-500/10 hover:text-amber-500"
@@ -965,30 +1010,37 @@ export default function Booking() {
                       </div>
 
                       {/* Right: Time Slots */}
-                      <div className="p-4">
+                      <div className="min-w-0 p-5 sm:p-6">
                         {selectedDate ? (
                           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
                             <div className="flex items-center justify-between mb-3">
-                              <p className="text-sm font-body font-medium text-foreground">
-                                {selectedDate.toLocaleDateString("en-US", { weekday: "short" })}{" "}
-                                {selectedDate.getDate()}
-                              </p>
+                              <div>
+                                <p className="text-[10px] font-body uppercase tracking-[0.16em] text-muted-foreground/70">Available times</p>
+                                <p className="text-sm font-body font-medium text-foreground">{selectedDate.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}</p>
+                              </div>
                               <div className="flex rounded-md border border-border overflow-hidden">
-                                <button onClick={() => setUse24h(false)} className={`px-2 py-0.5 text-[10px] font-body ${!use24h ? "bg-secondary text-foreground" : "text-muted-foreground"}`}>12h</button>
-                                <button onClick={() => setUse24h(true)} className={`px-2 py-0.5 text-[10px] font-body ${use24h ? "bg-secondary text-foreground" : "text-muted-foreground"}`}>24h</button>
+                                <button type="button" aria-pressed={!use24h} onClick={() => setUse24h(false)} className={`px-2 py-0.5 text-[10px] font-body ${!use24h ? "bg-secondary text-foreground" : "text-muted-foreground"}`}>12h</button>
+                                <button type="button" aria-pressed={use24h} onClick={() => setUse24h(true)} className={`px-2 py-0.5 text-[10px] font-body ${use24h ? "bg-secondary text-foreground" : "text-muted-foreground"}`}>24h</button>
                               </div>
                             </div>
                             
-                            {timerActive && selectedTime && (
+                            {timerExpiresAt && selectedTime && (
                               <div className="mb-2">
-                                <BookingTimer minutes={settings.bookingTimerMinutes} onExpire={handleTimerExpire} />
+                                <BookingTimer expiresAt={timerExpiresAt} onExpire={handleTimerExpire} />
                               </div>
                             )}
                             
-                            <div className="space-y-1.5 max-h-[420px] overflow-y-auto pr-1">
-                              {timeSlots.length > 0 ? (
+                            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:max-h-[420px] lg:grid-cols-1 lg:overflow-y-auto lg:overflow-x-hidden lg:pr-1">
+                              {availabilityLoading ? (
+                                <div className="py-6 text-center text-sm font-body text-muted-foreground" role="status">Checking availability…</div>
+                              ) : availabilityError ? (
+                                <div className="py-6 text-center space-y-3" role="alert">
+                                  <p className="text-sm font-body text-destructive">We couldn't load live availability.</p>
+                                  <Button type="button" variant="outline" size="sm" onClick={() => setAvailabilityRetry(retry => retry + 1)}>Try again</Button>
+                                </div>
+                              ) : timeSlots.length > 0 ? (
                                 timeSlots.map((t) => (
-                                  <button key={t} onClick={() => handleSelectTime(t)}
+                                  <button key={t} type="button" aria-pressed={selectedTime === t} onClick={() => handleSelectTime(t)}
                                     className={`w-full text-sm font-body py-2.5 px-4 rounded-lg border transition-all text-center ${
                                       selectedTime === t ? "bg-primary text-primary-foreground border-primary" : "border-border text-foreground hover:border-primary/50"
                                     }`}
@@ -1091,9 +1143,10 @@ export default function Booking() {
                             )}
                           </motion.div>
                         ) : (
-                          <div className="text-center py-12">
-                            <CalendarDays className="w-8 h-8 text-muted-foreground/30 mx-auto mb-3" />
-                            <p className="text-xs font-body text-muted-foreground/50">Select a date</p>
+                          <div className="flex min-h-44 flex-col items-center justify-center rounded-xl border border-dashed border-border/60 bg-secondary/15 px-4 py-8 text-center text-muted-foreground/60">
+                            <CalendarDays className="w-8 h-8 mb-3" />
+                            <p className="text-sm font-body text-muted-foreground">Select a date</p>
+                            <p className="mt-1 text-xs font-body text-muted-foreground/60">Available appointment times will appear here.</p>
                           </div>
                         )}
                       </div>
@@ -1110,9 +1163,9 @@ export default function Booking() {
                   <ArrowLeft className="w-3.5 h-3.5" /> Back
                 </button>
 
-                {timerActive && (
+                {timerExpiresAt && (
                   <div className="glass-panel rounded-lg p-3 mb-4 flex items-center justify-center">
-                    <BookingTimer minutes={settings.bookingTimerMinutes} onExpire={handleTimerExpire} />
+                    <BookingTimer expiresAt={timerExpiresAt} onExpire={handleTimerExpire} />
                   </div>
                 )}
 
@@ -1135,18 +1188,32 @@ export default function Booking() {
                 </div>
 
                 <div className="space-y-5">
-                  {selectedEvent.questions.map((q) => (
-                    <div key={q.id}>
-                      <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-2 block">
-                        {q.label} {q.required && <span className="text-destructive">*</span>}
-                      </label>
-                      <QuestionInput field={q} value={answers[q.id] || ""} onChange={(val) => setAnswers((prev) => ({ ...prev, [q.id]: val }))} />
-                    </div>
+                  <div>
+                    <label htmlFor="booking-client-name" className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-2 block">Name <span className="text-destructive">*</span></label>
+                    <Input id="booking-client-name" name="name" autoComplete="name" required value={clientName} onChange={event => setClientName(event.target.value)} className="bg-secondary border-border text-foreground font-body" />
+                  </div>
+                  <div>
+                    <label htmlFor="booking-client-email" className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-2 block">Email <span className="text-destructive">*</span></label>
+                    <Input id="booking-client-email" name="email" type="email" autoComplete="email" required value={clientEmail} onChange={event => setClientEmail(event.target.value)} className="bg-secondary border-border text-foreground font-body" />
+                  </div>
+                  <div>
+                    <label htmlFor="booking-client-phone" className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-2 block">Phone {phoneRequired ? <span className="text-destructive">*</span> : <span className="normal-case tracking-normal">(optional)</span>}</label>
+                    <Input id="booking-client-phone" name="tel" type="tel" autoComplete="tel" required={phoneRequired} value={clientPhone} onChange={event => setClientPhone(event.target.value)} className="bg-secondary border-border text-foreground font-body" />
+                  </div>
+                  {customQuestions.map((q) => (
+                    <BookingQuestionField key={q.id} field={q} value={answers[q.id] || ""} onChange={(val) => setAnswers((prev) => ({ ...prev, [q.id]: val }))} />
                   ))}
+                  {selectedQuestions.some(question => question.type === "image-upload") && (
+                    <p role={hasRequiredUnsupportedUpload ? "alert" : undefined} className={`rounded-lg border p-3 text-xs font-body ${hasRequiredUnsupportedUpload ? "border-destructive/40 bg-destructive/10 text-destructive" : "border-border text-muted-foreground"}`}>
+                      {hasRequiredUnsupportedUpload
+                        ? "This booking form is configured with a required image upload, but secure uploads are not available here. Please contact the photographer to book."
+                        : "Reference image uploads aren't accepted in this form. The photographer can arrange a secure upload after you submit."}
+                    </p>
+                  )}
                 </div>
 
-                <Button onClick={handleSubmitQuestions} size="lg" className="w-full mt-6 bg-primary text-primary-foreground hover:bg-primary/90 font-body tracking-wider uppercase text-xs py-6">
-                  Continue to Payment
+                <Button onClick={handleSubmitQuestions} disabled={processingPayment || hasRequiredUnsupportedUpload} size="lg" className="w-full mt-6 bg-primary text-primary-foreground hover:bg-primary/90 font-body tracking-wider uppercase text-xs py-6">
+                  {hasRequiredUnsupportedUpload ? "Contact Photographer to Book" : processingPayment ? "Submitting…" : getPriceForDuration(selectedEvent, selectedDuration) === 0 ? "Confirm Free Booking" : "Continue to Payment"}
                 </Button>
                 <p className="text-center text-[10px] font-body text-muted-foreground/40 mt-4">By booking, you agree to our terms and conditions.</p>
               </motion.div>
@@ -1154,35 +1221,60 @@ export default function Booking() {
 
             {/* ─── Payment Step ─── */}
             {step === "payment" && selectedEvent && selectedDate && selectedTime && selectedDuration && (() => {
-              const depositEnabled = selectedEvent.depositEnabled && selectedEvent.depositAmount && selectedEvent.depositAmount > 0;
-              const totalPrice = getPriceForDuration(selectedEvent, selectedDuration!);
-              const depositAmt = depositEnabled
+              const existingBooking = lastBookingId ? getBookings().find(b => b.id === lastBookingId) : null;
+              const existingChargeKnown = !existingBooking || hasAuthoritativeBookingCharge(existingBooking);
+              const storedCharge = existingBooking ? getAuthoritativeBookingCharge(existingBooking) : null;
+              const configuredDepositEnabled = !!(selectedEvent.depositEnabled && selectedEvent.depositAmount && selectedEvent.depositAmount > 0);
+              const configuredTotal = getPriceForDuration(selectedEvent, selectedDuration!);
+              const configuredDeposit = configuredDepositEnabled
                 ? selectedEvent.depositType === "percentage"
-                  ? Math.round((totalPrice * (selectedEvent.depositAmount || 0)) / 100)
+                  ? Math.round((configuredTotal * (selectedEvent.depositAmount || 0)) / 100)
                   : (selectedEvent.depositAmount || 0)
                 : 0;
+              // Existing bookings retain the exact price and deposit accepted by the server,
+              // even if the event type is edited before the client returns to this screen.
+              const depositEnabled = storedCharge?.depositRequired ?? configuredDepositEnabled;
+              const totalPrice = storedCharge?.total ?? configuredTotal;
+              const depositAmt = storedCharge?.depositAmount ?? configuredDeposit;
 
               // Check if deposit was already paid for this event (returning to pay remaining)
-              const existingBooking = lastBookingId ? getBookings().find(b => b.id === lastBookingId) : null;
-              const depositAlreadyPaid = !!(existingBooking?.depositPaidAt);
+              const depositAlreadyPaid = existingBooking?.paymentStatus === "deposit-paid" || !!existingBooking?.depositPaidAt;
+              const existingPaidInFull = existingBooking?.paymentStatus === "paid" || existingBooking?.paymentStatus === "cash" || !!existingBooking?.paidAt;
 
               // If user chose to pay full, or deposit already paid, or no deposit — determine amount
-              const wantsPayFull = payFullInstead && depositEnabled && !depositAlreadyPaid;
-              const amountDue = depositAlreadyPaid
+              const wantsPayFull = !existingBooking && payFullInstead && depositEnabled && !depositAlreadyPaid;
+              const amountDue = existingPaidInFull
+                ? 0
+                : depositAlreadyPaid
                 ? Math.max(0, totalPrice - depositAmt)
                 : wantsPayFull
                 ? totalPrice
                 : depositEnabled ? depositAmt : totalPrice;
 
-              const paymentLabel = depositAlreadyPaid
+              const paymentLabel = !existingChargeKnown
+                ? "Payment Details Unavailable"
+                : existingPaidInFull
+                ? "Payment Complete"
+                : depositAlreadyPaid
                 ? "Pay Remaining Balance"
                 : wantsPayFull
                 ? "Full Payment"
                 : depositEnabled ? "Deposit Required" : "Full Payment Required";
               const depositMethods = selectedEvent.depositMethods || [];
               const bankTransfer = settings.bankTransfer;
+              const methodAllowed = (method: "stripe" | "bank") => !depositEnabled || depositMethods.length === 0 || depositMethods.includes(method);
+              const stripeOffered = existingChargeKnown && !existingPaidInFull && amountDue > 0 && methodAllowed("stripe") && stripeAvailable;
+              const bankOffered = existingChargeKnown && !existingPaidInFull && amountDue > 0 && methodAllowed("bank") && bankTransfer.enabled;
 
               const handleStripePayment = async () => {
+                if (!existingChargeKnown) {
+                  toast.error("The saved booking amount could not be verified. Please reopen your booking link.");
+                  return;
+                }
+                if (existingPaidInFull || amountDue <= 0) {
+                  toast.info("This booking is already paid in full.");
+                  return;
+                }
                 setProcessingPayment(true);
                 let bookingId: string;
                 let modifyToken: string;
@@ -1200,7 +1292,6 @@ export default function Booking() {
                   const createResult = await createServerBooking("stripe");
                   if (!createResult.booking) { setProcessingPayment(false); toast.error(createResult.error || "Could not save your booking"); return; }
                   const newBooking = createResult.booking;
-                  syncBookingToCalendar(newBooking).then(res => { if (res?.eventId) cacheBookingLocally({ ...newBooking, gcalEventId: res.eventId }); }).catch(() => {});
                   localStorage.setItem("lastBookingId", newBooking.id);
                   setLastBookingId(newBooking.id);
                   bookingId = newBooking.id;
@@ -1209,8 +1300,15 @@ export default function Booking() {
                   clientEmail = newBooking.clientEmail;
                 }
 
+                if (!modifyToken) {
+                  setProcessingPayment(false);
+                  toast.error("This booking cannot be verified for payment. Please reopen your booking link.");
+                  return;
+                }
+
                 const result = await createBookingCheckout({
                   bookingId,
+                  modifyToken,
                   clientName,
                   clientEmail,
                   amount: amountDue,
@@ -1231,9 +1329,9 @@ export default function Booking() {
                     <ArrowLeft className="w-3.5 h-3.5" /> Back
                   </button>
 
-                  {timerActive && (
+                  {timerExpiresAt && (
                     <div className="glass-panel rounded-lg p-3 mb-4 flex items-center justify-center">
-                      <BookingTimer minutes={settings.bookingTimerMinutes} onExpire={handleTimerExpire} />
+                      <BookingTimer expiresAt={timerExpiresAt} onExpire={handleTimerExpire} />
                     </div>
                   )}
 
@@ -1261,7 +1359,11 @@ export default function Booking() {
                     <div>
                       <h2 className="font-display text-xl text-foreground mb-1">{paymentLabel}</h2>
                       <p className="text-xs font-body text-muted-foreground">
-                        {depositAlreadyPaid
+                        {!existingChargeKnown
+                          ? "The saved booking amount could not be verified. Reopen your booking link or contact the photographer before paying."
+                          : existingPaidInFull
+                          ? "This booking is already paid in full. No further payment is due."
+                          : depositAlreadyPaid
                           ? `Deposit paid. Remaining balance of $${amountDue} is due.`
                           : wantsPayFull
                           ? `Full payment of $${totalPrice} to confirm your booking.`
@@ -1272,7 +1374,7 @@ export default function Booking() {
                     </div>
 
                     {/* Pay full vs deposit toggle */}
-                    {depositEnabled && !depositAlreadyPaid && totalPrice > depositAmt && (
+                    {depositEnabled && !depositAlreadyPaid && !existingPaidInFull && totalPrice > depositAmt && (
                       <div className="flex rounded-lg border border-border overflow-hidden">
                         <button
                           onClick={() => setPayFullInstead(false)}
@@ -1291,16 +1393,16 @@ export default function Booking() {
                       </div>
                     )}
 
-                    <div className="flex justify-between items-center border border-border/50 rounded-lg p-4 bg-secondary/30">
+                    <div className={`flex justify-between items-center border rounded-lg p-4 ${existingPaidInFull ? "border-green-500/20 bg-green-500/10" : "border-border/50 bg-secondary/30"}`}>
                       <span className="text-sm font-body text-muted-foreground">
-                        {depositAlreadyPaid ? "Remaining Balance" : wantsPayFull ? "Total" : depositEnabled ? "Deposit" : "Total"}
+                        {existingPaidInFull ? "Amount Due" : depositAlreadyPaid ? "Remaining Balance" : wantsPayFull ? "Total" : depositEnabled ? "Deposit" : "Total"}
                       </span>
-                      <span className="font-display text-xl text-foreground">${amountDue}</span>
+                      <span className={`font-display text-xl ${existingPaidInFull ? "text-green-400" : "text-foreground"}`}>${amountDue}</span>
                     </div>
 
                     <div className="space-y-3">
                       {/* Stripe */}
-                      {(!depositEnabled || depositMethods.includes("stripe")) && stripeAvailable && (
+                      {stripeOffered && (
                         <Button
                           onClick={handleStripePayment}
                           disabled={processingPayment}
@@ -1312,7 +1414,7 @@ export default function Booking() {
                       )}
 
                       {/* Bank Transfer */}
-                      {(!depositEnabled || depositMethods.includes("bank")) && bankTransfer.enabled && (
+                      {bankOffered && (
                         <>
                           <Button
                             onClick={() => setShowBankDeposit(!showBankDeposit)}
@@ -1376,9 +1478,10 @@ export default function Booking() {
                               )}
                               <Button
                                 onClick={() => handleCompletePayment("bank")}
+                                disabled={processingPayment}
                                 className="w-full bg-green-600/90 text-white hover:bg-green-600 font-body text-xs tracking-wider uppercase h-11"
                               >
-                                I've Sent the Transfer — Submit Booking
+                                {processingPayment ? "Submitting…" : "I've Sent the Transfer — Submit Booking"}
                               </Button>
                               <p className="text-[10px] font-body text-muted-foreground text-center">
                                 Your booking will be held pending payment confirmation by the admin.
@@ -1386,6 +1489,12 @@ export default function Booking() {
                             </motion.div>
                           )}
                         </>
+                      )}
+                      {stripeChecked && !existingPaidInFull && !stripeOffered && !bankOffered && (
+                        <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-4 text-center" role="alert">
+                          <p className="text-sm font-body text-destructive">No payment method is currently available for this session.</p>
+                          <p className="mt-1 text-xs font-body text-muted-foreground">Please go back or contact the photographer before booking.</p>
+                        </div>
                       )}
                     </div>
                   </div>
@@ -1397,25 +1506,32 @@ export default function Booking() {
             {step === "confirmed" && selectedEvent && selectedDate && selectedTime && selectedDuration && (() => {
               const lastBooking = lastBookingId ? getBookings().find(b => b.id === lastBookingId) : null;
               const modifyUrl = lastBooking?.modifyToken ? `${window.location.origin}/booking/modify/${lastBooking.modifyToken}` : null;
-              const depositEnabled = selectedEvent.depositEnabled && selectedEvent.depositAmount && selectedEvent.depositAmount > 0;
-              const depositAmt = depositEnabled
-                ? selectedEvent.depositType === "percentage"
-                  ? Math.round((getPriceForDuration(selectedEvent, selectedDuration!) * (selectedEvent.depositAmount || 0)) / 100)
-                  : (selectedEvent.depositAmount || 0)
-                : 0;
-              const wasBankTransfer = lastBooking?.depositMethod === "bank" || lastBooking?.paymentStatus === "pending-confirmation";
+              const paymentState = getAuthoritativeBookingPaymentState(lastBooking);
+              const paymentStateKnown = paymentState.chargeKnown;
+              const depositEnabled = paymentState.depositRequired;
+              const depositAmt = paymentState.depositAmount;
+              const bankPaymentPending = paymentState.bankPaymentPending;
+              const totalPrice = paymentState.total;
+              const isCancelled = lastBooking?.status === "cancelled";
+              const isConfirmed = lastBooking?.status === "confirmed" || lastBooking?.status === "completed";
+              const paidInFull = paymentState.paidInFull;
+              const depositHasBeenPaid = paymentState.depositHasBeenPaid;
+              const remainingBalance = paymentState.remainingBalance;
+              const paymentLabel = paymentState.paymentLabel;
 
               return (
               <motion.div key="confirmed" initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="max-w-md mx-auto text-center">
                 <div className="glass-panel rounded-xl p-8">
-                  <CheckCircle2 className="w-12 h-12 text-green-400 mx-auto mb-4" />
+                  {isCancelled ? <XCircle className="w-12 h-12 text-destructive mx-auto mb-4" /> : <CheckCircle2 className="w-12 h-12 text-green-400 mx-auto mb-4" />}
                   <h2 className="font-display text-2xl text-foreground mb-2">
-                    {selectedEvent.requiresConfirmation ? "Booking Request Sent!" : "Booking Confirmed!"}
+                    {isCancelled ? "Booking Cancelled" : isConfirmed ? "Booking Confirmed!" : "Booking Request Sent!"}
                   </h2>
                   <p className="text-sm font-body text-muted-foreground mb-6">
-                    {wasBankTransfer
+                    {isCancelled
+                      ? "This appointment has been cancelled."
+                      : bankPaymentPending
                       ? "Your booking is held pending payment confirmation."
-                      : selectedEvent.requiresConfirmation
+                      : !isConfirmed
                       ? "You'll receive a confirmation once approved."
                       : "You're all set!"}
                   </p>
@@ -1424,25 +1540,31 @@ export default function Booking() {
                     <div className="flex justify-between text-sm font-body"><span className="text-muted-foreground">Duration</span><span className="text-foreground">{formatDuration(selectedDuration)}</span></div>
                     <div className="flex justify-between text-sm font-body"><span className="text-muted-foreground">Date</span><span className="text-foreground">{selectedDate.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}</span></div>
                     <div className="flex justify-between text-sm font-body"><span className="text-muted-foreground">Time</span><span className="text-primary font-medium">{formatTime12(selectedTime)}</span></div>
-                    {depositEnabled && (
+                    {!paymentStateKnown && (
+                      <div className="flex justify-between gap-4 text-sm font-body">
+                        <span className="text-muted-foreground">Payment</span>
+                        <span className="text-yellow-400 font-medium text-right">Status unavailable — reopen your booking link</span>
+                      </div>
+                    )}
+                    {paymentStateKnown && depositEnabled && totalPrice > 0 && (
                       <div className="flex justify-between text-sm font-body">
                         <span className="text-muted-foreground">Deposit</span>
-                        <span className={`font-medium ${wasBankTransfer ? "text-yellow-400" : "text-green-400"}`}>
-                          ${depositAmt} {wasBankTransfer ? "· Pending confirmation" : "· Paid"}
+                        <span className={`font-medium ${depositHasBeenPaid ? "text-green-400" : "text-yellow-400"}`}>
+                          ${depositAmt} · {depositHasBeenPaid ? "Paid" : bankPaymentPending ? "Pending confirmation" : "Unpaid"}
                         </span>
                       </div>
                     )}
-                    {!depositEnabled && (
+                    {paymentStateKnown && !depositEnabled && (
                       <div className="flex justify-between text-sm font-body">
                         <span className="text-muted-foreground">Payment</span>
-                        <span className={`font-medium ${wasBankTransfer ? "text-yellow-400" : "text-green-400"}`}>
-                          ${getPriceForDuration(selectedEvent, lastBooking?.duration || selectedDuration!)} {wasBankTransfer ? "· Pending confirmation" : "· Paid"}
+                        <span className={`font-medium ${totalPrice === 0 || paidInFull ? "text-green-400" : "text-yellow-400"}`}>
+                          {totalPrice > 0 ? `$${totalPrice} · ${paymentLabel}` : paymentLabel}
                         </span>
                       </div>
                     )}
                   </div>
 
-                  {wasBankTransfer && (
+                  {bankPaymentPending && !isCancelled && (
                     <div className="mt-4 p-3 rounded-lg bg-yellow-500/10 border border-yellow-500/20 text-left">
                       <p className="text-xs font-body text-yellow-400">
                         Once your bank transfer is received, the admin will confirm your booking. You'll be notified by email.
@@ -1451,7 +1573,7 @@ export default function Booking() {
                   )}
 
                   {/* Pay remaining balance button (deposit was paid, balance still owed) */}
-                  {depositEnabled && !wasBankTransfer && lastBooking?.depositPaidAt && (getPriceForDuration(selectedEvent, lastBooking?.duration || selectedDuration!) - depositAmt) > 0 && (
+                  {paymentStateKnown && depositEnabled && !isCancelled && !bankPaymentPending && !paidInFull && depositHasBeenPaid && remainingBalance > 0 && (
                     <div className="mt-4 p-4 rounded-lg bg-primary/5 border border-primary/20">
                       <p className="text-xs font-body text-muted-foreground mb-3">
                         Deposit paid. Remaining balance due on the day:
@@ -1460,33 +1582,28 @@ export default function Booking() {
                         onClick={() => setStep("payment")}
                         className="w-full bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs tracking-wider uppercase h-10"
                       >
-                        Pay Remaining ${getPriceForDuration(selectedEvent, lastBooking?.duration || selectedDuration!) - depositAmt}
+                        Pay Remaining ${remainingBalance}
                       </Button>
                     </div>
                   )}
                   
                   <div className="flex flex-col gap-3 mt-6">
-                    <a href={buildGoogleCalendarUrl(selectedEvent, selectedDate, selectedTime, selectedDuration)} target="_blank" rel="noopener noreferrer">
-                      <Button variant="outline" className="w-full font-body text-xs tracking-wider uppercase border-border text-foreground gap-2">
+                    {!isCancelled && <Button asChild variant="outline" className="w-full font-body text-xs tracking-wider uppercase border-border text-foreground gap-2">
+                      <a aria-label={`Add ${selectedEvent.title} on ${toDateStr(selectedDate)} at ${selectedTime} to Google Calendar`} href={buildBookingCalendarUrl({ title: selectedEvent.title, date: toDateStr(selectedDate), time: selectedTime, durationMinutes: selectedDuration, timeZone: availabilityTimezone || profile.timezone, details: richTextToPlainText(selectedEvent.description), location: selectedEvent.location })} target="_blank" rel="noopener noreferrer">
                         <CalendarIcon className="w-4 h-4" /> Add to Google Calendar
                         <ExternalLink className="w-3 h-3" />
-                      </Button>
-                    </a>
-                    {modifyUrl && (
-                      <a href={modifyUrl}>
-                        <Button variant="outline" className="w-full font-body text-xs tracking-wider uppercase border-border text-foreground gap-2">
-                          <Edit className="w-4 h-4" /> Modify Booking
-                        </Button>
                       </a>
+                    </Button>}
+                    {modifyUrl && !isCancelled && (
+                      <Button asChild variant="outline" className="w-full font-body text-xs tracking-wider uppercase border-border text-foreground gap-2">
+                        <a href={modifyUrl}>
+                          <Edit className="w-4 h-4" /> Modify Booking
+                        </a>
+                      </Button>
                     )}
                     {lastBooking && lastBooking.status !== "cancelled" && (
-                      <Button variant="outline" onClick={() => {
-                        if (!confirm("Are you sure you want to cancel this booking?")) return;
-                        updateBooking({ ...lastBooking, status: "cancelled" });
-                        toast.success("Booking cancelled");
-                        handleReset();
-                      }} className="w-full font-body text-xs tracking-wider uppercase border-destructive text-destructive hover:bg-destructive/10 gap-2">
-                        <XCircle className="w-4 h-4" /> Cancel Booking
+                      <Button variant="outline" disabled={cancellingBooking} onClick={() => void handleCancelBooking(lastBooking)} className="w-full font-body text-xs tracking-wider uppercase border-destructive text-destructive hover:bg-destructive/10 gap-2">
+                        <XCircle className="w-4 h-4" /> {cancellingBooking ? "Cancelling…" : "Cancel Booking"}
                       </Button>
                     )}
                     <Button onClick={handleReset} variant="outline" className="w-full font-body text-xs tracking-wider uppercase border-border text-foreground">

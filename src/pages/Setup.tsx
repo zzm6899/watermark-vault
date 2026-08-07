@@ -7,10 +7,10 @@ import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
 import {
-  completeSetup, setAdminCredentials, setProfile, addEventType,
+  clearAdminClientCredentials, completeSetup, setProfile, addEventType,
   setSettings, getSettings, hashPassword, login,
 } from "@/lib/storage";
-import { validateLicenseKey, activateLicenseKey, getLicenseKeys } from "@/lib/api";
+import { claimInitialSetup, getSetupStatus } from "@/lib/api";
 import type {
   EventType, QuestionField, AvailabilitySlot, AppSettings, BankTransferSettings,
 } from "@/lib/types";
@@ -30,17 +30,21 @@ export default function Setup({ onComplete }: { onComplete: () => void }) {
   const [licenseKey, setLicenseKey] = useState("");
   const [licenseKeyRequired, setLicenseKeyRequired] = useState(false);
   const [licenseKeyChecking, setLicenseKeyChecking] = useState(false);
+  const [setupTokenRequired, setSetupTokenRequired] = useState(false);
+  const [setupToken, setSetupToken] = useState("");
+  const [serverClaimed, setServerClaimed] = useState(false);
 
   // Welcome
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
 
-  // On mount — check if any license keys exist on the server;
-  // if so, a valid key is required to proceed with setup.
+  // Only non-sensitive setup requirements are exposed before an admin exists.
   useEffect(() => {
-    getLicenseKeys().then((keys) => {
-      setLicenseKeyRequired(keys.length > 0);
+    getSetupStatus().then((status) => {
+      if (!status) return;
+      setLicenseKeyRequired(status.licenseKeyRequired);
+      setSetupTokenRequired(status.setupTokenRequired);
     });
   }, []);
 
@@ -95,27 +99,40 @@ export default function Setup({ onComplete }: { onComplete: () => void }) {
       toast.error("Passwords don't match");
       return;
     }
-    if (password.length < 6) {
-      toast.error("Password must be at least 6 characters");
+    if (password.length < 12) {
+      toast.error("Password must be at least 12 characters");
       return;
     }
-    // Validate license key if one has been issued
     if (licenseKeyRequired) {
       if (!licenseKey.trim()) {
         toast.error("A license key is required to set up this instance");
         return;
       }
-      setLicenseKeyChecking(true);
-      const { valid, error } = await validateLicenseKey(licenseKey.trim());
-      setLicenseKeyChecking(false);
-      if (!valid) {
-        toast.error(error || "Invalid license key");
-        return;
-      }
+    }
+    if (setupTokenRequired && !setupToken.trim()) {
+      toast.error("The server setup token is required");
+      return;
     }
     try {
       const hash = await hashPassword(password);
-      setAdminCredentials({ username: username.trim().toLowerCase(), passwordHash: hash });
+      if (!serverClaimed) {
+        setLicenseKeyChecking(true);
+        const claimed = await claimInitialSetup({
+          username: username.trim().toLowerCase(),
+          passwordHash: hash,
+          ...(setupToken.trim() ? { setupToken: setupToken.trim() } : {}),
+          ...(licenseKey.trim() ? { licenseKey: licenseKey.trim() } : {}),
+        });
+        setLicenseKeyChecking(false);
+        if (!claimed.ok) {
+          toast.error(claimed.error || "Could not secure this instance");
+          return;
+        }
+        setServerClaimed(true);
+      }
+      // Browser setup uses the HttpOnly cookie; native setup stores only the
+      // short-lived bearer returned by claimInitialSetup().
+      clearAdminClientCredentials();
       setStep("profile");
     } catch (err) {
       console.error("Setup hash error:", err);
@@ -173,10 +190,6 @@ export default function Setup({ onComplete }: { onComplete: () => void }) {
     setSettings(settings);
     completeSetup();
     login();
-    // Mark the license key as used if one was entered
-    if (licenseKeyRequired && licenseKey.trim()) {
-      activateLicenseKey(licenseKey.trim(), username.trim()).catch(() => {});
-    }
     setStep("done");
   };
 
@@ -236,15 +249,15 @@ export default function Setup({ onComplete }: { onComplete: () => void }) {
               <div className="glass-panel rounded-xl p-6 space-y-4">
                 <div>
                   <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Username</label>
-                  <Input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="admin" className="bg-secondary border-border text-foreground font-body" />
+                  <Input autoComplete="username" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="admin" className="bg-secondary border-border text-foreground font-body" />
                 </div>
                 <div>
                   <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Password</label>
-                  <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••" className="bg-secondary border-border text-foreground font-body" />
+                  <Input autoComplete="new-password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="At least 12 characters" className="bg-secondary border-border text-foreground font-body" />
                 </div>
                 <div>
                   <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Confirm Password</label>
-                  <Input type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} placeholder="••••••" className="bg-secondary border-border text-foreground font-body" />
+                  <Input autoComplete="new-password" type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} placeholder="Repeat password" className="bg-secondary border-border text-foreground font-body" />
                 </div>
                 {licenseKeyRequired && (
                   <div>
@@ -258,6 +271,22 @@ export default function Setup({ onComplete }: { onComplete: () => void }) {
                       className="bg-secondary border-border text-foreground font-body font-mono tracking-widest"
                     />
                     <p className="text-xs font-body text-muted-foreground mt-1">Enter the license key provided to you.</p>
+                  </div>
+                )}
+                {setupTokenRequired && (
+                  <div>
+                    <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block flex items-center gap-1.5">
+                      <Key className="w-3 h-3" /> Server Setup Token *
+                    </label>
+                    <Input
+                      type="password"
+                      autoComplete="off"
+                      value={setupToken}
+                      onChange={(e) => setSetupToken(e.target.value)}
+                      placeholder="Value configured as SETUP_TOKEN"
+                      className="bg-secondary border-border text-foreground font-body font-mono"
+                    />
+                    <p className="text-xs font-body text-muted-foreground mt-1">Ask the server owner for the one-time setup token.</p>
                   </div>
                 )}
                 <Button onClick={handleWelcomeNext} disabled={licenseKeyChecking} className="w-full bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2">
@@ -388,7 +417,7 @@ export default function Setup({ onComplete }: { onComplete: () => void }) {
                             <option value="textarea">Long Text</option>
                             <option value="select">Select</option>
                             <option value="boolean">Yes/No</option>
-                            <option value="image-upload">Image Upload</option>
+                            <option value="image-upload" disabled>Image Upload (not yet supported)</option>
                           </select>
                           <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-destructive" onClick={() => removeQuestion(idx)}>
                             <Trash2 className="w-3.5 h-3.5" />

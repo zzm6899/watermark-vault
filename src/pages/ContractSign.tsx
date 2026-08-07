@@ -13,15 +13,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { getContractByToken, signContract } from "@/lib/api";
+import type { PublicContractInfo } from "@/lib/api";
 import Footer from "@/components/Footer";
-
-type ContractInfo = {
-  id: string;
-  title: string;
-  status: "pending" | "signed" | "declined";
-  bookingId?: string;
-  pdfPath?: string;
-};
 
 function formatDate(isoStr: string) {
   try {
@@ -36,7 +29,7 @@ function formatDate(isoStr: string) {
 
 export default function ContractSign() {
   const { token } = useParams<{ token: string }>();
-  const [contract, setContract] = useState<ContractInfo | null>(null);
+  const [contract, setContract] = useState<PublicContractInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [fullName, setFullName] = useState("");
@@ -49,7 +42,7 @@ export default function ContractSign() {
     getContractByToken(token)
       .then((c) => {
         if (!c) { setError("Contract not found. This link may be invalid or expired."); return; }
-        setContract(c as ContractInfo);
+        setContract(c);
       })
       .catch(() => setError("Failed to load contract."))
       .finally(() => setLoading(false));
@@ -92,7 +85,7 @@ export default function ContractSign() {
   }
 
   const alreadySigned = contract.status === "signed";
-  const pdfUrl = contract.pdfPath ? `/api/uploads/${contract.pdfPath}` : null;
+  const pdfUrl = contract.pdfUrl || null;
 
   return (
     <div className="min-h-screen bg-zinc-950 text-white">

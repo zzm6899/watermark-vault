@@ -10,10 +10,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { getPublicQuote, respondToQuote } from "@/lib/api";
-import type { Quote } from "@/lib/types";
+import type { PublicQuote } from "@/lib/api";
 import Footer from "@/components/Footer";
 
-function calcTotal(quote: Quote): number {
+function calcTotal(quote: PublicQuote): number {
   const sub = quote.items.reduce((s, i) => s + i.quantity * i.unitPrice, 0);
   const tax = quote.tax ? sub * quote.tax / 100 : 0;
   const disc = quote.discount || 0;
@@ -33,8 +33,8 @@ function formatDate(dateStr: string) {
   }
 }
 
-function StatusBadge({ status }: { status: Quote["status"] }) {
-  const map: Record<Quote["status"], { label: string; className: string }> = {
+function StatusBadge({ status }: { status: PublicQuote["status"] }) {
+  const map: Record<PublicQuote["status"], { label: string; className: string }> = {
     draft: { label: "Draft", className: "bg-zinc-700 text-zinc-200" },
     sent: { label: "Awaiting Response", className: "bg-amber-500/20 text-amber-300 border border-amber-500/30" },
     accepted: { label: "Accepted", className: "bg-green-500/20 text-green-300 border border-green-500/30" },
@@ -48,7 +48,7 @@ function StatusBadge({ status }: { status: Quote["status"] }) {
 
 export default function QuoteView() {
   const { token } = useParams<{ token: string }>();
-  const [quote, setQuote] = useState<Quote | null>(null);
+  const [quote, setQuote] = useState<PublicQuote | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [responding, setResponding] = useState(false);
@@ -75,9 +75,11 @@ export default function QuoteView() {
     }
     setResponding(true);
     try {
-      const updated = await respondToQuote(token, action);
+      const updated = action === "accept"
+        ? await respondToQuote(token, "accept", confirmName.trim())
+        : await respondToQuote(token, "decline");
       if (!updated) { toast.error("Something went wrong. Please try again."); return; }
-      setQuote(updated);
+      setQuote(current => current ? { ...current, ...updated } : current);
       setDone(action === "accept" ? "accepted" : "declined");
     } catch {
       toast.error("Request failed. Please try again.");

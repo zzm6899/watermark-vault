@@ -46,6 +46,7 @@ describe("shoot-day selectors", () => {
     const result = getShootDayBookings([
       booking({ id: "late", time: "14:00" }),
       booking({ id: "cancelled", time: "09:00", status: "cancelled" }),
+      booking({ id: "archived", time: "09:30", archived: true }),
       booking({ id: "early", time: "08:30" }),
       booking({ id: "other-day", date: "2026-05-23" }),
     ], "2026-05-22");

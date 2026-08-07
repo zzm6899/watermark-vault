@@ -2,18 +2,35 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { usePageTitle } from "@/hooks/use-page-title";
 import {
-  ArrowLeft, Camera, Clock, DollarSign, CheckCircle2,
+  ArrowLeft, ArrowRight, Camera, Clock, DollarSign, CheckCircle2,
   ChevronLeft, ChevronRight, Globe, MapPin, Calendar as CalendarIcon,
-  MessageSquare,
+  MessageSquare, CreditCard, Building2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
-import { getTenantPublicData, createTenantBooking, createTenantEnquiry } from "@/lib/api";
-import type { EventType, Tenant } from "@/lib/types";
-import Footer from "@/components/Footer";
+import {
+  createTenantBooking,
+  createTenantBookingCheckout,
+  createTenantEnquiry,
+  getTenantPublicData,
+  getTenantStripeStatus,
+  type PublicTenant,
+} from "@/lib/api";
+import type { Booking, EventType, QuestionField } from "@/lib/types";
 import { RichTextDisplay } from "@/components/RichTextEditor";
+import BookingAvatar from "@/components/BookingAvatar";
+import {
+  buildBookingCalendarUrl,
+  contactQuestionRole,
+  filterFutureBookingSlots,
+  getPublicCustomQuestions,
+  isPastBookingDate,
+  missingRequiredQuestions,
+  readAvailableSlots,
+} from "@/lib/booking-utils";
+import { fetchPublicAvailability } from "@/lib/booking-public-api";
 
 /** Strip HTML tags to plain text for short teasers */
 function stripHtml(html: string): string {
@@ -43,27 +60,16 @@ function getAvailabilityForDate(et: EventType, date: Date) {
   const avail = et.availability;
   if (!avail) return [];
   if ((avail.blockedDates || []).includes(dateStr)) return [];
-  const specific = (avail.specificDates || []).filter((s: any) => s.date === dateStr);
-  if (specific.length > 0) return specific.map((s: any) => ({ startTime: s.startTime, endTime: s.endTime }));
+  const specific = (avail.specificDates || []).filter(s => s.date === dateStr);
+  if (specific.length > 0) return specific.map(s => ({ startTime: s.startTime, endTime: s.endTime }));
   const dayOfWeek = date.getDay();
-  return (avail.recurring || []).filter((s: any) => s.day === dayOfWeek).map((s: any) => ({ startTime: s.startTime, endTime: s.endTime }));
+  return (avail.recurring || []).filter(s => s.day === dayOfWeek).map(s => ({ startTime: s.startTime, endTime: s.endTime }));
 }
 function isDayAvailable(et: EventType, date: Date) {
   return getAvailabilityForDate(et, date).length > 0;
 }
-function generateTimeSlots(startTime: string, endTime: string, duration: number): string[] {
-  const slots: string[] = [];
-  const [sh, sm] = startTime.split(":").map(Number);
-  const [eh, em] = endTime.split(":").map(Number);
-  const startMins = sh * 60 + sm;
-  const endMins = eh * 60 + em;
-  for (let m = startMins; m + duration <= endMins; m += duration) {
-    slots.push(`${Math.floor(m / 60).toString().padStart(2, "0")}:${(m % 60).toString().padStart(2, "0")}`);
-  }
-  return slots;
-}
 function getPriceForDuration(et: EventType, duration: number): number {
-  if (et.prices && (et.prices as any)[duration] !== undefined) return (et.prices as any)[duration];
+  if (et.prices?.[String(duration)] !== undefined) return et.prices[String(duration)];
   return et.price ?? 0;
 }
 function isValidEmail(email: string) {
@@ -85,7 +91,46 @@ function formatTimezone(tz: string): string {
   }
 }
 
+function TenantQuestionInput({ field, value, onChange, inputId, labelId }: { field: QuestionField; value: string; onChange: (value: string) => void; inputId: string; labelId: string }) {
+  if (field.type === "textarea") {
+    return <Textarea id={inputId} value={value} onChange={event => onChange(event.target.value)} placeholder={field.placeholder} className="bg-secondary border-border text-foreground font-body min-h-[80px]" />;
+  }
+  if (field.type === "select") {
+    return (
+      <select id={inputId} value={value} onChange={event => onChange(event.target.value)} className="w-full rounded-md border border-border bg-secondary px-3 py-2.5 text-sm font-body text-foreground">
+        <option value="">Select an option…</option>
+        {field.options?.map(option => <option key={option} value={option}>{option}</option>)}
+      </select>
+    );
+  }
+  if (field.type === "boolean") {
+    return (
+      <div className="flex gap-2" role="group" aria-labelledby={labelId}>
+        {["Yes", "No"].map(option => <Button key={option} type="button" aria-pressed={value === option} variant={value === option ? "default" : "outline"} onClick={() => onChange(option)} className="flex-1">{option}</Button>)}
+      </div>
+    );
+  }
+  if (field.type === "instagram") {
+    return <Input id={inputId} value={value.replace(/^@/, "")} onChange={event => onChange(event.target.value.replace(/^@/, ""))} placeholder={field.placeholder || "yourusername"} className="bg-secondary border-border text-foreground font-body" />;
+  }
+  return <Input id={inputId} value={value} onChange={event => onChange(event.target.value)} placeholder={field.placeholder} className="bg-secondary border-border text-foreground font-body" />;
+}
+
+export function TenantBookingQuestionField({ field, value, onChange }: { field: QuestionField; value: string; onChange: (value: string) => void }) {
+  const inputId = `tenant-booking-question-${field.id}`;
+  const labelId = `${inputId}-label`;
+  return (
+    <div>
+      <label id={labelId} htmlFor={field.type === "boolean" ? undefined : inputId} className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">
+        {field.label} {field.required && <span className="text-destructive">*</span>}
+      </label>
+      <TenantQuestionInput field={field} value={value} onChange={onChange} inputId={inputId} labelId={labelId} />
+    </div>
+  );
+}
+
 type Step = "event-select" | "datetime" | "contact" | "confirmed" | "enquiry" | "enquiry-confirmed";
+type TenantPaymentPath = "stripe" | "bank" | "contact" | "none";
 
 const TENANT_BOOKING_STEPS: { id: Step; label: string }[] = [
   { id: "event-select", label: "Service" },
@@ -133,7 +178,7 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
 
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
-  const [tenant, setTenant] = useState<Tenant | null>(null);
+  const [tenant, setTenant] = useState<PublicTenant | null>(null);
   const [eventTypes, setEventTypes] = useState<EventType[]>([]);
   const [bookingLimitReached, setBookingLimitReached] = useState(false);
   const [enquiryEnabled, setEnquiryEnabled] = useState(false);
@@ -151,6 +196,11 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
   const [selectedDuration, setSelectedDuration] = useState<number | null>(null);
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
   const [selectedTime, setSelectedTime] = useState<string | null>(null);
+  const [availableSlots, setAvailableSlots] = useState<string[] | null>(null);
+  const [availabilityLoading, setAvailabilityLoading] = useState(false);
+  const [availabilityError, setAvailabilityError] = useState<string | null>(null);
+  const [availabilityRetry, setAvailabilityRetry] = useState(0);
+  const [availabilityTimezone, setAvailabilityTimezone] = useState("Australia/Sydney");
   const [currentMonth, setCurrentMonth] = useState(() => {
     const now = new Date();
     return new Date(now.getFullYear(), now.getMonth());
@@ -164,8 +214,14 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
   const [cosplayCharacter, setCosplayCharacter] = useState("");
   const [cosplayCostume, setCosplayCostume] = useState("");
   const [conventionName, setConventionName] = useState("");
+  const [customAnswers, setCustomAnswers] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
   const [slotConflict, setSlotConflict] = useState(false);
+  const [submittedBooking, setSubmittedBooking] = useState<Booking | null>(null);
+  const [stripeAvailable, setStripeAvailable] = useState(false);
+  const [paymentPath, setPaymentPath] = useState<TenantPaymentPath | null>(null);
+  const [processingCheckout, setProcessingCheckout] = useState(false);
+  const [checkoutError, setCheckoutError] = useState<string | null>(null);
 
   // Enquiry form
   const [enquiryEventId, setEnquiryEventId] = useState("");
@@ -196,9 +252,11 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
 
   useEffect(() => {
     if (!tenantSlug) { setNotFound(true); setLoading(false); return; }
-    getTenantPublicData(tenantSlug).then((data) => {
+    Promise.all([getTenantPublicData(tenantSlug), getTenantStripeStatus(tenantSlug)]).then(([data, stripeStatus]) => {
+      setStripeAvailable(stripeStatus.configured);
       if (!data) { setNotFound(true); } else {
         setTenant(data.tenant);
+        if (data.tenant.timezone) setAvailabilityTimezone(data.tenant.timezone);
         setEventTypes(data.eventTypes);
         setBookingLimitReached(!!data.bookingLimitReached);
         setEnquiryEnabled(!!data.enquiryEnabled);
@@ -209,6 +267,9 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
         if (data.bankTransfer) setBankTransfer(data.bankTransfer);
       }
       setLoading(false);
+    }).catch(() => {
+      setNotFound(true);
+      setLoading(false);
     });
   }, [tenantSlug]);
 
@@ -217,7 +278,7 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
     "event-select": tenantName ? `Book with ${tenantName}` : "Book a Session",
     "datetime": selectedEvent ? `${selectedEvent.title} — ${tenantName || "Booking"}` : `Choose a Date — ${tenantName || "Booking"}`,
     "contact": `Your Details — ${tenantName || "Booking"}`,
-    "confirmed": `Booking Confirmed — ${tenantName || "Booking"}`,
+    "confirmed": `Booking Received — ${tenantName || "Booking"}`,
     "enquiry": `Send Enquiry — ${tenantName || "Booking"}`,
     "enquiry-confirmed": `Enquiry Sent — ${tenantName || "Booking"}`,
   };
@@ -231,24 +292,73 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
   const days = Array.from({ length: daysInMonth }, (_, i) => i + 1);
 
   const timeSlots = useMemo(() => {
-    if (!selectedEvent || !selectedDate || !selectedDuration) return [];
-    const windows = getAvailabilityForDate(selectedEvent, selectedDate);
-    return windows.flatMap(w => generateTimeSlots(w.startTime, w.endTime, selectedDuration));
-  }, [selectedEvent, selectedDate, selectedDuration]);
+    if (!selectedEvent || !selectedDate || !selectedDuration || availableSlots === null) return [];
+    return filterFutureBookingSlots(availableSlots, toDateStr(selectedDate), availabilityTimezone);
+  }, [selectedEvent, selectedDate, selectedDuration, availableSlots, availabilityTimezone]);
+
+  const selectedQuestions = selectedEvent?.questions ?? [];
+  const customQuestions = useMemo(
+    () => getPublicCustomQuestions(selectedEvent?.questions),
+    [selectedEvent],
+  );
+  const hasRequiredUnsupportedUpload = selectedQuestions.some(question => question.type === "image-upload" && question.required);
+  const phoneRequired = selectedQuestions.some(question => contactQuestionRole(question) === "phone" && question.required);
+  const selectedPrice = selectedEvent && selectedDuration ? getPriceForDuration(selectedEvent, selectedDuration) : 0;
+  const availablePaymentPaths = useMemo<TenantPaymentPath[]>(() => {
+    if (selectedPrice <= 0) return ["none"];
+    const configuredDepositMethods = selectedEvent?.depositEnabled && Number(selectedEvent.depositAmount) > 0
+      ? selectedEvent.depositMethods || []
+      : [];
+    const methodAllowed = (method: "stripe" | "bank") => configuredDepositMethods.length === 0 || configuredDepositMethods.includes(method);
+    const paths: TenantPaymentPath[] = [];
+    if (stripeAvailable && methodAllowed("stripe")) paths.push("stripe");
+    if (bankTransfer?.enabled && methodAllowed("bank")) paths.push("bank");
+    paths.push("contact");
+    return paths;
+  }, [bankTransfer?.enabled, selectedEvent, selectedPrice, stripeAvailable]);
+
+  useEffect(() => {
+    if (!paymentPath || !availablePaymentPaths.includes(paymentPath)) {
+      setPaymentPath(availablePaymentPaths[0]);
+    }
+  }, [availablePaymentPaths, paymentPath]);
+
+  useEffect(() => {
+    if (!tenantSlug || !selectedEvent || !selectedDate) {
+      setAvailableSlots(null);
+      setAvailabilityError(null);
+      return;
+    }
+    const controller = new AbortController();
+    const date = toDateStr(selectedDate);
+    setAvailableSlots(null);
+    setAvailabilityLoading(true);
+    setAvailabilityError(null);
+    fetchPublicAvailability({ tenantSlug, eventTypeId: selectedEvent.id, date, duration: selectedDuration || undefined, signal: controller.signal }).then(payload => {
+      const slots = readAvailableSlots(payload);
+      if (slots === null) throw new Error("Availability could not be read");
+      setAvailableSlots(slots);
+      if (payload.timezone) setAvailabilityTimezone(payload.timezone);
+    }).catch(error => {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      setAvailabilityError(error instanceof Error ? error.message : "Availability could not be loaded");
+    }).finally(() => {
+      if (!controller.signal.aborted) setAvailabilityLoading(false);
+    });
+    return () => controller.abort();
+  }, [tenantSlug, selectedEvent, selectedDate, selectedDuration, availabilityRetry]);
 
   const hasAvailabilityThisMonth = useMemo(() => {
     if (!selectedEvent) return false;
-    const now = new Date(new Date().setHours(0, 0, 0, 0));
     for (let d = 1; d <= daysInMonth; d++) {
       const date = new Date(year, month, d);
-      if (date >= now && isDayAvailable(selectedEvent, date)) return true;
+      if (!isPastBookingDate(toDateStr(date), availabilityTimezone) && isDayAvailable(selectedEvent, date)) return true;
     }
     return false;
-  }, [selectedEvent, year, month, daysInMonth]);
+  }, [selectedEvent, year, month, daysInMonth, availabilityTimezone]);
 
   const handleNextAvailableMonth = () => {
     if (!selectedEvent) return;
-    const now = new Date(new Date().setHours(0, 0, 0, 0));
     let searchYear = year;
     let searchMonth = month + 1;
     for (let i = 0; i < 24; i++) {
@@ -256,7 +366,7 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
       const daysInSearch = new Date(searchYear, searchMonth + 1, 0).getDate();
       for (let d = 1; d <= daysInSearch; d++) {
         const date = new Date(searchYear, searchMonth, d);
-        if (date >= now && isDayAvailable(selectedEvent, date)) {
+        if (!isPastBookingDate(toDateStr(date), availabilityTimezone) && isDayAvailable(selectedEvent, date)) {
           setCurrentMonth(new Date(searchYear, searchMonth));
           return;
         }
@@ -267,19 +377,54 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
 
   const scrollTop = () => window.scrollTo({ top: 0, behavior: "smooth" });
 
+  const openTenantCheckout = async (targetBooking: Booking) => {
+    if (!tenantSlug || processingCheckout) return;
+    const alreadyPaid = targetBooking.paymentStatus === "paid" || targetBooking.paymentStatus === "cash" || !!targetBooking.paidAt;
+    if (alreadyPaid) {
+      toast.info("This booking is already paid in full.");
+      return;
+    }
+    if (!targetBooking.modifyToken) {
+      const message = "This booking cannot be verified for payment. Please reopen your booking link.";
+      setCheckoutError(message);
+      toast.error(message);
+      return;
+    }
+
+    setCheckoutError(null);
+    setProcessingCheckout(true);
+    const modifyPath = `/booking/modify/${encodeURIComponent(targetBooking.modifyToken)}`;
+    const result = await createTenantBookingCheckout(tenantSlug, {
+      bookingId: targetBooking.id,
+      modifyToken: targetBooking.modifyToken,
+      successUrl: `${window.location.origin}${modifyPath}?checkout=success`,
+      cancelUrl: `${window.location.origin}${modifyPath}?checkout=cancelled`,
+    });
+    setProcessingCheckout(false);
+    if (result.url) {
+      window.location.href = result.url;
+      return;
+    }
+    const message = result.error || "Secure card checkout could not be opened.";
+    setCheckoutError(message);
+    toast.error(message);
+  };
+
   const handleSelectEvent = (et: EventType) => {
     setSelectedEvent(et);
     setSelectedDuration(et.durations[0] ?? 60);
     setSelectedDate(null);
     setSelectedTime(null);
+    setCustomAnswers({});
+    setSubmittedBooking(null);
+    setPaymentPath(null);
+    setCheckoutError(null);
     setStep("datetime");
     scrollTop();
   };
 
   const handleSelectTime = (t: string) => {
     setSelectedTime(t);
-    setStep("contact");
-    scrollTop();
   };
 
   const handleOpenEnquiry = (prefillEventId?: string) => {
@@ -321,11 +466,42 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
   const handleSubmit = async () => {
     if (!name.trim()) { toast.error("Please enter your name"); return; }
     if (!isValidEmail(email)) { toast.error("Please enter a valid email"); return; }
+    if (phoneRequired && !phone.trim()) { toast.error("Please enter your phone number"); return; }
     if (!selectedEvent || !selectedDate || !selectedTime || !selectedDuration) {
       toast.error("Please complete the date/time selection"); return;
     }
+    const missing = missingRequiredQuestions(customQuestions, customAnswers);
+    if (missing.length > 0) {
+      toast.error(`Please fill in: ${missing.map(question => question.label).join(", ")}`);
+      return;
+    }
+    if (hasRequiredUnsupportedUpload) {
+      toast.error("This booking form requires an upload that is not available online. Please contact the photographer.");
+      return;
+    }
+    if (availabilityLoading || availableSlots === null || !timeSlots.includes(selectedTime)) {
+      toast.error("That time is no longer available. Please choose another.");
+      setSelectedTime(null);
+      setStep("datetime");
+      setAvailabilityRetry(retry => retry + 1);
+      scrollTop();
+      return;
+    }
+    const answers = { ...customAnswers };
+    selectedQuestions.forEach(question => {
+      const role = contactQuestionRole(question);
+      if (role === "name") answers[question.id] = name.trim();
+      if (role === "email") answers[question.id] = email.trim();
+      if (role === "phone") answers[question.id] = phone.trim();
+    });
     setSubmitting(true);
     setSlotConflict(false);
+    setCheckoutError(null);
+    const selectedPaymentPath: TenantPaymentPath = selectedPrice <= 0
+      ? "none"
+      : paymentPath && availablePaymentPaths.includes(paymentPath)
+      ? paymentPath
+      : availablePaymentPaths[0] || "contact";
     const result = await createTenantBooking(tenantSlug!, {
       clientName: name.trim(),
       clientEmail: email.trim(),
@@ -336,9 +512,11 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
       duration: selectedDuration,
       notes: notes.trim(),
       phone: phone.trim() || undefined,
+      answers,
       cosplayCharacter: cosplayCharacter.trim() || undefined,
       cosplayCostume: cosplayCostume.trim() || undefined,
       conventionName: conventionName.trim() || undefined,
+      paymentMethod: selectedPaymentPath,
     });
     setSubmitting(false);
     if (!result.ok) {
@@ -346,6 +524,7 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
       if (result.statusCode === 409) {
         setSlotConflict(true);
         setSelectedTime(null);
+        setAvailabilityRetry(retry => retry + 1);
         setStep("datetime");
         scrollTop();
         toast.error("That time slot was just taken — please pick another.");
@@ -354,7 +533,13 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
       toast.error(result.error || "Booking failed");
       return;
     }
+    if (result.booking) setSubmittedBooking(result.booking);
+    setPaymentPath(selectedPaymentPath);
     setStep("confirmed");
+    scrollTop();
+    if (selectedPaymentPath === "stripe" && result.booking) {
+      await openTenantCheckout(result.booking);
+    }
   };
 
   if (loading) {
@@ -394,6 +579,17 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
     paddingBottom: "env(safe-area-inset-bottom)",
   };
 
+  const confirmedPrice = submittedBooking?.paymentAmount ?? selectedPrice;
+  const confirmedPaymentPaid = submittedBooking?.paymentStatus === "paid" || submittedBooking?.paymentStatus === "cash" || !!submittedBooking?.paidAt;
+  const confirmedDepositPaid = submittedBooking?.paymentStatus === "deposit-paid" || !!submittedBooking?.depositPaidAt;
+  const confirmedAmountDue = confirmedDepositPaid
+    ? Math.max(0, confirmedPrice - (submittedBooking?.depositAmount || 0))
+    : submittedBooking?.depositRequired && (submittedBooking.depositAmount || 0) > 0
+    ? submittedBooking.depositAmount || 0
+    : confirmedPrice;
+  const confirmedNeedsPayment = confirmedPrice > 0 && !confirmedPaymentPaid;
+  const confirmationIsFinal = submittedBooking?.status === "confirmed" && !confirmedNeedsPayment;
+
   return (    <div className="min-h-screen bg-background flex flex-col" style={brandStyle}>
       {/* Header */}
       <header className="border-b border-border/50 py-4 px-6 flex items-center gap-4">
@@ -402,21 +598,17 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
             <ArrowLeft className="w-3.5 h-3.5" /> Back
           </Button>
         )}
-        <div className="flex items-center gap-3 ml-2">
-          <div className="w-9 h-9 rounded-full bg-primary/20 flex items-center justify-center overflow-hidden shrink-0">
-            {tenant.avatar
-              ? <img src={tenant.avatar} alt={tenant.displayName} className="w-full h-full object-cover" />
-              : <Camera className="w-4 h-4 text-primary" />}
-          </div>
-          <div>
-            <p className="font-display text-sm text-foreground leading-tight">{tenant.displayName}</p>
+        <div className="ml-2 flex min-w-0 flex-1 items-center gap-3">
+          <BookingAvatar name={tenant.displayName} className="h-9 w-9 rounded-full" />
+          <div className="min-w-0 flex-1">
+            <p className="truncate font-display text-sm leading-tight text-foreground" title={tenant.displayName}>{tenant.displayName}</p>
             {tenant.bio && <p className="text-xs font-body text-muted-foreground leading-tight truncate max-w-xs">{stripHtml(tenant.bio)}</p>}
           </div>
         </div>
       </header>
       <TenantBookingSteps currentStep={step} />
 
-      <div className="flex-1 max-w-4xl w-full mx-auto p-4 sm:p-6 lg:p-8">
+      <div className="flex-1 max-w-6xl w-full mx-auto p-4 sm:p-6 lg:p-8">
 
           {/* ── Step 1: Event Selection ── */}
           {step === "event-select" && (
@@ -452,32 +644,40 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
                       <MessageSquare className="w-3.5 h-3.5" /> {enquiryLabel}
                     </Button>
                   )}
-                  {!enquiryEnabled && tenant.email && (
-                    <a href={`mailto:${tenant.email}`} className="text-xs font-body text-primary hover:underline">
-                      Contact {tenant.displayName} →
-                    </a>
+                  {!enquiryEnabled && (
+                    <p className="text-xs font-body text-muted-foreground/60">Please contact {tenant.displayName} directly for future availability.</p>
                   )}
                 </div>
               ) : (
-                <div className="grid sm:grid-cols-2 gap-3">
+                <div className="grid gap-4 md:grid-cols-2">
                   {eventTypes.map((et) => {
                     const minPrice = et.durations.length > 0
                       ? Math.min(...et.durations.map(d => getPriceForDuration(et, d)))
                       : (et.price ?? 0);
                     const isExpanded = !!expandedDescriptions[et.id];
                     return (
-                      <button
+                      <article
                         key={et.id}
-                        onClick={() => handleSelectEvent(et)}
-                        className="glass-panel rounded-xl p-5 text-left hover:border-amber-500 hover:shadow-lg transition-all cursor-pointer group"
+                        className="booking-service-card glass-panel rounded-2xl p-5 sm:p-6 text-left hover:border-primary/50 hover:-translate-y-0.5 hover:shadow-lg transition-all group"
                       >
-                        <h3 className="font-display text-base text-foreground group-hover:text-primary transition-colors mb-2">{et.title}</h3>
+                        <div className="flex items-start gap-3">
+                          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/15 ring-1 ring-primary/20" aria-hidden="true">
+                            <Camera className="h-4 w-4 text-primary" />
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                              <h3 className="font-display text-xl leading-tight text-foreground group-hover:text-primary transition-colors">{et.title}</h3>
+                              {(et.price ?? 0) > 0 && (
+                                <span className="shrink-0 self-start rounded-full border border-primary/20 bg-primary/10 px-2.5 py-1 text-xs font-body font-semibold text-primary">from ${minPrice}</span>
+                              )}
+                            </div>
                         {et.description && (
-                          <div>
+                          <div className="mt-2">
                             <div className={isExpanded ? "" : "line-clamp-4"}>
-                              <RichTextDisplay html={et.description} className="text-xs font-body text-muted-foreground" />
+                              <RichTextDisplay html={et.description} className="text-sm font-body text-muted-foreground" />
                             </div>
                             <button
+                              type="button"
                               onClick={(e) => { e.stopPropagation(); setExpandedDescriptions(prev => ({ ...prev, [et.id]: !prev[et.id] })); }}
                               className="text-xs font-body text-primary/70 hover:text-primary mt-1"
                             >
@@ -490,11 +690,6 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
                             <Clock className="w-3 h-3" />
                             {et.durations.map(formatDuration).join(" / ")}
                           </span>
-                          {(et.price ?? 0) > 0 && (
-                            <span className="text-xs font-body text-primary bg-primary/10 rounded-full px-2 py-0.5 border border-primary/15">
-                              from ${minPrice}
-                            </span>
-                          )}
                           {et.location && (
                             <span className="flex items-center gap-1 text-xs font-body text-muted-foreground border border-border/50 rounded-full px-2 py-0.5">
                               <MapPin className="w-3 h-3" /> {et.location}
@@ -504,12 +699,14 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
                             <span className="text-[10px] font-body bg-orange-500/10 text-orange-400 border border-orange-500/20 px-2 py-0.5 rounded-full">Requires confirmation</span>
                           )}
                         </div>
-                        <div className="flex justify-end mt-3">
-                          <span className="text-xs font-body bg-amber-500/10 text-amber-500 border border-amber-500/30 px-3 py-1 rounded-full">
-                            Book →
-                          </span>
+                        <div className="flex justify-end mt-4">
+                          <button type="button" onClick={() => handleSelectEvent(et)} className="inline-flex items-center gap-1.5 rounded-full bg-primary px-3.5 py-1.5 text-xs font-body font-semibold text-primary-foreground hover:bg-primary/90 transition-colors">
+                            Book <ArrowRight className="h-3 w-3" />
+                          </button>
                         </div>
-                      </button>
+                          </div>
+                        </div>
+                      </article>
                     );
                   })}
                 </div>
@@ -546,26 +743,37 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
                 </div>
               )}
 
-              <div className="glass-panel rounded-xl overflow-hidden">
-                <div className="grid md:grid-cols-[220px_1fr_170px] lg:grid-cols-[280px_1fr_200px] divide-y md:divide-y-0 md:divide-x divide-border/50">
+              <div className="glass-panel rounded-2xl overflow-hidden">
+                <div className="grid min-w-0 lg:grid-cols-[minmax(0,1fr)_220px] xl:grid-cols-[280px_minmax(0,1fr)_220px]">
                   {/* Event info */}
-                  <div className="p-6 space-y-4">
-                    <h2 className="font-display text-lg text-foreground">{selectedEvent.title}</h2>
+                  <div className="min-w-0 p-5 sm:p-6 space-y-5 border-b border-border/50 lg:col-span-2 xl:col-span-1 xl:border-b-0 xl:border-r">
+                    <div className="flex items-center gap-3">
+                      <BookingAvatar name={tenant.displayName} className="h-11 w-11 rounded-full" />
+                      <div className="min-w-0">
+                        <p className="text-[10px] font-body uppercase tracking-[0.16em] text-muted-foreground/70">Session with</p>
+                        <p className="truncate text-sm font-body font-medium text-foreground">{tenant.displayName}</p>
+                      </div>
+                    </div>
+                    <h2 className="font-display text-2xl leading-tight text-foreground">{selectedEvent.title}</h2>
                     {selectedEvent.description && (
-                      <p className="text-xs font-body text-muted-foreground line-clamp-3">{selectedEvent.description}</p>
+                      <div className="min-w-0 rounded-xl border border-border/50 bg-secondary/25 p-4">
+                        <RichTextDisplay html={selectedEvent.description} className="text-sm" />
+                      </div>
                     )}
                     {/* Duration picker */}
                     {selectedEvent.durations.length > 1 && (
-                      <div className="flex items-center gap-2">
-                        <Clock className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
-                        <div className="flex rounded-full border border-border overflow-hidden">
+                      <div className="flex items-start gap-2">
+                        <Clock className="w-3.5 h-3.5 text-muted-foreground shrink-0 mt-2.5" />
+                        <div className="flex min-w-0 flex-wrap gap-2">
                           {selectedEvent.durations.map(d => {
                             const p = getPriceForDuration(selectedEvent, d);
                             return (
                               <button
                                 key={d}
+                                type="button"
+                                aria-pressed={selectedDuration === d}
                                 onClick={() => { setSelectedDuration(d); setSelectedTime(null); }}
-                                className={`px-3 py-1.5 text-xs font-body flex flex-col items-center transition-all ${selectedDuration === d ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground hover:bg-secondary"}`}
+                                className={`min-w-16 rounded-lg border px-3 py-2 text-xs font-body flex flex-col items-center transition-all ${selectedDuration === d ? "border-primary bg-primary text-primary-foreground shadow-sm" : "border-border text-muted-foreground hover:text-foreground hover:border-primary/40 hover:bg-secondary"}`}
                               >
                                 <span>{formatDuration(d)}</span>
                                 {p > 0 && <span className={`text-[10px] mt-0.5 ${selectedDuration === d ? "text-primary-foreground/70" : "text-primary"}`}>${p}</span>}
@@ -588,6 +796,11 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
                         <MapPin className="w-3.5 h-3.5" /> {selectedEvent.location}
                       </div>
                     )}
+                    {!!selectedEvent.bufferMinutes && selectedEvent.bufferMinutes > 0 && (
+                      <div className="flex items-center gap-2 text-xs font-body text-muted-foreground">
+                        <Clock className="w-3.5 h-3.5" /> Includes a {formatDuration(selectedEvent.bufferMinutes)} turnaround buffer between sessions
+                      </div>
+                    )}
                     {tenant.timezone && (
                       <div className="flex items-center gap-2 text-xs font-body text-muted-foreground">
                         <Globe className="w-3.5 h-3.5" /> {formatTimezone(tenant.timezone)}
@@ -596,16 +809,19 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
                   </div>
 
                   {/* Calendar */}
-                  <div className="p-6">
-                    <div className="flex items-center justify-between mb-5">
-                      <h3 className="font-display text-base text-foreground">
-                        <span className="text-primary">{currentMonth.toLocaleDateString("en-US", { month: "long" })}</span> {year}
-                      </h3>
+                  <div className="min-w-0 p-5 sm:p-6 lg:border-r lg:border-border/50">
+                    <div className="flex items-center justify-between gap-4 mb-5">
+                      <div>
+                        <p className="text-[10px] font-body uppercase tracking-[0.16em] text-muted-foreground/70 mb-1">Choose a date</p>
+                        <h3 className="font-display text-lg text-foreground">
+                          <span className="text-primary">{currentMonth.toLocaleDateString("en-US", { month: "long" })}</span> {year}
+                        </h3>
+                      </div>
                       <div className="flex items-center gap-1">
-                        <button onClick={() => setCurrentMonth(new Date(year, month - 1))} className="text-muted-foreground hover:text-foreground p-1.5 rounded-lg hover:bg-secondary transition-colors">
+                        <button type="button" aria-label="Previous month" onClick={() => setCurrentMonth(new Date(year, month - 1))} className="text-muted-foreground hover:text-foreground p-1.5 rounded-lg hover:bg-secondary transition-colors">
                           <ChevronLeft className="w-4 h-4" />
                         </button>
-                        <button onClick={() => setCurrentMonth(new Date(year, month + 1))} className="text-muted-foreground hover:text-foreground p-1.5 rounded-lg hover:bg-secondary transition-colors">
+                        <button type="button" aria-label="Next month" onClick={() => setCurrentMonth(new Date(year, month + 1))} className="text-muted-foreground hover:text-foreground p-1.5 rounded-lg hover:bg-secondary transition-colors">
                           <ChevronRight className="w-4 h-4" />
                         </button>
                       </div>
@@ -620,12 +836,15 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
                       {days.map(day => {
                         const date = new Date(year, month, day);
                         const isSelected = selectedDate?.getDate() === day && selectedDate?.getMonth() === month && selectedDate?.getFullYear() === year;
-                        const isPast = date < new Date(new Date().setHours(0, 0, 0, 0));
+                        const isPast = isPastBookingDate(toDateStr(date), availabilityTimezone);
                         const isAvailable = !isPast && isDayAvailable(selectedEvent, date);
                         const isToday = toDateStr(date) === toDateStr(new Date());
                         return (
                           <button
                             key={day}
+                            type="button"
+                            aria-label={`${date.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" })}${isAvailable ? ", available" : ", unavailable"}`}
+                            aria-pressed={isSelected}
                             disabled={!isAvailable}
                             onClick={() => { setSelectedDate(date); setSelectedTime(null); }}
                             className={`aspect-square rounded-lg text-sm font-body transition-all relative ${
@@ -675,21 +894,35 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
                   </div>
 
                   {/* Time slots */}
-                  <div className="p-4">
+                  <div className="min-w-0 p-5 sm:p-6">
                     {!selectedDate ? (
-                      <p className="text-xs font-body text-muted-foreground text-center mt-8">Select a date to see available times</p>
+                      <div className="flex min-h-44 flex-col items-center justify-center rounded-xl border border-dashed border-border/60 bg-secondary/15 px-4 py-8 text-center text-muted-foreground/60">
+                        <CalendarIcon className="h-8 w-8 mb-3" />
+                        <p className="text-sm font-body text-muted-foreground">Select a date</p>
+                        <p className="mt-1 text-xs font-body text-muted-foreground/60">Available appointment times will appear here.</p>
+                      </div>
                     ) : (
                       <div>
-                        <p className="text-sm font-body font-medium text-foreground mb-3">
-                          {selectedDate.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}
-                        </p>
-                        {timeSlots.length === 0 ? (
+                        <div className="mb-3">
+                          <p className="text-[10px] font-body uppercase tracking-[0.16em] text-muted-foreground/70">Available times</p>
+                          <p className="text-sm font-body font-medium text-foreground">{selectedDate.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}</p>
+                        </div>
+                        {availabilityLoading ? (
+                          <p className="text-xs font-body text-muted-foreground" role="status">Checking availability…</p>
+                        ) : availabilityError ? (
+                          <div className="space-y-3" role="alert">
+                            <p className="text-xs font-body text-destructive">Live availability couldn't be loaded.</p>
+                            <Button type="button" variant="outline" size="sm" onClick={() => setAvailabilityRetry(retry => retry + 1)}>Try again</Button>
+                          </div>
+                        ) : timeSlots.length === 0 ? (
                           <p className="text-xs font-body text-muted-foreground">No times available</p>
                         ) : (
-                          <div className="space-y-1.5 max-h-[320px] overflow-y-auto pr-1">
+                          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:max-h-[420px] lg:grid-cols-1 lg:overflow-y-auto lg:overflow-x-hidden lg:pr-1">
                             {timeSlots.map(t => (
                               <button
                                 key={t}
+                                type="button"
+                                aria-pressed={selectedTime === t}
                                 onClick={() => handleSelectTime(t)}
                                 className={`w-full py-2.5 px-3 rounded-lg text-xs font-body text-center transition-all ${
                                   selectedTime === t
@@ -743,6 +976,12 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
                   <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground">Duration</p>
                   <p className="text-sm font-body text-foreground">{selectedDuration ? formatDuration(selectedDuration) : "—"}</p>
                 </div>
+                {!!selectedEvent.bufferMinutes && selectedEvent.bufferMinutes > 0 && (
+                  <div>
+                    <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground">Turnaround buffer</p>
+                    <p className="text-sm font-body text-foreground">{formatDuration(selectedEvent.bufferMinutes)}</p>
+                  </div>
+                )}
                 {selectedDuration && getPriceForDuration(selectedEvent, selectedDuration) > 0 && (
                   <div>
                     <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground">Price</p>
@@ -754,17 +993,27 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
               <div className="glass-panel rounded-xl p-6 space-y-4 max-w-lg">
                 <h2 className="font-display text-lg text-foreground">Your Details</h2>
                 <div>
-                  <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Full Name *</label>
-                  <Input value={name} onChange={e => setName(e.target.value)} placeholder="Jane Smith" className="bg-secondary border-border text-foreground font-body" />
+                  <label htmlFor="tenant-booking-name" className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Full Name *</label>
+                  <Input id="tenant-booking-name" name="name" autoComplete="name" required value={name} onChange={e => setName(e.target.value)} placeholder="Jane Smith" className="bg-secondary border-border text-foreground font-body" />
                 </div>
                 <div>
-                  <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Email *</label>
-                  <Input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="jane@example.com" className="bg-secondary border-border text-foreground font-body" />
+                  <label htmlFor="tenant-booking-email" className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Email *</label>
+                  <Input id="tenant-booking-email" name="email" type="email" autoComplete="email" required value={email} onChange={e => setEmail(e.target.value)} placeholder="jane@example.com" className="bg-secondary border-border text-foreground font-body" />
                 </div>
                 <div>
-                  <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Phone</label>
-                  <Input type="tel" value={phone} onChange={e => setPhone(e.target.value)} placeholder="+61 400 000 000" className="bg-secondary border-border text-foreground font-body" />
+                  <label htmlFor="tenant-booking-phone" className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Phone {phoneRequired && <span className="text-destructive">*</span>}</label>
+                  <Input id="tenant-booking-phone" name="tel" type="tel" autoComplete="tel" required={phoneRequired} value={phone} onChange={e => setPhone(e.target.value)} placeholder="+61 400 000 000" className="bg-secondary border-border text-foreground font-body" />
                 </div>
+                {customQuestions.map(question => (
+                  <TenantBookingQuestionField key={question.id} field={question} value={customAnswers[question.id] || ""} onChange={value => setCustomAnswers(previous => ({ ...previous, [question.id]: value }))} />
+                ))}
+                {selectedQuestions.some(question => question.type === "image-upload") && (
+                  <p role={hasRequiredUnsupportedUpload ? "alert" : undefined} className={`rounded-lg border p-3 text-xs font-body ${hasRequiredUnsupportedUpload ? "border-destructive/40 bg-destructive/10 text-destructive" : "border-border text-muted-foreground"}`}>
+                    {hasRequiredUnsupportedUpload
+                      ? "This booking form is configured with a required image upload, but secure uploads are not available here. Please contact the photographer to book."
+                      : "Reference image uploads aren't accepted in this form. The photographer can arrange a secure upload after you submit."}
+                  </p>
+                )}
                 {/* Convention name field */}
                 {conventionFieldEnabled && (
                   <div>
@@ -789,8 +1038,51 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
                   <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Notes</label>
                   <Textarea value={notes} onChange={e => setNotes(e.target.value)} placeholder="Any special requests or questions…" className="bg-secondary border-border text-foreground font-body min-h-[80px]" />
                 </div>
-                <Button onClick={handleSubmit} disabled={submitting} className="w-full bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2">
-                  {submitting ? "Submitting…" : selectedEvent.requiresConfirmation ? "Request Booking" : "Confirm Booking"}
+                {selectedPrice > 0 && (
+                  <fieldset className="space-y-2">
+                    <legend className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-2">Payment method</legend>
+                    <div className="grid gap-2" role="radiogroup" aria-label="Payment method">
+                      {availablePaymentPaths.includes("stripe") && (
+                        <label className={`flex cursor-pointer items-center gap-3 rounded-lg border p-3 transition-colors ${paymentPath === "stripe" ? "border-primary bg-primary/10" : "border-border bg-secondary/30 hover:bg-secondary/60"}`}>
+                          <input className="sr-only" type="radio" name="tenant-payment-path" value="stripe" checked={paymentPath === "stripe"} onChange={() => setPaymentPath("stripe")} />
+                          <CreditCard className="h-4 w-4 text-primary" />
+                          <span className="text-sm font-body text-foreground">Secure card payment</span>
+                        </label>
+                      )}
+                      {availablePaymentPaths.includes("bank") && (
+                        <label className={`flex cursor-pointer items-center gap-3 rounded-lg border p-3 transition-colors ${paymentPath === "bank" ? "border-primary bg-primary/10" : "border-border bg-secondary/30 hover:bg-secondary/60"}`}>
+                          <input className="sr-only" type="radio" name="tenant-payment-path" value="bank" checked={paymentPath === "bank"} onChange={() => setPaymentPath("bank")} />
+                          <Building2 className="h-4 w-4 text-primary" />
+                          <span className="text-sm font-body text-foreground">Bank transfer / PayID</span>
+                        </label>
+                      )}
+                      <label className={`flex cursor-pointer items-center gap-3 rounded-lg border p-3 transition-colors ${paymentPath === "contact" ? "border-primary bg-primary/10" : "border-border bg-secondary/30 hover:bg-secondary/60"}`}>
+                        <input className="sr-only" type="radio" name="tenant-payment-path" value="contact" checked={paymentPath === "contact"} onChange={() => setPaymentPath("contact")} />
+                        <MessageSquare className="h-4 w-4 text-primary" />
+                        <span className="text-sm font-body text-foreground">Arrange payment with photographer</span>
+                      </label>
+                    </div>
+                    <p className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-xs font-body text-muted-foreground">
+                      {paymentPath === "stripe"
+                        ? "Your booking will be saved before you continue to Stripe. The amount due is calculated securely from the saved booking."
+                        : paymentPath === "bank"
+                        ? "Your booking will remain pending while the photographer confirms your transfer. Bank details appear after submission."
+                        : `${tenant.displayName} will contact you with payment instructions. Your booking remains pending until payment is confirmed.`}
+                    </p>
+                  </fieldset>
+                )}
+                <Button onClick={handleSubmit} disabled={submitting || hasRequiredUnsupportedUpload} className="w-full bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2">
+                  {hasRequiredUnsupportedUpload
+                    ? "Contact Photographer to Book"
+                    : submitting
+                    ? paymentPath === "stripe" ? "Creating Secure Checkout…" : "Submitting…"
+                    : selectedPrice === 0
+                    ? selectedEvent.requiresConfirmation ? "Submit Free Booking Request" : "Confirm Free Booking"
+                    : paymentPath === "stripe"
+                    ? "Continue to Secure Card Payment"
+                    : paymentPath === "bank"
+                    ? "Submit Booking & View Bank Details"
+                    : "Submit Booking Request"}
                 </Button>
                 {selectedEvent.requiresConfirmation && (
                   <p className="text-xs font-body text-muted-foreground text-center">This session requires confirmation — you'll hear back within 24 hours.</p>
@@ -807,12 +1099,18 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
               </div>
               <div>
                 <h2 className="font-display text-2xl text-foreground mb-2">
-                  {selectedEvent?.requiresConfirmation ? "Request Received!" : "You're booked!"}
+                  {confirmationIsFinal ? "You're booked!" : "Booking Request Received!"}
                 </h2>
                 <p className="text-sm font-body text-muted-foreground max-w-sm mx-auto">
-                  {selectedEvent?.requiresConfirmation
-                    ? `Your booking request has been sent to ${tenant.displayName}. You'll receive a confirmation email shortly.`
-                    : `Your session with ${tenant.displayName} has been booked. A confirmation will be sent to ${email}.`}
+                  {confirmedNeedsPayment
+                    ? paymentPath === "stripe"
+                      ? "Your booking has been saved, but card payment is still outstanding. Stripe confirmation is required before this page can show it as paid."
+                      : paymentPath === "bank"
+                      ? `Your requested time has been sent to ${tenant.displayName}. Use the bank details below; the booking remains pending until the transfer is confirmed.`
+                      : `${tenant.displayName} will contact you with payment instructions. The booking remains pending until payment is confirmed.`
+                    : confirmationIsFinal
+                    ? `Your session with ${tenant.displayName} is confirmed for ${email}.`
+                    : `Your request has been sent to ${tenant.displayName}. The photographer will contact you when it is confirmed.`}
                 </p>
               </div>
               <div className="glass-panel rounded-xl p-5 max-w-sm mx-auto text-left space-y-2">
@@ -828,6 +1126,28 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
                   <span className="text-muted-foreground">Time</span>
                   <span className="text-foreground">{selectedTime ? formatTime12(selectedTime) : "—"}</span>
                 </div>
+                <div className="flex justify-between text-sm font-body">
+                  <span className="text-muted-foreground">Status</span>
+                  <span className={confirmationIsFinal ? "text-green-400" : "text-yellow-400"}>{confirmationIsFinal ? "Confirmed" : "Pending"}</span>
+                </div>
+                {confirmedPrice > 0 && (
+                  <>
+                    <div className="flex justify-between text-sm font-body">
+                      <span className="text-muted-foreground">Price</span>
+                      <span className="text-foreground">${confirmedPrice} AUD</span>
+                    </div>
+                    <div className="flex justify-between text-sm font-body">
+                      <span className="text-muted-foreground">Payment</span>
+                      <span className={confirmedPaymentPaid ? "text-green-400" : "text-yellow-400"}>{confirmedPaymentPaid ? "Paid" : `$${confirmedAmountDue} AUD due${confirmedDepositPaid ? " balance" : submittedBooking?.depositRequired ? " deposit" : ""}`}</span>
+                    </div>
+                  </>
+                )}
+                {submittedBooking && (
+                  <div className="flex justify-between text-sm font-body">
+                    <span className="text-muted-foreground">Reference</span>
+                    <span className="text-foreground font-mono text-xs">{submittedBooking.paymentReference || submittedBooking.id}</span>
+                  </div>
+                )}
                 {cosplayCharacter && (
                   <div className="flex justify-between text-sm font-body">
                     <span className="text-muted-foreground">Character</span>
@@ -844,16 +1164,19 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
 
               {/* Add to calendar */}
               {selectedDate && selectedTime && selectedEvent && selectedDuration && (() => {
-                const [h, m] = selectedTime.split(":").map(Number);
-                const startDt = new Date(selectedDate);
-                startDt.setHours(h, m, 0, 0);
-                const endDt = new Date(startDt.getTime() + (selectedDuration || 60) * 60000);
-                const fmt = (d: Date) => d.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
-                const title = encodeURIComponent(`${selectedEvent.title} with ${tenant.displayName}`);
-                const gcalUrl = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${fmt(startDt)}/${fmt(endDt)}&details=${encodeURIComponent(`Booked via ${tenant.displayName}'s booking page`)}`;
+                const gcalUrl = buildBookingCalendarUrl({
+                  title: `${selectedEvent.title} with ${tenant.displayName}`,
+                  date: toDateStr(selectedDate),
+                  time: selectedTime,
+                  durationMinutes: selectedDuration,
+                  timeZone: availabilityTimezone || tenant.timezone,
+                  details: confirmationIsFinal ? "Confirmed booking" : "Booking request — awaiting confirmation",
+                  location: selectedEvent.location,
+                });
                 return (
                   <a
                     href={gcalUrl}
+                    aria-label={`Add ${selectedEvent.title} on ${toDateStr(selectedDate)} at ${selectedTime} to Google Calendar`}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="inline-flex items-center gap-2 px-4 py-2 rounded-full border border-border/60 bg-secondary/40 hover:bg-secondary text-xs font-body text-muted-foreground hover:text-foreground transition-all"
@@ -864,8 +1187,24 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
                 );
               })()}
 
+              {/* Secure card checkout */}
+              {confirmedNeedsPayment && paymentPath === "stripe" && submittedBooking && (
+                <div className="glass-panel rounded-xl p-5 max-w-sm mx-auto text-left space-y-3 border border-primary/20 bg-primary/5">
+                  <p className="text-xs font-body font-semibold text-primary tracking-wider uppercase flex items-center gap-2">
+                    <CreditCard className="w-3.5 h-3.5" />
+                    Card Payment Outstanding
+                  </p>
+                  <p className="text-xs font-body text-muted-foreground">Amount due now: <span className="text-foreground font-medium">${confirmedAmountDue} AUD</span>. The server will verify the booking and calculate the Stripe charge.</p>
+                  {checkoutError && <p role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 p-2 text-xs font-body text-destructive">{checkoutError}</p>}
+                  <Button onClick={() => void openTenantCheckout(submittedBooking)} disabled={processingCheckout || confirmedPaymentPaid} className="w-full gap-2 bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase">
+                    <CreditCard className="w-4 h-4" />
+                    {processingCheckout ? "Opening Secure Checkout…" : `Pay $${confirmedAmountDue} with Card`}
+                  </Button>
+                </div>
+              )}
+
               {/* Bank transfer payment details */}
-              {bankTransfer?.enabled && (
+              {confirmedNeedsPayment && paymentPath === "bank" && bankTransfer?.enabled && (
                 <div className="glass-panel rounded-xl p-5 max-w-sm mx-auto text-left space-y-3 border border-amber-500/20 bg-amber-500/5">
                   <p className="text-xs font-body font-semibold text-amber-300 tracking-wider uppercase flex items-center gap-2">
                     <DollarSign className="w-3.5 h-3.5" />
@@ -900,10 +1239,16 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
                   {bankTransfer.instructions && (
                     <p className="text-xs font-body text-muted-foreground leading-relaxed border-t border-border/40 pt-2">{bankTransfer.instructions}</p>
                   )}
+                  <p className="text-xs font-body text-muted-foreground border-t border-border/40 pt-2">Amount due now: <span className="text-foreground font-medium">${confirmedAmountDue} AUD</span></p>
+                  {submittedBooking && <p className="text-xs font-body text-muted-foreground">Transfer reference: <span className="text-foreground font-mono">{submittedBooking.paymentReference || submittedBooking.id}</span></p>}
                 </div>
               )}
 
-              <Button variant="outline" onClick={() => { setStep("event-select"); setSelectedEvent(null); setSelectedDate(null); setSelectedTime(null); }} className="font-body text-xs gap-2">
+              {confirmedNeedsPayment && paymentPath === "contact" && (
+                <p className="glass-panel rounded-xl p-4 max-w-sm mx-auto text-sm font-body text-muted-foreground">{tenant.displayName} will contact you with payment instructions for the ${confirmedAmountDue} AUD currently due.</p>
+              )}
+
+              <Button variant="outline" onClick={() => { setStep("event-select"); setSelectedEvent(null); setSelectedDuration(null); setSelectedDate(null); setSelectedTime(null); setCustomAnswers({}); setSubmittedBooking(null); setPaymentPath(null); setCheckoutError(null); }} className="font-body text-xs gap-2">
                 Book another session
               </Button>
             </div>
@@ -1051,7 +1396,12 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
           )}
 
       </div>
-      <Footer tenantName={tenant?.displayName} tenantEmail={tenant?.email} />
+      <footer className="border-t border-border bg-card/50 py-8">
+        <div className="container mx-auto flex items-center justify-center gap-2 px-4 text-xs font-body text-muted-foreground/60">
+          <Camera className="h-3.5 w-3.5 text-primary" />
+          <span>© {new Date().getFullYear()} {tenant.displayName}</span>
+        </div>
+      </footer>
     </div>
   );
 }

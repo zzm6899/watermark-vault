@@ -53,11 +53,13 @@ services:
     environment:
       - SUPER_ADMIN_USERNAME=admin
       - SUPER_ADMIN_PASSWORD=your-secure-password
+      - SESSION_SECRET=replace-with-at-least-32-random-characters
+      - SETUP_TOKEN=replace-with-a-separate-random-setup-token
       # Optional — skip the setup wizard:
-      # - SMTP_HOST=smtp.gmail.com
-      # - SMTP_PORT=587
-      # - SMTP_USER=you@gmail.com
-      # - SMTP_PASS=app-password
+      # - EMAIL_SERVER_HOST=smtp.gmail.com
+      # - EMAIL_SERVER_PORT=587
+      # - EMAIL_SERVER_USER=you@gmail.com
+      # - EMAIL_SERVER_PASSWORD=app-password
       # - STRIPE_SECRET_KEY=sk_live_...
       # - STRIPE_PUBLISHABLE_KEY=pk_live_...
       # - STRIPE_WEBHOOK_SECRET=whsec_...
@@ -120,7 +122,7 @@ Go to **Events** → **New Event Type**. Key fields:
 - **Price** — base price; you can set per-duration prices in the advanced settings
 - **Availability** — recurring weekly slots (e.g. Saturday 10am–6pm) plus specific dates and blocked dates
 - **Deposit** — optionally require a deposit (fixed or %) paid at booking time
-- **Questions** — custom intake form questions (text, dropdown, yes/no, image upload, Instagram handle)
+- **Questions** — custom intake form questions (text, dropdown, yes/no, and Instagram handle)
 - **Requires Confirmation** — if enabled, bookings stay "pending" until you manually confirm them
 - **Buffer Time** — block X minutes after each session (for changeovers / travel)
 - **Max Attendees** — for group bookings (couples, groups — default 1)
@@ -391,12 +393,12 @@ Required for card payments. Set `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, a
 For booking confirmations, gallery delivery notifications, and automated reminders. Supports any SMTP provider (Gmail, Resend, Mailgun, etc.).
 
 ```yaml
-- SMTP_HOST=smtp.gmail.com
-- SMTP_PORT=587
-- SMTP_USER=you@gmail.com
-- SMTP_PASS=your-app-password
-- SMTP_FROM=PhotoFlow <you@gmail.com>
-- SMTP_SECURE=false
+- EMAIL_SERVER_HOST=smtp.gmail.com
+- EMAIL_SERVER_PORT=587
+- EMAIL_SERVER_USER=you@gmail.com
+- EMAIL_SERVER_PASSWORD=your-app-password
+- EMAIL_FROM=PhotoFlow <you@gmail.com>
+- EMAIL_SERVER_SECURE=false
 ```
 
 For Gmail: create an App Password in your Google account security settings (not your account password).
@@ -425,12 +427,18 @@ All configuration is done via environment variables in `docker-compose.yml`:
 | `DATA_DIR` | Path to data directory | `/data` |
 | `SUPER_ADMIN_USERNAME` | Auto-create admin account | — |
 | `SUPER_ADMIN_PASSWORD` | Admin password | — |
-| `SMTP_HOST` | SMTP server hostname | — |
-| `SMTP_PORT` | SMTP port (587 or 465) | — |
-| `SMTP_USER` | SMTP username / email | — |
-| `SMTP_PASS` | SMTP password or app password | — |
-| `SMTP_FROM` | Sender name and email | — |
-| `SMTP_SECURE` | Use TLS (`true`/`false`) | `false` |
+| `SESSION_SECRET` | Signs admin, tenant, and gallery sessions (use 32+ random characters) | — |
+| `SETUP_TOKEN` | One-time authorization token for remote setup | — |
+| `APP_BASE_URL` | Trusted public origin used in email and payment links | — |
+| `APP_HOSTS` | Comma-separated public host allowlist | — |
+| `ALLOWED_ORIGINS` | Additional exact browser origins allowed by CORS | — |
+| `NATIVE_APP_ORIGINS` | Exact Capacitor origins allowed to use cross-site session cookies | — |
+| `EMAIL_SERVER_HOST` | SMTP server hostname | — |
+| `EMAIL_SERVER_PORT` | SMTP port (587 or 465) | `587` |
+| `EMAIL_SERVER_USER` | SMTP username / email | — |
+| `EMAIL_SERVER_PASSWORD` | SMTP password or app password | — |
+| `EMAIL_FROM` | Sender name and email | — |
+| `EMAIL_SERVER_SECURE` | Use implicit TLS (`true`/`false`) | `false` |
 | `STRIPE_SECRET_KEY` | Stripe secret key | — |
 | `STRIPE_PUBLISHABLE_KEY` | Stripe publishable key | — |
 | `STRIPE_WEBHOOK_SECRET` | Stripe webhook signing secret | — |
@@ -444,6 +452,12 @@ All configuration is done via environment variables in `docker-compose.yml`:
 ## Android APK Build
 
 PhotoFlow can be built as a native Android app using Capacitor, which unlocks USB camera support for convention shooting.
+
+The bundled Capacitor 8 Android configuration runs at `https://localhost`. Set
+`NATIVE_APP_ORIGINS=https://localhost` on the server before using native login,
+gallery downloads, or payments. Keep this as an exact origin; do not use a
+wildcard or add unrelated localhost origins. If the Capacitor hostname or
+Android scheme is changed, update the server value to match it exactly.
 
 ```bash
 npm install

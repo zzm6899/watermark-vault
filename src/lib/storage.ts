@@ -1,6 +1,6 @@
 import type {
   EventType, Booking, Album, Photo, ProfileSettings,
-  AppSettings, AdminCredentials, BankTransferSettings, WaitlistEntry, EmailTemplate, Invoice, Contact, Enquiry, PixiesetImportAudit,
+  AppSettings, BankTransferSettings, WaitlistEntry, EmailTemplate, Invoice, Contact, Enquiry, PixiesetImportAudit,
 } from "./types";
 import { persistToServer, persistAlbumToServer, deleteAlbumFromServer } from "./api";
 
@@ -45,13 +45,11 @@ export function completeSetup() {
   set(KEYS.SETUP_COMPLETE, true);
 }
 
-// ── Admin Credentials ───────────────────────────────
-export function getAdminCredentials(): AdminCredentials | null {
-  return get<AdminCredentials | null>(KEYS.ADMIN, null);
-}
-
-export function setAdminCredentials(creds: AdminCredentials) {
-  set(KEYS.ADMIN, creds);
+export function clearAdminClientCredentials() {
+  try {
+    localStorage.removeItem(KEYS.ADMIN);
+    localStorage.removeItem("wv_admin_session_hash");
+  } catch { /* unavailable */ }
 }
 
 // ── Session ─────────────────────────────────────────
@@ -63,29 +61,17 @@ export function login() {
   set(KEYS.SESSION, true);
 }
 
-/**
- * Store the sha256 password hash in localStorage after a successful admin login.
- * This is used by adminAuthHeaders() in api.ts to construct the Basic Auth header
- * for protected endpoints. localStorage is used so the hash survives page refreshes —
- * the admin is already logged in (SESSION key is set), so persisting the hash is safe.
- * It is cleared on logout along with the session.
- */
-export function setAdminSessionHash(hash: string) {
-  try { localStorage.setItem("wv_admin_session_hash", hash); } catch { /* noop */ }
-}
-
-export function getAdminSessionHash(): string | null {
-  try { return localStorage.getItem("wv_admin_session_hash"); } catch { return null; }
-}
-
 export function logout() {
-  // Only clear local session — server session key is ignored on sync anyway
+  // The server session is revoked separately; clear every browser credential
+  // remnant so a logout cannot leave a reusable password verifier behind.
   localStorage.removeItem(KEYS.SESSION);
-  localStorage.removeItem("wv_admin_session_hash");
+  clearAdminClientCredentials();
   // Also clear super admin + mobile tenant sessions
   try {
     sessionStorage.removeItem("wv_super_admin");
     localStorage.removeItem("wv_mobile_tenant");
+    localStorage.removeItem("wv_admin_api_token");
+    localStorage.removeItem("wv_tenant_api_token");
   } catch { /* session storage may be unavailable */ }
 }
 

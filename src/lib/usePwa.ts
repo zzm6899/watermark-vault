@@ -6,6 +6,32 @@
 import { useEffect, useRef, useCallback } from "react";
 import { subscribePush, unsubscribePush, getVapidPublicKey } from "./api";
 
+const PUSH_SUBSCRIPTION_IDS_KEY = "wv_push_subscription_ids";
+
+function getStoredPushIds(): Record<string, string> {
+  try {
+    const value = JSON.parse(localStorage.getItem(PUSH_SUBSCRIPTION_IDS_KEY) || "{}");
+    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  } catch {
+    return {};
+  }
+}
+
+function storePushId(endpoint: string, subscriptionId?: string) {
+  if (!subscriptionId) return;
+  try {
+    localStorage.setItem(PUSH_SUBSCRIPTION_IDS_KEY, JSON.stringify({ ...getStoredPushIds(), [endpoint]: subscriptionId }));
+  } catch { /* storage may be unavailable */ }
+}
+
+function removeStoredPushId(endpoint: string) {
+  try {
+    const ids = getStoredPushIds();
+    delete ids[endpoint];
+    localStorage.setItem(PUSH_SUBSCRIPTION_IDS_KEY, JSON.stringify(ids));
+  } catch { /* storage may be unavailable */ }
+}
+
 // ─── Service Worker Registration ─────────────────────────────────────────────
 
 export function useServiceWorker() {
@@ -24,11 +50,15 @@ export function useServiceWorker() {
 
 // ─── Push Notification Subscription ──────────────────────────────────────────
 
-function urlBase64ToUint8Array(base64String: string): Uint8Array {
+function urlBase64ToUint8Array(base64String: string): Uint8Array<ArrayBuffer> {
   const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
   const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
   const rawData = window.atob(base64);
-  return Uint8Array.from([...rawData].map((char) => char.charCodeAt(0)));
+  const bytes = new Uint8Array(new ArrayBuffer(rawData.length));
+  for (let index = 0; index < rawData.length; index += 1) {
+    bytes[index] = rawData.charCodeAt(index);
+  }
+  return bytes;
 }
 
 export async function subscribeToPush(tenantSlug?: string): Promise<boolean> {
@@ -45,14 +75,17 @@ export async function subscribeToPush(tenantSlug?: string): Promise<boolean> {
     const reg = await navigator.serviceWorker.ready;
     const existing = await reg.pushManager.getSubscription();
     if (existing) {
-      await subscribePush(existing, tenantSlug);
-      return true;
+      const result = await subscribePush(existing, tenantSlug);
+      storePushId(existing.endpoint, result.subscriptionId);
+      return result.ok;
     }
     const subscription = await reg.pushManager.subscribe({
       userVisibleOnly: true,
       applicationServerKey: urlBase64ToUint8Array(vapidKey),
     });
-    return subscribePush(subscription, tenantSlug);
+    const result = await subscribePush(subscription, tenantSlug);
+    storePushId(subscription.endpoint, result.subscriptionId);
+    return result.ok;
   } catch (err) {
     console.error("[Push] Subscribe error:", err);
     return false;
@@ -65,8 +98,16 @@ export async function unsubscribeFromPush(): Promise<boolean> {
     const reg = await navigator.serviceWorker.ready;
     const sub = await reg.pushManager.getSubscription();
     if (!sub) return true;
-    await unsubscribePush(sub.endpoint);
+    let subscriptionId = getStoredPushIds()[sub.endpoint];
+    if (!subscriptionId) {
+      // Older clients stored only the browser endpoint. Re-register it under
+      // the current authenticated principal to obtain the owner-bound ID.
+      const registration = await subscribePush(sub);
+      subscriptionId = registration.subscriptionId;
+    }
+    if (subscriptionId) await unsubscribePush(subscriptionId);
     await sub.unsubscribe();
+    removeStoredPushId(sub.endpoint);
     return true;
   } catch (err) {
     console.error("[Push] Unsubscribe error:", err);

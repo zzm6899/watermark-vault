@@ -77,9 +77,10 @@ function buildSheetData(bookings, eventTypes) {
   return { headers, rows };
 }
 
-function registerRoutes(app) {
+function registerRoutes(app, options = {}) {
+  const requireAuth = options.requireAuth || ((_req, _res, next) => next());
   // Get sheets status
-  app.get("/api/integrations/sheets/status", (_req, res) => {
+  app.get("/api/integrations/sheets/status", requireAuth, (_req, res) => {
     const auth = getAuthenticatedClient();
     const settings = loadCalSettings();
     res.json({
@@ -92,7 +93,7 @@ function registerRoutes(app) {
   });
 
   // Sync bookings → Google Sheet
-  app.post("/api/integrations/sheets/sync", async (req, res) => {
+  app.post("/api/integrations/sheets/sync", requireAuth, async (req, res) => {
     const auth = getAuthenticatedClient();
     if (!auth) return res.status(401).json({ error: "Google not connected. Connect via Google Calendar first." });
 

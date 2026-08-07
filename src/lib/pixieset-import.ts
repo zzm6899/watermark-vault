@@ -1,4 +1,5 @@
 import type { Contact, Invoice, InvoiceParty, InvoiceStatus } from "./types";
+import { generateCapabilityToken } from "./capability-token";
 
 export const PIXIESET_SOURCE = "pixieset" as const;
 const EMPTY_PARTY: InvoiceParty = { name: "", email: "", address: "" };
@@ -85,7 +86,7 @@ function stableHash(value: string): string {
   return (hash >>> 0).toString(36).padStart(7, "0");
 }
 
-function deterministicId(kind: "contact" | "invoice" | "item" | "share", source: string, sourceId: string): string {
+function deterministicId(kind: "contact" | "invoice" | "item", source: string, sourceId: string): string {
   return `${kind === "invoice" ? "inv" : kind}_${stableHash(`${source.toLowerCase()}\u0000${sourceId}`)}`;
 }
 
@@ -215,7 +216,7 @@ function normalizeInvoice(
     notes: "",
     dueDate,
     createdAt,
-    shareToken: deterministicId("share", source, sourceId),
+    shareToken: generateCapabilityToken("inv"),
     emailLog: [],
     paymentMethods: [],
     source: PIXIESET_SOURCE,

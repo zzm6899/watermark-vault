@@ -64,6 +64,12 @@ export interface BookingStatusHistoryEntry {
   note?: string;       // optional admin note (e.g. "Cancelled by client request")
 }
 
+export interface BookingArchiveHistoryEntry {
+  archived: boolean;
+  changedAt: string;
+  changedBy: string;
+}
+
 export interface Booking {
   id: string;
   /** Short client-facing identifier for bank transfers and support lookups. */
@@ -106,6 +112,12 @@ export interface Booking {
   requiresConfirmation?: boolean; // true if admin must manually confirm; false = auto-confirm once deposit paid
   /** Chronological record of status transitions — appended whenever status changes. */
   statusHistory?: BookingStatusHistoryEntry[];
+  /** Retention-only state. Archived bookings remain in financial/audit history. */
+  archived?: boolean;
+  archivedAt?: string;
+  archivedBy?: string;
+  unarchivedAt?: string;
+  archiveHistory?: BookingArchiveHistoryEntry[];
   // ── New feature fields (BookingExtensions) ─────────────────
   seriesId?: string;
   seriesConfig?: BookingSeriesConfig;
@@ -229,6 +241,7 @@ export interface DownloadHistoryEntry {
 
 export interface Album {
   id: string;
+  updatedAt?: string;
   slug: string;
   title: string;
   description: string;
@@ -822,6 +835,7 @@ export interface Quote {
   createdAt: string;
   sentAt?: string;
   acceptedAt?: string;
+  acceptedByName?: string;
   declinedAt?: string;
   convertedInvoiceId?: string;  // set when accepted → invoice created
   shareToken: string;           // random token for public share link

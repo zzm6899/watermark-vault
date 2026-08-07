@@ -1,7 +1,7 @@
-import { useRef, useCallback } from "react";
+import { Fragment, useRef, useCallback } from "react";
 import { Bold, Italic, Heading2, Heading3, List } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import DOMPurify from "dompurify";
+import { normalizePlainRichText, sanitizeRichText } from "@/lib/rich-text";
 
 interface RichTextEditorProps {
   value: string;
@@ -11,10 +11,33 @@ interface RichTextEditorProps {
   minHeight?: string;
 }
 
-const sanitizeRichText = (html: string) => DOMPurify.sanitize(html, {
-  ALLOWED_TAGS: ["p", "br", "strong", "b", "em", "i", "ul", "ol", "li", "h2", "h3"],
-  ALLOWED_ATTR: [],
-});
+function PlainRichText({ text }: { text: string }) {
+  const normalized = normalizePlainRichText(text);
+  const parts = normalized.split(/(https?:\/\/[^\s]+)/gi);
+  return (
+    <>
+      {parts.map((part, index) => {
+        if (!/^https?:\/\//i.test(part)) return <Fragment key={index}>{part}</Fragment>;
+        const [, url = part, punctuation = ""] = part.match(/^(.*?)([),.!?;:]*)$/) || [];
+        return (
+          <Fragment key={index}>
+            <a href={url} target="_blank" rel="noopener noreferrer">{url}</a>{punctuation}
+          </Fragment>
+        );
+      })}
+    </>
+  );
+}
+
+const displayClassName = `min-w-0 max-w-full overflow-hidden break-words [overflow-wrap:anywhere]
+  [&_*]:max-w-full [&_a]:break-all [&_a]:text-primary [&_a]:underline [&_a]:underline-offset-2 [&_a]:decoration-primary/40 hover:[&_a]:decoration-primary
+  [&_h2]:font-display [&_h2]:text-base [&_h2]:font-semibold [&_h2]:text-foreground [&_h2]:mb-1.5 [&_h2]:mt-3
+  [&_h3]:font-display [&_h3]:text-sm [&_h3]:font-semibold [&_h3]:text-foreground [&_h3]:mb-1 [&_h3]:mt-2.5
+  [&_b]:font-semibold [&_strong]:font-semibold [&_b]:text-foreground/90 [&_strong]:text-foreground/90
+  [&_em]:italic [&_i]:italic
+  [&_ul]:list-disc [&_ol]:list-decimal [&_ul]:pl-5 [&_ol]:pl-5 [&_ul]:my-2 [&_ol]:my-2
+  [&_li]:text-sm [&_li]:font-body [&_li]:text-muted-foreground [&_li]:my-0.5
+  [&_p]:mb-2 [&_div]:mb-2`;
 
 /**
  * A lightweight rich-text editor that stores content as HTML.
@@ -52,9 +75,16 @@ export default function RichTextEditor({
 
   const handleInput = () => {
     const raw = ref.current?.innerHTML || "";
+    // Emit normalized, safe HTML without rewriting the live editing surface.
+    // Replacing innerHTML here resets the browser selection/caret on every
+    // keystroke whenever normalization changes the markup.
+    onChange(sanitizeRichText(raw));
+  };
+
+  const handleBlur = () => {
+    const raw = ref.current?.innerHTML || "";
     const clean = sanitizeRichText(raw);
     if (clean !== raw && ref.current) ref.current.innerHTML = clean;
-    onChange(clean);
   };
 
   const toolbarBtnClass =
@@ -133,8 +163,12 @@ export default function RichTextEditor({
         contentEditable
         suppressContentEditableWarning
         onInput={handleInput}
+        onBlur={handleBlur}
+        role="textbox"
+        aria-multiline="true"
+        aria-label={placeholder || "Rich text editor"}
         data-placeholder={placeholder}
-        className="px-3 py-2.5 text-sm font-body text-foreground focus:outline-none prose-sm prose-invert max-w-none
+        className="min-w-0 max-w-full overflow-x-hidden break-words [overflow-wrap:anywhere] [&_a]:break-all px-3 py-2.5 text-sm font-body text-foreground focus:outline-none prose-sm prose-invert
           [&_h2]:font-display [&_h2]:text-base [&_h2]:text-foreground [&_h2]:mb-1 [&_h2]:mt-2
           [&_h3]:font-display [&_h3]:text-sm [&_h3]:text-foreground [&_h3]:mb-1 [&_h3]:mt-2
           [&_b]:font-semibold [&_strong]:font-semibold
@@ -159,25 +193,19 @@ export function RichTextDisplay({
   className?: string;
 }) {
   if (!html) return null;
-  // Check if it's plain text (no HTML tags) – render as-is with whitespace
+  // Plain legacy values may still contain entities such as `&nbsp;`.
   const isPlain = !/<[a-z][\s\S]*>/i.test(html);
   if (isPlain) {
     return (
-      <p className={`text-sm font-body text-muted-foreground leading-relaxed whitespace-pre-line ${className}`}>
-        {html}
+      <p data-rich-text className={`text-sm font-body text-muted-foreground leading-relaxed whitespace-pre-line ${displayClassName} ${className}`}>
+        <PlainRichText text={html} />
       </p>
     );
   }
   return (
     <div
-      className={`text-sm font-body text-muted-foreground leading-relaxed
-        [&_h2]:font-display [&_h2]:text-sm [&_h2]:font-semibold [&_h2]:text-foreground [&_h2]:mb-1 [&_h2]:mt-2
-        [&_h3]:font-display [&_h3]:text-xs [&_h3]:font-semibold [&_h3]:text-foreground [&_h3]:mb-1 [&_h3]:mt-1.5
-        [&_b]:font-semibold [&_strong]:font-semibold [&_b]:text-foreground/90 [&_strong]:text-foreground/90
-        [&_em]:italic [&_i]:italic
-        [&_ul]:list-disc [&_ul]:pl-4 [&_ul]:my-1.5
-        [&_li]:text-sm [&_li]:font-body [&_li]:text-muted-foreground
-        [&_p]:mb-1.5 ${className}`}
+      data-rich-text
+      className={`text-sm font-body text-muted-foreground leading-relaxed ${displayClassName} ${className}`}
       dangerouslySetInnerHTML={{ __html: sanitizeRichText(html) }}
     />
   );

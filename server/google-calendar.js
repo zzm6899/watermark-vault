@@ -9,6 +9,28 @@ const path = require("path");
 const TOKEN_FILE    = path.join(process.env.DATA_DIR || "/data", "google-tokens.json");
 const SETTINGS_FILE = path.join(process.env.DATA_DIR || "/data", "gcal-settings.json");
 const TZ = process.env.TZ || "Australia/Sydney";
+let sharedReadDb = null;
+let sharedWriteDb = null;
+
+function readJsonFile(target, fallback) {
+  if (!fs.existsSync(target)) return fallback;
+  try { return JSON.parse(fs.readFileSync(target, "utf-8")); }
+  catch (err) {
+    console.error(`Unable to read ${path.basename(target)}:`, err.message);
+    throw new Error(`${path.basename(target)} is corrupt; refusing to overwrite it`, { cause: err });
+  }
+}
+
+function writeJsonFileAtomic(target, value) {
+  const temp = `${target}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    fs.writeFileSync(temp, JSON.stringify(value, null, 2), { encoding: "utf8", flag: "wx" });
+    fs.renameSync(temp, target);
+  } catch (err) {
+    try { fs.unlinkSync(temp); } catch {}
+    throw err;
+  }
+}
 
 // ── Credential helpers ────────────────────────────────────────
 function getCredentials() {
@@ -26,10 +48,9 @@ function getOAuth2Client() {
 }
 
 function loadTokens() {
-  try { return fs.existsSync(TOKEN_FILE) ? JSON.parse(fs.readFileSync(TOKEN_FILE, "utf-8")) : null; }
-  catch { return null; }
+  return readJsonFile(TOKEN_FILE, null);
 }
-function saveTokens(tokens) { fs.writeFileSync(TOKEN_FILE, JSON.stringify(tokens, null, 2)); }
+function saveTokens(tokens) { writeJsonFileAtomic(TOKEN_FILE, tokens); }
 function clearTokens() { try { if (fs.existsSync(TOKEN_FILE)) fs.unlinkSync(TOKEN_FILE); } catch {} }
 
 function getAuthenticatedClient() {
@@ -44,28 +65,25 @@ function getAuthenticatedClient() {
 
 // ── Calendar settings ─────────────────────────────────────────
 function loadCalSettings() {
-  try { return fs.existsSync(SETTINGS_FILE) ? JSON.parse(fs.readFileSync(SETTINGS_FILE, "utf-8")) : {}; }
-  catch { return {}; }
+  return readJsonFile(SETTINGS_FILE, {});
 }
 function saveCalSettings(s) {
-  fs.writeFileSync(SETTINGS_FILE, JSON.stringify({ ...loadCalSettings(), ...s }, null, 2));
+  writeJsonFileAtomic(SETTINGS_FILE, { ...loadCalSettings(), ...s });
 }
 
 // ── Persist gcalEventId back to db.json ──────────────────────
 function saveGcalEventId(bookingId, gcalEventId) {
   if (!bookingId || !gcalEventId) return;
-  const fs = require("fs");
-  const path = require("path");
-  const DB_FILE = path.join(process.env.DATA_DIR || "/data", "db.json");
   try {
-    const db = JSON.parse(fs.readFileSync(DB_FILE, "utf-8"));
+    if (!sharedReadDb || !sharedWriteDb) throw new Error("Shared database helpers are unavailable");
+    const db = sharedReadDb();
     const raw = db.wv_bookings;
     const bookings = Array.isArray(raw) ? raw : (raw ? JSON.parse(raw) : []);
     const idx = bookings.findIndex(b => b.id === bookingId);
     if (idx >= 0 && bookings[idx].gcalEventId !== gcalEventId) {
       bookings[idx].gcalEventId = gcalEventId;
-      db.wv_bookings = bookings; // keep as object, don't double-stringify
-      fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
+      db.wv_bookings = JSON.stringify(bookings);
+      sharedWriteDb(db);
     }
   } catch (e) {
     console.warn("saveGcalEventId failed:", e.message);
@@ -110,10 +128,13 @@ function buildEvent(booking) {
 }
 
 // ── Routes ────────────────────────────────────────────────────
-function registerRoutes(app) {
+function registerRoutes(app, options = {}) {
+  const requireAuth = options.requireAuth || ((_req, _res, next) => next());
+  sharedReadDb = options.readDb || sharedReadDb;
+  sharedWriteDb = options.writeDb || sharedWriteDb;
 
   // Status
-  app.get("/api/integrations/googlecalendar/status", (_req, res) => {
+  app.get("/api/integrations/googlecalendar/status", requireAuth, (_req, res) => {
     const tokens   = loadTokens();
     const settings = loadCalSettings();
     res.json({
@@ -126,13 +147,13 @@ function registerRoutes(app) {
   });
 
   // Save settings
-  app.post("/api/integrations/googlecalendar/settings", (req, res) => {
+  app.post("/api/integrations/googlecalendar/settings", requireAuth, (req, res) => {
     saveCalSettings(req.body);
     res.json({ ok: true });
   });
 
   // Start OAuth
-  app.get("/api/integrations/googlecalendar/auth", (_req, res) => {
+  app.get("/api/integrations/googlecalendar/auth", requireAuth, (_req, res) => {
     const client = getOAuth2Client();
     if (!client) return res.status(500).json({ error: "Google credentials not configured" });
     const url = client.generateAuthUrl({
@@ -142,14 +163,16 @@ function registerRoutes(app) {
         "https://www.googleapis.com/auth/userinfo.email",
         "https://www.googleapis.com/auth/spreadsheets",
       ],
+      ...(options.createOAuthState ? { state: options.createOAuthState() } : {}),
     });
     res.json({ url });
   });
 
   // OAuth callback
-  app.get("/api/integrations/googlecalendar/callback", async (req, res) => {
-    const { code } = req.query;
+  app.get("/api/integrations/googlecalendar/callback", requireAuth, async (req, res) => {
+    const { code, state } = req.query;
     if (!code) return res.status(400).send("Missing code");
+    if (options.verifyOAuthState && !options.verifyOAuthState(String(state || ""))) return res.status(400).send("Invalid or expired OAuth state");
     const client = getOAuth2Client();
     if (!client) return res.status(500).send("Not configured");
     try {
@@ -166,12 +189,12 @@ function registerRoutes(app) {
   });
 
   // Disconnect
-  app.post("/api/integrations/googlecalendar/disconnect", (_req, res) => {
+  app.post("/api/integrations/googlecalendar/disconnect", requireAuth, (_req, res) => {
     clearTokens(); res.json({ ok: true });
   });
 
   // List calendars
-  app.get("/api/integrations/googlecalendar/calendars", async (_req, res) => {
+  app.get("/api/integrations/googlecalendar/calendars", requireAuth, async (_req, res) => {
     const auth = getAuthenticatedClient();
     if (!auth) return res.status(401).json({ error: "Not connected" });
     try {
@@ -184,7 +207,7 @@ function registerRoutes(app) {
   // Called by Booking.tsx when user selects a date.
   // Returns busy periods from ALL events (personal + bookings) so anything
   // already on the calendar blocks out those slots automatically.
-  app.get("/api/integrations/googlecalendar/busy", async (req, res) => {
+  app.get("/api/integrations/googlecalendar/busy", requireAuth, async (req, res) => {
     const auth = getAuthenticatedClient();
     if (!auth) return res.json({ busy: [] }); // not connected — show all slots
 
@@ -215,7 +238,7 @@ function registerRoutes(app) {
   });
 
   // ── PUSH: Create or update event for a single booking ─────────
-  app.post("/api/integrations/googlecalendar/event", async (req, res) => {
+  app.post("/api/integrations/googlecalendar/event", requireAuth, async (req, res) => {
     const auth = getAuthenticatedClient();
     if (!auth) return res.status(401).json({ error: "Not connected" });
 
@@ -245,7 +268,7 @@ function registerRoutes(app) {
   });
 
   // ── PUSH: Update existing event (reschedule / status change) ──
-  app.put("/api/integrations/googlecalendar/event/:eventId", async (req, res) => {
+  app.put("/api/integrations/googlecalendar/event/:eventId", requireAuth, async (req, res) => {
     const auth = getAuthenticatedClient();
     if (!auth) return res.status(401).json({ error: "Not connected" });
     const calId = req.body.calendarId || loadCalSettings().calendarId || "primary";
@@ -258,7 +281,7 @@ function registerRoutes(app) {
   });
 
   // ── PUSH: Delete event (booking cancelled) ────────────────────
-  app.delete("/api/integrations/googlecalendar/event/:eventId", async (req, res) => {
+  app.delete("/api/integrations/googlecalendar/event/:eventId", requireAuth, async (req, res) => {
     const auth = getAuthenticatedClient();
     if (!auth) return res.status(401).json({ error: "Not connected" });
     const calId = req.query.calendarId || loadCalSettings().calendarId || "primary";
@@ -278,7 +301,7 @@ function registerRoutes(app) {
   //      is not in our active bookings → delete it (orphan/cancelled)
   //   3. Also use extendedProperties tag (newer events) for more reliable matching
   //   4. Upsert all active bookings (create if new, update if existing event found)
-  app.post("/api/integrations/googlecalendar/sync-all", async (req, res) => {
+  app.post("/api/integrations/googlecalendar/sync-all", requireAuth, async (req, res) => {
     const auth = getAuthenticatedClient();
     if (!auth) return res.status(401).json({ error: "Not connected" });
 
