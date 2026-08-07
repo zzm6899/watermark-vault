@@ -36,6 +36,7 @@ import {
   isSlotBooked,
 } from "@/lib/storage";
 import { compressImage, formatBytes, formatSpeed, getLocalStorageUsage, generateThumbnail } from "@/lib/image-utils";
+import { bookingPaymentReference } from "@/lib/booking-reference";
 import {
   getAlbumCaptureStats,
   getBookingAlbum,
@@ -2623,6 +2624,7 @@ function BookingEditor({ booking, onSave, onCancel }: {
     const bk: Booking = {
       ...(booking || {}),
       id: bookingId,
+      paymentReference: booking?.paymentReference || `BK-${(date || new Date().toISOString().slice(0, 10)).replace(/\D/g, "")}-${bookingId.replace(/[^a-z0-9]/gi, "").slice(-6).toUpperCase()}`,
       clientName: clientName.trim(),
       clientEmail: clientEmail.trim(),
       date,
@@ -2971,6 +2973,8 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
     const q = bookingSearch.toLowerCase();
     return (bk.clientName || "").toLowerCase().includes(q)
       || (bk.clientEmail || "").toLowerCase().includes(q)
+      || bookingPaymentReference(bk).toLowerCase().includes(q)
+      || (bk.id || "").toLowerCase().includes(q)
       || (bk.instagramHandle || "").toLowerCase().includes(q)
       || (bk.type || "").toLowerCase().includes(q)
       || (bk.status || "").toLowerCase().includes(q)
@@ -3342,6 +3346,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
                           <h3 className={`text-sm font-body text-foreground font-medium${bk.status === "cancelled" ? " line-through" : ""}`}>{bk.clientName}</h3>
+                          <span className="text-[10px] font-mono text-primary/80 bg-primary/10 px-1.5 py-0.5 rounded">{bookingPaymentReference(bk)}</span>
                           {bk.instagramHandle && <span className="text-xs font-body text-primary">@{bk.instagramHandle.replace("@", "")}</span>}
                           {albums.some(a => a.bookingId === bk.id || (a.clientName && a.clientName === bk.clientName)) && (
                             <span className="text-[10px] font-body px-2 py-0.5 rounded-full border border-green-500/30 bg-green-500/10 text-green-400">📷 Gallery sent</span>
@@ -9289,6 +9294,7 @@ function FinanceView() {
     description: string;
     requestedAt?: string; // for bank-transfer deletion key
     bookingId?: string;
+    reference?: string;
   };
 
   const payments: PaymentRecord[] = [];
@@ -9370,6 +9376,7 @@ function FinanceView() {
       status: "completed",
       description: booking.paymentStatus === "deposit-paid" ? "Booking deposit" : "Booking paid in full",
       bookingId: booking.id,
+      reference: bookingPaymentReference(booking),
     });
   }
 
@@ -9834,6 +9841,7 @@ function FinanceView() {
                         {p.purchaserEmail && (
                           <span className="text-[10px] font-body text-primary/60 bg-primary/5 px-1.5 py-0.5 rounded">{p.purchaserEmail}</span>
                         )}
+                        {p.reference && <span className="text-[10px] font-mono text-primary/80 bg-primary/10 px-1.5 py-0.5 rounded">{p.reference}</span>}
                       </div>
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
@@ -9851,7 +9859,7 @@ function FinanceView() {
                       <span className={`text-[10px] font-body px-2 py-0.5 rounded-full capitalize ${statusColor(p.status)}`}>{p.status}</span>
                       <p className="text-sm font-display text-foreground w-16 text-right">${p.amount.toFixed(2)}</p>
                       {p.bookingId ? (
-                        <button onClick={() => navigate(`/admin/bookings?search=${encodeURIComponent(p.clientName)}`)} className="text-[10px] font-body text-primary hover:underline">Booking</button>
+                        <button onClick={() => navigate(`/admin/bookings?search=${encodeURIComponent(p.reference || p.clientName)}`)} className="text-[10px] font-body text-primary hover:underline">Booking</button>
                       ) : (
                         <button
                           onClick={() => handleDelete(p)}

@@ -15,6 +15,7 @@ import { toast } from "sonner";
 import { getBookings, updateBooking, addBooking, getEventTypes, getProfile, getSettings, isSlotBooked } from "@/lib/storage";
 import { createBookingCheckout, getStripeStatus, syncBookingToCalendar, getGoogleBusyTimes, fetchBookingByToken, getTenantPublicData } from "@/lib/api";
 import type { EventType, Booking } from "@/lib/types";
+import { bookingPaymentReference } from "@/lib/booking-reference";
 
 function formatDuration(mins: number) {
   if (mins >= 60) { const h = Math.floor(mins / 60); const m = mins % 60; return m > 0 ? `${h}h ${m}m` : `${h}h`; }
@@ -369,7 +370,7 @@ export default function BookingModify() {
                         {bankTransfer.accountNumber && <div className="flex items-center justify-between p-3 rounded-lg bg-secondary"><div><p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Account Number</p><p className="text-sm font-body text-foreground font-medium">{bankTransfer.accountNumber}</p></div><Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => copyToClipboard(bankTransfer.accountNumber,"acc")}>{copiedField==="acc"?<CheckIcon className="w-4 h-4 text-primary"/>:<Copy className="w-4 h-4"/>}</Button></div>}
                         {bankTransfer.payId && <div className="flex items-center justify-between p-3 rounded-lg bg-secondary"><div><p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">PayID ({bankTransfer.payIdType})</p><p className="text-sm font-body text-foreground font-medium">{bankTransfer.payId}</p></div><Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => copyToClipboard(bankTransfer.payId,"payid")}>{copiedField==="payid"?<CheckIcon className="w-4 h-4 text-primary"/>:<Copy className="w-4 h-4"/>}</Button></div>}
                         {bankTransfer.instructions && <div className="p-3 rounded-lg bg-primary/5 border border-primary/10"><p className="text-xs font-body text-muted-foreground">{bankTransfer.instructions}</p></div>}
-                        <p className="text-xs font-body text-muted-foreground text-center">Reference: <span className="text-primary font-medium">{booking.id}</span></p>
+                        <p className="text-xs font-body text-muted-foreground text-center">Transfer reference: <span className="text-primary font-medium">{bookingPaymentReference(booking)}</span></p>
                       </motion.div>
                     )}
                   </div>

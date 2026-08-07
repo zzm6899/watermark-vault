@@ -66,6 +66,8 @@ export interface BookingStatusHistoryEntry {
 
 export interface Booking {
   id: string;
+  /** Short client-facing identifier for bank transfers and support lookups. */
+  paymentReference?: string;
   clientName: string;
   clientEmail: string;
   date: string;

@@ -112,6 +112,7 @@ end
 
 local function trim(value) return (tostring(value or ""):gsub("^%s+", ""):gsub("%s+$", "")) end
 local function baseName(name) return (LrPathUtils.removeExtension(LrPathUtils.leafName(name or "")) or ""):lower() end
+local function fileNumber(name) return baseName(name):match("(%d+)[^%d]*$") end
 local function isRaw(path)
   local ext = (LrPathUtils.extension(path) or ""):lower()
   return ext == "nef" or ext == "cr2" or ext == "cr3" or ext == "arw" or ext == "raf" or ext == "orf" or ext == "rw2" or ext == "dng"
@@ -257,15 +258,40 @@ end
 
 local function photoLookup(catalog, sourceFolder)
   local lookup = {}
+  local function addCandidate(key, candidate)
+    if not key or key == "" then return end
+    lookup[key] = lookup[key] or {}
+    table.insert(lookup[key], candidate)
+  end
   local root = normalisedPath(sourceFolder)
   if root ~= "" and root:sub(-1) ~= "/" then root = root .. "/" end
   for _, photo in ipairs(catalog:getAllPhotos()) do
     local path = photo:getRawMetadata("path")
     local normalisedPhotoPath = normalisedPath(path)
     if path and isRaw(path) and (root == "" or normalisedPhotoPath:sub(1, #root) == root) then
+      local candidate = { photo = photo, path = path }
+      addCandidate(baseName(path), candidate)
+      local number = fileNumber(path)
+      if number then addCandidate("#" .. number, candidate) end
+    end
+  end
+  -- The RAWs do not have to be imported before synchronising. Search the
+  -- selected folder and every subfolder, then import only the files that a
+  -- client actually selected. This is much safer than importing a whole shoot.
+  for path in LrFileUtils.recursiveFiles(sourceFolder) do
+    if isRaw(path) then
       local key = baseName(path)
-      lookup[key] = lookup[key] or {}
-      table.insert(lookup[key], photo)
+      local candidates = lookup[key] or {}
+      local alreadyKnown = false
+      for _, candidate in ipairs(candidates) do
+        if normalisedPath(candidate.path) == normalisedPath(path) then alreadyKnown = true; break end
+      end
+      if not alreadyKnown then
+        local candidate = { path = path }
+        addCandidate(key, candidate)
+        local number = fileNumber(path)
+        if number then addCandidate("#" .. number, candidate) end
+      end
     end
   end
   return lookup
@@ -349,18 +375,29 @@ function M.syncPicks()
       local manifest = jsonGet("/api/lightroom/albums/" .. albumId .. "/picks")
       local catalog = LrApplication.activeCatalog()
       local lookup = photoLookup(catalog, sourceFolder)
-      local selected, unmatched, ambiguous = {}, {}, {}
+      local selected, toImport, unmatched, ambiguous = {}, {}, {}, {}
       local cache = proofCacheFolder()
       for _, asset in ipairs(manifest.assets or {}) do
         if asset.selected then
           downloadProof(asset, LrPathUtils.child(cache, albumId))
           local candidates = lookup[baseName(asset.originalName or asset.proofId)] or {}
-          if #candidates == 1 then table.insert(selected, candidates[1])
+          -- Some export presets add text to JPEG names. When that happens,
+          -- use the camera file number only if it points to one RAW exactly.
+          if #candidates == 0 and asset.originalFileNumber then
+            candidates = lookup["#" .. tostring(asset.originalFileNumber)] or {}
+          end
+          if #candidates == 1 then
+            if candidates[1].photo then table.insert(selected, candidates[1].photo)
+            else table.insert(toImport, candidates[1]) end
           elseif #candidates == 0 then table.insert(unmatched, asset.originalName or asset.proofId)
           else table.insert(ambiguous, asset.originalName or asset.proofId) end
         end
       end
       catalog:withWriteAccessDo("Watermark Vault sync picks", function()
+        for _, candidate in ipairs(toImport) do
+          local imported = catalog:addPhoto(candidate.path)
+          if imported then table.insert(selected, imported) end
+        end
         local keyword = selectedKeyword(catalog, manifest.album.clientName)
         local collection = collectionFor(catalog, manifest.album.title, manifest.album.clientName)
         collection:addPhotos(selected)
@@ -369,7 +406,7 @@ function M.syncPicks()
           if prefs.applyFiveStars ~= false then photo:setRawMetadata("rating", 5) end
         end
       end)
-      LrDialogs.message("Watermark Vault", string.format("Synced %d picks from %s. %d unmatched, %d ambiguous. Proof JPEGs are cached in %s.", #selected, sourceFolder, #unmatched, #ambiguous, cache))
+      LrDialogs.message("Watermark Vault", string.format("Synced %d pick(s), including %d newly imported RAW(s), from %s. %d unmatched, %d ambiguous. Matching uses the original filename without its extension; proof JPEGs are cached in %s.", #selected, #toImport, sourceFolder, #unmatched, #ambiguous, cache))
     end)
     if not ok then LrDialogs.message("Watermark Vault sync failed", tostring(message), "critical") end
   end)
