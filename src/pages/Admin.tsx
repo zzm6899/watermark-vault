@@ -2624,7 +2624,7 @@ function BookingEditor({ booking, onSave, onCancel }: {
     const bk: Booking = {
       ...(booking || {}),
       id: bookingId,
-      paymentReference: booking?.paymentReference || `BK-${(date || new Date().toISOString().slice(0, 10)).replace(/\D/g, "")}-${bookingId.replace(/[^a-z0-9]/gi, "").slice(-6).toUpperCase()}`,
+      paymentReference: booking?.paymentReference || `BK-${bookingId.replace(/[^a-z0-9]/gi, "").slice(-5).toUpperCase()}`,
       clientName: clientName.trim(),
       clientEmail: clientEmail.trim(),
       date,
