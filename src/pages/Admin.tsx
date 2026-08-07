@@ -9260,6 +9260,7 @@ function FinanceView() {
   const [invoicesState] = React.useState(() => getInvoices());
   const [deletingId, setDeletingId] = React.useState<string | null>(null);
   const [expandedDownloadKeys, setExpandedDownloadKeys] = React.useState<Set<string>>(new Set());
+  const [financeSearch, setFinanceSearch] = React.useState("");
   const [financeExpenses, setFinanceExpenses] = React.useState<Expense[]>([]);
   const [downloadCaptureStats, setDownloadCaptureStats] = React.useState<any>(null);
   React.useEffect(() => { getExpenses().then(setFinanceExpenses).catch(() => {}); }, []);
@@ -9381,6 +9382,12 @@ function FinanceView() {
   }
 
   payments.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  const filteredPayments = payments.filter(payment => {
+    const q = financeSearch.trim().toLowerCase();
+    if (!q) return true;
+    return [payment.reference, payment.clientName, payment.purchaserEmail, payment.albumTitle, payment.description]
+      .some(value => String(value || "").toLowerCase().includes(q));
+  });
 
   const totalRevenue = payments.filter(p => p.status === "completed").reduce((s, p) => s + p.amount, 0);
   const pendingRevenue = payments.filter(p => p.status === "pending").reduce((s, p) => s + p.amount, 0);
@@ -9812,16 +9819,20 @@ function FinanceView() {
       <div className="glass-panel rounded-xl overflow-hidden">
         <div className="p-4 border-b border-border">
           <h3 className="font-display text-base text-foreground">Payment History</h3>
+          <div className="relative mt-3 max-w-sm">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+            <Input value={financeSearch} onChange={event => setFinanceSearch(event.target.value)} placeholder="Search client, album, or BK reference…" className="pl-8 h-8 text-xs font-body" />
+          </div>
         </div>
-        {payments.length === 0 ? (
+        {filteredPayments.length === 0 ? (
           <div className="p-12 text-center">
             <DollarSign className="w-8 h-8 text-muted-foreground/30 mx-auto mb-3" />
-            <p className="text-sm font-body text-muted-foreground">No payments recorded yet</p>
-            <p className="text-xs font-body text-muted-foreground/60 mt-1">Stripe and bank transfer payments will appear here</p>
+            <p className="text-sm font-body text-muted-foreground">{financeSearch ? "No payments match that search." : "No payments recorded yet"}</p>
+            {!financeSearch && <p className="text-xs font-body text-muted-foreground/60 mt-1">Stripe and bank transfer payments will appear here</p>}
           </div>
         ) : (
           <div className="divide-y divide-border">
-            {payments.map(p => {
+            {filteredPayments.map(p => {
               const showThumbs = expandedDownloadKeys.has(p.id);
               const paymentAlb = showThumbs ? albumsState.find(a => a.id === p.albumId) : null;
               const purchasedPhotos = showThumbs && p.photoIds?.length
@@ -9894,9 +9905,9 @@ function FinanceView() {
             })}
           </div>
         )}
-        {payments.length > 0 && (
+        {filteredPayments.length > 0 && (
           <div className="p-4 border-t border-border flex justify-between items-center">
-            <p className="text-xs font-body text-muted-foreground">{payments.length} total records</p>
+            <p className="text-xs font-body text-muted-foreground">{filteredPayments.length}{financeSearch ? ` of ${payments.length}` : ""} total records</p>
             <p className="text-sm font-body text-foreground">Total collected: <span className="text-green-400 font-medium">${totalRevenue.toFixed(2)}</span></p>
           </div>
         )}
