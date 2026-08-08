@@ -125,7 +125,25 @@ test("availability only returns future, non-conflicting starts", () => {
     timezone: "Australia/Sydney",
     now: new Date("2026-08-01T00:00:00Z"),
   });
-  assert.deepEqual(slots, ["11:00"]);
+  assert.deepEqual(slots, ["10:30", "10:40", "10:50", "11:00"]);
+});
+
+test("start-time intervals stay consistent across different booking durations", () => {
+  const mixed = { ...eventType, durations: [20, 40], bufferMinutes: 0, slotIntervalMinutes: 10 };
+  const common = { eventType: mixed, date: "2026-08-10", eventTypes: [mixed], bookings: [], tenantSlug: null, timezone: "Australia/Sydney", now: new Date("2026-08-01T00:00:00Z") };
+  const twenty = generateAvailableSlots({ ...common, duration: 20 });
+  const forty = generateAvailableSlots({ ...common, duration: 40 });
+  assert.deepEqual(twenty.slice(0, 4), ["09:00", "09:10", "09:20", "09:30"]);
+  assert.deepEqual(forty.slice(0, 4), ["09:00", "09:10", "09:20", "09:30"]);
+  assert.equal(twenty.at(-1), "11:40");
+  assert.equal(forty.at(-1), "11:20");
+});
+
+test("public booking validation enforces the configured start-time grid", () => {
+  const gridded = { ...eventType, durations: [20], bufferMinutes: 0, slotIntervalMinutes: 10 };
+  const context = { eventTypes: [gridded], bookings: [], tenantSlug: null, timezone: "Australia/Sydney", now: new Date("2026-08-01T00:00:00Z") };
+  assert.equal(validateBookingRequest({ eventTypeId: gridded.id, date: "2026-08-10", time: "09:10", duration: 20 }, context).ok, true);
+  assert.equal(validateBookingRequest({ eventTypeId: gridded.id, date: "2026-08-10", time: "09:07", duration: 20 }, context).ok, false);
 });
 
 test("expired unpaid checkout holds no longer block availability", () => {

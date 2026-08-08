@@ -827,7 +827,8 @@ function validateBookingRequest(input, context) {
   }
   const windows = availabilityWindows(eventType, date.value);
   const end = time.minutes + duration;
-  if (!windows.some(window => time.minutes >= window.start && end <= window.end)) {
+  const slotInterval = Math.max(5, Math.min(60, Number(eventType.slotIntervalMinutes) || 10));
+  if (!windows.some(window => time.minutes >= window.start && end <= window.end && (time.minutes - window.start) % slotInterval === 0)) {
     return { ok: false, status: 409, error: "This time is outside the configured availability" };
   }
   const normalized = {
@@ -864,21 +865,31 @@ function generateAvailableSlots({ eventType, date, duration: requestedDuration, 
   const duration = requestedDuration == null ? Math.min(...allowedDurations) : Number(requestedDuration);
   if (!allowedDurations.includes(duration)) return [];
   if (!Number.isFinite(duration)) return [];
-  const slots = [];
+  const interval = Math.max(5, Math.min(60, Number(eventType?.slotIntervalMinutes) || 10));
+  const nowMs = now?.getTime?.() ?? Date.now();
+  const nowParts = zonedNowParts(timezone, now);
+  const eventTypeById = new Map((eventTypes.length ? eventTypes : [eventType]).map(type => [type.id, type]));
+  const blockingIntervals = (bookings || []).flatMap(existing => {
+    if (!existing || existing.date !== date || !bookingBlocksAvailability(existing, nowMs)) return [];
+    if (tenantSlug !== undefined && String(existing.tenantSlug || "") !== String(tenantSlug || "")) return [];
+    const start = parseTime(existing.time)?.minutes;
+    const existingDuration = Number(existing.duration);
+    if (!Number.isFinite(start) || !Number.isFinite(existingDuration) || existingDuration <= 0) return [];
+    const existingBuffer = Math.max(0, Number(eventTypeById.get(existing.eventTypeId)?.bufferMinutes) || 0);
+    return [{ start, end: start + existingDuration + existingBuffer }];
+  });
+  const candidateBuffer = Math.max(0, Number(eventType?.bufferMinutes) || 0);
+  const slots = new Set();
   for (const window of availabilityWindows(eventType, date)) {
-    for (let minute = window.start; minute + duration <= window.end; minute += duration) {
+    for (let minute = window.start; minute + duration <= window.end; minute += interval) {
       const time = `${String(Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}`;
-      const result = validateBookingRequest({ eventTypeId: eventType.id, date, time, duration }, {
-        eventTypes: eventTypes.length ? eventTypes : [eventType],
-        bookings,
-        timezone,
-        tenantSlug,
-        now,
-      });
-      if (result.ok) slots.push(time);
+      if (date < nowParts.date || (date === nowParts.date && minute <= nowParts.minutes)) continue;
+      const candidateEnd = minute + duration + candidateBuffer;
+      if (blockingIntervals.some(existing => intervalsConflict(minute, candidateEnd, existing.start, existing.end))) continue;
+      slots.add(time);
     }
   }
-  return slots;
+  return [...slots].sort();
 }
 
 module.exports = {

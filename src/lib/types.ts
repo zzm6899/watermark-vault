@@ -52,6 +52,8 @@ export interface EventType {
   // ── New feature fields (EventTypeExtensions) ───────────────
   maxAttendees?: number;
   bufferMinutes?: number;
+  /** Distance between offered start times, independent of the selected duration. */
+  slotIntervalMinutes?: number;
   isPackage?: boolean;
   packageEventIds?: string[];
   durationPrices?: Record<string, number>;
@@ -1012,6 +1014,8 @@ export interface EventTypeExtensions {
   maxAttendees?: number;
   /** Buffer minutes to block after each booking of this type. */
   bufferMinutes?: number;
+  /** Distance between selectable appointment starts. */
+  slotIntervalMinutes?: number;
   /** If true, this is a package that bundles other event types. */
   isPackage?: boolean;
   /** Event type IDs included in this package. */

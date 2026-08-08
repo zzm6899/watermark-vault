@@ -177,6 +177,15 @@ import { drawServerAlignedWatermark } from "@/lib/watermark-render";
 import { Slider } from "@/components/ui/slider";
 
 const PaymentOperationsView = React.lazy(() => import("@/pages/admin/PaymentOperationsView"));
+const AlbumWorkspaceHeader = React.lazy(() => import("@/pages/admin/AlbumWorkspaceHeader"));
+const SlotIntervalField = React.lazy(() => import("@/pages/admin/SlotIntervalField"));
+const AlbumCardCover = React.lazy(() => import("@/pages/admin/AlbumCardUI").then(module => ({ default: module.AlbumCardCover })));
+const AlbumCardPrimaryActions = React.lazy(() => import("@/pages/admin/AlbumCardUI").then(module => ({ default: module.AlbumCardPrimaryActions })));
+const AlbumEditorSectionHeading = React.lazy(() => import("@/pages/admin/AlbumEditorSectionHeading"));
+const AlbumSlugField = React.lazy(() => import("@/pages/admin/AlbumSlugField"));
+const AlbumDescriptionField = React.lazy(() => import("@/pages/admin/AlbumDescriptionField"));
+const AlbumTitleField = React.lazy(() => import("@/pages/admin/AlbumTitleField"));
+const AlbumStatusControl = React.lazy(() => import("@/pages/admin/AlbumStatusControl"));
 const FinanceView = React.lazy(() => import("@/pages/admin/FinanceView"));
 const EnquiriesView = React.lazy(() => import("@/pages/admin/ClientAdminViews").then(module => ({ default: module.EnquiriesView })));
 const ProfileView = React.lazy(() => import("@/pages/admin/ClientAdminViews").then(module => ({ default: module.ProfileView })));
@@ -4218,6 +4227,7 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
   const [expandAvailability, setExpandAvailability] = useState(false);
   const [expandQuestions, setExpandQuestions] = useState(false);
   const [bufferMinutes, setBufferMinutes] = useState<number>(eventType?.bufferMinutes || 0);
+  const [slotIntervalMinutes, setSlotIntervalMinutes] = useState<number>(eventType?.slotIntervalMinutes || 10);
   const [maxAttendees, setMaxAttendees] = useState<number>(eventType?.maxAttendees || 1);
 
   const addDuration = () => {
@@ -4254,6 +4264,7 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
       availability: { recurring, specificDates, blockedDates },
       location: location.trim(),
       bufferMinutes: bufferMinutes > 0 ? bufferMinutes : undefined,
+      slotIntervalMinutes: Math.max(5, Math.min(60, slotIntervalMinutes || 10)),
       maxAttendees: maxAttendees > 1 ? maxAttendees : undefined,
     });
   };
@@ -4318,8 +4329,9 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
         <Switch checked={requiresConfirmation} onCheckedChange={setRequiresConfirmation} />
       </div>
 
-      {/* Buffer Time + Max Attendees */}
-      <div className="grid grid-cols-2 gap-4">
+      {/* Start interval + Buffer Time + Max Attendees */}
+      <div className="grid sm:grid-cols-3 gap-4">
+        <React.Suspense fallback={<div className="h-20 rounded-lg bg-secondary/30 animate-pulse" />}><SlotIntervalField value={slotIntervalMinutes} onChange={setSlotIntervalMinutes} /></React.Suspense>
         <div>
           <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Buffer Time (mins)</label>
           <Input
@@ -4841,12 +4853,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                 }
               }}
             >
-              {coverSrc && !coverSrc.startsWith("file://") && !brokenCovers.has(coverKey) && (
-                <div className="aspect-[16/9] bg-secondary overflow-hidden">
-                  <img src={coverSrc} alt={alb.title} className="w-full h-full object-cover transition-transform duration-700 hover:scale-105" loading="lazy"
-                    onError={() => setBrokenCovers(prev => { const n = new Set(prev); n.add(coverKey); return n; })} />
-                </div>
-              )}
+              <React.Suspense fallback={<div className="aspect-[16/9] bg-secondary animate-pulse" />}><AlbumCardCover src={!brokenCovers.has(coverKey) ? coverSrc : undefined} title={alb.title} enabled={alb.enabled !== false} onError={() => setBrokenCovers(prev => { const n = new Set(prev); n.add(coverKey); return n; })} /></React.Suspense>
               <div className="p-4 space-y-2">
                 <h3 className="font-display text-xl leading-tight text-foreground truncate">{alb.title}</h3>
                 <p className="text-xs font-body text-muted-foreground">
@@ -4861,20 +4868,6 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                 {(() => {
                   const useProofing = settings.proofingEnabled && alb.proofingEnabled;
                   const linkedBooking = bookingMap.get(alb.bookingId || "");
-
-                  // Determine display colour based on active value
-                  const proofingColor = (stage: string) =>
-                    stage === "proofing" ? "bg-yellow-500/15 text-yellow-400" :
-                    stage === "selections-submitted" ? "bg-orange-500/15 text-orange-400" :
-                    stage === "editing" ? "bg-blue-500/15 text-blue-400" :
-                    stage === "finals-delivered" ? "bg-green-500/15 text-green-400" :
-                    "bg-secondary text-muted-foreground";
-
-                  const albumStatusColor = (s: string) =>
-                    s === "editing"   ? "bg-yellow-500/15 text-yellow-400" :
-                    s === "proofing"  ? "bg-blue-500/15 text-blue-400" :
-                    s === "delivered" ? "bg-green-500/15 text-green-400" :
-                    "bg-secondary text-muted-foreground";
 
                   const handleChange = (val: string) => {
                     const updated = { ...alb };
@@ -4910,47 +4903,10 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                     ? (alb.proofingStage && alb.proofingStage !== "not-started" ? alb.proofingStage : "proofing")
                     : (alb.status || "editing");
 
-                  const colorClass = useProofing ? proofingColor(currentVal) : albumStatusColor(currentVal);
-
                   return (
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <select
-                        value={currentVal}
-                        onClick={e => e.stopPropagation()}
-                        onChange={e => { e.stopPropagation(); handleChange(e.target.value); }}
-                        className={`text-[10px] font-body px-2 py-0.5 rounded-full border-0 cursor-pointer appearance-none focus:outline-none focus:ring-1 focus:ring-primary/50 ${colorClass}`}
-                      >
-                        {useProofing ? (
-                          <>
-                            <option value="proofing">★ Proofing</option>
-                            <option value="selections-submitted">⏳ Picks submitted</option>
-                            <option value="editing">✏️ Editing</option>
-                            <option value="finals-delivered">✓ Finals delivered</option>
-                          </>
-                        ) : (
-                          <>
-                            <option value="editing">Editing</option>
-                            <option value="proofing">Proofing</option>
-                            <option value="delivered">Delivered</option>
-                            <option value="archived">Archived</option>
-                          </>
-                        )}
-                      </select>
-                      {/* Linked booking status pill */}
-                      {linkedBooking && (() => {
-                        const bkColor =
-                          linkedBooking.status === "confirmed" ? "bg-emerald-500/15 text-emerald-400" :
-                          linkedBooking.status === "pending" ? "bg-amber-500/15 text-amber-400" :
-                          linkedBooking.status === "completed" ? "bg-blue-500/15 text-blue-400" :
-                          linkedBooking.status === "cancelled" ? "bg-red-500/15 text-red-400" :
-                          "bg-secondary text-muted-foreground";
-                        return (
-                          <span className={`text-[9px] font-body px-1.5 py-0.5 rounded-full ${bkColor}`} title="Linked booking status">
-                            Booking: {linkedBooking.status}
-                          </span>
-                        );
-                      })()}
-                    </div>
+                    <React.Suspense fallback={<div className="h-5 w-24 rounded bg-secondary/30 animate-pulse" />}>
+                      <AlbumStatusControl proofing={!!useProofing} value={currentVal} bookingStatus={linkedBooking?.status} onChange={handleChange} />
+                    </React.Suspense>
                   );
                 })()}
                 {/* Download expiry badge */}
@@ -4991,7 +4947,9 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                 })()}
                 {alb.mergedFrom && <p className="text-[10px] font-body text-muted-foreground/50">Merged from {alb.mergedFrom.length} albums</p>}
                 {!mergeMode && (
-                  <div className="flex items-center gap-1.5 pt-3 mt-2 border-t border-white/10">
+                  <>
+                  <React.Suspense fallback={<div className="h-8 mt-3 rounded bg-secondary/30 animate-pulse" />}><AlbumCardPrimaryActions onEdit={() => setEditing(alb)} onView={() => openPublicGallery(alb)} /></React.Suspense>
+                  <div className="flex items-center gap-1.5 pt-2">
                     <Tooltip>
                         <TooltipTrigger asChild>
                           <div>
@@ -5023,14 +4981,6 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                           </Button>
                         </TooltipTrigger>
                         <TooltipContent>Send Notification</TooltipContent>
-                      </Tooltip>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button aria-label={`Open gallery ${alb.title}`} variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary" onClick={() => openPublicGallery(alb)}>
-                            <ExternalLink className="w-3.5 h-3.5" />
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>Open Gallery</TooltipContent>
                       </Tooltip>
                       {(() => {
                         const starredPhotos = alb.photos.filter((p: any) => p.starred);
@@ -5097,14 +5047,6 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                       <div className="flex-1" />
                       <Tooltip>
                         <TooltipTrigger asChild>
-                          <Button aria-label={`Edit album ${alb.title}`} variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-foreground" onClick={() => setEditing(alb)}>
-                            <Edit className="w-3.5 h-3.5" />
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>Edit Album</TooltipContent>
-                      </Tooltip>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
                           <Button aria-label={`Delete album ${alb.title}`} variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={() => handleDelete(alb.id)}>
                             <Trash2 className="w-3.5 h-3.5" />
                           </Button>
@@ -5112,6 +5054,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                         <TooltipContent>Delete Album</TooltipContent>
                       </Tooltip>
                     </div>
+                    </>
                   )}
                 </div>
               </div>
@@ -5709,35 +5652,24 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
         : photo.cull?.status === "reject");
 
   return (
-    <div className="glass-panel rounded-xl p-6 mb-6 space-y-5">
-      <div className="flex items-center justify-between">
-        <h3 className="font-display text-lg text-foreground">{isNew ? "New Album" : "Edit Album"}</h3>
-        <Button variant="ghost" size="icon" onClick={onCancel}><X className="w-4 h-4" /></Button>
-      </div>
+    <div className="glass-panel rounded-xl p-4 sm:p-6 mb-6 space-y-6 scroll-smooth">
+      <React.Suspense fallback={<div className="h-28 rounded-xl border border-border/50 bg-secondary/30 animate-pulse" />}>
+        <AlbumWorkspaceHeader isNew={isNew} title={title} photoCount={photos.length} clientName={clientName} status={albumStatus} saving={savingAlbum} onClose={onCancel} onSave={() => void handleSave()} />
+      </React.Suspense>
 
+      <React.Suspense fallback={null}><AlbumEditorSectionHeading id="album-editor-details" title="Gallery details" detail="Name the gallery, connect the client, and control its public link." /></React.Suspense>
       <div className="grid md:grid-cols-2 gap-4">
-        <div>
-          <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Title *</label>
-          <Input value={title} onChange={(e) => { setTitle(e.target.value); if (!slug || slug === slugify(album?.title || "")) setSlug(slugify(e.target.value)); }} className="bg-secondary border-border text-foreground font-body" />
-        </div>
-        <div>
-          <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Custom URL Slug</label>
-          <div className="flex items-center gap-2">
-            <span className="text-xs font-body text-muted-foreground">/gallery/</span>
-            <Input value={slug} onChange={(e) => setSlug(slugify(e.target.value))} className="bg-secondary border-border text-foreground font-body flex-1" />
-            {slug && (
-              <span className={`text-[10px] font-body whitespace-nowrap ${existingAlbums.some(a => a.slug === slug && a.id !== album?.id) ? "text-destructive" : "text-green-500"}`}>
-                {existingAlbums.some(a => a.slug === slug && a.id !== album?.id) ? "⚠ Already taken" : "✓ Available"}
-              </span>
-            )}
-          </div>
-        </div>
+        <React.Suspense fallback={<div className="h-16 rounded-lg bg-secondary/30 animate-pulse" />}>
+          <AlbumTitleField value={title} onChange={(value) => { setTitle(value); if (!slug || slug === slugify(album?.title || "")) setSlug(slugify(value)); }} />
+        </React.Suspense>
+        <React.Suspense fallback={<div className="h-16 rounded-lg bg-secondary/30 animate-pulse" />}>
+          <AlbumSlugField value={slug} onChange={(value) => setSlug(slugify(value))} taken={existingAlbums.some(a => a.slug === slug && a.id !== album?.id)} />
+        </React.Suspense>
       </div>
 
-      <div>
-        <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Description</label>
-        <Textarea value={description} onChange={(e) => setDescription(e.target.value)} className="bg-secondary border-border text-foreground font-body min-h-[50px]" />
-      </div>
+      <React.Suspense fallback={<div className="h-16 rounded-lg bg-secondary/30 animate-pulse" />}>
+        <AlbumDescriptionField value={description} onChange={setDescription} />
+      </React.Suspense>
 
       <div>
         <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Status</label>
@@ -5817,6 +5749,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
       </div>
 
       {/* Unlock & Display */}
+      <React.Suspense fallback={null}><AlbumEditorSectionHeading id="album-editor-access" title="Access & downloads" detail="Choose what clients can see, download, and when access expires." bordered /></React.Suspense>
       <div className="grid md:grid-cols-2 gap-4">
         <div className="p-4 rounded-lg bg-secondary/50 border border-border/50">
           <div className="flex items-center justify-between">
@@ -5935,7 +5868,8 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
         </div>
       </div>
 
-      <div className="grid grid-cols-3 gap-4">
+      <React.Suspense fallback={null}><AlbumEditorSectionHeading id="album-editor-pricing" title="Pricing" detail="Set the included allowance and purchase options shown to this client." bordered /></React.Suspense>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <div>
           <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Free Downloads</label>
           <Input type="number" value={freeDownloads} onChange={(e) => setFreeDownloads(Number(e.target.value))} className="bg-secondary border-border text-foreground font-body" />
@@ -5952,7 +5886,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
 
       {/* ── Per-album proofing toggle (only visible when global proofing is on) ── */}
       {album && settings.proofingEnabled && (
-        <div className="flex items-center justify-between p-3 rounded-lg bg-secondary">
+        <div id="album-editor-workflow" className="scroll-mt-40 flex items-center justify-between p-3 rounded-lg bg-secondary">
           <div>
             <p className="text-xs font-body text-foreground font-medium">Proofing for this album</p>
             <p className="text-[10px] font-body text-muted-foreground/70 mt-0.5">Let this client star and submit picks before editing</p>
@@ -6351,8 +6285,8 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
       )}
 
       {/* Photo Upload */}
-      <div>
-        <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-3 block">Photos ({photos.length})</label>
+      <div id="album-editor-photos" className="scroll-mt-40 border-t border-border/50 pt-5">
+        <React.Suspense fallback={null}><AlbumEditorSectionHeading id="album-editor-photos-heading" title={`Photos (${photos.length})`} detail="Upload, reorder, choose the cover, and mark photos for client delivery." className="mb-3" /></React.Suspense>
         <div className="border-2 border-dashed border-border rounded-lg p-6 text-center hover:border-primary/30 transition-colors cursor-pointer relative mb-3">
           <Upload className="w-6 h-6 text-muted-foreground/50 mx-auto mb-2" />
           <p className="text-xs font-body text-muted-foreground">Click to upload photos or drag and drop</p>
@@ -6632,7 +6566,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
 
       {/* One-click delivery */}
       {!isNew && album && album.status !== "delivered" && (
-        <div className="p-4 rounded-lg bg-green-500/5 border border-green-500/20 space-y-3">
+        <div id="album-editor-delivery" className="scroll-mt-40 p-4 rounded-lg bg-green-500/5 border border-green-500/20 space-y-3">
           <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
             <div>
               <div className="flex items-center gap-2">
