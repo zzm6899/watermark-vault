@@ -7520,6 +7520,124 @@ app.get("/api/super/all-bookings", superLimiter, requireAuth, (_req, res) => {
   res.json(bookings);
 });
 
+app.get("/api/admin/payments/health", superLimiter, requireAuth, (_req, res) => {
+  const db = readDb();
+  const bookings = getStoredArray(db, DB_KEYS.BOOKINGS).filter(booking => !booking?.tenantSlug && booking?.archived !== true);
+  const now = Date.now();
+  const isExpired = booking => booking?.holdExpiresAt && new Date(booking.holdExpiresAt).getTime() <= now;
+  const counts = {
+    reviews: bookings.filter(booking => booking.paymentNeedsReview === true).length,
+    bankPending: bookings.filter(booking => booking.paymentStatus === "pending-confirmation" || booking.bankTransferPendingAt).length,
+    cardProcessing: bookings.filter(booking => ["open", "processing"].includes(String(booking.stripeCheckoutStatus || ""))).length,
+    expiredHolds: bookings.filter(booking => isExpired(booking) && !["paid", "cash", "deposit-paid"].includes(booking.paymentStatus)).length,
+    unpaid: bookings.filter(booking => (!booking.paymentStatus || booking.paymentStatus === "unpaid") && !isExpired(booking)).length,
+  };
+  res.setHeader("Cache-Control", "no-store");
+  res.json({
+    ok: true,
+    stripe: {
+      ready: mainStripeReady(),
+      secretKeyConfigured: !!process.env.STRIPE_SECRET_KEY,
+      webhookVerificationConfigured: !!process.env.STRIPE_WEBHOOK_SECRET,
+      unsafeUnsignedWebhooks: process.env.ALLOW_UNSIGNED_STRIPE_WEBHOOKS === "true",
+    },
+    counts,
+    checkedAt: new Date().toISOString(),
+  });
+});
+
+const ADMIN_BOOKING_EDITABLE_FIELDS = new Set([
+  "clientName", "clientEmail", "phone", "date", "time", "eventTypeId", "type", "duration",
+  "status", "notes", "answers", "answerLabels", "paymentStatus", "paymentAmount", "instagramHandle",
+  "depositRequired", "depositAmount", "depositMethod", "paymentMethod", "requiresConfirmation",
+  "statusHistory", "tasks", "albumId", "gcalEventId", "source", "tags", "contractId",
+  "attendeeCount", "instalmentIds", "seriesId", "seriesConfig",
+]);
+
+function sanitizeAdminBookingChanges(input) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return null;
+  const changes = {};
+  for (const [key, value] of Object.entries(input)) {
+    if (ADMIN_BOOKING_EDITABLE_FIELDS.has(key)) changes[key] = value;
+  }
+  return changes;
+}
+
+function withMainBookingLocks(bookingIds, task, index = 0) {
+  const ids = [...new Set(bookingIds)].sort();
+  if (index >= ids.length) return task();
+  return withCheckoutResourceLock(
+    bookingCheckoutResourceLockKey("main", ids[index]),
+    () => withMainBookingLocks(ids, task, index + 1),
+  );
+}
+
+// Atomic single-record admin mutations. These deliberately preserve all
+// checkout, capability, archive and payment-review fields managed by the
+// server, even when an administrator has a stale browser tab open.
+app.post("/api/admin/bookings", superLimiter, requireAuth, async (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  const input = req.body?.booking;
+  const bookingId = String(input?.id || "").trim();
+  const changes = sanitizeAdminBookingChanges(input);
+  if (!bookingId || bookingId.length > 128 || !changes) {
+    return res.status(400).json({ ok: false, code: "INVALID_BOOKING", error: "A valid booking is required" });
+  }
+  return withCheckoutResourceLock(bookingCheckoutResourceLockKey("main", bookingId), async () => {
+    const db = readDb();
+    const bookings = getStoredArray(db, DB_KEYS.BOOKINGS);
+    if (bookings.some(booking => String(booking?.id || "") === bookingId)) {
+      return res.status(409).json({ ok: false, code: "BOOKING_EXISTS", error: "Booking already exists" });
+    }
+    const booking = { id: bookingId, ...changes, createdAt: String(input?.createdAt || new Date().toISOString()), tenantSlug: undefined };
+    bookings.push(booking);
+    db[DB_KEYS.BOOKINGS] = JSON.stringify(bookings);
+    writeDb(db);
+    return res.status(201).json({ ok: true, booking });
+  });
+});
+
+app.patch("/api/admin/bookings/:id", superLimiter, requireAuth, async (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  const bookingId = String(req.params.id || "").trim();
+  const changes = sanitizeAdminBookingChanges(req.body?.changes);
+  if (!bookingId || bookingId.length > 128) {
+    return res.status(404).json({ ok: false, code: "BOOKING_NOT_FOUND", error: "Booking not found" });
+  }
+  if (!changes || !Object.keys(changes).length) {
+    return res.status(400).json({ ok: false, code: "NO_BOOKING_CHANGES", error: "No supported booking changes were supplied" });
+  }
+  return withCheckoutResourceLock(bookingCheckoutResourceLockKey("main", bookingId), async () => {
+    const db = readDb();
+    const bookings = getStoredArray(db, DB_KEYS.BOOKINGS);
+    const index = bookings.findIndex(booking => !booking?.tenantSlug && String(booking?.id || "") === bookingId);
+    if (index < 0) return res.status(404).json({ ok: false, code: "BOOKING_NOT_FOUND", error: "Booking not found" });
+    const booking = { ...bookings[index], ...changes, id: bookingId, tenantSlug: bookings[index].tenantSlug };
+    bookings[index] = booking;
+    db[DB_KEYS.BOOKINGS] = JSON.stringify(bookings);
+    writeDb(db);
+    return res.json({ ok: true, booking });
+  });
+});
+
+app.delete("/api/admin/bookings/:id", superLimiter, requireAuth, async (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  const bookingId = String(req.params.id || "").trim();
+  if (!bookingId || bookingId.length > 128) {
+    return res.status(404).json({ ok: false, code: "BOOKING_NOT_FOUND", error: "Booking not found" });
+  }
+  return withCheckoutResourceLock(bookingCheckoutResourceLockKey("main", bookingId), async () => {
+    const db = readDb();
+    const bookings = getStoredArray(db, DB_KEYS.BOOKINGS);
+    const index = bookings.findIndex(booking => !booking?.tenantSlug && String(booking?.id || "") === bookingId);
+    if (index < 0) return res.status(404).json({ ok: false, code: "BOOKING_NOT_FOUND", error: "Booking not found" });
+    bookings.splice(index, 1);
+    db[DB_KEYS.BOOKINGS] = JSON.stringify(bookings);
+    writeDb(db);
+    return res.json({ ok: true, bookingId });
+  });
+});
+
 // Resolve a Stripe payment review against the current canonical main booking.
 // This shares the booking mutation lock with checkout, bank switching, and
 // Stripe webhook fulfilment so a delayed webhook cannot overwrite the result.
@@ -7577,7 +7695,7 @@ app.patch("/api/admin/bookings/:id/payment-review", superLimiter, requireAuth, a
 // Archive/unarchive one or more retained bookings without allowing the browser
 // to replace the canonical bookings collection. Archiving is limited to
 // terminal, elapsed, or expired unpaid holds so it cannot release a live slot.
-app.patch("/api/admin/bookings/archive", superLimiter, requireAuth, (req, res) => {
+app.patch("/api/admin/bookings/archive", superLimiter, requireAuth, async (req, res) => {
   const archived = req.body?.archived;
   const bookingIds = req.body?.bookingIds;
   if (typeof archived !== "boolean" || !Array.isArray(bookingIds)) {
@@ -7587,28 +7705,30 @@ app.patch("/api/admin/bookings/archive", superLimiter, requireAuth, (req, res) =
   if (!normalizedIds.length || normalizedIds.length > 200 || normalizedIds.some(id => id.length > 128)) {
     return res.status(400).json({ ok: false, error: "Provide between 1 and 200 valid booking IDs" });
   }
-  const db = readDb();
-  const bookings = getStoredArray(db, DB_KEYS.BOOKINGS);
-  const mainTimezone = dbGet(db, DB_KEYS.PROFILE, {})?.timezone || "Australia/Sydney";
-  const tenantTimezones = new Map(readTenants().map(tenant => [tenant.slug, tenant.timezone || "Australia/Sydney"]));
-  const result = applyBookingArchiveState(bookings, normalizedIds, archived, {
-    actor: req.authContext?.username || "admin",
-    timezoneForBooking: booking => booking?.tenantSlug ? tenantTimezones.get(booking.tenantSlug) || "Australia/Sydney" : mainTimezone,
-  });
-  if (result.changedIds.length) {
-    db[DB_KEYS.BOOKINGS] = JSON.stringify(result.bookings);
-    writeDb(db);
-  }
-  const requested = new Set(normalizedIds);
-  const updated = result.bookings.filter(booking => requested.has(String(booking?.id || "")));
-  res.setHeader("Cache-Control", "no-store");
-  return res.json({
-    ok: true,
-    archived,
-    updated,
-    changedIds: result.changedIds,
-    unchangedIds: result.unchangedIds,
-    skipped: result.skipped,
+  return withMainBookingLocks(normalizedIds, () => {
+    const db = readDb();
+    const bookings = getStoredArray(db, DB_KEYS.BOOKINGS);
+    const mainTimezone = dbGet(db, DB_KEYS.PROFILE, {})?.timezone || "Australia/Sydney";
+    const tenantTimezones = new Map(readTenants().map(tenant => [tenant.slug, tenant.timezone || "Australia/Sydney"]));
+    const result = applyBookingArchiveState(bookings, normalizedIds, archived, {
+      actor: req.authContext?.username || "admin",
+      timezoneForBooking: booking => booking?.tenantSlug ? tenantTimezones.get(booking.tenantSlug) || "Australia/Sydney" : mainTimezone,
+    });
+    if (result.changedIds.length) {
+      db[DB_KEYS.BOOKINGS] = JSON.stringify(result.bookings);
+      writeDb(db);
+    }
+    const requested = new Set(normalizedIds);
+    const updated = result.bookings.filter(booking => requested.has(String(booking?.id || "")));
+    res.setHeader("Cache-Control", "no-store");
+    return res.json({
+      ok: true,
+      archived,
+      updated,
+      changedIds: result.changedIds,
+      unchangedIds: result.unchangedIds,
+      skipped: result.skipped,
+    });
   });
 });
 

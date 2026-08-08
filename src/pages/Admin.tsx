@@ -20,7 +20,6 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import PixiesetImportPanel from "@/components/admin/PixiesetImportPanel";
 import { toast } from "sonner";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import {
@@ -160,8 +159,6 @@ import type {
   Expense, Quote, Tag, BookingTask, BookingSource, EmailAutomationRule, EmailAutomationReminderType, EmailAutomationTrigger,
 } from "@/lib/types";
 import ProgressiveImg from "@/components/ProgressiveImg";
-import PortfolioEditor from "@/components/admin/PortfolioEditor";
-import ZipOperationsPanel from "@/components/admin/ZipOperationsPanel";
 import { useBackfillThumbnails } from "@/hooks/use-backfill-thumbnails";
 import { generateCapabilityToken } from "@/lib/capability-token";
 import { drawServerAlignedWatermark } from "@/lib/watermark-render";
@@ -172,12 +169,18 @@ import sampleWedding from "@/assets/sample-wedding.jpg";
 import sampleEvent from "@/assets/sample-event.jpg";
 import sampleFood from "@/assets/sample-food.jpg";
 
-type Tab = "dashboard" | "shoot-day" | "bookings" | "automations" | "events" | "albums" | "photos" | "finance" | "invoices" | "contacts" | "enquiries" | "website" | "profile" | "settings" | "storage" | "apk" | "platform";
+const PaymentOperationsView = React.lazy(() => import("@/pages/admin/PaymentOperationsView"));
+const PortfolioEditor = React.lazy(() => import("@/components/admin/PortfolioEditor"));
+const PixiesetImportPanel = React.lazy(() => import("@/components/admin/PixiesetImportPanel"));
+const ZipOperationsPanel = React.lazy(() => import("@/components/admin/ZipOperationsPanel"));
+
+type Tab = "dashboard" | "shoot-day" | "bookings" | "payments" | "automations" | "events" | "albums" | "photos" | "finance" | "invoices" | "contacts" | "enquiries" | "website" | "profile" | "settings" | "storage" | "apk" | "platform";
 
 const TAB_ROUTE_MAP: Record<string, Tab> = {
   dashboard: "dashboard",
   "shoot-day": "shoot-day",
   bookings: "bookings",
+  payments: "payments",
   automations: "automations",
   events: "events",
   albums: "albums",
@@ -198,6 +201,7 @@ const ADMIN_TAB_LABELS: Record<Tab, string> = {
   dashboard: "Dashboard",
   "shoot-day": "Shoot Day",
   bookings: "Bookings",
+  payments: "Payment Operations",
   automations: "Automations",
   events: "Events",
   albums: "Albums",
@@ -779,6 +783,7 @@ export default function Admin() {
     { id: "dashboard" as Tab, label: "Dashboard", icon: LayoutDashboard },
     { id: "shoot-day" as Tab, label: "Shoot Day", icon: RadioTower },
     { id: "bookings" as Tab, label: "Bookings", icon: Calendar },
+    { id: "payments" as Tab, label: "Payments", icon: CreditCard },
     { id: "automations" as Tab, label: "Automations", icon: Bell },
     { id: "events" as Tab, label: "Events", icon: Clock },
     { id: "albums" as Tab, label: "Albums", icon: Image },
@@ -818,6 +823,8 @@ export default function Admin() {
                     ? getInvoices().filter(i => i.status === "overdue").length
                     : tab.id === "enquiries"
                       ? getEnquiries().filter(e => e.status === "pending").length
+                      : tab.id === "payments"
+                        ? getBookings().filter(b => b.archived !== true && (b.paymentNeedsReview || b.paymentStatus === "pending-confirmation")).length
                       : tab.id === "bookings"
                         ? getBookings().filter(b => b.archived !== true && b.status === "pending").length
                         : 0;
@@ -922,6 +929,7 @@ export default function Admin() {
           {activeTab === "dashboard" && <DashboardView />}
           {activeTab === "shoot-day" && <ShootDayCommandCenterView />}
           {activeTab === "bookings" && <BookingsView onCreateAlbum={handleCreateAlbumForBooking} />}
+          {activeTab === "payments" && <React.Suspense fallback={<div className="text-sm text-muted-foreground">Loading payment operations…</div>}><PaymentOperationsView /></React.Suspense>}
           {activeTab === "automations" && <AutomationsView />}
           {activeTab === "events" && <EventTypesView />}
           {activeTab === "albums" && <AlbumsView prefillBookingId={prefillBookingId} onClearPrefill={() => setPrefillBookingId(null)} />}
@@ -930,7 +938,7 @@ export default function Admin() {
           {activeTab === "invoices" && <InvoicesView />}
           {activeTab === "contacts" && <ContactsView />}
           {activeTab === "enquiries" && <EnquiriesView />}
-          {activeTab === "website" && <PortfolioEditor />}
+          {activeTab === "website" && <React.Suspense fallback={<div className="text-sm text-muted-foreground">Loading website editor…</div>}><PortfolioEditor /></React.Suspense>}
           {activeTab === "profile" && <ProfileView />}
           {activeTab === "settings" && <SettingsView />}
           {activeTab === "storage" && <StorageView />}
@@ -2767,12 +2775,14 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
   const [showCreateBooking, setShowCreateBooking] = useState(false);
   const [editingBooking, setEditingBooking] = useState<Booking | null>(null);
 
-  const handleSaveBooking = (bk: Booking) => {
+  const handleSaveBooking = async (bk: Booking) => {
     if (editingBooking) {
-      updateBooking(bk);
+      const saved = await updateBooking(bk);
+      if (!saved) { toast.error("Booking could not be updated. Refresh and try again."); return; }
       toast.success("Booking updated");
     } else {
-      addBooking(bk);
+      const saved = await addBooking(bk);
+      if (!saved) { toast.error("Booking could not be created. Refresh and try again."); return; }
       toast.success("Booking created");
     }
     setBookingsState(getBookings());
@@ -2818,9 +2828,9 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
     setEmailLogs(prev => ({ ...prev, [bookingId]: log }));
   };
 
-  const handleDelete = (id: string) => {
+  const handleDelete = async (id: string) => {
     if (!confirm("Delete this booking?")) return;
-    deleteBooking(id);
+    if (!await deleteBooking(id)) { toast.error("Booking could not be deleted. Refresh and try again."); return; }
     setBookingsState(getBookings());
     toast.success("Booking deleted");
   };
@@ -4411,7 +4421,6 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
                     <option value="textarea">Long Text</option>
                     <option value="select">Select</option>
                     <option value="boolean">Yes/No</option>
-                    <option value="image-upload" disabled>Image Upload (not yet supported)</option>
                     <option value="instagram">Instagram Handle</option>
                   </select>
                   <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-destructive" onClick={() => setQuestions(questions.filter((_, i) => i !== idx))}>
@@ -8749,12 +8758,12 @@ function InvoicesView() {
           </div>
         </div>
 
-        <PixiesetImportPanel
+        <React.Suspense fallback={<div className="rounded-xl border border-border p-6 text-sm text-muted-foreground">Loading importer…</div>}><PixiesetImportPanel
           contacts={getContacts()}
           invoices={invoices}
           onReplaceContacts={saveContacts}
           onReplaceInvoices={nextInvoices => { saveInvoices(nextInvoices); setInvoices(nextInvoices); }}
-        />
+        /></React.Suspense>
 
         {/* Search + Date range + Sort */}
         <div className="glass-panel rounded-xl p-3 space-y-3">
@@ -14711,7 +14720,7 @@ function StorageView() {
         <HardDrive className="w-6 h-6 text-primary" /> Storage & Usage
       </h2>
 
-      <ZipOperationsPanel />
+      <React.Suspense fallback={<div className="rounded-xl border border-border p-6 text-sm text-muted-foreground">Loading ZIP operations…</div>}><ZipOperationsPanel /></React.Suspense>
 
       {/* Overview Stats */}
       <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">

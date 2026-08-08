@@ -1,5 +1,7 @@
 export type WatermarkPosition = "center" | "top-left" | "top-right" | "bottom-left" | "bottom-right" | "tiled";
-export type QuestionFieldType = "text" | "textarea" | "select" | "boolean" | "image-upload" | "instagram";
+/** `image-upload` is a read-only legacy value. Editors no longer create it and
+ * public booking forms omit old prompts instead of presenting a broken field. */
+export type QuestionFieldType = "text" | "textarea" | "select" | "boolean" | "instagram" | "image-upload";
 export type PaymentStatus = "unpaid" | "paid" | "cash" | "pending-confirmation" | "deposit-paid";
 export type DownloadQuality = "2mb" | "5mb" | "original";
 

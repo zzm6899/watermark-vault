@@ -1,5 +1,5 @@
 import { defineConfig } from "vite";
-import react from "@vitejs/plugin-react-swc";
+import react from "@vitejs/plugin-react";
 import { fileURLToPath } from "node:url";
 import { componentTagger } from "lovable-tagger";
 
@@ -20,6 +20,10 @@ export default defineConfig(({ mode }) => ({
     dedupe: ["react", "react-dom"],
   },
   build: {
+    // Admin is now split at feature boundaries (payments, portfolio, imports,
+    // ZIP operations). Keep the remaining workspace shell under a deliberate
+    // 600 kB ceiling while those routes continue to be extracted incrementally.
+    chunkSizeWarningLimit: 600,
     rollupOptions: {
       output: {
         manualChunks(id) {

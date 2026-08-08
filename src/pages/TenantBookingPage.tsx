@@ -4,7 +4,7 @@ import { usePageTitle } from "@/hooks/use-page-title";
 import {
   ArrowLeft, ArrowRight, Camera, Clock, DollarSign, CheckCircle2,
   ChevronLeft, ChevronRight, Globe, MapPin, Calendar as CalendarIcon,
-  MessageSquare, CreditCard, Building2,
+  MessageSquare, CreditCard, Building2, CalendarDays,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -301,7 +301,6 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
     () => getPublicCustomQuestions(selectedEvent?.questions),
     [selectedEvent],
   );
-  const hasRequiredUnsupportedUpload = selectedQuestions.some(question => question.type === "image-upload" && question.required);
   const phoneRequired = selectedQuestions.some(question => contactQuestionRole(question) === "phone" && question.required);
   const selectedPrice = selectedEvent && selectedDuration ? getPriceForDuration(selectedEvent, selectedDuration) : 0;
   const availablePaymentPaths = useMemo<TenantPaymentPath[]>(() => {
@@ -475,10 +474,6 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
       toast.error(`Please fill in: ${missing.map(question => question.label).join(", ")}`);
       return;
     }
-    if (hasRequiredUnsupportedUpload) {
-      toast.error("This booking form requires an upload that is not available online. Please contact the photographer.");
-      return;
-    }
     if (availabilityLoading || availableSlots === null || !timeSlots.includes(selectedTime)) {
       toast.error("That time is no longer available. Please choose another.");
       setSelectedTime(null);
@@ -607,6 +602,14 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
         </div>
       </header>
       <TenantBookingSteps currentStep={step} />
+
+      {selectedEvent && !["event-select", "confirmed", "enquiry", "enquiry-confirmed"].includes(step) && (
+        <aside aria-label="Current booking selection" className="sticky top-0 z-20 mx-auto mt-3 flex w-[calc(100%-2rem)] max-w-3xl items-center gap-3 rounded-xl border border-primary/20 bg-background/90 px-4 py-3 shadow-lg backdrop-blur">
+          <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/15 text-primary"><CalendarDays className="size-4" /></span>
+          <div className="min-w-0 flex-1"><p className="truncate text-sm font-medium text-foreground">{selectedEvent.title}</p><p className="truncate text-xs text-muted-foreground">{selectedDate ? selectedDate.toLocaleDateString("en-AU", { weekday: "short", day: "numeric", month: "short" }) : "Choose a date"}{selectedTime ? ` · ${formatTime12(selectedTime)}` : ""}{selectedDuration ? ` · ${formatDuration(selectedDuration)}` : ""}</p></div>
+          {selectedDuration && <span className="shrink-0 rounded-full border border-primary/20 bg-primary/10 px-2.5 py-1 text-xs font-semibold text-primary">${getPriceForDuration(selectedEvent, selectedDuration)}</span>}
+        </aside>
+      )}
 
       <div className="flex-1 max-w-6xl w-full mx-auto p-4 sm:p-6 lg:p-8">
 
@@ -1007,13 +1010,6 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
                 {customQuestions.map(question => (
                   <TenantBookingQuestionField key={question.id} field={question} value={customAnswers[question.id] || ""} onChange={value => setCustomAnswers(previous => ({ ...previous, [question.id]: value }))} />
                 ))}
-                {selectedQuestions.some(question => question.type === "image-upload") && (
-                  <p role={hasRequiredUnsupportedUpload ? "alert" : undefined} className={`rounded-lg border p-3 text-xs font-body ${hasRequiredUnsupportedUpload ? "border-destructive/40 bg-destructive/10 text-destructive" : "border-border text-muted-foreground"}`}>
-                    {hasRequiredUnsupportedUpload
-                      ? "This booking form is configured with a required image upload, but secure uploads are not available here. Please contact the photographer to book."
-                      : "Reference image uploads aren't accepted in this form. The photographer can arrange a secure upload after you submit."}
-                  </p>
-                )}
                 {/* Convention name field */}
                 {conventionFieldEnabled && (
                   <div>
@@ -1071,10 +1067,8 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
                     </p>
                   </fieldset>
                 )}
-                <Button onClick={handleSubmit} disabled={submitting || hasRequiredUnsupportedUpload} className="w-full bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2">
-                  {hasRequiredUnsupportedUpload
-                    ? "Contact Photographer to Book"
-                    : submitting
+                <Button onClick={handleSubmit} disabled={submitting} className="w-full bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2">
+                  {submitting
                     ? paymentPath === "stripe" ? "Creating Secure Checkout…" : "Submitting…"
                     : selectedPrice === 0
                     ? selectedEvent.requiresConfirmation ? "Submit Free Booking Request" : "Confirm Free Booking"

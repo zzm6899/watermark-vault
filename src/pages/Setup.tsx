@@ -417,7 +417,6 @@ export default function Setup({ onComplete }: { onComplete: () => void }) {
                             <option value="textarea">Long Text</option>
                             <option value="select">Select</option>
                             <option value="boolean">Yes/No</option>
-                            <option value="image-upload" disabled>Image Upload (not yet supported)</option>
                           </select>
                           <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-destructive" onClick={() => removeQuestion(idx)}>
                             <Trash2 className="w-3.5 h-3.5" />
