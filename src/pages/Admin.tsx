@@ -144,14 +144,16 @@ import {
   adminLogout,
   adminAuthHeaders,
   setBookingArchiveState,
+  resolveBookingPaymentReview,
 } from "@/lib/api";
-import type { CacheBreakdown, EmailAutomationPreview, ManualEditParams, PresetEditParams, XmpPreset, PhotoEditRequest } from "@/lib/api";
+import type { CacheBreakdown, EmailAutomationPreview, ManualEditParams, PaymentReviewResolutionStatus, PresetEditParams, XmpPreset, PhotoEditRequest } from "@/lib/api";
 import RichTextEditor, { RichTextDisplay } from "@/components/RichTextEditor";
 import { richTextToPlainText } from "@/lib/rich-text";
 import LoginPage from "@/pages/LoginPage";
 import type {
   EventType, QuestionField, AvailabilitySlot,
   ProfileSettings, AppSettings, Booking, WatermarkPosition,
+  BookingPaymentReviewEntry,
   Album, Photo, PaymentStatus, AlbumDisplaySize, AlbumDownloadRecord, DownloadHistoryEntry,
   EmailTemplate, WaitlistEntry, Invoice, InvoiceItem, InvoiceParty, InvoiceStatus, Contact,
   Enquiry, EnquiryStatus, LicenseKey, Tenant, LicensePlan, LicensePurchase, TenantSettings, EventSlotRequest,
@@ -229,6 +231,39 @@ function formatDuration(mins: number) {
 
 function slugify(text: string): string {
   return text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+}
+
+const PAYMENT_REVIEW_RESOLUTION_STATUSES: PaymentReviewResolutionStatus[] = ["paid", "cash", "deposit-paid"];
+
+function bookingNeedsManualPaymentReview(booking: Booking): boolean {
+  if (booking.paymentNeedsReview === true) return true;
+  if (booking.paymentReviewStatus && booking.paymentReviewStatus !== "resolved") return true;
+  return !!booking.paymentReviewReason && booking.paymentReviewStatus !== "resolved";
+}
+
+function latestPaymentReview(booking: Booking): BookingPaymentReviewEntry | undefined {
+  const reviews = Array.isArray(booking.paymentReviews) ? booking.paymentReviews : [];
+  return [...reviews].reverse().find(review => review?.status !== "resolved") || reviews[reviews.length - 1];
+}
+
+function formatPaymentReviewAmount(review?: BookingPaymentReviewEntry): string | null {
+  const amountTotal = Number(review?.amountTotal);
+  if (!Number.isFinite(amountTotal) || amountTotal < 0) return null;
+  const currency = /^[a-z]{3}$/i.test(String(review?.currency || ""))
+    ? String(review?.currency).toUpperCase()
+    : "AUD";
+  try {
+    return new Intl.NumberFormat("en-AU", { style: "currency", currency }).format(amountTotal / 100);
+  } catch {
+    return `${currency} ${(amountTotal / 100).toFixed(2)}`;
+  }
+}
+
+function paymentStatusLabel(status: PaymentStatus): string {
+  if (status === "paid") return "paid in full";
+  if (status === "deposit-paid") return "deposit paid";
+  if (status === "pending-confirmation") return "bank transfer pending";
+  return status;
 }
 
 function albumDedupeKey(album: Album): string {
@@ -2749,8 +2784,10 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
   const [bookingSearch, setBookingSearch] = useState(() => new URLSearchParams(location.search).get("search") || "");
   const [statusFilter, setStatusFilter] = useState<"all" | "pending" | "confirmed" | "completed" | "cancelled">("all");
   const [paymentFilter, setPaymentFilter] = useState<"all" | PaymentStatus>(() => new URLSearchParams(location.search).get("payment") === "unpaid" ? "unpaid" : "all");
+  const [paymentReviewOnly, setPaymentReviewOnly] = useState(false);
   const [archiveFilter, setArchiveFilter] = useState<"active" | "archived" | "all">("active");
   const [archivingBookingIds, setArchivingBookingIds] = useState<Set<string>>(new Set());
+  const [resolvingPaymentReviewId, setResolvingPaymentReviewId] = useState<string | null>(null);
   const [showCancelled, setShowCancelled] = useState(false);
   const albums = getAlbums();
   const [emailLogs, setEmailLogs] = useState<Record<string, { id: string; type: string; sentAt: string; openedAt?: string; subject: string; to: string }[]>>({});
@@ -2869,11 +2906,32 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
   };
 
   const handlePaymentChange = async (bk: Booking, paymentStatus: PaymentStatus) => {
-    updateBooking({ ...bk, paymentStatus });
+    const hadActiveReview = bookingNeedsManualPaymentReview(bk);
+    if (hadActiveReview) {
+      if (!PAYMENT_REVIEW_RESOLUTION_STATUSES.some(status => status === paymentStatus)) {
+        toast.error("Verify the Stripe payment, then select Paid in Full, Deposit Paid, or Cash to resolve this review");
+        return;
+      }
+      setResolvingPaymentReviewId(bk.id);
+      const result = await resolveBookingPaymentReview(bk.id, paymentStatus as PaymentReviewResolutionStatus);
+      setResolvingPaymentReviewId(null);
+      if (!result.ok || !result.booking) {
+        toast.error(result.error || "Unable to resolve payment review");
+        return;
+      }
+      setBookingsState(previous => previous.map(booking => booking.id === result.booking!.id ? result.booking! : booking));
+      cacheBookingLocally(result.booking);
+      toast.success(`Payment marked as ${paymentStatusLabel(paymentStatus)} and manual review resolved`);
+      notifyDiscord({ type: "payment", booking: result.booking, payment: paymentStatus }).catch(() => {});
+      return;
+    }
+
+    const updated = { ...bk, paymentStatus };
+    updateBooking(updated);
     setBookingsState(getBookings());
-    toast.success(`Payment marked as ${paymentStatus}`);
+    toast.success(`Payment marked as ${paymentStatusLabel(paymentStatus)}`);
     // Discord notification for payment status change
-    notifyDiscord({ type: "payment", booking: { ...bk, paymentStatus }, payment: paymentStatus }).catch(() => {});
+    notifyDiscord({ type: "payment", booking: updated, payment: paymentStatus }).catch(() => {});
   };
 
   const handleExportCsv = () => {
@@ -2927,6 +2985,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
     if (statusFilter !== "all" && bk.status !== statusFilter) return false;
     if (archiveFilter === "active" && statusFilter === "all" && bk.status === "cancelled" && !showCancelled) return false;
     if (paymentFilter !== "all" && (bk.paymentStatus || "unpaid") !== paymentFilter) return false;
+    if (paymentReviewOnly && !bookingNeedsManualPaymentReview(bk)) return false;
     if (!bookingSearch) return true;
     const q = bookingSearch.toLowerCase();
     return (bk.clientName || "").toLowerCase().includes(q)
@@ -2936,6 +2995,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
       || (bk.instagramHandle || "").toLowerCase().includes(q)
       || (bk.type || "").toLowerCase().includes(q)
       || (bk.status || "").toLowerCase().includes(q)
+      || (bk.paymentReviewReason || "").toLowerCase().includes(q)
       || (bk.date || "").includes(q)
       || (bk.notes || "").toLowerCase().includes(q)
       || (bk.createdAt ? new Date(bk.createdAt).toLocaleDateString("en-AU") : "").includes(q);
@@ -2946,11 +3006,14 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
   nextWeek.setDate(nextWeek.getDate() + 7);
   const nextWeekStr = localDateString(nextWeek);
   const operationalBookings = bookings.filter(b => b.archived !== true);
+  const paymentReviewCount = operationalBookings.filter(bookingNeedsManualPaymentReview).length;
+  const archivedPaymentReviewCount = bookings.filter(b => b.archived === true && bookingNeedsManualPaymentReview(b)).length;
   const bookingSummary = {
     pending: operationalBookings.filter(b => b.status === "pending").length,
     today: operationalBookings.filter(b => b.date === today && b.status !== "cancelled").length,
     next7: operationalBookings.filter(b => b.date >= today && b.date <= nextWeekStr && b.status !== "cancelled").length,
     needsPayment: operationalBookings.filter(b => b.status !== "cancelled" && !["paid", "cash"].includes(b.paymentStatus || "unpaid")).length,
+    paymentReview: paymentReviewCount,
   };
 
   const sortedBookings = [...filteredBookings].sort((a, b) => {
@@ -3027,6 +3090,40 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
         </div>
       )}
 
+      {(paymentReviewCount > 0 || archivedPaymentReviewCount > 0) && (
+        <div role="alert" className="rounded-xl border border-red-500/50 bg-red-500/10 p-4 mb-5 shadow-[0_0_0_1px_rgba(239,68,68,0.08)]">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm font-body font-semibold text-red-300">Payment needs manual review</p>
+                <p className="text-xs font-body text-red-200/80 mt-0.5">
+                  {paymentReviewCount} active booking{paymentReviewCount === 1 ? " has" : "s have"} a Stripe payment that was received but not safely applied.
+                  {archivedPaymentReviewCount > 0 ? ` ${archivedPaymentReviewCount} archived booking${archivedPaymentReviewCount === 1 ? " is" : "s are"} also flagged.` : ""}
+                </p>
+                <p className="text-[11px] font-body text-muted-foreground mt-1">Verify the payment in Stripe, then intentionally set the payment status to resolve the flag. No booking is marked paid automatically.</p>
+              </div>
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              className="gap-1.5 font-body text-xs border-red-500/40 text-red-300 hover:bg-red-500/10 shrink-0"
+              onClick={() => {
+                setArchiveFilter(paymentReviewCount > 0 ? "active" : "archived");
+                setPaymentReviewOnly(true);
+                setPaymentFilter("all");
+                setStatusFilter("all");
+                setBookingSearch("");
+                setShowCancelled(true);
+                setSelectedBookingIds(new Set());
+              }}
+            >
+              <AlertTriangle className="w-3.5 h-3.5" /> Show flagged
+            </Button>
+          </div>
+        </div>
+      )}
+
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
         <div>
           <h2 className="font-display text-2xl text-foreground">Bookings</h2>
@@ -3098,14 +3195,15 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
         </div>
       </div>
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-5">
         {[
           { label: "Pending", value: bookingSummary.pending, tone: "text-yellow-400" },
           { label: "Today", value: bookingSummary.today, tone: "text-primary" },
           { label: "Next 7 Days", value: bookingSummary.next7, tone: "text-blue-400" },
           { label: "Needs Payment", value: bookingSummary.needsPayment, tone: "text-red-400" },
+          { label: "Manual Review", value: bookingSummary.paymentReview, tone: "text-red-300" },
         ].map(item => (
-          <div key={item.label} className="glass-panel rounded-xl p-3">
+          <div key={item.label} className={`glass-panel rounded-xl p-3 ${item.label === "Manual Review" && item.value > 0 ? "border border-red-500/40 bg-red-500/5" : ""}`}>
             <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground">{item.label}</p>
             <p className={`font-display text-2xl mt-1 ${item.tone}`}>{item.value}</p>
           </div>
@@ -3283,6 +3381,13 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                   {s.replace("-", " ")}
                 </button>
               ))}
+              <button
+                onClick={() => setPaymentReviewOnly(value => !value)}
+                aria-pressed={paymentReviewOnly}
+                className={`inline-flex items-center gap-1 text-[10px] font-body tracking-wider uppercase px-2 py-1 rounded transition-colors ${paymentReviewOnly ? "bg-red-500/20 text-red-300" : "text-muted-foreground hover:text-red-300"}`}
+              >
+                <AlertTriangle className="w-3 h-3" /> Manual review {paymentReviewCount + archivedPaymentReviewCount}
+              </button>
             </div>
             <div className="flex items-center gap-1 flex-wrap overflow-x-auto">
               <span className="text-[10px] font-body text-muted-foreground/50 mr-1">Sort:</span>
@@ -3306,8 +3411,13 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
             const et = eventTypes.find(e => e.id === bk.eventTypeId);
             const remaining = Math.max(0, (bk.paymentAmount || 0) - (bk.depositAmount || 0));
             const showBalance = remaining > 0 && !["paid", "cash"].includes(bk.paymentStatus || "unpaid");
+            const needsPaymentReview = bookingNeedsManualPaymentReview(bk);
+            const review = latestPaymentReview(bk);
+            const reviewReason = String(bk.paymentReviewReason || review?.reason || "Stripe confirmed money, but it could not be safely matched to this booking.").slice(0, 500);
+            const reviewReceivedAt = bk.paymentReceivedAt || review?.receivedAt;
+            const reviewAmount = formatPaymentReviewAmount(review);
             return (
-              <div key={bk.id} className={`glass-panel rounded-xl overflow-hidden${bk.status === "cancelled" ? " opacity-50" : ""}${bk.archived ? " border border-dashed border-border/70" : ""}`}>
+              <div key={bk.id} className={`glass-panel rounded-xl overflow-hidden${bk.status === "cancelled" && !needsPaymentReview ? " opacity-50" : ""}${bk.archived ? " border border-dashed border-border/70" : ""}${needsPaymentReview ? " border border-red-500/50 bg-red-500/[0.03] shadow-[0_0_0_1px_rgba(239,68,68,0.06)]" : ""}`}>
                 <div className="p-4 cursor-pointer hover:bg-secondary/20 transition-colors" onClick={() => {
                     const willExpand = expandedId !== bk.id;
                     setExpandedId(willExpand ? bk.id : null);
@@ -3341,6 +3451,11 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                         <div className="flex items-center gap-2 flex-wrap">
                           <h3 className={`text-sm font-body text-foreground font-medium${bk.status === "cancelled" ? " line-through" : ""}`}>{bk.clientName}</h3>
                           <span className="text-[10px] font-mono text-primary/80 bg-primary/10 px-1.5 py-0.5 rounded">{bookingPaymentReference(bk)}</span>
+                          {needsPaymentReview && (
+                            <span className="inline-flex items-center gap-1 text-[10px] font-body font-semibold px-2 py-0.5 rounded-full border border-red-500/50 bg-red-500/15 text-red-300">
+                              <AlertTriangle className="w-2.5 h-2.5" /> Payment needs manual review
+                            </span>
+                          )}
                           {bk.archived && (
                             <span className="inline-flex items-center gap-1 text-[10px] font-body px-2 py-0.5 rounded-full border border-border bg-secondary text-muted-foreground">
                               <Archive className="w-2.5 h-2.5" /> Archived
@@ -3354,6 +3469,13 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                         <p className={`text-xs font-body text-muted-foreground${bk.status === "cancelled" ? " line-through" : ""}`}>{bk.type} · {bk.date} {formatBookingTimeRange(bk.time, bk.duration) || "Time TBC"} · {formatDuration(bk.duration)}</p>
                         {bk.createdAt && (
                           <p className="text-[10px] font-body text-muted-foreground/50">Booked {new Date(bk.createdAt).toLocaleDateString("en-AU", { day: "numeric", month: "short", year: "numeric" })}</p>
+                        )}
+                        {needsPaymentReview && (
+                          <p className="text-[11px] font-body text-red-300/90 mt-1 line-clamp-2">
+                            {reviewReason}
+                            {reviewAmount ? ` · ${reviewAmount}` : ""}
+                            {reviewReceivedAt ? ` · ${new Date(reviewReceivedAt).toLocaleString("en-AU")}` : ""}
+                          </p>
                         )}
                       </div>
                     </div>
@@ -3373,7 +3495,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                         <option value="completed">Completed</option>
                         <option value="cancelled">Cancelled</option>
                       </select>
-                      <select value={bk.paymentStatus || "unpaid"} onChange={(e) => handlePaymentChange(bk, e.target.value as PaymentStatus)} disabled={bk.archived === true}
+                      <select value={bk.paymentStatus || "unpaid"} onChange={(e) => handlePaymentChange(bk, e.target.value as PaymentStatus)} disabled={bk.archived === true || resolvingPaymentReviewId === bk.id}
                         aria-label="Payment status"
                         className="hidden sm:block text-xs font-body px-2.5 py-1 rounded-full bg-secondary border border-border text-foreground cursor-pointer">
                         <option value="unpaid">Unpaid</option>
@@ -3421,6 +3543,24 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                 </div>
                 {isExpanded && (
                   <div className="px-4 pb-4 border-t border-border/50 pt-3 space-y-3">
+                    {needsPaymentReview && (
+                      <div role="alert" className="rounded-lg border border-red-500/50 bg-red-500/10 p-3">
+                        <div className="flex items-start gap-2.5">
+                          <AlertTriangle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+                          <div className="min-w-0">
+                            <p className="text-sm font-body font-semibold text-red-300">Payment needs manual review</p>
+                            <p className="text-xs font-body text-red-100/90 mt-1">{reviewReason}</p>
+                            {(reviewReceivedAt || reviewAmount) && (
+                              <p className="text-[11px] font-body text-red-200/75 mt-1.5">
+                                {reviewAmount ? `Received amount: ${reviewAmount}` : "Amount not recorded"}
+                                {reviewReceivedAt ? ` · Received ${new Date(reviewReceivedAt).toLocaleString("en-AU")}` : ""}
+                              </p>
+                            )}
+                            <p className="text-[11px] font-body text-muted-foreground mt-2">The payment remains unallocated. Verify it in Stripe before selecting Paid in Full, Deposit Paid, or Cash. That intentional status change resolves the active flag and keeps this audit history.</p>
+                          </div>
+                        </div>
+                      </div>
+                    )}
                     {/* Mobile-only: status/payment selects in expanded section */}
                     <div className="flex gap-2 sm:hidden" onClick={e => e.stopPropagation()}>
                       <select value={bk.status} onChange={(e) => handleStatusChange(bk, e.target.value as Booking["status"])} disabled={bk.archived === true}
@@ -3430,7 +3570,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                         <option value="completed">Completed</option>
                         <option value="cancelled">Cancelled</option>
                       </select>
-                      <select value={bk.paymentStatus || "unpaid"} onChange={(e) => handlePaymentChange(bk, e.target.value as PaymentStatus)} disabled={bk.archived === true}
+                      <select value={bk.paymentStatus || "unpaid"} onChange={(e) => handlePaymentChange(bk, e.target.value as PaymentStatus)} disabled={bk.archived === true || resolvingPaymentReviewId === bk.id}
                         className="flex-1 text-xs font-body px-2.5 py-2 rounded-lg bg-secondary border border-border text-foreground cursor-pointer">
                         <option value="unpaid">Unpaid</option>
                         <option value="deposit-paid">Deposit Paid</option>
@@ -3464,6 +3604,37 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                         )}
                       </div>
                     </div>
+                    {(bk.paymentReviews && bk.paymentReviews.length > 0) && (
+                      <div>
+                        <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-2 flex items-center gap-1.5">
+                          <AlertTriangle className="w-3 h-3" /> Payment Review History
+                        </p>
+                        <div className="space-y-1.5">
+                          {bk.paymentReviews.map((entry, index) => {
+                            const entryAmount = formatPaymentReviewAmount(entry);
+                            const entryTime = entry.receivedAt || entry.resolvedAt;
+                            return (
+                              <div key={`${entryTime || "payment-review"}-${index}`} className="rounded-md bg-secondary/30 border border-border/40 px-2.5 py-2">
+                                <div className="flex items-center justify-between gap-3">
+                                  <span className={`text-[10px] font-body font-medium ${entry.status === "resolved" ? "text-green-400" : "text-red-300"}`}>
+                                    {entry.status === "resolved" ? "Resolved" : "Manual review"}
+                                  </span>
+                                  {(entryAmount || entryTime) && (
+                                    <span className="text-[10px] font-body text-muted-foreground">
+                                      {entryAmount || "Amount not recorded"}{entryTime ? ` · ${new Date(entryTime).toLocaleString("en-AU")}` : ""}
+                                    </span>
+                                  )}
+                                </div>
+                                {entry.reason && <p className="text-[11px] font-body text-muted-foreground mt-1">{String(entry.reason).slice(0, 500)}</p>}
+                                {entry.resolvedAt && entry.resolutionPaymentStatus && (
+                                  <p className="text-[10px] font-body text-green-400/80 mt-1">Marked {paymentStatusLabel(entry.resolutionPaymentStatus)} by {entry.resolvedBy || "admin"}</p>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
                     {bk.answers && Object.keys(bk.answers).length > 0 && (
                       <div>
                         <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-2">Questionnaire Answers</p>

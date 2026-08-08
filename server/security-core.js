@@ -6,6 +6,11 @@ const path = require("path");
 const DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 const TIME_RE = /^(\d{2}):(\d{2})$/;
 const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
+const BOOKING_ATTEMPT_UUID_SHAPE_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const BOOKING_ATTEMPT_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const BOOKING_ATTEMPT_TOKEN_RE = /^[A-Za-z0-9_-]{32,128}$/;
+const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
+const PAYMENT_REVIEW_RESOLUTION_STATUSES = new Set(["paid", "cash", "deposit-paid"]);
 
 function normalizeOrigin(value) {
   return String(value || "").trim().replace(/\/+$/, "").toLowerCase();
@@ -176,6 +181,154 @@ function timingSafeTextEqual(left, right) {
   const a = Buffer.from(String(left || ""));
   const b = Buffer.from(String(right || ""));
   return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+/**
+ * Accept only an opaque, high-entropy booking-attempt identifier. UUIDv4 is
+ * supported for Web Crypto's randomUUID(); longer base64url tokens support
+ * clients that generate at least 192 random bits directly.
+ */
+function normalizeBookingAttemptId(value) {
+  if (typeof value !== "string" || value !== value.trim()) return null;
+  if (BOOKING_ATTEMPT_UUID_SHAPE_RE.test(value)) return BOOKING_ATTEMPT_UUID_RE.test(value) ? value : null;
+  return BOOKING_ATTEMPT_TOKEN_RE.test(value) ? value : null;
+}
+
+function hashBookingAttemptId(value) {
+  const normalized = normalizeBookingAttemptId(value);
+  return normalized ? crypto.createHash("sha256").update(normalized, "utf8").digest("hex") : null;
+}
+
+function normalizeBookingAttemptIdentity(input) {
+  const answers = input?.answers && typeof input.answers === "object" && !Array.isArray(input.answers)
+    ? Object.keys(input.answers)
+      .sort()
+      .filter(key => input.answers[key] !== undefined && input.answers[key] !== null)
+      .map(key => [key, String(input.answers[key]).slice(0, 2000)])
+    : [];
+  const numericDuration = Number(input?.duration);
+  return {
+    clientName: String(input?.clientName || "").trim().slice(0, 160),
+    clientEmail: String(input?.clientEmail || "").trim().toLowerCase().slice(0, 254),
+    phone: String(input?.phone || "").trim().slice(0, 40),
+    eventTypeId: String(input?.eventTypeId || "").trim(),
+    date: String(input?.date || "").trim(),
+    time: String(input?.time || "").trim(),
+    duration: Number.isFinite(numericDuration) ? numericDuration : null,
+    paymentMethod: String(input?.paymentMethod || "").trim().toLowerCase(),
+    payInFull: input?.payInFull === true,
+    answers,
+  };
+}
+
+function hashBookingAttemptIdentity(input) {
+  const canonical = JSON.stringify(normalizeBookingAttemptIdentity(input));
+  return crypto.createHash("sha256").update(`public-booking-v1\0${canonical}`, "utf8").digest("hex");
+}
+
+/**
+ * Resolve a public booking creation replay without exposing or storing the raw
+ * attempt identifier. Call this both before external availability work and
+ * again against the final commit snapshot to close concurrent/lost responses.
+ */
+function evaluatePublicBookingAttempt(bookings, input) {
+  if (input?.bookingAttemptId === undefined) return { action: "legacy" };
+  const bookingAttemptIdHash = hashBookingAttemptId(input.bookingAttemptId);
+  if (!bookingAttemptIdHash) {
+    return {
+      action: "invalid",
+      status: 400,
+      code: "INVALID_BOOKING_ATTEMPT_ID",
+      error: "bookingAttemptId must be a UUIDv4 or a 32-128 character base64url token",
+    };
+  }
+  const bookingAttemptIdentityHash = hashBookingAttemptIdentity(input);
+  const matches = (Array.isArray(bookings) ? bookings : []).filter(booking =>
+    !booking?.tenantSlug && timingSafeTextEqual(booking?.bookingAttemptIdHash, bookingAttemptIdHash));
+  if (matches.length === 0) {
+    return { action: "create", bookingAttemptIdHash, bookingAttemptIdentityHash };
+  }
+  if (matches.length === 1
+    && SHA256_HEX_RE.test(String(matches[0]?.bookingAttemptIdentityHash || ""))
+    && timingSafeTextEqual(matches[0].bookingAttemptIdentityHash, bookingAttemptIdentityHash)) {
+    return { action: "reuse", booking: matches[0], bookingAttemptIdHash, bookingAttemptIdentityHash };
+  }
+  return {
+    action: "conflict",
+    status: 409,
+    code: "BOOKING_ATTEMPT_CONFLICT",
+    error: "This booking attempt was already used with different booking details",
+  };
+}
+
+function bookingNeedsPaymentReview(booking) {
+  if (!booking || typeof booking !== "object") return false;
+  const reviewStatus = String(booking.paymentReviewStatus || "").trim().toLowerCase();
+  if (booking.paymentNeedsReview === true) return true;
+  if (reviewStatus && reviewStatus !== "resolved") return true;
+  return !!String(booking.paymentReviewReason || "").trim() && reviewStatus !== "resolved";
+}
+
+/**
+ * Resolve one canonical booking payment review without rebuilding the booking
+ * from browser state. All unrelated payment and Stripe fields are preserved;
+ * the only changed payment state is the administrator's explicit resolution.
+ */
+function resolveBookingPaymentReview(booking, paymentStatus, options = {}) {
+  const normalizedPaymentStatus = String(paymentStatus || "").trim().toLowerCase();
+  if (!PAYMENT_REVIEW_RESOLUTION_STATUSES.has(normalizedPaymentStatus)) {
+    return {
+      ok: false,
+      status: 400,
+      code: "INVALID_PAYMENT_REVIEW_RESOLUTION",
+      error: "paymentStatus must be paid, cash, or deposit-paid",
+    };
+  }
+  if (!bookingNeedsPaymentReview(booking)) {
+    return {
+      ok: false,
+      status: 409,
+      code: "PAYMENT_REVIEW_NOT_ACTIVE",
+      error: "This booking does not have an active payment review",
+    };
+  }
+
+  const nowMs = Number.isFinite(Number(options.nowMs)) ? Number(options.nowMs) : Date.now();
+  const resolvedAt = new Date(nowMs).toISOString();
+  const resolvedBy = String(options.actor || "admin").trim().slice(0, 160) || "admin";
+  const paymentReviews = Array.isArray(booking.paymentReviews) ? [...booking.paymentReviews] : [];
+
+  // Older records may have only the top-level review markers. Preserve their
+  // reason in the append-only audit before clearing the active marker.
+  if (!paymentReviews.some(review => review?.status && review.status !== "resolved")) {
+    const legacyReason = String(booking.paymentReviewReason || "").trim();
+    if (legacyReason) {
+      paymentReviews.push({
+        status: "manual-review",
+        reason: legacyReason,
+        receivedAt: booking.paymentReceivedAt,
+      });
+    }
+  }
+  paymentReviews.push({
+    status: "resolved",
+    reason: `Payment review resolved by marking payment ${normalizedPaymentStatus}.`,
+    resolvedAt,
+    resolvedBy,
+    resolutionPaymentStatus: normalizedPaymentStatus,
+  });
+
+  const updated = {
+    ...booking,
+    paymentStatus: normalizedPaymentStatus,
+    paymentNeedsReview: false,
+    paymentReviewStatus: "resolved",
+    paymentReviewResolvedAt: resolvedAt,
+    paymentReviewResolvedBy: resolvedBy,
+    paymentReviews,
+  };
+  delete updated.paymentReviewReason;
+  return { ok: true, booking: updated };
 }
 
 /** Sign a small, purpose-bound server session token. */
@@ -737,14 +890,20 @@ module.exports = {
   bookingCanBeArchived,
   bookingBlocksAvailability,
   bookingConflicts,
+  bookingNeedsPaymentReview,
   calculateDeposit,
   collectUploadFileNames,
   generateAvailableSlots,
   galleryShareLinkAccess,
   galleryPhotoDownloadEntitlement,
   getPriceForDuration,
+  evaluatePublicBookingAttempt,
+  hashBookingAttemptId,
+  hashBookingAttemptIdentity,
   isValidSlug,
   isExplicitNativeOrigin,
+  normalizeBookingAttemptId,
+  normalizeBookingAttemptIdentity,
   normalizeClientPortalEmail,
   parseCookies,
   parseDate,
@@ -756,6 +915,7 @@ module.exports = {
   safeGalleryPurchaseDto,
   selectClientPortalAlbumGroups,
   resolveUploadOwnerScope,
+  resolveBookingPaymentReview,
   resolveContainedPath,
   safeUploadFilenameFromSrc,
   signSession,

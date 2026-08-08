@@ -15,8 +15,17 @@ import Footer from "@/components/Footer";
 import BookingAvatar from "@/components/BookingAvatar";
 import { toast } from "sonner";
 import { getEventTypes, getProfile, cacheBookingLocally, getBookings, getSettings } from "@/lib/storage";
-import { createBookingCheckout, createPublicBooking, fetchBookingByToken, getStripeStatus, joinWaitlist } from "@/lib/api";
-import type { AppSettings, EventType, ProfileSettings, QuestionField } from "@/lib/types";
+import {
+  createBookingCheckout,
+  createPublicBooking,
+  fetchBookingByToken,
+  getBookingPaymentStatus,
+  getStripeStatus,
+  joinWaitlist,
+  selectBookingBankTransfer,
+} from "@/lib/api";
+import type { AppSettings, Booking as BookingRecord, EventType, ProfileSettings, QuestionField } from "@/lib/types";
+import type { PublicBookingPaymentStatus } from "@/lib/api";
 import {
   buildBookingCalendarUrl,
   contactQuestionRole,
@@ -25,6 +34,8 @@ import {
   getAuthoritativeBookingPaymentState,
   getPublicCustomQuestions,
   hasAuthoritativeBookingCharge,
+  isBookingPaymentConflictError,
+  isBookingPaymentVerificationPending,
   isPastBookingDate,
   missingRequiredQuestions,
   readAvailableSlots,
@@ -38,8 +49,27 @@ import {
 import { RichTextDisplay } from "@/components/RichTextEditor";
 import { richTextToPlainText } from "@/lib/rich-text";
 import { generateCapabilityToken } from "@/lib/capability-token";
+import { bookingPaymentReference } from "@/lib/booking-reference";
 
 type Step = "event-select" | "datetime" | "questions" | "payment" | "confirmed" | "enquiry" | "enquiry-confirmed";
+const BOOKING_ATTEMPT_SESSION_KEY = "wv_public_booking_attempt_id";
+
+function getOrCreateBookingAttemptId(): string {
+  try {
+    const existing = sessionStorage.getItem(BOOKING_ATTEMPT_SESSION_KEY);
+    if (existing) return existing;
+  } catch { /* keep the in-memory attempt when session storage is unavailable */ }
+  if (typeof globalThis.crypto?.randomUUID !== "function") {
+    throw new Error("Secure booking attempt IDs are unavailable in this browser");
+  }
+  const attemptId = globalThis.crypto.randomUUID();
+  try { sessionStorage.setItem(BOOKING_ATTEMPT_SESSION_KEY, attemptId); } catch { /* in-memory ref still protects this page */ }
+  return attemptId;
+}
+
+function clearBookingAttemptId(): void {
+  try { sessionStorage.removeItem(BOOKING_ATTEMPT_SESSION_KEY); } catch { /* storage may be unavailable */ }
+}
 
 /** Basic email format check — covers the vast majority of real email addresses. */
 function isValidEmail(email: string): boolean {
@@ -154,6 +184,19 @@ function QuestionInput({ field, value, onChange, inputId, labelId }: { field: Qu
     default:
       return null;
   }
+}
+
+function bookingMatchesSelection(
+  booking: Pick<BookingRecord, "eventTypeId" | "date" | "time" | "duration">,
+  eventTypeId: string,
+  date: string,
+  time: string,
+  duration: number,
+): boolean {
+  return booking.eventTypeId === eventTypeId
+    && booking.date === date
+    && booking.time === time
+    && booking.duration === duration;
 }
 
 export function BookingQuestionField({ field, value, onChange }: { field: QuestionField; value: string; onChange: (val: string) => void }) {
@@ -300,6 +343,7 @@ export default function Booking() {
   const [availabilityTimezone, setAvailabilityTimezone] = useState(profile.timezone || "Australia/Sydney");
   const [availabilityRetry, setAvailabilityRetry] = useState(0);
   const [lastBookingId, setLastBookingId] = useState<string | null>(restoredBookingId);
+  const [lastBookingPaymentStatus, setLastBookingPaymentStatus] = useState<PublicBookingPaymentStatus | null>(null);
   const [, setBookingVersion] = useState(0);
   const [cancellingBooking, setCancellingBooking] = useState(false);
 
@@ -318,11 +362,15 @@ export default function Booking() {
     const refresh = async () => {
       const local = getBookings().find(booking => booking.id === lastBookingId);
       if (!local?.modifyToken) return;
-      const result = await fetchBookingByToken(local.modifyToken);
-      if (!cancelled && result) {
-        cacheBookingLocally(result);
+      const [bookingResult, paymentResult] = await Promise.all([
+        fetchBookingByToken(local.modifyToken),
+        getBookingPaymentStatus(local.modifyToken),
+      ]);
+      if (!cancelled && bookingResult) {
+        cacheBookingLocally(bookingResult);
         setBookingVersion(version => version + 1);
       }
+      if (!cancelled && paymentResult.payment) setLastBookingPaymentStatus(paymentResult.payment);
     };
     void refresh();
     const timer = window.setTimeout(() => { void refresh(); }, 2500);
@@ -336,12 +384,14 @@ export default function Booking() {
   const [waitlistNote, setWaitlistNote] = useState("");
   const [waitlistSubmitting, setWaitlistSubmitting] = useState(false);
   const [waitlistDone, setWaitlistDone] = useState(false);
-  const [showBankDeposit, setShowBankDeposit] = useState(false);
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [stripeAvailable, setStripeAvailable] = useState(false);
   const [stripeChecked, setStripeChecked] = useState(false);
   const [processingPayment, setProcessingPayment] = useState(false);
   const [payFullInstead, setPayFullInstead] = useState(false);
+  const [paymentActionError, setPaymentActionError] = useState<{ kind: "network" | "processing" | "api"; message: string } | null>(null);
+  const paymentActionRef = useRef(false);
+  const bookingAttemptIdRef = useRef<string | null>(null);
 
   // Enquiry form state
   const [enquiryEventId, setEnquiryEventId] = useState("");
@@ -581,12 +631,30 @@ export default function Booking() {
   const createServerBooking = async (paymentMethod: "stripe" | "bank" | "none") => {
     const draft = buildBookingRecord(paymentMethod);
     if (!draft || !selectedEvent) return { error: "Please complete your booking details" };
+    let bookingAttemptId: string;
+    try {
+      bookingAttemptId = bookingAttemptIdRef.current ?? getOrCreateBookingAttemptId();
+      bookingAttemptIdRef.current = bookingAttemptId;
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : "A secure booking attempt could not be created", errorKind: "server" as const };
+    }
     const result = await createPublicBooking({
       clientName: draft.clientName, clientEmail: draft.clientEmail, date: draft.date, time: draft.time,
       eventTypeId: selectedEvent.id, duration: draft.duration, answers: draft.answers,
       paymentMethod, payInFull: payFullInstead,
       phone: clientPhone.trim(),
+      bookingAttemptId,
     });
+    // Network failures and 5xx responses are ambiguous: the server may have
+    // committed the booking before failing to respond. Only a booking payload or
+    // a definitive 4xx rejection is safe grounds to rotate this attempt key.
+    const definitiveClientRejection = typeof result.statusCode === "number"
+      && result.statusCode >= 400
+      && result.statusCode < 500;
+    if (result.booking || definitiveClientRejection) {
+      bookingAttemptIdRef.current = null;
+      clearBookingAttemptId();
+    }
     if (result.booking) cacheBookingLocally(result.booking);
     return result;
   };
@@ -613,26 +681,96 @@ export default function Booking() {
     setStep("confirmed");
   };
 
-  const handleCompletePayment = async (paymentMethod: "stripe" | "bank" | "none") => {
-    if (!selectedEvent || !selectedDate || !selectedTime || !selectedDuration || processingPayment) return;
+  const handleSelectBankTransfer = async () => {
+    if (!selectedEvent || !selectedDate || !selectedTime || !selectedDuration || processingPayment || paymentActionRef.current) return;
+    paymentActionRef.current = true;
     setProcessingPayment(true);
-    const result = await createServerBooking(paymentMethod);
-    if (!result.booking) {
-      setProcessingPayment(false);
-      toast.error(result.error || "Could not save your booking");
-      if (/available|taken|conflict/i.test(result.error || "")) {
-        setSelectedTime(null);
-        setStep("datetime");
-        setAvailabilityRetry(retry => retry + 1);
+    setPaymentActionError(null);
+    try {
+      const existing = lastBookingId ? getBookings().find(item => item.id === lastBookingId) : undefined;
+      if (existing && !bookingMatchesSelection(existing, selectedEvent.id, toDateStr(selectedDate), selectedTime, selectedDuration)) {
+        setPaymentActionError({
+          kind: "api",
+          message: "A different booking is already holding your earlier selection. Open that booking to change or cancel it before paying for this new time.",
+        });
+        return;
       }
-      return;
+      if (existing && !existing.modifyToken) {
+        setPaymentActionError({
+          kind: "api",
+          message: "The existing booking cannot be safely verified. Reopen its management link instead of creating another booking.",
+        });
+        return;
+      }
+      if (existing?.paymentStatus === "deposit-paid" || existing?.depositPaidAt) {
+        setPaymentActionError({
+          kind: "api",
+          message: "Your deposit is already recorded. Contact the photographer to confirm a manual remaining-balance transfer.",
+        });
+        return;
+      }
+      if (existing?.modifyToken) {
+        const statusResult = await getBookingPaymentStatus(existing.modifyToken);
+        if (!statusResult.payment) {
+          setPaymentActionError({
+            kind: statusResult.errorKind === "network" ? "network" : "api",
+            message: statusResult.error || "Payment status could not be verified. Do not send a second payment yet.",
+          });
+          return;
+        }
+        if (!statusResult.payment.canSubmitBank) {
+          const processing = isBookingPaymentVerificationPending(statusResult.payment.state);
+          const refreshed = await fetchBookingByToken(existing.modifyToken);
+          if (refreshed) {
+            cacheBookingLocally(refreshed);
+            setBookingVersion(version => version + 1);
+          }
+          setPaymentActionError({
+            kind: processing ? "processing" : "api",
+            message: processing
+              ? "A card payment is already being verified. Do not send a bank transfer as well."
+              : "Bank transfer is not available for the booking’s current payment state.",
+          });
+          return;
+        }
+      }
+      const result = existing?.modifyToken
+        ? await selectBookingBankTransfer(existing.modifyToken)
+        : await createServerBooking("bank");
+      if (!result.booking) {
+        const errorKind = "errorKind" in result ? result.errorKind : undefined;
+        const errorCode = "errorCode" in result && typeof result.errorCode === "string" ? result.errorCode : undefined;
+        const kind = errorKind === "network" ? "network" : isBookingPaymentConflictError(errorCode) ? "processing" : "api";
+        const message = result.error || "Could not record the bank transfer";
+        setPaymentActionError({ kind, message });
+        toast.error(message);
+        if (!existing && /available|taken|conflict/i.test(message)) {
+          setSelectedTime(null);
+          setStep("datetime");
+          setAvailabilityRetry(retry => retry + 1);
+        }
+        return;
+      }
+      const booking = result.booking;
+      cacheBookingLocally(booking);
+      localStorage.setItem("lastBookingId", booking.id);
+      setLastBookingId(booking.id);
+      setBookingVersion(version => version + 1);
+      setLastBookingPaymentStatus({
+        state: "bank-pending",
+        paymentStatus: "pending-confirmation",
+        paymentMethod: "bank",
+        canRetryCard: false,
+        canSubmitBank: false,
+        bankTransferIsManual: true,
+        requiresAdminVerification: true,
+      });
+      setTimerExpiresAt(null);
+      setStep("confirmed");
+    } finally {
+      paymentActionRef.current = false;
+      setProcessingPayment(false);
     }
-    const booking = result.booking;
-    localStorage.setItem("lastBookingId", booking.id);
-    setLastBookingId(booking.id);
-    setTimerExpiresAt(null);
-    setProcessingPayment(false);
-    setStep("confirmed");
   };
 
   const handleReset = () => {
@@ -648,9 +786,13 @@ export default function Booking() {
     setClientPhone("");
     setTimerExpiresAt(null);
     setLastBookingId(null);
-    setShowBankDeposit(false);
+    setLastBookingPaymentStatus(null);
     setProcessingPayment(false);
     setPayFullInstead(false);
+    setPaymentActionError(null);
+    paymentActionRef.current = false;
+    bookingAttemptIdRef.current = null;
+    clearBookingAttemptId();
   };
 
   const handleNextAvailableMonth = useCallback(() => {
@@ -1221,7 +1363,15 @@ export default function Booking() {
 
             {/* ─── Payment Step ─── */}
             {step === "payment" && selectedEvent && selectedDate && selectedTime && selectedDuration && (() => {
-              const existingBooking = lastBookingId ? getBookings().find(b => b.id === lastBookingId) : null;
+              const existingBookingCandidate = lastBookingId ? getBookings().find(b => b.id === lastBookingId) : null;
+              const existingBookingMismatch = !!existingBookingCandidate && !bookingMatchesSelection(
+                existingBookingCandidate,
+                selectedEvent.id,
+                toDateStr(selectedDate),
+                selectedTime,
+                selectedDuration,
+              );
+              const existingBooking = existingBookingMismatch ? null : existingBookingCandidate;
               const existingChargeKnown = !existingBooking || hasAuthoritativeBookingCharge(existingBooking);
               const storedCharge = existingBooking ? getAuthoritativeBookingCharge(existingBooking) : null;
               const configuredDepositEnabled = !!(selectedEvent.depositEnabled && selectedEvent.depositAmount && selectedEvent.depositAmount > 0);
@@ -1240,6 +1390,7 @@ export default function Booking() {
               // Check if deposit was already paid for this event (returning to pay remaining)
               const depositAlreadyPaid = existingBooking?.paymentStatus === "deposit-paid" || !!existingBooking?.depositPaidAt;
               const existingPaidInFull = existingBooking?.paymentStatus === "paid" || existingBooking?.paymentStatus === "cash" || !!existingBooking?.paidAt;
+              const existingBankPending = existingBooking?.paymentStatus === "pending-confirmation";
 
               // If user chose to pay full, or deposit already paid, or no deposit — determine amount
               const wantsPayFull = !existingBooking && payFullInstead && depositEnabled && !depositAlreadyPaid;
@@ -1263,26 +1414,42 @@ export default function Booking() {
               const depositMethods = selectedEvent.depositMethods || [];
               const bankTransfer = settings.bankTransfer;
               const methodAllowed = (method: "stripe" | "bank") => !depositEnabled || depositMethods.length === 0 || depositMethods.includes(method);
-              const stripeOffered = existingChargeKnown && !existingPaidInFull && amountDue > 0 && methodAllowed("stripe") && stripeAvailable;
-              const bankOffered = existingChargeKnown && !existingPaidInFull && amountDue > 0 && methodAllowed("bank") && bankTransfer.enabled;
+              const stripeOffered = !existingBookingMismatch && existingChargeKnown && !existingPaidInFull && !existingBankPending && amountDue > 0 && methodAllowed("stripe") && stripeAvailable;
+              const bankOffered = !existingBookingMismatch && existingChargeKnown && !existingPaidInFull && !existingBankPending && amountDue > 0 && methodAllowed("bank") && bankTransfer.enabled;
+              const canRecordBankTransfer = bankOffered && !depositAlreadyPaid;
 
               const handleStripePayment = async () => {
+                if (processingPayment || paymentActionRef.current) return;
+                if (existingBookingMismatch) {
+                  setPaymentActionError({
+                    kind: "api",
+                    message: "A different booking is already holding your earlier selection. Manage or cancel it before paying for this new time.",
+                  });
+                  return;
+                }
                 if (!existingChargeKnown) {
                   toast.error("The saved booking amount could not be verified. Please reopen your booking link.");
+                  return;
+                }
+                if (existingBankPending) {
+                  toast.info("Your bank transfer is awaiting confirmation. Please do not pay again.");
                   return;
                 }
                 if (existingPaidInFull || amountDue <= 0) {
                   toast.info("This booking is already paid in full.");
                   return;
                 }
+                paymentActionRef.current = true;
                 setProcessingPayment(true);
+                setPaymentActionError(null);
                 let bookingId: string;
                 let modifyToken: string;
                 let clientName: string;
                 let clientEmail: string;
 
-                if (existingBooking && depositAlreadyPaid) {
-                  // Paying remaining on existing booking
+                if (existingBooking) {
+                  // Retry or continue payment against the booking already holding
+                  // this slot. Never create a second booking for the same attempt.
                   bookingId = existingBooking.id;
                   modifyToken = existingBooking.modifyToken;
                   clientName = existingBooking.clientName;
@@ -1290,10 +1457,18 @@ export default function Booking() {
                 } else {
                   // New booking — create record before redirecting to Stripe
                   const createResult = await createServerBooking("stripe");
-                  if (!createResult.booking) { setProcessingPayment(false); toast.error(createResult.error || "Could not save your booking"); return; }
+                  if (!createResult.booking) {
+                    const message = createResult.error || "Could not save your booking";
+                    setPaymentActionError({ kind: /network/i.test(message) ? "network" : "api", message });
+                    setProcessingPayment(false);
+                    paymentActionRef.current = false;
+                    toast.error(message);
+                    return;
+                  }
                   const newBooking = createResult.booking;
                   localStorage.setItem("lastBookingId", newBooking.id);
                   setLastBookingId(newBooking.id);
+                  setTimerExpiresAt(null);
                   bookingId = newBooking.id;
                   modifyToken = newBooking.modifyToken;
                   clientName = newBooking.clientName;
@@ -1302,9 +1477,53 @@ export default function Booking() {
 
                 if (!modifyToken) {
                   setProcessingPayment(false);
+                  paymentActionRef.current = false;
                   toast.error("This booking cannot be verified for payment. Please reopen your booking link.");
                   return;
                 }
+
+                const statusResult = await getBookingPaymentStatus(modifyToken);
+                if (!statusResult.payment) {
+                  const message = statusResult.error || "Payment status could not be verified. Your existing booking has not been duplicated; check the status before trying again.";
+                  setPaymentActionError({ kind: statusResult.errorKind === "network" ? "network" : "api", message });
+                  setProcessingPayment(false);
+                  paymentActionRef.current = false;
+                  toast.error(message);
+                  return;
+                }
+                if (statusResult.payment.state === "deposit-paid" && !depositAlreadyPaid) {
+                  const refreshed = await fetchBookingByToken(modifyToken);
+                  if (refreshed) {
+                    cacheBookingLocally(refreshed);
+                    setBookingVersion(version => version + 1);
+                  }
+                  const message = "Your deposit has already been confirmed. Review the updated remaining balance before continuing.";
+                  setPaymentActionError({ kind: "api", message });
+                  setProcessingPayment(false);
+                  paymentActionRef.current = false;
+                  toast.info(message);
+                  return;
+                }
+                if (!statusResult.payment.canRetryCard) {
+                  const processing = isBookingPaymentVerificationPending(statusResult.payment.state);
+                  const refreshed = await fetchBookingByToken(modifyToken);
+                  if (refreshed) {
+                    cacheBookingLocally(refreshed);
+                    setBookingVersion(version => version + 1);
+                  }
+                  const message = processing
+                    ? "Your existing card payment is being verified. Do not submit another payment."
+                    : statusResult.payment.state === "bank-pending"
+                    ? "Your bank transfer is awaiting manual confirmation. Do not pay again."
+                    : "This booking cannot accept another card payment in its current state.";
+                  setPaymentActionError({ kind: processing ? "processing" : "api", message });
+                  setProcessingPayment(false);
+                  paymentActionRef.current = false;
+                  toast.info(message);
+                  return;
+                }
+
+                const modifyPath = `/booking/modify/${encodeURIComponent(modifyToken)}`;
 
                 const result = await createBookingCheckout({
                   bookingId,
@@ -1314,12 +1533,27 @@ export default function Booking() {
                   amount: amountDue,
                   eventTitle: selectedEvent.title,
                   paymentKind: depositAlreadyPaid ? "balance" : wantsPayFull || !depositEnabled ? "full" : "deposit",
+                  successUrl: `${window.location.origin}${modifyPath}?checkout=success`,
+                  cancelUrl: `${window.location.origin}${modifyPath}?checkout=cancelled`,
                 });
                 setProcessingPayment(false);
+                paymentActionRef.current = false;
                 if (result.url) {
                   window.location.href = result.url;
                 } else {
-                  toast.error(result.error || "Failed to create checkout session");
+                  const processing = isBookingPaymentConflictError(result.errorCode);
+                  const message = processing
+                    ? "A card payment is already processing. Refresh your booking status before trying again."
+                    : result.error || "Failed to create checkout session";
+                  setPaymentActionError({ kind: processing ? "processing" : result.errorKind === "network" ? "network" : "api", message });
+                  if (processing) {
+                    const refreshed = await fetchBookingByToken(modifyToken);
+                    if (refreshed) {
+                      cacheBookingLocally(refreshed);
+                      setBookingVersion(version => version + 1);
+                    }
+                  }
+                  toast.error(message);
                 }
               };
 
@@ -1401,6 +1635,13 @@ export default function Booking() {
                     </div>
 
                     <div className="space-y-3">
+                      {existingBookingMismatch && existingBookingCandidate && (
+                        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-center" role="alert">
+                          <p className="text-sm font-body text-amber-300">Your existing booking is for a different date or time.</p>
+                          <p className="mt-1 text-xs font-body text-muted-foreground">Manage or cancel that held booking before starting payment for this selection.</p>
+                          {existingBookingCandidate.modifyToken && <Button asChild variant="outline" size="sm" className="mt-3"><a href={`/booking/modify/${encodeURIComponent(existingBookingCandidate.modifyToken)}`}>Open Existing Booking</a></Button>}
+                        </div>
+                      )}
                       {/* Stripe */}
                       {stripeOffered && (
                         <Button
@@ -1409,88 +1650,52 @@ export default function Booking() {
                           className="w-full gap-3 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-sm h-12"
                         >
                           <CreditCard className="w-5 h-5" />
-                          {processingPayment ? "Redirecting…" : `Pay $${amountDue} with Card`}
+                          {processingPayment ? "Checking…" : `${existingBooking ? "Continue" : "Pay"} $${amountDue} with Card`}
                         </Button>
                       )}
 
                       {/* Bank Transfer */}
                       {bankOffered && (
-                        <>
-                          <Button
-                            onClick={() => setShowBankDeposit(!showBankDeposit)}
-                            variant="outline"
-                            className="w-full gap-3 border-border text-foreground hover:bg-secondary font-body text-sm h-12"
-                          >
-                            <Building2 className="w-5 h-5" />
-                            Bank Transfer / PayID
-                          </Button>
-
-                          {showBankDeposit && (
-                            <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} className="space-y-3">
-                              {bankTransfer.accountName && (
-                                <div className="flex items-center justify-between p-3 rounded-lg bg-secondary">
-                                  <div>
-                                    <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Account Name</p>
-                                    <p className="text-sm font-body text-foreground font-medium">{bankTransfer.accountName}</p>
-                                  </div>
-                                  <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-primary" onClick={() => { navigator.clipboard.writeText(bankTransfer.accountName); setCopiedField("name"); setTimeout(() => setCopiedField(null), 2000); }}>
-                                    {copiedField === "name" ? <CheckIcon className="w-4 h-4 text-primary" /> : <Copy className="w-4 h-4" />}
-                                  </Button>
-                                </div>
-                              )}
-                              {bankTransfer.bsb && (
-                                <div className="flex items-center justify-between p-3 rounded-lg bg-secondary">
-                                  <div>
-                                    <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">BSB</p>
-                                    <p className="text-sm font-body text-foreground font-medium">{bankTransfer.bsb}</p>
-                                  </div>
-                                  <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-primary" onClick={() => { navigator.clipboard.writeText(bankTransfer.bsb); setCopiedField("bsb"); setTimeout(() => setCopiedField(null), 2000); }}>
-                                    {copiedField === "bsb" ? <CheckIcon className="w-4 h-4 text-primary" /> : <Copy className="w-4 h-4" />}
-                                  </Button>
-                                </div>
-                              )}
-                              {bankTransfer.accountNumber && (
-                                <div className="flex items-center justify-between p-3 rounded-lg bg-secondary">
-                                  <div>
-                                    <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Account Number</p>
-                                    <p className="text-sm font-body text-foreground font-medium">{bankTransfer.accountNumber}</p>
-                                  </div>
-                                  <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-primary" onClick={() => { navigator.clipboard.writeText(bankTransfer.accountNumber); setCopiedField("acc"); setTimeout(() => setCopiedField(null), 2000); }}>
-                                    {copiedField === "acc" ? <CheckIcon className="w-4 h-4 text-primary" /> : <Copy className="w-4 h-4" />}
-                                  </Button>
-                                </div>
-                              )}
-                              {bankTransfer.payId && (
-                                <div className="flex items-center justify-between p-3 rounded-lg bg-secondary">
-                                  <div>
-                                    <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">PayID ({bankTransfer.payIdType})</p>
-                                    <p className="text-sm font-body text-foreground font-medium">{bankTransfer.payId}</p>
-                                  </div>
-                                  <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-primary" onClick={() => { navigator.clipboard.writeText(bankTransfer.payId); setCopiedField("payid"); setTimeout(() => setCopiedField(null), 2000); }}>
-                                    {copiedField === "payid" ? <CheckIcon className="w-4 h-4 text-primary" /> : <Copy className="w-4 h-4" />}
-                                  </Button>
-                                </div>
-                              )}
-                              {bankTransfer.instructions && (
-                                <div className="p-3 rounded-lg bg-primary/5 border border-primary/10">
-                                  <p className="text-xs font-body text-muted-foreground">{bankTransfer.instructions}</p>
-                                </div>
-                              )}
-                              <Button
-                                onClick={() => handleCompletePayment("bank")}
-                                disabled={processingPayment}
-                                className="w-full bg-green-600/90 text-white hover:bg-green-600 font-body text-xs tracking-wider uppercase h-11"
-                              >
-                                {processingPayment ? "Submitting…" : "I've Sent the Transfer — Submit Booking"}
-                              </Button>
-                              <p className="text-[10px] font-body text-muted-foreground text-center">
-                                Your booking will be held pending payment confirmation by the admin.
-                              </p>
-                            </motion.div>
-                          )}
-                        </>
+                        canRecordBankTransfer ? (
+                          <div className="space-y-2">
+                            <Button
+                              onClick={() => void handleSelectBankTransfer()}
+                              disabled={processingPayment}
+                              variant="outline"
+                              className="w-full gap-3 border-border text-foreground hover:bg-secondary font-body text-sm h-12"
+                            >
+                              <Building2 className="w-5 h-5" />
+                              {processingPayment
+                                ? existingBooking ? "Switching safely…" : "Creating booking…"
+                                : existingBooking ? "Switch to Bank Transfer / PayID" : "Choose Bank Transfer / PayID"}
+                            </Button>
+                            <p className="text-[10px] font-body text-muted-foreground text-center">
+                              {existingBooking
+                                ? "Any open card checkout is closed before the bank details are revealed."
+                                : "Your booking is created before the bank details are revealed, so the transfer has the correct reference."}
+                            </p>
+                          </div>
+                        ) : (
+                          <p className="rounded-lg border border-amber-500/20 bg-amber-500/10 p-3 text-xs font-body text-amber-300 text-center">
+                            For a remaining-balance bank transfer, contact the photographer. Your paid deposit will stay recorded while they confirm the balance manually.
+                          </p>
+                        )
                       )}
-                      {stripeChecked && !existingPaidInFull && !stripeOffered && !bankOffered && (
+                      {existingBankPending && (
+                        <div className="rounded-lg border border-blue-500/30 bg-blue-500/10 p-4 text-center" role="status">
+                          <p className="text-sm font-body text-blue-300">Bank Transfer Pending</p>
+                          <p className="mt-1 text-xs font-body text-muted-foreground">The transfer is manual and will show as paid only after the photographer confirms receipt. Please do not pay again.</p>
+                        </div>
+                      )}
+                      {paymentActionError && (
+                        <div className={`rounded-lg border p-4 ${paymentActionError.kind === "processing" ? "border-amber-500/30 bg-amber-500/10" : "border-destructive/30 bg-destructive/10"}`} role="alert">
+                          <p className={`text-sm font-body ${paymentActionError.kind === "processing" ? "text-amber-300" : "text-destructive"}`}>
+                            {paymentActionError.kind === "network" ? "Connection problem" : paymentActionError.kind === "processing" ? "Payment status is updating" : "Payment could not be started"}
+                          </p>
+                          <p className="mt-1 text-xs font-body text-muted-foreground">{paymentActionError.message}</p>
+                        </div>
+                      )}
+                      {stripeChecked && !existingBookingMismatch && !existingPaidInFull && !existingBankPending && !stripeOffered && !bankOffered && (
                         <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-4 text-center" role="alert">
                           <p className="text-sm font-body text-destructive">No payment method is currently available for this session.</p>
                           <p className="mt-1 text-xs font-body text-muted-foreground">Please go back or contact the photographer before booking.</p>
@@ -1510,7 +1715,11 @@ export default function Booking() {
               const paymentStateKnown = paymentState.chargeKnown;
               const depositEnabled = paymentState.depositRequired;
               const depositAmt = paymentState.depositAmount;
-              const bankPaymentPending = paymentState.bankPaymentPending;
+              const storedBankPaymentPending = paymentState.bankPaymentPending;
+              const bankPaymentPending = storedBankPaymentPending && lastBookingPaymentStatus?.state === "bank-pending";
+              const bankPaymentStatusChecking = storedBankPaymentPending && !lastBookingPaymentStatus;
+              const bankPaymentHoldExpired = storedBankPaymentPending && lastBookingPaymentStatus?.state === "hold-expired";
+              const bankPaymentNeedsReview = lastBookingPaymentStatus?.state === "payment-review" || lastBookingPaymentStatus?.state === "checkout-processing";
               const totalPrice = paymentState.total;
               const isCancelled = lastBooking?.status === "cancelled";
               const isConfirmed = lastBooking?.status === "confirmed" || lastBooking?.status === "completed";
@@ -1529,6 +1738,12 @@ export default function Booking() {
                   <p className="text-sm font-body text-muted-foreground mb-6">
                     {isCancelled
                       ? "This appointment has been cancelled."
+                      : bankPaymentHoldExpired
+                      ? "The bank-transfer booking hold has expired. Contact the photographer before sending money."
+                      : bankPaymentNeedsReview
+                      ? "Payment is being reviewed. Do not send another card or bank payment."
+                      : bankPaymentStatusChecking
+                      ? "Checking the bank-transfer hold before showing payment details."
                       : bankPaymentPending
                       ? "Your booking is held pending payment confirmation."
                       : !isConfirmed
@@ -1550,7 +1765,7 @@ export default function Booking() {
                       <div className="flex justify-between text-sm font-body">
                         <span className="text-muted-foreground">Deposit</span>
                         <span className={`font-medium ${depositHasBeenPaid ? "text-green-400" : "text-yellow-400"}`}>
-                          ${depositAmt} · {depositHasBeenPaid ? "Paid" : bankPaymentPending ? "Pending confirmation" : "Unpaid"}
+                          ${depositAmt} · {depositHasBeenPaid ? "Paid" : bankPaymentPending ? "Pending confirmation" : bankPaymentHoldExpired ? "Hold expired" : bankPaymentStatusChecking ? "Checking status" : "Unpaid"}
                         </span>
                       </div>
                     )}
@@ -1565,10 +1780,23 @@ export default function Booking() {
                   </div>
 
                   {bankPaymentPending && !isCancelled && (
-                    <div className="mt-4 p-3 rounded-lg bg-yellow-500/10 border border-yellow-500/20 text-left">
-                      <p className="text-xs font-body text-yellow-400">
-                        Once your bank transfer is received, the admin will confirm your booking. You'll be notified by email.
-                      </p>
+                    <div className="mt-4 space-y-3 rounded-lg bg-blue-500/10 border border-blue-500/20 p-4 text-left">
+                      <div>
+                        <p className="text-sm font-body font-medium text-blue-300">Complete your manual bank transfer</p>
+                        <p className="mt-1 text-xs font-body text-muted-foreground">Bank transfer is now selected and any prior card checkout has been closed. This remains unpaid until the photographer verifies receipt.</p>
+                      </div>
+                      {settings.bankTransfer.accountName && <div className="flex items-center justify-between rounded-lg bg-secondary p-3"><div><p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Account Name</p><p className="text-sm font-body text-foreground font-medium">{settings.bankTransfer.accountName}</p></div><Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => { navigator.clipboard.writeText(settings.bankTransfer.accountName); setCopiedField("confirm-name"); setTimeout(() => setCopiedField(null), 2000); }}>{copiedField === "confirm-name" ? <CheckIcon className="w-4 h-4 text-primary" /> : <Copy className="w-4 h-4" />}</Button></div>}
+                      {settings.bankTransfer.bsb && <div className="flex items-center justify-between rounded-lg bg-secondary p-3"><div><p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">BSB</p><p className="text-sm font-body text-foreground font-medium">{settings.bankTransfer.bsb}</p></div><Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => { navigator.clipboard.writeText(settings.bankTransfer.bsb); setCopiedField("confirm-bsb"); setTimeout(() => setCopiedField(null), 2000); }}>{copiedField === "confirm-bsb" ? <CheckIcon className="w-4 h-4 text-primary" /> : <Copy className="w-4 h-4" />}</Button></div>}
+                      {settings.bankTransfer.accountNumber && <div className="flex items-center justify-between rounded-lg bg-secondary p-3"><div><p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Account Number</p><p className="text-sm font-body text-foreground font-medium">{settings.bankTransfer.accountNumber}</p></div><Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => { navigator.clipboard.writeText(settings.bankTransfer.accountNumber); setCopiedField("confirm-account"); setTimeout(() => setCopiedField(null), 2000); }}>{copiedField === "confirm-account" ? <CheckIcon className="w-4 h-4 text-primary" /> : <Copy className="w-4 h-4" />}</Button></div>}
+                      {settings.bankTransfer.payId && <div className="flex items-center justify-between rounded-lg bg-secondary p-3"><div><p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">PayID ({settings.bankTransfer.payIdType})</p><p className="text-sm font-body text-foreground font-medium">{settings.bankTransfer.payId}</p></div><Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => { navigator.clipboard.writeText(settings.bankTransfer.payId); setCopiedField("confirm-payid"); setTimeout(() => setCopiedField(null), 2000); }}>{copiedField === "confirm-payid" ? <CheckIcon className="w-4 h-4 text-primary" /> : <Copy className="w-4 h-4" />}</Button></div>}
+                      {lastBooking && <div className="rounded-lg bg-secondary p-3"><p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Transfer Reference</p><p className="font-mono text-sm text-primary">{bookingPaymentReference(lastBooking)}</p></div>}
+                      <p className="text-xs font-body text-blue-300">Transfer ${depositEnabled ? depositAmt : totalPrice} using the reference above. The photographer will confirm it manually and notify you by email.</p>
+                    </div>
+                  )}
+
+                  {(bankPaymentHoldExpired || bankPaymentNeedsReview) && !isCancelled && (
+                    <div className="mt-4 rounded-lg border border-amber-500/20 bg-amber-500/10 p-3 text-left">
+                      <p className="text-xs font-body text-amber-300">{bankPaymentHoldExpired ? "Do not transfer to the displayed account for this expired hold. Contact the photographer to arrange the booking." : "A payment may already be in progress or awaiting review. Do not pay again until the photographer confirms its status."}</p>
                     </div>
                   )}
 

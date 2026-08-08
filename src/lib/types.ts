@@ -70,6 +70,23 @@ export interface BookingArchiveHistoryEntry {
   changedBy: string;
 }
 
+/** Immutable audit detail for a Stripe payment that could not be applied automatically. */
+export interface BookingPaymentReviewEntry {
+  /** Stripe identifiers are retained for server/admin reconciliation, but must not be rendered publicly. */
+  stripeSessionId?: string;
+  stripePaymentIntentId?: string;
+  paymentKind?: string;
+  /** Amount received in the currency's minor unit (for example, cents). */
+  amountTotal?: number;
+  currency?: string;
+  reason?: string;
+  receivedAt?: string;
+  status?: "manual-review" | "resolved";
+  resolvedAt?: string;
+  resolvedBy?: string;
+  resolutionPaymentStatus?: PaymentStatus;
+}
+
 export interface Booking {
   id: string;
   /** Short client-facing identifier for bank transfers and support lookups. */
@@ -105,6 +122,15 @@ export interface Booking {
   /** Created only after Stripe successfully creates a hosted checkout page. */
   stripeCheckoutSessionId?: string;
   stripeCheckoutStartedAt?: string;
+  /** Active/manual-review state set when Stripe confirms money that cannot be safely allocated. */
+  paymentNeedsReview?: boolean;
+  paymentReviewStatus?: string;
+  paymentReviewReason?: string;
+  paymentReceivedAt?: string;
+  paymentReviewResolvedAt?: string;
+  paymentReviewResolvedBy?: string;
+  /** Append-only payment reconciliation audit. Stripe identifiers in this array are admin/server-only. */
+  paymentReviews?: BookingPaymentReviewEntry[];
   gcalEventId?: string;
   answerLabels?: Record<string, string>;
   emailLog?: any[];
