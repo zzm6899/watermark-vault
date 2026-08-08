@@ -1010,6 +1010,32 @@ export function invalidateStripeStatusCache() {
   _stripeStatusCacheTs = 0;
 }
 
+export type PublicPaymentErrorKind = "network" | "conflict" | "forbidden" | "not-found" | "server";
+
+export interface PublicPaymentError {
+  error?: string;
+  errorCode?: string;
+  statusCode?: number;
+  errorKind?: PublicPaymentErrorKind;
+}
+
+function paymentErrorKind(statusCode: number): Exclude<PublicPaymentErrorKind, "network"> {
+  if (statusCode === 403) return "forbidden";
+  if (statusCode === 404) return "not-found";
+  if (statusCode === 409) return "conflict";
+  return "server";
+}
+
+async function publicPaymentError(res: Response): Promise<PublicPaymentError> {
+  const payload = await res.json().catch(() => ({})) as { error?: unknown; code?: unknown };
+  return {
+    error: typeof payload.error === "string" ? payload.error : `Request failed (${res.status})`,
+    errorCode: typeof payload.code === "string" ? payload.code : undefined,
+    statusCode: res.status,
+    errorKind: paymentErrorKind(res.status),
+  };
+}
+
 export async function createBookingCheckout(params: {
   bookingId: string;
   clientName: string;
@@ -1021,17 +1047,14 @@ export async function createBookingCheckout(params: {
   paymentKind?: "deposit" | "balance" | "full";
   successUrl?: string;
   cancelUrl?: string;
-}): Promise<{ url?: string; sessionId?: string; error?: string }> {
+}): Promise<{ url?: string; sessionId?: string; reused?: boolean } & PublicPaymentError> {
   try {
     const res = await fetch("/api/stripe/checkout/booking", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(params),
     });
-    if (!res.ok) {
-      try { const e = await res.json(); return { error: e.error || `Request failed (${res.status})` }; }
-      catch { return { error: `Request failed (${res.status})` }; }
-    }
+    if (!res.ok) return await publicPaymentError(res);
     return await res.json();
-  } catch { return { error: "Network error" }; }
+  } catch { return { error: "Network error — check your connection and try again", errorKind: "network" }; }
 }
 
 export async function createAlbumCheckout(params: {
@@ -1087,17 +1110,31 @@ export async function sendEmail(to: string, subject: string, html?: string, text
   }
 }
 
-export async function createPublicBooking(params: Record<string, unknown>): Promise<{ booking?: import("./types").Booking; error?: string }> {
+export interface CreatePublicBookingInput {
+  clientName: string;
+  clientEmail: string;
+  date: string;
+  time: string;
+  eventTypeId: string;
+  duration: number;
+  answers: Record<string, string>;
+  paymentMethod: "stripe" | "bank" | "none";
+  payInFull: boolean;
+  phone?: string;
+  /** Stable across an ambiguous/lost response so the server can replay safely. */
+  bookingAttemptId: string;
+}
+
+export async function createPublicBooking(params: CreatePublicBookingInput): Promise<{
+  booking?: import("./types").Booking;
+} & PublicPaymentError> {
   try {
     const res = await fetch("/api/booking", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(params),
     });
-    if (!res.ok) {
-      try { const e = await res.json(); return { error: e.error || `Request failed (${res.status})` }; }
-      catch { return { error: `Request failed (${res.status})` }; }
-    }
+    if (!res.ok) return await publicPaymentError(res);
     return await res.json();
-  } catch { return { error: "Network error — please check your connection and try again" }; }
+  } catch { return { error: "Network error — please check your connection and try again", errorKind: "network" }; }
 }
 
 export async function getEmailAutomations(): Promise<import("./types").EmailAutomationRule[]> {
@@ -1993,6 +2030,40 @@ export type BookingArchiveMutationResult = {
   error?: string;
 };
 
+export type PaymentReviewResolutionStatus = "paid" | "cash" | "deposit-paid";
+
+export type BookingPaymentReviewResolutionResult = {
+  ok: boolean;
+  booking?: import("./types").Booking;
+  code?: "INVALID_PAYMENT_REVIEW_RESOLUTION" | "BOOKING_NOT_FOUND" | "PAYMENT_REVIEW_NOT_ACTIVE" | string;
+  error?: string;
+};
+
+/** Resolve one canonical booking's quarantined payment without replacing the bookings store. */
+export async function resolveBookingPaymentReview(
+  bookingId: string,
+  paymentStatus: PaymentReviewResolutionStatus,
+): Promise<BookingPaymentReviewResolutionResult> {
+  try {
+    const res = await fetch(`/api/admin/bookings/${encodeURIComponent(bookingId)}/payment-review`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
+      body: JSON.stringify({ paymentStatus }),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok || json?.ok !== true || !json?.booking || typeof json.booking !== "object") {
+      return {
+        ok: false,
+        code: typeof json?.code === "string" ? json.code : undefined,
+        error: typeof json?.error === "string" ? json.error : "Unable to resolve payment review",
+      };
+    }
+    return { ok: true, booking: json.booking };
+  } catch {
+    return { ok: false, error: "Network error while resolving payment review" };
+  }
+}
+
 /** Archive or restore canonical bookings without replacing the bookings store. */
 export async function setBookingArchiveState(bookingIds: string[], archived: boolean): Promise<BookingArchiveMutationResult> {
   try {
@@ -2100,6 +2171,73 @@ export async function fetchTenantMobileData(slug: string): Promise<{
     if (!res.ok) return null;
     return await res.json();
   } catch { return null; }
+}
+
+export type PublicBookingPaymentState =
+  | "bank-pending"
+  | "paid"
+  | "deposit-paid"
+  | "checkout-open"
+  | "checkout-processing"
+  | "checkout-expired"
+  | "hold-expired"
+  | "unpaid"
+  | "payment-review"
+  | "not-payable"
+  | "checkout-status-unavailable";
+
+export interface PublicBookingPaymentStatus {
+  state: PublicBookingPaymentState;
+  paymentStatus: import("./types").PaymentStatus;
+  paymentMethod?: "stripe" | "bank" | "cash";
+  canRetryCard: boolean;
+  canSubmitBank: boolean;
+  bankTransferIsManual: true;
+  requiresAdminVerification: boolean;
+  holdExpiresAt?: string;
+}
+
+/** Fetch the server's safe, authoritative view of a booking payment attempt. */
+export async function getBookingPaymentStatus(modifyToken: string): Promise<{
+  ok?: boolean;
+  payment?: PublicBookingPaymentStatus;
+} & PublicPaymentError> {
+  try {
+    const res = await fetch(`/api/booking/${encodeURIComponent(modifyToken)}/payment/status`, {
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+    });
+    if (!res.ok) return await publicPaymentError(res);
+    const payload = await res.json().catch(() => ({})) as { ok?: boolean; payment?: PublicBookingPaymentStatus };
+    if (!payload.payment) return { error: "The payment server returned an invalid response", errorKind: "server" };
+    return payload;
+  } catch {
+    return { error: "Network error — check your connection and try again", errorKind: "network" };
+  }
+}
+
+/**
+ * Safely switch an existing main-site booking to manual bank transfer before
+ * revealing payment details. The result is pending admin verification, never paid.
+ */
+export async function selectBookingBankTransfer(modifyToken: string): Promise<{
+  ok?: boolean;
+  changed?: boolean;
+  booking?: import("./types").Booking;
+} & PublicPaymentError> {
+  try {
+    const res = await fetch(`/api/booking/${encodeURIComponent(modifyToken)}/payment/bank`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ action: "select-bank" }),
+    });
+    if (!res.ok) return await publicPaymentError(res);
+    const payload = await res.json().catch(() => ({})) as { ok?: boolean; booking?: import("./types").Booking };
+    if (!payload.booking) return { error: "The booking server returned an invalid response", errorKind: "server" };
+    return payload;
+  } catch {
+    return { error: "Network error — check your connection and try again", errorKind: "network" };
+  }
 }
 
 /** Remove tenant routing query params before persisting tenant-owned photo URLs. */
@@ -2417,20 +2555,17 @@ export async function createTenantBookingCheckout(slug: string, params: {
   modifyToken: string;
   successUrl?: string;
   cancelUrl?: string;
-}): Promise<{ url?: string; sessionId?: string; error?: string }> {
+}): Promise<{ url?: string; sessionId?: string; reused?: boolean } & PublicPaymentError> {
   try {
     const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/stripe/checkout/booking`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(params),
     });
-    if (!res.ok) {
-      try { const error = await res.json(); return { error: error.error || `Request failed (${res.status})` }; }
-      catch { return { error: `Request failed (${res.status})` }; }
-    }
+    if (!res.ok) return await publicPaymentError(res);
     return await res.json();
   } catch {
-    return { error: "Network error" };
+    return { error: "Network error — check your connection and try again", errorKind: "network" };
   }
 }
 

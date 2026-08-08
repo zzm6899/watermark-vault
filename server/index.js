@@ -48,11 +48,13 @@ const {
 const {
   registerRoutes: registerStripeRoutes,
   registerTenantStripeRoutes,
+  bookingCheckoutResourceLockKey,
   expireBookingCheckout,
   calculateAlbumSelectionPricing,
   mainStripeReady,
   safeCheckoutReturnUrl,
   tenantStripeReady,
+  withCheckoutResourceLock,
 } = require("./stripe");
 const { registerRoutes: registerGoogleSheetsRoutes } = require("./google-sheets");
 const {
@@ -78,6 +80,7 @@ const {
   bookingAllowsCapabilityMutation,
   bookingBlocksAvailability,
   collectUploadFileNames,
+  evaluatePublicBookingAttempt,
   galleryPhotoDownloadEntitlement,
   galleryShareLinkAccess,
   generateAvailableSlots,
@@ -89,6 +92,7 @@ const {
   parseTime,
   planFreePhotoClaims,
   resolveContainedPath,
+  resolveBookingPaymentReview,
   resolveUploadOwnerScope,
   safeUploadFilenameFromSrc,
   safeTenantPrivateDto,
@@ -7164,8 +7168,17 @@ app.post("/api/booking", publicBookingLimiter, async (req, res) => {
   if (!clientName || typeof clientName !== "string" || !clientName.trim()) return res.status(400).json({ error: "clientName is required" });
   if (!clientEmail || typeof clientEmail !== "string" || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clientEmail.trim())) return res.status(400).json({ error: "Valid clientEmail is required" });
   if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date) || !time || !/^\d{2}:\d{2}$/.test(time)) return res.status(400).json({ error: "A valid date and time are required" });
+  const allowedMethods = new Set(["stripe", "bank", "none"]);
+  if (!allowedMethods.has(paymentMethod)) return res.status(400).json({ error: "Invalid payment method" });
 
   const db = readDb();
+  const initialAttempt = evaluatePublicBookingAttempt(getStoredArray(db, DB_KEYS.BOOKINGS), input);
+  if (initialAttempt.action === "invalid" || initialAttempt.action === "conflict") {
+    return res.status(initialAttempt.status).json({ ok: false, code: initialAttempt.code, error: initialAttempt.error });
+  }
+  if (initialAttempt.action === "reuse") {
+    return res.status(200).json({ ok: true, booking: publicBookingDto(initialAttempt.booking), reused: true });
+  }
   const eventTypes = getStoredArray(db, DB_KEYS.EVENT_TYPES);
   const profile = dbGet(db, DB_KEYS.PROFILE, {});
   let googleBusy;
@@ -7179,8 +7192,6 @@ app.post("/api/booking", publicBookingLimiter, async (req, res) => {
   const { eventType, normalized } = validation;
   const totalPrice = normalized.paymentAmount;
   const settings = dbGet(db, DB_KEYS.SETTINGS, {});
-  const allowedMethods = new Set(["stripe", "bank", "none"]);
-  if (!allowedMethods.has(paymentMethod)) return res.status(400).json({ error: "Invalid payment method" });
   if (totalPrice === 0 && paymentMethod !== "none") return res.status(400).json({ error: "This session does not require payment" });
   if (totalPrice > 0 && paymentMethod === "none") return res.status(400).json({ error: "A payment method is required" });
   if (paymentMethod === "stripe" && (!mainStripeReady() || settings?.stripeEnabled === false)) return res.status(400).json({ error: "Stripe is not available" });
@@ -7202,13 +7213,20 @@ app.post("/api/booking", publicBookingLimiter, async (req, res) => {
   // requests may both pass the earlier Google/network check; this final check
   // serializes them through Node's event loop and prevents lost/double bookings.
   const commitDb = readDb();
+  const bookings = getStoredArray(commitDb, DB_KEYS.BOOKINGS);
+  const commitAttempt = evaluatePublicBookingAttempt(bookings, input);
+  if (commitAttempt.action === "invalid" || commitAttempt.action === "conflict") {
+    return res.status(commitAttempt.status).json({ ok: false, code: commitAttempt.code, error: commitAttempt.error });
+  }
+  if (commitAttempt.action === "reuse") {
+    return res.status(200).json({ ok: true, booking: publicBookingDto(commitAttempt.booking), reused: true });
+  }
   const commitEventTypes = getStoredArray(commitDb, DB_KEYS.EVENT_TYPES);
   const commitValidation = validateBookingRequest({ eventTypeId, date, time, duration }, bookingValidationContext(commitDb, null, commitEventTypes, profile?.timezone, undefined, googleBusy));
   if (!commitValidation.ok) return res.status(commitValidation.status).json({ error: commitValidation.error });
   if (JSON.stringify(commitValidation.eventType) !== JSON.stringify(eventType)) {
     return res.status(409).json({ error: "Booking configuration changed; please refresh and try again" });
   }
-  const bookings = getStoredArray(commitDb, DB_KEYS.BOOKINGS);
   const answerLabels = Array.isArray(eventType.questions) ? Object.fromEntries(eventType.questions.map(question => [question.id, question.label])) : {};
   const id = `bk-${crypto.randomUUID()}`;
   const booking = {
@@ -7224,6 +7242,10 @@ app.post("/api/booking", publicBookingLimiter, async (req, res) => {
     paymentStatus: totalPrice === 0 ? "paid" : paymentMethod === "bank" ? "pending-confirmation" : "unpaid",
     paymentAmount: totalPrice, depositRequired, depositAmount: depositRequired ? normalized.depositAmount : 0,
     holdExpiresAt: totalPrice > 0 ? unconfirmedBookingHoldExpiresAt(settings, paymentMethod) : undefined,
+    ...(commitAttempt.action === "create" ? {
+      bookingAttemptIdHash: commitAttempt.bookingAttemptIdHash,
+      bookingAttemptIdentityHash: commitAttempt.bookingAttemptIdentityHash,
+    } : {}),
     // Bank transfer is selected at booking time. Stripe is only recorded after
     // Stripe successfully creates a checkout session (see stripe.js).
     depositMethod: paymentMethod === "bank" ? "bank" : undefined,
@@ -7496,6 +7518,60 @@ app.get("/api/super/all-bookings", superLimiter, requireAuth, (_req, res) => {
   const raw = db["wv_bookings"];
   const bookings = raw ? (typeof raw === "string" ? JSON.parse(raw) : (Array.isArray(raw) ? raw : [])) : [];
   res.json(bookings);
+});
+
+// Resolve a Stripe payment review against the current canonical main booking.
+// This shares the booking mutation lock with checkout, bank switching, and
+// Stripe webhook fulfilment so a delayed webhook cannot overwrite the result.
+app.patch("/api/admin/bookings/:id/payment-review", superLimiter, requireAuth, async (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  const bookingId = String(req.params.id || "").trim();
+  const paymentStatus = String(req.body?.paymentStatus || "").trim().toLowerCase();
+  if (!bookingId || bookingId.length > 128) {
+    return res.status(404).json({ ok: false, code: "BOOKING_NOT_FOUND", error: "Booking not found" });
+  }
+  if (!["paid", "cash", "deposit-paid"].includes(paymentStatus)) {
+    return res.status(400).json({
+      ok: false,
+      code: "INVALID_PAYMENT_REVIEW_RESOLUTION",
+      error: "paymentStatus must be paid, cash, or deposit-paid",
+    });
+  }
+
+  try {
+    return await withCheckoutResourceLock(bookingCheckoutResourceLockKey("main", bookingId), async () => {
+      const db = readDb();
+      const bookings = getStoredArray(db, DB_KEYS.BOOKINGS);
+      const matches = bookings
+        .map((booking, index) => ({ booking, index }))
+        .filter(match => !match.booking?.tenantSlug && String(match.booking?.id || "") === bookingId);
+      if (matches.length === 0) {
+        return res.status(404).json({ ok: false, code: "BOOKING_NOT_FOUND", error: "Booking not found" });
+      }
+      if (matches.length !== 1) {
+        return res.status(409).json({
+          ok: false,
+          code: "PAYMENT_REVIEW_NOT_ACTIVE",
+          error: "The booking payment review could not be resolved unambiguously",
+        });
+      }
+
+      const resolution = resolveBookingPaymentReview(matches[0].booking, paymentStatus, {
+        actor: req.authContext?.username || "admin",
+      });
+      if (!resolution.ok) {
+        return res.status(resolution.status).json({ ok: false, code: resolution.code, error: resolution.error });
+      }
+
+      bookings[matches[0].index] = resolution.booking;
+      db[DB_KEYS.BOOKINGS] = JSON.stringify(bookings);
+      writeDb(db);
+      return res.json({ ok: true, booking: resolution.booking });
+    });
+  } catch (error) {
+    console.error(`Payment review resolution failed for booking ${bookingId}:`, error?.message || error);
+    return res.status(500).json({ ok: false, error: "Payment review resolution failed" });
+  }
 });
 
 // Archive/unarchive one or more retained bookings without allowing the browser

@@ -124,6 +124,21 @@ export function hasAuthoritativeBookingCharge(
       && booking.depositAmount <= booking.paymentAmount);
 }
 
+/**
+ * States where Stripe may already have the money and another card or bank
+ * payment must stay disabled until the server reaches an authoritative result.
+ */
+export function isBookingPaymentVerificationPending(state: string | null | undefined): boolean {
+  return state === "checkout-processing" || state === "payment-review" || state === "checkout-status-unavailable";
+}
+
+/** Stable server errors where a second payment must not be encouraged. */
+export function isBookingPaymentConflictError(errorCode: string | null | undefined): boolean {
+  return errorCode === "STRIPE_PAYMENT_PROCESSING"
+    || errorCode === "PAYMENT_STATE_CONFLICT"
+    || errorCode === "STRIPE_STATUS_UNAVAILABLE";
+}
+
 /** Payment state used by confirmation pages; bank is pending only while the stored status says so. */
 export function getAuthoritativeBookingPaymentState(
   booking: Pick<Booking, "paymentAmount" | "depositRequired" | "depositAmount" | "depositMethod" | "paymentStatus" | "paidAt" | "depositPaidAt"> | null | undefined,

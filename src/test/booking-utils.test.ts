@@ -7,6 +7,8 @@ import {
   getAuthoritativeBookingCharge,
   getAuthoritativeBookingPaymentState,
   hasAuthoritativeBookingCharge,
+  isBookingPaymentConflictError,
+  isBookingPaymentVerificationPending,
   getPublicCustomQuestions,
   isPastBookingDate,
   isPastBookingSlot,
@@ -89,6 +91,19 @@ describe("booking confirmation amounts", () => {
       bankPaymentPending: true,
       paymentLabel: "Pending confirmation",
     });
+  });
+
+  it("blocks alternative payments only while Stripe may already have the money", () => {
+    expect(isBookingPaymentVerificationPending("checkout-processing")).toBe(true);
+    expect(isBookingPaymentVerificationPending("payment-review")).toBe(true);
+    expect(isBookingPaymentVerificationPending("checkout-status-unavailable")).toBe(true);
+    expect(isBookingPaymentVerificationPending("checkout-open")).toBe(false);
+    expect(isBookingPaymentVerificationPending("checkout-expired")).toBe(false);
+    expect(isBookingPaymentVerificationPending("unpaid")).toBe(false);
+    expect(isBookingPaymentConflictError("STRIPE_PAYMENT_PROCESSING")).toBe(true);
+    expect(isBookingPaymentConflictError("PAYMENT_STATE_CONFLICT")).toBe(true);
+    expect(isBookingPaymentConflictError("STRIPE_STATUS_UNAVAILABLE")).toBe(true);
+    expect(isBookingPaymentConflictError("BOOKING_HOLD_EXPIRED")).toBe(false);
   });
 });
 

@@ -42,6 +42,10 @@ async function withCheckoutResourceLock(key, operation) {
   }
 }
 
+function bookingCheckoutResourceLockKey(scope, bookingId) {
+  return `checkout:${String(scope || "main")}:booking:${String(bookingId || "unknown")}`;
+}
+
 function checkoutSnapshotHash(snapshot) {
   return crypto.createHash("sha256").update(JSON.stringify(snapshot)).digest("hex");
 }
@@ -196,6 +200,9 @@ function bookingCheckoutSnapshot(booking, scope, paymentKind, amountCents, curre
 }
 
 function bookingPaymentDetails(booking) {
+  if (["paid", "cash"].includes(String(booking?.paymentStatus || "").toLowerCase())) {
+    return { error: "No balance remains on this booking" };
+  }
   const total = Number(booking?.paymentAmount);
   const deposit = Number(booking?.depositAmount) || 0;
   if (!Number.isFinite(total) || total <= 0) return { error: "This booking does not require payment" };
@@ -210,6 +217,20 @@ function bookingPaymentDetails(booking) {
   }
   if (!Number.isFinite(amount) || amount <= 0) return { error: "No balance remains on this booking" };
   return { paymentKind, amount, amountCents: Math.round(amount * 100) };
+}
+
+function bookingStripeCheckoutStage(booking) {
+  const status = String(booking?.paymentStatus || "").toLowerCase();
+  if (status === "unpaid") return { ok: true };
+  if (status === "deposit-paid") {
+    const payment = bookingPaymentDetails(booking);
+    if (!payment.error && payment.paymentKind === "balance") return { ok: true };
+    return { ok: false, code: "BOOKING_ALREADY_SETTLED", error: payment.error || "No balance remains on this booking" };
+  }
+  if (["paid", "cash"].includes(status)) {
+    return { ok: false, code: "BOOKING_ALREADY_SETTLED", error: "A payment has already been recorded for this booking" };
+  }
+  return { ok: false, code: "PAYMENT_STATE_CONFLICT", error: "The current payment state cannot start a card checkout" };
 }
 
 function evaluateBookingStripePayment(booking, metadata, session, scope, currency) {
@@ -308,7 +329,10 @@ function markStripeResourceFulfilled(db, key, session, extra = {}) {
 
 function webhookResourceLockKey(scope, metadata) {
   const type = String(metadata?.type || "unknown");
-  if (metadata?.bookingId) return `fulfil:${scope}:booking:${metadata.bookingId}:${metadata.paymentKind || type}`;
+  // Checkout creation, bank switching, webhook fulfilment, and administrator
+  // reconciliation all mutate the same canonical booking. Use one lock key so
+  // none can commit a stale snapshot over another operation.
+  if (metadata?.bookingId) return bookingCheckoutResourceLockKey(scope, metadata.bookingId);
   if (metadata?.albumId) return `fulfil:${scope}:album:${metadata.albumId}:${metadata.sessionKey || "unknown"}`;
   if (metadata?.invoiceId) return `fulfil:${scope}:invoice:${metadata.invoiceId}`;
   if (metadata?.requestId) return `fulfil:${scope}:event-slot:${metadata.requestId}`;
@@ -702,32 +726,458 @@ async function expireBookingCheckout(booking, tenantSettings = null) {
   return true;
 }
 
+const SAFE_PAYMENT_BOOKING_FIELDS = [
+  "id", "paymentReference", "clientName", "clientEmail", "phone", "date", "time", "eventTypeId", "type",
+  "duration", "status", "notes", "answers", "answerLabels", "createdAt", "paymentStatus", "paymentAmount",
+  "instagramHandle", "modifyToken", "depositRequired", "depositAmount", "depositMethod", "depositPaidAt", "paidAt",
+  "requiresConfirmation", "tenantSlug", "statusHistory", "paymentMethod", "paymentPath", "holdExpiresAt",
+  "bankTransferPendingAt", "bankTransferVerificationStatus", "stripeCheckoutStatus", "paymentNeedsReview",
+];
+
+function safePaymentBookingDto(booking) {
+  return Object.fromEntries(SAFE_PAYMENT_BOOKING_FIELDS
+    .filter(key => booking?.[key] !== undefined)
+    .map(key => [key, booking[key]]));
+}
+
+function paymentRouteError(status, code, error) {
+  return { status, body: { ok: false, code, error } };
+}
+
+function suppliedBookingCapability(value) {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function storedBookingCapabilityMatches(booking, supplied) {
+  return !!supplied
+    && typeof booking?.modifyToken === "string"
+    && booking.modifyToken.length > 0
+    && timingSafeTextEqual(booking.modifyToken, supplied);
+}
+
+function mainBookingByCapability(db, modifyToken) {
+  const supplied = suppliedBookingCapability(modifyToken);
+  if (!supplied) return null;
+  const matches = parseStored(db?.wv_bookings, [])
+    .filter(booking => !booking?.tenantSlug && storedBookingCapabilityMatches(booking, supplied));
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function canonicalEventPaymentMethod(db, booking, method) {
+  const bookingEventTypeId = String(booking?.eventTypeId || "");
+  if (!bookingEventTypeId) return { allowed: false, reason: "missing" };
+  const matches = parseStored(db?.wv_event_types, [])
+    .filter(eventType => String(eventType?.id || "") === bookingEventTypeId);
+  if (matches.length !== 1) return { allowed: false, reason: "missing" };
+  const methods = matches[0]?.depositMethods;
+  return {
+    allowed: !Array.isArray(methods) || methods.length === 0 || methods.includes(method),
+    reason: "configured",
+  };
+}
+
+function canonicalBankPending(booking) {
+  if (booking?.paymentStatus !== "pending-confirmation") return false;
+  const methods = [booking.paymentMethod, booking.depositMethod, booking.paymentPath]
+    .filter(value => value !== undefined && value !== null && value !== "")
+    .map(value => String(value).toLowerCase());
+  return methods.length > 0 && methods.every(method => method === "bank");
+}
+
+function bookingPaymentMethod(booking) {
+  if (canonicalBankPending(booking)) return "bank";
+  const methods = [booking?.paymentMethod, booking?.depositMethod, booking?.paymentPath]
+    .filter(value => value !== undefined && value !== null && value !== "")
+    .map(value => String(value).toLowerCase());
+  if (methods.includes("stripe")) return "stripe";
+  if (methods.includes("bank")) return "bank";
+  if (methods.includes("cash")) return "cash";
+  return null;
+}
+
+function bookingPaymentIsTerminal(booking) {
+  return booking?.archived === true || ["cancelled", "completed"].includes(String(booking?.status || "").toLowerCase());
+}
+
+function manualBankHoldExpiresAt(settings, nowMs = Date.now()) {
+  const hours = Math.max(1, Math.min(168, Number(settings?.unconfirmedBookingHoldHours) || 48));
+  return new Date(nowMs + hours * 60 * 60_000).toISOString();
+}
+
+function stripeResourceMissing(error) {
+  return String(error?.code || "") === "resource_missing";
+}
+
+function stripeAlreadyExpired(error) {
+  return /already expired/i.test(String(error?.message || ""));
+}
+
+function stripeAlreadyComplete(error) {
+  return /already complete|status (?:is )?complete|cannot expire.*complete/i.test(String(error?.message || ""));
+}
+
+async function retrieveBookingCheckout(client, sessionId) {
+  if (!client || !sessionId) return { state: "unavailable" };
+  try {
+    const session = await client.checkout.sessions.retrieve(sessionId);
+    if (checkoutIsPaid(session) || session?.status === "complete") return { state: "processing", session };
+    if (session?.status === "open" && session?.payment_status === "unpaid") return { state: "open", session };
+    if (session?.status === "expired") return { state: "expired", session };
+    return { state: "processing", session };
+  } catch (error) {
+    if (stripeResourceMissing(error)) return { state: "missing" };
+    return { state: "unavailable" };
+  }
+}
+
+async function revokeBookingCheckoutForBank(client, sessionId) {
+  if (!sessionId) return { ok: true, outcome: "none" };
+  if (!client) return paymentRouteError(503, "STRIPE_STATUS_UNAVAILABLE", "The card payment status could not be verified; please try again shortly");
+
+  let session;
+  try {
+    session = await client.checkout.sessions.retrieve(sessionId);
+  } catch (error) {
+    if (stripeResourceMissing(error)) return { ok: true, outcome: "missing" };
+    return paymentRouteError(503, "STRIPE_STATUS_UNAVAILABLE", "The card payment status could not be verified; please try again shortly");
+  }
+
+  if (checkoutIsPaid(session) || session?.status === "complete" || session?.payment_status !== "unpaid") {
+    return paymentRouteError(409, "STRIPE_PAYMENT_PROCESSING", "The card payment has completed or is processing; bank transfer cannot be selected yet");
+  }
+  if (session?.status === "expired") return { ok: true, outcome: "already-expired" };
+  if (session?.status !== "open") {
+    return paymentRouteError(409, "STRIPE_PAYMENT_PROCESSING", "The card payment status is still being resolved; bank transfer cannot be selected yet");
+  }
+
+  try {
+    const expired = await client.checkout.sessions.expire(sessionId);
+    if (expired && (checkoutIsPaid(expired) || expired.status === "complete")) {
+      return paymentRouteError(409, "STRIPE_PAYMENT_PROCESSING", "The card payment completed while bank transfer was being selected");
+    }
+    if (expired?.status && expired.status !== "expired") {
+      return paymentRouteError(503, "STRIPE_STATUS_UNAVAILABLE", "The card checkout could not be safely closed; please try again shortly");
+    }
+    return { ok: true, outcome: "expired" };
+  } catch (error) {
+    if (stripeResourceMissing(error) || stripeAlreadyExpired(error)) return { ok: true, outcome: "already-expired" };
+    if (stripeAlreadyComplete(error)) {
+      return paymentRouteError(409, "STRIPE_PAYMENT_PROCESSING", "The card payment completed while bank transfer was being selected");
+    }
+    const latest = await retrieveBookingCheckout(client, sessionId);
+    if (latest.state === "processing") {
+      return paymentRouteError(409, "STRIPE_PAYMENT_PROCESSING", "The card payment completed while bank transfer was being selected");
+    }
+    if (["expired", "missing"].includes(latest.state)) return { ok: true, outcome: "already-expired" };
+    // A network or Stripe error is never proof that the session was revoked.
+    // Fail closed so two payment paths cannot remain live at once.
+    return paymentRouteError(503, "STRIPE_STATUS_UNAVAILABLE", "The card checkout could not be safely closed; please try again shortly");
+  }
+}
+
+function validateManualBankTransition(db, booking, nowMs) {
+  const settings = parseStored(db?.wv_settings, {});
+  if (bookingPaymentIsTerminal(booking)) return paymentRouteError(409, "BOOKING_NOT_PAYABLE", "Booking is no longer payable");
+  if (["paid", "deposit-paid", "cash"].includes(booking?.paymentStatus)) {
+    return paymentRouteError(409, "BOOKING_ALREADY_SETTLED", "A payment has already been recorded for this booking");
+  }
+  const paymentAmount = Number(booking?.paymentAmount);
+  if (!Number.isFinite(paymentAmount) || paymentAmount <= 0) {
+    return paymentRouteError(409, "BOOKING_NOT_PAYABLE", "This booking does not require payment");
+  }
+  if (!bookingBlocksAvailability(booking, nowMs)) {
+    return paymentRouteError(409, "BOOKING_HOLD_EXPIRED", "This booking hold has expired");
+  }
+  if (canonicalBankPending(booking)) return { ok: true, idempotent: true, settings };
+  if (settings?.bankTransfer?.enabled !== true) {
+    return paymentRouteError(403, "BANK_TRANSFER_UNAVAILABLE", "Bank transfer is not available");
+  }
+  const eventBank = canonicalEventPaymentMethod(db, booking, "bank");
+  if (!eventBank.allowed) {
+    return paymentRouteError(403, "EVENT_BANK_TRANSFER_UNAVAILABLE", eventBank.reason === "missing"
+      ? "The booking configuration no longer supports changing payment method"
+      : "Bank transfer is not available for this session");
+  }
+  if (booking?.paymentStatus !== "unpaid") {
+    return paymentRouteError(409, "PAYMENT_STATE_CONFLICT", "The booking payment state cannot be changed to bank transfer");
+  }
+  return { ok: true, idempotent: false, settings };
+}
+
+async function switchMainBookingToManualBank({ modifyToken, action, readDb, writeDb, getStripeClient = getStripe, nowMs = Date.now() }) {
+  if (action !== undefined && action !== null && !["select-bank", "transfer-sent"].includes(action)) {
+    return paymentRouteError(400, "INVALID_ACTION", "Invalid bank transfer action");
+  }
+  const supplied = suppliedBookingCapability(modifyToken);
+  if (!supplied || typeof readDb !== "function" || typeof writeDb !== "function") {
+    return paymentRouteError(404, "BOOKING_NOT_FOUND", "Booking not found");
+  }
+  const initialDb = readDb();
+  const initialBooking = mainBookingByCapability(initialDb, supplied);
+  if (!initialBooking) return paymentRouteError(404, "BOOKING_NOT_FOUND", "Booking not found");
+
+  return withCheckoutResourceLock(bookingCheckoutResourceLockKey("main", initialBooking.id), async () => {
+    const db = readDb();
+    const bookings = parseStored(db?.wv_bookings, []);
+    const bookingIndex = bookings.findIndex(booking => booking?.id === initialBooking.id
+      && !booking?.tenantSlug
+      && storedBookingCapabilityMatches(booking, supplied));
+    if (bookingIndex < 0) return paymentRouteError(404, "BOOKING_NOT_FOUND", "Booking not found");
+    const booking = bookings[bookingIndex];
+    const validation = validateManualBankTransition(db, booking, nowMs);
+    if (!validation.ok) return validation;
+
+    const priorSessionId = booking.stripeCheckoutSessionId || null;
+    let stripeClient = null;
+    if (priorSessionId) {
+      try { stripeClient = getStripeClient(); }
+      catch { return paymentRouteError(503, "STRIPE_STATUS_UNAVAILABLE", "The card payment status could not be verified; please try again shortly"); }
+    }
+    const revocation = await revokeBookingCheckoutForBank(stripeClient, priorSessionId);
+    if (!revocation.ok) return revocation;
+
+    // Stripe and its webhook operate outside this checkout lock. Re-read the
+    // canonical booking after the network call so a just-paid booking always
+    // beats the bank transition and is never downgraded.
+    const commitDb = readDb();
+    const commitBookings = parseStored(commitDb?.wv_bookings, []);
+    const commitIndex = commitBookings.findIndex(item => item?.id === booking.id
+      && !item?.tenantSlug
+      && storedBookingCapabilityMatches(item, supplied));
+    if (commitIndex < 0) return paymentRouteError(404, "BOOKING_NOT_FOUND", "Booking not found");
+    const current = commitBookings[commitIndex];
+    const commitValidation = validateManualBankTransition(commitDb, current, nowMs);
+    if (!commitValidation.ok) return commitValidation;
+    if (canonicalBankPending(current)) {
+      return { status: 200, changed: false, bookingRecord: current, body: { ok: true, changed: false, booking: safePaymentBookingDto(current) } };
+    }
+    if (String(current.stripeCheckoutSessionId || "") !== String(priorSessionId || "")) {
+      return paymentRouteError(409, "PAYMENT_STATE_CONFLICT", "The card checkout changed while bank transfer was being selected");
+    }
+
+    const changedAt = new Date(nowMs).toISOString();
+    const paymentHistory = Array.isArray(current.paymentHistory) ? current.paymentHistory.slice(-99) : [];
+    const checkoutHistory = Array.isArray(current.stripeCheckoutHistory) ? current.stripeCheckoutHistory.slice(-19) : [];
+    const updated = {
+      ...current,
+      paymentStatus: "pending-confirmation",
+      paymentMethod: "bank",
+      depositMethod: "bank",
+      paymentPath: "bank",
+      holdExpiresAt: manualBankHoldExpiresAt(commitValidation.settings, nowMs),
+      bankTransferPendingAt: changedAt,
+      bankTransferVerificationStatus: "pending-admin-verification",
+      stripeCheckoutStatus: priorSessionId ? "expired-for-bank-transfer" : "superseded-by-bank-transfer",
+      stripeCheckoutRevokedAt: priorSessionId ? changedAt : undefined,
+      paymentHistory: [...paymentHistory, {
+        action: "manual-bank-transfer-selected",
+        changedAt,
+        source: "client-capability",
+        fromPaymentStatus: current.paymentStatus,
+        fromPaymentMethod: bookingPaymentMethod(current),
+        paymentStatus: "pending-confirmation",
+        paymentMethod: "bank",
+        verification: "pending-admin-verification",
+        note: "Manual bank transfer selected; awaiting admin verification",
+      }],
+      ...(priorSessionId ? {
+        stripeCheckoutHistory: [...checkoutHistory, {
+          stripeSessionId: priorSessionId,
+          status: "expired-for-bank-transfer",
+          changedAt,
+          outcome: revocation.outcome,
+        }],
+      } : {}),
+    };
+    // Revoking the canonical pointer makes any delayed paid webhook fail the
+    // checkout snapshot check and enter paid-unallocated manual review instead
+    // of overwriting this manual bank state.
+    delete updated.stripeCheckoutSessionId;
+    delete updated.stripeCheckoutSnapshotHash;
+    delete updated.stripeCheckoutExpectedAmountCents;
+    delete updated.stripeCheckoutExpectedCurrency;
+    delete updated.stripeCheckoutPaymentKind;
+    commitBookings[commitIndex] = updated;
+    commitDb.wv_bookings = JSON.stringify(commitBookings);
+    try {
+      writeDb(commitDb);
+    } catch {
+      return paymentRouteError(500, "WRITE_FAILED", "The payment method could not be saved; please try again");
+    }
+    return { status: 200, changed: true, bookingRecord: updated, body: { ok: true, changed: true, booking: safePaymentBookingDto(updated) } };
+  });
+}
+
+async function getMainBookingPaymentStatus({ modifyToken, readDb, getStripeClient = getStripe, nowMs = Date.now() }) {
+  const supplied = suppliedBookingCapability(modifyToken);
+  if (!supplied || typeof readDb !== "function") return paymentRouteError(404, "BOOKING_NOT_FOUND", "Booking not found");
+  const db = readDb();
+  const booking = mainBookingByCapability(db, supplied);
+  if (!booking) return paymentRouteError(404, "BOOKING_NOT_FOUND", "Booking not found");
+  const settings = parseStored(db?.wv_settings, {});
+  const eventBank = canonicalEventPaymentMethod(db, booking, "bank");
+  const eventStripe = canonicalEventPaymentMethod(db, booking, "stripe");
+  const terminal = bookingPaymentIsTerminal(booking);
+  const fullySettled = ["paid", "cash"].includes(booking.paymentStatus);
+  const bankPending = canonicalBankPending(booking);
+  const holdActive = bookingBlocksAvailability(booking, nowMs);
+  let checkoutState = booking.stripeCheckoutSessionId ? "unavailable" : "none";
+  const activeBalanceCheckout = booking.paymentStatus === "deposit-paid" && booking.stripeCheckoutPaymentKind === "balance";
+  if (!terminal && !fullySettled && !bankPending && booking.stripeCheckoutSessionId
+    && (booking.paymentStatus !== "deposit-paid" || activeBalanceCheckout)) {
+    checkoutState = (await retrieveBookingCheckout(getStripeClient(), booking.stripeCheckoutSessionId)).state;
+  }
+
+  let state;
+  if (terminal) state = "not-payable";
+  else if (booking.paymentStatus === "paid") state = "paid";
+  else if (booking.paymentStatus === "cash") state = "not-payable";
+  else if (booking.paymentNeedsReview === true) state = "payment-review";
+  else if (bankPending && !holdActive) state = "hold-expired";
+  else if (bankPending) state = "bank-pending";
+  else if (checkoutState === "processing") state = "checkout-processing";
+  else if (!holdActive) state = "hold-expired";
+  else if (checkoutState === "open") state = "checkout-open";
+  else if (["expired", "missing"].includes(checkoutState)) state = "checkout-expired";
+  else if (checkoutState === "unavailable") state = "checkout-status-unavailable";
+  else if (booking.paymentStatus === "deposit-paid") state = "deposit-paid";
+  else if (booking.paymentStatus !== "unpaid") state = "not-payable";
+  else state = "unpaid";
+
+  const retryableState = ["checkout-open", "checkout-expired", "deposit-paid", "unpaid"].includes(state);
+  const payment = bookingPaymentDetails(booking);
+  const cardPayable = !terminal
+    && !fullySettled
+    && !payment.error
+    && ["unpaid", "deposit-paid"].includes(booking.paymentStatus)
+    && holdActive;
+  const canRetryCard = cardPayable
+    && retryableState
+    && settings?.stripeEnabled !== false
+    && mainStripeReady()
+    && eventStripe.allowed;
+  const canSubmitBank = !terminal
+    && !fullySettled
+    && booking.paymentStatus === "unpaid"
+    && holdActive
+    && retryableState
+    && settings?.bankTransfer?.enabled === true
+    && eventBank.allowed;
+  const safeHold = Number.isFinite(Date.parse(booking.holdExpiresAt || "")) ? booking.holdExpiresAt : undefined;
+  const resolvedPaymentMethod = bookingPaymentMethod(booking);
+  return {
+    status: 200,
+    body: {
+      ok: true,
+      payment: {
+        state,
+        paymentStatus: String(booking.paymentStatus || "unpaid"),
+        ...(resolvedPaymentMethod ? { paymentMethod: resolvedPaymentMethod } : {}),
+        canRetryCard,
+        canSubmitBank,
+        bankTransferIsManual: true,
+        requiresAdminVerification: state === "bank-pending",
+        ...(safeHold ? { holdExpiresAt: safeHold } : {}),
+      },
+    },
+  };
+}
+
 function registerRoutes(app, { readDb, writeDb, readLicenseKeys, writeLicenseKeys, getGallerySession, onBookingPaid } = {}) {
   const checkoutLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHeaders: true, legacyHeaders: false, message: { error: "Too many checkout requests — please wait" } });
+  const paymentStatusLimiter = rateLimit({ windowMs: 60_000, max: 30, standardHeaders: true, legacyHeaders: false, message: { ok: false, code: "RATE_LIMITED", error: "Too many payment status requests — please wait" } });
   // ── Status ─────────────────────────────────────────
   app.get("/api/stripe/status", (_req, res) => {
     const configured = mainStripeReady();
     res.json({ configured, publishableKey: configured ? (process.env.STRIPE_PUBLISHABLE_KEY || null) : null });
   });
 
+  // Capability-authenticated booking payment state. This exposes no Stripe
+  // identifiers or client PII and never reconciles or mutates payment state.
+  app.get("/api/booking/:modifyToken/payment/status", paymentStatusLimiter, async (req, res) => {
+    try {
+      const result = await getMainBookingPaymentStatus({ modifyToken: req.params.modifyToken, readDb });
+      res.setHeader("Cache-Control", "private, no-store");
+      return res.status(result.status).json(result.body);
+    } catch (error) {
+      console.error("Booking payment status error:", error);
+      return res.status(500).json({ ok: false, code: "STATUS_CHECK_FAILED", error: "Payment status could not be checked" });
+    }
+  });
+
+  // Select a manual bank transfer for an existing main booking. This records
+  // only pending admin verification; it never confirms payment or the booking.
+  app.post("/api/booking/:modifyToken/payment/bank", checkoutLimiter, async (req, res) => {
+    try {
+      const result = await switchMainBookingToManualBank({
+        modifyToken: req.params.modifyToken,
+        action: req.body?.action,
+        readDb,
+        writeDb,
+      });
+      if (result.status === 200 && result.changed === true && result.bookingRecord) {
+        const booking = result.bookingRecord;
+        try {
+          const profile = parseStored(readDb()?.wv_profile, {});
+          const payment = bookingPaymentDetails(booking);
+          sendBookingConfirmationEmail({
+            to: booking.clientEmail,
+            clientName: booking.clientName,
+            eventTitle: booking.type,
+            date: booking.date,
+            time: booking.time,
+            duration: booking.duration,
+            location: booking.location || "",
+            price: booking.paymentAmount || 0,
+            depositAmount: booking.depositAmount || 0,
+            paymentMethod: "bank",
+            paymentStatus: booking.paymentStatus,
+            paymentKind: payment.error ? undefined : payment.paymentKind,
+            status: booking.status,
+            modifyToken: booking.modifyToken,
+            bookingId: booking.id,
+            appBaseUrl: String(process.env.APP_BASE_URL || `https://${String(process.env.APP_HOSTS || "book.zacmclients.photos").split(",")[0].trim()}`).replace(/\/$/, ""),
+            brandName: profile.businessName || profile.brandName || profile.name || "PhotoFlow",
+          }).then(emailResult => {
+            if (!emailResult.ok && emailResult.reason !== "not_configured") console.error(`Bank-pending booking receipt failed for ${booking.id}:`, emailResult.error || emailResult.reason);
+          }).catch(error => console.error(`Bank-pending booking receipt failed for ${booking.id}:`, error?.message || error));
+        } catch (error) {
+          console.error(`Bank-pending booking receipt failed for ${booking.id}:`, error?.message || error);
+        }
+        // The callback registered by index.js queues the same initial calendar
+        // sync used by a booking that selected bank transfer at creation time.
+        if (onBookingPaid) {
+          setImmediate(() => Promise.resolve(onBookingPaid(booking)).catch(error => console.error(`Bank-pending booking callback failed for ${booking.id}:`, error?.message || error)));
+        }
+      }
+      return res.status(result.status).json(result.body);
+    } catch (error) {
+      console.error("Booking bank transfer selection error:", error);
+      return res.status(500).json({ ok: false, code: "BANK_TRANSFER_FAILED", error: "Bank transfer could not be selected" });
+    }
+  });
+
   // ── Create Checkout Session (booking deposit) ──────
   app.post("/api/stripe/checkout/booking", checkoutLimiter, async (req, res) => {
     const s = getStripe();
-    if (!s || !mainStripeReady()) return res.status(503).json({ error: "Stripe checkout is unavailable until webhook verification is configured" });
-    const { bookingId, successUrl, cancelUrl } = req.body;
+    if (!s || !mainStripeReady()) return res.status(503).json({ code: "STRIPE_UNAVAILABLE", error: "Stripe checkout is unavailable until webhook verification is configured" });
+    const { bookingId, successUrl, cancelUrl } = req.body || {};
     try {
-      await withCheckoutResourceLock(`checkout:main:booking:${bookingId}`, async () => {
+      await withCheckoutResourceLock(bookingCheckoutResourceLockKey("main", bookingId), async () => {
         const db = readDb();
         const bookings = parseStored(db["wv_bookings"], []);
         const bookingIndex = bookings.findIndex(item => item.id === bookingId && !item.tenantSlug);
-        if (bookingIndex < 0) return res.status(404).json({ error: "Booking not found or no longer payable" });
+        if (bookingIndex < 0) return res.status(404).json({ code: "BOOKING_NOT_FOUND", error: "Booking not found or no longer payable" });
         const booking = bookings[bookingIndex];
-        if (!timingSafeTextEqual(req.body.modifyToken, booking.modifyToken)) return res.status(403).json({ error: "Invalid booking capability" });
-        if (booking.archived === true || ["cancelled", "completed"].includes(booking.status) || booking.paymentStatus === "paid") return res.status(409).json({ error: "Booking is no longer payable" });
-        if (!bookingBlocksAvailability(booking)) return res.status(409).json({ error: "This booking hold has expired" });
+        const suppliedCapability = suppliedBookingCapability(req.body?.modifyToken);
+        if (!storedBookingCapabilityMatches(booking, suppliedCapability)) return res.status(403).json({ code: "INVALID_BOOKING_CAPABILITY", error: "Invalid booking capability" });
+        if (booking.archived === true || ["cancelled", "completed"].includes(booking.status)) return res.status(409).json({ code: "BOOKING_NOT_PAYABLE", error: "Booking is no longer payable" });
+        const checkoutStage = bookingStripeCheckoutStage(booking);
+        if (!checkoutStage.ok) return res.status(409).json({ code: checkoutStage.code, error: checkoutStage.error });
+        if (!bookingBlocksAvailability(booking)) return res.status(409).json({ code: "BOOKING_HOLD_EXPIRED", error: "This booking hold has expired" });
         const total = Number(booking.paymentAmount);
         const deposit = Number(booking.depositAmount) || 0;
-        if (!Number.isFinite(total) || total <= 0) return res.status(400).json({ error: "This booking does not require payment" });
+        if (!Number.isFinite(total) || total <= 0) return res.status(400).json({ code: "BOOKING_NOT_PAYABLE", error: "This booking does not require payment" });
         let paymentKind = "full";
         let amount = total;
         if (booking.paymentStatus === "deposit-paid" && deposit > 0) {
@@ -737,17 +1187,22 @@ function registerRoutes(app, { readDb, writeDb, readLicenseKeys, writeLicenseKey
           paymentKind = "deposit";
           amount = deposit;
         }
-        if (!Number.isFinite(amount) || amount <= 0) return res.status(409).json({ error: "No balance remains on this booking" });
+        if (!Number.isFinite(amount) || amount <= 0) return res.status(409).json({ code: "BOOKING_ALREADY_SETTLED", error: "No balance remains on this booking" });
         const expectedAmountCents = Math.round(amount * 100);
         const checkoutSnapshot = bookingCheckoutSnapshot(booking, "main", paymentKind, expectedAmountCents, "aud");
-        if (booking.stripeCheckoutSessionId) {
+        const fulfilledDepositCheckout = paymentKind === "balance" && booking.paymentStatus === "deposit-paid" && (
+          booking.stripeFulfilments?.deposit?.stripeSessionId === booking.stripeCheckoutSessionId
+          || booking.stripeSessionId === booking.stripeCheckoutSessionId
+          || (booking.stripeCheckoutPaymentKind === "deposit" && booking.stripeCheckoutStatus === "completed")
+        );
+        if (booking.stripeCheckoutSessionId && !fulfilledDepositCheckout) {
           const existing = await inspectExistingCheckout(s, booking.stripeCheckoutSessionId, {
             amountCents: expectedAmountCents,
             currency: "aud",
             snapshotHash: checkoutSnapshot.snapshotHash,
           });
           if (existing.action === "reuse") return res.json({ url: existing.session.url, sessionId: existing.session.id, reused: true });
-          if (existing.action === "processing") return res.status(409).json({ error: "A payment for this booking is already processing", sessionId: existing.session.id });
+          if (existing.action === "processing") return res.status(409).json({ code: "STRIPE_PAYMENT_PROCESSING", error: "A payment for this booking is already processing", sessionId: existing.session.id });
         }
         const expiresAt = checkoutExpirySeconds(booking.holdExpiresAt);
         const session = await s.checkout.sessions.create({
@@ -803,7 +1258,7 @@ function registerRoutes(app, { readDb, writeDb, readLicenseKeys, writeLicenseKey
       });
     } catch (err) {
       console.error("Stripe checkout error:", err);
-      if (!res.headersSent) res.status(500).json({ error: err.message });
+      if (!res.headersSent) res.status(500).json({ code: "STRIPE_CHECKOUT_FAILED", error: err.message });
     }
   });
 
@@ -1448,25 +1903,33 @@ function registerTenantStripeRoutes(app, { readDb, writeDb, readTenants, require
   app.post("/api/tenant/:slug/stripe/checkout/booking", tenantCheckoutLimiter, async (req, res) => {
     const { slug } = req.params;
     if (!findLicensedTenant(slug)) return res.status(404).json({ error: "Tenant not found" });
-    const { bookingId, successUrl, cancelUrl } = req.body;
+    const { bookingId, successUrl, cancelUrl } = req.body || {};
     try {
-      await withCheckoutResourceLock(`checkout:tenant:${slug}:booking:${bookingId}`, async () => {
+      await withCheckoutResourceLock(bookingCheckoutResourceLockKey(`tenant:${slug}`, bookingId), async () => {
         const db = readDb();
         const ts = parseStored(db[`t_${slug}_wv_tenant_settings`], {});
         const resolved = resolveTenantStripe(ts);
         if (!resolved?.webhookReady) return res.status(503).json({ error: "Stripe checkout is unavailable until webhook verification is configured" });
         const bookings = parseStored(db["wv_bookings"], []);
         const bookingIndex = bookings.findIndex(item => item.id === bookingId && item.tenantSlug === slug);
-        if (bookingIndex < 0) return res.status(404).json({ error: "Booking not found or no longer payable" });
+        if (bookingIndex < 0) return res.status(404).json({ code: "BOOKING_NOT_FOUND", error: "Booking not found or no longer payable" });
         const booking = bookings[bookingIndex];
-        if (!timingSafeTextEqual(req.body.modifyToken, booking.modifyToken)) return res.status(403).json({ error: "Invalid booking capability" });
-        if (booking.archived === true || ["cancelled", "completed"].includes(booking.status) || booking.paymentStatus === "paid") return res.status(409).json({ error: "Booking is no longer payable" });
-        if (!bookingBlocksAvailability(booking)) return res.status(409).json({ error: "This booking hold has expired" });
+        const suppliedCapability = suppliedBookingCapability(req.body?.modifyToken);
+        if (!storedBookingCapabilityMatches(booking, suppliedCapability)) return res.status(403).json({ code: "INVALID_BOOKING_CAPABILITY", error: "Invalid booking capability" });
+        if (booking.archived === true || ["cancelled", "completed"].includes(booking.status)) return res.status(409).json({ code: "BOOKING_NOT_PAYABLE", error: "Booking is no longer payable" });
+        const checkoutStage = bookingStripeCheckoutStage(booking);
+        if (!checkoutStage.ok) return res.status(409).json({ code: checkoutStage.code, error: checkoutStage.error });
+        if (!bookingBlocksAvailability(booking)) return res.status(409).json({ code: "BOOKING_HOLD_EXPIRED", error: "This booking hold has expired" });
         const payment = bookingPaymentDetails(booking);
-        if (payment.error) return res.status(/does not require/i.test(payment.error) ? 400 : 409).json({ error: payment.error });
+        if (payment.error) return res.status(/does not require/i.test(payment.error) ? 400 : 409).json({ code: "BOOKING_NOT_PAYABLE", error: payment.error });
         const accountHash = stripeAccountHash(ts.stripeSecretKey);
         const checkoutSnapshot = bookingCheckoutSnapshot(booking, `tenant:${slug}`, payment.paymentKind, payment.amountCents, resolved.currency);
-        if (booking.stripeCheckoutSessionId) {
+        const fulfilledDepositCheckout = payment.paymentKind === "balance" && booking.paymentStatus === "deposit-paid" && (
+          booking.stripeFulfilments?.deposit?.stripeSessionId === booking.stripeCheckoutSessionId
+          || booking.stripeSessionId === booking.stripeCheckoutSessionId
+          || (booking.stripeCheckoutPaymentKind === "deposit" && booking.stripeCheckoutStatus === "completed")
+        );
+        if (booking.stripeCheckoutSessionId && !fulfilledDepositCheckout) {
           if (booking.stripeCheckoutAccountHash && !timingSafeTextEqual(booking.stripeCheckoutAccountHash, accountHash)) {
             return res.status(409).json({ error: "Stripe account changed while a booking checkout is still open; resolve the previous checkout before retrying" });
           }
@@ -1476,7 +1939,7 @@ function registerTenantStripeRoutes(app, { readDb, writeDb, readTenants, require
             snapshotHash: checkoutSnapshot.snapshotHash,
           });
           if (existing.action === "reuse") return res.json({ url: existing.session.url, sessionId: existing.session.id, reused: true });
-          if (existing.action === "processing") return res.status(409).json({ error: "A payment for this booking is already processing", sessionId: existing.session.id });
+          if (existing.action === "processing") return res.status(409).json({ code: "STRIPE_PAYMENT_PROCESSING", error: "A payment for this booking is already processing", sessionId: existing.session.id });
         }
         const expiresAt = checkoutExpirySeconds(booking.holdExpiresAt);
         const session = await resolved.client.checkout.sessions.create({
@@ -1881,7 +2344,9 @@ module.exports = {
   calculateAlbumCheckout,
   calculateAlbumSelectionPricing,
   applyBookingStripePayment,
+  bookingCheckoutResourceLockKey,
   bookingCheckoutSnapshot,
+  bookingStripeCheckoutStage,
   checkoutSessionMatches,
   evaluateAlbumStripePayment,
   evaluateBookingStripePayment,
@@ -1890,7 +2355,12 @@ module.exports = {
   recordLegacyLicensePlanPaymentReview,
   checkoutExpirySeconds,
   expireBookingCheckout,
+  getMainBookingPaymentStatus,
   mainStripeReady,
+  manualBankHoldExpiresAt,
+  safePaymentBookingDto,
   safeCheckoutReturnUrl,
+  switchMainBookingToManualBank,
   tenantStripeReady,
+  withCheckoutResourceLock,
 };
