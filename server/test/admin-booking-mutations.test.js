@@ -58,6 +58,8 @@ test("a verified deposit can be completed without losing its audit trail", () =>
   assert.doesNotMatch(section, /current\.paymentStatus !== "deposit-paid" \|\| !current\.depositPaidAt/);
   assert.match(section, /const depositVerifiedAt = current\.depositPaidAt/);
   assert.match(section, /depositTimestampBackfilled: !current\.depositPaidAt/);
+  assert.match(section, /current\.paymentStatus === "paid" && current\.balancePaidAt && current\.lastPaymentKind === "balance"/);
+  assert.doesNotMatch(section, /\|\| current\.updatedAt[\s\S]*\|\| current\.createdAt/);
   assert.match(section, /balancePaidAt: confirmedAt/);
   assert.match(section, /action: "remaining-balance-confirmed"/);
   assert.match(section, /\.\.\.current/);
