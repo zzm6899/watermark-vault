@@ -6815,7 +6815,16 @@ async function syncBookingCalendarMutation(booking, action) {
   if (!booking?.id) return "not-linked";
   if (["create", "reschedule"].includes(action) && (!bookingBlocksAvailability(booking) || !bookingReadyForCalendar(booking))) return "not-eligible";
   const connection = getBookingGoogleCalendarConnection(booking.tenantSlug || null);
-  if (!connection) return "not-configured";
+  if (!connection) {
+    // Do not silently orphan a known Calendar event when deleting its booking.
+    // Cancellation can remain queued until the owner reconnects Google.
+    if (action === "cancel" && (booking.gcalEventId || booking.gcalCalendarId)) {
+      const error = new Error("Google Calendar must be reconnected before this booking event can be removed");
+      error.code = "CALENDAR_NOT_CONNECTED";
+      throw error;
+    }
+    return "not-configured";
+  }
   const { google } = require("googleapis");
   const calendar = google.calendar({ version: "v3", auth: connection.client });
   const findLinkedEventIds = async calendarId => {
@@ -7955,6 +7964,9 @@ app.patch("/api/admin/bookings/:id/complete-balance", superLimiter, requireAuth,
     const index = bookings.findIndex(booking => !booking?.tenantSlug && booking.id === bookingId);
     if (index < 0) return res.status(404).json({ ok: false, code: "BOOKING_NOT_FOUND", error: "Booking not found" });
     const current = bookings[index];
+    if (current.paymentStatus === "paid" && current.balancePaidAt && current.lastPaymentKind === "balance") {
+      return res.json({ ok: true, booking: current, reused: true });
+    }
     if (current.paymentStatus !== "deposit-paid") {
       return res.status(409).json({ ok: false, code: "DEPOSIT_NOT_SETTLED", error: "This booking does not have a verified deposit awaiting its balance" });
     }
@@ -7973,8 +7985,6 @@ app.patch("/api/admin/bookings/:id/complete-balance", superLimiter, requireAuth,
     const depositVerifiedAt = current.depositPaidAt
       || (current.lastPaymentKind === "deposit" ? current.lastPaymentAt : undefined)
       || current.paidAt
-      || current.updatedAt
-      || current.createdAt
       || confirmedAt;
     const history = Array.isArray(current.paymentHistory) ? current.paymentHistory.slice(-99) : [];
     const updated = {

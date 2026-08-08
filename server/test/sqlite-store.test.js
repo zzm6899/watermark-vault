@@ -35,3 +35,21 @@ test("SQLite writes replace one complete application snapshot atomically", () =>
   store.close();
   fs.rmSync(dataDir, { recursive: true, force: true });
 });
+
+test("an intentionally empty migrated store never reimports a later stale db.json", () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "photoflow-sqlite-empty-"));
+  const legacyFile = path.join(dataDir, "db.json");
+  fs.writeFileSync(legacyFile, "{}");
+  const store = createSqliteStore({ dataDir, legacyFile });
+  assert.equal(store.migratedLegacy, true);
+  assert.deepEqual(store.read(), {});
+  store.close();
+
+  fs.writeFileSync(legacyFile, JSON.stringify({ stale: "must-not-return" }));
+  const reopened = createSqliteStore({ dataDir, legacyFile });
+  assert.equal(reopened.migratedLegacy, false);
+  assert.deepEqual(reopened.read(), {});
+  assert.deepEqual(JSON.parse(fs.readFileSync(legacyFile, "utf8")), {});
+  reopened.close();
+  fs.rmSync(dataDir, { recursive: true, force: true });
+});

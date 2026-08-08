@@ -28,6 +28,7 @@ function createSqliteStore({ dataDir, legacyFile = path.join(dataDir, "db.json")
   const upsert = database.prepare("INSERT INTO app_store(key, value_json, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json, updated_at=excluded.updated_at");
   const remove = database.prepare("DELETE FROM app_store WHERE key = ?");
   const setMeta = database.prepare("INSERT INTO schema_meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value");
+  const getMeta = database.prepare("SELECT value FROM schema_meta WHERE key = ?");
 
   function writeLegacyShadow(value) {
     if (!legacyFile) return;
@@ -38,6 +39,15 @@ function createSqliteStore({ dataDir, legacyFile = path.join(dataDir, "db.json")
     } catch (error) {
       try { fs.unlinkSync(temporary); } catch {}
       throw error;
+    }
+  }
+
+  function refreshLegacyShadow(value) {
+    try { writeLegacyShadow(value); }
+    catch (error) {
+      // The committed SQLite transaction remains authoritative. A rollback
+      // shadow failure must not make callers retry an already-committed write.
+      console.error("Unable to refresh the db.json rollback shadow:", error?.message || error);
     }
   }
 
@@ -59,10 +69,11 @@ function createSqliteStore({ dataDir, legacyFile = path.join(dataDir, "db.json")
       }
       for (const key of existing) remove.run(key);
       setMeta.run("schema_version", "1");
+      if (!getMeta.get("store_initialized_at")?.value) setMeta.run("store_initialized_at", now);
       database.exec("COMMIT");
       // Keep a current rollback shadow for older application images that still
       // understand db.json. SQLite remains authoritative on this version.
-      writeLegacyShadow(normalized);
+      refreshLegacyShadow(normalized);
     } catch (error) {
       try { database.exec("ROLLBACK"); } catch {}
       throw error;
@@ -70,13 +81,17 @@ function createSqliteStore({ dataDir, legacyFile = path.join(dataDir, "db.json")
   }
 
   const rowCount = Number(database.prepare("SELECT COUNT(*) AS count FROM app_store").get().count || 0);
+  const initialized = !!getMeta.get("store_initialized_at")?.value;
   let migratedLegacy = false;
-  if (rowCount === 0 && fs.existsSync(legacyFile)) {
-    const legacy = parseLegacyDatabase(legacyFile);
-    write(legacy);
-    setMeta.run("legacy_imported_at", new Date().toISOString());
-    migratedLegacy = true;
-  } else if (rowCount > 0) writeLegacyShadow(read());
+  if (!initialized) {
+    if (rowCount === 0 && fs.existsSync(legacyFile)) {
+      const legacy = parseLegacyDatabase(legacyFile);
+      write(legacy);
+      setMeta.run("legacy_imported_at", new Date().toISOString());
+      migratedLegacy = true;
+    } else refreshLegacyShadow(read());
+    setMeta.run("store_initialized_at", new Date().toISOString());
+  } else refreshLegacyShadow(read());
 
   function checkpoint() { database.exec("PRAGMA wal_checkpoint(TRUNCATE)"); }
   function close() { checkpoint(); database.close(); }
