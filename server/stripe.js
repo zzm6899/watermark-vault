@@ -1083,13 +1083,132 @@ async function getMainBookingPaymentStatus({ modifyToken, readDb, getStripeClien
   };
 }
 
-function registerRoutes(app, { readDb, writeDb, readLicenseKeys, writeLicenseKeys, getGallerySession, onBookingPaid } = {}) {
+function registerRoutes(app, { readDb, writeDb, readLicenseKeys, writeLicenseKeys, requireAuth, getGallerySession, onBookingPaid } = {}) {
   const checkoutLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHeaders: true, legacyHeaders: false, message: { error: "Too many checkout requests — please wait" } });
   const paymentStatusLimiter = rateLimit({ windowMs: 60_000, max: 30, standardHeaders: true, legacyHeaders: false, message: { ok: false, code: "RATE_LIMITED", error: "Too many payment status requests — please wait" } });
   // ── Status ─────────────────────────────────────────
   app.get("/api/stripe/status", (_req, res) => {
     const configured = mainStripeReady();
     res.json({ configured, publishableKey: configured ? (process.env.STRIPE_PUBLISHABLE_KEY || null) : null });
+  });
+
+  // Reconcile a main booking against its canonical Stripe Checkout Session.
+  // This is deliberately an authenticated, single-record operation: an admin
+  // can recover from a missed/delayed webhook without manually asserting that
+  // money was received or replacing the bookings array from stale browser data.
+  app.post("/api/admin/bookings/:bookingId/stripe/reconcile", checkoutLimiter, requireAuth, async (req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    const bookingId = String(req.params.bookingId || "").trim();
+    const s = getStripe();
+    if (!bookingId || bookingId.length > 128) return res.status(404).json({ ok: false, code: "BOOKING_NOT_FOUND", error: "Booking not found" });
+    if (!s || !mainStripeReady()) return res.status(503).json({ ok: false, code: "STRIPE_UNAVAILABLE", error: "Stripe reconciliation is unavailable until webhook verification is configured" });
+    try {
+      const result = await withCheckoutResourceLock(bookingCheckoutResourceLockKey("main", bookingId), async () => {
+        const db = readDb();
+        const bookings = parseStored(db["wv_bookings"], []);
+        const index = bookings.findIndex(booking => !booking?.tenantSlug && String(booking?.id || "") === bookingId);
+        if (index < 0) return { status: 404, body: { ok: false, code: "BOOKING_NOT_FOUND", error: "Booking not found" } };
+        const current = bookings[index];
+        const sessionId = String(current.stripeCheckoutSessionId || current.stripeSessionId || "").trim();
+        if (!sessionId) return { status: 409, body: { ok: false, code: "STRIPE_SESSION_NOT_FOUND", error: "No Stripe checkout is recorded for this booking" } };
+
+        let session;
+        try {
+          session = await s.checkout.sessions.retrieve(sessionId);
+        } catch (error) {
+          if (stripeResourceMissing(error)) return { status: 409, body: { ok: false, code: "STRIPE_SESSION_NOT_FOUND", error: "The recorded Stripe checkout no longer exists" } };
+          throw error;
+        }
+        if (!checkoutIsPaid(session)) {
+          const status = String(session?.status || current.stripeCheckoutStatus || "open");
+          if (current.stripeCheckoutStatus !== status) {
+            bookings[index] = { ...current, stripeCheckoutStatus: status };
+            db["wv_bookings"] = JSON.stringify(bookings);
+            writeDb(db);
+          }
+          return { status: 409, body: { ok: false, code: "STRIPE_PAYMENT_NOT_COMPLETE", error: status === "expired" ? "Stripe checkout expired without a successful card payment" : "Stripe has not confirmed this card payment yet", checkoutState: status } };
+        }
+
+        const metadata = session.metadata || {};
+        if (!new Set(["booking-payment", "booking-deposit"]).has(String(metadata.type || "")) || String(metadata.bookingId || "") !== bookingId) {
+          const reason = "Stripe checkout does not belong to this booking";
+          bookings[index] = reviewBookingStripePayment(current, metadata, session, reason);
+          db["wv_bookings"] = JSON.stringify(bookings);
+          recordStripePaymentReview(db, { resourceType: "booking", resourceId: bookingId, tenantSlug: null, stripeSessionId: session.id, amountTotal: session.amount_total, currency: session.currency, reason });
+          writeDb(db);
+          return { status: 200, body: { ok: true, booking: bookings[index], paymentNeedsReview: true, reconciled: false } };
+        }
+
+        const paymentKind = String(metadata.paymentKind || "full");
+        const fulfilmentKey = `main:booking:${bookingId}:${paymentKind}`;
+        const priorFulfilment = stripeFulfilment(db, fulfilmentKey);
+        const paymentProbe = applyBookingStripePayment(current, metadata, session);
+        if (priorFulfilment?.stripeSessionId === session.id || paymentProbe.alreadyFulfilled) {
+          return { status: 200, body: { ok: true, booking: current, reconciled: false, alreadyFulfilled: true } };
+        }
+
+        let reviewReason = priorFulfilment?.stripeSessionId ? `Duplicate ${paymentKind} payment completed for an already fulfilled booking stage` : null;
+        if (!reviewReason) {
+          const validation = evaluateBookingStripePayment(current, metadata, session, "main", "aud");
+          if (!validation.valid) reviewReason = validation.reason;
+        }
+        if (reviewReason) {
+          bookings[index] = reviewBookingStripePayment(current, metadata, session, reviewReason);
+          db["wv_bookings"] = JSON.stringify(bookings);
+          recordStripePaymentReview(db, { resourceType: "booking", resourceId: bookingId, tenantSlug: null, stripeSessionId: session.id, amountTotal: session.amount_total, currency: session.currency, reason: reviewReason });
+          writeDb(db);
+          return { status: 200, body: { ok: true, booking: bookings[index], paymentNeedsReview: true, reconciled: false } };
+        }
+
+        const application = applyBookingStripePayment(current, metadata, session);
+        bookings[index] = application.booking;
+        if (application.needsReview) {
+          db["wv_bookings"] = JSON.stringify(bookings);
+          recordStripePaymentReview(db, { resourceType: "booking", resourceId: bookingId, tenantSlug: null, stripeSessionId: session.id, amountTotal: session.amount_total, currency: session.currency, reason: bookings[index].paymentReviewReason });
+          writeDb(db);
+          return { status: 200, body: { ok: true, booking: bookings[index], paymentNeedsReview: true, reconciled: false } };
+        }
+        markStripeResourceFulfilled(db, fulfilmentKey, session, { resourceType: "booking", resourceId: bookingId, paymentKind });
+        try {
+          const paymentIntentId = bookings[index].stripePaymentIntentId;
+          if (paymentIntentId) {
+            const paymentIntent = await s.paymentIntents.retrieve(paymentIntentId, { expand: ["latest_charge"] });
+            const latestCharge = paymentIntent.latest_charge;
+            const receiptUrl = typeof latestCharge === "object" ? latestCharge?.receipt_url : null;
+            if (receiptUrl) bookings[index].stripeReceiptUrl = receiptUrl;
+          }
+        } catch (error) {
+          console.warn(`Stripe receipt lookup failed during booking reconciliation ${bookingId}:`, error.message);
+        }
+        db["wv_bookings"] = JSON.stringify(bookings);
+        writeDb(db);
+        return { status: 200, body: { ok: true, booking: bookings[index], reconciled: true }, notifyBooking: bookings[index], paymentKind };
+      });
+
+      if (result.notifyBooking) {
+        const booking = result.notifyBooking;
+        const profile = parseStored(readDb()?.wv_profile, {});
+        sendBookingConfirmationEmail({
+          to: booking.clientEmail, clientName: booking.clientName, eventTitle: booking.type,
+          date: booking.date, time: booking.time, duration: booking.duration,
+          location: booking.location || "", price: booking.paymentAmount || 0,
+          depositAmount: booking.depositAmount || 0, paymentMethod: "stripe",
+          paymentStatus: booking.paymentStatus, paymentKind: result.paymentKind,
+          status: booking.status, modifyToken: booking.modifyToken, bookingId: booking.id,
+          appBaseUrl: String(process.env.APP_BASE_URL || `https://${String(process.env.APP_HOSTS || "book.zacmclients.photos").split(",")[0].trim()}`).replace(/\/$/, ""),
+          brandName: profile.businessName || profile.brandName || profile.name || "PhotoFlow",
+        }).catch(error => console.error(`Reconciled booking receipt failed for ${bookingId}:`, error?.message || error));
+        if (onBookingPaid) setImmediate(() => Promise.resolve(onBookingPaid(booking)).catch(error => console.error(`Reconciled booking callback failed for ${bookingId}:`, error?.message || error)));
+        try {
+          const settings = parseStored(readDb()?.wv_settings, {});
+          if (settings?.discordWebhookUrl && settings?.discordNotifyPayments !== false) notifyPayment(settings.discordWebhookUrl, booking, booking.paymentStatus).catch(() => {});
+        } catch { /* payment is already persisted; notifications are best effort */ }
+      }
+      return res.status(result.status).json(result.body);
+    } catch (error) {
+      console.error(`Stripe reconciliation failed for booking ${bookingId}:`, error);
+      return res.status(500).json({ ok: false, code: "STRIPE_RECONCILIATION_FAILED", error: "Stripe payment could not be reconciled" });
+    }
   });
 
   // Capability-authenticated booking payment state. This exposes no Stripe

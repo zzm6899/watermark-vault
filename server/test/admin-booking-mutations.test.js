@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const source = fs.readFileSync(path.join(__dirname, "..", "index.js"), "utf8");
+const stripeSource = fs.readFileSync(path.join(__dirname, "..", "stripe.js"), "utf8");
 
 test("admin booking mutations are narrow and share the Stripe booking lock", () => {
   for (const contract of [
@@ -49,4 +50,19 @@ test("bank settlement requires canonical bank-pending state under the booking lo
   assert.match(section, /bankTransferVerificationStatus: "confirmed-by-admin"/);
   assert.match(section, /holdExpiresAt: undefined/);
   assert.match(section, /manual-bank-payment-confirmed/);
+});
+
+test("admin Stripe reconciliation verifies the canonical paid session under the booking lock", () => {
+  const section = stripeSource.slice(
+    stripeSource.indexOf('app.post("/api/admin/bookings/:bookingId/stripe/reconcile"'),
+    stripeSource.indexOf('// Capability-authenticated booking payment state'),
+  );
+  assert.match(section, /checkoutLimiter, requireAuth/);
+  assert.match(section, /withCheckoutResourceLock\(bookingCheckoutResourceLockKey\("main", bookingId\)/);
+  assert.match(section, /checkout\.sessions\.retrieve\(sessionId\)/);
+  assert.match(section, /if \(!checkoutIsPaid\(session\)\)/);
+  assert.match(section, /evaluateBookingStripePayment\(current, metadata, session, "main", "aud"\)/);
+  assert.match(section, /applyBookingStripePayment\(current, metadata, session\)/);
+  assert.match(section, /markStripeResourceFulfilled/);
+  assert.doesNotMatch(section, /req\.body.*paymentStatus/);
 });

@@ -154,6 +154,8 @@ import {
   adminAuthHeaders,
   setBookingArchiveState,
   resolveBookingPaymentReview,
+  confirmAdminBankPayment,
+  reconcileAdminStripePayment,
 } from "@/lib/api";
 import type { CacheBreakdown, EmailAutomationPreview, ManualEditParams, PaymentReviewResolutionStatus, PresetEditParams, XmpPreset, PhotoEditRequest } from "@/lib/api";
 import RichTextEditor, { RichTextDisplay } from "@/components/RichTextEditor";
@@ -2776,6 +2778,17 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
   const [sheetsSyncing, setSheetsSyncing] = useState(false);
   const [sortKey, setSortKey] = useState<BookingSortKey>("date");
 
+  // Direct links (including Payment Operations references) must not be
+  // filtered against an old localStorage snapshot. Refresh the canonical
+  // server store when this view mounts, then update only this view's state.
+  useEffect(() => {
+    let active = true;
+    syncFromServer().then(() => {
+      if (active) setBookingsState(getBookings());
+    }).catch(() => {});
+    return () => { active = false; };
+  }, []);
+
   // Waitlist state
   const [waitlist, setWaitlist] = useState<WaitlistEntry[]>([]);
   const [showWaitlist, setShowWaitlist] = useState(false);
@@ -2954,12 +2967,32 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
       return;
     }
 
-    const updated = { ...bk, paymentStatus };
-    updateBooking(updated);
-    setBookingsState(getBookings());
-    toast.success(`Payment marked as ${paymentStatusLabel(paymentStatus)}`);
-    // Discord notification for payment status change
-    notifyDiscord({ type: "payment", booking: updated, payment: paymentStatus }).catch(() => {});
+    if (paymentStatus === bk.paymentStatus) return;
+    const isBankPending = bk.paymentStatus === "pending-confirmation" || !!bk.bankTransferPendingAt;
+    const isCardCheckout = ["open", "processing"].includes(String(bk.stripeCheckoutStatus || ""))
+      || bk.paymentMethod === "stripe" || bk.depositMethod === "stripe";
+    if (isBankPending && ["paid", "deposit-paid"].includes(paymentStatus)) {
+      setResolvingPaymentReviewId(bk.id);
+      const result = await confirmAdminBankPayment(bk.id);
+      setResolvingPaymentReviewId(null);
+      if (!result.ok || !result.booking) { toast.error(result.error || "Unable to confirm bank payment"); return; }
+      setBookingsState(previous => previous.map(booking => booking.id === result.booking!.id ? result.booking! : booking));
+      cacheBookingLocally(result.booking);
+      toast.success("Bank payment confirmed");
+      return;
+    }
+    if (isCardCheckout && ["paid", "deposit-paid"].includes(paymentStatus)) {
+      setResolvingPaymentReviewId(bk.id);
+      const result = await reconcileAdminStripePayment(bk.id);
+      setResolvingPaymentReviewId(null);
+      if (!result.ok || !result.booking) { toast.error(result.error || "Stripe has not confirmed this payment"); return; }
+      setBookingsState(previous => previous.map(booking => booking.id === result.booking!.id ? result.booking! : booking));
+      cacheBookingLocally(result.booking);
+      if (result.booking.paymentNeedsReview) toast.warning("Stripe found the payment, but it needs manual review in Payment Operations");
+      else toast.success(`Stripe payment verified as ${paymentStatusLabel(result.booking.paymentStatus || "paid")}`);
+      return;
+    }
+    toast.error("This payment state is server-managed. Use Payment Operations to verify card or bank payments.");
   };
 
   const handleExportCsv = () => {
