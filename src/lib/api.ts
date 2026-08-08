@@ -1247,12 +1247,12 @@ export async function getGoogleCalendars(): Promise<{ id: string; summary: strin
   }
 }
 
-export async function syncBookingToCalendar(booking: unknown, calendarId = "primary"): Promise<{ ok: boolean; eventId?: string }> {
+export async function syncBookingToCalendar(booking: unknown, calendarId?: string): Promise<{ ok: boolean; eventId?: string }> {
   try {
     const res = await fetch("/api/integrations/googlecalendar/event", {
       method: "POST",
       headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
-      body: JSON.stringify({ booking, calendarId }),
+      body: JSON.stringify({ booking, ...(calendarId ? { calendarId } : {}) }),
     });
     return await res.json();
   } catch {
@@ -1494,12 +1494,12 @@ export async function saveTenantCalendarSettings(slug: string, settings: { autoS
   } catch { return { ok: false }; }
 }
 
-export async function syncTenantBookingToCalendar(slug: string, booking: unknown, calendarId = "primary"): Promise<{ ok: boolean; eventId?: string }> {
+export async function syncTenantBookingToCalendar(slug: string, booking: unknown, calendarId?: string): Promise<{ ok: boolean; eventId?: string }> {
   try {
     const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/integrations/googlecalendar/event`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ booking, calendarId }),
+      body: JSON.stringify({ booking, ...(calendarId ? { calendarId } : {}) }),
     });
     return await res.json();
   } catch { return { ok: false }; }

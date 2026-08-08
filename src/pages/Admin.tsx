@@ -67,8 +67,6 @@ import {
   disconnectGoogleCalendar,
   getGoogleCalendars,
   syncAllBookingsToCalendar,
-  syncBookingToCalendar,
-  syncTenantBookingToCalendar,
   getServerStorageStats,
   downloadServerBackup,
   syncFromServer,
@@ -2875,7 +2873,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
     toast.success("Booking deleted");
   };
 
-  const handleStatusChange = (bk: Booking, status: Booking["status"]) => {
+  const handleStatusChange = async (bk: Booking, status: Booking["status"]) => {
     // Append an entry to the status history so the timeline remains accurate
     const historyEntry = { status, changedAt: new Date().toISOString() };
     const updated = {
@@ -2883,20 +2881,14 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
       status,
       statusHistory: [...(bk.statusHistory || []), historyEntry],
     };
-    updateBooking(updated);
+    const saved = await updateBooking(updated);
+    if (!saved) { toast.error("Booking status could not be saved"); return; }
     setBookingsState(getBookings());
     toast.success(`Booking ${status}`);
     // Discord notification
     notifyDiscord({ type: "booking-update", booking: updated, oldStatus: bk.status, newStatus: status }).catch(() => {});
-    // Push status change to Google Calendar (updates event color)
-    if (bk.gcalEventId || status !== "cancelled") {
-      const syncPromise = updated.tenantSlug
-        ? syncTenantBookingToCalendar(updated.tenantSlug, updated)
-        : syncBookingToCalendar(updated);
-      syncPromise.then(res => {
-        if (res?.eventId) updateBooking({ ...updated, gcalEventId: res.eventId });
-      }).catch(() => {});
-    }
+    // The canonical server mutation updates or removes the linked Google
+    // Calendar event and queues retry state if Google is temporarily unavailable.
     // If cancelled, check waitlist and notify anyone waiting for this slot
     if (status === "cancelled") {
       notifyWaitlistOnCancel(updated).catch(() => {});

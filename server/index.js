@@ -5958,37 +5958,37 @@ const tenantBookingLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHead
     const { booking, calendarId } = req.body;
     if (!booking) return res.status(400).json({ error: "Missing booking" });
     const calId = calendarId || loadTenantCalSettings(slug).calendarId || "primary";
-    // Reuse the event builder from the main google-calendar module
-    const { getAuthenticatedClient, loadCalSettings } = require("./google-calendar");
-    const TZ = process.env.TZ || "Australia/Sydney";
-    function buildEvent(b) {
-      const startLocal = `${b.date}T${b.time}:00`;
-      const [h, m] = b.time.split(":").map(Number);
-      const totalMins = h * 60 + m + (b.duration || 60);
-      const endH = String(Math.floor(totalMins / 60) % 24).padStart(2, "0");
-      const endM = String(totalMins % 60).padStart(2, "0");
-      let endDate2 = b.date;
-      if (Math.floor(totalMins / 60) >= 24) {
-        const d = new Date(`${b.date}T00:00:00Z`);
-        d.setUTCDate(d.getUTCDate() + Math.floor(Math.floor(totalMins / 60) / 24));
-        endDate2 = d.toISOString().slice(0, 10);
-      }
-      return {
-        summary: `📸 ${b.type || "Session"} — ${b.clientName}`,
-        description: [`Client: ${b.clientName}`, b.clientEmail ? `Email: ${b.clientEmail}` : "", `Duration: ${b.duration || 60}min`, b.notes ? `Notes: ${b.notes}` : "", `\nRef: ${b.id}`].filter(Boolean).join("\n"),
-        start: { dateTime: `${b.date}T${b.time}:00`, timeZone: TZ },
-        end:   { dateTime: `${endDate2}T${endH}:${endM}:00`, timeZone: TZ },
-        extendedProperties: { private: { watermarkVaultBookingId: b.id } },
-      };
-    }
     try {
       const cal = google.calendar({ version: "v3", auth });
-      if (booking.gcalEventId) {
-        const { data } = await cal.events.update({ calendarId: calId, eventId: booking.gcalEventId, requestBody: buildEvent(booking) });
-        return res.json({ ok: true, eventId: data.id, updated: true });
+      const tenant = readTenants().find(item => item.slug === slug);
+      const requestBody = buildBookingCalendarEvent(booking, tenant?.timezone || "Australia/Sydney");
+      let eventId = booking.gcalEventId || null;
+      let updated = false;
+      if (eventId) {
+        try {
+          const { data } = await cal.events.update({ calendarId: calId, eventId, requestBody });
+          eventId = data.id;
+          updated = true;
+        } catch (error) {
+          const status = Number(error?.code || error?.response?.status);
+          if (status !== 404 && status !== 410) throw error;
+          eventId = null;
+        }
       }
-      const { data } = await cal.events.insert({ calendarId: calId, requestBody: buildEvent(booking) });
-      res.json({ ok: true, eventId: data.id, htmlLink: data.htmlLink });
+      if (!eventId) {
+        const existing = await cal.events.list({ calendarId: calId, privateExtendedProperty: [`watermarkVaultBookingId=${booking.id}`], singleEvents: true, showDeleted: false, maxResults: 10 });
+        eventId = existing.data.items?.find(item => item.status !== "cancelled" && item.id)?.id || null;
+        if (eventId) {
+          const { data } = await cal.events.update({ calendarId: calId, eventId, requestBody });
+          eventId = data.id;
+          updated = true;
+        } else {
+          const { data } = await cal.events.insert({ calendarId: calId, requestBody });
+          eventId = data.id;
+        }
+      }
+      persistBookingCalendarEventLink(booking.id, eventId);
+      res.json({ ok: true, eventId, updated });
     } catch (err) {
       console.error("Tenant calendar event error:", err.message);
       res.status(500).json({ error: err.message });
@@ -6786,14 +6786,18 @@ function buildBookingCalendarEvent(booking, timezone) {
   return {
     summary: `📸 ${booking.type || "Session"} — ${booking.clientName || "Client"}`,
     description: [
+      booking.clientName ? `Client: ${booking.clientName}` : "",
       booking.clientEmail ? `Email: ${booking.clientEmail}` : "",
       booking.phone ? `Phone: ${booking.phone}` : "",
       `Duration: ${Math.max(1, Number(booking.duration) || 60)}min`,
+      booking.status ? `Status: ${booking.status}` : "",
+      booking.paymentStatus ? `Payment: ${booking.paymentStatus}` : "",
       booking.notes ? `Notes: ${booking.notes}` : "",
       `Ref: ${booking.id}`,
     ].filter(Boolean).join("\n"),
     start: { dateTime: start.toISOString(), timeZone: timezone },
     end: { dateTime: end.toISOString(), timeZone: timezone },
+    colorId: booking.status === "confirmed" ? "2" : booking.status === "completed" ? "10" : booking.status === "cancelled" ? "11" : "5",
     extendedProperties: { private: { watermarkVaultBookingId: booking.id } },
   };
 }
@@ -6807,49 +6811,59 @@ function bookingReadyForCalendar(booking) {
 
 async function syncBookingCalendarMutation(booking, action) {
   if (!booking?.id) return "not-linked";
-  if (action !== "create" && !booking.gcalEventId) return "not-linked";
-  if (action === "create" && (!bookingBlocksAvailability(booking) || !bookingReadyForCalendar(booking))) return "not-eligible";
+  if (["create", "reschedule"].includes(action) && (!bookingBlocksAvailability(booking) || !bookingReadyForCalendar(booking))) return "not-eligible";
   const connection = getBookingGoogleCalendarConnection(booking.tenantSlug || null);
   if (!connection) return "not-configured";
   const { google } = require("googleapis");
   const calendar = google.calendar({ version: "v3", auth: connection.client });
-  if (action === "create") {
-    let eventId = booking.gcalEventId;
-    if (!eventId) {
-      const existing = await calendar.events.list({
-        calendarId: connection.calendarId,
-        privateExtendedProperty: [`watermarkVaultBookingId=${booking.id}`],
-        singleEvents: true,
-        showDeleted: false,
-        maxResults: 2,
-      });
-      eventId = existing.data.items?.find(item => item.status !== "cancelled")?.id || null;
-    }
+  const findLinkedEventIds = async () => {
+    const existing = await calendar.events.list({
+      calendarId: connection.calendarId,
+      privateExtendedProperty: [`watermarkVaultBookingId=${booking.id}`],
+      singleEvents: true,
+      showDeleted: false,
+      maxResults: 10,
+    });
+    return (existing.data.items || []).filter(item => item.status !== "cancelled" && item.id).map(item => item.id);
+  };
+  if (["create", "reschedule"].includes(action)) {
+    let eventId = booking.gcalEventId || null;
+    const requestBody = buildBookingCalendarEvent(booking, connection.timezone);
     if (eventId) {
-      await calendar.events.update({ calendarId: connection.calendarId, eventId, requestBody: buildBookingCalendarEvent(booking, connection.timezone) });
-    } else {
-      const created = await calendar.events.insert({ calendarId: connection.calendarId, requestBody: buildBookingCalendarEvent(booking, connection.timezone) });
-      eventId = created.data.id;
+      try {
+        await calendar.events.update({ calendarId: connection.calendarId, eventId, requestBody });
+      } catch (err) {
+        const status = Number(err?.code || err?.response?.status);
+        if (status !== 404 && status !== 410) throw err;
+        eventId = null;
+      }
+    }
+    if (!eventId) {
+      eventId = (await findLinkedEventIds())[0] || null;
+      if (eventId) await calendar.events.update({ calendarId: connection.calendarId, eventId, requestBody });
+      else {
+        const created = await calendar.events.insert({ calendarId: connection.calendarId, requestBody });
+        eventId = created.data.id;
+      }
     }
     if (!eventId) throw new Error("Google Calendar did not return an event ID");
     persistBookingCalendarEventLink(booking.id, eventId);
     return "synced";
   }
   if (action === "cancel") {
-    try {
-      await calendar.events.delete({ calendarId: connection.calendarId, eventId: booking.gcalEventId });
-    } catch (err) {
-      const status = Number(err?.code || err?.response?.status);
-      if (status !== 404 && status !== 410) throw err;
+    const eventIds = new Set(booking.gcalEventId ? [booking.gcalEventId] : []);
+    for (const eventId of await findLinkedEventIds()) eventIds.add(eventId);
+    for (const eventId of eventIds) {
+      try {
+        await calendar.events.delete({ calendarId: connection.calendarId, eventId });
+      } catch (err) {
+        const status = Number(err?.code || err?.response?.status);
+        if (status !== 404 && status !== 410) throw err;
+      }
     }
     return "synced";
   }
-  await calendar.events.update({
-    calendarId: connection.calendarId,
-    eventId: booking.gcalEventId,
-    requestBody: buildBookingCalendarEvent(booking, connection.timezone),
-  });
-  return "synced";
+  return "not-linked";
 }
 
 function persistBookingCalendarEventLink(bookingId, gcalEventId) {
@@ -6898,16 +6912,20 @@ function enqueueBookingCalendarSync(booking, action, err) {
 }
 
 function queueInitialBookingCalendarSync(booking) {
+  queueBookingCalendarSync(booking, "create");
+}
+
+function queueBookingCalendarSync(booking, action) {
   setImmediate(async () => {
     try {
       const current = getStoredArray(readDb(), DB_KEYS.BOOKINGS).find(item => item.id === booking.id);
       if (!current) return;
-      const result = await syncBookingCalendarMutation(current, "create");
-      if (result === "synced") persistBookingCalendarSyncState(current.id, "synced", "create");
+      const result = await syncBookingCalendarMutation(current, action);
+      if (result === "synced") persistBookingCalendarSyncState(current.id, "synced", action);
     } catch (err) {
-      console.error(`Google Calendar create failed for booking ${booking.id}; queued for retry:`, err.message);
+      console.error(`Google Calendar ${action} failed for booking ${booking.id}; queued for retry:`, err.message);
       const current = getStoredArray(readDb(), DB_KEYS.BOOKINGS).find(item => item.id === booking.id);
-      if (current && current.status !== "cancelled") enqueueBookingCalendarSync(current, "create", err);
+      if (current) enqueueBookingCalendarSync(current, action, err);
     }
   });
 }
@@ -7753,6 +7771,7 @@ app.post("/api/admin/bookings", superLimiter, requireAuth, async (req, res) => {
     bookings.push(booking);
     db[DB_KEYS.BOOKINGS] = JSON.stringify(bookings);
     writeDb(db);
+    if (bookingReadyForCalendar(booking)) queueBookingCalendarSync(booking, "create");
     return res.status(201).json({ ok: true, booking });
   });
 });
@@ -7772,10 +7791,15 @@ app.patch("/api/admin/bookings/:id", superLimiter, requireAuth, async (req, res)
     const bookings = getStoredArray(db, DB_KEYS.BOOKINGS);
     const index = bookings.findIndex(booking => !booking?.tenantSlug && String(booking?.id || "") === bookingId);
     if (index < 0) return res.status(404).json({ ok: false, code: "BOOKING_NOT_FOUND", error: "Booking not found" });
-    const booking = { ...bookings[index], ...changes, id: bookingId, tenantSlug: bookings[index].tenantSlug };
+    const previous = bookings[index];
+    const booking = { ...previous, ...changes, id: bookingId, tenantSlug: previous.tenantSlug };
     bookings[index] = booking;
     db[DB_KEYS.BOOKINGS] = JSON.stringify(bookings);
     writeDb(db);
+    const calendarAction = booking.status === "cancelled" || (!bookingReadyForCalendar(booking) && previous.gcalEventId)
+      ? "cancel"
+      : bookingReadyForCalendar(booking) ? (previous.gcalEventId ? "reschedule" : "create") : null;
+    if (calendarAction) queueBookingCalendarSync(booking, calendarAction);
     return res.json({ ok: true, booking });
   });
 });
@@ -8183,7 +8207,7 @@ app.put("/api/tenant/:slug/bookings/:bookingId", tenantLimiter, requireTenant, a
   let db = readDb();
   let allBookings = getStoredArray(db, DB_KEYS.BOOKINGS);
   const idx = allBookings.findIndex(b => b.id === bookingId && b.tenantSlug === slug);
-  let shouldQueueCalendarCreate = false;
+  let calendarAction = null;
   const { id: _id, tenantSlug: _ts, ...updates } = req.body || {};
   if (idx < 0) {
     const clientName = String(updates.clientName || "").trim();
@@ -8279,12 +8303,14 @@ app.put("/api/tenant/:slug/bookings/:bookingId", tenantLimiter, requireTenant, a
     } else if (!updated.holdExpiresAt && updated.paymentAmount > 0) {
       updated.holdExpiresAt = unconfirmedBookingHoldExpiresAt(dbGet(db, `t_${slug}_wv_tenant_settings`, {}), updated.paymentPath || "contact");
     }
-    shouldQueueCalendarCreate = bookingReadyForCalendar(updated) && !updated.gcalEventId && !bookingReadyForCalendar(existing);
+    calendarAction = updated.status === "cancelled" || (!bookingReadyForCalendar(updated) && existing.gcalEventId)
+      ? "cancel"
+      : bookingReadyForCalendar(updated) ? (existing.gcalEventId ? "reschedule" : "create") : null;
     allBookings[idx] = updated;
   }
   db[DB_KEYS.BOOKINGS] = JSON.stringify(allBookings);
   writeDb(db);
-  if (shouldQueueCalendarCreate) queueInitialBookingCalendarSync(allBookings[idx]);
+  if (calendarAction) queueBookingCalendarSync(allBookings[idx], calendarAction);
   res.json({ ok: true, booking: publicBookingDto(allBookings[idx]) });
 });
 

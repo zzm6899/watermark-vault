@@ -1984,31 +1984,6 @@ export default function AlbumDetail() {
             </div>
           </motion.div>
 
-          {visiblePhotos.length > 0 && (
-            <div className="mb-5 rounded-2xl border border-border/70 bg-card/45 p-4 sm:p-5">
-              <div className="grid gap-3 sm:grid-cols-3">
-                {(showProofingGalleryControls ? [
-                  ["1", "Browse", "Open any image for a closer look"],
-                  ["2", "Star favourites", "Tap the star on every photo you want"],
-                  ["3", "Submit picks", "Send the final selection to your photographer"],
-                ] : canDownload ? [
-                  ["1", "Choose", "Select individual photos or keep everything"],
-                  ["2", "Review", "Use filters and the lightbox to check details"],
-                  ["3", "Download", "Download selected photos or the complete gallery"],
-                ] : [
-                  ["1", "Choose", "Tap photos to add them to your selection"],
-                  ["2", "Review total", "Free allowance and pricing update automatically"],
-                  ["3", "Download", "Use free access or complete secure checkout"],
-                ]).map(([number, label, detail]) => (
-                  <div key={number} className="flex items-start gap-3 rounded-xl bg-background/45 p-3">
-                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary/15 text-xs font-body font-semibold text-primary">{number}</span>
-                    <div><p className="text-xs font-body font-semibold text-foreground">{label}</p><p className="mt-0.5 text-[11px] font-body leading-4 text-muted-foreground">{detail}</p></div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
             {canDownload && (
               <div className="flex items-center gap-2 mt-4 p-3 rounded-lg bg-green-500/5 border border-green-500/10">
                 <Download className="w-4 h-4 text-green-400 flex-shrink-0" />
