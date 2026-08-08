@@ -7955,7 +7955,7 @@ app.patch("/api/admin/bookings/:id/complete-balance", superLimiter, requireAuth,
     const index = bookings.findIndex(booking => !booking?.tenantSlug && booking.id === bookingId);
     if (index < 0) return res.status(404).json({ ok: false, code: "BOOKING_NOT_FOUND", error: "Booking not found" });
     const current = bookings[index];
-    if (current.paymentStatus !== "deposit-paid" || !current.depositPaidAt) {
+    if (current.paymentStatus !== "deposit-paid") {
       return res.status(409).json({ ok: false, code: "DEPOSIT_NOT_SETTLED", error: "This booking does not have a verified deposit awaiting its balance" });
     }
     if (current.paymentNeedsReview || current.archived || current.status === "cancelled") {
@@ -7966,18 +7966,29 @@ app.patch("/api/admin/bookings/:id/complete-balance", superLimiter, requireAuth,
     const balance = Math.max(0, total - deposit);
     if (balance <= 0) return res.status(409).json({ ok: false, code: "NO_BALANCE_DUE", error: "This booking has no remaining balance" });
     const confirmedAt = new Date().toISOString();
+    // Older bookings used paymentStatus as the authoritative deposit record
+    // before depositPaidAt was introduced. Preserve that verified state and
+    // backfill a conservative audit timestamp when the remaining balance is
+    // explicitly confirmed by an admin.
+    const depositVerifiedAt = current.depositPaidAt
+      || (current.lastPaymentKind === "deposit" ? current.lastPaymentAt : undefined)
+      || current.paidAt
+      || current.updatedAt
+      || current.createdAt
+      || confirmedAt;
     const history = Array.isArray(current.paymentHistory) ? current.paymentHistory.slice(-99) : [];
     const updated = {
       ...current,
       paymentStatus: "paid",
       paymentMethod: method,
+      depositPaidAt: depositVerifiedAt,
       paidAt: confirmedAt,
       balancePaidAt: confirmedAt,
       holdExpiresAt: undefined,
       lastPaymentKind: "balance",
       lastPaymentAmount: balance,
       lastPaymentAt: confirmedAt,
-      paymentHistory: [...history, { action: "remaining-balance-confirmed", changedAt: confirmedAt, source: "admin", method, paymentStatus: "paid", amount: balance }],
+      paymentHistory: [...history, { action: "remaining-balance-confirmed", changedAt: confirmedAt, source: "admin", method, paymentStatus: "paid", amount: balance, depositTimestampBackfilled: !current.depositPaidAt }],
     };
     bookings[index] = updated;
     db[DB_KEYS.BOOKINGS] = JSON.stringify(bookings);

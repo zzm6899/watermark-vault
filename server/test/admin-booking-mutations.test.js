@@ -54,7 +54,10 @@ test("bank settlement requires canonical bank-pending state under the booking lo
 
 test("a verified deposit can be completed without losing its audit trail", () => {
   const section = source.slice(source.indexOf('app.patch("/api/admin/bookings/:id/complete-balance"'), source.indexOf("// Archive/unarchive"));
-  assert.match(section, /current\.paymentStatus !== "deposit-paid" \|\| !current\.depositPaidAt/);
+  assert.match(section, /current\.paymentStatus !== "deposit-paid"/);
+  assert.doesNotMatch(section, /current\.paymentStatus !== "deposit-paid" \|\| !current\.depositPaidAt/);
+  assert.match(section, /const depositVerifiedAt = current\.depositPaidAt/);
+  assert.match(section, /depositTimestampBackfilled: !current\.depositPaidAt/);
   assert.match(section, /balancePaidAt: confirmedAt/);
   assert.match(section, /action: "remaining-balance-confirmed"/);
   assert.match(section, /\.\.\.current/);
