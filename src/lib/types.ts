@@ -141,6 +141,8 @@ export interface Booking {
   /** Append-only payment reconciliation audit. Stripe identifiers in this array are admin/server-only. */
   paymentReviews?: BookingPaymentReviewEntry[];
   gcalEventId?: string;
+  /** Calendar that owns gcalEventId, used to migrate or clean up events safely. */
+  gcalCalendarId?: string;
   answerLabels?: Record<string, string>;
   emailLog?: any[];
   tenantSlug?: string;   // set when booking is made via a tenant's public page

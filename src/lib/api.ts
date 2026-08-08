@@ -2118,6 +2118,16 @@ export async function confirmAdminBankPayment(bookingId: string): Promise<AdminB
   } catch { return { ok: false, error: "Network error while confirming bank payment" }; }
 }
 
+export async function completeAdminBookingBalance(bookingId: string, method: "bank" | "cash" = "bank"): Promise<AdminBookingMutationResult> {
+  try {
+    return await parseAdminBookingMutation(await fetch(`/api/admin/bookings/${encodeURIComponent(bookingId)}/complete-balance`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
+      body: JSON.stringify({ method }),
+    }));
+  } catch { return { ok: false, error: "Network error while confirming the remaining balance" }; }
+}
+
 /** Verify and fulfil one booking from its canonical Stripe Checkout Session. */
 export async function reconcileAdminStripePayment(bookingId: string): Promise<AdminBookingMutationResult> {
   try {

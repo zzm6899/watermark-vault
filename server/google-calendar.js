@@ -71,8 +71,8 @@ function saveCalSettings(s) {
   writeJsonFileAtomic(SETTINGS_FILE, { ...loadCalSettings(), ...s });
 }
 
-// ── Persist gcalEventId back to db.json ──────────────────────
-function saveGcalEventId(bookingId, gcalEventId) {
+// ── Persist the Google event ownership link ─────────────────
+function saveGcalEventId(bookingId, gcalEventId, gcalCalendarId) {
   if (!bookingId || !gcalEventId) return;
   try {
     if (!sharedReadDb || !sharedWriteDb) throw new Error("Shared database helpers are unavailable");
@@ -80,8 +80,9 @@ function saveGcalEventId(bookingId, gcalEventId) {
     const raw = db.wv_bookings;
     const bookings = Array.isArray(raw) ? raw : (raw ? JSON.parse(raw) : []);
     const idx = bookings.findIndex(b => b.id === bookingId);
-    if (idx >= 0 && bookings[idx].gcalEventId !== gcalEventId) {
+    if (idx >= 0 && (bookings[idx].gcalEventId !== gcalEventId || bookings[idx].gcalCalendarId !== gcalCalendarId)) {
       bookings[idx].gcalEventId = gcalEventId;
+      bookings[idx].gcalCalendarId = gcalCalendarId;
       db.wv_bookings = JSON.stringify(bookings);
       sharedWriteDb(db);
     }
@@ -252,6 +253,14 @@ function registerRoutes(app, options = {}) {
       const requestBody = buildEvent(booking);
       let eventId = booking.gcalEventId || null;
       let updated = false;
+      if (eventId && booking.gcalCalendarId && booking.gcalCalendarId !== calId) {
+        try { await cal.events.delete({ calendarId: booking.gcalCalendarId, eventId }); }
+        catch (error) {
+          const status = Number(error?.code || error?.response?.status);
+          if (status !== 404 && status !== 410) throw error;
+        }
+        eventId = null;
+      }
       if (eventId) {
         try {
           const { data } = await cal.events.update({ calendarId: calId, eventId, requestBody });
@@ -275,7 +284,7 @@ function registerRoutes(app, options = {}) {
           eventId = data.id;
         }
       }
-      saveGcalEventId(booking.id, eventId);
+      saveGcalEventId(booking.id, eventId, calId);
       res.json({ ok: true, eventId, updated });
     } catch (err) {
       console.error("Calendar event error:", err.message);
@@ -393,7 +402,7 @@ function registerRoutes(app, options = {}) {
         if (existId) {
           try {
             const { data } = await cal.events.update({ calendarId: calId, eventId: existId, requestBody: buildEvent(booking) });
-            saveGcalEventId(booking.id, data.id);
+            saveGcalEventId(booking.id, data.id, calId);
             updated++;
             continue;
           } catch (error) {
@@ -403,7 +412,7 @@ function registerRoutes(app, options = {}) {
         }
         {
           const { data } = await cal.events.insert({ calendarId: calId, requestBody: buildEvent(booking) });
-          saveGcalEventId(booking.id, data.id);
+          saveGcalEventId(booking.id, data.id, calId);
           created++;
         }
       } catch (e) {
