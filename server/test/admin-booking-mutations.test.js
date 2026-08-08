@@ -30,3 +30,23 @@ test("payment health is an aggregate and never returns credential values", () =>
   assert.doesNotMatch(section, /secretKey\s*:\s*process\.env/);
   assert.doesNotMatch(section, /webhookSecret\s*:\s*process\.env/);
 });
+
+test("reference images are isolated, capability-bound, signed and size limited", () => {
+  const section = source.slice(source.indexOf("const BOOKING_REFERENCES_DIR"), source.indexOf('app.patch("/api/booking/:token"'));
+  assert.match(section, /path\.join\(DATA_DIR, "booking-references"\)/);
+  assert.match(section, /limits: \{ fileSize: 8 \* 1024 \* 1024, files: 5 \}/);
+  assert.match(section, /requireBookingReferenceCapability, acceptBookingReferenceImages/);
+  assert.match(section, /purpose: "booking-reference"/);
+  assert.match(section, /private, no-store/);
+  assert.match(section, /bookingCheckoutResourceLockKey\(req\.referenceBookingScope/);
+  assert.doesNotMatch(section, /url:.*modifyToken/);
+});
+
+test("bank settlement requires canonical bank-pending state under the booking lock", () => {
+  const section = source.slice(source.indexOf('app.patch("/api/admin/bookings/:id/bank-payment"'), source.indexOf('// Archive/unarchive'));
+  assert.match(section, /withCheckoutResourceLock\(bookingCheckoutResourceLockKey\("main", bookingId\)/);
+  assert.match(section, /current\.paymentStatus !== "pending-confirmation"/);
+  assert.match(section, /bankTransferVerificationStatus: "confirmed-by-admin"/);
+  assert.match(section, /holdExpiresAt: undefined/);
+  assert.match(section, /manual-bank-payment-confirmed/);
+});

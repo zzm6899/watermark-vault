@@ -13,6 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import Footer from "@/components/Footer";
 import BookingAvatar from "@/components/BookingAvatar";
+import BookingReferenceUploads from "@/components/BookingReferenceUploads";
 import { toast } from "sonner";
 import { getEventTypes, getProfile, cacheBookingLocally, getBookings, getSettings } from "@/lib/storage";
 import {
@@ -1811,6 +1812,8 @@ export default function Booking() {
                     </div>
                   )}
                   
+                  {lastBooking && !isCancelled && <BookingReferenceUploads booking={lastBooking} onChange={updated => cacheBookingLocally(updated)} />}
+
                   <div className="flex flex-col gap-3 mt-6">
                     {!isCancelled && <Button asChild variant="outline" className="w-full font-body text-xs tracking-wider uppercase border-border text-foreground gap-2">
                       <a aria-label={`Add ${selectedEvent.title} on ${toDateStr(selectedDate)} at ${selectedTime} to Google Calendar`} href={buildBookingCalendarUrl({ title: selectedEvent.title, date: toDateStr(selectedDate), time: selectedTime, durationMinutes: selectedDuration, timeZone: availabilityTimezone || profile.timezone, details: richTextToPlainText(selectedEvent.description), location: selectedEvent.location })} target="_blank" rel="noopener noreferrer">

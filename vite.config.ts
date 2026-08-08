@@ -23,7 +23,7 @@ export default defineConfig(({ mode }) => ({
     // Admin is now split at feature boundaries (payments, portfolio, imports,
     // ZIP operations). Keep the remaining workspace shell under a deliberate
     // 600 kB ceiling while those routes continue to be extracted incrementally.
-    chunkSizeWarningLimit: 600,
+    chunkSizeWarningLimit: 500,
     rollupOptions: {
       output: {
         manualChunks(id) {
