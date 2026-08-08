@@ -52,6 +52,15 @@ test("bank settlement requires canonical bank-pending state under the booking lo
   assert.match(section, /manual-bank-payment-confirmed/);
 });
 
+test("a verified deposit can be completed without losing its audit trail", () => {
+  const section = source.slice(source.indexOf('app.patch("/api/admin/bookings/:id/complete-balance"'), source.indexOf("// Archive/unarchive"));
+  assert.match(section, /current\.paymentStatus !== "deposit-paid" \|\| !current\.depositPaidAt/);
+  assert.match(section, /balancePaidAt: confirmedAt/);
+  assert.match(section, /action: "remaining-balance-confirmed"/);
+  assert.match(section, /\.\.\.current/);
+  assert.match(section, /withCheckoutResourceLock\(bookingCheckoutResourceLockKey\("main", bookingId\)/);
+});
+
 test("admin Stripe reconciliation verifies the canonical paid session under the booking lock", () => {
   const section = stripeSource.slice(
     stripeSource.indexOf('app.post("/api/admin/bookings/:bookingId/stripe/reconcile"'),

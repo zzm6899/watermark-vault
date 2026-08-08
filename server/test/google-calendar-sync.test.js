@@ -19,10 +19,18 @@ test("Calendar updates recover from missing or stale event ids", () => {
   assert.match(indexSource, /\["create", "reschedule"\]\.includes\(action\)/);
   assert.match(indexSource, /privateExtendedProperty: \[`watermarkVaultBookingId=\$\{booking\.id\}`\]/);
   assert.match(indexSource, /status !== 404 && status !== 410/);
-  assert.match(indexSource, /for \(const eventId of await findLinkedEventIds\(\)\) eventIds\.add\(eventId\)/);
+  assert.match(indexSource, /for \(const eventId of await findLinkedEventIds\(calendarId\)\) eventIds\.add\(eventId\)/);
   assert.match(calendarSource, /privateExtendedProperty: \[`watermarkVaultBookingId=\$\{booking\.id\}`\]/);
   assert.match(indexSource, /booking\.status === "confirmed" \? "2"/);
   assert.match(indexSource, /booking\.paymentStatus \? `Payment:/);
+});
+
+test("Calendar ownership follows events and deletion fails closed when cleanup fails", () => {
+  assert.match(indexSource, /gcalCalendarId/);
+  assert.match(indexSource, /booking\.gcalCalendarId !== connection\.calendarId/);
+  assert.match(indexSource, /CALENDAR_CLEANUP_FAILED/);
+  assert.match(indexSource, /persistBookingCalendarEventLink\(booking\.id, eventId, connection\.calendarId\)/);
+  assert.match(calendarSource, /saveGcalEventId\(booking\.id, eventId, calId\)/);
 });
 
 test("manual Calendar helpers defer to the configured calendar unless explicitly overridden", () => {

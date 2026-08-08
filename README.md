@@ -484,7 +484,7 @@ In Android Studio: Build → Build Bundle(s)/APK(s) → Build APK. Transfer to y
 
 **"Server unavailable"** — The app is running in localStorage-only mode. Make sure the Docker container is running on port 5066. Check `docker compose logs` for errors.
 
-**Data backup** — The database is `./data/db.json`. Back up the entire `./data/` directory regularly (including uploads). The database uses debounced writes so a clean shutdown (`docker compose stop`) flushes any pending writes first.
+**Data backup** — The primary database is `./data/photoflow.sqlite` (transactional SQLite/WAL). On first start after upgrading, PhotoFlow imports the existing `./data/db.json` automatically and then keeps that JSON file refreshed as a rollback shadow. Back up the entire `./data/` directory regularly, including uploads; the Admin backup download includes both the SQLite database and rollback JSON.
 
 ---
 

@@ -153,6 +153,7 @@ import {
   setBookingArchiveState,
   resolveBookingPaymentReview,
   confirmAdminBankPayment,
+  completeAdminBookingBalance,
   reconcileAdminStripePayment,
 } from "@/lib/api";
 import type { CacheBreakdown, EmailAutomationPreview, ManualEditParams, PaymentReviewResolutionStatus, PresetEditParams, XmpPreset, PhotoEditRequest } from "@/lib/api";
@@ -2969,6 +2970,17 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
     }
 
     if (paymentStatus === bk.paymentStatus) return;
+    if (bk.paymentStatus === "deposit-paid" && paymentStatus === "paid") {
+      if (!window.confirm(`Mark the remaining balance for ${bk.clientName} as paid? Only continue after verifying the funds were received.`)) return;
+      setResolvingPaymentReviewId(bk.id);
+      const result = await completeAdminBookingBalance(bk.id, "bank");
+      setResolvingPaymentReviewId(null);
+      if (!result.ok || !result.booking) { toast.error(result.error || "Unable to confirm the remaining balance"); return; }
+      setBookingsState(previous => previous.map(booking => booking.id === result.booking!.id ? result.booking! : booking));
+      cacheBookingLocally(result.booking);
+      toast.success("Remaining balance confirmed — booking is now paid in full");
+      return;
+    }
     const isBankPending = bk.paymentStatus === "pending-confirmation" || !!bk.bankTransferPendingAt;
     const isCardCheckout = ["open", "processing"].includes(String(bk.stripeCheckoutStatus || ""))
       || bk.paymentMethod === "stripe" || bk.depositMethod === "stripe";
@@ -12887,7 +12899,7 @@ function StorageView() {
               <div className="p-4 rounded-lg bg-secondary/50 border border-border/50">
                 <p className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1">Database</p>
                 <p className="font-display text-xl text-foreground">{formatBytes(serverStats.dbSizeBytes)}</p>
-                <p className="text-[10px] font-body text-muted-foreground">db.json</p>
+                <p className="text-[10px] font-body text-muted-foreground">SQLite · transactional WAL</p>
               </div>
               <div className="p-4 rounded-lg bg-secondary/50 border border-border/50">
                 <p className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1">Total App Data</p>
@@ -12914,7 +12926,7 @@ function StorageView() {
                 </Button>
               </div>
               <p className="text-[10px] font-body text-muted-foreground/50 mt-2">
-                Includes db.json and uploads/. Keep this ZIP somewhere outside the server volume.
+                Includes photoflow.sqlite and uploads/. Keep this ZIP somewhere outside the server volume.
               </p>
             </div>
 

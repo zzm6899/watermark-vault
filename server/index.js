@@ -5,6 +5,7 @@ const compression = require("compression");
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
+const { createSqliteStore } = require("./sqlite-store");
 const sharp = require("sharp");
 const archiver = require("archiver");
 const rateLimit = require("express-rate-limit");
@@ -343,7 +344,10 @@ function platformSeoBlock() {
 }
 const DATA_DIR = process.env.DATA_DIR || "/data";
 const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
-const DB_FILE = path.join(DATA_DIR, "db.json");
+const LEGACY_DB_FILE = path.join(DATA_DIR, "db.json");
+const sqliteStore = createSqliteStore({ dataDir: DATA_DIR, legacyFile: LEGACY_DB_FILE });
+const DB_FILE = sqliteStore.filePath;
+if (sqliteStore.migratedLegacy) console.log("✅ Imported db.json into transactional SQLite storage; a current JSON rollback shadow will be retained.");
 const MAX_ZIP_FILES = 1000; // Reasonable upper bound per request to prevent resource abuse
 const ZIP_WATERMARK_CONCURRENCY = Math.max(1, Math.min(8,
   Number.parseInt(process.env.ZIP_WATERMARK_CONCURRENCY || "", 10) ||
@@ -392,8 +396,6 @@ try {
     try { if (fs.statSync(target).mtimeMs < cutoff) fs.unlinkSync(target); } catch {}
   }
 } catch {}
-if (!fs.existsSync(DB_FILE)) fs.writeFileSync(DB_FILE, JSON.stringify({}));
-
 function writeJsonFileAtomicSync(targetFile, value) {
   const tempFile = `${targetFile}.${process.pid}.${crypto.randomBytes(6).toString("hex")}.tmp`;
   try {
@@ -544,7 +546,7 @@ async function seedSuperAdminIfNeeded() {
 }
 function readDbDirect() {
   try {
-    const dbData = JSON.parse(fs.readFileSync(DB_FILE, "utf-8"));
+    const dbData = sqliteStore.read();
     if (!dbData || typeof dbData !== "object" || Array.isArray(dbData)) throw new Error("Database root must be an object");
     return dbData;
   } catch (err) {
@@ -564,7 +566,7 @@ function readDb() {
   const now = Date.now();
   if (_dbCache !== null && (now - _dbCacheTime) < DB_CACHE_TTL) return _dbCache;
   try {
-    _dbCache = JSON.parse(fs.readFileSync(DB_FILE, "utf-8"));
+    _dbCache = sqliteStore.read();
     _dbCacheTime = now;
     return _dbCache;
   } catch (err) {
@@ -591,18 +593,11 @@ async function _flushDbToDisk() {
   if (_flushInProgress || !_dbCache) return;
   _flushInProgress = true;
   const generation = _writeGeneration;
-  const snapshot = JSON.stringify(_dbCache);
-  const tempFile = `${DB_FILE}.${process.pid}.${generation}.tmp`;
-  // Use compact JSON (no indentation) — reduces file size by ~30-40 % compared
-  // to the previous pretty-printed format, which directly speeds up reads and
-  // network transfer of the /api/store endpoint.
   try {
-    await fs.promises.writeFile(tempFile, snapshot, { encoding: "utf8", flag: "wx" });
-    await fs.promises.rename(tempFile, DB_FILE);
+    sqliteStore.write(_dbCache);
     _flushedGeneration = Math.max(_flushedGeneration, generation);
   } catch (err) {
     console.error("writeDb error:", err);
-    try { await fs.promises.unlink(tempFile); } catch {}
   } finally {
     _flushInProgress = false;
     _writePending = _flushedGeneration < _writeGeneration;
@@ -629,14 +624,11 @@ function _flushDbSync() {
       clearTimeout(_writeDebounceTimer);
       _writeDebounceTimer = null;
     }
-    const tempFile = `${DB_FILE}.${process.pid}.shutdown.tmp`;
     try {
-      fs.writeFileSync(tempFile, JSON.stringify(_dbCache), { encoding: "utf8", flag: "w" });
-      fs.renameSync(tempFile, DB_FILE);
+      sqliteStore.write(_dbCache);
       _flushedGeneration = _writeGeneration;
     } catch (e) {
       console.error("Failed to flush database to disk on shutdown:", e);
-      try { fs.unlinkSync(tempFile); } catch {}
     }
     _writePending = false;
   }
@@ -781,6 +773,7 @@ app.get("/api/storage", async (req, res) => {
 app.get("/api/backup/download", requireAuth, (req, res) => {
   try {
     _flushDbSync();
+    sqliteStore.checkpoint();
 
     const now = new Date();
     const stamp = now.toISOString().replace(/[:.]/g, "-").slice(0, 19);
@@ -820,7 +813,8 @@ app.get("/api/backup/download", requireAuth, (req, res) => {
       }
     };
 
-    addFileIfExists(DB_FILE, "db.json");
+    addFileIfExists(DB_FILE, "photoflow.sqlite");
+    addFileIfExists(LEGACY_DB_FILE, "rollback/db.json");
     addFileIfExists(path.join(DATA_DIR, "tenants.json"), "tenants.json");
     addFileIfExists(path.join(DATA_DIR, "license_keys.json"), "license_keys.json");
     addFileIfExists(path.join(DATA_DIR, "event_slot_requests.json"), "event_slot_requests.json");
@@ -832,7 +826,7 @@ app.get("/api/backup/download", requireAuth, (req, res) => {
     archive.append(JSON.stringify({
       createdAt: now.toISOString(),
       dataDir: DATA_DIR,
-      includes: ["db.json", "uploads/", "portfolio-media/", "sidecar JSON files when present"],
+      includes: ["photoflow.sqlite", "uploads/", "portfolio-media/", "sidecar JSON files when present"],
       excluded: ["uploads/_cache generated image variants"],
       app: "PhotoFlow",
     }, null, 2), { name: "backup-manifest.json" });
@@ -902,7 +896,7 @@ app.delete("/api/waitlist/:id", requireAuth, (req, res) => {
 // feature (up to ~1.6 MB *per photo*).  In server mode the watermark overlay
 // is already applied on the fly by /uploads/:filename, so these pre-baked
 // blobs add zero value server-side.  Stripping them on both reads AND writes
-// keeps db.json lean and eliminates the primary source of inflated
+// keeps the application database lean and eliminates the primary source of inflated
 // /api/store payloads (100 photos × 2.4 MB each = 240 MB before this fix).
 const BAKED_PHOTO_FIELDS = ["thumbnailWatermarked", "mediumWatermarked", "fullWatermarked"];
 const ALBUMS_KEY        = "wv_albums";
@@ -2475,7 +2469,7 @@ app.post("/api/upload", uploadLimiter, requireAdminOrScopedTenant, upload.array(
 
   // ── Disk space guard ─────────────────────────────────────────────────────
   // Reject uploads early when the data volume is critically low to prevent
-  // partial writes that could corrupt already-uploaded files or db.json.
+  // partial writes that could leave already-uploaded files out of sync with the database.
   const availableBytes = getAvailableDiskBytes();
   if (availableBytes !== null && availableBytes < LOW_DISK_THRESHOLD_BYTES) {
     // Clean up the already-accepted multer temp files
@@ -2796,7 +2790,7 @@ app.delete("/api/upload/all", deleteAllLimiter, requireAuth, async (_req, res) =
     }
     clearImageCache();
 
-    // Wipe all photo records from db.json so album refs don't break —
+    // Wipe all photo records from the database so album refs don't break —
     // including tenant albums and tenant photo libraries so stale references
     // don't accumulate after a full storage wipe.
     const db = readDb();
@@ -5964,6 +5958,14 @@ const tenantBookingLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHead
       const requestBody = buildBookingCalendarEvent(booking, tenant?.timezone || "Australia/Sydney");
       let eventId = booking.gcalEventId || null;
       let updated = false;
+      if (eventId && booking.gcalCalendarId && booking.gcalCalendarId !== calId) {
+        try { await cal.events.delete({ calendarId: booking.gcalCalendarId, eventId }); }
+        catch (error) {
+          const status = Number(error?.code || error?.response?.status);
+          if (status !== 404 && status !== 410) throw error;
+        }
+        eventId = null;
+      }
       if (eventId) {
         try {
           const { data } = await cal.events.update({ calendarId: calId, eventId, requestBody });
@@ -5987,7 +5989,7 @@ const tenantBookingLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHead
           eventId = data.id;
         }
       }
-      persistBookingCalendarEventLink(booking.id, eventId);
+      persistBookingCalendarEventLink(booking.id, eventId, calId);
       res.json({ ok: true, eventId, updated });
     } catch (err) {
       console.error("Tenant calendar event error:", err.message);
@@ -6816,9 +6818,9 @@ async function syncBookingCalendarMutation(booking, action) {
   if (!connection) return "not-configured";
   const { google } = require("googleapis");
   const calendar = google.calendar({ version: "v3", auth: connection.client });
-  const findLinkedEventIds = async () => {
+  const findLinkedEventIds = async calendarId => {
     const existing = await calendar.events.list({
-      calendarId: connection.calendarId,
+      calendarId,
       privateExtendedProperty: [`watermarkVaultBookingId=${booking.id}`],
       singleEvents: true,
       showDeleted: false,
@@ -6829,6 +6831,14 @@ async function syncBookingCalendarMutation(booking, action) {
   if (["create", "reschedule"].includes(action)) {
     let eventId = booking.gcalEventId || null;
     const requestBody = buildBookingCalendarEvent(booking, connection.timezone);
+    if (eventId && booking.gcalCalendarId && booking.gcalCalendarId !== connection.calendarId) {
+      try { await calendar.events.delete({ calendarId: booking.gcalCalendarId, eventId }); }
+      catch (error) {
+        const status = Number(error?.code || error?.response?.status);
+        if (status !== 404 && status !== 410) throw error;
+      }
+      eventId = null;
+    }
     if (eventId) {
       try {
         await calendar.events.update({ calendarId: connection.calendarId, eventId, requestBody });
@@ -6839,7 +6849,7 @@ async function syncBookingCalendarMutation(booking, action) {
       }
     }
     if (!eventId) {
-      eventId = (await findLinkedEventIds())[0] || null;
+      eventId = (await findLinkedEventIds(connection.calendarId))[0] || null;
       if (eventId) await calendar.events.update({ calendarId: connection.calendarId, eventId, requestBody });
       else {
         const created = await calendar.events.insert({ calendarId: connection.calendarId, requestBody });
@@ -6847,15 +6857,16 @@ async function syncBookingCalendarMutation(booking, action) {
       }
     }
     if (!eventId) throw new Error("Google Calendar did not return an event ID");
-    persistBookingCalendarEventLink(booking.id, eventId);
+    persistBookingCalendarEventLink(booking.id, eventId, connection.calendarId);
     return "synced";
   }
   if (action === "cancel") {
-    const eventIds = new Set(booking.gcalEventId ? [booking.gcalEventId] : []);
-    for (const eventId of await findLinkedEventIds()) eventIds.add(eventId);
-    for (const eventId of eventIds) {
-      try {
-        await calendar.events.delete({ calendarId: connection.calendarId, eventId });
+    const calendarIds = new Set([connection.calendarId, booking.gcalCalendarId].filter(Boolean));
+    for (const calendarId of calendarIds) {
+      const eventIds = new Set(booking.gcalEventId && calendarId === (booking.gcalCalendarId || connection.calendarId) ? [booking.gcalEventId] : []);
+      for (const eventId of await findLinkedEventIds(calendarId)) eventIds.add(eventId);
+      for (const eventId of eventIds) try {
+        await calendar.events.delete({ calendarId, eventId });
       } catch (err) {
         const status = Number(err?.code || err?.response?.status);
         if (status !== 404 && status !== 410) throw err;
@@ -6866,12 +6877,12 @@ async function syncBookingCalendarMutation(booking, action) {
   return "not-linked";
 }
 
-function persistBookingCalendarEventLink(bookingId, gcalEventId) {
+function persistBookingCalendarEventLink(bookingId, gcalEventId, gcalCalendarId) {
   const db = readDb();
   const bookings = getStoredArray(db, DB_KEYS.BOOKINGS);
   const index = bookings.findIndex(item => item.id === bookingId);
   if (index < 0) return;
-  bookings[index] = { ...bookings[index], gcalEventId };
+  bookings[index] = { ...bookings[index], gcalEventId, gcalCalendarId };
   db[DB_KEYS.BOOKINGS] = JSON.stringify(bookings);
   writeDb(db);
 }
@@ -6888,7 +6899,7 @@ function persistBookingCalendarSyncState(bookingId, state, action, errorMessage)
     calendarSyncAction: action,
     calendarSyncUpdatedAt: changedAt,
     calendarSyncError: errorMessage ? String(errorMessage).slice(0, 500) : undefined,
-    ...(state === "synced" && action === "cancel" ? { gcalEventId: undefined } : {}),
+    ...(state === "synced" && action === "cancel" ? { gcalEventId: undefined, gcalCalendarId: undefined } : {}),
   };
   db[DB_KEYS.BOOKINGS] = JSON.stringify(bookings);
   writeDb(db);
@@ -7811,9 +7822,18 @@ app.delete("/api/admin/bookings/:id", superLimiter, requireAuth, async (req, res
     return res.status(404).json({ ok: false, code: "BOOKING_NOT_FOUND", error: "Booking not found" });
   }
   return withCheckoutResourceLock(bookingCheckoutResourceLockKey("main", bookingId), async () => {
-    const db = readDb();
-    const bookings = getStoredArray(db, DB_KEYS.BOOKINGS);
-    const index = bookings.findIndex(booking => !booking?.tenantSlug && String(booking?.id || "") === bookingId);
+    let db = readDb();
+    let bookings = getStoredArray(db, DB_KEYS.BOOKINGS);
+    let index = bookings.findIndex(booking => !booking?.tenantSlug && String(booking?.id || "") === bookingId);
+    if (index < 0) return res.status(404).json({ ok: false, code: "BOOKING_NOT_FOUND", error: "Booking not found" });
+    try { await syncBookingCalendarMutation(bookings[index], "cancel"); }
+    catch (error) {
+      console.error(`Calendar cleanup failed before deleting booking ${bookingId}:`, error?.message || error);
+      return res.status(502).json({ ok: false, code: "CALENDAR_CLEANUP_FAILED", error: "Google Calendar could not be updated, so the booking was not deleted" });
+    }
+    db = readDb();
+    bookings = getStoredArray(db, DB_KEYS.BOOKINGS);
+    index = bookings.findIndex(booking => !booking?.tenantSlug && String(booking?.id || "") === bookingId);
     if (index < 0) return res.status(404).json({ ok: false, code: "BOOKING_NOT_FOUND", error: "Booking not found" });
     bookings.splice(index, 1);
     db[DB_KEYS.BOOKINGS] = JSON.stringify(bookings);
@@ -7921,6 +7941,51 @@ app.patch("/api/admin/bookings/:id/bank-payment", superLimiter, requireAuth, asy
     console.error(`Bank payment confirmation failed for ${bookingId}:`, error?.message || error);
     return res.status(500).json({ ok: false, error: "Bank payment confirmation failed" });
   }
+});
+
+app.patch("/api/admin/bookings/:id/complete-balance", superLimiter, requireAuth, async (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  const bookingId = String(req.params.id || "").trim();
+  const method = String(req.body?.method || "bank").trim().toLowerCase();
+  if (!bookingId || bookingId.length > 128) return res.status(404).json({ ok: false, code: "BOOKING_NOT_FOUND", error: "Booking not found" });
+  if (!["bank", "cash"].includes(method)) return res.status(400).json({ ok: false, code: "INVALID_BALANCE_METHOD", error: "Balance method must be bank or cash" });
+  return withCheckoutResourceLock(bookingCheckoutResourceLockKey("main", bookingId), async () => {
+    const db = readDb();
+    const bookings = getStoredArray(db, DB_KEYS.BOOKINGS);
+    const index = bookings.findIndex(booking => !booking?.tenantSlug && booking.id === bookingId);
+    if (index < 0) return res.status(404).json({ ok: false, code: "BOOKING_NOT_FOUND", error: "Booking not found" });
+    const current = bookings[index];
+    if (current.paymentStatus !== "deposit-paid" || !current.depositPaidAt) {
+      return res.status(409).json({ ok: false, code: "DEPOSIT_NOT_SETTLED", error: "This booking does not have a verified deposit awaiting its balance" });
+    }
+    if (current.paymentNeedsReview || current.archived || current.status === "cancelled") {
+      return res.status(409).json({ ok: false, code: "BALANCE_REVIEW_REQUIRED", error: "This balance must be reconciled from the booking review" });
+    }
+    const total = Math.max(0, Number(current.paymentAmount) || 0);
+    const deposit = Math.max(0, Number(current.depositAmount) || 0);
+    const balance = Math.max(0, total - deposit);
+    if (balance <= 0) return res.status(409).json({ ok: false, code: "NO_BALANCE_DUE", error: "This booking has no remaining balance" });
+    const confirmedAt = new Date().toISOString();
+    const history = Array.isArray(current.paymentHistory) ? current.paymentHistory.slice(-99) : [];
+    const updated = {
+      ...current,
+      paymentStatus: "paid",
+      paymentMethod: method,
+      paidAt: confirmedAt,
+      balancePaidAt: confirmedAt,
+      holdExpiresAt: undefined,
+      lastPaymentKind: "balance",
+      lastPaymentAmount: balance,
+      lastPaymentAt: confirmedAt,
+      paymentHistory: [...history, { action: "remaining-balance-confirmed", changedAt: confirmedAt, source: "admin", method, paymentStatus: "paid", amount: balance }],
+    };
+    bookings[index] = updated;
+    db[DB_KEYS.BOOKINGS] = JSON.stringify(bookings);
+    writeDb(db);
+    queueBookingCalendarSync(updated, updated.gcalEventId ? "reschedule" : "create");
+    setImmediate(() => sendMainBookingReceipt(updated, { recordEmailLog: false }).catch(error => console.error(`Balance receipt failed for ${bookingId}:`, error?.message || error)));
+    return res.json({ ok: true, booking: updated });
+  });
 });
 
 // Archive/unarchive one or more retained bookings without allowing the browser
@@ -8169,7 +8234,7 @@ app.put("/api/tenant/:slug/albums/:albumId", tenantLimiter, requireTenant, authe
   const raw = db[key];
   const albums = raw ? (typeof raw === "string" ? JSON.parse(raw) : (Array.isArray(raw) ? raw : [])) : [];
   const idx = albums.findIndex(a => a.id === albumId);
-  // Strip baked watermark fields before persisting to keep db.json lean.
+  // Strip baked watermark fields before persisting to keep the database lean.
   const incoming = { ...req.body, id: albumId };
   if (Object.prototype.hasOwnProperty.call(incoming, "downloadEmailCapture")) {
     incoming.downloadEmailCapture = normalizeDownloadEmailPolicy(incoming.downloadEmailCapture);
@@ -8315,19 +8380,30 @@ app.put("/api/tenant/:slug/bookings/:bookingId", tenantLimiter, requireTenant, a
 });
 
 // Delete a booking that belongs to a tenant (tenant admin)
-app.delete("/api/tenant/:slug/bookings/:bookingId", tenantLimiter, requireTenant, (req, res) => {
+app.delete("/api/tenant/:slug/bookings/:bookingId", tenantLimiter, requireTenant, async (req, res) => {
   const { slug, bookingId } = req.params;
   const tenants = readTenants();
   const tenant = tenants.find(t => t.slug === slug && t.active !== false);
   if (!tenant) return res.status(404).json({ ok: false, error: "Tenant not found" });
-  const db = readDb();
-  const allBookingsRaw = db["wv_bookings"];
-  const allBookings = allBookingsRaw ? (typeof allBookingsRaw === "string" ? JSON.parse(allBookingsRaw) : (Array.isArray(allBookingsRaw) ? allBookingsRaw : [])) : [];
-  const filtered = allBookings.filter(b => !(b.id === bookingId && b.tenantSlug === slug));
-  if (filtered.length === allBookings.length) return res.status(404).json({ ok: false, error: "Booking not found" });
-  db["wv_bookings"] = JSON.stringify(filtered);
-  writeDb(db);
-  res.json({ ok: true });
+  return withCheckoutResourceLock(bookingCheckoutResourceLockKey(`tenant:${slug}`, bookingId), async () => {
+    let db = readDb();
+    let bookings = getStoredArray(db, DB_KEYS.BOOKINGS);
+    let index = bookings.findIndex(booking => booking.id === bookingId && booking.tenantSlug === slug);
+    if (index < 0) return res.status(404).json({ ok: false, error: "Booking not found" });
+    try { await syncBookingCalendarMutation(bookings[index], "cancel"); }
+    catch (error) {
+      console.error(`Tenant ${slug} Calendar cleanup failed before deleting booking ${bookingId}:`, error?.message || error);
+      return res.status(502).json({ ok: false, code: "CALENDAR_CLEANUP_FAILED", error: "Google Calendar could not be updated, so the booking was not deleted" });
+    }
+    db = readDb();
+    bookings = getStoredArray(db, DB_KEYS.BOOKINGS);
+    index = bookings.findIndex(booking => booking.id === bookingId && booking.tenantSlug === slug);
+    if (index < 0) return res.status(404).json({ ok: false, error: "Booking not found" });
+    bookings.splice(index, 1);
+    db[DB_KEYS.BOOKINGS] = JSON.stringify(bookings);
+    writeDb(db);
+    return res.json({ ok: true });
+  });
 });
 
 // Delete a tenant album (tenant admin)
