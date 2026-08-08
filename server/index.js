@@ -5800,7 +5800,7 @@ registerGoogleCalendarRoutes(app, {
   verifyOAuthState: state => !!verifySession(state, SESSION_SECRET, { purpose: "admin-gcal" }),
 });
 registerEmailRoutes(app, store, { requireAuth });
-registerStripeRoutes(app, { readDb, writeDb, readLicenseKeys, writeLicenseKeys, getGallerySession: getGallerySessionForAlbum, onBookingPaid: queueInitialBookingCalendarSync });
+registerStripeRoutes(app, { readDb, writeDb, readLicenseKeys, writeLicenseKeys, requireAuth, getGallerySession: getGallerySessionForAlbum, onBookingPaid: queueInitialBookingCalendarSync });
 registerTenantStripeRoutes(app, { readDb, writeDb, readTenants, readLicenseKeys, getLicKeyLimits, readEventSlotRequests, writeEventSlotRequests, requireTenant, getGallerySession: getGallerySessionForAlbum, sendTenantBookingReceipt, onBookingPaid: queueInitialBookingCalendarSync, isTenantLicensed: tenantIsLicensed });
 registerGoogleSheetsRoutes(app, { requireAuth });
 

@@ -4,7 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { confirmAdminBankPayment, getAdminPaymentHealth, sendBookingReminder, syncFromServer, type AdminPaymentHealth } from "@/lib/api";
+import { confirmAdminBankPayment, getAdminPaymentHealth, reconcileAdminStripePayment, sendBookingReminder, syncFromServer, type AdminPaymentHealth } from "@/lib/api";
 import { bookingPaymentReference } from "@/lib/booking-reference";
 import { getBookings } from "@/lib/storage";
 import type { Booking } from "@/lib/types";
@@ -67,6 +67,17 @@ export default function PaymentOperationsView() {
     toast.success("Bank payment confirmed and receipt queued");
     setHealth(await getAdminPaymentHealth());
   });
+  const reconcileCard = (booking: Booking) => withAction(booking.id, async () => {
+    const result = await reconcileAdminStripePayment(booking.id);
+    if (!result.ok || !result.booking) {
+      toast.error(result.error || "Stripe has not confirmed this payment");
+      return;
+    }
+    setBookings(current => current.map(item => item.id === booking.id ? result.booking! : item));
+    if (result.booking.paymentNeedsReview) toast.warning("Stripe found a payment that needs manual reconciliation");
+    else toast.success(result.booking.paymentStatus === "deposit-paid" ? "Stripe deposit verified" : "Stripe payment verified");
+    setHealth(await getAdminPaymentHealth());
+  });
   const remind = (booking: Booking) => withAction(booking.id, async () => {
     const result = await sendBookingReminder(booking.id, "payment");
     if (result.ok) toast.success(`Payment reminder sent to ${booking.clientName}`);
@@ -105,6 +116,6 @@ export default function PaymentOperationsView() {
     {health?.stripe.ready && !health.stripe.unsafeUnsignedWebhooks && health.counts.reviews === 0 && <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/10 p-3 text-sm text-emerald-200 flex items-center gap-2"><CheckCircle2 className="w-4 h-4" />Stripe secret and webhook verification are configured.</div>}
     <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">{Object.entries(queueMeta).map(([key, meta]) => { const Icon = meta.icon; return <button key={key} onClick={() => setQueue(key as Queue)} className={`text-left rounded-xl border p-4 transition ${meta.tone} ${queue === key ? "ring-2 ring-primary/50" : "hover:border-primary/30"}`}><Icon className="w-4 h-4 mb-3" /><span className="block text-2xl font-display">{counts[key] || 0}</span><span className="text-xs">{meta.label}</span></button>; })}</div>
     <div className="flex flex-col gap-3 sm:flex-row"><div className="relative flex-1"><Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" /><Input value={search} onChange={event => setSearch(event.target.value)} placeholder="Search client, email, reference or shoot…" className="pl-9" /></div><Button variant="outline" disabled={bulkReminding} onClick={() => void remindVisible()}>{bulkReminding ? "Sending reminders…" : "Remind visible clients"}</Button></div>
-    <div className="space-y-3">{visible.map(booking => { const kind = queueFor(booking); const meta = queueMeta[kind]; const Icon = meta.icon; const busy = acting.has(booking.id); return <article key={booking.id} className="w-full rounded-xl border border-border bg-card/60 p-4 transition hover:border-primary/40"><button type="button" onClick={() => navigate(`/admin/bookings?search=${encodeURIComponent(bookingPaymentReference(booking))}`)} className="flex w-full flex-col gap-3 text-left sm:flex-row sm:items-center"><span className={`rounded-lg border p-2 ${meta.tone}`}><Icon className="w-4 h-4" /></span><span className="min-w-0 flex-1"><span className="font-medium text-foreground block truncate">{booking.clientName} · {booking.type}</span><span className="text-xs text-muted-foreground">{booking.date} at {booking.time} · {bookingPaymentReference(booking)}</span></span><span className={`text-xs border rounded-full px-2.5 py-1 ${meta.tone}`}>{meta.label}</span></button><div className="mt-3 flex flex-wrap justify-end gap-2 border-t border-border/50 pt-3">{kind === "outstanding" && <Button size="sm" variant="ghost" disabled={busy} onClick={() => void remind(booking)}>Send reminder</Button>}{kind === "bank" && <Button size="sm" disabled={busy} onClick={() => void confirmBank(booking)}>Confirm bank payment</Button>}</div></article>; })}{!visible.length && <div className="rounded-xl border border-dashed border-border p-10 text-center text-sm text-muted-foreground">No payments in this queue.</div>}</div>
+    <div className="space-y-3">{visible.map(booking => { const kind = queueFor(booking); const meta = queueMeta[kind]; const Icon = meta.icon; const busy = acting.has(booking.id); return <article key={booking.id} className="w-full rounded-xl border border-border bg-card/60 p-4 transition hover:border-primary/40"><button type="button" onClick={() => navigate(`/admin/bookings?search=${encodeURIComponent(bookingPaymentReference(booking))}`)} className="flex w-full flex-col gap-3 text-left sm:flex-row sm:items-center"><span className={`rounded-lg border p-2 ${meta.tone}`}><Icon className="w-4 h-4" /></span><span className="min-w-0 flex-1"><span className="font-medium text-foreground block truncate">{booking.clientName} · {booking.type}</span><span className="text-xs text-muted-foreground">{booking.date} at {booking.time} · {bookingPaymentReference(booking)}</span></span><span className={`text-xs border rounded-full px-2.5 py-1 ${meta.tone}`}>{meta.label}</span></button><div className="mt-3 flex flex-wrap justify-end gap-2 border-t border-border/50 pt-3">{kind === "outstanding" && <Button size="sm" variant="ghost" disabled={busy} onClick={() => void remind(booking)}>Send reminder</Button>}{kind === "bank" && <Button size="sm" disabled={busy} onClick={() => void confirmBank(booking)}>Confirm bank payment</Button>}{kind === "card" && <Button size="sm" disabled={busy} onClick={() => void reconcileCard(booking)}>{busy ? "Checking Stripe…" : "Check Stripe payment"}</Button>}</div></article>; })}{!visible.length && <div className="rounded-xl border border-dashed border-border p-10 text-center text-sm text-muted-foreground">No payments in this queue.</div>}</div>
   </div>;
 }

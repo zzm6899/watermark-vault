@@ -124,6 +124,11 @@ export interface Booking {
   /** Created only after Stripe successfully creates a hosted checkout page. */
   stripeCheckoutSessionId?: string;
   stripeCheckoutStartedAt?: string;
+  stripeCheckoutStatus?: "open" | "processing" | "complete" | "completed" | "completed-review" | "expired" | string;
+  /** Manual transfer state is distinct from settlement; only an admin confirmation marks funds received. */
+  bankTransferPendingAt?: string;
+  bankTransferVerificationStatus?: string;
+  holdExpiresAt?: string;
   /** Active/manual-review state set when Stripe confirms money that cannot be safely allocated. */
   paymentNeedsReview?: boolean;
   paymentReviewStatus?: string;
