@@ -1728,8 +1728,8 @@ export default function AlbumDetail() {
             <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(320px,440px)] lg:items-end">
               <div>
                 <p className="mb-3 text-[10px] font-body uppercase tracking-[0.22em] text-primary">Client gallery</p>
-                <div className="flex items-center gap-3 mb-3">
-                  <h1 className="font-display text-4xl md:text-6xl text-foreground leading-[0.95]">{album.title}</h1>
+                <div className="flex items-start gap-3 mb-3">
+                  <h1 className="min-w-0 font-display text-3xl sm:text-4xl md:text-6xl text-foreground leading-[0.98] break-words">{album.title}</h1>
                   {visiblePhotos.length > 0 && (
                     <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-primary/10 border border-primary/20 text-primary text-xs font-body shrink-0">
                       <Images className="w-3 h-3" />
@@ -1737,7 +1737,7 @@ export default function AlbumDetail() {
                     </span>
                   )}
                 </div>
-                {album.description && <p className="max-w-2xl text-sm font-body leading-6 text-muted-foreground">{album.description}</p>}
+                {album.description && <p className="max-w-2xl text-sm sm:text-base font-body leading-6 text-muted-foreground whitespace-pre-line">{album.description}</p>}
               </div>
 
               {/* ── Proofing Stage Banner ───────────────────────────── */}
@@ -1984,6 +1984,31 @@ export default function AlbumDetail() {
             </div>
           </motion.div>
 
+          {visiblePhotos.length > 0 && (
+            <div className="mb-5 rounded-2xl border border-border/70 bg-card/45 p-4 sm:p-5">
+              <div className="grid gap-3 sm:grid-cols-3">
+                {(showProofingGalleryControls ? [
+                  ["1", "Browse", "Open any image for a closer look"],
+                  ["2", "Star favourites", "Tap the star on every photo you want"],
+                  ["3", "Submit picks", "Send the final selection to your photographer"],
+                ] : canDownload ? [
+                  ["1", "Choose", "Select individual photos or keep everything"],
+                  ["2", "Review", "Use filters and the lightbox to check details"],
+                  ["3", "Download", "Download selected photos or the complete gallery"],
+                ] : [
+                  ["1", "Choose", "Tap photos to add them to your selection"],
+                  ["2", "Review total", "Free allowance and pricing update automatically"],
+                  ["3", "Download", "Use free access or complete secure checkout"],
+                ]).map(([number, label, detail]) => (
+                  <div key={number} className="flex items-start gap-3 rounded-xl bg-background/45 p-3">
+                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary/15 text-xs font-body font-semibold text-primary">{number}</span>
+                    <div><p className="text-xs font-body font-semibold text-foreground">{label}</p><p className="mt-0.5 text-[11px] font-body leading-4 text-muted-foreground">{detail}</p></div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
             {canDownload && (
               <div className="flex items-center gap-2 mt-4 p-3 rounded-lg bg-green-500/5 border border-green-500/10">
                 <Download className="w-4 h-4 text-green-400 flex-shrink-0" />
@@ -2023,7 +2048,7 @@ export default function AlbumDetail() {
 
           {/* ── Filter / Sort toolbar ──────────────────────────────── */}
           {visiblePhotos.length > 0 && (
-            <div className="flex items-center gap-2 flex-wrap mb-2">
+            <div className="sticky top-20 z-30 -mx-2 mb-3 flex items-center gap-2 flex-wrap rounded-xl border border-border/60 bg-background/90 p-2 shadow-lg shadow-black/10 backdrop-blur-xl">
               <button
                 onClick={() => setShowGalleryFilters(v => !v)}
                 aria-pressed={showGalleryFilters}
@@ -2088,8 +2113,23 @@ export default function AlbumDetail() {
                   <X className="w-3 h-3" /> Clear
                 </button>
               )}
+              {!showProofingGalleryControls && !isPurchasingLocked && !isExpired && !isDownloadLockedForProofing && (
+                <>
+                  <span className="ml-auto text-[11px] font-body text-muted-foreground">{selectedIds.size ? `${selectedIds.size} selected` : "Tap photos to select"}</span>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedIds(new Set(displayedPhotos.map(photo => photo.id)))}
+                    className="rounded-full border border-border/70 px-3 py-1.5 text-xs font-body text-muted-foreground transition-colors hover:border-primary/40 hover:text-primary"
+                  >
+                    Select visible
+                  </button>
+                  {selectedIds.size > 0 && (
+                    <button type="button" onClick={() => setSelectedIds(new Set())} className="rounded-full px-2 py-1.5 text-xs font-body text-muted-foreground hover:text-foreground">Clear</button>
+                  )}
+                </>
+              )}
               {/* Display size controls — push to right on larger screens */}
-              <div className={`items-center gap-1 ml-auto ${showGalleryFilters ? "flex" : "hidden sm:flex"}`}>
+              <div className={`items-center gap-1 ${showProofingGalleryControls ? "ml-auto" : ""} ${showGalleryFilters ? "flex" : "hidden sm:flex"}`}>
                 {([
                   { size: "small", icon: <LayoutGrid className="w-3.5 h-3.5" />, label: "Small" },
                   { size: "medium", icon: <Grid className="w-3.5 h-3.5" />, label: "Medium" },

@@ -1425,7 +1425,7 @@ function sanitizePublicEventType(eventType) {
   const allowed = [
     "id", "title", "description", "durations", "color", "price", "active", "requiresConfirmation",
     "questions", "availability", "location", "depositEnabled", "depositAmount", "depositType", "depositMethods",
-    "prices", "maxAttendees", "bufferMinutes", "isPackage", "packageEventIds", "durationPrices",
+    "prices", "maxAttendees", "bufferMinutes", "slotIntervalMinutes", "isPackage", "packageEventIds", "durationPrices",
   ];
   return Object.fromEntries(allowed.filter(key => eventType?.[key] !== undefined).map(key => [key, eventType[key]]));
 }
@@ -6729,6 +6729,27 @@ async function getGoogleBusyBookings(tenantSlug, dateValue, timeZone) {
   return (data.calendars?.[calendarId]?.busy || []).map((period, index) => busyPeriodToBooking(period, dateValue, timeZone, tenantSlug, index)).filter(Boolean);
 }
 
+// Availability is requested again whenever a visitor changes duration on the
+// same date. Coalesce those read-only Google free/busy calls briefly; booking
+// creation/rescheduling continues to call getGoogleBusyBookings directly and
+// therefore always performs a fresh authoritative check.
+const googleAvailabilityCache = new Map();
+async function getCachedGoogleBusyBookings(tenantSlug, dateValue, timeZone) {
+  const key = `${tenantSlug || "main"}:${dateValue}:${timeZone}`;
+  const now = Date.now();
+  const cached = googleAvailabilityCache.get(key);
+  if (cached && cached.expiresAt > now) return cached.promise;
+  const promise = getGoogleBusyBookings(tenantSlug, dateValue, timeZone).catch(error => {
+    googleAvailabilityCache.delete(key);
+    throw error;
+  });
+  googleAvailabilityCache.set(key, { expiresAt: now + 15_000, promise });
+  if (googleAvailabilityCache.size > 200) {
+    for (const [cacheKey, value] of googleAvailabilityCache) if (value.expiresAt <= now) googleAvailabilityCache.delete(cacheKey);
+  }
+  return promise;
+}
+
 function getBookingGoogleCalendarConnection(tenantSlug) {
   if (!tenantSlug) {
     const client = getMainGoogleCalendarClient();
@@ -6953,7 +6974,7 @@ app.get("/api/availability", bookingLookupLimiter, async (req, res) => {
   const profile = dbGet(db, DB_KEYS.PROFILE, {});
   const timezone = profile?.timezone || process.env.TZ || "Australia/Sydney";
   let googleBusy;
-  try { googleBusy = await getGoogleBusyBookings(null, date, timezone); }
+  try { googleBusy = await getCachedGoogleBusyBookings(null, date, timezone); }
   catch (err) {
     console.error("Google Calendar availability check failed:", err.message);
     return res.status(503).json({ ok: false, error: "Calendar availability is temporarily unavailable" });
@@ -6981,7 +7002,7 @@ app.get("/api/tenant/:slug/availability", tenantPublicLimiter, async (req, res) 
   if (!eventType || !parseDate(date)) return res.status(400).json({ ok: false, error: "A valid date and eventTypeId are required" });
   const timezone = tenant.timezone || "Australia/Sydney";
   let googleBusy;
-  try { googleBusy = await getGoogleBusyBookings(tenant.slug, date, timezone); }
+  try { googleBusy = await getCachedGoogleBusyBookings(tenant.slug, date, timezone); }
   catch (err) {
     console.error(`Tenant ${tenant.slug} Google Calendar availability check failed:`, err.message);
     return res.status(503).json({ ok: false, error: "Calendar availability is temporarily unavailable" });

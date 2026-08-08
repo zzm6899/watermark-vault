@@ -50,6 +50,8 @@ import sampleWedding from "@/assets/sample-wedding.jpg";
 import sampleEvent from "@/assets/sample-event.jpg";
 import sampleFood from "@/assets/sample-food.jpg";
 
+const SlotIntervalField = React.lazy(() => import("@/pages/admin/SlotIntervalField"));
+
 type Tab = "dashboard" | "bookings" | "events" | "albums" | "photos" | "finance" | "invoices" | "contacts" | "enquiries" | "profile" | "settings" | "storage" | "license";
 type AlbumSortKey = "date" | "name" | "photos" | "client";
 type SortDir = "asc" | "desc";
@@ -1086,6 +1088,7 @@ function TenantEventEditor({ eventType, onSave, onCancel }: { eventType: EventTy
   const [depositAmount, setDepositAmount] = useState(eventType?.depositAmount || 0);
   const [depositType, setDepositType] = useState<"fixed" | "percentage">(eventType?.depositType || "fixed");
   const [depositMethods, setDepositMethods] = useState<("stripe" | "bank")[]>(eventType?.depositMethods || ["stripe", "bank"]);
+  const [slotIntervalMinutes, setSlotIntervalMinutes] = useState<number>(eventType?.slotIntervalMinutes || 10);
   const [recurring, setRecurring] = useState<AvailabilitySlot[]>(eventType?.availability?.recurring || []);
   const [specificDates, setSpecificDates] = useState<SpecificDateSlot[]>(eventType?.availability?.specificDates || []);
   const [blockedDates, setBlockedDates] = useState<string[]>(eventType?.availability?.blockedDates || []);
@@ -1134,6 +1137,7 @@ function TenantEventEditor({ eventType, onSave, onCancel }: { eventType: EventTy
       questions,
       availability: { recurring, specificDates, blockedDates },
       location: location.trim(),
+      slotIntervalMinutes: Math.max(5, Math.min(60, slotIntervalMinutes || 10)),
     });
   };
 
@@ -1196,6 +1200,8 @@ function TenantEventEditor({ eventType, onSave, onCancel }: { eventType: EventTy
         <span className="text-xs font-body text-muted-foreground">Requires Confirmation</span>
         <Switch checked={requiresConfirmation} onCheckedChange={setRequiresConfirmation} />
       </div>
+
+      <React.Suspense fallback={<div className="h-20 rounded-lg bg-secondary/30 animate-pulse" />}><SlotIntervalField value={slotIntervalMinutes} onChange={setSlotIntervalMinutes} tenant /></React.Suspense>
 
       {/* Deposit */}
       <div className="space-y-3 p-4 rounded-lg bg-secondary/30 border border-border/50">
