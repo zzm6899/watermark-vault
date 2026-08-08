@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, Building2, CheckCircle2, Clock3, CreditCard, RefreshCw, Search } from "lucide-react";
 import { useNavigate } from "react-router-dom";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { getAdminPaymentHealth, syncFromServer, type AdminPaymentHealth } from "@/lib/api";
+import { confirmAdminBankPayment, getAdminPaymentHealth, sendBookingReminder, syncFromServer, type AdminPaymentHealth } from "@/lib/api";
 import { bookingPaymentReference } from "@/lib/booking-reference";
 import { getBookings } from "@/lib/storage";
 import type { Booking } from "@/lib/types";
@@ -34,6 +35,8 @@ export default function PaymentOperationsView() {
   const [queue, setQueue] = useState<Queue>("all");
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(false);
+  const [bulkReminding, setBulkReminding] = useState(false);
+  const [acting, setActing] = useState<Set<string>>(new Set());
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -52,6 +55,47 @@ export default function PaymentOperationsView() {
     return haystack.includes(search.trim().toLowerCase());
   }), [actionable, queue, search]);
 
+  const withAction = async (bookingId: string, action: () => Promise<void>) => {
+    setActing(current => new Set(current).add(bookingId));
+    try { await action(); } finally { setActing(current => { const next = new Set(current); next.delete(bookingId); return next; }); }
+  };
+  const confirmBank = (booking: Booking) => withAction(booking.id, async () => {
+    if (!window.confirm(`Confirm the bank transfer for ${booking.clientName}? Verify the funds in your bank first.`)) return;
+    const result = await confirmAdminBankPayment(booking.id);
+    if (!result.ok || !result.booking) { toast.error(result.error || "Unable to confirm bank payment"); return; }
+    setBookings(current => current.map(item => item.id === booking.id ? result.booking! : item));
+    toast.success("Bank payment confirmed and receipt queued");
+    setHealth(await getAdminPaymentHealth());
+  });
+  const remind = (booking: Booking) => withAction(booking.id, async () => {
+    const result = await sendBookingReminder(booking.id, "payment");
+    if (result.ok) toast.success(`Payment reminder sent to ${booking.clientName}`);
+    else toast.error(result.error || "Reminder could not be sent");
+  });
+  const remindVisible = async () => {
+    const eligible = visible.filter(booking => queueFor(booking) === "outstanding" && !!booking.clientEmail);
+    const targets = eligible.slice(0, 25);
+    if (!targets.length) { toast.info("No visible clients need a payment reminder"); return; }
+    if (!window.confirm(`Send payment reminders to ${targets.length} visible client${targets.length === 1 ? "" : "s"}${eligible.length > 25 ? " (first 25 only)" : ""}?`)) return;
+    setBulkReminding(true);
+    let sent = 0;
+    try {
+      for (const booking of targets) {
+        setActing(current => new Set(current).add(booking.id));
+        try {
+          const result = await sendBookingReminder(booking.id, "payment");
+          if (result.ok) sent++;
+        } finally {
+          setActing(current => { const next = new Set(current); next.delete(booking.id); return next; });
+        }
+      }
+    } finally {
+      setBulkReminding(false);
+    }
+    if (sent === targets.length) toast.success(`${sent} payment reminder${sent === 1 ? "" : "s"} sent`);
+    else toast.warning(`${sent} of ${targets.length} reminders sent`);
+  };
+
   return <div className="space-y-6 max-w-6xl mx-auto">
     <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
       <div><p className="text-xs uppercase tracking-[.22em] text-primary">Money desk</p><h1 className="font-display text-3xl text-foreground">Payment Operations</h1><p className="text-sm text-muted-foreground mt-1">One queue for card verification, PayID checks, expired holds and balances.</p></div>
@@ -60,7 +104,7 @@ export default function PaymentOperationsView() {
     {health && (!health.stripe.ready || health.stripe.unsafeUnsignedWebhooks || health.counts.reviews > 0) && <div role="alert" className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-100 flex gap-3"><AlertTriangle className="w-5 h-5 shrink-0" /><div><strong>Payment attention required.</strong> {!health.stripe.ready ? "Card payments are not fully configured. " : ""}{health.stripe.unsafeUnsignedWebhooks ? "Unsigned webhooks are enabled and should be disabled. " : ""}{health.counts.reviews ? `${health.counts.reviews} payment${health.counts.reviews === 1 ? " needs" : "s need"} manual reconciliation.` : ""}</div></div>}
     {health?.stripe.ready && !health.stripe.unsafeUnsignedWebhooks && health.counts.reviews === 0 && <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/10 p-3 text-sm text-emerald-200 flex items-center gap-2"><CheckCircle2 className="w-4 h-4" />Stripe secret and webhook verification are configured.</div>}
     <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">{Object.entries(queueMeta).map(([key, meta]) => { const Icon = meta.icon; return <button key={key} onClick={() => setQueue(key as Queue)} className={`text-left rounded-xl border p-4 transition ${meta.tone} ${queue === key ? "ring-2 ring-primary/50" : "hover:border-primary/30"}`}><Icon className="w-4 h-4 mb-3" /><span className="block text-2xl font-display">{counts[key] || 0}</span><span className="text-xs">{meta.label}</span></button>; })}</div>
-    <div className="relative"><Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" /><Input value={search} onChange={event => setSearch(event.target.value)} placeholder="Search client, email, reference or shoot…" className="pl-9" /></div>
-    <div className="space-y-3">{visible.map(booking => { const kind = queueFor(booking); const meta = queueMeta[kind]; const Icon = meta.icon; return <button key={booking.id} onClick={() => navigate(`/admin/bookings?search=${encodeURIComponent(bookingPaymentReference(booking))}`)} className="w-full rounded-xl border border-border bg-card/60 p-4 text-left hover:border-primary/40 transition flex flex-col sm:flex-row sm:items-center gap-3"><span className={`rounded-lg border p-2 ${meta.tone}`}><Icon className="w-4 h-4" /></span><span className="min-w-0 flex-1"><span className="font-medium text-foreground block truncate">{booking.clientName} · {booking.type}</span><span className="text-xs text-muted-foreground">{booking.date} at {booking.time} · {bookingPaymentReference(booking)}</span></span><span className={`text-xs border rounded-full px-2.5 py-1 ${meta.tone}`}>{meta.label}</span></button>; })}{!visible.length && <div className="rounded-xl border border-dashed border-border p-10 text-center text-sm text-muted-foreground">No payments in this queue.</div>}</div>
+    <div className="flex flex-col gap-3 sm:flex-row"><div className="relative flex-1"><Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" /><Input value={search} onChange={event => setSearch(event.target.value)} placeholder="Search client, email, reference or shoot…" className="pl-9" /></div><Button variant="outline" disabled={bulkReminding} onClick={() => void remindVisible()}>{bulkReminding ? "Sending reminders…" : "Remind visible clients"}</Button></div>
+    <div className="space-y-3">{visible.map(booking => { const kind = queueFor(booking); const meta = queueMeta[kind]; const Icon = meta.icon; const busy = acting.has(booking.id); return <article key={booking.id} className="w-full rounded-xl border border-border bg-card/60 p-4 transition hover:border-primary/40"><button type="button" onClick={() => navigate(`/admin/bookings?search=${encodeURIComponent(bookingPaymentReference(booking))}`)} className="flex w-full flex-col gap-3 text-left sm:flex-row sm:items-center"><span className={`rounded-lg border p-2 ${meta.tone}`}><Icon className="w-4 h-4" /></span><span className="min-w-0 flex-1"><span className="font-medium text-foreground block truncate">{booking.clientName} · {booking.type}</span><span className="text-xs text-muted-foreground">{booking.date} at {booking.time} · {bookingPaymentReference(booking)}</span></span><span className={`text-xs border rounded-full px-2.5 py-1 ${meta.tone}`}>{meta.label}</span></button><div className="mt-3 flex flex-wrap justify-end gap-2 border-t border-border/50 pt-3">{kind === "outstanding" && <Button size="sm" variant="ghost" disabled={busy} onClick={() => void remind(booking)}>Send reminder</Button>}{kind === "bank" && <Button size="sm" disabled={busy} onClick={() => void confirmBank(booking)}>Confirm bank payment</Button>}</div></article>; })}{!visible.length && <div className="rounded-xl border border-dashed border-border p-10 text-center text-sm text-muted-foreground">No payments in this queue.</div>}</div>
   </div>;
 }

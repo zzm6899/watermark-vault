@@ -1549,6 +1549,24 @@ export async function syncBookingsToSheet(bookings: unknown[], eventTypes?: unkn
     return await readJson(res, { ok: false, error: res.ok ? "Invalid server response" : `Request failed (${res.status})` });
   } catch { return { ok: false, error: "Network error" }; }
 }
+
+export async function uploadBookingReferenceImages(modifyToken: string, files: File[]): Promise<{ ok: boolean; booking?: import("./types").Booking; error?: string }> {
+  try {
+    const body = new FormData();
+    files.forEach(file => body.append("images", file));
+    const res = await fetch(`/api/booking/${encodeURIComponent(modifyToken)}/reference-images`, { method: "POST", body });
+    const json = await res.json().catch(() => ({}));
+    return res.ok && json?.ok && json?.booking ? { ok: true, booking: json.booking } : { ok: false, error: json?.error || "Unable to upload reference images" };
+  } catch { return { ok: false, error: "Network error while uploading reference images" }; }
+}
+
+export async function deleteBookingReferenceImage(modifyToken: string, imageId: string): Promise<{ ok: boolean; booking?: import("./types").Booking; error?: string }> {
+  try {
+    const res = await fetch(`/api/booking/${encodeURIComponent(modifyToken)}/reference-images/${encodeURIComponent(imageId)}`, { method: "DELETE" });
+    const json = await res.json().catch(() => ({}));
+    return res.ok && json?.ok && json?.booking ? { ok: true, booking: json.booking } : { ok: false, error: json?.error || "Unable to remove reference image" };
+  } catch { return { ok: false, error: "Network error while removing reference image" }; }
+}
 // ── Waitlist ────────────────────────────────────────────────
 export async function joinWaitlist(entry: {
   eventTypeId: string;
@@ -2090,6 +2108,14 @@ export async function deleteAdminBooking(bookingId: string): Promise<{ ok: boole
     const json = await res.json().catch(() => ({}));
     return res.ok && json?.ok ? { ok: true } : { ok: false, error: json?.error || "Unable to delete booking" };
   } catch { return { ok: false, error: "Network error while deleting booking" }; }
+}
+
+export async function confirmAdminBankPayment(bookingId: string): Promise<AdminBookingMutationResult> {
+  try {
+    return await parseAdminBookingMutation(await fetch(`/api/admin/bookings/${encodeURIComponent(bookingId)}/bank-payment`, {
+      method: "PATCH", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: "{}",
+    }));
+  } catch { return { ok: false, error: "Network error while confirming bank payment" }; }
 }
 
 export type BookingPaymentReviewResolutionResult = {

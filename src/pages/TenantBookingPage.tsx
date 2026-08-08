@@ -21,6 +21,7 @@ import {
 import type { Booking, EventType, QuestionField } from "@/lib/types";
 import { RichTextDisplay } from "@/components/RichTextEditor";
 import BookingAvatar from "@/components/BookingAvatar";
+import BookingReferenceUploads from "@/components/BookingReferenceUploads";
 import {
   buildBookingCalendarUrl,
   contactQuestionRole,
@@ -1241,6 +1242,8 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
               {confirmedNeedsPayment && paymentPath === "contact" && (
                 <p className="glass-panel rounded-xl p-4 max-w-sm mx-auto text-sm font-body text-muted-foreground">{tenant.displayName} will contact you with payment instructions for the ${confirmedAmountDue} AUD currently due.</p>
               )}
+
+              {submittedBooking && <div className="mx-auto max-w-sm"><BookingReferenceUploads booking={submittedBooking} onChange={setSubmittedBooking} /></div>}
 
               <Button variant="outline" onClick={() => { setStep("event-select"); setSelectedEvent(null); setSelectedDuration(null); setSelectedDate(null); setSelectedTime(null); setCustomAnswers({}); setSubmittedBooking(null); setPaymentPath(null); setCheckoutError(null); }} className="font-body text-xs gap-2">
                 Book another session

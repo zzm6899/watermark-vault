@@ -155,6 +155,17 @@ export interface Booking {
   contractId?: string;
   attendeeCount?: number;
   instalmentIds?: string[];
+  referenceImages?: BookingReferenceImage[];
+}
+
+export interface BookingReferenceImage {
+  id: string;
+  originalName: string;
+  size: number;
+  mimeType: string;
+  uploadedAt: string;
+  /** Present only in public capability responses; Admin uses its authenticated media route. */
+  url?: string;
 }
 
 export interface Photo {

@@ -379,6 +379,8 @@ const ZIP_JOBS_DIR = path.join(DATA_DIR, "zip-jobs");
 fs.mkdirSync(ZIP_JOBS_DIR, { recursive: true });
 const PORTFOLIO_MEDIA_DIR = path.join(DATA_DIR, "portfolio-media");
 fs.mkdirSync(PORTFOLIO_MEDIA_DIR, { recursive: true });
+const BOOKING_REFERENCES_DIR = path.join(DATA_DIR, "booking-references");
+fs.mkdirSync(BOOKING_REFERENCES_DIR, { recursive: true });
 const ZIP_READY_TTL_MS = Math.max(60_000, Number(process.env.ZIP_READY_TTL_MS) || 15 * 60 * 1000);
 const ZIP_TRANSFERRED_TTL_MS = Math.max(10_000, Number(process.env.ZIP_TRANSFERRED_TTL_MS) || 2 * 60 * 1000);
 // Remove artifacts left by a container restart. Active jobs only exist in memory,
@@ -5685,7 +5687,7 @@ const store = {
   },
 };
 
-function sendMainBookingReceipt(booking) {
+function sendMainBookingReceipt(booking, options = {}) {
   const profile = dbGet(readDb(), DB_KEYS.PROFILE, {});
   return sendBookingConfirmationEmail({
     to: booking.clientEmail,
@@ -5703,7 +5705,7 @@ function sendMainBookingReceipt(booking) {
     modifyToken: booking.modifyToken,
     bookingId: booking.id,
     appBaseUrl: String(process.env.APP_BASE_URL || `https://${String(process.env.APP_HOSTS || "book.zacmclients.photos").split(",")[0].trim()}`).replace(/\/$/, ""),
-    store,
+    store: options.recordEmailLog === false ? null : store,
     brandName: profile.businessName || profile.brandName || profile.name || "PhotoFlow",
   });
 }
@@ -6607,7 +6609,19 @@ function publicBookingDto(booking) {
     "instagramHandle", "modifyToken", "depositRequired", "depositAmount", "depositMethod", "depositPaidAt", "paidAt",
     "requiresConfirmation", "tenantSlug", "statusHistory",
   ];
-  return Object.fromEntries(allowed.filter(key => booking?.[key] !== undefined).map(key => [key, booking[key]]));
+  const dto = Object.fromEntries(allowed.filter(key => booking?.[key] !== undefined).map(key => [key, booking[key]]));
+  dto.referenceImages = (Array.isArray(booking?.referenceImages) ? booking.referenceImages : []).map(image => {
+    const access = signSession({ purpose: "booking-reference", bookingId: booking.id, imageId: image.id }, SESSION_SECRET, { ttlSeconds: 15 * 60 });
+    return {
+      id: image.id,
+      originalName: image.originalName,
+      size: image.size,
+      mimeType: image.mimeType,
+      uploadedAt: image.uploadedAt,
+      url: `/api/booking/reference-images/${encodeURIComponent(image.id)}?access=${encodeURIComponent(access)}`,
+    };
+  });
+  return dto;
 }
 
 function getStoredArray(db, key) {
@@ -6996,6 +7010,131 @@ app.get("/api/booking/:token", bookingLookupLimiter, (req, res) => {
   if (!bookingAllowsCapabilityMutation(booking)) return res.status(410).json({ error: "This booking has been archived" });
   res.setHeader("Cache-Control", "no-store");
   res.json({ ok: true, booking: publicBookingDto(booking) });
+});
+
+const bookingReferenceUpload = multer({
+  storage: multer.diskStorage({
+    destination: BOOKING_REFERENCES_DIR,
+    filename: (_req, file, callback) => callback(null, `${crypto.randomUUID()}${path.extname(file.originalname).toLowerCase()}`),
+  }),
+  limits: { fileSize: 8 * 1024 * 1024, files: 5 },
+  fileFilter: (_req, file, callback) => {
+    const extension = path.extname(String(file.originalname || "")).toLowerCase();
+    const allowedExtension = [".jpg", ".jpeg", ".png", ".webp"].includes(extension);
+    const allowedMime = ["image/jpeg", "image/png", "image/webp"].includes(String(file.mimetype || "").toLowerCase());
+    callback(null, allowedExtension && allowedMime);
+  },
+});
+
+function requireBookingReferenceCapability(req, res, next) {
+  const token = String(req.params.token || "");
+  if (!token) return res.status(404).json({ ok: false, error: "Booking not found" });
+  const bookings = getStoredArray(readDb(), DB_KEYS.BOOKINGS);
+  const matches = bookings.filter(booking => typeof booking?.modifyToken === "string" && booking.modifyToken.length > 0 && timingSafeTextEqual(booking.modifyToken, token));
+  if (matches.length !== 1) return res.status(404).json({ ok: false, error: "Booking not found" });
+  if (!bookingAllowsCapabilityMutation(matches[0]) || matches[0].status === "cancelled") return res.status(409).json({ ok: false, error: "Reference images cannot be changed for this booking" });
+  req.referenceBookingId = matches[0].id;
+  req.referenceBookingScope = matches[0].tenantSlug ? `tenant:${matches[0].tenantSlug}` : "main";
+  return next();
+}
+
+function removeReferenceFiles(files) {
+  for (const file of files || []) {
+    try { fs.unlinkSync(file.path); } catch {}
+  }
+}
+
+function acceptBookingReferenceImages(req, res, next) {
+  bookingReferenceUpload.array("images", 5)(req, res, error => {
+    if (!error) return next();
+    removeReferenceFiles(req.files);
+    const message = error.code === "LIMIT_FILE_SIZE" ? "Each reference image must be 8 MB or smaller"
+      : error.code === "LIMIT_FILE_COUNT" || error.code === "LIMIT_UNEXPECTED_FILE" ? "Upload no more than five reference images"
+      : "Reference images could not be uploaded";
+    return res.status(400).json({ ok: false, error: message });
+  });
+}
+
+app.post("/api/booking/:token/reference-images", bookingLookupLimiter, requireBookingReferenceCapability, acceptBookingReferenceImages, async (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  const files = Array.isArray(req.files) ? req.files : [];
+  if (!files.length) return res.status(400).json({ ok: false, error: "Choose at least one JPEG, PNG, or WebP image" });
+  try {
+    for (const file of files) {
+      const metadata = await sharp(file.path).metadata();
+      if (!metadata.width || !metadata.height || metadata.width * metadata.height > 80_000_000) throw new Error("invalid-dimensions");
+    }
+  } catch {
+    removeReferenceFiles(files);
+    return res.status(400).json({ ok: false, error: "One or more files are not valid images" });
+  }
+  return withCheckoutResourceLock(bookingCheckoutResourceLockKey(req.referenceBookingScope, req.referenceBookingId), async () => {
+    const db = readDb();
+    const bookings = getStoredArray(db, DB_KEYS.BOOKINGS);
+    const index = bookings.findIndex(booking => booking.id === req.referenceBookingId && timingSafeTextEqual(booking.modifyToken, req.params.token));
+    if (index < 0 || !bookingAllowsCapabilityMutation(bookings[index]) || bookings[index].status === "cancelled") {
+      removeReferenceFiles(files);
+      return res.status(409).json({ ok: false, error: "Reference images cannot be changed for this booking" });
+    }
+    const existing = Array.isArray(bookings[index].referenceImages) ? bookings[index].referenceImages : [];
+    if (existing.length + files.length > 5) {
+      removeReferenceFiles(files);
+      return res.status(409).json({ ok: false, error: "A booking can retain up to five reference images" });
+    }
+    const uploadedAt = new Date().toISOString();
+    const additions = files.map(file => ({
+      id: crypto.randomUUID(), filename: path.basename(file.filename), originalName: String(file.originalname || "reference image").slice(0, 180),
+      mimeType: file.mimetype, size: file.size, uploadedAt,
+    }));
+    bookings[index] = { ...bookings[index], referenceImages: [...existing, ...additions] };
+    db[DB_KEYS.BOOKINGS] = JSON.stringify(bookings);
+    writeDb(db);
+    return res.status(201).json({ ok: true, booking: publicBookingDto(bookings[index]) });
+  });
+});
+
+app.delete("/api/booking/:token/reference-images/:imageId", bookingLookupLimiter, requireBookingReferenceCapability, async (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  return withCheckoutResourceLock(bookingCheckoutResourceLockKey(req.referenceBookingScope, req.referenceBookingId), async () => {
+    const db = readDb();
+    const bookings = getStoredArray(db, DB_KEYS.BOOKINGS);
+    const index = bookings.findIndex(booking => booking.id === req.referenceBookingId && timingSafeTextEqual(booking.modifyToken, req.params.token));
+    if (index < 0) return res.status(404).json({ ok: false, error: "Booking not found" });
+    const images = Array.isArray(bookings[index].referenceImages) ? bookings[index].referenceImages : [];
+    const image = images.find(item => item.id === req.params.imageId);
+    if (!image) return res.status(404).json({ ok: false, error: "Reference image not found" });
+    bookings[index] = { ...bookings[index], referenceImages: images.filter(item => item.id !== image.id) };
+    db[DB_KEYS.BOOKINGS] = JSON.stringify(bookings);
+    writeDb(db);
+    try { fs.unlinkSync(resolveContainedPath(BOOKING_REFERENCES_DIR, image.filename)); } catch {}
+    return res.json({ ok: true, booking: publicBookingDto(bookings[index]) });
+  });
+});
+
+app.get("/api/booking/reference-images/:imageId", bookingLookupLimiter, (req, res) => {
+  const session = verifySession(String(req.query.access || ""), SESSION_SECRET, { purpose: "booking-reference" });
+  if (!session || session.imageId !== req.params.imageId) return res.status(404).end();
+  const bookings = getStoredArray(readDb(), DB_KEYS.BOOKINGS);
+  const booking = bookings.find(item => item.id === session.bookingId && item.archived !== true);
+  const image = booking?.referenceImages?.find(item => item.id === session.imageId);
+  if (!image) return res.status(404).end();
+  const target = resolveContainedPath(BOOKING_REFERENCES_DIR, image.filename);
+  if (!target || !fs.existsSync(target)) return res.status(404).end();
+  res.setHeader("Cache-Control", "private, no-store");
+  res.type(image.mimeType || "application/octet-stream");
+  return res.sendFile(target);
+});
+
+app.get("/api/admin/bookings/:id/reference-images/:imageId", bookingLookupLimiter, requireAuth, (req, res) => {
+  const bookings = getStoredArray(readDb(), DB_KEYS.BOOKINGS);
+  const booking = bookings.find(item => item.id === req.params.id);
+  const image = booking?.referenceImages?.find(item => item.id === req.params.imageId);
+  if (!image) return res.status(404).end();
+  const target = resolveContainedPath(BOOKING_REFERENCES_DIR, image.filename);
+  if (!target || !fs.existsSync(target)) return res.status(404).end();
+  res.setHeader("Cache-Control", "private, no-store");
+  res.type(image.mimeType || "application/octet-stream");
+  return res.sendFile(target);
 });
 
 app.patch("/api/booking/:token", bookingLookupLimiter, async (req, res) => {
@@ -7689,6 +7828,53 @@ app.patch("/api/admin/bookings/:id/payment-review", superLimiter, requireAuth, a
   } catch (error) {
     console.error(`Payment review resolution failed for booking ${bookingId}:`, error?.message || error);
     return res.status(500).json({ ok: false, error: "Payment review resolution failed" });
+  }
+});
+
+app.patch("/api/admin/bookings/:id/bank-payment", superLimiter, requireAuth, async (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  const bookingId = String(req.params.id || "").trim();
+  if (!bookingId || bookingId.length > 128) return res.status(404).json({ ok: false, code: "BOOKING_NOT_FOUND", error: "Booking not found" });
+  try {
+    return await withCheckoutResourceLock(bookingCheckoutResourceLockKey("main", bookingId), async () => {
+      const db = readDb();
+      const bookings = getStoredArray(db, DB_KEYS.BOOKINGS);
+      const index = bookings.findIndex(booking => !booking?.tenantSlug && booking.id === bookingId);
+      if (index < 0) return res.status(404).json({ ok: false, code: "BOOKING_NOT_FOUND", error: "Booking not found" });
+      const current = bookings[index];
+      const methods = [current.paymentMethod, current.depositMethod, current.paymentPath].filter(Boolean).map(value => String(value).toLowerCase());
+      if (current.paymentStatus !== "pending-confirmation" || !methods.length || methods.some(method => method !== "bank")) {
+        return res.status(409).json({ ok: false, code: "BANK_PAYMENT_NOT_PENDING", error: "This booking is not awaiting bank-transfer verification" });
+      }
+      if (current.paymentNeedsReview || current.archived || ["cancelled", "completed"].includes(current.status)) {
+        return res.status(409).json({ ok: false, code: "BANK_PAYMENT_REVIEW_REQUIRED", error: "This payment must be reconciled from the booking review before settlement" });
+      }
+      const confirmedAt = new Date().toISOString();
+      const total = Number(current.paymentAmount) || 0;
+      const deposit = Number(current.depositAmount) || 0;
+      const depositOnly = current.depositRequired === true && deposit > 0 && deposit < total && !current.depositPaidAt;
+      const history = Array.isArray(current.paymentHistory) ? current.paymentHistory.slice(-99) : [];
+      const updated = {
+        ...current,
+        paymentStatus: depositOnly ? "deposit-paid" : "paid",
+        paymentMethod: "bank",
+        bankTransferVerificationStatus: "confirmed-by-admin",
+        bankPaymentConfirmedAt: confirmedAt,
+        bankPaymentConfirmedBy: req.authContext?.username || "admin",
+        holdExpiresAt: undefined,
+        ...(depositOnly ? { depositPaidAt: confirmedAt } : { paidAt: confirmedAt, ...(current.depositPaidAt ? { balancePaidAt: confirmedAt } : {}) }),
+        status: current.status === "pending" && !current.requiresConfirmation ? "confirmed" : current.status,
+        paymentHistory: [...history, { action: "manual-bank-payment-confirmed", changedAt: confirmedAt, source: "admin", paymentStatus: depositOnly ? "deposit-paid" : "paid", amount: depositOnly ? deposit : Math.max(0, total - (current.depositPaidAt ? deposit : 0)) }],
+      };
+      bookings[index] = updated;
+      db[DB_KEYS.BOOKINGS] = JSON.stringify(bookings);
+      writeDb(db);
+      setImmediate(() => sendMainBookingReceipt(updated, { recordEmailLog: false }).catch(error => console.error(`Bank payment receipt failed for ${bookingId}:`, error?.message || error)));
+      return res.json({ ok: true, booking: updated });
+    });
+  } catch (error) {
+    console.error(`Bank payment confirmation failed for ${bookingId}:`, error?.message || error);
+    return res.status(500).json({ ok: false, error: "Bank payment confirmation failed" });
   }
 });
 

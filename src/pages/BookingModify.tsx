@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import Footer from "@/components/Footer";
+import BookingReferenceUploads from "@/components/BookingReferenceUploads";
 import { toast } from "sonner";
 import { cacheBookingLocally, getBookings, getEventTypes, getProfile, getSettings } from "@/lib/storage";
 import {
@@ -683,6 +684,8 @@ export default function BookingModify() {
                     <p className="text-xs font-body text-muted-foreground text-center">Transfer reference: <span className="text-primary font-medium">{bookingPaymentReference(booking)}</span></p>
                   </div>
                 )}
+
+                <BookingReferenceUploads booking={booking} onChange={updated => { setBooking(updated); cacheBookingLocally(updated); }} />
 
                 {/* Pay now buttons */}
                 {!isFree && !isPaidInFull && booking.status !== "cancelled" && paymentState !== "hold-expired" && paymentState !== "not-payable" && (
