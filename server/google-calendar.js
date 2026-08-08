@@ -249,18 +249,34 @@ function registerRoutes(app, options = {}) {
     const cal   = google.calendar({ version: "v3", auth });
 
     try {
-      if (booking.gcalEventId) {
-        // Already synced — update in place
-        const { data } = await cal.events.update({
-          calendarId: calId, eventId: booking.gcalEventId, requestBody: buildEvent(booking),
-        });
-        saveGcalEventId(booking.id, data.id);
-        return res.json({ ok: true, eventId: data.id, updated: true });
+      const requestBody = buildEvent(booking);
+      let eventId = booking.gcalEventId || null;
+      let updated = false;
+      if (eventId) {
+        try {
+          const { data } = await cal.events.update({ calendarId: calId, eventId, requestBody });
+          eventId = data.id;
+          updated = true;
+        } catch (err) {
+          const status = Number(err?.code || err?.response?.status);
+          if (status !== 404 && status !== 410) throw err;
+          eventId = null;
+        }
       }
-      const { data } = await cal.events.insert({ calendarId: calId, requestBody: buildEvent(booking) });
-      // Persist gcalEventId back to db.json so future syncs can update instead of duplicate
-      saveGcalEventId(booking.id, data.id);
-      res.json({ ok: true, eventId: data.id, htmlLink: data.htmlLink });
+      if (!eventId) {
+        const existing = await cal.events.list({ calendarId: calId, privateExtendedProperty: [`watermarkVaultBookingId=${booking.id}`], singleEvents: true, showDeleted: false, maxResults: 10 });
+        eventId = existing.data.items?.find(item => item.status !== "cancelled" && item.id)?.id || null;
+        if (eventId) {
+          const { data } = await cal.events.update({ calendarId: calId, eventId, requestBody });
+          eventId = data.id;
+          updated = true;
+        } else {
+          const { data } = await cal.events.insert({ calendarId: calId, requestBody });
+          eventId = data.id;
+        }
+      }
+      saveGcalEventId(booking.id, eventId);
+      res.json({ ok: true, eventId, updated });
     } catch (err) {
       console.error("Calendar event error:", err.message);
       res.status(500).json({ error: err.message });
@@ -375,12 +391,18 @@ function registerRoutes(app, options = {}) {
       try {
         const existId = existingEventIdByBookingId[booking.id] || booking.gcalEventId;
         if (existId) {
-          const { data } = await cal.events.update({ calendarId: calId, eventId: existId, requestBody: buildEvent(booking) });
-          saveGcalEventId(booking.id, data.id);
-          updated++;
-        } else {
+          try {
+            const { data } = await cal.events.update({ calendarId: calId, eventId: existId, requestBody: buildEvent(booking) });
+            saveGcalEventId(booking.id, data.id);
+            updated++;
+            continue;
+          } catch (error) {
+            const status = Number(error?.code || error?.response?.status);
+            if (status !== 404 && status !== 410) throw error;
+          }
+        }
+        {
           const { data } = await cal.events.insert({ calendarId: calId, requestBody: buildEvent(booking) });
-          // Save the new event ID so future syncs update instead of duplicate
           saveGcalEventId(booking.id, data.id);
           created++;
         }

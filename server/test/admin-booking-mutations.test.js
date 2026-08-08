@@ -15,7 +15,7 @@ test("admin booking mutations are narrow and share the Stripe booking lock", () 
   const section = source.slice(source.indexOf("const ADMIN_BOOKING_EDITABLE_FIELDS"), source.indexOf("// Resolve a Stripe payment review"));
   assert.match(section, /withCheckoutResourceLock\(bookingCheckoutResourceLockKey\("main", bookingId\)/);
   assert.doesNotMatch(section.slice(0, section.indexOf("function sanitizeAdminBookingChanges")), /stripeSessionId|modifyToken|paymentNeedsReview|archivedAt/);
-  assert.match(section, /const booking = \{ \.\.\.bookings\[index\], \.\.\.changes/);
+  assert.match(section, /const previous = bookings\[index\];[\s\S]*const booking = \{ \.\.\.previous, \.\.\.changes/);
 });
 
 test("archive mutations lock every requested booking before the canonical re-read", () => {

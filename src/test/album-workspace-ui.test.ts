@@ -24,9 +24,9 @@ describe("album workspace UI contracts", () => {
     expect(slugFieldSource).toContain("Already taken");
   });
 
-  it("gives gallery visitors a visible workflow and selection controls", () => {
-    expect(gallerySource).toContain("Star favourites");
-    expect(gallerySource).toContain("Review total");
+  it("keeps gallery selection controls without the instructional step cards", () => {
+    expect(gallerySource).not.toContain("Review total");
+    expect(gallerySource).not.toContain("Free allowance and pricing update automatically");
     expect(gallerySource).toContain("Select visible");
     expect(gallerySource).toContain("Tap photos to select");
     expect(gallerySource).toContain("sticky top-20");
