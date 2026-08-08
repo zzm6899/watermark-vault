@@ -2032,6 +2032,66 @@ export type BookingArchiveMutationResult = {
 
 export type PaymentReviewResolutionStatus = "paid" | "cash" | "deposit-paid";
 
+export type AdminPaymentHealth = {
+  ok: boolean;
+  stripe: { ready: boolean; secretKeyConfigured: boolean; webhookVerificationConfigured: boolean; unsafeUnsignedWebhooks: boolean };
+  counts: { reviews: number; bankPending: number; cardProcessing: number; expiredHolds: number; unpaid: number };
+  checkedAt: string;
+};
+
+export async function getAdminPaymentHealth(): Promise<AdminPaymentHealth | null> {
+  try {
+    const res = await fetch("/api/admin/payments/health", { cache: "no-store", headers: adminAuthHeaders() });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch { return null; }
+}
+
+export type AdminBookingMutationResult = {
+  ok: boolean;
+  booking?: import("./types").Booking;
+  code?: string;
+  error?: string;
+};
+
+async function parseAdminBookingMutation(res: Response): Promise<AdminBookingMutationResult> {
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok || json?.ok !== true || !json?.booking) {
+    return { ok: false, code: json?.code, error: json?.error || "Unable to save booking" };
+  }
+  return { ok: true, booking: json.booking };
+}
+
+export async function createAdminBooking(booking: import("./types").Booking): Promise<AdminBookingMutationResult> {
+  try {
+    return await parseAdminBookingMutation(await fetch("/api/admin/bookings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
+      body: JSON.stringify({ booking }),
+    }));
+  } catch { return { ok: false, error: "Network error while creating booking" }; }
+}
+
+export async function patchAdminBooking(bookingId: string, changes: Partial<import("./types").Booking>): Promise<AdminBookingMutationResult> {
+  try {
+    return await parseAdminBookingMutation(await fetch(`/api/admin/bookings/${encodeURIComponent(bookingId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
+      body: JSON.stringify({ changes }),
+    }));
+  } catch { return { ok: false, error: "Network error while updating booking" }; }
+}
+
+export async function deleteAdminBooking(bookingId: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch(`/api/admin/bookings/${encodeURIComponent(bookingId)}`, {
+      method: "DELETE", headers: adminAuthHeaders(),
+    });
+    const json = await res.json().catch(() => ({}));
+    return res.ok && json?.ok ? { ok: true } : { ok: false, error: json?.error || "Unable to delete booking" };
+  } catch { return { ok: false, error: "Network error while deleting booking" }; }
+}
+
 export type BookingPaymentReviewResolutionResult = {
   ok: boolean;
   booking?: import("./types").Booking;

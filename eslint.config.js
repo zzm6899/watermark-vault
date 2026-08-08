@@ -36,4 +36,11 @@ export default tseslint.config(
       "no-empty": ["error", { allowEmptyCatch: true }],
     },
   },
+  {
+    // Shadcn-style primitives intentionally co-export their variant helpers,
+    // and AlbumDetail exports pure URL/entitlement helpers used by regression
+    // tests. These exports are stable and do not represent hot-reload state.
+    files: ["src/components/ui/**/*.{ts,tsx}", "src/pages/AlbumDetail.tsx"],
+    rules: { "react-refresh/only-export-components": "off" },
+  },
 );

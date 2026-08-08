@@ -179,8 +179,6 @@ function QuestionInput({ field, value, onChange, inputId, labelId }: { field: Qu
           ))}
         </div>
       );
-    case "image-upload":
-      return null;
     default:
       return null;
   }
@@ -493,7 +491,6 @@ export default function Booking() {
     () => getPublicCustomQuestions(selectedEvent?.questions),
     [selectedEvent],
   );
-  const hasRequiredUnsupportedUpload = selectedQuestions.some(question => question.type === "image-upload" && question.required);
   const phoneRequired = selectedQuestions.some(question => contactQuestionRole(question) === "phone" && question.required);
 
   const handleSelectEvent = (ev: EventType) => {
@@ -554,10 +551,6 @@ export default function Booking() {
     if (!clientName.trim()) { toast.error("Please enter your name"); return; }
     if (!isValidEmail(clientEmail)) { toast.error("Please enter a valid email address"); return; }
     if (phoneRequired && !clientPhone.trim()) { toast.error("Please enter your phone number"); return; }
-    if (hasRequiredUnsupportedUpload) {
-      toast.error("This booking form requires an upload that is not available online. Please contact the photographer.");
-      return;
-    }
     const missing = missingRequiredQuestions(customQuestions, answers);
     if (missing.length > 0) {
       toast.error(`Please fill in: ${missing.map((q) => q.label).join(", ")}`);
@@ -876,6 +869,16 @@ export default function Booking() {
       <section className="min-h-screen" style={{ paddingTop: "calc(env(safe-area-inset-top) + 2rem)", paddingBottom: "calc(env(safe-area-inset-bottom) + 6rem)" }}>
         <div className="mx-auto w-full max-w-5xl px-4 sm:px-6 lg:px-8">
           <BookingSteps currentStep={step} />
+          {selectedEvent && !["event-select", "confirmed", "enquiry", "enquiry-confirmed"].includes(step) && (
+            <aside aria-label="Current booking selection" className="sticky top-3 z-20 mx-auto mb-5 flex max-w-3xl items-center gap-3 rounded-xl border border-primary/20 bg-background/90 px-4 py-3 shadow-xl shadow-black/10 backdrop-blur">
+              <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/15 text-primary"><CalendarDays className="size-4" /></span>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-medium text-foreground">{selectedEvent.title}</p>
+                <p className="truncate text-xs text-muted-foreground">{selectedDate ? selectedDate.toLocaleDateString("en-AU", { weekday: "short", day: "numeric", month: "short" }) : "Choose a date"}{selectedTime ? ` · ${formatTime12(selectedTime)}` : ""}{selectedDuration ? ` · ${formatDuration(selectedDuration)}` : ""}</p>
+              </div>
+              {selectedDuration && <span className="shrink-0 rounded-full border border-primary/20 bg-primary/10 px-2.5 py-1 text-xs font-semibold text-primary">${getPriceForDuration(selectedEvent, selectedDuration)}</span>}
+            </aside>
+          )}
           <AnimatePresence mode="wait">
 
             {/* ─── Step 1: Event List ─── */}
@@ -1345,17 +1348,10 @@ export default function Booking() {
                   {customQuestions.map((q) => (
                     <BookingQuestionField key={q.id} field={q} value={answers[q.id] || ""} onChange={(val) => setAnswers((prev) => ({ ...prev, [q.id]: val }))} />
                   ))}
-                  {selectedQuestions.some(question => question.type === "image-upload") && (
-                    <p role={hasRequiredUnsupportedUpload ? "alert" : undefined} className={`rounded-lg border p-3 text-xs font-body ${hasRequiredUnsupportedUpload ? "border-destructive/40 bg-destructive/10 text-destructive" : "border-border text-muted-foreground"}`}>
-                      {hasRequiredUnsupportedUpload
-                        ? "This booking form is configured with a required image upload, but secure uploads are not available here. Please contact the photographer to book."
-                        : "Reference image uploads aren't accepted in this form. The photographer can arrange a secure upload after you submit."}
-                    </p>
-                  )}
                 </div>
 
-                <Button onClick={handleSubmitQuestions} disabled={processingPayment || hasRequiredUnsupportedUpload} size="lg" className="w-full mt-6 bg-primary text-primary-foreground hover:bg-primary/90 font-body tracking-wider uppercase text-xs py-6">
-                  {hasRequiredUnsupportedUpload ? "Contact Photographer to Book" : processingPayment ? "Submitting…" : getPriceForDuration(selectedEvent, selectedDuration) === 0 ? "Confirm Free Booking" : "Continue to Payment"}
+                <Button onClick={handleSubmitQuestions} disabled={processingPayment} size="lg" className="w-full mt-6 bg-primary text-primary-foreground hover:bg-primary/90 font-body tracking-wider uppercase text-xs py-6">
+                  {processingPayment ? "Submitting…" : getPriceForDuration(selectedEvent, selectedDuration) === 0 ? "Confirm Free Booking" : "Continue to Payment"}
                 </Button>
                 <p className="text-center text-[10px] font-body text-muted-foreground/40 mt-4">By booking, you agree to our terms and conditions.</p>
               </motion.div>

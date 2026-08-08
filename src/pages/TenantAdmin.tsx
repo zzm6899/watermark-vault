@@ -1311,7 +1311,6 @@ function TenantEventEditor({ eventType, onSave, onCancel }: { eventType: EventTy
                     <option value="textarea">Long Text</option>
                     <option value="select">Select</option>
                     <option value="boolean">Yes/No</option>
-                    <option value="image-upload" disabled>Image Upload (not yet supported)</option>
                     <option value="instagram">Instagram Handle</option>
                   </select>
                   <button onClick={() => setQuestions(questions.filter((_, i) => i !== idx))} className="p-1.5 text-muted-foreground hover:text-destructive"><X className="w-3.5 h-3.5" /></button>

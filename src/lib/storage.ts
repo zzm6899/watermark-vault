@@ -2,7 +2,7 @@ import type {
   EventType, Booking, Album, Photo, ProfileSettings,
   AppSettings, BankTransferSettings, WaitlistEntry, EmailTemplate, Invoice, Contact, Enquiry, PixiesetImportAudit,
 } from "./types";
-import { persistToServer, persistAlbumToServer, deleteAlbumFromServer } from "./api";
+import { createAdminBooking, deleteAdminBooking, patchAdminBooking, persistToServer, persistAlbumToServer, deleteAlbumFromServer } from "./api";
 
 const KEYS = {
   SETUP_COMPLETE: "wv_setup_complete",
@@ -166,10 +166,16 @@ export function setBookings(bks: Booking[]) {
   set(KEYS.BOOKINGS, bks);
 }
 
-export function addBooking(bk: Booking) {
-  const list = getBookings();
-  list.push(bk);
-  setBookings(list);
+export async function addBooking(bk: Booking) {
+  cacheBookingLocally(bk);
+  const result = await createAdminBooking(bk);
+  if (result.booking) cacheBookingLocally(result.booking);
+  if (!result.ok) {
+    localStorage.setItem(KEYS.BOOKINGS, JSON.stringify(getBookings().filter(existing => existing.id !== bk.id)));
+    console.error(result.error || "Unable to create booking");
+    return undefined;
+  }
+  return result.booking;
 }
 
 /** Cache a server-created booking in this browser without writing the whole
@@ -213,12 +219,34 @@ export function isDuplicateBooking(bk: {
   );
 }
 
-export function deleteBooking(id: string) {
-  setBookings(getBookings().filter((b) => b.id !== id));
+export async function deleteBooking(id: string) {
+  const previous = getBookings();
+  const result = await deleteAdminBooking(id);
+  if (!result.ok) {
+    localStorage.setItem(KEYS.BOOKINGS, JSON.stringify(previous));
+    console.error(result.error || "Unable to delete booking");
+    return false;
+  }
+  localStorage.setItem(KEYS.BOOKINGS, JSON.stringify(getBookings().filter((b) => b.id !== id)));
+  return true;
 }
 
-export function updateBooking(bk: Booking) {
-  setBookings(getBookings().map((b) => (b.id === bk.id ? bk : b)));
+export async function updateBooking(bk: Booking) {
+  const previous = getBookings().find((booking) => booking.id === bk.id);
+  const changes = Object.fromEntries(Object.entries(bk).filter(([key, value]) => {
+    if (key === "id" || key === "tenantSlug" || key === "createdAt") return false;
+    return JSON.stringify(value) !== JSON.stringify(previous?.[key as keyof Booking]);
+  })) as Partial<Booking>;
+  if (!Object.keys(changes).length) return bk;
+  cacheBookingLocally(bk);
+  const result = await patchAdminBooking(bk.id, changes);
+  if (result.booking) cacheBookingLocally(result.booking);
+  if (!result.ok) {
+    if (previous) cacheBookingLocally(previous);
+    console.error(result.error || "Unable to update booking");
+    return undefined;
+  }
+  return result.booking;
 }
 
 // Check if a time slot is already booked
