@@ -65,6 +65,10 @@ describe("portfolio technical SEO", () => {
     expect(server).toContain('if (!isPortfolioSiteHost(req.hostname)) return next()');
     expect(server).toContain("index: false");
     expect(server).toContain("platformSeoBlock()");
+    expect(server).toContain("gallerySeoBlock(req, chosen.album, chosen.tenantSlug)");
+    expect(server).toContain('req.path.match(/^\\/gallery\\/([^/]+)\\/?$/)');
+    expect(server).toContain('<meta property="og:image" content="${imageUrl}" />');
+    expect(server).toContain('url.searchParams.set("size", "medium")');
     expect(compose).toContain("CANONICAL_PORTFOLIO_HOST=${CANONICAL_PORTFOLIO_HOST:-zacmorganphotography.com}");
   });
 });

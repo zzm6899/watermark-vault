@@ -342,6 +342,58 @@ function platformSeoBlock() {
     <meta name="twitter:card" content="summary" />
     <!-- SEO:END -->`;
 }
+
+function gallerySocialImageUrl(req, album) {
+  const raw = String(album?.coverImage || album?.photos?.[0]?.thumbnail || album?.photos?.[0]?.src || "").trim();
+  if (!raw || raw.startsWith("data:") || raw.startsWith("file:")) return "";
+  try {
+    const url = new URL(raw, safeCheckoutReturnUrl(req, null, "/"));
+    if (!/^https?:$/.test(url.protocol)) return "";
+    if (url.pathname.startsWith("/uploads/")) {
+      url.searchParams.set("size", "medium");
+      url.searchParams.delete("wm");
+      url.searchParams.delete("paid");
+      url.searchParams.delete("sessionKey");
+      url.searchParams.delete("albumId");
+    }
+    return url.toString();
+  } catch {
+    return "";
+  }
+}
+
+function gallerySeoBlock(req, album, tenantSlug) {
+  const db = readDb();
+  const tenantSettings = tenantSlug ? dbGet(db, `t_${tenantSlug}_wv_tenant_settings`, {}) : {};
+  const profile = dbGet(db, DB_KEYS.PROFILE, {});
+  const brand = String(tenantSettings?.businessName || tenantSettings?.brandName || profile?.businessName || profile?.name || "PhotoFlow").trim();
+  const albumTitle = String(album?.title || "Photo gallery").trim();
+  const title = escapeHtml(brand && !albumTitle.toLowerCase().includes(brand.toLowerCase()) ? `${albumTitle} | ${brand}` : albumTitle);
+  const plainDescription = String(album?.description || `View ${albumTitle} by ${brand}.`)
+    .replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().slice(0, 300);
+  const description = escapeHtml(plainDescription);
+  const canonicalUrl = escapeHtml(safeCheckoutReturnUrl(req, null, `/gallery/${encodeURIComponent(album.slug || album.id)}`));
+  const imageUrl = escapeHtml(gallerySocialImageUrl(req, album));
+  const imageMeta = imageUrl ? `
+    <meta property="og:image" content="${imageUrl}" />
+    <meta property="og:image:secure_url" content="${imageUrl}" />
+    <meta property="og:image:alt" content="Cover photo for ${escapeHtml(albumTitle)}" />
+    <meta name="twitter:image" content="${imageUrl}" />` : "";
+  return `<!-- SEO:START -->
+    <title>${title}</title>
+    <meta name="description" content="${description}" />
+    <meta name="robots" content="noindex, nofollow, noarchive" />
+    <link rel="canonical" href="${canonicalUrl}" />
+    <meta property="og:site_name" content="${escapeHtml(brand)}" />
+    <meta property="og:title" content="${title}" />
+    <meta property="og:description" content="${description}" />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="${canonicalUrl}" />${imageMeta}
+    <meta name="twitter:card" content="${imageUrl ? "summary_large_image" : "summary"}" />
+    <meta name="twitter:title" content="${title}" />
+    <meta name="twitter:description" content="${description}" />
+    <!-- SEO:END -->`;
+}
 const DATA_DIR = process.env.DATA_DIR || "/data";
 const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
 const LEGACY_DB_FILE = path.join(DATA_DIR, "db.json");
@@ -10822,6 +10874,17 @@ app.get("*", (req, res) => {
   res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
   if (!portfolioIndexHtml) return res.status(503).send("Application build is unavailable");
   if (!isPortfolioSiteHost(req.hostname)) {
+    const galleryMatch = req.path.match(/^\/gallery\/([^/]+)\/?$/);
+    if (galleryMatch) {
+      let identifier = "";
+      try { identifier = decodeURIComponent(galleryMatch[1]); } catch { identifier = galleryMatch[1]; }
+      const db = readDb();
+      const chosen = findAlbumBySlugOrId(db, identifier);
+      if (chosen && chosen.album.enabled !== false && !albumAccessWindow(chosen.album, Date.now(), galleryTimezone(db, chosen.tenantSlug)).galleryExpired) {
+        res.setHeader("X-Robots-Tag", "noindex, nofollow, noarchive");
+        return res.type("html").send(portfolioIndexHtml.replace(/<!-- SEO:START -->[\s\S]*?<!-- SEO:END -->/, gallerySeoBlock(req, chosen.album, chosen.tenantSlug)));
+      }
+    }
     return res.type("html").send(portfolioIndexHtml.replace(/<!-- SEO:START -->[\s\S]*?<!-- SEO:END -->/, platformSeoBlock()));
   }
   res.setHeader("X-Robots-Tag", "noindex, nofollow, noarchive");
