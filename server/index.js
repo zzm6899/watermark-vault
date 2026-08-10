@@ -382,7 +382,7 @@ function gallerySeoBlock(req, album, tenantSlug) {
   return `<!-- SEO:START -->
     <title>${title}</title>
     <meta name="description" content="${description}" />
-    <meta name="robots" content="noindex, nofollow, noarchive" />
+    <meta name="robots" content="noindex, follow, max-image-preview:large" />
     <link rel="canonical" href="${canonicalUrl}" />
     <meta property="og:site_name" content="${escapeHtml(brand)}" />
     <meta property="og:title" content="${title}" />
@@ -10881,7 +10881,7 @@ app.get("*", (req, res) => {
       const db = readDb();
       const chosen = findAlbumBySlugOrId(db, identifier);
       if (chosen && chosen.album.enabled !== false && !albumAccessWindow(chosen.album, Date.now(), galleryTimezone(db, chosen.tenantSlug)).galleryExpired) {
-        res.setHeader("X-Robots-Tag", "noindex, nofollow, noarchive");
+        res.setHeader("X-Robots-Tag", "noindex, follow, max-image-preview:large");
         return res.type("html").send(portfolioIndexHtml.replace(/<!-- SEO:START -->[\s\S]*?<!-- SEO:END -->/, gallerySeoBlock(req, chosen.album, chosen.tenantSlug)));
       }
     }
