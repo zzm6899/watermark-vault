@@ -6,7 +6,7 @@ import { Switch } from "@/components/ui/switch";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { getBookings, getAlbums, getSettings, updateAlbum, addAlbum, updateBooking, getMobileTenantSession, setMobileTenantSession, isLoggedIn, logout } from "@/lib/storage";
-import { uploadPhotosToServer, isSupportedUploadFile, isSupportedPhotoSource, recheckServer, sendEmail, sendTenantEmail, fetchTenantMobileData, saveTenantAlbum, autoCullAlbum, tenantLogout, verifyTenantSession, verifyAdminSession, adminAuthHeaders, NATIVE_API_ORIGIN, type UploadedPhotoResult } from "@/lib/api";
+import { uploadPhotosToServer, isSupportedUploadFile, isSupportedPhotoSource, recheckServer, sendEmail, sendTenantEmail, fetchTenantMobileData, saveTenantAlbum, autoCullAlbum, tenantLogout, verifyTenantSession, verifyAdminSession, adminAuthHeaders, NATIVE_API_ORIGIN, PhotoUploadError, type UploadedPhotoResult } from "@/lib/api";
 import { queueOfflineCapture, getOfflineQueue, useOfflineUploadQueue, type OfflineCaptureItem } from "@/lib/usePwa";
 import { generateThumbnail, formatSpeed } from "@/lib/image-utils";
 import CameraUsb from "@/plugins/camera-usb";
@@ -37,6 +37,7 @@ function todayStr(): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 const FTP_SETTINGS_KEY = "cameraFtpSettings:v1";
+const CAPTURE_TARGET_KEY = "cameraCaptureTarget:v1";
 const FTP_JPEG_EXTENSIONS = new Set([".jpg", ".jpeg"]);
 const FTP_PROOF_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif", ".tif", ".tiff"]);
 const FTP_RAW_EXTENSIONS = new Set([".nef", ".nrw", ".raw", ".cr2", ".cr3", ".arw", ".dng", ".raf", ".orf", ".rw2"]);
@@ -996,7 +997,7 @@ function MobileCaptureInner() {
   }, []);
 
   const drainFtpImportQueue = useCallback(async () => {
-    if (importBusyRef.current || liveCapturePausedRef.current) return;
+    if (importBusyRef.current || liveCapturePausedRef.current || !targetAlbumRef.current) return;
     while (ftpImportQueueRef.current.length > 0) {
       if (liveCapturePausedRef.current) break;
       const paths = ftpImportQueueRef.current.splice(0).flat();
@@ -1058,9 +1059,8 @@ function MobileCaptureInner() {
       CameraFtp.status().then(setFtpStatus).catch(() => {});
     }, 2000);
     const setup = async () => {
-      listenerHandle = await CameraFtp.addListener("newFiles", async (event) => {
-        const files: CameraFtpFile[] = event?.files || [];
-        if (!files.length || !targetAlbumRef.current) return;
+      const queueFtpFiles = (files: CameraFtpFile[]) => {
+        if (!files.length) return;
         const proofFiles = files.filter(file => {
           const name = file.name || filenameFromFtpPath(file.localPath || file.path || "");
           return isProofableFtpName(name, jpegOnly);
@@ -1080,12 +1080,17 @@ function MobileCaptureInner() {
             "warning"
           );
         }
-        const paths = proofFiles.map(f => f.localPath || f.path).filter((path): path is string => Boolean(path));
+        const queuedPaths = new Set(ftpImportQueueRef.current.flat());
+        const paths = proofFiles.map(f => f.localPath || f.path).filter((path): path is string => Boolean(path) && !queuedPaths.has(path));
         if (paths.length === 0) return;
         ftpImportQueueRef.current.push(paths);
         setFtpQueueSize(ftpImportQueueRef.current.reduce((sum, batch) => sum + batch.length, 0));
-        drainFtpImportQueue();
-      });
+        if (targetAlbumRef.current) drainFtpImportQueue();
+        else setQuietCaptureStatus("Photos waiting", `${countLabel(paths.length, "photo")} received. Select a booking album to upload.`, "warning");
+      };
+      listenerHandle = await CameraFtp.addListener("newFiles", async (event) => queueFtpFiles(event?.files || []));
+      const pending = await CameraFtp.listFiles({ limit: 500 }).catch(() => ({ files: [] as CameraFtpFile[] }));
+      queueFtpFiles(pending.files || []);
       statusHandle = await CameraFtp.addListener("statusChanged", (status) => {
         setFtpStatus(status);
         if (status.clients?.length) {
@@ -1146,6 +1151,7 @@ function MobileCaptureInner() {
     const album = getOrCreateAlbum(booking);
     setTargetAlbum(album);
     targetAlbumRef.current = album;
+    try { localStorage.setItem(CAPTURE_TARGET_KEY, JSON.stringify({ bookingId: booking.id, tenantSlug: tenantSession?.slug || null })); } catch { /* unavailable */ }
     setUploadedCount(0);
     setImportSpeed(null);
     setQuietCaptureStatus("Session ready", `${booking.clientName} · ${formatDate(booking.date)}`, "idle");
@@ -1157,15 +1163,22 @@ function MobileCaptureInner() {
     );
     if (!existing) { sendClientNotification("album-created"); emailSentRef.current = true; }
     if (isNative) checkCamera();
-  }, [albums, checkCamera, getOrCreateAlbum, isNative, sendClientNotification, setQuietCaptureStatus]);
+    if (ftpImportQueueRef.current.length > 0) drainFtpImportQueue();
+  }, [albums, checkCamera, drainFtpImportQueue, getOrCreateAlbum, isNative, sendClientNotification, setQuietCaptureStatus, tenantSession?.slug]);
 
   useEffect(() => {
     if (selectedBooking || bookings.length === 0) return;
-    const bookingId = new URLSearchParams(window.location.search).get("bookingId");
+    let bookingId = new URLSearchParams(window.location.search).get("bookingId");
+    if (!bookingId) {
+      try {
+        const saved = JSON.parse(localStorage.getItem(CAPTURE_TARGET_KEY) || "null");
+        if ((saved?.tenantSlug || null) === (tenantSession?.slug || null)) bookingId = saved?.bookingId || null;
+      } catch { /* unavailable */ }
+    }
     if (!bookingId) return;
     const booking = bookings.find((bk) => bk.id === bookingId);
     if (booking) selectBooking(booking);
-  }, [bookings, selectedBooking, selectBooking]);
+  }, [bookings, selectedBooking, selectBooking, tenantSession?.slug]);
 
   const importCameraFiles = async (handles: number[]) => {
     const album = targetAlbumRef.current;
@@ -1354,27 +1367,41 @@ function MobileCaptureInner() {
     const newPhotos: Photo[] = [];
     let queuedOfflineCount = 0;
     try {
-      for (let start = 0; start < proofPaths.length; start += 5) {
-        const chunkPaths = proofPaths.slice(start, start + 5);
-        const importResult = await CameraFtp.importFiles({ paths: chunkPaths });
+      // Metadata-only imports avoid Base64's ~33% expansion and the extra full
+      // memory copies on Android. Fifteen proof JPEGs fill the uploader's three
+      // concurrent five-file workers while still bounding a burst's memory use.
+      const FTP_IMPORT_CHUNK_SIZE = 15;
+      for (let start = 0; start < proofPaths.length; start += FTP_IMPORT_CHUNK_SIZE) {
+        const chunkPaths = proofPaths.slice(start, start + FTP_IMPORT_CHUNK_SIZE);
+        const importResult = await CameraFtp.importFiles({ paths: chunkPaths, includeBase64: false });
         const imported = importResult?.files ?? [];
-        const decodedFiles: File[] = [];
-
-        for (const f of imported) {
-          if (!f.base64) continue;
+        const decodedFiles = (await Promise.all(imported.map(async (f) => {
+          const name = f.name || f.localPath?.split(/[\\/]/).pop() || `ftp_${Date.now()}.jpg`;
+          const mimeType = f.mimeType || "image/jpeg";
           try {
-            const byteChars = atob(f.base64);
-            const byteArr = new Uint8Array(byteChars.length);
-            for (let b = 0; b < byteChars.length; b++) byteArr[b] = byteChars.charCodeAt(b);
-            const blob = new Blob([byteArr], { type: f.mimeType || "image/jpeg" });
-            decodedFiles.push(new File([blob], f.name || f.localPath?.split(/[\\/]/).pop() || `ftp_${Date.now()}.jpg`, {
-              type: f.mimeType || "image/jpeg",
-              lastModified: f.dateModified || Date.now(),
-            }));
-          } catch (err) {
-            console.error("FTP decode error:", err);
+            if (!f.localPath) throw new Error("Missing local FTP path");
+            const localResponse = await fetch(Capacitor.convertFileSrc(f.localPath));
+            if (!localResponse.ok) throw new Error(`Local file read failed (${localResponse.status})`);
+            const blob = await localResponse.blob();
+            return new File([blob], name, { type: mimeType, lastModified: f.dateModified || Date.now() });
+          } catch (directErr) {
+            // Some vendor WebViews restrict fetch() for Capacitor file URLs.
+            // Fall back one file at a time so the normal fast path stays lean.
+            console.warn("Direct FTP file read unavailable; using bridge fallback:", directErr);
+            try {
+              const fallback = await CameraFtp.importFiles({ paths: [f.localPath || f.path], includeBase64: true });
+              const encoded = fallback.files?.[0];
+              if (!encoded?.base64) return null;
+              const byteChars = atob(encoded.base64);
+              const byteArr = new Uint8Array(byteChars.length);
+              for (let b = 0; b < byteChars.length; b++) byteArr[b] = byteChars.charCodeAt(b);
+              return new File([byteArr], name, { type: mimeType, lastModified: f.dateModified || Date.now() });
+            } catch (fallbackErr) {
+              console.error("FTP file read failed:", fallbackErr);
+              return null;
+            }
           }
-        }
+        }))).filter((file): file is File => file !== null);
 
         if (decodedFiles.length === 0) continue;
         decodedFiles.sort((a, b) => a.name.localeCompare(b.name));
@@ -1763,7 +1790,24 @@ function MobileCaptureInner() {
       setUploadedCount(p => p + newPhotos.length);
       sessionUploadedRef.current = true;
       queueCaptureSummary({ added: results.length });
-    } catch { toast.error("Failed to flush offline queue"); }
+    } catch (error) {
+      // Clearing the visible queue before uploading makes the progress state
+      // responsive, but every file must be restored if the request aborts.
+      setOfflineQueue(current => {
+        const known = new Set(current.map(file => `${file.name}:${file.size}:${file.lastModified}`));
+        return [...files.filter(file => !known.has(`${file.name}:${file.size}:${file.lastModified}`)), ...current];
+      });
+      if (error instanceof PhotoUploadError && error.kind === "authentication") {
+        setQuietCaptureStatus("Sign-in required", "Queued photos are safe. Sign in again, then tap Retry.", "warning");
+        toast.error("Session expired — queued photos were kept. Sign in again, then retry.");
+      } else if (error instanceof PhotoUploadError) {
+        setQuietCaptureStatus("Upload rejected", "Queued photos were kept. Check the file and server settings.", "warning");
+        toast.error(error.message);
+      } else {
+        setQuietCaptureStatus("Upload paused", "Queued photos were kept for another retry.", "warning");
+        toast.error("Upload failed — queued photos were kept");
+      }
+    }
     finally { setUploading(false); setUploadSpeed(null); }
   };
 
@@ -1882,7 +1926,7 @@ function MobileCaptureInner() {
                   : bk.status === "completed" ? "border-emerald-400/30 text-emerald-300 bg-emerald-400/10"
                   : "border-white/10 text-white/50 bg-white/[0.05]"
                 }`}>
-                  {bk.status}
+                  {bk.status === "pending" ? "awaiting confirmation" : bk.status}
                 </span>
                 {photoCount > 0 && (
                   <span className="inline-flex items-center gap-0.5 text-[9px] font-body text-muted-foreground/70">
@@ -2117,6 +2161,8 @@ function MobileCaptureInner() {
             if (sessionUploadedRef.current && notifyClient) sendClientNotification("photos-uploaded", uploadedCount);
             sessionUploadedRef.current = false;
             setSelectedBooking(null); setTargetAlbum(null); setUploadedCount(0);
+            targetAlbumRef.current = null;
+            try { localStorage.removeItem(CAPTURE_TARGET_KEY); } catch { /* unavailable */ }
             setHeldRawCount(0); setLastHeldRawName("");
             if (watching) { setWatching(false); CameraUsb.stopWatching().catch(() => {}); }
           }}
@@ -2146,6 +2192,24 @@ function MobileCaptureInner() {
             <Settings2 className="w-4 h-4" />
           </button>
         </div>
+      </div>
+
+      <div className="mt-3 rounded-xl border border-cyan-300/20 bg-cyan-400/[0.06] p-3">
+        <label className="mb-1.5 block text-[10px] font-body uppercase tracking-[0.18em] text-cyan-100/65">Upload destination</label>
+        <select
+          value={selectedBooking.id}
+          onChange={event => {
+            const booking = bookings.find(item => item.id === event.target.value);
+            if (booking) selectBooking(booking);
+          }}
+          className="h-10 w-full rounded-lg border border-cyan-300/20 bg-[#0e1720] px-3 text-sm font-body text-white focus:outline-none focus:ring-1 focus:ring-cyan-300/50"
+        >
+          {bookings.map(booking => {
+            const album = albums.find(item => item.bookingId === booking.id);
+            return <option key={booking.id} value={booking.id}>{booking.clientName} · {booking.type} · {formatDate(booking.date)} · {album?.photos.length || 0} photos</option>;
+          })}
+        </select>
+        <p className="mt-1.5 text-[10px] font-body text-white/45">New FTP and USB photos upload straight to this booking album for preview.</p>
       </div>
 
       <div className="mt-4 capture-hero-panel">
@@ -2696,6 +2760,7 @@ function MobileCaptureInner() {
               <div className="rounded-lg border border-border/50 bg-background/40 p-3 space-y-1.5">
                 <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground">Nikon Z6III / ZR setup</p>
                 <p className="text-xs font-body text-muted-foreground">Network Menu &gt; Connect to FTP Server &gt; Network Settings &gt; Create Profile &gt; Connection Wizard. Choose FTP, enter the host/port/user/password above, set PASV mode ON, then Auto Upload ON.</p>
+                <p className="text-xs font-body text-muted-foreground">For the quickest proofs, shoot RAW+JPEG, choose a medium JPEG, then set Options &gt; Upload RAW+JPEG As &gt; JPEG only. The NEF stays on the camera card for final editing.</p>
                 <p className="text-[10px] font-body text-muted-foreground/70">If the phone hotspot is active, use the host shown above. If the camera creates Wi-Fi, join it in Android Wi-Fi settings first.</p>
               </div>
 

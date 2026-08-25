@@ -169,11 +169,29 @@ class CameraFtpPlugin : Plugin() {
     }
 
     @PluginMethod
+    fun listFiles(call: PluginCall) {
+        val limit = (call.getInt("limit", 500) ?: 500).coerceIn(1, 2000)
+        val files = ftpRoot().walkTopDown()
+            .filter { it.isFile }
+            .sortedBy { it.lastModified() }
+            .take(limit)
+            .toList()
+        call.resolve(JSObject().apply {
+            put("files", JSArray().apply { files.forEach { put(fileObject(it)) } })
+        })
+    }
+
+    @PluginMethod
     fun importFiles(call: PluginCall) {
         val pathsArray = call.getArray("paths") ?: run {
             call.reject("Missing paths")
             return
         }
+        // Capacitor can expose app-local files through convertFileSrc().  Let the
+        // web layer request metadata only so large camera JPEGs do not have to be
+        // Base64 encoded, copied over the bridge, and decoded again.  Base64 is
+        // retained as an explicit compatibility fallback for older WebViews.
+        val includeBase64 = call.getBoolean("includeBase64", true) ?: true
 
         clientExecutor.execute {
             try {
@@ -186,7 +204,7 @@ class CameraFtpPlugin : Plugin() {
                     files.put(JSObject().apply {
                         put("localPath", file.absolutePath)
                         put("name", file.name)
-                        put("base64", encodeFileBase64(file))
+                        if (includeBase64) put("base64", encodeFileBase64(file))
                         put("mimeType", mimeTypeFor(file.name))
                         put("size", file.length())
                         put("dateModified", file.lastModified())

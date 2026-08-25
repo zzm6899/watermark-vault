@@ -7,6 +7,28 @@ function source(relativePath: string): string {
 }
 
 describe("booking payment flow regressions", () => {
+  it("keeps the active booking pointer isolated to one browser tab", () => {
+    const bookingSource = source("src/pages/Booking.tsx");
+    const modifySource = source("src/pages/BookingModify.tsx");
+
+    expect(bookingSource).toContain('sessionStorage.getItem("lastBookingId")');
+    expect(bookingSource).toContain('sessionStorage.setItem("lastBookingId", booking.id)');
+    expect(bookingSource).not.toMatch(/localStorage\.(?:getItem|setItem|removeItem)\("lastBookingId"/);
+    expect(modifySource).toContain('sessionStorage.removeItem("lastBookingId")');
+  });
+
+  it("recovers Android FTP files and keeps an explicit booking-album destination", () => {
+    const captureSource = source("src/pages/MobileCapture.tsx");
+    const pluginSource = source("android/app/src/main/java/app/lovable/cameraftp/CameraFtpPlugin.kt");
+
+    expect(captureSource).toContain('const CAPTURE_TARGET_KEY = "cameraCaptureTarget:v1"');
+    expect(captureSource).toContain("CameraFtp.listFiles({ limit: 500 })");
+    expect(captureSource).toContain("Photos waiting");
+    expect(captureSource).toContain("Upload destination");
+    expect(captureSource).toContain("New FTP and USB photos upload straight to this booking album for preview.");
+    expect(pluginSource).toContain("fun listFiles(call: PluginCall)");
+  });
+
   it("reuses the booking already holding the slot for a card retry", () => {
     const bookingSource = source("src/pages/Booking.tsx");
     const paymentHandler = bookingSource.slice(

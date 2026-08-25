@@ -1195,6 +1195,7 @@ function registerRoutes(app, { readDb, writeDb, readLicenseKeys, writeLicenseKey
           depositAmount: booking.depositAmount || 0, paymentMethod: "stripe",
           paymentStatus: booking.paymentStatus, paymentKind: result.paymentKind,
           status: booking.status, modifyToken: booking.modifyToken, bookingId: booking.id,
+          paymentReference: booking.paymentReference,
           appBaseUrl: String(process.env.APP_BASE_URL || `https://${String(process.env.APP_HOSTS || "book.zacmclients.photos").split(",")[0].trim()}`).replace(/\/$/, ""),
           brandName: profile.businessName || profile.brandName || profile.name || "PhotoFlow",
         }).catch(error => console.error(`Reconciled booking receipt failed for ${bookingId}:`, error?.message || error));
@@ -1255,6 +1256,7 @@ function registerRoutes(app, { readDb, writeDb, readLicenseKeys, writeLicenseKey
             status: booking.status,
             modifyToken: booking.modifyToken,
             bookingId: booking.id,
+            paymentReference: booking.paymentReference,
             appBaseUrl: String(process.env.APP_BASE_URL || `https://${String(process.env.APP_HOSTS || "book.zacmclients.photos").split(",")[0].trim()}`).replace(/\/$/, ""),
             brandName: profile.businessName || profile.brandName || profile.name || "PhotoFlow",
           }).then(emailResult => {
@@ -1742,6 +1744,7 @@ function registerRoutes(app, { readDb, writeDb, readLicenseKeys, writeLicenseKey
               status: bookings[idx].status,
               modifyToken: bookings[idx].modifyToken,
               bookingId: bookings[idx].id,
+              paymentReference: bookings[idx].paymentReference,
               appBaseUrl: String(process.env.APP_BASE_URL || `https://${String(process.env.APP_HOSTS || "book.zacmclients.photos").split(",")[0].trim()}`).replace(/\/$/, ""),
               brandName: emailProfile.businessName || emailProfile.brandName || emailProfile.name || "PhotoFlow",
             }).then(result => {

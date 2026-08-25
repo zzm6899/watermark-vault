@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildBookingCalendarUrl,
+  bookingNeedsOutstandingPayment,
   contactQuestionRole,
   filterFutureBookingSlots,
   generateBookingTimeSlots,
@@ -10,6 +11,7 @@ import {
   isBookingPaymentConflictError,
   isBookingPaymentVerificationPending,
   getPublicCustomQuestions,
+  hasExpiredBookingPaymentHold,
   isPastBookingDate,
   isPastBookingSlot,
   readAvailableSlots,
@@ -104,6 +106,14 @@ describe("booking confirmation amounts", () => {
     expect(isBookingPaymentConflictError("PAYMENT_STATE_CONFLICT")).toBe(true);
     expect(isBookingPaymentConflictError("STRIPE_STATUS_UNAVAILABLE")).toBe(true);
     expect(isBookingPaymentConflictError("BOOKING_HOLD_EXPIRED")).toBe(false);
+  });
+
+  it("excludes expired holds and fully-covered deposits from needs-payment counts", () => {
+    const now = Date.parse("2026-08-26T00:00:00.000Z");
+    expect(hasExpiredBookingPaymentHold({ holdExpiresAt: "2026-08-25T00:00:00.000Z", paymentStatus: "unpaid" }, now)).toBe(true);
+    expect(bookingNeedsOutstandingPayment({ status: "pending", paymentStatus: "unpaid", paymentAmount: 30, depositAmount: 15, holdExpiresAt: "2026-08-25T00:00:00.000Z" }, now)).toBe(false);
+    expect(bookingNeedsOutstandingPayment({ status: "confirmed", paymentStatus: "deposit-paid", paymentAmount: 30, depositAmount: 30 }, now)).toBe(false);
+    expect(bookingNeedsOutstandingPayment({ status: "confirmed", paymentStatus: "deposit-paid", paymentAmount: 50, depositAmount: 20 }, now)).toBe(true);
   });
 });
 

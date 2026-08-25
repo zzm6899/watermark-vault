@@ -16,6 +16,34 @@ test("admin booking mutations are narrow and share the Stripe booking lock", () 
   assert.match(section, /withCheckoutResourceLock\(bookingCheckoutResourceLockKey\("main", bookingId\)/);
   assert.doesNotMatch(section.slice(0, section.indexOf("function sanitizeAdminBookingChanges")), /stripeSessionId|modifyToken|paymentNeedsReview|archivedAt/);
   assert.match(section, /const previous = bookings\[index\];[\s\S]*const booking = \{ \.\.\.previous, \.\.\.changes/);
+  assert.match(section, /ADMIN_BOOKING_SERVER_MANAGED_FIELDS/);
+  assert.match(section, /PAYMENT_OPERATION_REQUIRED/);
+  assert.match(section, /bookingConflicts\(booking, bookings, eventTypes/);
+});
+
+test("generic collection writes cannot overwrite bookings and merge concurrent invoice additions safely", () => {
+  const section = source.slice(source.indexOf('app.put("/api/store/:key"'), source.indexOf('app.delete("/api/store/:key"'));
+  assert.match(section, /key === DB_KEYS\.BOOKINGS[\s\S]*atomic booking endpoints/);
+  assert.match(section, /key === DB_KEYS\.INVOICES/);
+  assert.match(section, /hasAdditions[\s\S]*existing\.filter/);
+  assert.match(section, /usedNumbers[\s\S]*INV-/);
+});
+
+test("invoice records use atomic endpoints and legacy data has an audited repair path", () => {
+  for (const contract of [
+    'app.get("/api/admin/invoices"',
+    'app.post("/api/admin/invoices"',
+    'app.put("/api/admin/invoices/:id"',
+    'app.delete("/api/admin/invoices/:id"',
+    'app.get("/api/admin/data-integrity"',
+    'app.post("/api/admin/data-integrity/repair"',
+  ]) assert.equal(source.includes(contract), true, `${contract} must exist`);
+  const section = source.slice(source.indexOf("const INVOICE_SERVER_MANAGED_FIELDS"), source.indexOf("// ── Invoice share endpoint"));
+  assert.match(section, /allocateInvoiceNumber/);
+  assert.match(section, /invoice-store:main/);
+  assert.match(section, /INVOICE_CHECKOUT_ACTIVE/);
+  assert.match(section, /wv_data_repair_audit/);
+  assert.match(section, /Expired unpaid booking hold/);
 });
 
 test("archive mutations lock every requested booking before the canonical re-read", () => {

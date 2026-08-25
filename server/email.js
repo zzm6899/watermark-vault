@@ -76,6 +76,16 @@ function formatDuration(mins) {
   return `${mins}m`;
 }
 
+// Keep client-facing references short. The canonical booking ID remains in
+// links and storage; it should never be printed as the payment reference.
+function bookingEmailReference(bookingId, paymentReference = "") {
+  const supplied = String(paymentReference || "").trim();
+  if (supplied && supplied.length <= 16 && !/^BK-\d{8}-/i.test(supplied)) return supplied;
+  const source = supplied || String(bookingId || "");
+  const suffix = source.replace(/[^a-z0-9]/gi, "").slice(-5).toUpperCase() || "REF";
+  return `BK-${suffix}`;
+}
+
 function escapeHtml(value) {
   return String(value == null ? "" : value)
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
@@ -247,11 +257,12 @@ function prepareCustomEmail({ subject, html, text, brandName = DEFAULT_EMAIL_BRA
 // ── Email HTML builder ────────────────────────────────────────
 function buildBookingEmailHtml({ clientName, eventTitle, date, time, duration, location,
   price, depositAmount, paymentMethod, remainingAmount, isFree, modifyUrl, bookingId,
-  calendarUrl, trackingPixelUrl, unsubscribeUrl, status, paymentKind, brandName }) {
+  paymentReference, calendarUrl, trackingPixelUrl, unsubscribeUrl, status, paymentKind, brandName }) {
+  const reference = bookingEmailReference(bookingId, paymentReference);
   const rows = bookingSummaryRows({ eventTitle, date, time, duration, location, price, depositAmount, paymentMethod, remainingAmount, isFree, paymentKind });
   const isConfirmed = status === "confirmed";
   const bankNote = paymentMethod === "bank"
-    ? buildCallout("Bank transfer pending", `Use booking reference ${bookingId} as the payment description. Your booking will be confirmed once payment is received.`, "warning")
+    ? buildCallout("Bank transfer pending", `Use booking reference ${reference} as the payment description. Your booking will be confirmed once payment is received.`, "warning")
     : "";
   return buildEmailDocument({
     title: isConfirmed ? "Booking confirmed" : "Booking received",
@@ -267,7 +278,7 @@ function buildBookingEmailHtml({ clientName, eventTitle, date, time, duration, l
     secondaryAction: safeHttpUrl(modifyUrl) && safeHttpUrl(calendarUrl)
       ? { label: "Add to Google Calendar", url: calendarUrl }
       : null,
-    reference: bookingId,
+    reference,
     brandName,
     unsubscribeUrl,
     trackingPixelUrl,
@@ -305,8 +316,9 @@ function bookingSummaryRows({ eventTitle, date, time, duration, location, price,
 function buildBookingEmailText(params) {
   const isConfirmed = params.status === "confirmed";
   const rows = bookingSummaryRows(params);
+  const reference = bookingEmailReference(params.bookingId, params.paymentReference);
   const sections = params.paymentMethod === "bank"
-    ? [`Bank transfer pending. Use booking reference ${params.bookingId} as the payment description. Your booking will be confirmed once payment is received.`]
+    ? [`Bank transfer pending. Use booking reference ${reference} as the payment description. Your booking will be confirmed once payment is received.`]
     : [];
   return buildEmailText({
     title: isConfirmed ? "Booking confirmed" : "Booking received",
@@ -318,7 +330,7 @@ function buildBookingEmailText(params) {
       safeHttpUrl(params.modifyUrl) ? { label: "View or manage booking", url: params.modifyUrl } : null,
       safeHttpUrl(params.calendarUrl) ? { label: "Add to Google Calendar", url: params.calendarUrl } : null,
     ].filter(Boolean),
-    reference: params.bookingId,
+    reference,
     unsubscribeUrl: params.unsubscribeUrl,
   });
 }
@@ -343,7 +355,7 @@ async function sendBookingConfirmationEmail({
   to, clientName, eventTitle, date, time, duration, location = "",
   price = 0, depositAmount = 0, paymentMethod = "none",
   paymentKind = null,
-  modifyToken, bookingId, appBaseUrl, store, status = "pending", paymentStatus = "unpaid",
+  modifyToken, bookingId, paymentReference = "", appBaseUrl, store, status = "pending", paymentStatus = "unpaid",
   transport = null, fromAddress = null, brandName = DEFAULT_EMAIL_BRAND,
 }) {
   const t = transport || getTransporter();
@@ -373,7 +385,7 @@ async function sendBookingConfirmationEmail({
   const messageParams = {
     clientName, eventTitle, date, time, duration, location,
     price, depositAmount, paymentMethod, remainingAmount,
-    isFree, modifyUrl, bookingId, calendarUrl, trackingPixelUrl, unsubscribeUrl, status, paymentKind, brandName,
+    isFree, modifyUrl, bookingId, paymentReference, calendarUrl, trackingPixelUrl, unsubscribeUrl, status, paymentKind, brandName,
   };
   const html = buildBookingEmailHtml(messageParams);
   const text = buildBookingEmailText(messageParams);
@@ -474,6 +486,7 @@ function registerRoutes(app, store, options = {}) {
       paymentKind: booking.lastPaymentKind || (booking.paymentStatus === "deposit-paid" ? "deposit" : booking.paymentStatus === "paid" ? "full" : null),
       modifyToken: booking.modifyToken,
       bookingId: booking.id,
+      paymentReference: booking.paymentReference,
       appBaseUrl,
       store,
       status: booking.status,
@@ -606,6 +619,7 @@ function registerRoutes(app, store, options = {}) {
       depositPaid: booking.depositPaidAt ? (booking.depositAmount || 0) : 0,
       remaining,
       bookingId: booking.id,
+      paymentReference: booking.paymentReference,
       modifyUrl,
       calendarUrl,
       trackingPixelUrl,
@@ -662,7 +676,8 @@ function registerRoutes(app, store, options = {}) {
     if (!to || !clientName) return res.status(400).json({ ok: false, error: "Missing required fields" });
     const appBaseUrl = req.body.appBaseUrl || `${req.protocol}://${req.get("host")}`;
     const modifyUrl = modifyToken && appBaseUrl ? `${appBaseUrl}/booking/modify/${modifyToken}` : null;
-    const params = { clientName, eventTitle, preferredDate, preferredStartTime, preferredEndTime, bookingId, modifyUrl, brandName: storeBrandName(store) };
+    const acceptedBooking = (store?.get("wv_bookings") || []).find(booking => booking.id === bookingId);
+    const params = { clientName, eventTitle, preferredDate, preferredStartTime, preferredEndTime, bookingId, paymentReference: acceptedBooking?.paymentReference, modifyUrl, brandName: storeBrandName(store) };
     const html = buildEnquiryAcceptedHtml(params);
     const text = buildEnquiryEmailText("accepted", params);
     try {
@@ -698,7 +713,8 @@ function registerRoutes(app, store, options = {}) {
 // ── Reminder Email HTML ───────────────────────────────────
 function buildReminderEmailHtml({ clientName, eventTitle, date, time, duration,
   isPaymentReminder, paymentStatus, totalPrice, depositPaid, remaining,
-  bookingId, modifyUrl, calendarUrl, trackingPixelUrl, brandName }) {
+  bookingId, paymentReference, modifyUrl, calendarUrl, trackingPixelUrl, brandName }) {
+  const reference = bookingEmailReference(bookingId, paymentReference);
   const due = Number(remaining) > 0 ? Number(remaining) : Number(totalPrice) || 0;
   const rows = [
     { label: "Session", value: eventTitle || "Booking", emphasis: true },
@@ -710,7 +726,7 @@ function buildReminderEmailHtml({ clientName, eventTitle, date, time, duration,
     isPaymentReminder ? { label: "Amount due", value: formatMoney(due), tone: "warning", emphasis: true } : null,
   ].filter(Boolean);
   const callout = isPaymentReminder
-    ? buildCallout("Payment outstanding", `Please use booking reference ${bookingId} as the payment description. If you’ve already paid, no action is needed.`, "warning")
+    ? buildCallout("Payment outstanding", `Please use booking reference ${reference} as the payment description. If you’ve already paid, no action is needed.`, "warning")
     : buildCallout("Your session is coming up", "We’re looking forward to seeing you. Please review the date and time below and arrive ready for your session.", "success");
   return buildEmailDocument({
     title: isPaymentReminder ? "Payment reminder" : "Booking reminder",
@@ -726,13 +742,14 @@ function buildReminderEmailHtml({ clientName, eventTitle, date, time, duration,
     secondaryAction: !isPaymentReminder && safeHttpUrl(modifyUrl) && safeHttpUrl(calendarUrl)
       ? { label: "Add to Google Calendar", url: calendarUrl }
       : null,
-    reference: bookingId,
+    reference,
     trackingPixelUrl,
     brandName,
   });
 }
 
 function buildReminderEmailText(params) {
+  const reference = bookingEmailReference(params.bookingId, params.paymentReference);
   const due = Number(params.remaining) > 0 ? Number(params.remaining) : Number(params.totalPrice) || 0;
   const rows = [
     { label: "Session", value: params.eventTitle || "Booking" },
@@ -748,12 +765,12 @@ function buildReminderEmailText(params) {
     greeting: `Hi ${params.clientName || "there"},`,
     intro: params.isPaymentReminder ? "Payment is still outstanding for your booking." : "Your photography session is coming up.",
     rows,
-    sections: params.isPaymentReminder ? [`Please use booking reference ${params.bookingId} as the payment description.`] : [],
+    sections: params.isPaymentReminder ? [`Please use booking reference ${reference} as the payment description.`] : [],
     actions: [
       safeHttpUrl(params.modifyUrl) ? { label: "View or manage booking", url: params.modifyUrl } : null,
       !params.isPaymentReminder && safeHttpUrl(params.calendarUrl) ? { label: "Add to Google Calendar", url: params.calendarUrl } : null,
     ].filter(Boolean),
-    reference: params.bookingId,
+    reference,
   });
 }
 
@@ -771,7 +788,7 @@ function buildEnquiryReceivedHtml({ clientName, eventTitle, preferredDate, prefe
   });
 }
 
-function buildEnquiryAcceptedHtml({ clientName, eventTitle, preferredDate, preferredStartTime, preferredEndTime, bookingId, modifyUrl, brandName }) {
+function buildEnquiryAcceptedHtml({ clientName, eventTitle, preferredDate, preferredStartTime, preferredEndTime, bookingId, paymentReference, modifyUrl, brandName }) {
   const rows = enquirySummaryRows({ eventTitle, preferredDate, preferredStartTime, preferredEndTime });
   return buildEmailDocument({
     title: "Enquiry accepted",
@@ -780,7 +797,7 @@ function buildEnquiryAcceptedHtml({ clientName, eventTitle, preferredDate, prefe
     intro: "Good news — we’d love to work with you. Your booking has been created with the details below.",
     bodyHtml: `${buildSummaryCard(rows)}${buildCallout("Next steps", "We’ll be in touch to confirm the remaining details and payment arrangements.", "success")}`,
     primaryAction: safeHttpUrl(modifyUrl) ? { label: "View your booking", url: modifyUrl } : null,
-    reference: bookingId,
+    reference: bookingEmailReference(bookingId, paymentReference),
     brandName,
   });
 }
@@ -821,7 +838,7 @@ function buildEnquiryEmailText(kind, params) {
     intro: "Good news — we’d love to work with you. Your booking has been created.",
     rows,
     actions: safeHttpUrl(params.modifyUrl) ? [{ label: "View your booking", url: params.modifyUrl }] : [],
-    reference: params.bookingId,
+    reference: bookingEmailReference(params.bookingId, params.paymentReference),
   });
   return buildEmailText({
     title: "An update on your enquiry",
@@ -900,6 +917,7 @@ function buildBookingUpdateEmail({
   duration,
   location,
   bookingId,
+  paymentReference,
   modifyUrl,
   previousDate,
   previousTime,
@@ -932,7 +950,7 @@ function buildBookingUpdateEmail({
       intro,
       bodyHtml: `${buildSummaryCard(rows)}${callout}`,
       primaryAction: safeHttpUrl(modifyUrl) ? { label: "View booking details", url: modifyUrl } : null,
-      reference: bookingId,
+      reference: bookingEmailReference(bookingId, paymentReference),
       brandName,
     }),
     text: buildEmailText({
@@ -941,7 +959,7 @@ function buildBookingUpdateEmail({
       intro,
       rows,
       actions: safeHttpUrl(modifyUrl) ? [{ label: "View booking details", url: modifyUrl }] : [],
-      reference: bookingId,
+      reference: bookingEmailReference(bookingId, paymentReference),
     }),
   };
 }
@@ -1086,10 +1104,10 @@ function buildAutomationEmail({ subject, body, booking = {}, brandName = DEFAULT
       title: safeSubject,
       preheader: safeBody.slice(0, 140),
       bodyHtml: `${buildCallout("Message", safeBody)}${buildSummaryCard(rows)}`,
-      reference: booking.id,
+      reference: bookingEmailReference(booking.id, booking.paymentReference),
       brandName,
     }),
-    text: buildEmailText({ title: safeSubject, sections: [safeBody], rows, reference: booking.id }),
+    text: buildEmailText({ title: safeSubject, sections: [safeBody], rows, reference: bookingEmailReference(booking.id, booking.paymentReference) }),
   };
 }
 
@@ -1134,6 +1152,7 @@ module.exports = {
   escapeHtml,
   safeHttpUrl,
   buildEmailDocument,
+  bookingEmailReference,
   prepareCustomEmail,
   buildBookingEmailHtml,
   buildBookingEmailText,

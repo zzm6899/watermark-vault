@@ -80,6 +80,7 @@ const {
   albumAccessWindow,
   bookingAllowsCapabilityMutation,
   bookingBlocksAvailability,
+  bookingConflicts,
   collectUploadFileNames,
   evaluatePublicBookingAttempt,
   galleryPhotoDownloadEntitlement,
@@ -474,7 +475,10 @@ if (!configuredSessionSeed) {
 const ADMIN_SESSION_COOKIE = "wv_admin_session";
 const TENANT_SESSION_COOKIE = "wv_tenant_session";
 const ADMIN_SESSION_TTL_SECONDS = 12 * 60 * 60;
-const ADMIN_NATIVE_TOKEN_TTL_SECONDS = 2 * 60 * 60;
+// A native capture session must comfortably cover a full event day. The old
+// two-hour token could expire mid-shoot while the public health check still
+// reported the server as online, causing uploads to be mislabelled "offline".
+const ADMIN_NATIVE_TOKEN_TTL_SECONDS = 12 * 60 * 60;
 const TENANT_SESSION_TTL_SECONDS = 12 * 60 * 60;
 const GALLERY_SESSION_TTL_SECONDS = 7 * 24 * 60 * 60;
 const NATIVE_APP_ORIGINS = String(process.env.NATIVE_APP_ORIGINS || "")
@@ -1643,8 +1647,40 @@ app.get("/api/store/:key", requireAuth, (req, res) => {
 app.put("/api/store/:key", requireAuth, authenticatedLargeJson, async (req, res) => {
   const db = readDb();
   const key = req.params.key;
+  if (key === DB_KEYS.BOOKINGS) {
+    return res.status(409).json({ error: "Bookings must be changed through the atomic booking endpoints" });
+  }
   let value = stripBakedFields(key, req.body.value);
   value = mergePreservingStoreSecrets(key, db[key], value);
+  if (key === DB_KEYS.INVOICES) {
+    const asString = typeof value === "string";
+    let incoming;
+    try { incoming = asString ? JSON.parse(value) : value; } catch { return res.status(400).json({ error: "Invalid invoices payload" }); }
+    if (!Array.isArray(incoming) || incoming.some(invoice => !invoice || typeof invoice !== "object" || !String(invoice.id || "").trim())) {
+      return res.status(400).json({ error: "Invoices must be an array of identified records" });
+    }
+    const existing = getStoredArray(db, DB_KEYS.INVOICES);
+    const existingIds = new Set(existing.map(invoice => String(invoice.id)));
+    const incomingIds = new Set(incoming.map(invoice => String(invoice.id)));
+    const hasAdditions = incoming.some(invoice => !existingIds.has(String(invoice.id)));
+    // An add/clone based on a stale browser snapshot must not erase invoices
+    // another tab committed after that snapshot was loaded.
+    if (hasAdditions) incoming = [...existing.filter(invoice => !incomingIds.has(String(invoice.id))), ...incoming];
+
+    const usedNumbers = new Map();
+    let nextNumber = Math.max(0, ...incoming.map(invoice => parseInt(String(invoice.number || "").replace(/\D/g, ""), 10) || 0)) + 1;
+    incoming = incoming.map(invoice => {
+      const id = String(invoice.id);
+      let number = String(invoice.number || "").trim();
+      const owner = usedNumbers.get(number);
+      if (!number || (owner && owner !== id)) {
+        do { number = `INV-${String(nextNumber++).padStart(4, "0")}`; } while (usedNumbers.has(number));
+      }
+      usedNumbers.set(number, id);
+      return { ...invoice, number };
+    });
+    value = asString ? JSON.stringify(incoming) : incoming;
+  }
   let calendarCreates = [];
   if (key === DB_KEYS.BOOKINGS) {
     const asString = typeof value === "string";
@@ -4107,6 +4143,11 @@ const aiEnhanceLimiter = rateLimit({ windowMs: 60_000, max: 30, standardHeaders:
 // All values use the same scale as the manual sliders below.
 function presetToEditParams(preset) {
   const presets = {
+    // Live-event defaults: conservative enough for batches of camera JPEGs.
+    natural:     { exposure: 3,  highlights: -18, shadows: 12, contrast: 8,  vibrance: 10, saturation: 0,  warmth: 3,   clarity: 8,  denoise: 5,  sharpness: 48 },
+    indoor:      { exposure: 8,  highlights: -25, shadows: 24, contrast: 5,  vibrance: 8,  saturation: -3, warmth: -4,  clarity: 5,  denoise: 30, sharpness: 42 },
+    concert:     { exposure: 2,  highlights: -38, shadows: 8,  contrast: 24, vibrance: 18, saturation: 5,  warmth: -8,  clarity: 18, denoise: 22, sharpness: 55 },
+    sports:      { exposure: 4,  highlights: -22, shadows: 14, contrast: 18, vibrance: 18, saturation: 3,  warmth: 0,   clarity: 22, denoise: 10, sharpness: 68 },
     // Moody: darker, high contrast, desaturated, cool
     moody:      { exposure: -10, highlights: -25, shadows: 10, contrast: 35, vibrance: -15, saturation: -10, warmth: -15, clarity: 20, denoise: 0, sharpness: 80 },
     // Bright & Airy: lifted, low contrast, warm, pastel
@@ -4197,8 +4238,11 @@ async function applyEditParams(filepath, params, outputPath) {
   // vibrance is a gentler version (boosts muted colours more than already-vivid ones)
   const satFactor = Math.max(0, 1 + (saturation / 100) * 1.2 + (vibrance / 100) * 0.6);
 
-  // Hue rotation for warmth: warmth +100 → +15° (orange), -100 → -15° (blue)
-  const hueShift = (warmth / 100) * 15;
+  // Temperature approximation: adjust red/blue channel gains without rotating
+  // every hue (which made skin and coloured stage lights shift unnaturally).
+  const warmthAmount = Math.max(-1, Math.min(1, warmth / 100));
+  const redGain = 1 + warmthAmount * 0.11;
+  const blueGain = 1 - warmthAmount * 0.11;
 
   // Contrast: linear gain + offset. contrast ±100 → gain 0.5…1.8
   const contrastGain = Math.max(0.3, 1 + (contrast / 100) * 0.6);
@@ -4209,10 +4253,12 @@ async function applyEditParams(filepath, params, outputPath) {
   // sequential lighten-only / darken-only linear op:
   //   highlights < 0 → compress highlights (darken top end)
   //   shadows > 0 → lift shadows (raise black floor)
-  const hlFactor = 1 + (highlights / 100) * 0.3;  // 0.7…1.3
-  const hlOffset = (highlights / 100) * -20;        // negative = pull down brights
-  const shFactor = 1;
-  const shOffset = Math.max(0, (shadows / 100) * 35); // lift floor 0–35
+  const recoverHighlights = Math.max(0, -highlights / 100);
+  const liftHighlights = Math.max(0, highlights / 100);
+  const liftShadows = Math.max(0, shadows / 100);
+  const crushShadows = Math.max(0, -shadows / 100);
+  const toneGain = Math.max(0.65, 1 - recoverHighlights * 0.18 + liftHighlights * 0.08 + crushShadows * 0.08);
+  const toneOffset = recoverHighlights * 8 + liftShadows * 20 - crushShadows * 8;
 
   // Clarity ≈ unsharp mask (positive = local contrast boost, negative = blur)
   const clarityAmount = clarity / 100;  // -1…1
@@ -4225,17 +4271,27 @@ async function applyEditParams(filepath, params, outputPath) {
   const sharpAmount = Math.max(0, sharpness / 100) * 2.5;
 
   // ── Build the Sharp pipeline ──────────────────────────────────────────────
-  let pipeline = sharp(filepath);
+  // Auto-orient from EXIF before editing so portrait JPEGs stay upright after
+  // metadata is rewritten.
+  let pipeline = sharp(filepath).rotate();
 
   // 1. Modulate (brightness, saturation, hue)
-  pipeline = pipeline.modulate({ brightness: brightnessFactor, saturation: Math.max(0.01, satFactor), hue: hueShift });
+  pipeline = pipeline.modulate({ brightness: brightnessFactor, saturation: Math.max(0.01, satFactor) });
+
+  // 1b. Warm/cool channel balance.
+  if (Math.abs(warmthAmount) > 0.01) {
+    pipeline = pipeline.recomb([
+      [redGain, 0, 0],
+      [0, 1, 0],
+      [0, 0, blueGain],
+    ]);
+  }
 
   // 2. Global contrast
   pipeline = pipeline.linear(contrastGain, contrastOffset);
 
-  // 3. Highlight recovery / shadow lift (two sequential linear passes)
-  if (Math.abs(highlights) > 2) pipeline = pipeline.linear(hlFactor, hlOffset);
-  if (shadows > 2)              pipeline = pipeline.linear(1, shOffset);
+  // 3. A single bounded tone pass avoids compounding global linear operations.
+  if (Math.abs(highlights) > 2 || Math.abs(shadows) > 2) pipeline = pipeline.linear(toneGain, toneOffset);
 
   // 4. Clarity — positive = local contrast (CLAHE), negative = gentle blur
   if (clarityAmount > 0.05) {
@@ -4246,7 +4302,7 @@ async function applyEditParams(filepath, params, outputPath) {
 
   // 5. Denoise — median blur if requested
   if (denoiseLevel > 10) {
-    pipeline = pipeline.median(denoiseLevel > 60 ? 3 : 2);
+    pipeline = pipeline.median(denoiseLevel > 60 ? 5 : 3);
   }
 
   // 6. Sharpen
@@ -4254,7 +4310,10 @@ async function applyEditParams(filepath, params, outputPath) {
     pipeline = pipeline.sharpen({ sigma: sharpSigma, m1: sharpAmount * 0.5, m2: sharpAmount });
   }
 
-  await pipeline.jpeg({ quality: 92, progressive: true }).toFile(outputPath);
+  await pipeline
+    .withMetadata({ orientation: 1 })
+    .jpeg({ quality: 91, progressive: true, chromaSubsampling: "4:4:4" })
+    .toFile(outputPath);
 }
 
 // ── XMP preset store ──────────────────────────────────────────────────────────
@@ -4404,14 +4463,30 @@ app.delete("/api/xmp-presets/:id", requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
-// ── Adobe-style Auto exposure analysis ───────────────────────────────────────
-// Replicates Lightroom's "Auto" button logic:
-// Analyses per-channel histograms and tonal statistics to set
-// exposure, highlights, shadows, whites, blacks, contrast, vibrance.
+// ── Smart Auto exposure analysis ─────────────────────────────────────────────
+// A local, deterministic JPEG histogram analysis. This is intentionally
+// conservative for event batches and does not claim to reproduce Adobe.
 async function computeAdobeAutoParams(filepath) {
-  const { channels, dominant } = await sharp(filepath).stats();
+  const { channels } = await sharp(filepath).rotate().stats();
+  const greyStats = await sharp(filepath).rotate().greyscale().stats();
+  const histogram = greyStats.channels[0]?.histogram || [];
+  const totalPixels = histogram.reduce((sum, count) => sum + count, 0);
+  const percentile = (ratio) => {
+    if (!totalPixels) return Math.round(greyStats.channels[0]?.mean || 128);
+    const target = totalPixels * ratio;
+    let seen = 0;
+    for (let value = 0; value < histogram.length; value++) {
+      seen += histogram[value];
+      if (seen >= target) return value;
+    }
+    return 255;
+  };
+  const p05 = percentile(0.05);
+  const p50 = percentile(0.50);
+  const p95 = percentile(0.95);
+  const p99 = percentile(0.99);
 
-  const meanBrightness = (channels[0].mean + channels[1].mean + channels[2].mean) / 3;
+  const meanBrightness = greyStats.channels[0]?.mean || (channels[0].mean + channels[1].mean + channels[2].mean) / 3;
   const meanStd        = (channels[0].stdev + channels[1].stdev + channels[2].stdev) / 3;
 
   // Min/max give us the actual tonal range
@@ -4422,25 +4497,24 @@ async function computeAdobeAutoParams(filepath) {
   // ── Exposure ──────────────────────────────────────────────────────────────
   // Target: mean brightness around 115-125 (slightly above mid-gray 128)
   // Each EV ≈ doubling, so we compute how many stops off from target we are
-  const targetBrightness = 118;
-  const evDiff = Math.log2(Math.max(1, targetBrightness) / Math.max(1, meanBrightness));
-  // Clamp: LR Auto rarely pushes more than ±2 stops
-  const exposure = Math.max(-60, Math.min(60, Math.round(evDiff * 25)));
+  const targetBrightness = 116;
+  const evDiff = Math.log2(Math.max(1, targetBrightness) / Math.max(1, p50));
+  const exposure = Math.max(-45, Math.min(45, Math.round(evDiff * 24)));
 
   // ── Highlights ────────────────────────────────────────────────────────────
   // Pull highlights down if maxVal is very close to 255 (blown), lift if very low
-  const highlightClipping = (maxVal - 220) / 35;  // 0 = fine, 1 = blown
-  const highlights = Math.max(-80, Math.min(40, Math.round(-highlightClipping * 60)));
+  const highlightClipping = Math.max(0, (p99 - 232) / 23);
+  const highlights = Math.max(-70, Math.min(20, Math.round(-highlightClipping * 58)));
 
   // ── Shadows ───────────────────────────────────────────────────────────────
   // Lift shadows if minVal is very dark (crushed blacks), leave if already open
-  const shadowCrush = Math.max(0, (30 - minVal) / 30);  // 0 = fine, 1 = very dark
-  const shadows = Math.max(-30, Math.min(80, Math.round(shadowCrush * 55)));
+  const shadowCrush = Math.max(0, (24 - p05) / 24);
+  const shadows = Math.max(-20, Math.min(65, Math.round(shadowCrush * 50)));
 
   // ── Contrast ─────────────────────────────────────────────────────────────
   // Flat image (low std) → add contrast; high std → don't touch
-  const contrastBoost = meanStd < 30 ? 30 : meanStd < 50 ? 18 : meanStd < 70 ? 8 : 0;
-  const contrast = Math.max(-20, Math.min(40, contrastBoost));
+  const tonalSpread = p95 - p05;
+  const contrast = tonalSpread < 105 ? 22 : tonalSpread < 145 ? 12 : tonalSpread > 225 ? -8 : 4;
 
   // ── Vibrance ─────────────────────────────────────────────────────────────
   // Desaturated image → boost vibrance; already vivid → gentle
@@ -4452,13 +4526,14 @@ async function computeAdobeAutoParams(filepath) {
   // ── Warmth (White Balance) ─────────────────────────────────────────────────
   // If red >> blue → image is warm/orange, nudge cool. Blue >> red → warm it up.
   const rbBalance = channels[0].mean - channels[2].mean;  // positive = warm cast
-  const warmth = Math.max(-30, Math.min(30, Math.round(-rbBalance * 0.4)));
+  const warmth = Math.max(-18, Math.min(18, Math.round(-rbBalance * 0.22)));
 
   // ── Clarity ───────────────────────────────────────────────────────────────
   // Flat/hazy photos get a clarity boost
   const clarity = meanStd < 40 ? 15 : meanStd < 60 ? 8 : 0;
 
-  return { exposure, highlights, shadows, contrast, vibrance, saturation: 0, warmth, clarity, denoise: 0, sharpness: 60 };
+  const denoise = meanStd < 26 && meanBrightness < 95 ? 22 : 5;
+  return { exposure, highlights, shadows, contrast, vibrance, saturation: 0, warmth, clarity, denoise, sharpness: 48 };
 }
 
 app.get("/api/photo/:filename/ai-enhanced", aiEnhanceLimiter, requireAuth, async (req, res) => {
@@ -4599,8 +4674,9 @@ app.get("/api/photo/:filename/ai-enhanced", aiEnhanceLimiter, requireAuth, async
 
   } catch (err) {
     console.error(`AI edit failed for ${safeName}:`, err.message);
-    res.set({ "Cache-Control": "private, no-store", "Content-Type": "image/jpeg" });
-    res.sendFile(filepath);
+    if (!res.headersSent) {
+      res.status(500).json({ error: "Image edit failed", detail: process.env.NODE_ENV === "development" ? err.message : undefined });
+    }
   }
 });
 
@@ -5750,6 +5826,7 @@ function sendMainBookingReceipt(booking, options = {}) {
     status: booking.status,
     modifyToken: booking.modifyToken,
     bookingId: booking.id,
+    paymentReference: booking.paymentReference,
     appBaseUrl: String(process.env.APP_BASE_URL || `https://${String(process.env.APP_HOSTS || "book.zacmclients.photos").split(",")[0].trim()}`).replace(/\/$/, ""),
     store: options.recordEmailLog === false ? null : store,
     brandName: profile.businessName || profile.brandName || profile.name || "PhotoFlow",
@@ -5787,6 +5864,7 @@ async function sendTenantBookingReceipt(booking, eventKey, options = {}) {
     paymentKind: booking.lastPaymentKind || options.paymentKind,
     modifyToken: booking.modifyToken,
     bookingId: booking.id,
+    paymentReference: booking.paymentReference,
     appBaseUrl: String(process.env.APP_BASE_URL || `https://${String(process.env.APP_HOSTS || "book.zacmclients.photos").split(",")[0].trim()}`).replace(/\/$/, ""),
     transport,
     fromAddress: getTenantFromAddress(settings),
@@ -5828,6 +5906,7 @@ async function sendBookingUpdateReceipt(booking, updateType, previousBooking) {
     duration: booking.duration,
     location: booking.location || "",
     bookingId: booking.id,
+    paymentReference: booking.paymentReference,
     modifyUrl: booking.modifyToken && appBaseUrl
       ? `${appBaseUrl}/booking/modify/${encodeURIComponent(booking.modifyToken)}`
       : "",
@@ -6049,6 +6128,180 @@ const tenantBookingLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHead
     }
   });
 })();
+
+// ── Atomic invoice administration ─────────────────────────────
+const INVOICE_SERVER_MANAGED_FIELDS = new Set([
+  "stripeSessionId", "stripeCheckoutOrderId", "stripeCheckoutSessionId",
+  "stripeCheckoutStartedAt", "stripeCheckoutStatus", "stripeCheckoutSnapshotHash",
+  "paymentNeedsReview", "paymentReviewStatus", "paymentReviewReason", "paymentReviews",
+]);
+
+function allocateInvoiceNumber(invoices, preferred = "", excludeId = "") {
+  const used = new Set(invoices
+    .filter(invoice => String(invoice?.id || "") !== String(excludeId || ""))
+    .map(invoice => String(invoice?.number || "").trim().toUpperCase())
+    .filter(Boolean));
+  const requested = String(preferred || "").trim().toUpperCase();
+  if (requested && !used.has(requested)) return requested;
+  let next = Math.max(0, ...invoices.map(invoice => parseInt(String(invoice?.number || "").replace(/\D/g, ""), 10) || 0)) + 1;
+  let candidate;
+  do { candidate = `INV-${String(next++).padStart(4, "0")}`; } while (used.has(candidate));
+  return candidate;
+}
+
+function validInvoiceInput(value) {
+  return !!value && typeof value === "object" && !Array.isArray(value)
+    && String(value.id || "").trim().length > 0
+    && String(value.id || "").trim().length <= 128
+    && Array.isArray(value.items)
+    && value.items.length <= 500;
+}
+
+app.get("/api/admin/invoices", superLimiter, requireAuth, (_req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  res.json(getStoredArray(readDb(), DB_KEYS.INVOICES));
+});
+
+app.post("/api/admin/invoices", superLimiter, requireAuth, authenticatedLargeJson, (req, res) => {
+  const input = req.body?.invoice;
+  if (!validInvoiceInput(input)) return res.status(400).json({ ok: false, code: "INVALID_INVOICE", error: "A valid invoice is required" });
+  return withCheckoutResourceLock("invoice-store:main", () => {
+    const db = readDb();
+    const invoices = getStoredArray(db, DB_KEYS.INVOICES);
+    if (invoices.some(invoice => String(invoice.id) === String(input.id))) {
+      return res.status(409).json({ ok: false, code: "INVOICE_EXISTS", error: "Invoice already exists" });
+    }
+    const invoice = {
+      ...input,
+      id: String(input.id),
+      number: allocateInvoiceNumber(invoices, input.number),
+      createdAt: String(input.createdAt || new Date().toISOString()),
+    };
+    invoices.push(invoice);
+    db[DB_KEYS.INVOICES] = JSON.stringify(invoices);
+    writeDb(db);
+    return res.status(201).json({ ok: true, invoice });
+  });
+});
+
+app.put("/api/admin/invoices/:id", superLimiter, requireAuth, authenticatedLargeJson, (req, res) => {
+  const invoiceId = String(req.params.id || "").trim();
+  const input = req.body?.invoice;
+  if (!invoiceId || !validInvoiceInput({ ...input, id: invoiceId })) return res.status(400).json({ ok: false, code: "INVALID_INVOICE", error: "A valid invoice is required" });
+  return withCheckoutResourceLock(`checkout:main:invoice:${invoiceId}`, () => withCheckoutResourceLock("invoice-store:main", () => {
+    const db = readDb();
+    const invoices = getStoredArray(db, DB_KEYS.INVOICES);
+    const index = invoices.findIndex(invoice => String(invoice?.id || "") === invoiceId && invoice?.tenantSlug == null);
+    if (index < 0) return res.status(404).json({ ok: false, code: "INVOICE_NOT_FOUND", error: "Invoice not found" });
+    const previous = invoices[index];
+    const invoice = { ...previous, ...input, id: invoiceId, number: allocateInvoiceNumber(invoices, input.number, invoiceId) };
+    for (const field of INVOICE_SERVER_MANAGED_FIELDS) {
+      if (Object.prototype.hasOwnProperty.call(previous, field)) invoice[field] = previous[field];
+      else delete invoice[field];
+    }
+    invoices[index] = invoice;
+    db[DB_KEYS.INVOICES] = JSON.stringify(invoices);
+    writeDb(db);
+    return res.json({ ok: true, invoice });
+  }));
+});
+
+app.delete("/api/admin/invoices/:id", superLimiter, requireAuth, (req, res) => {
+  const invoiceId = String(req.params.id || "").trim();
+  return withCheckoutResourceLock(`checkout:main:invoice:${invoiceId}`, () => withCheckoutResourceLock("invoice-store:main", () => {
+    const db = readDb();
+    const invoices = getStoredArray(db, DB_KEYS.INVOICES);
+    const index = invoices.findIndex(invoice => String(invoice?.id || "") === invoiceId && invoice?.tenantSlug == null);
+    if (index < 0) return res.status(404).json({ ok: false, code: "INVOICE_NOT_FOUND", error: "Invoice not found" });
+    if (["open", "processing"].includes(String(invoices[index].stripeCheckoutStatus || ""))) {
+      return res.status(409).json({ ok: false, code: "INVOICE_CHECKOUT_ACTIVE", error: "Expire or complete the active Stripe checkout before deleting this invoice" });
+    }
+    const [deleted] = invoices.splice(index, 1);
+    db[DB_KEYS.INVOICES] = JSON.stringify(invoices);
+    writeDb(db);
+    return res.json({ ok: true, invoice: deleted });
+  }));
+});
+
+function dataIntegrityRepairSnapshot(db, apply = false) {
+  const now = new Date();
+  const nowIso = now.toISOString();
+  const bookings = getStoredArray(db, DB_KEYS.BOOKINGS);
+  const invoices = getStoredArray(db, DB_KEYS.INVOICES);
+  const issues = { bookingReferences: 0, paymentTimestamps: 0, paidPendingBookings: 0, expiredHolds: 0, invoiceNumbers: 0 };
+  const repairedBookings = bookings.map(source => {
+    const booking = { ...source };
+    const currentReference = String(booking.paymentReference || "").trim();
+    if (!currentReference || currentReference.length > 16 || /^BK-\d{8}-/i.test(currentReference)) {
+      issues.bookingReferences++;
+      if (apply) booking.paymentReference = `PF-${crypto.createHash("sha256").update(String(booking.id || "booking")).digest("hex").slice(0, 8).toUpperCase()}`;
+    }
+    const settledAt = booking.stripePaidAt || booking.depositPaidAt || booking.updatedAt || booking.createdAt || nowIso;
+    if (["paid", "cash"].includes(String(booking.paymentStatus || "")) && !booking.paidAt) {
+      issues.paymentTimestamps++;
+      if (apply) booking.paidAt = settledAt;
+    }
+    if (booking.paymentStatus === "deposit-paid" && !booking.depositPaidAt) {
+      issues.paymentTimestamps++;
+      if (apply) booking.depositPaidAt = booking.paidAt || booking.updatedAt || booking.createdAt || nowIso;
+    }
+    if (booking.status === "pending" && booking.requiresConfirmation !== true && ["paid", "cash"].includes(String(booking.paymentStatus || ""))) {
+      issues.paidPendingBookings++;
+      if (apply) {
+        booking.status = "confirmed";
+        booking.statusHistory = [...(Array.isArray(booking.statusHistory) ? booking.statusHistory : []), { status: "confirmed", changedAt: nowIso, note: "Data repair: settled payment" }];
+      }
+    }
+    const holdExpired = Number.isFinite(Date.parse(String(booking.holdExpiresAt || ""))) && Date.parse(booking.holdExpiresAt) <= now.getTime();
+    const unsettled = !["paid", "cash", "deposit-paid"].includes(String(booking.paymentStatus || "unpaid"));
+    if (booking.status === "pending" && unsettled && holdExpired && booking.archived !== true) {
+      issues.expiredHolds++;
+      if (apply) {
+        booking.archived = true;
+        booking.archivedAt = nowIso;
+        booking.archiveReason = "Expired unpaid booking hold";
+      }
+    }
+    return booking;
+  });
+
+  const seenNumbers = new Set();
+  const repairedInvoices = invoices.map(invoice => {
+    const number = String(invoice?.number || "").trim().toUpperCase();
+    if (!number || seenNumbers.has(number)) {
+      issues.invoiceNumbers++;
+      const repaired = apply ? { ...invoice, number: allocateInvoiceNumber([...invoices, ...Array.from(seenNumbers).map(value => ({ number: value }))], "", invoice.id) } : invoice;
+      if (apply) seenNumbers.add(repaired.number);
+      return repaired;
+    }
+    seenNumbers.add(number);
+    return invoice;
+  });
+  const total = Object.values(issues).reduce((sum, count) => sum + count, 0);
+  return { total, issues, bookings: repairedBookings, invoices: repairedInvoices, repairedAt: nowIso };
+}
+
+app.get("/api/admin/data-integrity", superLimiter, requireAuth, (_req, res) => {
+  const report = dataIntegrityRepairSnapshot(readDb(), false);
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ ok: true, total: report.total, issues: report.issues });
+});
+
+app.post("/api/admin/data-integrity/repair", superLimiter, requireAuth, (req, res) => {
+  return withCheckoutResourceLock("data-integrity:main", () => {
+    const db = readDb();
+    const report = dataIntegrityRepairSnapshot(db, true);
+    if (report.total > 0) {
+      db[DB_KEYS.BOOKINGS] = JSON.stringify(report.bookings);
+      db[DB_KEYS.INVOICES] = JSON.stringify(report.invoices);
+      const audit = getStoredArray(db, "wv_data_repair_audit");
+      audit.push({ repairedAt: report.repairedAt, issues: report.issues, actor: "admin" });
+      db.wv_data_repair_audit = JSON.stringify(audit.slice(-100));
+      writeDb(db);
+    }
+    res.json({ ok: true, total: report.total, issues: report.issues, repairedAt: report.repairedAt });
+  });
+});
 
 // ── Invoice share endpoint (public — no auth required) ────────
 const invoiceShareLimiter = rateLimit({ windowMs: 60_000, max: 60, standardHeaders: true, legacyHeaders: false, message: { error: "Too many requests" } });
@@ -7796,7 +8049,7 @@ app.get("/api/admin/payments/health", superLimiter, requireAuth, (_req, res) => 
   });
 });
 
-const ADMIN_BOOKING_EDITABLE_FIELDS = new Set([
+const ADMIN_BOOKING_CREATE_FIELDS = new Set([
   "clientName", "clientEmail", "phone", "date", "time", "eventTypeId", "type", "duration",
   "status", "notes", "answers", "answerLabels", "paymentStatus", "paymentAmount", "instagramHandle",
   "depositRequired", "depositAmount", "depositMethod", "paymentMethod", "requiresConfirmation",
@@ -7804,11 +8057,23 @@ const ADMIN_BOOKING_EDITABLE_FIELDS = new Set([
   "attendeeCount", "instalmentIds", "seriesId", "seriesConfig",
 ]);
 
-function sanitizeAdminBookingChanges(input) {
+const ADMIN_BOOKING_EDITABLE_FIELDS = new Set([
+  "clientName", "clientEmail", "phone", "date", "time", "eventTypeId", "type", "duration",
+  "status", "notes", "answers", "answerLabels", "instagramHandle", "statusHistory", "tasks",
+  "albumId", "gcalEventId", "source", "tags", "contractId", "attendeeCount", "instalmentIds",
+  "seriesId", "seriesConfig",
+]);
+
+const ADMIN_BOOKING_SERVER_MANAGED_FIELDS = new Set([
+  "paymentStatus", "paymentAmount", "depositRequired", "depositAmount", "depositMethod",
+  "paymentMethod", "requiresConfirmation",
+]);
+
+function sanitizeAdminBookingChanges(input, allowedFields = ADMIN_BOOKING_EDITABLE_FIELDS) {
   if (!input || typeof input !== "object" || Array.isArray(input)) return null;
   const changes = {};
   for (const [key, value] of Object.entries(input)) {
-    if (ADMIN_BOOKING_EDITABLE_FIELDS.has(key)) changes[key] = value;
+    if (allowedFields.has(key)) changes[key] = value;
   }
   return changes;
 }
@@ -7829,7 +8094,7 @@ app.post("/api/admin/bookings", superLimiter, requireAuth, async (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   const input = req.body?.booking;
   const bookingId = String(input?.id || "").trim();
-  const changes = sanitizeAdminBookingChanges(input);
+  const changes = sanitizeAdminBookingChanges(input, ADMIN_BOOKING_CREATE_FIELDS);
   if (!bookingId || bookingId.length > 128 || !changes) {
     return res.status(400).json({ ok: false, code: "INVALID_BOOKING", error: "A valid booking is required" });
   }
@@ -7839,7 +8104,26 @@ app.post("/api/admin/bookings", superLimiter, requireAuth, async (req, res) => {
     if (bookings.some(booking => String(booking?.id || "") === bookingId)) {
       return res.status(409).json({ ok: false, code: "BOOKING_EXISTS", error: "Booking already exists" });
     }
-    const booking = { id: bookingId, ...changes, createdAt: String(input?.createdAt || new Date().toISOString()), tenantSlug: undefined };
+    const createdAt = String(input?.createdAt || new Date().toISOString());
+    const booking = { id: bookingId, ...changes, createdAt, tenantSlug: undefined };
+    if (["paid", "cash"].includes(String(booking.paymentStatus || ""))) {
+      booking.paidAt = createdAt;
+      if (booking.paymentStatus === "cash") booking.paymentMethod = "cash";
+      booking.paymentHistory = [{ action: "admin-booking-created-settled", changedAt: createdAt, source: "admin", paymentStatus: booking.paymentStatus }];
+      if (booking.status === "pending" && booking.requiresConfirmation !== true) {
+        booking.status = "confirmed";
+        booking.statusHistory = [...(Array.isArray(booking.statusHistory) ? booking.statusHistory : []), { status: "confirmed", changedAt: createdAt, note: "Admin booking created with settled payment" }];
+      }
+    } else if (booking.paymentStatus === "deposit-paid") {
+      booking.depositPaidAt = createdAt;
+      booking.paymentHistory = [{ action: "admin-booking-created-deposit", changedAt: createdAt, source: "admin", paymentStatus: "deposit-paid" }];
+    }
+    if (booking.status !== "cancelled") {
+      const eventTypes = getStoredArray(db, DB_KEYS.EVENT_TYPES);
+      if (bookingConflicts(booking, bookings, eventTypes, { tenantSlug: null })) {
+        return res.status(409).json({ ok: false, code: "BOOKING_CONFLICT", error: "This time conflicts with an existing booking" });
+      }
+    }
     bookings.push(booking);
     db[DB_KEYS.BOOKINGS] = JSON.stringify(bookings);
     writeDb(db);
@@ -7851,10 +8135,14 @@ app.post("/api/admin/bookings", superLimiter, requireAuth, async (req, res) => {
 app.patch("/api/admin/bookings/:id", superLimiter, requireAuth, async (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   const bookingId = String(req.params.id || "").trim();
-  const changes = sanitizeAdminBookingChanges(req.body?.changes);
   if (!bookingId || bookingId.length > 128) {
     return res.status(404).json({ ok: false, code: "BOOKING_NOT_FOUND", error: "Booking not found" });
   }
+  const requestedKeys = Object.keys(req.body?.changes || {});
+  if (requestedKeys.some(key => ADMIN_BOOKING_SERVER_MANAGED_FIELDS.has(key))) {
+    return res.status(409).json({ ok: false, code: "PAYMENT_OPERATION_REQUIRED", error: "Payment fields must be changed through Payment Operations" });
+  }
+  const changes = sanitizeAdminBookingChanges(req.body?.changes);
   if (!changes || !Object.keys(changes).length) {
     return res.status(400).json({ ok: false, code: "NO_BOOKING_CHANGES", error: "No supported booking changes were supplied" });
   }
@@ -7865,6 +8153,13 @@ app.patch("/api/admin/bookings/:id", superLimiter, requireAuth, async (req, res)
     if (index < 0) return res.status(404).json({ ok: false, code: "BOOKING_NOT_FOUND", error: "Booking not found" });
     const previous = bookings[index];
     const booking = { ...previous, ...changes, id: bookingId, tenantSlug: previous.tenantSlug };
+    const schedulingChanged = ["date", "time", "duration", "eventTypeId", "status"].some(field => Object.prototype.hasOwnProperty.call(changes, field));
+    if (schedulingChanged && booking.status !== "cancelled") {
+      const eventTypes = getStoredArray(db, DB_KEYS.EVENT_TYPES);
+      if (bookingConflicts(booking, bookings, eventTypes, { tenantSlug: null, excludeBookingId: bookingId })) {
+        return res.status(409).json({ ok: false, code: "BOOKING_CONFLICT", error: "This time conflicts with an existing booking" });
+      }
+    }
     bookings[index] = booking;
     db[DB_KEYS.BOOKINGS] = JSON.stringify(bookings);
     writeDb(db);
@@ -10029,11 +10324,9 @@ app.post("/api/quotes/:id/convert", requireAuth, (req, res) => {
   const quote = quotes[idx];
   // Build invoice from quote
   const invoices = db["wv_invoices"] ? (typeof db["wv_invoices"] === "string" ? JSON.parse(db["wv_invoices"]) : db["wv_invoices"]) : [];
-  const invNums = invoices.map(i => parseInt((i.number || "INV-0000").replace(/[^\d]/g, "")) || 0);
-  const nextInvNum = (invNums.length ? Math.max(...invNums) : 0) + 1;
   const invoice = {
     id: crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString("hex"),
-    number: `INV-${String(nextInvNum).padStart(4, "0")}`,
+    number: allocateInvoiceNumber(invoices),
     status: "draft",
     from: quote.from,
     to: quote.to,

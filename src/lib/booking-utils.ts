@@ -139,6 +139,28 @@ export function isBookingPaymentConflictError(errorCode: string | null | undefin
     || errorCode === "STRIPE_STATUS_UNAVAILABLE";
 }
 
+export function hasExpiredBookingPaymentHold(
+  booking: Pick<Booking, "holdExpiresAt" | "paymentStatus"> | null | undefined,
+  nowMs = Date.now(),
+): boolean {
+  if (!booking?.holdExpiresAt || ["paid", "cash", "deposit-paid"].includes(booking.paymentStatus || "")) return false;
+  const expiresAt = Date.parse(booking.holdExpiresAt);
+  return Number.isFinite(expiresAt) && expiresAt <= nowMs;
+}
+
+export function bookingNeedsOutstandingPayment(
+  booking: Pick<Booking, "status" | "paymentStatus" | "paymentAmount" | "depositAmount" | "holdExpiresAt"> | null | undefined,
+  nowMs = Date.now(),
+): boolean {
+  if (!booking || booking.status === "cancelled" || hasExpiredBookingPaymentHold(booking, nowMs)) return false;
+  const total = Number(booking.paymentAmount);
+  if (!Number.isFinite(total) || total <= 0 || ["paid", "cash"].includes(booking.paymentStatus || "")) return false;
+  if (booking.paymentStatus === "deposit-paid") {
+    return Math.max(0, total - (Number(booking.depositAmount) || 0)) > 0;
+  }
+  return true;
+}
+
 /** Payment state used by confirmation pages; bank is pending only while the stored status says so. */
 export function getAuthoritativeBookingPaymentState(
   booking: Pick<Booking, "paymentAmount" | "depositRequired" | "depositAmount" | "depositMethod" | "paymentStatus" | "paidAt" | "depositPaidAt"> | null | undefined,

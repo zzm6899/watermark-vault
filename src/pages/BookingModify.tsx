@@ -343,7 +343,7 @@ export default function BookingModify() {
   const handleBookAnother = () => {
     // The main booking page restores the last booking by default. Clear that
     // marker so this link always opens a fresh booking rather than this one.
-    localStorage.removeItem("lastBookingId");
+    sessionStorage.removeItem("lastBookingId");
     navigate(booking?.tenantSlug ? `/book/${encodeURIComponent(booking.tenantSlug)}` : "/");
   };
 

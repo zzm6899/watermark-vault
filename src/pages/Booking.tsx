@@ -300,16 +300,17 @@ export default function Booking() {
     return () => controller.abort();
   }, []);
 
-  // ── Restore last booking from localStorage on page reload ──
+  // Keep the in-progress booking scoped to this tab. localStorage is shared by
+  // every tab and caused one booking page to restore another tab's Stripe state.
   const restoredBookingId = (() => {
     try {
-      const saved = localStorage.getItem("lastBookingId");
+      const saved = sessionStorage.getItem("lastBookingId");
       if (!saved) return null;
       const booking = getBookings().find(b => b.id === saved);
       // Only restore if booking exists and was made in the last 24h
-      if (!booking) { localStorage.removeItem("lastBookingId"); return null; }
+      if (!booking) { sessionStorage.removeItem("lastBookingId"); return null; }
       const age = Date.now() - new Date(booking.createdAt).getTime();
-      if (age > 24 * 60 * 60 * 1000) { localStorage.removeItem("lastBookingId"); return null; }
+      if (age > 24 * 60 * 60 * 1000) { sessionStorage.removeItem("lastBookingId"); return null; }
       return saved;
     } catch { return null; }
   })();
@@ -668,7 +669,7 @@ export default function Booking() {
       return;
     }
     const booking = result.booking;
-    localStorage.setItem("lastBookingId", booking.id);
+    sessionStorage.setItem("lastBookingId", booking.id);
     setLastBookingId(booking.id);
     setTimerExpiresAt(null);
     setProcessingPayment(false);
@@ -747,7 +748,7 @@ export default function Booking() {
       }
       const booking = result.booking;
       cacheBookingLocally(booking);
-      localStorage.setItem("lastBookingId", booking.id);
+      sessionStorage.setItem("lastBookingId", booking.id);
       setLastBookingId(booking.id);
       setBookingVersion(version => version + 1);
       setLastBookingPaymentStatus({
@@ -768,7 +769,7 @@ export default function Booking() {
   };
 
   const handleReset = () => {
-    localStorage.removeItem("lastBookingId");
+    sessionStorage.removeItem("lastBookingId");
     setStep("event-select");
     setSelectedEvent(null);
     setSelectedDuration(null);
@@ -1463,7 +1464,7 @@ export default function Booking() {
                     return;
                   }
                   const newBooking = createResult.booking;
-                  localStorage.setItem("lastBookingId", newBooking.id);
+                  sessionStorage.setItem("lastBookingId", newBooking.id);
                   setLastBookingId(newBooking.id);
                   setTimerExpiresAt(null);
                   bookingId = newBooking.id;

@@ -62,7 +62,8 @@ export interface CameraFtpPlugin {
   getNetworkInfo(): Promise<{ addresses?: string[]; hotspotLikelyAddress?: string; ipAddress?: string; activeIpAddress?: string; ftpUrl?: string }>;
   scanNetwork(options?: { timeoutMs?: number }): Promise<{ serverHost?: string; serverPort?: number; subnet?: string; candidates: CameraFtpCandidate[] }>;
   openHotspotSettings(): Promise<void>;
-  importFiles(options: { paths: string[] }): Promise<{ files: Array<CameraFtpFile & { base64?: string }> }>;
+  importFiles(options: { paths: string[]; includeBase64?: boolean }): Promise<{ files: Array<CameraFtpFile & { base64?: string }> }>;
+  listFiles(options?: { limit?: number }): Promise<{ files: CameraFtpFile[] }>;
   deleteLocalFiles(options: { paths: string[] }): Promise<{ deleted: number }>;
   addListener(eventName: "newFiles", callback: (data: { files: CameraFtpFile[] }) => void): Promise<{ remove: () => void }>;
   addListener(eventName: "statusChanged", callback: (data: CameraFtpStatus) => void): Promise<{ remove: () => void }>;

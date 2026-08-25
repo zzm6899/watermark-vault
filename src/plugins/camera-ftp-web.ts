@@ -21,5 +21,6 @@ export class CameraFtpWeb extends WebPlugin implements CameraFtpPlugin {
   async scanNetwork() { return { serverHost: "192.168.43.1", serverPort: 2121, subnet: "192.168.43.0/24", candidates: [] }; }
   async openHotspotSettings() {}
   async importFiles() { return { files: [] }; }
+  async listFiles() { return { files: [] }; }
   async deleteLocalFiles() { return { deleted: 0 }; }
 }

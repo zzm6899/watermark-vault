@@ -1,20 +1,24 @@
-{
-  "appName": "Zuploader Capture",
-  "packageName": "conn.uploader.capture",
-  "versionName": "1.0",
-  "versionCode": 1,
-  "buildType": "debug",
-  "builtAt": "2026-05-23T13:12:02.4537555Z",
-  "commit": "b4a920a",
-  "apk": {
-    "fileName": "zuploader-capture-latest.apk",
-    "url": "/downloads/android/latest.apk",
-    "sizeBytes": 8067936,
-    "sha256": "9210e2a097eb598329b45fe92876921fef330c500f551917b40c2ad63d4e899d"
-  },
-  "notes": [
-    "Built from the current web bundle and synced into the Android shell.",
-    "Latest APK only; older public APK versions are removed by the build script.",
-    "Use the Admin APK tab to download or copy the install link."
-  ]
+﻿{
+    "appName":  "Zuploader Capture",
+    "packageName":  "conn.uploader.capture",
+    "versionName":  "1.4",
+    "versionCode":  5,
+    "buildType":  "debug",
+    "builtAt":  "2026-08-25T18:40:13.9753357Z",
+    "commit":  "647e681",
+    "apk":  {
+                "fileName":  "zuploader-capture-latest.apk",
+                "url":  "/downloads/android/latest.apk",
+                "sizeBytes":  8156529,
+                "sha256":  "c25d38d0649b76f8910cdace3eae58e772df57edfc5c8552f256eae7a594ba7b"
+            },
+    "notes":  [
+                  "Built from the current web bundle and synced into the Android shell.",
+                  "Latest APK only; older public APK versions are removed by the build script.",
+                  "Use the Admin APK tab to download or copy the install link.",
+                  "Nikon FTP imports stream from Android local storage without Base64 bridge overhead, with automatic fallback.",
+                  "Burst JPEG uploads use up to three concurrent upload workers before automatic culling.",
+                  "Expired native upload sessions keep queued photos safe and show a clear sign-in message.",
+                  "Image editor adds Smart Auto, Nikon/event presets, corrected warmth and denoise processing, and one-tap restore original."
+              ]
 }

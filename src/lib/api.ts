@@ -43,6 +43,17 @@ export function adminAuthHeaders(): Record<string, string> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+export class PhotoUploadError extends Error {
+  constructor(
+    message: string,
+    public readonly status?: number,
+    public readonly kind: "authentication" | "request" = "request",
+  ) {
+    super(message);
+    this.name = "PhotoUploadError";
+  }
+}
+
 /**
  * Wraps fetch with simple exponential-backoff retry logic.
  * Retries only on network errors (not on HTTP error statuses).
@@ -656,11 +667,22 @@ export async function uploadPhotosToServer(
         const res = await fetch(uploadUrl, { method: "POST", headers: adminAuthHeaders(), body: form });
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
-          throw new Error(body?.error || `Upload failed (${res.status})`);
+          const authenticationFailure = res.status === 401 || res.status === 403;
+          const message = authenticationFailure
+            ? "Your upload session expired. Sign in again, then retry the queued photos."
+            : body?.error || `Upload failed (${res.status})`;
+          // Retrying an expired session or a rejected request cannot succeed.
+          // Surface it to the capture screen so it can retain the files and
+          // explain the real problem instead of calling the server "offline".
+          if (authenticationFailure || (res.status >= 400 && res.status < 500 && res.status !== 408 && res.status !== 429)) {
+            throw new PhotoUploadError(message, res.status, authenticationFailure ? "authentication" : "request");
+          }
+          throw new Error(message);
         }
         const data = await readJson<{ files?: UploadedPhotoResult[] }>(res, {});
         return Array.isArray(data.files) ? data.files : [];
       } catch (err) {
+        if (err instanceof PhotoUploadError) throw err;
         lastError = err;
         if (attempt < UPLOAD_BATCH_RETRIES) {
           await new Promise(resolve => setTimeout(resolve, 250 * (attempt + 1)));
@@ -749,7 +771,7 @@ export interface ManualEditParams {
 /** Preset edit request */
 export interface PresetEditParams {
   mode: "preset";
-  preset: "moody" | "bright" | "film" | "bw" | "fade" | "pop" | "golden" | "cool";
+  preset: "natural" | "indoor" | "concert" | "sports" | "moody" | "bright" | "film" | "bw" | "fade" | "pop" | "golden" | "cool";
 }
 
 /** Uploaded XMP preset by server-assigned id */
@@ -758,7 +780,7 @@ export interface XmpEditParams {
   xmpId: string;
 }
 
-/** Adobe-style Auto: server analyses image and picks optimal params */
+/** Smart Auto: server analyses the JPEG histogram and picks conservative parameters. */
 export interface AdobeAutoParams {
   mode: "adobe-auto";
 }
@@ -809,7 +831,9 @@ export async function aiEnhancePhoto(photoSrc: string, params?: PhotoEditRequest
   const filename = photoSrc.split("/").pop()?.split("?")[0]?.trim();
   if (!filename) throw new Error("Invalid photo URL");
 
-  const qs = new URLSearchParams({ force: "1" });
+  // The server cache key includes every edit parameter, so identical previews
+  // can be reused without re-decoding a full camera JPEG.
+  const qs = new URLSearchParams();
 
   if (!params || !("mode" in params)) {
     // Legacy auto mode with optional multipliers
@@ -1660,6 +1684,68 @@ export async function getSuperAdminWebhooks(): Promise<{
 }
 
 // ── Invoices ───────────────────────────────────────────────────
+
+export async function fetchAdminInvoices(): Promise<{ ok: boolean; invoices: import("./types").Invoice[]; error?: string }> {
+  try {
+    const res = await fetch("/api/admin/invoices", { headers: adminAuthHeaders(), cache: "no-store" });
+    const json = await res.json().catch(() => []);
+    return res.ok && Array.isArray(json) ? { ok: true, invoices: json } : { ok: false, invoices: [], error: json?.error || "Unable to load invoices" };
+  } catch { return { ok: false, invoices: [], error: "Network error" }; }
+}
+
+export async function createAdminInvoice(invoice: import("./types").Invoice): Promise<{ ok: boolean; invoice?: import("./types").Invoice; error?: string }> {
+  try {
+    const res = await fetch("/api/admin/invoices", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
+      body: JSON.stringify({ invoice }),
+    });
+    const json = await res.json().catch(() => ({}));
+    return res.ok && json?.invoice ? { ok: true, invoice: json.invoice } : { ok: false, error: json?.error || "Unable to create invoice" };
+  } catch { return { ok: false, error: "Network error" }; }
+}
+
+export async function updateAdminInvoice(invoice: import("./types").Invoice): Promise<{ ok: boolean; invoice?: import("./types").Invoice; error?: string }> {
+  try {
+    const res = await fetch(`/api/admin/invoices/${encodeURIComponent(invoice.id)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
+      body: JSON.stringify({ invoice }),
+    });
+    const json = await res.json().catch(() => ({}));
+    return res.ok && json?.invoice ? { ok: true, invoice: json.invoice } : { ok: false, error: json?.error || "Unable to update invoice" };
+  } catch { return { ok: false, error: "Network error" }; }
+}
+
+export async function deleteAdminInvoice(id: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch(`/api/admin/invoices/${encodeURIComponent(id)}`, { method: "DELETE", headers: adminAuthHeaders() });
+    const json = await res.json().catch(() => ({}));
+    return res.ok ? { ok: true } : { ok: false, error: json?.error || "Unable to delete invoice" };
+  } catch { return { ok: false, error: "Network error" }; }
+}
+
+export type DataIntegrityReport = {
+  ok: boolean;
+  total: number;
+  issues: { bookingReferences: number; paymentTimestamps: number; paidPendingBookings: number; expiredHolds: number; invoiceNumbers: number };
+  repairedAt?: string;
+  error?: string;
+};
+
+export async function getDataIntegrityReport(): Promise<DataIntegrityReport | null> {
+  try {
+    const res = await fetch("/api/admin/data-integrity", { headers: adminAuthHeaders(), cache: "no-store" });
+    return res.ok ? await res.json() : null;
+  } catch { return null; }
+}
+
+export async function repairDataIntegrity(): Promise<DataIntegrityReport | null> {
+  try {
+    const res = await fetch("/api/admin/data-integrity/repair", { method: "POST", headers: adminAuthHeaders() });
+    return res.ok ? await res.json() : null;
+  } catch { return null; }
+}
 
 export type PublicBankTransfer = {
   enabled: boolean;

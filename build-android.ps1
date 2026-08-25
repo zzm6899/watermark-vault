@@ -1,8 +1,8 @@
 #!/usr/bin/env pwsh
 <#
-  ONE-COMMAND ANDROID RELEASE BUILD
+  ONE-COMMAND ANDROID DEBUG BUILD
   Usage:  powershell -ExecutionPolicy Bypass -File .\build-android.ps1
-  Output: android\app\build\outputs\apk\release\app-release-unsigned.apk
+  Output: android\app\build\outputs\apk\debug\app-debug.apk
 #>
 $ErrorActionPreference = "Stop"
 
@@ -12,6 +12,7 @@ Write-Host "`n=== Step 0: Checking JDK 21 ===" -ForegroundColor Cyan
 # Auto-detect JDK 21 from common install locations
 $jdk21 = $null
 $searchPaths = @(
+    "C:\Program Files\Android\Android Studio",
     "C:\Program Files\Eclipse Adoptium",
     "C:\Program Files\Java",
     "C:\Program Files\Microsoft\jdk",
@@ -19,7 +20,9 @@ $searchPaths = @(
 )
 foreach ($base in $searchPaths) {
     if (Test-Path $base) {
-        $match = Get-ChildItem -Path $base -Directory | Where-Object { $_.Name -match "21" } | Select-Object -First 1
+        $match = Get-ChildItem -Path $base -Directory | Where-Object {
+            $_.Name -match "21" -or ($_.Name -eq "jbr" -and (Test-Path (Join-Path $_.FullName "bin\java.exe")))
+        } | Select-Object -First 1
         if ($match) { $jdk21 = $match.FullName; break }
     }
 }
@@ -81,14 +84,22 @@ $env:ANDROID_HOME = $sdkDir
 $env:ANDROID_SDK_ROOT = $sdkDir
 $sdkManager = Join-Path $sdkDir "cmdline-tools\latest\bin\sdkmanager.bat"
 if (-not (Test-Path $sdkManager)) {
-    throw "Android SDK manager not found at $sdkManager"
+    $requiredPlatform = Join-Path $sdkDir "platforms\android-35"
+    $requiredBuildTools = Join-Path $sdkDir "build-tools\35.0.0"
+    if (-not (Test-Path $requiredPlatform) -or -not (Test-Path $requiredBuildTools)) {
+        throw "Android SDK manager not found at $sdkManager and the required Android 35 packages are not installed"
+    }
 }
 Write-Host "  ANDROID_HOME = $env:ANDROID_HOME" -ForegroundColor Green
-Write-Host "  Installing required SDK packages..." -ForegroundColor Yellow
-& $sdkManager --sdk_root=$sdkDir "platform-tools" "platforms;android-35" "build-tools;35.0.0"
-if ($LASTEXITCODE -ne 0) { throw "Android SDK package install failed" }
-"y`n" * 100 | & $sdkManager --sdk_root=$sdkDir --licenses | Out-Host
-if ($LASTEXITCODE -ne 0) { throw "Android SDK license acceptance failed" }
+if (Test-Path $sdkManager) {
+    Write-Host "  Installing required SDK packages..." -ForegroundColor Yellow
+    & $sdkManager --sdk_root=$sdkDir "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+    if ($LASTEXITCODE -ne 0) { throw "Android SDK package install failed" }
+    "y`n" * 100 | & $sdkManager --sdk_root=$sdkDir --licenses | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw "Android SDK license acceptance failed" }
+} else {
+    Write-Host "  Android 35 packages already installed; command-line manager is not required." -ForegroundColor Green
+}
 
 $escapedSdkDir = $sdkDir.Replace("\", "\\")
 Set-Content -Path "android\local.properties" -Value "sdk.dir=$escapedSdkDir" -Encoding ASCII
@@ -129,6 +140,18 @@ Write-Host "`n=== Step 2: Building web app ===" -ForegroundColor Cyan
 npm run build
 if ($LASTEXITCODE -ne 0) { throw "Vite build failed" }
 
+# Stage a lean Android bundle. The website's portfolio media and previously
+# published APK must never be embedded inside the next APK.
+$androidWebDir = (Resolve-Path ".").Path + "\.android-web"
+if (Test-Path $androidWebDir) { Remove-Item -LiteralPath $androidWebDir -Recurse -Force }
+New-Item -ItemType Directory -Path $androidWebDir | Out-Null
+Copy-Item -Path "dist\*" -Destination $androidWebDir -Recurse -Force
+$androidPortfolio = Join-Path $androidWebDir "portfolio"
+$androidDownloads = Join-Path $androidWebDir "downloads"
+if (Test-Path $androidPortfolio) { Remove-Item -LiteralPath $androidPortfolio -Recurse -Force }
+if (Test-Path $androidDownloads) { Remove-Item -LiteralPath $androidDownloads -Recurse -Force }
+$env:CAPACITOR_WEB_DIR = $androidWebDir
+
 # ---------- STEP 3: Capacitor sync ----------
 Write-Host "`n=== Step 3: Capacitor sync ===" -ForegroundColor Cyan
 npx cap sync android
@@ -146,8 +169,11 @@ New-Item -ItemType Directory -Force -Path $projectGradleHome | Out-Null
 Write-Host "  GRADLE_USER_HOME = $projectGradleHome"
 
 # ---------- STEP 4: Gradle debug build ----------
-Write-Host "`n=== Step 4: Gradle assembleDebug ===" -ForegroundColor Cyan
-& $GRADLE_BAT -g $projectGradleHome -p android assembleDebug --no-daemon --refresh-dependencies
+# Always clean the APK output first. Incremental packaging can retain stale ZIP
+# payloads (including a previously embedded APK), making an otherwise lean build
+# tens of megabytes larger than its actual entries.
+Write-Host "`n=== Step 4: Gradle clean assembleDebug ===" -ForegroundColor Cyan
+& $GRADLE_BAT -g $projectGradleHome -p android clean assembleDebug --no-daemon --refresh-dependencies
 if ($LASTEXITCODE -ne 0) { throw "Gradle build failed" }
 
 # ---------- STEP 5: Publish latest APK ----------
@@ -176,8 +202,8 @@ if (Test-Path $apk) {
     $manifest = [ordered]@{
         appName = "Zuploader Capture"
         packageName = "conn.uploader.capture"
-        versionName = "1.0"
-        versionCode = 1
+        versionName = "1.4"
+        versionCode = 5
         buildType = "debug"
         builtAt = (Get-Date).ToUniversalTime().ToString("o")
         commit = $commit
@@ -190,7 +216,11 @@ if (Test-Path $apk) {
         notes = @(
             "Built from the current web bundle and synced into the Android shell.",
             "Latest APK only; older public APK versions are removed by the build script.",
-            "Use the Admin APK tab to download or copy the install link."
+            "Use the Admin APK tab to download or copy the install link.",
+            "Nikon FTP imports stream from Android local storage without Base64 bridge overhead, with automatic fallback.",
+            "Burst JPEG uploads use up to three concurrent upload workers before automatic culling.",
+            "Expired native upload sessions keep queued photos safe and show a clear sign-in message.",
+            "Image editor adds Smart Auto, Nikon/event presets, corrected warmth and denoise processing, and one-tap restore original."
         )
     }
     $manifest | ConvertTo-Json -Depth 6 | Set-Content -Path (Join-Path $publicDir "latest.json") -Encoding UTF8

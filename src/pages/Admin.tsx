@@ -30,7 +30,7 @@ import {
   getAlbums, addAlbum, updateAlbum, deleteAlbum,
   getPhotoLibrary, setPhotoLibrary,
   getEmailTemplates, addEmailTemplate, updateEmailTemplate, deleteEmailTemplate,
-  getInvoices, setInvoices as saveInvoices, addInvoice, updateInvoice, deleteInvoice, getNextInvoiceNumber,
+  getInvoices, setInvoices as saveInvoices, cacheInvoicesLocally, addInvoice, updateInvoice, deleteInvoice, getNextInvoiceNumber,
   getContacts, setContacts as saveContacts, addContact, updateContact, deleteContact,
   getEnquiries, updateEnquiry, deleteEnquiry,
   hashPassword,
@@ -38,6 +38,7 @@ import {
 } from "@/lib/storage";
 import { compressImage, formatBytes, formatSpeed, getLocalStorageUsage, generateThumbnail } from "@/lib/image-utils";
 import { bookingPaymentReference } from "@/lib/booking-reference";
+import { bookingNeedsOutstandingPayment, hasExpiredBookingPaymentHold } from "@/lib/booking-utils";
 import {
   buildInvoiceEmailHtml,
   calcInvSubtotal,
@@ -86,6 +87,10 @@ import {
   getCacheStats,
   warmCache,
   createInvoiceCheckout,
+  fetchAdminInvoices,
+  createAdminInvoice,
+  updateAdminInvoice,
+  deleteAdminInvoice,
   sendInvoiceEmail,
   getStripeStatus,
   sendEnquiryAcceptedEmail,
@@ -2611,6 +2616,7 @@ function BookingEditor({ booking, onSave, onCancel }: {
   const handleSave = () => {
     if (!clientName.trim()) { toast.error("Client name is required"); return; }
     if (!date) { toast.error("Date is required"); return; }
+    if (hasConflict) { toast.error("This time conflicts with another active booking"); return; }
     const bk: Booking = {
       ...(booking || {}),
       id: bookingId,
@@ -2623,8 +2629,8 @@ function BookingEditor({ booking, onSave, onCancel }: {
       type: type.trim(),
       notes: notes.trim(),
       status,
-      paymentStatus: paymentStatus as Booking["paymentStatus"],
-      paymentAmount: paymentAmount ? parseFloat(paymentAmount) : undefined,
+      paymentStatus: booking?.paymentStatus || paymentStatus as Booking["paymentStatus"],
+      paymentAmount: booking?.paymentAmount ?? (paymentAmount ? parseFloat(paymentAmount) : undefined),
       instagramHandle: instagramHandle.trim() || undefined,
       createdAt: booking?.createdAt || new Date().toISOString(),
       answers: booking?.answers,
@@ -2732,14 +2738,14 @@ function BookingEditor({ booking, onSave, onCancel }: {
       {hasConflict && (
         <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-3 py-2 flex items-start gap-2">
           <AlertCircle className="w-4 h-4 text-yellow-400 mt-0.5 shrink-0" />
-          <p className="text-xs font-body text-yellow-200">This time overlaps another non-cancelled booking. You can still save it, but check the calendar first.</p>
+          <p className="text-xs font-body text-yellow-200">This time overlaps another active booking. Choose another time before saving.</p>
         </div>
       )}
       <div className="grid grid-cols-2 gap-4">
         <div>
           <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Status</label>
           <select value={status} onChange={e => setStatus(e.target.value as Booking["status"])} className="w-full bg-secondary border border-border text-foreground font-body text-sm rounded-md px-3 py-2">
-            <option value="pending">Pending</option>
+            <option value="pending">Awaiting Confirmation</option>
             <option value="confirmed">Confirmed</option>
             <option value="completed">Completed</option>
             <option value="cancelled">Cancelled</option>
@@ -2747,12 +2753,18 @@ function BookingEditor({ booking, onSave, onCancel }: {
         </div>
         <div>
           <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Payment</label>
-          <select value={paymentStatus} onChange={e => setPaymentStatus(e.target.value as Booking["paymentStatus"])} className="w-full bg-secondary border border-border text-foreground font-body text-sm rounded-md px-3 py-2">
-            <option value="unpaid">Unpaid</option>
-            <option value="paid">Paid</option>
-            <option value="cash">Cash</option>
-            <option value="deposit-paid">Deposit Paid</option>
-          </select>
+          {booking ? (
+            <div className="w-full bg-secondary/60 border border-border text-muted-foreground font-body text-sm rounded-md px-3 py-2 capitalize">
+              {(booking.paymentStatus || "unpaid").replace("-", " ")}
+            </div>
+          ) : (
+            <select value={paymentStatus} onChange={e => setPaymentStatus(e.target.value as Booking["paymentStatus"])} className="w-full bg-secondary border border-border text-foreground font-body text-sm rounded-md px-3 py-2">
+              <option value="unpaid">Unpaid</option>
+              <option value="paid">Paid</option>
+              <option value="cash">Cash</option>
+              <option value="deposit-paid">Deposit Paid</option>
+            </select>
+          )}
         </div>
       </div>
       <div>
@@ -3083,10 +3095,10 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
   const paymentReviewCount = operationalBookings.filter(bookingNeedsManualPaymentReview).length;
   const archivedPaymentReviewCount = bookings.filter(b => b.archived === true && bookingNeedsManualPaymentReview(b)).length;
   const bookingSummary = {
-    pending: operationalBookings.filter(b => b.status === "pending").length,
+    pending: operationalBookings.filter(b => b.status === "pending" && !hasExpiredBookingPaymentHold(b)).length,
     today: operationalBookings.filter(b => b.date === today && b.status !== "cancelled").length,
     next7: operationalBookings.filter(b => b.date >= today && b.date <= nextWeekStr && b.status !== "cancelled").length,
-    needsPayment: operationalBookings.filter(b => b.status !== "cancelled" && !["paid", "cash"].includes(b.paymentStatus || "unpaid")).length,
+    needsPayment: operationalBookings.filter(b => bookingNeedsOutstandingPayment(b)).length,
     paymentReview: paymentReviewCount,
   };
 
@@ -3271,7 +3283,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
 
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-5">
         {[
-          { label: "Pending", value: bookingSummary.pending, tone: "text-yellow-400" },
+          { label: "Awaiting Confirmation", value: bookingSummary.pending, tone: "text-yellow-400" },
           { label: "Today", value: bookingSummary.today, tone: "text-primary" },
           { label: "Next 7 Days", value: bookingSummary.next7, tone: "text-blue-400" },
           { label: "Needs Payment", value: bookingSummary.needsPayment, tone: "text-red-400" },
@@ -3564,7 +3576,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                       <select value={bk.status} onChange={(e) => handleStatusChange(bk, e.target.value as Booking["status"])} disabled={bk.archived === true}
                         aria-label="Booking status"
                         className="hidden sm:block text-xs font-body px-2.5 py-1 rounded-full bg-secondary border border-border text-foreground cursor-pointer sm:mr-3">
-                        <option value="pending">Pending</option>
+                        <option value="pending">Awaiting Confirmation</option>
                         <option value="confirmed">Confirmed</option>
                         <option value="completed">Completed</option>
                         <option value="cancelled">Cancelled</option>
@@ -7314,6 +7326,36 @@ function PhotosView() {
     }
   };
 
+  const sourceWithoutQuery = (src?: string) => (src || "").split("?")[0];
+
+  const patchPhotoEverywhere = (photoId: string, patch: Partial<Photo>, previousSrc?: string) => {
+    const updatedLib = libraryPhotos.map(p => p.id === photoId ? { ...p, ...patch } : p);
+    setPhotoLibrary(updatedLib);
+    setLibraryPhotosState(updatedLib);
+
+    const previousBase = sourceWithoutQuery(previousSrc);
+    const currentAlbums = getAlbums();
+    let anyAlbumPatched = false;
+    for (const alb of currentAlbums) {
+      if (!alb.photos.some(p => p.id === photoId)) continue;
+      const updatedPhotos = alb.photos.map(p => p.id === photoId ? { ...p, ...patch } : p);
+      const coverMatches = previousBase && sourceWithoutQuery(alb.coverImage) === previousBase;
+      updateAlbum({
+        ...alb,
+        photos: updatedPhotos,
+        coverImage: coverMatches && patch.src ? patch.src : alb.coverImage,
+      });
+      anyAlbumPatched = true;
+    }
+    if (anyAlbumPatched) setAlbumsState(getAlbums());
+  };
+
+  const sourceUsedByAnotherPhoto = (src: string, photoId: string) => {
+    const base = sourceWithoutQuery(src);
+    return libraryPhotos.some(p => p.id !== photoId && sourceWithoutQuery(p.src) === base)
+      || getAlbums().some(alb => alb.photos.some(p => p.id !== photoId && sourceWithoutQuery(p.src) === base));
+  };
+
   const handleAIEnhance = async (photo: Photo & { source: string }, params?: PhotoEditRequest) => {
     if (enhancingIds.has(photo.id)) return;
     setEnhancingIds(prev => new Set(prev).add(photo.id));
@@ -7352,38 +7394,49 @@ function PhotosView() {
       const newSrc = `${newFile.url}?wm=0`;
       const newThumb = `${newFile.url}?size=thumb&wm=0`;
 
-      // Revoke any previous blob URL to free memory
-      if (photo.src.startsWith("blob:")) URL.revokeObjectURL(photo.src);
+      const previousEditedSrc = photo.beforeSrc ? photo.src : "";
+      const patch = { src: newSrc, beforeSrc: originalSrc, afterSrc: newSrc, thumbnail: newThumb };
+      patchPhotoEverywhere(photo.id, patch, photo.src);
+      setLightboxPhoto(prev => prev?.id === photo.id ? { ...prev, ...patch } : prev);
+      URL.revokeObjectURL(blobUrl);
 
-      const patch = { src: newSrc, beforeSrc: originalSrc, thumbnail: newThumb };
-
-      // Always patch the library entry (whether the photo lives there or not —
-      // photos are often in both library AND albums simultaneously).
-      const updatedLib = libraryPhotos.map(p => p.id === photo.id ? { ...p, ...patch } : p);
-      setPhotoLibrary(updatedLib);
-      setLibraryPhotosState(updatedLib);
-
-      // Also patch every album that contains a photo with this id, so the "all"
-      // view and album-specific views both show the enhanced image.
-      const currentAlbums = getAlbums();
-      let anyAlbumPatched = false;
-      for (const alb of currentAlbums) {
-        if (alb.photos.some(p => p.id === photo.id)) {
-          const updated = { ...alb, photos: alb.photos.map(p => p.id === photo.id ? { ...p, ...patch } : p) };
-          updateAlbum(updated);
-          anyAlbumPatched = true;
-        }
+      // Re-editing replaces the previous derivative. Remove it only after every
+      // record points at the new file and only when no other photo references it.
+      if (previousEditedSrc.startsWith("/uploads/")
+          && sourceWithoutQuery(previousEditedSrc) !== sourceWithoutQuery(originalSrc)
+          && !sourceUsedByAnotherPhoto(previousEditedSrc, photo.id)) {
+        deletePhotoFromServer(previousEditedSrc);
       }
-      if (anyAlbumPatched) setAlbumsState(getAlbums());
-      // Show blob in lightbox immediately — no second network request needed
-      setLightboxPhoto(prev => prev?.id === photo.id ? { ...prev, src: blobUrl, beforeSrc: originalSrc } : prev);
       setLbShowBefore(false);
-      toast.success("AI enhancement saved");
+      toast.success("Edit saved · original preserved");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "AI enhancement failed");
     } finally {
       setEnhancingIds(prev => { const next = new Set(prev); next.delete(photo.id); return next; });
     }
+  };
+
+  const handleRestoreOriginal = (photo: Photo & { source: string }) => {
+    if (!photo.beforeSrc) return;
+    const editedSrc = photo.src;
+    const originalBase = sourceWithoutQuery(photo.beforeSrc);
+    const originalSrc = `${originalBase}?wm=0`;
+    const patch: Partial<Photo> = {
+      src: originalSrc,
+      thumbnail: `${originalBase}?size=thumb&wm=0`,
+      beforeSrc: undefined,
+      afterSrc: undefined,
+    };
+    patchPhotoEverywhere(photo.id, patch, editedSrc);
+    setLightboxPhoto(prev => prev?.id === photo.id ? { ...prev, ...patch } : prev);
+    setLbShowBefore(false);
+    setLbEditOpen(false);
+    if (editedSrc.startsWith("/uploads/")
+        && sourceWithoutQuery(editedSrc) !== originalBase
+        && !sourceUsedByAnotherPhoto(editedSrc, photo.id)) {
+      deletePhotoFromServer(editedSrc);
+    }
+    toast.success("Original restored");
   };
 
   const handleDeletePhoto = (id: string, source: string) => {
@@ -7594,6 +7647,15 @@ function PhotosView() {
                   {lbShowBefore ? "Show Enhanced" : "Show Original"}
                 </button>
               )}
+              {lightboxPhoto.beforeSrc && (
+                <button
+                  onClick={e => { e.stopPropagation(); handleRestoreOriginal(lightboxPhoto as Photo & { source: string }); }}
+                  className="flex items-center gap-1.5 bg-black/50 hover:bg-red-500/30 text-white px-3 py-1 rounded-full text-xs font-body transition-colors shrink-0"
+                  title="Restore the untouched camera JPEG"
+                >
+                  <RefreshCcw className="w-3 h-3" /> Restore Original
+                </button>
+              )}
               {/* AI Edit button in lightbox */}
               <button
                 onClick={e => { e.stopPropagation(); if (!enhancingIds.has(lightboxPhoto.id)) setLbEditOpen(v => !v); }}
@@ -7603,7 +7665,7 @@ function PhotosView() {
               >
                 {enhancingIds.has(lightboxPhoto.id)
                   ? <><div className="w-3 h-3 rounded-full border border-white border-t-transparent animate-spin" /><span>Processing…</span></>
-                  : <><Sparkles className="w-3 h-3" /><span>{lightboxPhoto.beforeSrc ? "Re-edit" : "AI Edit"}</span></>
+                  : <><Sparkles className="w-3 h-3" /><span>{lightboxPhoto.beforeSrc ? "Re-edit" : "Edit"}</span></>
                 }
               </button>
             </div>
@@ -7611,6 +7673,10 @@ function PhotosView() {
             {/* ── Full AI Editing Panel ─────────────────────────────────────── */}
             {lbEditOpen && !enhancingIds.has(lightboxPhoto.id) && (() => {
               const presets: { id: PresetEditParams["preset"]; label: string; emoji: string; desc: string }[] = [
+                { id: "natural", label: "Natural",     emoji: "📷", desc: "Clean camera JPEG" },
+                { id: "indoor",  label: "Indoor",      emoji: "💡", desc: "Mixed light & noise" },
+                { id: "concert", label: "Concert",     emoji: "🎤", desc: "Protect stage lights" },
+                { id: "sports",  label: "Sports",      emoji: "🏃", desc: "Crisp action" },
                 { id: "moody",  label: "Moody",       emoji: "🌑", desc: "Dark & cinematic" },
                 { id: "bright", label: "Bright",      emoji: "☀️", desc: "Light & airy" },
                 { id: "film",   label: "Film",        emoji: "🎞️", desc: "Warm analogue" },
@@ -7667,14 +7733,14 @@ function PhotosView() {
                     {/* ── Auto tab ────────────────────────────────────────── */}
                     {lbEditTab === "auto" && (
                       <div>
-                        {/* Adobe Auto button */}
+                        {/* Smart Auto button */}
                         <button
                           onClick={() => handleAIEnhance(lightboxPhoto as Photo & { source: string }, { mode: "adobe-auto" })}
                           className="w-full mb-3 py-2 rounded-xl bg-gradient-to-r from-blue-600/80 to-violet-600/80 hover:from-blue-500/90 hover:to-violet-500/90 text-white text-[10px] font-body font-semibold tracking-wider transition-all flex items-center justify-center gap-1.5 border border-white/10"
                         >
-                          <Sparkles className="w-3 h-3" /> Adobe Auto
+                          <Sparkles className="w-3 h-3" /> Smart Auto
                         </button>
-                        <p className="text-[10px] font-body text-white/40 mb-3 text-center">Or manually scale each axis below.</p>
+                        <p className="text-[10px] font-body text-white/40 mb-3 text-center">Conservative histogram-based correction for JPEGs.</p>
                         {(["brightness","saturation","contrast","sharpness"] as const).map(key => (
                           <div key={key} className="mb-3">
                             <div className="flex justify-between items-center mb-1">
@@ -8185,6 +8251,11 @@ function InvoicesView() {
 
   React.useEffect(() => {
     getStripeStatus().then(s => setStripeAvailable(s.configured));
+    fetchAdminInvoices().then(result => {
+      if (!result.ok) return;
+      cacheInvoicesLocally(result.invoices);
+      setInvoices(result.invoices);
+    });
   }, []);
 
   // Auto-detect overdue invoices on mount: mark any "sent" invoice whose due date
@@ -8206,7 +8277,22 @@ function InvoicesView() {
     }
   }, []);
 
-  const reload = () => setInvoices(getInvoices());
+  const acceptCanonicalInvoice = React.useCallback((invoice: Invoice) => {
+    setInvoices(current => {
+      const next = current.some(item => item.id === invoice.id)
+        ? current.map(item => item.id === invoice.id ? invoice : item)
+        : [...current, invoice];
+      cacheInvoicesLocally(next);
+      return next;
+    });
+  }, []);
+
+  const reload = React.useCallback(async () => {
+    const result = await fetchAdminInvoices();
+    if (!result.ok) return;
+    cacheInvoicesLocally(result.invoices);
+    setInvoices(result.invoices);
+  }, []);
 
   // ── helpers ──────────────────────────────────────────────
   const shareUrl = (inv: Invoice) => `${window.location.origin}/invoice/${inv.shareToken}`;
@@ -8240,7 +8326,7 @@ function InvoicesView() {
 
   const openEdit = (inv: Invoice) => { setEditing({ ...inv }); setView("form"); };
 
-  const handleClone = (inv: Invoice) => {
+  const handleClone = async (inv: Invoice) => {
     const now = new Date();
     const due = new Date(now); due.setDate(due.getDate() + 30);
     const cloned: Invoice = {
@@ -8256,32 +8342,40 @@ function InvoicesView() {
       shareToken: generateCapabilityToken("inv"),
       emailLog: [],
     };
-    addInvoice(cloned);
-    reload();
-    toast.success("Invoice cloned as draft");
+    const result = await createAdminInvoice(cloned);
+    if (!result.ok || !result.invoice) { toast.error(result.error || "Unable to clone invoice"); return; }
+    acceptCanonicalInvoice(result.invoice);
+    toast.success(`Invoice cloned as ${result.invoice.number}`);
   };
 
-  const handleDelete = (inv: Invoice) => {
+  const handleDelete = async (inv: Invoice) => {
     if (!confirm(`Delete invoice ${inv.number}? This cannot be undone.`)) return;
-    deleteInvoice(inv.id);
-    reload();
+    const result = await deleteAdminInvoice(inv.id);
+    if (!result.ok) { toast.error(result.error || "Unable to delete invoice"); return; }
+    setInvoices(current => {
+      const next = current.filter(item => item.id !== inv.id);
+      cacheInvoicesLocally(next);
+      return next;
+    });
     toast.success("Invoice deleted");
   };
 
-  const handleMarkPaid = (inv: Invoice) => {
+  const handleMarkPaid = async (inv: Invoice) => {
     if (!confirm(`Mark ${inv.number} as paid?`)) return;
     const updated: Invoice = { ...inv, status: "paid", paidAt: new Date().toISOString() };
-    updateInvoice(updated);
-    reload();
-    notifyDiscord({ event: "invoice-paid", invoice: updated });
+    const result = await updateAdminInvoice(updated);
+    if (!result.ok || !result.invoice) { toast.error(result.error || "Unable to update invoice"); return; }
+    acceptCanonicalInvoice(result.invoice);
+    notifyDiscord({ event: "invoice-paid", invoice: result.invoice });
     toast.success("Invoice marked as paid");
   };
 
-  const handleMarkOverdue = (inv: Invoice) => {
+  const handleMarkOverdue = async (inv: Invoice) => {
     const updated: Invoice = { ...inv, status: "overdue" };
-    updateInvoice(updated);
-    reload();
-    notifyDiscord({ event: "invoice-overdue", invoice: updated });
+    const result = await updateAdminInvoice(updated);
+    if (!result.ok || !result.invoice) { toast.error(result.error || "Unable to update invoice"); return; }
+    acceptCanonicalInvoice(result.invoice);
+    notifyDiscord({ event: "invoice-overdue", invoice: result.invoice });
     toast.info("Invoice marked as overdue");
   };
 
@@ -8354,9 +8448,10 @@ function InvoicesView() {
     if (!ok) { toast.error(error || "Failed to send email"); setSendingEmail(false); return; }
     const logEntry = { sentAt: new Date().toISOString(), type: "invoice" as const, to: inv.to.email, subject };
     const updated: Invoice = { ...inv, status: inv.status === "draft" ? "sent" : inv.status, sentAt: inv.sentAt || new Date().toISOString(), emailLog: [...(inv.emailLog || []), logEntry] };
-    updateInvoice(updated);
-    reload();
-    notifyDiscord({ event: "invoice-sent", invoice: updated });
+    const saved = await updateAdminInvoice(updated);
+    if (!saved.ok || !saved.invoice) { toast.error(saved.error || "Email sent, but invoice history could not be saved"); setSendingEmail(false); return; }
+    acceptCanonicalInvoice(saved.invoice);
+    notifyDiscord({ event: "invoice-sent", invoice: saved.invoice });
     setSendingEmail(false);
     toast.success(`Invoice sent to ${inv.to.email}`);
   };
@@ -8372,9 +8467,10 @@ function InvoicesView() {
     if (!ok) { toast.error(error || "Failed to send reminder"); setSendingEmail(false); return; }
     const logEntry = { sentAt: new Date().toISOString(), type: "reminder" as const, to: inv.to.email, subject };
     const updated: Invoice = { ...inv, emailLog: [...(inv.emailLog || []), logEntry] };
-    updateInvoice(updated);
-    reload();
-    notifyDiscord({ event: "invoice-reminder", invoice: updated });
+    const saved = await updateAdminInvoice(updated);
+    if (!saved.ok || !saved.invoice) { toast.error(saved.error || "Reminder sent, but invoice history could not be saved"); setSendingEmail(false); return; }
+    acceptCanonicalInvoice(saved.invoice);
+    notifyDiscord({ event: "invoice-reminder", invoice: saved.invoice });
     setSendingEmail(false);
     toast.success("Payment reminder sent");
   };
@@ -8720,14 +8816,15 @@ function InvoicesView() {
       bankSettings={bankSettings}
       bookings={getBookings()}
       albums={getAlbums()}
-      onSave={(inv) => {
+      onSave={async (inv) => {
         const existing = getInvoices().find(i => i.id === inv.id);
-        if (existing) updateInvoice(inv);
-        else { addInvoice(inv); notifyDiscord({ event: "invoice-created", invoice: inv }); }
-        reload();
+        const result = existing ? await updateAdminInvoice(inv) : await createAdminInvoice(inv);
+        if (!result.ok || !result.invoice) { toast.error(result.error || "Unable to save invoice"); return; }
+        acceptCanonicalInvoice(result.invoice);
+        if (!existing) notifyDiscord({ event: "invoice-created", invoice: result.invoice });
         setView("list");
         setEditing(null);
-        toast.success(`Invoice ${inv.number} saved`);
+        toast.success(`Invoice ${result.invoice.number} saved`);
       }}
       onCancel={() => { setView("list"); setEditing(null); }}
     />

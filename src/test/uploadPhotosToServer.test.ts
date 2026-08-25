@@ -14,6 +14,17 @@ const SUPPORTED_UPLOAD_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".webp", "
 const IGNORED_UPLOAD_FILENAMES = new Set(["thumbs.db", ".ds_store", "desktop.ini"]);
 const UPLOAD_BATCH_RETRIES = 2;
 
+class PhotoUploadError extends Error {
+  constructor(
+    message: string,
+    public readonly status?: number,
+    public readonly kind: "authentication" | "request" = "request",
+  ) {
+    super(message);
+    this.name = "PhotoUploadError";
+  }
+}
+
 function fileExtension(name: string): string {
   const dot = name.lastIndexOf(".");
   return dot >= 0 ? name.slice(dot).toLowerCase() : "";
@@ -87,10 +98,21 @@ async function uploadPhotosToServer(
       batch.forEach((f) => form.append("photos", f));
       try {
         const res = await fetchFn(uploadUrl, { method: "POST", body: form });
-        if (!res.ok) throw new Error(`Upload failed (${res.status})`);
+        if (!res.ok) {
+          const body = await (res as any).json().catch(() => ({}));
+          const authenticationFailure = res.status === 401 || res.status === 403;
+          const message = authenticationFailure
+            ? "Your upload session expired. Sign in again, then retry the queued photos."
+            : body?.error || `Upload failed (${res.status})`;
+          if (authenticationFailure || (res.status >= 400 && res.status < 500 && res.status !== 408 && res.status !== 429)) {
+            throw new PhotoUploadError(message, res.status, authenticationFailure ? "authentication" : "request");
+          }
+          throw new Error(message);
+        }
         const data = await (res as any).json().catch(() => ({}));
         return Array.isArray(data.files) ? data.files : [];
-      } catch {
+      } catch (error) {
+        if (error instanceof PhotoUploadError) throw error;
         // retry below
       }
     }
@@ -335,6 +357,29 @@ describe("uploadPhotosToServer (concurrent implementation)", () => {
 
     expect(partialFetch).toHaveBeenCalledTimes(3);
     expect(result).toHaveLength(10);
+  });
+
+  it("surfaces an expired upload session immediately instead of reporting offline", async () => {
+    const unauthorizedFetch = vi.fn(async () => ({
+      ok: false,
+      status: 401,
+      json: async () => ({ error: "Authentication required" }),
+    } as unknown as Response));
+
+    await expect(uploadPhotosToServer(
+      [makeFile("session-expired.jpg")],
+      undefined,
+      undefined,
+      1,
+      undefined,
+      undefined,
+      unauthorizedFetch,
+    )).rejects.toMatchObject({
+      name: "PhotoUploadError",
+      status: 401,
+      kind: "authentication",
+    });
+    expect(unauthorizedFetch).toHaveBeenCalledTimes(1);
   });
 
   it("returns successful batches when one batch keeps failing after retries", async () => {

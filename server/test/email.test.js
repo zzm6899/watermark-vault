@@ -10,6 +10,7 @@ const {
   buildClientPortalEmail,
   buildGalleryDeliveryEmail,
   buildInvoicePaidEmail,
+  bookingEmailReference,
   prepareCustomEmail,
   sendBookingConfirmationEmail,
 } = require("../email");
@@ -29,6 +30,18 @@ const base = {
   calendarUrl: "https://calendar.example",
   status: "confirmed",
 };
+
+test("booking email references stay short while canonical IDs remain internal", () => {
+  const longId = "bk-12345678-1234-4abc-9def-123456789abc";
+  assert.equal(bookingEmailReference(longId), "BK-89ABC");
+  assert.equal(bookingEmailReference(longId, "PF-9A8B7C6D"), "PF-9A8B7C6D");
+
+  const html = buildBookingEmailHtml({ ...base, bookingId: longId, paymentReference: "PF-9A8B7C6D", paymentMethod: "bank" });
+  const text = buildBookingEmailText({ ...base, bookingId: longId, paymentReference: "PF-9A8B7C6D", paymentMethod: "bank" });
+  assert.match(html, /Reference: PF-9A8B7C6D/);
+  assert.match(text, /Reference: PF-9A8B7C6D/);
+  assert.doesNotMatch(`${html}${text}`, new RegExp(longId));
+});
 
 test("pay-in-full booking receipts do not mislabel the configured deposit as the amount paid", () => {
   const full = buildBookingEmailHtml({ ...base, paymentMethod: "stripe", paymentKind: "full" });

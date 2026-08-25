@@ -63,6 +63,24 @@ test("payment review resolution accepts only the three intentional settlement st
   }
 });
 
+test("payment review settlement records timestamps and confirms bookings that do not require approval", () => {
+  const paid = resolveBookingPaymentReview(reviewBooking({ status: "pending", requiresConfirmation: false }), "paid", {
+    actor: "owner",
+    nowMs: RESOLVED_AT_MS,
+  });
+  assert.equal(paid.booking.status, "confirmed");
+  assert.equal(paid.booking.paidAt, "2026-08-08T12:34:56.000Z");
+  assert.equal(paid.booking.statusHistory.at(-1).status, "confirmed");
+  assert.equal(paid.booking.paymentHistory.at(-1).action, "payment-review-resolved");
+
+  const approvalRequired = resolveBookingPaymentReview(reviewBooking({ status: "pending", requiresConfirmation: true }), "cash", {
+    actor: "owner",
+    nowMs: RESOLVED_AT_MS,
+  });
+  assert.equal(approvalRequired.booking.status, "pending");
+  assert.equal(approvalRequired.booking.paymentMethod, "cash");
+});
+
 test("inactive or already resolved payment reviews fail closed", () => {
   for (const booking of [
     reviewBooking({ paymentNeedsReview: false, paymentReviewStatus: "resolved", paymentReviewReason: undefined }),

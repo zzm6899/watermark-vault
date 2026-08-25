@@ -271,8 +271,8 @@ function bookingNeedsPaymentReview(booking) {
 
 /**
  * Resolve one canonical booking payment review without rebuilding the booking
- * from browser state. All unrelated payment and Stripe fields are preserved;
- * the only changed payment state is the administrator's explicit resolution.
+ * from browser state. All unrelated Stripe fields are preserved while the
+ * canonical settlement timestamps and booking status are kept consistent.
  */
 function resolveBookingPaymentReview(booking, paymentStatus, options = {}) {
   const normalizedPaymentStatus = String(paymentStatus || "").trim().toLowerCase();
@@ -318,14 +318,25 @@ function resolveBookingPaymentReview(booking, paymentStatus, options = {}) {
     resolutionPaymentStatus: normalizedPaymentStatus,
   });
 
+  const confirmsBooking = booking.status === "pending" && booking.requiresConfirmation !== true;
+  const paymentHistory = Array.isArray(booking.paymentHistory) ? booking.paymentHistory.slice(-99) : [];
   const updated = {
     ...booking,
     paymentStatus: normalizedPaymentStatus,
+    ...(normalizedPaymentStatus === "deposit-paid"
+      ? { depositPaidAt: booking.depositPaidAt || resolvedAt }
+      : { paidAt: booking.paidAt || resolvedAt }),
+    ...(normalizedPaymentStatus === "cash" ? { paymentMethod: "cash" } : {}),
+    ...(confirmsBooking ? {
+      status: "confirmed",
+      statusHistory: [...(Array.isArray(booking.statusHistory) ? booking.statusHistory : []), { status: "confirmed", changedAt: resolvedAt, note: "Payment review resolved" }],
+    } : {}),
     paymentNeedsReview: false,
     paymentReviewStatus: "resolved",
     paymentReviewResolvedAt: resolvedAt,
     paymentReviewResolvedBy: resolvedBy,
     paymentReviews,
+    paymentHistory: [...paymentHistory, { action: "payment-review-resolved", changedAt: resolvedAt, source: "admin", paymentStatus: normalizedPaymentStatus, resolvedBy }],
   };
   delete updated.paymentReviewReason;
   return { ok: true, booking: updated };

@@ -15,6 +15,7 @@ artifacts/
 .android-sdk/
 .gradle-local/
 .gradle-user-home/
+.android-web*/
 *.local
 
 # Editor directories and files

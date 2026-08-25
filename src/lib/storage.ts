@@ -2,7 +2,7 @@ import type {
   EventType, Booking, Album, Photo, ProfileSettings,
   AppSettings, BankTransferSettings, WaitlistEntry, EmailTemplate, Invoice, Contact, Enquiry, PixiesetImportAudit,
 } from "./types";
-import { createAdminBooking, deleteAdminBooking, patchAdminBooking, persistToServer, persistAlbumToServer, deleteAlbumFromServer } from "./api";
+import { createAdminBooking, deleteAdminBooking, patchAdminBooking, persistToServer, persistAlbumToServer, deleteAlbumFromServer, createAdminInvoice, updateAdminInvoice, deleteAdminInvoice } from "./api";
 
 const KEYS = {
   SETUP_COMPLETE: "wv_setup_complete",
@@ -500,22 +500,45 @@ export function getInvoices(): Invoice[] {
   return get<Invoice[]>("wv_invoices", []);
 }
 
+export function cacheInvoicesLocally(invoices: Invoice[]) {
+  try { localStorage.setItem("wv_invoices", JSON.stringify(invoices)); } catch { /* cache is best effort */ }
+}
+
 export function setInvoices(invoices: Invoice[]) {
-  set("wv_invoices", invoices);
+  const previous = getInvoices();
+  localStorage.setItem("wv_invoices", JSON.stringify(invoices));
+  const previousById = new Map(previous.map(invoice => [invoice.id, invoice]));
+  const nextIds = new Set(invoices.map(invoice => invoice.id));
+  for (const invoice of invoices) {
+    const operation = previousById.has(invoice.id) ? updateAdminInvoice(invoice) : createAdminInvoice(invoice);
+    operation.catch(error => console.error("Invoice sync failed:", error));
+  }
+  for (const invoice of previous) {
+    if (!nextIds.has(invoice.id)) deleteAdminInvoice(invoice.id).catch(error => console.error("Invoice delete sync failed:", error));
+  }
 }
 
 export function addInvoice(invoice: Invoice) {
   const list = getInvoices();
   list.push(invoice);
-  setInvoices(list);
+  localStorage.setItem("wv_invoices", JSON.stringify(list));
+  createAdminInvoice(invoice).then(result => {
+    if (!result.ok || !result.invoice) return;
+    localStorage.setItem("wv_invoices", JSON.stringify(getInvoices().map(item => item.id === invoice.id ? result.invoice : item)));
+  }).catch(error => console.error("Invoice create failed:", error));
 }
 
 export function updateInvoice(invoice: Invoice) {
-  setInvoices(getInvoices().map(i => (i.id === invoice.id ? invoice : i)));
+  localStorage.setItem("wv_invoices", JSON.stringify(getInvoices().map(i => (i.id === invoice.id ? invoice : i))));
+  updateAdminInvoice(invoice).then(result => {
+    if (!result.ok || !result.invoice) return;
+    localStorage.setItem("wv_invoices", JSON.stringify(getInvoices().map(item => item.id === invoice.id ? result.invoice : item)));
+  }).catch(error => console.error("Invoice update failed:", error));
 }
 
 export function deleteInvoice(id: string) {
-  setInvoices(getInvoices().filter(i => i.id !== id));
+  localStorage.setItem("wv_invoices", JSON.stringify(getInvoices().filter(i => i.id !== id)));
+  deleteAdminInvoice(id).catch(error => console.error("Invoice delete failed:", error));
 }
 
 export function getNextInvoiceNumber(): string {
