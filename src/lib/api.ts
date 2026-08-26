@@ -630,6 +630,7 @@ export async function uploadPhotosToServer(
   concurrency = 3,
   albumFolder?: string,
   albumId?: string,
+  autoEdit = false,
 ): Promise<UploadedPhotoResult[]> {
   if (!(await checkServer())) return [];
   const uploadFiles = files.filter(isSupportedUploadFile);
@@ -644,6 +645,7 @@ export async function uploadPhotosToServer(
   if (albumId) {
     uploadUrl += (uploadUrl.includes("?") ? "&" : "?") + `albumId=${encodeURIComponent(albumId)}`;
   }
+  if (autoEdit) uploadUrl += (uploadUrl.includes("?") ? "&" : "?") + "autoEdit=1";
 
   // Smaller batches improve granular progress feedback and concurrent throughput
   const batchSize = 5;

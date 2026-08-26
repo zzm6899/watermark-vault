@@ -21,7 +21,7 @@ import {
   Usb, AlertCircle, Download, Mail, FileImage, Search,
   Clock, ChevronDown, ChevronUp, CheckCircle2, Users,
   Star, CalendarDays, ChevronLeft, ChevronRight,
-  AlertTriangle, RotateCcw, Settings2, LogOut,
+  AlertTriangle, RotateCcw, Settings2, LogOut, Sparkles,
   Pause, Play,
   Activity, CircleDot, FolderOpen, ListFilter, RadioTower, ShieldCheck, UploadCloud,
 } from "lucide-react";
@@ -38,6 +38,8 @@ function todayStr(): string {
 }
 const FTP_SETTINGS_KEY = "cameraFtpSettings:v1";
 const CAPTURE_TARGET_KEY = "cameraCaptureTarget:v1";
+const AUTO_CULL_KEY = "cameraCaptureAutoCull:v1";
+const AUTO_EDIT_KEY = "cameraCaptureAutoEdit:v1";
 const FTP_JPEG_EXTENSIONS = new Set([".jpg", ".jpeg"]);
 const FTP_PROOF_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif", ".tif", ".tiff"]);
 const FTP_RAW_EXTENSIONS = new Set([".nef", ".nrw", ".raw", ".cr2", ".cr3", ".arw", ".dng", ".raf", ".orf", ".rw2"]);
@@ -559,6 +561,12 @@ function MobileCaptureInner() {
   const [importProgress, setImportProgress] = useState(0);
   const [liveQueueSize, setLiveQueueSize] = useState(0);
   const [watching, setWatching] = useState(false);
+  const [autoCullEnabled, setAutoCullEnabled] = useState(() => {
+    try { return localStorage.getItem(AUTO_CULL_KEY) !== "off"; } catch { return true; }
+  });
+  const [autoEditEnabled, setAutoEditEnabled] = useState(() => {
+    try { return localStorage.getItem(AUTO_EDIT_KEY) !== "off"; } catch { return true; }
+  });
   const [notifyClient, setNotifyClient] = useState(true);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   const [lightboxSrcCache, setLightboxSrcCache] = useState<Record<string, string>>({});
@@ -668,6 +676,23 @@ function MobileCaptureInner() {
     });
     if (!response.ok) throw new Error(`Failed to save album (${response.status})`);
   }, [tenantSession]);
+
+  const loadCanonicalAlbum = useCallback(async (album: Album): Promise<Album> => {
+    if (tenantSession) return album;
+    try {
+      const response = await fetch(`/api/albums/${encodeURIComponent(album.id)}/photos`, { headers: adminAuthHeaders() });
+      if (response.ok) {
+        const payload = await response.json();
+        if (Array.isArray(payload.photos)) return { ...album, photos: payload.photos, photoCount: payload.photos.length };
+      }
+    } catch { /* retain local snapshot if the refresh is unavailable */ }
+    return album;
+  }, [tenantSession]);
+
+  const mergePhotosById = (existing: Photo[], incoming: Photo[]) => {
+    const seen = new Set(existing.map(photo => photo.id));
+    return [...existing, ...incoming.filter(photo => !seen.has(photo.id))];
+  };
 
   const autoCullRouteMissingRef = useRef(false);
   const cullInFlightRef = useRef(false);
@@ -779,7 +804,7 @@ function MobileCaptureInner() {
     try {
       const album = albums.find(a => a.id === item.albumId);
       if (!album) return false;
-      const results = await uploadPhotosToServer([file], () => {}, tenantSession?.slug, 1, album.title, album.id);
+      const results = await uploadPhotosToServer([file], () => {}, tenantSession?.slug, 1, album.title, album.id, autoEditEnabled);
       const uploaded = results?.[0];
       if (!uploaded?.url) return false;
 
@@ -813,7 +838,7 @@ function MobileCaptureInner() {
     } catch {
       return false;
     }
-  }, [albums, saveAlbum, tenantSession?.slug]);
+  }, [albums, autoEditEnabled, saveAlbum, tenantSession?.slug]);
 
   useOfflineUploadQueue(uploadOfflineItem);
 
@@ -955,6 +980,7 @@ function MobileCaptureInner() {
   const pendingCullAlbumRef = useRef<Album | null>(null);
   const cullTimerRef = useRef<number | null>(null);
   const scheduleAutoCull = useCallback((album: Album, delayMs = 4200) => {
+    if (!autoCullEnabled) return;
     pendingCullAlbumRef.current = album;
     if (cullTimerRef.current != null) window.clearTimeout(cullTimerRef.current);
     cullTimerRef.current = window.setTimeout(() => {
@@ -963,7 +989,7 @@ function MobileCaptureInner() {
       cullTimerRef.current = null;
       if (pending) runAutoCull(pending.id, pending);
     }, delayMs);
-  }, [runAutoCull]);
+  }, [autoCullEnabled, runAutoCull]);
   useEffect(() => () => {
     if (cullTimerRef.current != null) window.clearTimeout(cullTimerRef.current);
   }, []);
@@ -972,6 +998,7 @@ function MobileCaptureInner() {
   const importQueueRef = useRef<number[][]>([]);
   const ftpImportQueueRef = useRef<string[][]>([]);
   const importBusyRef = useRef(false);
+  const drainPendingQueuesRef = useRef<(() => void) | null>(null);
   // ref so drainImportQueue never closes over importCameraFiles before it's defined
   const importCameraFilesRef = useRef<((handles: number[]) => Promise<void>) | null>(null);
   const importFtpFilesRef = useRef<((paths: string[]) => Promise<void>) | null>(null);
@@ -992,7 +1019,10 @@ function MobileCaptureInner() {
       importBusyRef.current = true;
       try { await importCameraFilesRef.current(handles); }
       catch (e) { console.error("Queue import error:", e); }
-      finally { importBusyRef.current = false; }
+      finally {
+        importBusyRef.current = false;
+        window.setTimeout(() => drainPendingQueuesRef.current?.(), 0);
+      }
     }
   }, []);
 
@@ -1006,9 +1036,18 @@ function MobileCaptureInner() {
       importBusyRef.current = true;
       try { await importFtpFilesRef.current(paths); }
       catch (e) { console.error("FTP queue import error:", e); }
-      finally { importBusyRef.current = false; }
+      finally {
+        importBusyRef.current = false;
+        window.setTimeout(() => drainPendingQueuesRef.current?.(), 0);
+      }
     }
   }, []);
+
+  drainPendingQueuesRef.current = () => {
+    if (importBusyRef.current || liveCapturePausedRef.current) return;
+    if (importQueueRef.current.length > 0) { void drainImportQueue(); return; }
+    if (ftpImportQueueRef.current.length > 0) { void drainFtpImportQueue(); }
+  };
 
   useEffect(() => {
     if (!isNative || !watching) return;
@@ -1253,15 +1292,18 @@ function MobileCaptureInner() {
               const chunkResults = await uploadPhotosToServer(decodedFiles, (done, _total, bytesPerSecond) => {
                 setImportProgress(Math.round((chunkStart + done) / freshHandles.length * 100));
                 if (bytesPerSecond != null) setImportSpeed(bytesPerSecond);
-              }, tenantSession?.slug, 3, album?.title || undefined, album?.id);
-              for (const { result } of matchUploadResultsToFiles(decodedFiles, chunkResults)) {
+              }, tenantSession?.slug, 3, album?.title || undefined, album?.id, autoEditEnabled);
+              const matched = matchUploadResultsToFiles(decodedFiles, chunkResults);
+              for (const { result } of matched) {
                 newPhotos.push(photoFromUploadResult(result, uploadedAt));
               }
               // Delete local cached copies now that files are safely on the server.
               // Fire-and-forget: cleanup is best-effort and must not block the upload flow
               // or depend on the component remaining mounted.
               const localPaths = imported.map(f => f.localPath).filter((p): p is string => Boolean(p));
-              if (localPaths.length > 0) {
+              // Keep every local source when any file was not acknowledged. A
+              // partial response must never delete the retryable part of a burst.
+              if (localPaths.length > 0 && matched.length === imported.length && decodedFiles.length === imported.length) {
                 CameraUsb.deleteLocalFiles({ paths: localPaths }).catch(e =>
                   console.warn("Local file cleanup failed:", e)
                 );
@@ -1310,8 +1352,9 @@ function MobileCaptureInner() {
       // importSpeed is intentionally kept (not cleared) so the live capture idle panel
       // continues to show the last measured upload speed between shots.
       if (newPhotos.length > 0) {
-        const fresh = albums.find(a => a.id === album.id) || album;
-        const updated: Album = { ...fresh, enabled: true, photos: [...fresh.photos, ...newPhotos], photoCount: fresh.photos.length + newPhotos.length, coverImage: fresh.coverImage || newPhotos[0]?.src || "" };
+        const fresh = await loadCanonicalAlbum(albums.find(a => a.id === album.id) || album);
+        const photos = mergePhotosById(fresh.photos, newPhotos);
+        const updated: Album = { ...fresh, enabled: true, photos, photoCount: photos.length, coverImage: fresh.coverImage || newPhotos[0]?.src || "" };
         await saveAlbum(updated); setTargetAlbum(updated); targetAlbumRef.current = updated; setAlbums(prev => prev.map(a => a.id === updated.id ? updated : a));
         if (isOnline) scheduleAutoCull(updated);
         // saveAlbum above persists the complete canonical album; a second partial
@@ -1424,7 +1467,7 @@ function MobileCaptureInner() {
         const results = await uploadPhotosToServer(decodedFiles, (done, _total, bytesPerSecond) => {
           setImportProgress(Math.round((start + done) / proofPaths.length * 100));
           if (bytesPerSecond != null) setImportSpeed(bytesPerSecond);
-        }, tenantSession?.slug, 3, album.title, album.id);
+        }, tenantSession?.slug, 3, album.title, album.id, autoEditEnabled);
         const matched = matchUploadResultsToFiles(decodedFiles, results);
         const uploadedFiles = new Set(matched.map(pair => pair.file));
         for (const { file, result } of matched) {
@@ -1437,7 +1480,7 @@ function MobileCaptureInner() {
         }
 
         const localPaths = imported.map(f => f.localPath || f.path).filter((p): p is string => Boolean(p));
-        if (localPaths.length > 0) {
+        if (localPaths.length > 0 && matched.length === imported.length && decodedFiles.length === imported.length) {
           CameraFtp.deleteLocalFiles({ paths: localPaths }).catch(err => console.warn("FTP cleanup failed:", err));
         }
         imported.forEach(f => {
@@ -1447,12 +1490,13 @@ function MobileCaptureInner() {
       }
 
       if (newPhotos.length > 0) {
-        const fresh = albums.find(a => a.id === album.id) || album;
+        const fresh = await loadCanonicalAlbum(albums.find(a => a.id === album.id) || album);
+        const photos = mergePhotosById(fresh.photos, newPhotos);
         const updated: Album = {
           ...fresh,
           enabled: true,
-          photos: [...fresh.photos, ...newPhotos],
-          photoCount: fresh.photos.length + newPhotos.length,
+          photos,
+          photoCount: photos.length,
           coverImage: fresh.coverImage || newPhotos[0]?.src || "",
         };
         await saveAlbum(updated);
@@ -1658,7 +1702,7 @@ function MobileCaptureInner() {
             const chunkResults = await uploadPhotosToServer(chunk, (done, _total, bytesPerSecond) => {
               setUploadProgress(Math.round((totalDone + done) / sortedFiles.length * 100));
               if (bytesPerSecond != null) setUploadSpeed(bytesPerSecond);
-            }, tenantSession?.slug, 3, targetAlbum?.title || undefined, targetAlbum?.id);
+            }, tenantSession?.slug, 3, targetAlbum?.title || undefined, targetAlbum?.id, autoEditEnabled);
             const matched = matchUploadResultsToFiles(chunk, chunkResults);
             const succeededFiles = new Set(matched.map(pair => pair.file));
             for (const { file, result } of matched) {
@@ -1691,8 +1735,9 @@ function MobileCaptureInner() {
         setQuietCaptureStatus("Queued offline", `${countLabel(sortedFiles.length, "file")} will upload when the server is back.`, "warning");
       }
       if (newPhotos.length > 0) {
-        const fresh = albums.find(a => a.id === targetAlbum.id) || targetAlbum;
-        const updated: Album = { ...fresh, enabled: true, photos: [...fresh.photos, ...newPhotos], photoCount: fresh.photos.length + newPhotos.length, coverImage: fresh.coverImage || newPhotos[0]?.src || "" };
+        const fresh = await loadCanonicalAlbum(albums.find(a => a.id === targetAlbum.id) || targetAlbum);
+        const photos = mergePhotosById(fresh.photos, newPhotos);
+        const updated: Album = { ...fresh, enabled: true, photos, photoCount: photos.length, coverImage: fresh.coverImage || newPhotos[0]?.src || "" };
         await saveAlbum(updated); setTargetAlbum(updated); targetAlbumRef.current = updated; setAlbums(prev => prev.map(a => a.id === updated.id ? updated : a));
         scheduleAutoCull(updated);
         setUploadedCount(p => p + newPhotos.length);
@@ -1772,7 +1817,7 @@ function MobileCaptureInner() {
       const results = await uploadPhotosToServer(files, (done, total, bytesPerSecond) => {
         setUploadProgress(Math.round(done / total * 100));
         if (bytesPerSecond != null) setUploadSpeed(bytesPerSecond);
-      }, tenantSession?.slug, 3, targetAlbum?.title || undefined, targetAlbum?.id);
+      }, tenantSession?.slug, 3, targetAlbum?.title || undefined, targetAlbum?.id, autoEditEnabled);
       const matched = matchUploadResultsToFiles(files, results);
       const uploadedFiles = new Set(matched.map(pair => pair.file));
       const failedFiles = files.filter(file => !uploadedFiles.has(file));
@@ -1783,8 +1828,9 @@ function MobileCaptureInner() {
         setOfflineQueue(q => [...q, ...failedFiles]);
         queueCaptureSummary({ queued: failedFiles.length });
       }
-      const fresh = albums.find(a => a.id === targetAlbum.id) || targetAlbum;
-      const upd: Album = { ...fresh, photos: [...fresh.photos, ...newPhotos], photoCount: fresh.photos.length + newPhotos.length, coverImage: fresh.coverImage || newPhotos[0]?.src || "" };
+      const fresh = await loadCanonicalAlbum(albums.find(a => a.id === targetAlbum.id) || targetAlbum);
+      const photos = mergePhotosById(fresh.photos, newPhotos);
+      const upd: Album = { ...fresh, photos, photoCount: photos.length, coverImage: fresh.coverImage || newPhotos[0]?.src || "" };
       await saveAlbum(upd); setTargetAlbum(upd); targetAlbumRef.current = upd; setAlbums(prev => prev.map(a => a.id === upd.id ? upd : a));
       scheduleAutoCull(upd);
       setUploadedCount(p => p + newPhotos.length);
@@ -2407,7 +2453,7 @@ function MobileCaptureInner() {
       )}
 
       {/* Toggles */}
-      <div className={`${captureTab === "capture" ? "grid" : "hidden"} grid-cols-2 gap-3 mb-4`}>
+      <div className={`${captureTab === "capture" ? "grid" : "hidden"} grid-cols-2 sm:grid-cols-4 gap-3 mb-4`}>
         <div className="capture-control-tile">
           <div className="flex items-center gap-2">
             <Mail className={`w-4 h-4 ${notifyClient ? "text-primary" : "text-muted-foreground"}`} />
@@ -2421,6 +2467,31 @@ function MobileCaptureInner() {
             <span className="text-xs font-body text-foreground">JPEG Only</span>
           </div>
           <Switch checked={jpegOnly} onCheckedChange={setJpegOnly} />
+        </div>
+        <div className="capture-control-tile">
+          <div className="flex items-center gap-2">
+            <RefreshCw className={`w-4 h-4 ${autoCullEnabled ? "text-primary" : "text-muted-foreground"}`} />
+            <span className="text-xs font-body text-foreground">Auto-cull</span>
+          </div>
+          <Switch checked={autoCullEnabled} onCheckedChange={(enabled) => {
+            setAutoCullEnabled(enabled);
+            try { localStorage.setItem(AUTO_CULL_KEY, enabled ? "on" : "off"); } catch { /* unavailable */ }
+            if (!enabled && cullTimerRef.current != null) {
+              window.clearTimeout(cullTimerRef.current);
+              cullTimerRef.current = null;
+              pendingCullAlbumRef.current = null;
+            }
+          }} />
+        </div>
+        <div className="capture-control-tile">
+          <div className="flex items-center gap-2">
+            <Sparkles className={`w-4 h-4 ${autoEditEnabled ? "text-primary" : "text-muted-foreground"}`} />
+            <span className="text-xs font-body text-foreground">Auto-edit</span>
+          </div>
+          <Switch checked={autoEditEnabled} onCheckedChange={(enabled) => {
+            setAutoEditEnabled(enabled);
+            try { localStorage.setItem(AUTO_EDIT_KEY, enabled ? "on" : "off"); } catch { /* unavailable */ }
+          }} />
         </div>
       </div>
 

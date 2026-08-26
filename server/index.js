@@ -2679,6 +2679,10 @@ app.post("/api/upload", uploadLimiter, requireAdminOrScopedTenant, upload.array(
 
   res.json({ files, albumPersisted, albumPersistError, ignoredFileCount: ignoredUploadFiles.length, rejectedInvalidCount });
 
+  if (req.query.autoEdit === "1" && albumId && files.length > 0) {
+    setImmediate(() => autoEditAlbumUploads({ albumId, tenantSlug: tenantSlug || null, uploadedFiles }));
+  }
+
   // ── Pre-generate thumbnails asynchronously ───────────────────────────────
   // Fire-and-forget: warm the thumb cache for every uploaded file so the
   // gallery renders fast thumbnails on first load without waiting for the
@@ -4534,6 +4538,43 @@ async function computeAdobeAutoParams(filepath) {
 
   const denoise = meanStd < 26 && meanBrightness < 95 ? 22 : 5;
   return { exposure, highlights, shadows, contrast, vibrance, saturation: 0, warmth, clarity, denoise, sharpness: 48 };
+}
+
+// Apply the built-in, deterministic auto edit after a proof is safely stored.
+// This keeps upload latency low while still publishing an edited rendition to
+// the client album. The original upload remains available for reprocessing.
+async function autoEditAlbumUploads({ albumId, tenantSlug, uploadedFiles }) {
+  if (!albumId || !uploadedFiles?.length) return;
+  const db = readDb();
+  const storeKey = tenantSlug ? `t_${tenantSlug}_wv_albums` : ALBUMS_KEY;
+  const albums = _parseAlbumsFromDb(db[storeKey]);
+  const idx = albums.findIndex(a => a.id === albumId || a.slug === albumId);
+  if (idx < 0) return;
+  const album = albums[idx];
+  let changed = false;
+  for (const file of uploadedFiles) {
+    const photo = (album.photos || []).find(p => p.id === file.id);
+    if (!photo || !file.localPath || !fs.existsSync(file.localPath)) continue;
+    try {
+      const params = await computeAdobeAutoParams(file.localPath);
+      const editedName = `${path.basename(file.localPath, path.extname(file.localPath))}-auto.jpg`;
+      const editedPath = path.join(UPLOADS_DIR, editedName);
+      await applyEditParams(file.localPath, params, editedPath);
+      const editedUrl = `/uploads/${editedName}`;
+      if (!photo.beforeSrc) photo.beforeSrc = photo.src;
+      photo.editedSrc = editedUrl;
+      photo.src = editedUrl;
+      photo.editRecipe = { engine: "photoflow-auto-v1", params, processedAt: new Date().toISOString() };
+      changed = true;
+    } catch (err) {
+      console.warn(`[AUTO-EDIT] Failed for ${file.originalName || file.id}:`, err.message);
+    }
+  }
+  if (changed) {
+    albums[idx] = { ...album, photos: album.photos, photoCount: album.photos.length, _photosStripped: false };
+    db[storeKey] = JSON.stringify(albums);
+    writeDb(db);
+  }
 }
 
 app.get("/api/photo/:filename/ai-enhanced", aiEnhanceLimiter, requireAuth, async (req, res) => {
