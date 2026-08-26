@@ -38,6 +38,10 @@ test("invoice records use atomic endpoints and legacy data has an audited repair
     'app.get("/api/admin/data-integrity"',
     'app.post("/api/admin/data-integrity/repair"',
   ]) assert.equal(source.includes(contract), true, `${contract} must exist`);
+  assert.ok(
+    source.indexOf("const superLimiter") < source.indexOf('app.get("/api/admin/invoices"'),
+    "superLimiter must be initialized before invoice routes are registered",
+  );
   const section = source.slice(source.indexOf("const INVOICE_SERVER_MANAGED_FIELDS"), source.indexOf("// ── Invoice share endpoint"));
   assert.match(section, /allocateInvoiceNumber/);
   assert.match(section, /invoice-store:main/);

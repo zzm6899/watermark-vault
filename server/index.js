@@ -6129,6 +6129,11 @@ const tenantBookingLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHead
   });
 })();
 
+// Shared limiter for authenticated administration routes. Keep this declared
+// before the first route that references it; const bindings are not usable
+// during module initialization before their declaration.
+const superLimiter = rateLimit({ windowMs: 60_000, max: 60, standardHeaders: true, legacyHeaders: false, message: { error: "Too many requests" } });
+
 // ── Atomic invoice administration ─────────────────────────────
 const INVOICE_SERVER_MANAGED_FIELDS = new Set([
   "stripeSessionId", "stripeCheckoutOrderId", "stripeCheckoutSessionId",
@@ -7982,7 +7987,6 @@ app.get("/api/super-admin/info", requireAuth, (_req, res) => {
 });
 
 // ── Super Admin: Cross-Tenant Data ───────────────────
-const superLimiter = rateLimit({ windowMs: 60_000, max: 60, standardHeaders: true, legacyHeaders: false, message: { error: "Too many requests" } });
 
 // Aggregate stats: tenant count, total bookings, etc.
 app.get("/api/super/stats", superLimiter, requireAuth, (_req, res) => {
