@@ -4499,11 +4499,14 @@ async function computeAdobeAutoParams(filepath) {
   const tonalRange = maxVal - minVal;
 
   // ── Exposure ──────────────────────────────────────────────────────────────
-  // Target: mean brightness around 115-125 (slightly above mid-gray 128)
-  // Each EV ≈ doubling, so we compute how many stops off from target we are
-  const targetBrightness = 116;
-  const evDiff = Math.log2(Math.max(1, targetBrightness) / Math.max(1, p50));
-  const exposure = Math.max(-45, Math.min(45, Math.round(evDiff * 24)));
+  // Target the actual scene brightness, not just the median. Indoor sports
+  // frames often contain a large dark background and a few hot ceiling lights;
+  // using p50 alone incorrectly darkened the athlete. Blend mean + median and
+  // keep negative compensation gentle so proofs remain client-ready.
+  const targetBrightness = 122;
+  const exposureReference = (meanBrightness * 0.7) + (p50 * 0.3);
+  const evDiff = Math.log2(Math.max(1, targetBrightness) / Math.max(1, exposureReference));
+  const exposure = Math.max(-18, Math.min(35, Math.round(evDiff * 24)));
 
   // ── Highlights ────────────────────────────────────────────────────────────
   // Pull highlights down if maxVal is very close to 255 (blown), lift if very low
@@ -4513,12 +4516,12 @@ async function computeAdobeAutoParams(filepath) {
   // ── Shadows ───────────────────────────────────────────────────────────────
   // Lift shadows if minVal is very dark (crushed blacks), leave if already open
   const shadowCrush = Math.max(0, (24 - p05) / 24);
-  const shadows = Math.max(-20, Math.min(65, Math.round(shadowCrush * 50)));
+  const shadows = Math.max(-20, Math.min(65, Math.round((shadowCrush * 50) + (meanBrightness < 118 ? 10 : 0))));
 
   // ── Contrast ─────────────────────────────────────────────────────────────
   // Flat image (low std) → add contrast; high std → don't touch
   const tonalSpread = p95 - p05;
-  const contrast = tonalSpread < 105 ? 22 : tonalSpread < 145 ? 12 : tonalSpread > 225 ? -8 : 4;
+  const contrast = tonalSpread < 105 ? 22 : tonalSpread < 145 ? 16 : tonalSpread > 225 ? -4 : 8;
 
   // ── Vibrance ─────────────────────────────────────────────────────────────
   // Desaturated image → boost vibrance; already vivid → gentle
