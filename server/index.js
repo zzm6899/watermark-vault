@@ -2680,7 +2680,7 @@ app.post("/api/upload", uploadLimiter, requireAdminOrScopedTenant, upload.array(
   res.json({ files, albumPersisted, albumPersistError, ignoredFileCount: ignoredUploadFiles.length, rejectedInvalidCount });
 
   if (req.query.autoEdit === "1" && albumId && files.length > 0) {
-    setImmediate(() => autoEditAlbumUploads({ albumId, tenantSlug: tenantSlug || null, uploadedFiles }));
+    setImmediate(() => autoEditAlbumUploads({ albumId, tenantSlug: tenantSlug || null, uploadedFiles, strength: req.query.autoEditStrength }));
   }
 
   // ── Pre-generate thumbnails asynchronously ───────────────────────────────
@@ -4546,7 +4546,7 @@ async function computeAdobeAutoParams(filepath) {
 // Apply the built-in, deterministic auto edit after a proof is safely stored.
 // This keeps upload latency low while still publishing an edited rendition to
 // the client album. The original upload remains available for reprocessing.
-async function autoEditAlbumUploads({ albumId, tenantSlug, uploadedFiles }) {
+async function autoEditAlbumUploads({ albumId, tenantSlug, uploadedFiles, strength = "balanced" }) {
   if (!albumId || !uploadedFiles?.length) return;
   const db = readDb();
   const storeKey = tenantSlug ? `t_${tenantSlug}_wv_albums` : ALBUMS_KEY;
@@ -4560,6 +4560,10 @@ async function autoEditAlbumUploads({ albumId, tenantSlug, uploadedFiles }) {
     if (!photo || !file.localPath || !fs.existsSync(file.localPath)) continue;
     try {
       const params = await computeAdobeAutoParams(file.localPath);
+      const multiplier = strength === "strong" ? 1.35 : strength === "subtle" ? 0.65 : 1;
+      for (const key of ["exposure", "highlights", "shadows", "contrast", "vibrance", "saturation", "warmth", "clarity"]) {
+        if (typeof params[key] === "number") params[key] = Math.round(params[key] * multiplier);
+      }
       const editedName = `${path.basename(file.localPath, path.extname(file.localPath))}-auto.jpg`;
       const editedPath = path.join(UPLOADS_DIR, editedName);
       await applyEditParams(file.localPath, params, editedPath);

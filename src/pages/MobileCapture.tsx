@@ -40,6 +40,7 @@ const FTP_SETTINGS_KEY = "cameraFtpSettings:v1";
 const CAPTURE_TARGET_KEY = "cameraCaptureTarget:v1";
 const AUTO_CULL_KEY = "cameraCaptureAutoCull:v1";
 const AUTO_EDIT_KEY = "cameraCaptureAutoEdit:v1";
+const AUTO_EDIT_STRENGTH_KEY = "cameraCaptureAutoEditStrength:v1";
 const FTP_JPEG_EXTENSIONS = new Set([".jpg", ".jpeg"]);
 const FTP_PROOF_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif", ".tif", ".tiff"]);
 const FTP_RAW_EXTENSIONS = new Set([".nef", ".nrw", ".raw", ".cr2", ".cr3", ".arw", ".dng", ".raf", ".orf", ".rw2"]);
@@ -567,6 +568,9 @@ function MobileCaptureInner() {
   const [autoEditEnabled, setAutoEditEnabled] = useState(() => {
     try { return localStorage.getItem(AUTO_EDIT_KEY) !== "off"; } catch { return true; }
   });
+  const [autoEditStrength, setAutoEditStrength] = useState<"subtle" | "balanced" | "strong">(() => {
+    try { const value = localStorage.getItem(AUTO_EDIT_STRENGTH_KEY); return value === "subtle" || value === "strong" ? value : "balanced"; } catch { return "balanced"; }
+  });
   const [notifyClient, setNotifyClient] = useState(true);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   const [lightboxSrcCache, setLightboxSrcCache] = useState<Record<string, string>>({});
@@ -804,7 +808,7 @@ function MobileCaptureInner() {
     try {
       const album = albums.find(a => a.id === item.albumId);
       if (!album) return false;
-      const results = await uploadPhotosToServer([file], () => {}, tenantSession?.slug, 1, album.title, album.id, autoEditEnabled);
+      const results = await uploadPhotosToServer([file], () => {}, tenantSession?.slug, 1, album.title, album.id, autoEditEnabled, autoEditStrength);
       const uploaded = results?.[0];
       if (!uploaded?.url) return false;
 
@@ -838,7 +842,7 @@ function MobileCaptureInner() {
     } catch {
       return false;
     }
-  }, [albums, autoEditEnabled, saveAlbum, tenantSession?.slug]);
+  }, [albums, autoEditEnabled, autoEditStrength, saveAlbum, tenantSession?.slug]);
 
   useOfflineUploadQueue(uploadOfflineItem);
 
@@ -1292,7 +1296,7 @@ function MobileCaptureInner() {
               const chunkResults = await uploadPhotosToServer(decodedFiles, (done, _total, bytesPerSecond) => {
                 setImportProgress(Math.round((chunkStart + done) / freshHandles.length * 100));
                 if (bytesPerSecond != null) setImportSpeed(bytesPerSecond);
-              }, tenantSession?.slug, 3, album?.title || undefined, album?.id, autoEditEnabled);
+              }, tenantSession?.slug, 3, album?.title || undefined, album?.id, autoEditEnabled, autoEditStrength);
               const matched = matchUploadResultsToFiles(decodedFiles, chunkResults);
               for (const { result } of matched) {
                 newPhotos.push(photoFromUploadResult(result, uploadedAt));
@@ -1467,7 +1471,7 @@ function MobileCaptureInner() {
         const results = await uploadPhotosToServer(decodedFiles, (done, _total, bytesPerSecond) => {
           setImportProgress(Math.round((start + done) / proofPaths.length * 100));
           if (bytesPerSecond != null) setImportSpeed(bytesPerSecond);
-        }, tenantSession?.slug, 3, album.title, album.id, autoEditEnabled);
+        }, tenantSession?.slug, 3, album.title, album.id, autoEditEnabled, autoEditStrength);
         const matched = matchUploadResultsToFiles(decodedFiles, results);
         const uploadedFiles = new Set(matched.map(pair => pair.file));
         for (const { file, result } of matched) {
@@ -1702,7 +1706,7 @@ function MobileCaptureInner() {
             const chunkResults = await uploadPhotosToServer(chunk, (done, _total, bytesPerSecond) => {
               setUploadProgress(Math.round((totalDone + done) / sortedFiles.length * 100));
               if (bytesPerSecond != null) setUploadSpeed(bytesPerSecond);
-            }, tenantSession?.slug, 3, targetAlbum?.title || undefined, targetAlbum?.id, autoEditEnabled);
+            }, tenantSession?.slug, 3, targetAlbum?.title || undefined, targetAlbum?.id, autoEditEnabled, autoEditStrength);
             const matched = matchUploadResultsToFiles(chunk, chunkResults);
             const succeededFiles = new Set(matched.map(pair => pair.file));
             for (const { file, result } of matched) {
@@ -1817,7 +1821,7 @@ function MobileCaptureInner() {
       const results = await uploadPhotosToServer(files, (done, total, bytesPerSecond) => {
         setUploadProgress(Math.round(done / total * 100));
         if (bytesPerSecond != null) setUploadSpeed(bytesPerSecond);
-      }, tenantSession?.slug, 3, targetAlbum?.title || undefined, targetAlbum?.id, autoEditEnabled);
+      }, tenantSession?.slug, 3, targetAlbum?.title || undefined, targetAlbum?.id, autoEditEnabled, autoEditStrength);
       const matched = matchUploadResultsToFiles(files, results);
       const uploadedFiles = new Set(matched.map(pair => pair.file));
       const failedFiles = files.filter(file => !uploadedFiles.has(file));
@@ -2468,6 +2472,15 @@ function MobileCaptureInner() {
           </div>
           <Switch checked={jpegOnly} onCheckedChange={setJpegOnly} />
         </div>
+        {autoEditEnabled && <div className="capture-control-tile">
+          <div className="flex items-center gap-2">
+            <Sparkles className="w-4 h-4 text-primary" />
+            <span className="text-xs font-body text-foreground">Edit strength</span>
+          </div>
+          <select value={autoEditStrength} onChange={(event) => { const value = event.target.value as "subtle" | "balanced" | "strong"; setAutoEditStrength(value); try { localStorage.setItem(AUTO_EDIT_STRENGTH_KEY, value); } catch { /* unavailable */ } }} className="bg-transparent text-xs text-foreground border border-border rounded px-1.5 py-1">
+            <option value="subtle">Subtle</option><option value="balanced">Balanced</option><option value="strong">Strong</option>
+          </select>
+        </div>}
         <div className="capture-control-tile">
           <div className="flex items-center gap-2">
             <RefreshCw className={`w-4 h-4 ${autoCullEnabled ? "text-primary" : "text-muted-foreground"}`} />
