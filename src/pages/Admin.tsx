@@ -5243,6 +5243,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
   const [expiresAt, setExpiresAt] = useState(album?.expiresAt || "");
   const [displaySize, setDisplaySize] = useState<AlbumDisplaySize>(album?.displaySize || "medium");
   const [albumStatus, setAlbumStatus] = useState<"editing" | "proofing" | "delivered" | "archived">(album?.status || "editing");
+  const [editProfile, setEditProfile] = useState<Album["editProfile"]>(album?.editProfile || "natural");
   const [editorGridSize, setEditorGridSize] = useState<"small" | "medium" | "large">("medium");
   const [editorLightboxPhoto, setEditorLightboxPhoto] = useState<Photo | null>(null);
   const [photoSortDir, setPhotoSortDir] = useState<"asc" | "desc">("asc");
@@ -5297,6 +5298,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
       downloadEmailCapture,
       displaySize,
       status: albumStatus,
+      editProfile,
       _photosStripped: false,
       ...(album?.enabled !== undefined ? { enabled: album.enabled } : {}),
     };
@@ -6660,6 +6662,14 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
         <Button onClick={handleSave} disabled={savingAlbum} className="bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs tracking-wider uppercase gap-2">
           <Save className="w-4 h-4" /> {savingAlbum ? "Saving..." : isNew ? "Create Album" : "Save Album"}
         </Button>
+      </div>
+
+      <div>
+        <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Default Auto-edit Profile</label>
+        <select value={editProfile} onChange={(e) => setEditProfile(e.target.value as Album["editProfile"])} className="w-full bg-secondary border border-border text-foreground font-body text-sm rounded-md px-3 py-2.5">
+          <option value="natural">Natural</option><option value="indoor">Indoor event</option><option value="sports">Sports</option><option value="concert">Concert</option><option value="bright">Bright &amp; airy</option><option value="moody">Moody</option>
+        </select>
+        <p className="text-[10px] font-body text-muted-foreground/50 mt-1">Used as the default style when Auto-edit is enabled for this album.</p>
       </div>
     </div>
   );

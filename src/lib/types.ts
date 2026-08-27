@@ -297,6 +297,8 @@ export interface Album {
   date: string;
   photoCount: number;
   status?: "editing" | "proofing" | "delivered" | "archived";
+  /** Default automatic edit profile for uploads into this album. */
+  editProfile?: "natural" | "indoor" | "sports" | "concert" | "bright" | "moody";
   freeDownloads: number;
   pricePerPhoto: number;
   priceFullAlbum: number;
