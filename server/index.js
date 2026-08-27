@@ -2545,6 +2545,21 @@ function getAvailableDiskBytes() {
 }
 
 const uploadLimiter = rateLimit({ windowMs: 60_000, max: 60, standardHeaders: true, legacyHeaders: false, message: "Too many upload requests — please wait 60 seconds." });
+function detectUploadSequenceGaps(files) {
+  const numbers = files.map(file => {
+    const base = String(file.originalName || "");
+    const match = base.match(/(\d+)(?!.*\d)/);
+    return match ? Number(match[1]) : null;
+  }).filter(number => Number.isInteger(number)).sort((a, b) => a - b);
+  const gaps = [];
+  for (let i = 1; i < numbers.length; i += 1) {
+    if (numbers[i] - numbers[i - 1] > 1 && numbers[i] - numbers[i - 1] < 1000) {
+      gaps.push({ from: numbers[i - 1], to: numbers[i], missing: numbers[i] - numbers[i - 1] - 1 });
+    }
+  }
+  return gaps;
+}
+
 app.post("/api/upload", uploadLimiter, requireAdminOrScopedTenant, upload.array("photos", 100), async (req, res) => {
   const ignoredUploadFiles = Array.isArray(req.ignoredUploadFiles) ? req.ignoredUploadFiles : [];
   if ((req.files || []).length === 0) {
@@ -2677,7 +2692,7 @@ app.post("/api/upload", uploadLimiter, requireAdminOrScopedTenant, upload.array(
   // Persist ownership even when an upload is not immediately attached to an album.
   writeDb(db);
 
-  res.json({ files, albumPersisted, albumPersistError, ignoredFileCount: ignoredUploadFiles.length, rejectedInvalidCount });
+  res.json({ files, albumPersisted, albumPersistError, ignoredFileCount: ignoredUploadFiles.length, rejectedInvalidCount, sequenceGaps: detectUploadSequenceGaps(files) });
 
   if (req.query.autoEdit === "1" && albumId && files.length > 0) {
     setImmediate(() => autoEditAlbumUploads({ albumId, tenantSlug: tenantSlug || null, uploadedFiles, strength: req.query.autoEditStrength }));
