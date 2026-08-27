@@ -658,7 +658,9 @@ export async function uploadPhotosToServer(
   if (autoEdit) uploadUrl += (uploadUrl.includes("?") ? "&" : "?") + `autoEditStrength=${autoEditStrength}`;
 
   // Smaller batches improve granular progress feedback and concurrent throughput
-  const batchSize = 5;
+  // Large camera files get one-file batches so an interrupted transfer only
+  // retries that file; normal JPEG proofs retain efficient batching.
+  const batchSize = uploadFiles.some(file => file.size > 12 * 1024 * 1024) ? 1 : 5;
   const batches: File[][] = [];
   for (let i = 0; i < uploadFiles.length; i += batchSize) {
     batches.push(uploadFiles.slice(i, i + batchSize));
