@@ -633,7 +633,15 @@ export async function uploadPhotosToServer(
   autoEdit = false,
 ): Promise<UploadedPhotoResult[]> {
   if (!(await checkServer())) return [];
-  const uploadFiles = files.filter(isSupportedUploadFile);
+  // Proofs should reach the client first. Keep RAW/large source files queued
+  // behind JPEGs so live galleries become useful without delaying capture.
+  const uploadFiles = files
+    .filter(isSupportedUploadFile)
+    .sort((a, b) => {
+      const aJpeg = /\.(?:jpe?g)$/i.test(a.name) ? 0 : 1;
+      const bJpeg = /\.(?:jpe?g)$/i.test(b.name) ? 0 : 1;
+      return aJpeg - bJpeg;
+    });
   if (uploadFiles.length === 0) return [];
 
   let uploadUrl = tenantSlug
