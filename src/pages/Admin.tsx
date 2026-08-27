@@ -6709,6 +6709,7 @@ function PhotosView() {
   const [photoGridSize, setPhotoGridSize] = useState<"small" | "medium" | "large">("medium");
   const [lightboxPhoto, setLightboxPhoto] = useState<Photo | null>(null);
   const [lbShowBefore, setLbShowBefore] = useState(false);
+  const [lbComparePosition, setLbComparePosition] = useState(50);
   const [lbEditOpen, setLbEditOpen] = useState(false);
   const [lbEditTab, setLbEditTab] = useState<"auto" | "manual" | "presets" | "xmp" | "prompt">("auto");
   const [xmpPresets, setXmpPresets] = useState<XmpPreset[]>([]);
@@ -7626,12 +7627,22 @@ function PhotosView() {
                 </span>
               </div>
             )}
-            <img
+            {lightboxPhoto.beforeSrc && !lbShowBefore ? (
+              <div className="relative max-w-full max-h-full" onClick={e => e.stopPropagation()}>
+                <img src={lightboxPhoto.src} alt={lightboxPhoto.title} className="max-w-full max-h-full object-contain rounded-lg shadow-2xl" />
+                <div className="absolute inset-0 overflow-hidden rounded-lg" style={{ width: `${lbComparePosition}%` }}>
+                  <img src={lightboxPhoto.beforeSrc} alt="Original" className="absolute inset-0 max-w-none h-full object-contain object-left" style={{ width: `${100 / Math.max(lbComparePosition, 1) * 100}%` }} />
+                </div>
+                <span className="absolute top-2 left-2 bg-black/60 text-white text-[10px] px-2 py-1 rounded-full">Before</span>
+                <span className="absolute top-2 right-2 bg-primary/80 text-white text-[10px] px-2 py-1 rounded-full">After</span>
+                <input aria-label="Before and after comparison" type="range" min="0" max="100" value={lbComparePosition} onChange={e => setLbComparePosition(Number(e.target.value))} className="absolute -bottom-7 left-1/2 -translate-x-1/2 w-64 accent-primary" onClick={e => e.stopPropagation()} />
+              </div>
+            ) : <img
               src={lbShowBefore && lightboxPhoto.beforeSrc ? lightboxPhoto.beforeSrc : lightboxPhoto.src}
               alt={lightboxPhoto.title}
               className="max-w-full max-h-full object-contain rounded-lg shadow-2xl transition-opacity duration-200"
               onClick={e => e.stopPropagation()}
-            />
+            />}
             <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 max-w-[90vw] flex-wrap justify-center">
               <p className="text-xs font-body bg-black/40 px-3 py-1 rounded-full text-white/90 truncate max-w-[40vw] text-center">{lightboxPhoto.title}</p>
               {displayPhotos.length > 1 && (
