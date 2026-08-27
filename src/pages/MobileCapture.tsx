@@ -808,7 +808,7 @@ function MobileCaptureInner() {
     try {
       const album = albums.find(a => a.id === item.albumId);
       if (!album) return false;
-      const results = await uploadPhotosToServer([file], () => {}, tenantSession?.slug, 1, album.title, album.id, autoEditEnabled, autoEditStrength);
+      const results = await uploadPhotosToServer([file], () => {}, tenantSession?.slug, 1, album.title, album.id, autoEditEnabled, autoEditStrength, album.editProfile);
       const uploaded = results?.[0];
       if (!uploaded?.url) return false;
 
@@ -1296,7 +1296,7 @@ function MobileCaptureInner() {
               const chunkResults = await uploadPhotosToServer(decodedFiles, (done, _total, bytesPerSecond) => {
                 setImportProgress(Math.round((chunkStart + done) / freshHandles.length * 100));
                 if (bytesPerSecond != null) setImportSpeed(bytesPerSecond);
-              }, tenantSession?.slug, 3, album?.title || undefined, album?.id, autoEditEnabled, autoEditStrength);
+              }, tenantSession?.slug, 3, album?.title || undefined, album?.id, autoEditEnabled, autoEditStrength, album?.editProfile);
               const matched = matchUploadResultsToFiles(decodedFiles, chunkResults);
               for (const { result } of matched) {
                 newPhotos.push(photoFromUploadResult(result, uploadedAt));
@@ -1471,7 +1471,7 @@ function MobileCaptureInner() {
         const results = await uploadPhotosToServer(decodedFiles, (done, _total, bytesPerSecond) => {
           setImportProgress(Math.round((start + done) / proofPaths.length * 100));
           if (bytesPerSecond != null) setImportSpeed(bytesPerSecond);
-        }, tenantSession?.slug, 3, album.title, album.id, autoEditEnabled, autoEditStrength);
+        }, tenantSession?.slug, 3, album.title, album.id, autoEditEnabled, autoEditStrength, album.editProfile);
         const matched = matchUploadResultsToFiles(decodedFiles, results);
         const uploadedFiles = new Set(matched.map(pair => pair.file));
         for (const { file, result } of matched) {
@@ -1706,7 +1706,7 @@ function MobileCaptureInner() {
             const chunkResults = await uploadPhotosToServer(chunk, (done, _total, bytesPerSecond) => {
               setUploadProgress(Math.round((totalDone + done) / sortedFiles.length * 100));
               if (bytesPerSecond != null) setUploadSpeed(bytesPerSecond);
-            }, tenantSession?.slug, 3, targetAlbum?.title || undefined, targetAlbum?.id, autoEditEnabled, autoEditStrength);
+            }, tenantSession?.slug, 3, targetAlbum?.title || undefined, targetAlbum?.id, autoEditEnabled, autoEditStrength, targetAlbum?.editProfile);
             const matched = matchUploadResultsToFiles(chunk, chunkResults);
             const succeededFiles = new Set(matched.map(pair => pair.file));
             for (const { file, result } of matched) {
@@ -1821,7 +1821,7 @@ function MobileCaptureInner() {
       const results = await uploadPhotosToServer(files, (done, total, bytesPerSecond) => {
         setUploadProgress(Math.round(done / total * 100));
         if (bytesPerSecond != null) setUploadSpeed(bytesPerSecond);
-      }, tenantSession?.slug, 3, targetAlbum?.title || undefined, targetAlbum?.id, autoEditEnabled, autoEditStrength);
+      }, tenantSession?.slug, 3, targetAlbum?.title || undefined, targetAlbum?.id, autoEditEnabled, autoEditStrength, targetAlbum?.editProfile);
       const matched = matchUploadResultsToFiles(files, results);
       const uploadedFiles = new Set(matched.map(pair => pair.file));
       const failedFiles = files.filter(file => !uploadedFiles.has(file));

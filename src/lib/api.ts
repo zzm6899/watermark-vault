@@ -632,6 +632,7 @@ export async function uploadPhotosToServer(
   albumId?: string,
   autoEdit = false,
   autoEditStrength: "subtle" | "balanced" | "strong" = "balanced",
+  autoEditProfile?: string,
 ): Promise<UploadedPhotoResult[]> {
   if (!(await checkServer())) return [];
   // Proofs should reach the client first. Keep RAW/large source files queued
@@ -656,6 +657,7 @@ export async function uploadPhotosToServer(
   }
   if (autoEdit) uploadUrl += (uploadUrl.includes("?") ? "&" : "?") + "autoEdit=1";
   if (autoEdit) uploadUrl += (uploadUrl.includes("?") ? "&" : "?") + `autoEditStrength=${autoEditStrength}`;
+  if (autoEdit && autoEditProfile) uploadUrl += (uploadUrl.includes("?") ? "&" : "?") + `autoEditProfile=${encodeURIComponent(autoEditProfile)}`;
 
   // Smaller batches improve granular progress feedback and concurrent throughput
   // Large camera files get one-file batches so an interrupted transfer only
