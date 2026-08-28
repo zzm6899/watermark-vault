@@ -766,7 +766,9 @@ export async function runUploadSpeedTest(sizeBytes = 4 * 1024 * 1024): Promise<{
   // Blob-backed bodies are more stable than passing a large Uint8Array through
   // Android WebView's fetch bridge, which can crash on some devices.
   const payload = new Blob([new Uint8Array(sizeBytes)], { type: "application/octet-stream" });
-  const started = typeof performance !== "undefined" ? performance.now() : Date.now();
+  // Date.now() is intentionally used here; some Android WebViews have
+  // unreliable performance.now() clocks across long-running fetches.
+  const started = Date.now();
   const controller = typeof AbortController !== "undefined" ? new AbortController() : undefined;
   const timeout = controller ? window.setTimeout(() => controller.abort(), 20000) : undefined;
   let res: Response;
@@ -777,9 +779,13 @@ export async function runUploadSpeedTest(sizeBytes = 4 * 1024 * 1024): Promise<{
   }
   if (!res.ok) throw new Error(`Speed test failed (${res.status})`);
   const data = await res.json() as { bytes?: number };
-  const elapsedMs = Math.max(1, (typeof performance !== "undefined" ? performance.now() : Date.now()) - started);
+  const elapsedMs = Math.max(1, Date.now() - started);
   const bytes = Number(data.bytes || sizeBytes);
-  return { bytesPerSecond: Math.round(bytes / (elapsedMs / 1000)), elapsedMs };
+  const bytesPerSecond = Math.round(bytes / (elapsedMs / 1000));
+  if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0 || elapsedMs > 120000) {
+    throw new Error("Upload speed test timed out or returned an invalid result");
+  }
+  return { bytesPerSecond, elapsedMs };
 }
 
 export async function autoCullAlbum(
