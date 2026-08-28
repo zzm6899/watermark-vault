@@ -1,16 +1,16 @@
 ﻿{
     "appName":  "Zuploader Capture",
     "packageName":  "conn.uploader.capture",
-    "versionName":  "1.5",
-    "versionCode":  6,
+    "versionName":  "1.6",
+    "versionCode":  7,
     "buildType":  "debug",
     "builtAt":  "2026-08-28T05:27:51.0000000Z",
-    "commit":  "be2f96f",
+    "commit":  "1c02cfd",
     "apk":  {
                 "fileName":  "zuploader-capture-latest.apk",
                 "url":  "/downloads/android/latest.apk",
-                "sizeBytes":  84103857,
-                "sha256":  "2b6613f78298883d5b365f4cc2f60f218e7d3e8fc53bca1cc366c6c67bdd0c35"
+                "sizeBytes":  84103769,
+                "sha256":  "3841b953974d3b58d52a53a3aba8d1d6c709ac103d3d374f3dbd33fff108eb29"
             },
     "notes":  [
                   "Built from the current web bundle and synced into the Android shell.",
