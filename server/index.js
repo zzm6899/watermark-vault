@@ -2471,7 +2471,7 @@ app.post("/api/ftp/move-starred", ftpMoveStarredLimiter, requireAdminOrScopedTen
 // ── Photo Upload ──────────────────────────────────────
 // Disposable connectivity probe: accepts bytes, measures transfer time, and
 // never writes them to disk or an album.
-app.post("/api/upload/speed-test", uploadLimiter, requireAdminOrScopedTenant, express.raw({ type: "application/octet-stream", limit: "8mb" }), (req, res) => {
+app.post("/api/upload/speed-test", requireAdminOrScopedTenant, express.raw({ type: "application/octet-stream", limit: "8mb" }), (req, res) => {
   const bytes = Buffer.isBuffer(req.body) ? req.body.length : 0;
   const startedAt = Number(req.headers["x-speed-test-start"] || Date.now());
   const elapsedMs = Math.max(1, Date.now() - startedAt);
