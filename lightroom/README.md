@@ -1,6 +1,11 @@
-# Watermark Vault for Lightroom Classic
+# Watermark Vault for Lightroom Classic (v0.2)
 
 Install `WatermarkVault.lrplugin` from Lightroom Classic's **File → Plug-in Manager → Add**.
+
+The current plug-in defaults to `https://book.zacmclients.photos`, validates every
+server response, and keeps album IDs URL-safe when browsing, proofing, or
+uploading finals. Use the **Admin → APK → Lightroom Classic plugin** card to
+download the current package.
 
 1. In Watermark Vault, create an album for the client/time slot (for example `Animaga 2026 — Sat 10:00 — Alice`).
 2. In the plug-in, choose **Configure connection** and enter the server URL, admin username/password, and proof cache folder. Use HTTPS for any non-local server.

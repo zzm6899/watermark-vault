@@ -3,7 +3,7 @@ return {
   LrSdkMinimumVersion = 6.0,
   LrToolkitIdentifier = "com.watermarkvault.lightroomclassic",
   LrPluginName = "Watermark Vault",
-  LrPluginInfoUrl = "https://watermark-vault.local/lightroom",
+  LrPluginInfoUrl = "https://book.zacmclients.photos/admin/apk",
   LrLibraryMenuItems = {
     { title = "Watermark Vault: Configure connection", file = "Configure.lua" },
     { title = "Watermark Vault: Browse albums and download picks", file = "BrowseAlbums.lua" },
@@ -11,5 +11,5 @@ return {
     { title = "Watermark Vault: Sync client picks from folder", file = "SyncPicks.lua" },
     { title = "Watermark Vault: Upload selected finals", file = "UploadFinals.lua" },
   },
-  VERSION = { major = 0, minor = 1, revision = 0, build = 1 },
+  VERSION = { major = 0, minor = 2, revision = 0, build = 2 },
 }

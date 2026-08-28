@@ -50,7 +50,11 @@ function ApkManagerView() {
   }, [loadManifest]);
 
   const apkUrl = manifest?.apk?.url || "/downloads/android/latest.apk";
-  const absoluteApkUrl = typeof window !== "undefined" ? new URL(apkUrl, window.location.origin).toString() : apkUrl;
+  // The APK path is intentionally cache-busted by build number. This prevents
+  // a phone/browser or CDN from reopening a previously downloaded build after
+  // the manifest has advanced.
+  const apkHref = `${apkUrl}${apkUrl.includes("?") ? "&" : "?"}v=${encodeURIComponent(String(manifest?.versionCode || manifest?.commit || Date.now()))}`;
+  const absoluteApkUrl = typeof window !== "undefined" ? new URL(apkHref, window.location.origin).toString() : apkHref;
   const builtAt = manifest?.builtAt ? new Date(manifest.builtAt) : null;
 
   const copyLink = async () => {
@@ -106,7 +110,7 @@ function ApkManagerView() {
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <Button asChild className="gap-2 font-body">
-                  <a href={apkUrl} download={manifest?.apk?.fileName || "zuploader-capture-latest.apk"}>
+                  <a href={apkHref} download={manifest?.apk?.fileName || "zuploader-capture-latest.apk"}>
                     <Download className="w-4 h-4" /> Download APK
                   </a>
                 </Button>
@@ -114,7 +118,7 @@ function ApkManagerView() {
                   <Copy className="w-4 h-4" /> Copy Link
                 </Button>
                 <Button variant="outline" asChild className="gap-2 font-body">
-                  <a href={apkUrl} target="_blank" rel="noreferrer">
+                  <a href={apkHref} target="_blank" rel="noreferrer">
                     <ExternalLink className="w-4 h-4" /> Open
                   </a>
                 </Button>
@@ -174,7 +178,7 @@ function ApkManagerView() {
             <p className="text-xs font-body text-muted-foreground mt-1">Download the plugin to browse albums, sync client picks, and upload edited JPEG finals directly from Lightroom.</p>
           </div>
           <Button asChild variant="outline" className="gap-2 font-body shrink-0">
-            <a href="/downloads/lightroom/WatermarkVault-Lightroom-Plugin.zip" download="WatermarkVault-Lightroom-Plugin.zip">
+            <a href="/downloads/lightroom/WatermarkVault-Lightroom-Plugin.zip?v=2" download="WatermarkVault-Lightroom-Plugin.zip">
               <Download className="w-4 h-4" /> Download plugin
             </a>
           </Button>

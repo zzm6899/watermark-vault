@@ -111,6 +111,11 @@ local function base64Encode(value)
 end
 
 local function trim(value) return (tostring(value or ""):gsub("^%s+", ""):gsub("%s+$", "")) end
+local function encodePathSegment(value)
+  return tostring(value or ""):gsub("([^%w%._~-])", function(character)
+    return string.format("%%%02X", character:byte())
+  end)
+end
 local function baseName(name) return (LrPathUtils.removeExtension(LrPathUtils.leafName(name or "")) or ""):lower() end
 local function fileNumber(name) return baseName(name):match("(%d+)[^%d]*$") end
 local function isRaw(path)
@@ -321,7 +326,7 @@ function M.configure()
     LrFunctionContext.callWithContext("watermarkVaultConfigure", function(context)
       local f = LrView.osFactory()
       local props = LrBinding.makePropertyTable(context)
-      props.serverUrl = prefs.serverUrl or ""
+      props.serverUrl = prefs.serverUrl or "https://book.zacmclients.photos"
       props.username = prefs.username or ""
       props.password = prefs.password or ""
       props.proofCacheFolder = prefs.proofCacheFolder or ""
@@ -372,7 +377,7 @@ function M.syncPicks()
     local ok, message = LrTasks.pcall(function()
       local albumId = chooseAlbum("Sync Watermark Vault client picks")
       if not albumId then return end
-      local manifest = jsonGet("/api/lightroom/albums/" .. albumId .. "/picks")
+      local manifest = jsonGet("/api/lightroom/albums/" .. encodePathSegment(albumId) .. "/picks")
       local catalog = LrApplication.activeCatalog()
       local lookup = photoLookup(catalog, sourceFolder)
       local selected, toImport, unmatched, ambiguous = {}, {}, {}, {}
@@ -413,8 +418,15 @@ function M.syncPicks()
 end
 
 local function postMultipart(path, fields)
-  local body, headers = LrHttp.postMultipart(serverUrl(path), fields, authHeaders())
-  local result = jsonDecode(body or "{}")
+  local body, headers = LrHttp.postMultipart(serverUrl(path), fields, authHeaders(), 60)
+  if not body or body == "" then
+    local status = headers and headers.status and ("HTTP " .. tostring(headers.status)) or "no response"
+    error("Watermark Vault upload returned " .. status)
+  end
+  if headers and headers.status and (headers.status < 200 or headers.status >= 300) then
+    error("Watermark Vault upload returned HTTP " .. tostring(headers.status) .. ": " .. tostring(body):sub(1, 240))
+  end
+  local result = jsonDecode(body)
   if not result.ok and not result.files then error(result.error or "Upload failed") end
   return result
 end
@@ -432,7 +444,7 @@ function M.publishProofs()
       for _, rendition in session:renditions { stopIfCanceled = true } do
         local success, renderedPath = rendition:waitForRender()
         if success then
-          postMultipart("/api/upload?albumId=" .. albumId, { { name = "photos", filePath = renderedPath } })
+          postMultipart("/api/upload?albumId=" .. encodePathSegment(albumId), { { name = "photos", filePath = renderedPath } })
           uploaded = uploaded + 1
         end
       end
@@ -450,7 +462,7 @@ function M.uploadFinals()
     local ok, message = LrTasks.pcall(function()
       local albumId = chooseAlbum("Upload selected final JPEGs")
       if not albumId then return end
-      local manifest = jsonGet("/api/lightroom/albums/" .. albumId .. "/picks")
+      local manifest = jsonGet("/api/lightroom/albums/" .. encodePathSegment(albumId) .. "/picks")
       local assetsByName = {}
       for _, asset in ipairs(manifest.assets or {}) do assetsByName[baseName(asset.originalName or asset.proofId)] = asset end
       local session = LrExportSession { photosToExport = photos, exportSettings = { LR_format = "JPEG", LR_jpeg_quality = 90, LR_size_doConstrain = false, LR_export_destinationType = "specificFolder", LR_collisionHandling = "overwrite" } }
@@ -460,7 +472,7 @@ function M.uploadFinals()
         local asset = assetsByName[baseName(sourcePath)]
         local success, renderedPath = rendition:waitForRender()
         if success and asset then
-          postMultipart("/api/lightroom/albums/" .. albumId .. "/finals", {
+          postMultipart("/api/lightroom/albums/" .. encodePathSegment(albumId) .. "/finals", {
             { name = "assetId", value = asset.assetId },
             { name = "final", filePath = renderedPath },
           })
@@ -481,7 +493,7 @@ function M.browseAlbums()
     local ok, message = LrTasks.pcall(function()
       local albumId = chooseAlbum("Browse Watermark Vault albums")
       if not albumId then return end
-      local manifest = jsonGet("/api/lightroom/albums/" .. albumId .. "/picks")
+      local manifest = jsonGet("/api/lightroom/albums/" .. encodePathSegment(albumId) .. "/picks")
       local cache = proofCacheFolder()
       local downloaded, picked = 0, 0
       local paths = {}
