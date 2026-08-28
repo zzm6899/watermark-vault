@@ -762,11 +762,19 @@ export function deletePhotoFromServer(url: string, tenantSlug?: string): void {
 }
 
 /** Send disposable bytes to measure upload connectivity without creating a photo. */
-export async function runUploadSpeedTest(sizeBytes = 6 * 1024 * 1024): Promise<{ bytesPerSecond: number; elapsedMs: number }> {
-  const payload = new Uint8Array(sizeBytes);
-  if (typeof crypto !== "undefined" && crypto.getRandomValues) crypto.getRandomValues(payload.subarray(0, Math.min(sizeBytes, 65536)));
+export async function runUploadSpeedTest(sizeBytes = 4 * 1024 * 1024): Promise<{ bytesPerSecond: number; elapsedMs: number }> {
+  // Blob-backed bodies are more stable than passing a large Uint8Array through
+  // Android WebView's fetch bridge, which can crash on some devices.
+  const payload = new Blob([new Uint8Array(sizeBytes)], { type: "application/octet-stream" });
   const started = typeof performance !== "undefined" ? performance.now() : Date.now();
-  const res = await fetch("/api/upload/speed-test", { method: "POST", headers: { ...adminAuthHeaders(), "Content-Type": "application/octet-stream" }, body: payload });
+  const controller = typeof AbortController !== "undefined" ? new AbortController() : undefined;
+  const timeout = controller ? window.setTimeout(() => controller.abort(), 20000) : undefined;
+  let res: Response;
+  try {
+    res = await fetch("/api/upload/speed-test", { method: "POST", headers: { ...adminAuthHeaders(), "Content-Type": "application/octet-stream" }, body: payload, signal: controller?.signal });
+  } finally {
+    if (timeout != null) window.clearTimeout(timeout);
+  }
   if (!res.ok) throw new Error(`Speed test failed (${res.status})`);
   const data = await res.json() as { bytes?: number };
   const elapsedMs = Math.max(1, (typeof performance !== "undefined" ? performance.now() : Date.now()) - started);
