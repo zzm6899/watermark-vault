@@ -45,6 +45,20 @@ const FTP_JPEG_EXTENSIONS = new Set([".jpg", ".jpeg"]);
 const FTP_PROOF_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif", ".tif", ".tiff"]);
 const FTP_RAW_EXTENSIONS = new Set([".nef", ".nrw", ".raw", ".cr2", ".cr3", ".arw", ".dng", ".raf", ".orf", ".rw2"]);
 
+// Files in the in-memory retry queue must retain their original destination.
+// Otherwise switching bookings before tapping Retry can send an older batch to
+// whichever album happens to be selected at retry time.
+type LocalOfflineQueueItem = {
+  file: File;
+  albumId: string;
+  albumTitle: string;
+  editProfile?: Album["editProfile"];
+};
+
+function toLocalOfflineItems(files: File[], album: Album): LocalOfflineQueueItem[] {
+  return files.map(file => ({ file, albumId: album.id, albumTitle: album.title, editProfile: album.editProfile }));
+}
+
 function loadFtpSettings(): { username: string; password: string; port: number } {
   try {
     const parsed = JSON.parse(localStorage.getItem(FTP_SETTINGS_KEY) || "{}");
@@ -620,7 +634,7 @@ function MobileCaptureInner() {
   const [jpegOnly, setJpegOnly] = useState(true);
   const [importLabel, setImportLabel] = useState(""); // e.g. "3 / 11 — DSC_0042.JPG"
   const [failedHandles, setFailedHandles] = useState<number[]>([]);
-  const [offlineQueue, setOfflineQueue] = useState<File[]>([]);
+  const [offlineQueue, setOfflineQueue] = useState<LocalOfflineQueueItem[]>([]);
   const [starFilter, setStarFilter] = useState(false);
   const [showAlbumEdit, setShowAlbumEdit] = useState(false);
   const [sendingProofing, setSendingProofing] = useState(false);
@@ -1348,7 +1362,7 @@ function MobileCaptureInner() {
             } catch (e) {
               console.error("Upload error:", e);
               // Queue decoded files for retry when connection is restored
-              setOfflineQueue(q => [...q, ...decodedFiles]);
+              setOfflineQueue(q => [...q, ...toLocalOfflineItems(decodedFiles, album)]);
               queuedOfflineCount += decodedFiles.length;
             }
           }
@@ -1373,7 +1387,7 @@ function MobileCaptureInner() {
             }
           }
           if (offlineFiles.length > 0) {
-            setOfflineQueue(q => [...q, ...offlineFiles]);
+            setOfflineQueue(q => [...q, ...toLocalOfflineItems(offlineFiles, album)]);
             queuedOfflineCount += offlineFiles.length;
           }
           setImportProgress(Math.round((chunkStart + chunkHandles.length) / freshHandles.length * 100));
@@ -1487,7 +1501,7 @@ function MobileCaptureInner() {
         decodedFiles.sort((a, b) => a.name.localeCompare(b.name));
 
         if (!isOnline) {
-          setOfflineQueue(q => [...q, ...decodedFiles]);
+          setOfflineQueue(q => [...q, ...toLocalOfflineItems(decodedFiles, album)]);
           queuedOfflineCount += decodedFiles.length;
           setImportProgress(Math.round((start + chunkPaths.length) / proofPaths.length * 100));
           continue;
@@ -1512,7 +1526,7 @@ function MobileCaptureInner() {
         }
         const failedFiles = decodedFiles.filter(file => !uploadedFiles.has(file));
         if (failedFiles.length > 0) {
-          setOfflineQueue(q => [...q, ...failedFiles]);
+          setOfflineQueue(q => [...q, ...toLocalOfflineItems(failedFiles, album)]);
           queuedOfflineCount += failedFiles.length;
         }
 
@@ -1756,7 +1770,7 @@ function MobileCaptureInner() {
               return { ...item, status: succeededFiles.has(item.file) ? "done" : "failed" };
             }));
             if (failedFiles.length > 0) {
-              setOfflineQueue(q => [...q, ...failedFiles]);
+              setOfflineQueue(q => [...q, ...toLocalOfflineItems(failedFiles, activeAlbum)]);
               queuedOfflineCount += failedFiles.length;
             }
           } catch {
@@ -1764,13 +1778,13 @@ function MobileCaptureInner() {
             setUploadQueue(prev => prev.map(item =>
               chunkIds.includes(item.id) ? { ...item, status: "failed" } : item
             ));
-            setOfflineQueue(q => [...q, ...chunk]);
+            setOfflineQueue(q => [...q, ...toLocalOfflineItems(chunk, activeAlbum)]);
             queuedOfflineCount += chunk.length;
             totalDone += chunk.length;
           }
         }
       } else {
-        setOfflineQueue(q => [...q, ...sortedFiles]);
+        setOfflineQueue(q => [...q, ...toLocalOfflineItems(sortedFiles, activeAlbum)]);
         setUploadQueue(prev => prev.map(item => ({ ...item, status: "failed" })));
         queuedOfflineCount += sortedFiles.length;
         setQuietCaptureStatus("Queued offline", `${countLabel(sortedFiles.length, "file")} will upload when the server is back.`, "warning");
@@ -1852,44 +1866,66 @@ function MobileCaptureInner() {
 
   // Flush offline queue when server comes back
   const flushOfflineQueue = async () => {
-    if (!offlineQueue.length || !targetAlbum) return;
+    if (!offlineQueue.length) return;
     const isOnline = await recheckServer();
     if (!isOnline) { toast.info("Still offline — queue retained"); return; }
     setServerOnline(true);
-    // Sort by capture time before retrying
-    const files = [...offlineQueue].sort((a, b) => a.lastModified - b.lastModified);
+    // Snapshot items and group by their captured destination. Never use the
+    // currently selected album for a retry: the user may have switched
+    // bookings since the files were queued.
+    const queued = [...offlineQueue];
     setOfflineQueue([]);
     setUploading(true); setUploadProgress(0); setUploadSpeed(null);
-    setQuietCaptureStatus("Syncing queue", `${countLabel(files.length, "queued photo")} uploading now`, "active");
+    setQuietCaptureStatus("Syncing queue", `${countLabel(queued.length, "queued photo")} uploading now`, "active");
     try {
-      const results = await uploadPhotosToServer(files, (done, total, bytesPerSecond) => {
-        setUploadProgress(Math.round(done / total * 100));
-        if (bytesPerSecond != null) setUploadSpeed(bytesPerSecond);
-      }, tenantSession?.slug, uploadConcurrency, targetAlbum?.title || undefined, targetAlbum?.id, autoEditEnabled, autoEditStrength, targetAlbum?.editProfile);
-      const matched = matchUploadResultsToFiles(files, results);
-      const uploadedFiles = new Set(matched.map(pair => pair.file));
-      const failedFiles = files.filter(file => !uploadedFiles.has(file));
-      const newPhotos: Photo[] = matched.map(({ file, result }) =>
-        photoFromUploadResult(result, new Date(file.lastModified || Date.now()).toISOString())
-      );
-      if (failedFiles.length > 0) {
-        setOfflineQueue(q => [...q, ...failedFiles]);
-        queueCaptureSummary({ queued: failedFiles.length });
+      const groups = new Map<string, LocalOfflineQueueItem[]>();
+      queued.forEach(item => groups.set(item.albumId, [...(groups.get(item.albumId) || []), item]));
+      let completed = 0;
+      for (const items of groups.values()) {
+        const album = albums.find(a => a.id === items[0].albumId);
+        if (!album) {
+          setOfflineQueue(q => [...q, ...items]);
+          continue;
+        }
+        const files = items.map(item => item.file).sort((a, b) => a.lastModified - b.lastModified);
+        const results = await uploadPhotosToServer(files, (done, _total, bytesPerSecond) => {
+          setUploadProgress(Math.round((completed + done) / queued.length * 100));
+          if (bytesPerSecond != null) setUploadSpeed(bytesPerSecond);
+        }, tenantSession?.slug, uploadConcurrency, items[0].albumTitle || album.title, album.id, autoEditEnabled, autoEditStrength, items[0].editProfile ?? album.editProfile);
+        const matched = matchUploadResultsToFiles(files, results);
+        const uploadedFiles = new Set(matched.map(pair => pair.file));
+        const failedFiles = files.filter(file => !uploadedFiles.has(file));
+        if (failedFiles.length > 0) {
+          setOfflineQueue(q => [...q, ...toLocalOfflineItems(failedFiles, album)]);
+          queueCaptureSummary({ queued: failedFiles.length });
+        }
+        const newPhotos: Photo[] = matched.map(({ file, result }) => photoFromUploadResult(result, new Date(file.lastModified || Date.now()).toISOString()));
+        if (newPhotos.length > 0) {
+          const fresh = await loadCanonicalAlbum(albums.find(a => a.id === album.id) || album);
+          const photos = mergePhotosById(fresh.photos, newPhotos);
+          const upd: Album = { ...fresh, photos, photoCount: photos.length, coverImage: fresh.coverImage || newPhotos[0]?.src || "" };
+          await saveAlbum(upd);
+          if (targetAlbumRef.current?.id === upd.id) { setTargetAlbum(upd); targetAlbumRef.current = upd; }
+          setAlbums(prev => prev.map(a => a.id === upd.id ? upd : a));
+          scheduleAutoCull(upd);
+          setUploadedCount(p => p + newPhotos.length);
+          sessionUploadedRef.current = true;
+          queueCaptureSummary({ added: newPhotos.length });
+        }
+        completed += files.length;
       }
-      const fresh = await loadCanonicalAlbum(albums.find(a => a.id === targetAlbum.id) || targetAlbum);
-      const photos = mergePhotosById(fresh.photos, newPhotos);
-      const upd: Album = { ...fresh, photos, photoCount: photos.length, coverImage: fresh.coverImage || newPhotos[0]?.src || "" };
-      await saveAlbum(upd); setTargetAlbum(upd); targetAlbumRef.current = upd; setAlbums(prev => prev.map(a => a.id === upd.id ? upd : a));
-      scheduleAutoCull(upd);
-      setUploadedCount(p => p + newPhotos.length);
-      sessionUploadedRef.current = true;
-      queueCaptureSummary({ added: results.length });
     } catch (error) {
       // Clearing the visible queue before uploading makes the progress state
       // responsive, but every file must be restored if the request aborts.
       setOfflineQueue(current => {
-        const known = new Set(current.map(file => `${file.name}:${file.size}:${file.lastModified}`));
-        return [...files.filter(file => !known.has(`${file.name}:${file.size}:${file.lastModified}`)), ...current];
+        const merged = [...queued, ...current];
+        const seen = new Set<string>();
+        return merged.filter(item => {
+          const key = `${item.albumId}:${item.file.name}:${item.file.size}:${item.file.lastModified}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
       });
       if (error instanceof PhotoUploadError && error.kind === "authentication") {
         setQuietCaptureStatus("Sign-in required", "Queued photos are safe. Sign in again, then tap Retry.", "warning");
