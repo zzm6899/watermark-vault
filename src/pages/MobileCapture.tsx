@@ -531,6 +531,9 @@ function MobileCaptureInner() {
 
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [albums, setAlbums] = useState<Album[]>([]);
+  // Synchronous snapshot prevents duplicate album creation during rapid
+  // booking switches before React has committed the previous setState.
+  const albumsRef = useRef<Album[]>([]);
   const [selectedBooking, setSelectedBooking] = useState<Booking | null>(null);
   const [targetAlbum, setTargetAlbum] = useState<Album | null>(null);
   // Event listeners and queued imports need the latest album without re-subscribing.
@@ -1027,6 +1030,7 @@ function MobileCaptureInner() {
 
   // Keep targetAlbumRef current for native listeners and queued imports.
   useEffect(() => { targetAlbumRef.current = targetAlbum; }, [targetAlbum]);
+  useEffect(() => { albumsRef.current = albums; }, [albums]);
   useEffect(() => { setShowRejectsToClient(!!targetAlbum?.showCullRejectsToClient); }, [targetAlbum?.id, targetAlbum?.showCullRejectsToClient]);
   const pendingCullAlbumRef = useRef<Album | null>(null);
   const cullTimerRef = useRef<number | null>(null);
@@ -1209,7 +1213,7 @@ function MobileCaptureInner() {
   }, [isNative, ftpStatus?.running, drainFtpImportQueue, jpegOnly, queueCaptureSummary, setQuietCaptureStatus]);
 
   const getOrCreateAlbum = useCallback((booking: Booking): Album => {
-    const existing = albums.find(a => a.bookingId === booking.id);
+    const existing = albumsRef.current.find(a => a.bookingId === booking.id);
     if (existing) return existing;
     const settings = getSettings();
     const newAlbum: Album = {
@@ -1230,9 +1234,10 @@ function MobileCaptureInner() {
         body: JSON.stringify(newAlbum),
       }).catch(() => {});
     }
-    setAlbums(prev => [...prev, newAlbum]);
+    albumsRef.current = [...albumsRef.current, newAlbum];
+    setAlbums(prev => prev.some(a => a.bookingId === booking.id) ? prev : [...prev, newAlbum]);
     return newAlbum;
-  }, [albums, tenantSession]);
+  }, [tenantSession]);
 
   const selectBooking = useCallback((booking: Booking) => {
     setSelectedBooking(booking);
