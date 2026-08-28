@@ -45,6 +45,12 @@ jobs:
       - name: Sync Capacitor Android project
         run: npx cap sync android
 
+      # Keep the downloadable APK out of the embedded web bundle. Otherwise
+      # each APK build would recursively package the previous APK and balloon
+      # the installer size.
+      - name: Remove downloadable APK from Capacitor assets
+        run: rm -f android/app/src/main/assets/public/downloads/android/latest.apk
+
       - name: Build debug APK
         working-directory: android
         run: |
