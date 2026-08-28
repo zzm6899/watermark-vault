@@ -5913,6 +5913,13 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
             checked={albumProofingEnabled}
             onCheckedChange={(v) => {
               setAlbumProofingEnabled(v);
+              // Proofing is a review workflow, never a checkout workflow.
+              // Disable purchase prompts as soon as proofing is enabled; the
+              // admin can explicitly re-enable payment after approval.
+              if (v) {
+                setPurchasingDisabled(true);
+                setAllUnlocked(false);
+              }
               toast.success(v ? "Proofing enabled for this album" : "Proofing disabled for this album");
             }}
           />
@@ -5955,7 +5962,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
           const proofingPhotos = (liveAlbum!.photos || []).map(photo =>
             photo.cull?.status === "reject" ? { ...photo, hidden: true } : photo
           );
-          const updated = { ...liveAlbum!, photos: proofingPhotos, proofingEnabled: true, proofingStage: "proofing" as const, proofingRounds: [...rounds, newRound], clientToken, proofingExpiresAt };
+          const updated = { ...liveAlbum!, photos: proofingPhotos, proofingEnabled: true, proofingStage: "proofing" as const, proofingRounds: [...rounds, newRound], clientToken, proofingExpiresAt, purchasingDisabled: true, allUnlocked: false };
           updateLiveAlbum(updated);
           let inviteSent = false;
           if (clientEmail) {
@@ -5986,7 +5993,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
           if (!latest?.selectedPhotoIds?.length) { toast.error("No selections to approve yet"); return; }
           const selectedSet = new Set(latest.selectedPhotoIds);
           const updatedPhotos = liveAlbum!.photos.map((p: any) => ({ ...p, hidden: !selectedSet.has(p.id) }));
-          const updated = { ...liveAlbum!, photos: updatedPhotos, proofingStage: "editing" as const, allUnlocked: free ? true : liveAlbum!.allUnlocked };
+          const updated = { ...liveAlbum!, photos: updatedPhotos, proofingStage: "editing" as const, allUnlocked: free ? true : liveAlbum!.allUnlocked, purchasingDisabled: false };
           updateLiveAlbum(updated);
           toast.success(`${latest.selectedPhotoIds.length} photos kept, ${liveAlbum!.photos.length - latest.selectedPhotoIds.length} hidden — ${free ? "album unlocked" : "moving to editing"}`);
           onUpdate?.(updated);
@@ -6002,7 +6009,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
         };
 
         const deliverFinals = async (free: boolean) => {
-          const updated = { ...liveAlbum!, proofingStage: "finals-delivered" as const, allUnlocked: free ? true : liveAlbum!.allUnlocked };
+          const updated = { ...liveAlbum!, proofingStage: "finals-delivered" as const, allUnlocked: free ? true : liveAlbum!.allUnlocked, purchasingDisabled: free ? false : liveAlbum!.purchasingDisabled };
           updateLiveAlbum(updated);
           onUpdate?.(updated);
           if (clientEmail) {
@@ -6109,6 +6116,26 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
                   <p className="text-xs font-body text-foreground font-medium">{latest.selectedPhotoIds.length} photos selected by client</p>
                   {latest.clientNote && <p className="text-xs font-body text-muted-foreground italic">"{latest.clientNote}"</p>}
                   <p className="text-[10px] font-body text-muted-foreground/60">{latest.submittedAt ? new Date(latest.submittedAt).toLocaleString() : ""}</p>
+                  {(() => {
+                    const selectedSet = new Set(latest.selectedPhotoIds);
+                    const selectedPhotos = (liveAlbum!.photos || []).filter(photo => selectedSet.has(photo.id));
+                    return selectedPhotos.length > 0 ? (
+                      <div className="pt-2">
+                        <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground mb-2">Client selection preview</p>
+                        <div className="grid grid-cols-4 sm:grid-cols-6 gap-1.5">
+                          {selectedPhotos.slice(0, 12).map(photo => (
+                            <div key={photo.id} className="group relative aspect-square overflow-hidden rounded-md border border-yellow-400/30 bg-background/40" title={proofReference(photo)}>
+                              <img src={photo.thumbnail || photo.src} alt={proofReference(photo)} loading="lazy" className="h-full w-full object-cover" />
+                              <span className="absolute bottom-0 left-0 right-0 truncate bg-black/65 px-1 py-0.5 text-[8px] text-white/85">{photo.originalFileNumber || photo.title}</span>
+                            </div>
+                          ))}
+                        </div>
+                        {selectedPhotos.length > 12 && <p className="mt-1 text-[10px] font-body text-muted-foreground">+{selectedPhotos.length - 12} more selected</p>}
+                      </div>
+                    ) : (
+                      <p className="pt-2 text-[10px] font-body text-muted-foreground/70">Preview thumbnails will appear when the album photos finish loading.</p>
+                    );
+                  })()}
                   <button
                     onClick={async () => {
                       // Ensure photos are loaded — if the album was opened as a stub

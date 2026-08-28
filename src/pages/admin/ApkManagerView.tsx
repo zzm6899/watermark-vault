@@ -166,6 +166,21 @@ function ApkManagerView() {
           </div>
         )}
       </div>
+      <div className="glass-panel rounded-xl p-5 sm:p-6">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div>
+            <p className="text-[10px] font-body uppercase tracking-wider text-primary">Desktop editing bridge</p>
+            <h3 className="font-display text-xl text-foreground mt-1">Lightroom Classic plugin</h3>
+            <p className="text-xs font-body text-muted-foreground mt-1">Download the plugin to browse albums, sync client picks, and upload edited JPEG finals directly from Lightroom.</p>
+          </div>
+          <Button asChild variant="outline" className="gap-2 font-body shrink-0">
+            <a href="/downloads/lightroom/WatermarkVault-Lightroom-Plugin.zip" download="WatermarkVault-Lightroom-Plugin.zip">
+              <Download className="w-4 h-4" /> Download plugin
+            </a>
+          </Button>
+        </div>
+        <p className="mt-3 text-[10px] font-body text-muted-foreground/70">Install via Lightroom Classic → File → Plug-in Manager → Add, then configure your Watermark Vault URL and admin credentials.</p>
+      </div>
     </motion.div>
   );
 }
