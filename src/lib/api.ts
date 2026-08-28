@@ -745,14 +745,16 @@ export function deletePhotoFromServer(url: string, tenantSlug?: string): void {
 }
 
 /** Send disposable bytes to measure upload connectivity without creating a photo. */
-export async function runUploadSpeedTest(sizeBytes = 2 * 1024 * 1024): Promise<{ bytesPerSecond: number; elapsedMs: number }> {
+export async function runUploadSpeedTest(sizeBytes = 6 * 1024 * 1024): Promise<{ bytesPerSecond: number; elapsedMs: number }> {
   const payload = new Uint8Array(sizeBytes);
   if (typeof crypto !== "undefined" && crypto.getRandomValues) crypto.getRandomValues(payload.subarray(0, Math.min(sizeBytes, 65536)));
-  const started = Date.now();
-  const res = await fetch("/api/upload/speed-test", { method: "POST", headers: { ...adminAuthHeaders(), "Content-Type": "application/octet-stream", "X-Speed-Test-Start": String(started) }, body: payload });
+  const started = typeof performance !== "undefined" ? performance.now() : Date.now();
+  const res = await fetch("/api/upload/speed-test", { method: "POST", headers: { ...adminAuthHeaders(), "Content-Type": "application/octet-stream" }, body: payload });
   if (!res.ok) throw new Error(`Speed test failed (${res.status})`);
-  const data = await res.json() as { bytesPerSecond?: number; elapsedMs?: number };
-  return { bytesPerSecond: Number(data.bytesPerSecond || 0), elapsedMs: Number(data.elapsedMs || Date.now() - started) };
+  const data = await res.json() as { bytes?: number };
+  const elapsedMs = Math.max(1, (typeof performance !== "undefined" ? performance.now() : Date.now()) - started);
+  const bytes = Number(data.bytes || sizeBytes);
+  return { bytesPerSecond: Math.round(bytes / (elapsedMs / 1000)), elapsedMs };
 }
 
 export async function autoCullAlbum(
