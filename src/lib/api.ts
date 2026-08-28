@@ -763,15 +763,16 @@ export function deletePhotoFromServer(url: string, tenantSlug?: string): void {
 
 /** Send disposable bytes to measure upload connectivity without creating a photo. */
 export async function runUploadSpeedTest(sizeBytes = 1 * 1024 * 1024): Promise<{ bytesPerSecond: number; elapsedMs: number }> {
-  // Android WebView's fetch(Blob) bridge can serialize the body to only a few
-  // bytes. An ArrayBuffer keeps the native fetch upload path binary-safe.
-  const payload = new Uint8Array(sizeBytes).buffer;
+  // Some Android WebViews serialize binary fetch bodies to only a few bytes.
+  // A plain-text payload uses the reliable string bridge while still measuring
+  // a real upload over the same route.
+  const payload = "0".repeat(sizeBytes);
   const started = Date.now();
   const controller = typeof AbortController !== "undefined" ? new AbortController() : undefined;
   const timeout = controller ? window.setTimeout(() => controller.abort(), 20000) : undefined;
   let res: Response;
   try {
-    res = await fetch("/api/upload/speed-test", { method: "POST", headers: { ...adminAuthHeaders(), "Content-Type": "application/octet-stream" }, body: payload, signal: controller?.signal });
+    res = await fetch("/api/upload/speed-test", { method: "POST", headers: { ...adminAuthHeaders(), "Content-Type": "text/plain; charset=utf-8" }, body: payload, signal: controller?.signal });
   } finally {
     if (timeout != null) window.clearTimeout(timeout);
   }
