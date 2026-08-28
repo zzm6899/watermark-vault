@@ -2132,6 +2132,22 @@ app.put("/api/albums/:albumId", requireAuth, authenticatedLargeJson, (req, res) 
   const candidate = idx >= 0 ? { ...albums[idx], ...incoming } : incoming;
   const invalidUploads = invalidAlbumUploadReferences(db, candidate, null);
   if (invalidUploads.length) return res.status(409).json({ error: "One or more uploads do not belong to this album scope" });
+  // A mobile client can create the same booking from two screens before either
+  // screen receives the updated album list. Reuse the existing booking album
+  // instead of creating another UUID with the same title.
+  if (idx < 0 && incoming.bookingId) {
+    const existingIdx = albums.findIndex(a => a.bookingId === incoming.bookingId);
+    if (existingIdx >= 0) {
+      const existing = albums[existingIdx];
+      const merged = { ...existing, ...incoming, id: existing.id,
+        photos: _mergePhotoArrays(existing.photos || [], incoming.photos || []) };
+      merged.photoCount = merged.photos.length;
+      albums[existingIdx] = merged;
+      db[ALBUMS_KEY] = JSON.stringify(albums);
+      writeDb(db);
+      return res.json({ ok: true, merged: true, albumId: existing.id });
+    }
+  }
   if (idx >= 0) albums[idx] = candidate;
   else albums.push(candidate);
   db[ALBUMS_KEY] = JSON.stringify(albums);
@@ -8700,6 +8716,19 @@ app.put("/api/tenant/:slug/albums/:albumId", tenantLimiter, requireTenant, authe
   const candidate = idx >= 0 ? { ...albums[idx], ...incoming } : incoming;
   const invalidUploads = invalidAlbumUploadReferences(db, candidate, slug);
   if (invalidUploads.length) return res.status(409).json({ error: "One or more uploads do not belong to this tenant" });
+  if (idx < 0 && incoming.bookingId) {
+    const existingIdx = albums.findIndex(a => a.bookingId === incoming.bookingId);
+    if (existingIdx >= 0) {
+      const existing = albums[existingIdx];
+      const merged = { ...existing, ...incoming, id: existing.id,
+        photos: _mergePhotoArrays(existing.photos || [], incoming.photos || []) };
+      merged.photoCount = merged.photos.length;
+      albums[existingIdx] = merged;
+      db[key] = JSON.stringify(albums);
+      writeDb(db);
+      return res.json({ ok: true, merged: true, albumId: existing.id });
+    }
+  }
   if (idx >= 0) albums[idx] = candidate;
   else albums.push(candidate);
   db[key] = JSON.stringify(albums);
