@@ -1681,7 +1681,11 @@ function MobileCaptureInner() {
   };
 
   const handleFilePick = async (files: FileList | null) => {
-    if (!files || files.length === 0 || !targetAlbum) return;
+    // Read the ref at event time. React state can still contain the previous
+    // booking for one render immediately after the destination selector changes.
+    const activeAlbum = targetAlbumRef.current;
+    if (!files || files.length === 0 || !activeAlbum) return;
+    const uploadAlbumId = activeAlbum.id;
     const rawExt = [".nef",".cr2",".cr3",".arw",".orf",".rw2",".dng",".raf"];
     const imageFiles = Array.from(files).filter(f => {
       if (!isSupportedUploadFile(f)) return false;
@@ -1739,7 +1743,7 @@ function MobileCaptureInner() {
             const chunkResults = await uploadPhotosToServer(chunk, (done, _total, bytesPerSecond) => {
               setUploadProgress(Math.round((totalDone + done) / sortedFiles.length * 100));
               if (bytesPerSecond != null) setUploadSpeed(bytesPerSecond);
-            }, tenantSession?.slug, uploadConcurrency, targetAlbum?.title || undefined, targetAlbum?.id, autoEditEnabled, autoEditStrength, targetAlbum?.editProfile);
+            }, tenantSession?.slug, uploadConcurrency, activeAlbum.title || undefined, uploadAlbumId, autoEditEnabled, autoEditStrength, activeAlbum.editProfile);
             const matched = matchUploadResultsToFiles(chunk, chunkResults);
             const succeededFiles = new Set(matched.map(pair => pair.file));
             for (const { file, result } of matched) {
@@ -1772,10 +1776,17 @@ function MobileCaptureInner() {
         setQuietCaptureStatus("Queued offline", `${countLabel(sortedFiles.length, "file")} will upload when the server is back.`, "warning");
       }
       if (newPhotos.length > 0) {
-        const fresh = await loadCanonicalAlbum(albums.find(a => a.id === targetAlbum.id) || targetAlbum);
+        const fresh = await loadCanonicalAlbum(albums.find(a => a.id === uploadAlbumId) || activeAlbum);
         const photos = mergePhotosById(fresh.photos, newPhotos);
         const updated: Album = { ...fresh, enabled: true, photos, photoCount: photos.length, coverImage: fresh.coverImage || newPhotos[0]?.src || "" };
-        await saveAlbum(updated); setTargetAlbum(updated); targetAlbumRef.current = updated; setAlbums(prev => prev.map(a => a.id === updated.id ? updated : a));
+        await saveAlbum(updated);
+        // Do not switch the UI back to an older upload target if the user has
+        // already selected another booking while this batch was in flight.
+        if (targetAlbumRef.current?.id === uploadAlbumId) {
+          setTargetAlbum(updated);
+          targetAlbumRef.current = updated;
+        }
+        setAlbums(prev => prev.map(a => a.id === updated.id ? updated : a));
         scheduleAutoCull(updated);
         setUploadedCount(p => p + newPhotos.length);
         sessionUploadedRef.current = true;
