@@ -4,13 +4,13 @@
     "versionName":  "1.4",
     "versionCode":  5,
     "buildType":  "debug",
-    "builtAt":  "2026-08-26T16:18:21.0731646Z",
-    "commit":  "9e8e1f2",
+    "builtAt":  "2026-08-28T05:27:51.0000000Z",
+    "commit":  "a2506a2",
     "apk":  {
                 "fileName":  "zuploader-capture-latest.apk",
                 "url":  "/downloads/android/latest.apk",
-                "sizeBytes":  8156641,
-                "sha256":  "b5d53dd48f5265833703ac18a2d1436a0b5a03c766f886f975102ff012732185"
+                "sizeBytes":  91130517,
+                "sha256":  "833e9b895dc94af967fe04b7991526bf2fdda8380ea45956df59f3eb6290dad6"
             },
     "notes":  [
                   "Built from the current web bundle and synced into the Android shell.",
