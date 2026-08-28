@@ -762,23 +762,25 @@ export function deletePhotoFromServer(url: string, tenantSlug?: string): void {
 }
 
 /** Send disposable bytes to measure upload connectivity without creating a photo. */
-export async function runUploadSpeedTest(sizeBytes = 4 * 1024 * 1024): Promise<{ bytesPerSecond: number; elapsedMs: number }> {
-  // Blob-backed bodies are more stable than passing a large Uint8Array through
-  // Android WebView's fetch bridge, which can crash on some devices.
-  const payload = new Blob([new Uint8Array(sizeBytes)], { type: "application/octet-stream" });
-  // Date.now() is intentionally used here; some Android WebViews have
-  // unreliable performance.now() clocks across long-running fetches.
+export async function runUploadSpeedTest(sizeBytes = 1 * 1024 * 1024): Promise<{ bytesPerSecond: number; elapsedMs: number }> {
+  // Android WebView's fetch(Blob) bridge can serialize the body to only a few
+  // bytes. XHR + ArrayBuffer uses the native WebView upload path reliably.
+  const payload = new Uint8Array(sizeBytes).buffer;
   const started = Date.now();
-  const controller = typeof AbortController !== "undefined" ? new AbortController() : undefined;
-  const timeout = controller ? window.setTimeout(() => controller.abort(), 20000) : undefined;
-  let res: Response;
-  try {
-    res = await fetch("/api/upload/speed-test", { method: "POST", headers: { ...adminAuthHeaders(), "Content-Type": "application/octet-stream" }, body: payload, signal: controller?.signal });
-  } finally {
-    if (timeout != null) window.clearTimeout(timeout);
-  }
-  if (!res.ok) throw new Error(`Speed test failed (${res.status})`);
-  const data = await res.json() as { bytes?: number };
+  const data = await new Promise<{ bytes?: number }>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/upload/speed-test", true);
+    xhr.timeout = 20000;
+    for (const [key, value] of Object.entries({ ...adminAuthHeaders(), "Content-Type": "application/octet-stream" })) xhr.setRequestHeader(key, value);
+    xhr.responseType = "json";
+    xhr.onload = () => xhr.status >= 200 && xhr.status < 300
+      ? resolve((xhr.response || JSON.parse(xhr.responseText || "{}")) as { bytes?: number })
+      : reject(new Error(`Speed test failed (${xhr.status})`));
+    xhr.onerror = () => reject(new Error("Upload speed test could not reach the server"));
+    xhr.ontimeout = () => reject(new Error("Upload speed test timed out"));
+    xhr.onabort = () => reject(new Error("Upload speed test was cancelled"));
+    xhr.send(payload);
+  });
   const elapsedMs = Math.max(1, Date.now() - started);
   const bytes = Number(data.bytes);
   // A successful test must make it through the upload body.  Some Android
