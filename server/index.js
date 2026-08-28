@@ -2129,6 +2129,13 @@ app.put("/api/albums/:albumId", requireAuth, authenticatedLargeJson, (req, res) 
   } else if (incoming.photos) {
     incoming.photos = _stripBakedFromPhotos(incoming.photos).map(_ensurePhotoProofIdentity);
   }
+  // Multiple photographers may save the same booking album concurrently.
+  // Treat photo arrays as additive here so a stale full-album save cannot
+  // erase photos uploaded by another device moments earlier.
+  if (idx >= 0 && Array.isArray(incoming.photos)) {
+    incoming.photos = _mergePhotoArrays(albums[idx].photos || [], incoming.photos);
+    incoming.photoCount = incoming.photos.length;
+  }
   const candidate = idx >= 0 ? { ...albums[idx], ...incoming } : incoming;
   const invalidUploads = invalidAlbumUploadReferences(db, candidate, null);
   if (invalidUploads.length) return res.status(409).json({ error: "One or more uploads do not belong to this album scope" });
@@ -8712,6 +8719,10 @@ app.put("/api/tenant/:slug/albums/:albumId", tenantLimiter, requireTenant, authe
     delete incoming._photosStripped;
   } else if (incoming.photos) {
     incoming.photos = _stripBakedFromPhotos(incoming.photos).map(_ensurePhotoProofIdentity);
+  }
+  if (idx >= 0 && Array.isArray(incoming.photos)) {
+    incoming.photos = _mergePhotoArrays(albums[idx].photos || [], incoming.photos);
+    incoming.photoCount = incoming.photos.length;
   }
   const candidate = idx >= 0 ? { ...albums[idx], ...incoming } : incoming;
   const invalidUploads = invalidAlbumUploadReferences(db, candidate, slug);
