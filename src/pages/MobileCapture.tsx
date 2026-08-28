@@ -553,7 +553,7 @@ function MobileCaptureInner() {
     try {
       const result = await runUploadSpeedTest();
       setSpeedTestResult(result.bytesPerSecond);
-      toast.success(`Upload connection: ${formatSpeed(result.bytesPerSecond)}/s`);
+      toast.success(`Upload connection: ${formatSpeed(result.bytesPerSecond)}`);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Upload speed test failed");
     } finally { setSpeedTesting(false); }

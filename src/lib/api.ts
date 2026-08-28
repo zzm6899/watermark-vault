@@ -780,7 +780,13 @@ export async function runUploadSpeedTest(sizeBytes = 4 * 1024 * 1024): Promise<{
   if (!res.ok) throw new Error(`Speed test failed (${res.status})`);
   const data = await res.json() as { bytes?: number };
   const elapsedMs = Math.max(1, Date.now() - started);
-  const bytes = Number(data.bytes || sizeBytes);
+  const bytes = Number(data.bytes);
+  // A successful test must make it through the upload body.  Some Android
+  // WebViews/proxies can return a response while sending only a tiny prefix;
+  // treating that prefix as throughput produces misleading values like 32 B/s.
+  if (!Number.isFinite(bytes) || bytes < Math.min(sizeBytes, 64 * 1024)) {
+    throw new Error(`Upload test sent only ${Math.max(0, Math.round(bytes || 0))} bytes; check the connection and retry`);
+  }
   const bytesPerSecond = Math.round(bytes / (elapsedMs / 1000));
   if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0 || elapsedMs > 120000) {
     throw new Error("Upload speed test timed out or returned an invalid result");
