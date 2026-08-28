@@ -97,6 +97,14 @@ function formatDuration(mins: number) {
   if (mins >= 60) { const h = Math.floor(mins / 60); const m = mins % 60; return m > 0 ? `${h}h ${m}m` : `${h}h`; }
   return `${mins}m`;
 }
+function recommendedUploadConcurrency(): number {
+  try {
+    const connection = (navigator as Navigator & { connection?: { effectiveType?: string; saveData?: boolean } }).connection;
+    if (connection?.saveData || connection?.effectiveType === "slow-2g" || connection?.effectiveType === "2g") return 1;
+    if (connection?.effectiveType === "3g") return 2;
+  } catch { /* connection hints are optional */ }
+  return 3;
+}
 /** Returns the best thumbnail URL for a photo, optionally scoped to a tenant watermark. */
 function getThumbSrc(photo: Photo, tenantSlug?: string | null): string {
   if (!isSupportedPhotoSource(photo.src)) return "";
@@ -532,7 +540,7 @@ function MobileCaptureInner() {
   // benefits from fewer in-flight requests (less contention); fast Wi-Fi can
   // safely use more workers to keep the pipe full.
   const uploadConcurrency = speedTestResult == null
-    ? 3
+    ? recommendedUploadConcurrency()
     : speedTestResult < 800 * 1024
       ? 1
       : speedTestResult > 2 * 1024 * 1024
