@@ -659,13 +659,28 @@ export async function uploadPhotosToServer(
   if (autoEdit) uploadUrl += (uploadUrl.includes("?") ? "&" : "?") + `autoEditStrength=${autoEditStrength}`;
   if (autoEdit && autoEditProfile) uploadUrl += (uploadUrl.includes("?") ? "&" : "?") + `autoEditProfile=${encodeURIComponent(autoEditProfile)}`;
 
-  // Smaller batches improve granular progress feedback and concurrent throughput
-  // Large camera files get one-file batches so an interrupted transfer only
-  // retries that file; normal JPEG proofs retain efficient batching.
-  const batchSize = uploadFiles.some(file => file.size > 12 * 1024 * 1024) ? 1 : 5;
+  // Keep requests bounded by both file count and payload size. This preserves
+  // JPEG throughput while avoiding large multipart bodies that consume memory
+  // and make a retry repeat several already-transferred files.
+  const maxBatchFiles = 5;
+  const maxBatchBytes = 24 * 1024 * 1024;
   const batches: File[][] = [];
-  for (let i = 0; i < uploadFiles.length; i += batchSize) {
-    batches.push(uploadFiles.slice(i, i + batchSize));
+  let currentBatch: File[] = [];
+  let currentBytes = 0;
+  for (const file of uploadFiles) {
+    const exceedsBudget = currentBatch.length > 0 && (
+      currentBatch.length >= maxBatchFiles || currentBytes + file.size > maxBatchBytes
+    );
+    if (exceedsBudget) {
+      batches.push(currentBatch);
+      currentBatch = [];
+      currentBytes = 0;
+    }
+    currentBatch.push(file);
+    currentBytes += file.size;
+  }
+  if (currentBatch.length > 0) {
+    batches.push(currentBatch);
   }
 
   const results: UploadedPhotoResult[] = [];
@@ -701,7 +716,9 @@ export async function uploadPhotosToServer(
         if (err instanceof PhotoUploadError) throw err;
         lastError = err;
         if (attempt < UPLOAD_BATCH_RETRIES) {
-          await new Promise(resolve => setTimeout(resolve, 250 * (attempt + 1)));
+          const backoffMs = Math.min(4000, 500 * (2 ** attempt));
+          const jitterMs = Math.floor(Math.random() * 250);
+          await new Promise(resolve => setTimeout(resolve, backoffMs + jitterMs));
         }
       }
     }
