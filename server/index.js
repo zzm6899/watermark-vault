@@ -2469,6 +2469,15 @@ app.post("/api/ftp/move-starred", ftpMoveStarredLimiter, requireAdminOrScopedTen
 });
 
 // ── Photo Upload ──────────────────────────────────────
+// Disposable connectivity probe: accepts bytes, measures transfer time, and
+// never writes them to disk or an album.
+app.post("/api/upload/speed-test", uploadLimiter, requireAdminOrScopedTenant, express.raw({ type: "application/octet-stream", limit: "8mb" }), (req, res) => {
+  const bytes = Buffer.isBuffer(req.body) ? req.body.length : 0;
+  const startedAt = Number(req.headers["x-speed-test-start"] || Date.now());
+  const elapsedMs = Math.max(1, Date.now() - startedAt);
+  res.json({ ok: true, bytes, elapsedMs, bytesPerSecond: Math.round(bytes / (elapsedMs / 1000)) });
+});
+
 const storage = multer.diskStorage({
   destination: UPLOADS_DIR,
   filename: (_req, file, cb) => {

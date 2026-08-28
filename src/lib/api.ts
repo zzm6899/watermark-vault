@@ -744,6 +744,17 @@ export function deletePhotoFromServer(url: string, tenantSlug?: string): void {
   fetch(`/api/upload/${encodeURIComponent(filename)}${tenantQuery}`, { method: "DELETE", headers: adminAuthHeaders() }).catch(() => {});
 }
 
+/** Send disposable bytes to measure upload connectivity without creating a photo. */
+export async function runUploadSpeedTest(sizeBytes = 2 * 1024 * 1024): Promise<{ bytesPerSecond: number; elapsedMs: number }> {
+  const payload = new Uint8Array(sizeBytes);
+  if (typeof crypto !== "undefined" && crypto.getRandomValues) crypto.getRandomValues(payload.subarray(0, Math.min(sizeBytes, 65536)));
+  const started = Date.now();
+  const res = await fetch("/api/upload/speed-test", { method: "POST", headers: { ...adminAuthHeaders(), "Content-Type": "application/octet-stream", "X-Speed-Test-Start": String(started) }, body: payload });
+  if (!res.ok) throw new Error(`Speed test failed (${res.status})`);
+  const data = await res.json() as { bytesPerSecond?: number; elapsedMs?: number };
+  return { bytesPerSecond: Number(data.bytesPerSecond || 0), elapsedMs: Number(data.elapsedMs || Date.now() - started) };
+}
+
 export async function autoCullAlbum(
   albumId: string,
   tenantSlug?: string,

@@ -6,7 +6,7 @@ import { Switch } from "@/components/ui/switch";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { getBookings, getAlbums, getSettings, updateAlbum, addAlbum, updateBooking, getMobileTenantSession, setMobileTenantSession, isLoggedIn, logout } from "@/lib/storage";
-import { uploadPhotosToServer, isSupportedUploadFile, isSupportedPhotoSource, recheckServer, sendEmail, sendTenantEmail, fetchTenantMobileData, saveTenantAlbum, autoCullAlbum, tenantLogout, verifyTenantSession, verifyAdminSession, adminAuthHeaders, NATIVE_API_ORIGIN, PhotoUploadError, type UploadedPhotoResult } from "@/lib/api";
+import { uploadPhotosToServer, runUploadSpeedTest, isSupportedUploadFile, isSupportedPhotoSource, recheckServer, sendEmail, sendTenantEmail, fetchTenantMobileData, saveTenantAlbum, autoCullAlbum, tenantLogout, verifyTenantSession, verifyAdminSession, adminAuthHeaders, NATIVE_API_ORIGIN, PhotoUploadError, type UploadedPhotoResult } from "@/lib/api";
 import { queueOfflineCapture, getOfflineQueue, useOfflineUploadQueue, type OfflineCaptureItem } from "@/lib/usePwa";
 import { generateThumbnail, formatSpeed } from "@/lib/image-utils";
 import CameraUsb from "@/plugins/camera-usb";
@@ -525,6 +525,20 @@ function MobileCaptureInner() {
   const [liveCapturePaused, setLiveCapturePaused] = useState(false);
   const liveCapturePausedRef = useRef(false);
   const [serverOnline, setServerOnline] = useState(false);
+  const [speedTesting, setSpeedTesting] = useState(false);
+  const [speedTestResult, setSpeedTestResult] = useState<number | null>(null);
+
+  const handleSpeedTest = useCallback(async () => {
+    if (speedTesting) return;
+    setSpeedTesting(true);
+    try {
+      const result = await runUploadSpeedTest();
+      setSpeedTestResult(result.bytesPerSecond);
+      toast.success(`Upload connection: ${formatSpeed(result.bytesPerSecond)}/s`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Upload speed test failed");
+    } finally { setSpeedTesting(false); }
+  }, [speedTesting]);
   const [networkOnline, setNetworkOnline] = useState(navigator.onLine);
   const [idbQueue, setIdbQueue] = useState<OfflineCaptureItem[]>([]);
   const [showIdbQueue, setShowIdbQueue] = useState(false);
@@ -2506,6 +2520,10 @@ function MobileCaptureInner() {
             try { localStorage.setItem(AUTO_EDIT_KEY, enabled ? "on" : "off"); } catch { /* unavailable */ }
           }} />
         </div>
+        <button type="button" onClick={() => void handleSpeedTest()} disabled={!serverOnline || speedTesting} className="capture-control-tile text-left disabled:opacity-50">
+          <div className="flex items-center gap-2"><Activity className={`w-4 h-4 ${speedTestResult ? "text-primary" : "text-muted-foreground"}`} /><span className="text-xs font-body text-foreground">{speedTesting ? "Testing upload…" : speedTestResult ? `Speed ${formatSpeed(speedTestResult)}/s` : "Test upload speed"}</span></div>
+          <span className="text-[10px] text-muted-foreground">Sends disposable test data only</span>
+        </button>
       </div>
 
       {/* Capture transport */}
