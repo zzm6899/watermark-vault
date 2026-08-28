@@ -9,8 +9,8 @@
     "apk":  {
                 "fileName":  "zuploader-capture-latest.apk",
                 "url":  "/downloads/android/latest.apk",
-                "sizeBytes":  84103701,
-                "sha256":  "9bab0d411cbbc6d7fe459d8de070dc88f3fc838b4e92fbf3bc7fc5a22c730e7f"
+                "sizeBytes":  84103857,
+                "sha256":  "2b6613f78298883d5b365f4cc2f60f218e7d3e8fc53bca1cc366c6c67bdd0c35"
             },
     "notes":  [
                   "Built from the current web bundle and synced into the Android shell.",
