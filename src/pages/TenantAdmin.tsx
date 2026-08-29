@@ -28,7 +28,7 @@ import {
   getTenantStoreKey, saveTenantStoreKey, updateTenantProfile, tenantLogout,
   clearTenantImageCache, tenantPhotoSrc, saveTenantAlbum,
   uploadPhotosToServer, isSupportedUploadFile, isSupportedPhotoSource, isServerMode, notifyTenantDiscord,
-  getSuperAdminWebhooks, sendTenantEmail,
+  getSuperAdminWebhooks, sendTenantEmail, publicGalleryUrl, fetchPublicAlbum,
   bulkDeleteFiles, deletePhotoFromServer,
   getTenantGoogleCalendarStatus, startTenantGoogleCalendarAuth, verifyTenantSession,
   disconnectTenantGoogleCalendar, getTenantGoogleCalendars,
@@ -1386,8 +1386,7 @@ function TenantAlbums({ slug }: { slug: string }) {
   };
 
   const copyLink = (album: Album) => {
-    const tok = album.clientToken;
-    const url = `${window.location.origin}/gallery/${album.slug}${tok ? `#token=${encodeURIComponent(tok)}` : ""}`;
+    const url = publicGalleryUrl(album);
     navigator.clipboard.writeText(url).then(() => toast.success("Gallery link copied!")).catch(() => {
       const ta = document.createElement("textarea");
       ta.value = url;
@@ -1401,8 +1400,7 @@ function TenantAlbums({ slug }: { slug: string }) {
 
   const handleSendNotification = async (alb: Album) => {
     if (!alb.clientEmail) { toast.error("No client email on this album"); return; }
-    const tok = (alb as any).clientToken;
-    const link = `${window.location.origin}/gallery/${alb.slug}${tok ? `#token=${encodeURIComponent(tok)}` : ""}`;
+    const link = publicGalleryUrl(alb);
     const message = `Hey ${alb.clientName || "there"}, your photos are ready! Check them out here: ${link}`;
     const html = `<div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:32px;background:#0a0a0a;color:#f5f5f5;border-radius:12px;"><h2 style="font-size:22px;margin:0 0 16px;">📸 Your photos are ready!</h2><p style="color:#aaa;line-height:1.6;">${message.replace(link, "")}</p><a href="${link}" style="display:inline-block;margin-top:24px;padding:12px 28px;background:#fff;color:#000;border-radius:8px;text-decoration:none;font-weight:600;">View Your Gallery →</a><p style="margin-top:32px;font-size:11px;color:#555;">${link}</p></div>`;
     const result = await sendTenantEmail(slug, alb.clientEmail, `Your photos are ready — ${alb.clientName || "Gallery"}`, html, message);
@@ -1636,8 +1634,7 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
   const uploadRef = useRef<HTMLInputElement>(null);
 
   const copyLink = (targetAlbum: Album) => {
-    const token = targetAlbum.clientToken;
-    const url = `${window.location.origin}/gallery/${targetAlbum.slug}${token ? `#token=${encodeURIComponent(token)}` : ""}`;
+    const url = publicGalleryUrl(targetAlbum);
     navigator.clipboard.writeText(url)
       .then(() => toast.success("Gallery link copied!"))
       .catch(() => toast.error("Could not copy the gallery link"));
@@ -1965,23 +1962,31 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
           const newRound = { roundNumber: rounds.length + 1, sentAt: new Date().toISOString(), selectedPhotoIds: [], adminNote: note || undefined };
           const updated = { ...liveAlbum, proofingEnabled: true, proofingStage: "proofing" as const, proofingRounds: [...rounds, newRound], clientToken, proofingExpiresAt, proofingExpiryHours: expiryHours };
           await updateLiveAlbum(updated);
-          if (email) {
-            const galleryUrl = `${window.location.origin}/gallery/${liveAlbum.slug}#token=${encodeURIComponent(clientToken)}`;
-            const expiryDateStr = new Date(proofingExpiresAt).toLocaleString("en-AU", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
-            sendTenantEmail(slug, email, `📸 Your proofing gallery is ready — ${liveAlbum.title}`, buildProofingEmailHtml(galleryUrl, expiryDateStr, note || undefined)).catch(() => {});
+          const published = await fetchPublicAlbum(updated.slug || updated.id, { token: clientToken });
+          if (!published?.album) {
+            toast.error("Proofing was saved, but the public gallery is not available yet. Try again before emailing the client.");
+            return;
           }
-          toast.success("Proofing round started" + (email ? " — invite sent to client" : " (no client email on file)"));
+          let inviteSent = false;
+          if (email) {
+            const galleryUrl = publicGalleryUrl({ ...liveAlbum, clientToken });
+            const expiryDateStr = new Date(proofingExpiresAt).toLocaleString("en-AU", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+            const emailResult = await sendTenantEmail(slug, email, `📸 Your proofing gallery is ready — ${liveAlbum.title}`, buildProofingEmailHtml(galleryUrl, expiryDateStr, note || undefined));
+            inviteSent = emailResult.ok;
+            if (!inviteSent) toast.error(emailResult.error || "Proofing saved, but the invite email could not be sent.");
+          }
+          toast.success("Proofing round started" + (inviteSent ? " — invite sent to client" : email ? " — invite was not sent" : " (no client email on file)"));
         };
 
-        const resendProofingEmail = () => {
+        const resendProofingEmail = async () => {
           if (!email) return;
-          const tok = liveAlbum.clientToken;
-          const galleryUrl = `${window.location.origin}/gallery/${liveAlbum.slug}${tok ? `#token=${encodeURIComponent(tok)}` : ""}`;
+          const galleryUrl = publicGalleryUrl(liveAlbum);
           const expiryDateStr = liveAlbum.proofingExpiresAt
             ? new Date(liveAlbum.proofingExpiresAt as string).toLocaleString("en-AU", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })
             : "";
-          sendTenantEmail(slug, email, `📸 Your proofing gallery is ready — ${liveAlbum.title}`, buildProofingEmailHtml(galleryUrl, expiryDateStr, latest?.adminNote)).catch(() => {});
-          toast.success("Proofing invite resent to client");
+          const result = await sendTenantEmail(slug, email, `📸 Your proofing gallery is ready — ${liveAlbum.title}`, buildProofingEmailHtml(galleryUrl, expiryDateStr, latest?.adminNote));
+          if (result.ok) toast.success("Proofing invite resent to client");
+          else toast.error(result.error || "The proofing invite could not be sent.");
         };
 
         const approveSelections = async (free: boolean) => {
@@ -1995,29 +2000,31 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
 
         const sendEditingEmail = async () => {
           if (!email) { toast.error("No client email on file"); return; }
-          const tok = liveAlbum.clientToken;
-          const galleryUrl = `${window.location.origin}/gallery/${liveAlbum.slug}${tok ? `#token=${encodeURIComponent(tok)}` : ""}`;
+          const galleryUrl = publicGalleryUrl(liveAlbum);
           const html = `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;"><h2 style="margin:0 0 16px;font-size:20px;">Your photos are being edited ✏️</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${liveAlbum.clientName || "there"},</p><p style="color:#9ca3af;margin:0 0 20px;">Your selections for <strong style="color:#e5e7eb;">${liveAlbum.title}</strong> are confirmed and editing has begun.</p><a href="${galleryUrl}" style="display:inline-block;background:#374151;color:#e5e7eb;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">Preview Gallery →</a></div>`;
-          await sendTenantEmail(slug, email, `✏️ Your photos are being edited — ${liveAlbum.title}`, html);
-          toast.success("Editing notification sent");
+          const result = await sendTenantEmail(slug, email, `✏️ Your photos are being edited — ${liveAlbum.title}`, html);
+          if (result.ok) toast.success("Editing notification sent");
+          else toast.error(result.error || "The editing notification could not be sent.");
         };
 
         const deliverFinals = async (free: boolean) => {
           const updated = { ...liveAlbum, proofingStage: "finals-delivered" as const, allUnlocked: free ? true : liveAlbum.allUnlocked };
           await updateLiveAlbum(updated);
+          let notificationSent = false;
           if (email) {
-            const tok = liveAlbum.clientToken;
-            const galleryUrl = `${window.location.origin}/gallery/${liveAlbum.slug}${tok ? `#token=${encodeURIComponent(tok)}` : ""}`;
+            const galleryUrl = publicGalleryUrl(liveAlbum);
             const html = `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;"><h2 style="margin:0 0 16px;font-size:20px;">Your edited photos are ready! ✨</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${liveAlbum.clientName || "there"},</p><p style="color:#9ca3af;margin:0 0 20px;">Your final edited photos for <strong style="color:#e5e7eb;">${liveAlbum.title}</strong> are now available.</p><a href="${galleryUrl}" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">${free ? "Download Your Photos →" : "View & Download Photos →"}</a></div>`;
-            sendTenantEmail(slug, email, `✨ Your final photos are ready — ${liveAlbum.title}`, html).catch(() => {});
+            const result = await sendTenantEmail(slug, email, `✨ Your final photos are ready — ${liveAlbum.title}`, html);
+            notificationSent = result.ok;
+            if (!notificationSent) toast.error(result.error || "Finals were delivered, but the notification email could not be sent.");
           }
-          toast.success("Finals delivered!" + (email ? " — client notified" : ""));
+          toast.success("Finals delivered!" + (notificationSent ? " — client notified" : email ? " — client was not notified" : ""));
         };
 
         const resetProofing = async () => {
           if (!confirm("Reset proofing? This will un-hide all photos and clear the proofing stage.")) return;
           const updatedPhotos = (liveAlbum.photos || []).map(p => ({ ...p, hidden: false }));
-          await updateLiveAlbum({ ...liveAlbum, photos: updatedPhotos, proofingStage: "not-started" as const, proofingRounds: [] });
+          await updateLiveAlbum({ ...liveAlbum, photos: updatedPhotos, proofingStage: "not-started" as const, proofingRounds: [], proofingExpiresAt: undefined, purchasingDisabled: false, allUnlocked: false });
           toast.success("Proofing reset");
         };
 

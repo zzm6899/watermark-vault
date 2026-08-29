@@ -10668,17 +10668,23 @@ app.delete("/api/tags/:id", requireAuth, (req, res) => {
 // ── Gallery Share Links ────────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════════════
 
-app.get("/api/albums/:id/share-links", requireAuth, (req, res) => {
+function shareLinkAlbumStore(db, req) {
+  const tenantSlug = String(req.query.tenant || "").trim() || null;
+  const storeKey = tenantSlug ? `t_${tenantSlug}${TENANT_ALBUMS_SUFFIX}` : DB_KEYS.ALBUMS;
+  return { tenantSlug, storeKey, albums: dbGet(db, storeKey, []) };
+}
+
+app.get("/api/albums/:id/share-links", requireAdminOrScopedTenant, (req, res) => {
   const db = readDb();
-  const albums = db["wv_albums"] ? (typeof db["wv_albums"] === "string" ? JSON.parse(db["wv_albums"]) : db["wv_albums"]) : [];
+  const { albums } = shareLinkAlbumStore(db, req);
   const album = albums.find(a => a.id === req.params.id);
   if (!album) return res.status(404).json({ error: "Album not found" });
   res.json(album.shareLinks || []);
 });
 
-app.post("/api/albums/:id/share-links", requireAuth, (req, res) => {
+app.post("/api/albums/:id/share-links", requireAdminOrScopedTenant, (req, res) => {
   const db = readDb();
-  const albums = db["wv_albums"] ? (typeof db["wv_albums"] === "string" ? JSON.parse(db["wv_albums"]) : db["wv_albums"]) : [];
+  const { storeKey, albums } = shareLinkAlbumStore(db, req);
   const idx = albums.findIndex(a => a.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: "Album not found" });
   const link = {
@@ -10693,14 +10699,14 @@ app.post("/api/albums/:id/share-links", requireAuth, (req, res) => {
   };
   if (!albums[idx].shareLinks) albums[idx].shareLinks = [];
   albums[idx].shareLinks.push(link);
-  db["wv_albums"] = albums;
+  db[storeKey] = JSON.stringify(albums);
   writeDb(db);
   res.json(link);
 });
 
-app.delete("/api/albums/:id/share-links/:linkId", requireAuth, (req, res) => {
+app.delete("/api/albums/:id/share-links/:linkId", requireAdminOrScopedTenant, (req, res) => {
   const db = readDb();
-  const albums = db["wv_albums"] ? (typeof db["wv_albums"] === "string" ? JSON.parse(db["wv_albums"]) : db["wv_albums"]) : [];
+  const { storeKey, albums } = shareLinkAlbumStore(db, req);
   const idx = albums.findIndex(a => a.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: "Album not found" });
   albums[idx].shareLinks = (albums[idx].shareLinks || []).filter(l => l.id !== req.params.linkId);
@@ -10709,7 +10715,7 @@ app.delete("/api/albums/:id/share-links/:linkId", requireAuth, (req, res) => {
       if (purchase?.source === "share-link" && purchase?.shareLinkId === req.params.linkId) delete albums[idx].sessionPurchases[sessionKey];
     }
   }
-  db["wv_albums"] = albums;
+  db[storeKey] = JSON.stringify(albums);
   writeDb(db);
   res.json({ ok: true });
 });
@@ -10717,27 +10723,34 @@ app.delete("/api/albums/:id/share-links/:linkId", requireAuth, (req, res) => {
 // Public share link access — resolves a token to album data (view-only)
 app.get("/api/gallery/share/:token", galleryAccessLimiter, (req, res) => {
   const db = readDb();
-  const albums = db["wv_albums"] ? (typeof db["wv_albums"] === "string" ? JSON.parse(db["wv_albums"]) : db["wv_albums"]) : [];
-  for (const album of albums) {
+  const stores = [{ tenantSlug: null, storeKey: DB_KEYS.ALBUMS, albums: dbGet(db, DB_KEYS.ALBUMS, []) }];
+  const activeTenantSlugs = new Set(readTenants().filter(tenant => tenantIsLicensed(tenant)).map(tenant => tenant.slug));
+  for (const key of Object.keys(db)) {
+    if (!key.startsWith("t_") || !key.endsWith(TENANT_ALBUMS_SUFFIX)) continue;
+    const tenantSlug = key.slice(2, -TENANT_ALBUMS_SUFFIX.length);
+    if (activeTenantSlugs.has(tenantSlug)) stores.push({ tenantSlug, storeKey: key, albums: dbGet(db, key, []) });
+  }
+  for (const { tenantSlug, storeKey, albums } of stores) {
+   for (const album of albums) {
     const links = album.shareLinks || [];
     const link = links.find(l => timingSafeTextEqual(l.token, req.params.token));
     if (link) {
       if (album.enabled === false) return res.status(404).json({ error: "Share link not found" });
-      const accessWindow = albumAccessWindow(album, Date.now(), galleryTimezone(db, null));
+      const accessWindow = albumAccessWindow(album, Date.now(), galleryTimezone(db, tenantSlug));
       if (accessWindow.galleryExpired) return res.status(410).json({ error: "This gallery has expired" });
-      if (albumAccessWindow({ expiresAt: link.expiresAt }, Date.now(), galleryTimezone(db, null)).galleryExpired) return res.status(410).json({ error: "This share link has expired" });
+      if (albumAccessWindow({ expiresAt: link.expiresAt }, Date.now(), galleryTimezone(db, tenantSlug)).galleryExpired) return res.status(410).json({ error: "This share link has expired" });
       // Increment access counter
       link.accessCount = (link.accessCount || 0) + 1;
       link.lastAccessedAt = new Date().toISOString();
       const sessionKey = `gallery-${crypto.randomBytes(24).toString("base64url")}`;
-      const sessionToken = signSession({ purpose: "gallery", albumId: album.id, tenantSlug: null, sessionKey, shareLinkId: link.id }, SESSION_SECRET, { ttlSeconds: GALLERY_SESSION_TTL_SECONDS });
+      const sessionToken = signSession({ purpose: "gallery", albumId: album.id, tenantSlug, sessionKey, shareLinkId: link.id }, SESSION_SECRET, { ttlSeconds: GALLERY_SESSION_TTL_SECONDS });
       setHttpOnlyCookie(req, res, galleryCookieName(album.id), sessionToken, GALLERY_SESSION_TTL_SECONDS);
       const allowDownload = link.allowDownload === true && !accessWindow.downloadsExpired;
       if (allowDownload) {
         album.sessionPurchases = album.sessionPurchases || {};
         album.sessionPurchases[sessionKey] = { fullAlbum: true, grantedAt: new Date().toISOString(), source: "share-link", shareLinkId: link.id };
       }
-      db["wv_albums"] = albums;
+      db[storeKey] = JSON.stringify(albums);
       writeDb(db);
       const gallerySession = verifySession(sessionToken, SESSION_SECRET, { purpose: "gallery" });
       return res.json({
@@ -10746,6 +10759,7 @@ app.get("/api/gallery/share/:token", galleryAccessLimiter, (req, res) => {
         linkLabel: link.label,
       });
     }
+   }
   }
   res.status(404).json({ error: "Share link not found" });
 });

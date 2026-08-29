@@ -3023,7 +3023,7 @@ export async function rejectEventSlotRequest(id: string, rejectedBy?: string, no
   } catch { return { ok: false, error: "Network error" }; }
 }
 
-/** Send an email using the tenant's own SMTP settings (falls back to global SMTP). */
+/** Send an email using the tenant's own SMTP settings. */
 export async function sendTenantEmail(slug: string, to: string, subject: string, html?: string, text?: string): Promise<{ ok: boolean; messageId?: string; error?: string }> {
   try {
     const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/email/send`, {
@@ -3438,25 +3438,28 @@ export async function setAlbumTags(albumId: string, tags: string[]): Promise<boo
 
 // ─── Gallery Share Links ──────────────────────────────────────────────────────
 
-export async function getAlbumShareLinks(albumId: string): Promise<import("./types").GalleryShareLink[]> {
+export async function getAlbumShareLinks(albumId: string, tenantSlug?: string): Promise<import("./types").GalleryShareLink[]> {
   try {
-    const res = await fetch(`/api/albums/${encodeURIComponent(albumId)}/share-links`, { headers: adminAuthHeaders() });
+    const query = tenantSlug ? `?tenant=${encodeURIComponent(tenantSlug)}` : "";
+    const res = await fetch(`/api/albums/${encodeURIComponent(albumId)}/share-links${query}`, { headers: adminAuthHeaders() });
     if (!res.ok) return [];
     return res.json();
   } catch { return []; }
 }
 
-export async function createAlbumShareLink(albumId: string, data: { label?: string; expiresAt?: string; allowDownload?: boolean }): Promise<import("./types").GalleryShareLink | null> {
+export async function createAlbumShareLink(albumId: string, data: { label?: string; expiresAt?: string; allowDownload?: boolean }, tenantSlug?: string): Promise<import("./types").GalleryShareLink | null> {
   try {
-    const res = await fetch(`/api/albums/${encodeURIComponent(albumId)}/share-links`, { method: "POST", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify(data) });
+    const query = tenantSlug ? `?tenant=${encodeURIComponent(tenantSlug)}` : "";
+    const res = await fetch(`/api/albums/${encodeURIComponent(albumId)}/share-links${query}`, { method: "POST", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify(data) });
     if (!res.ok) return null;
     return res.json();
   } catch { return null; }
 }
 
-export async function deleteAlbumShareLink(albumId: string, linkId: string): Promise<boolean> {
+export async function deleteAlbumShareLink(albumId: string, linkId: string, tenantSlug?: string): Promise<boolean> {
   try {
-    const res = await fetch(`/api/albums/${encodeURIComponent(albumId)}/share-links/${encodeURIComponent(linkId)}`, { method: "DELETE", headers: adminAuthHeaders() });
+    const query = tenantSlug ? `?tenant=${encodeURIComponent(tenantSlug)}` : "";
+    const res = await fetch(`/api/albums/${encodeURIComponent(albumId)}/share-links/${encodeURIComponent(linkId)}${query}`, { method: "DELETE", headers: adminAuthHeaders() });
     return res.ok;
   } catch { return false; }
 }

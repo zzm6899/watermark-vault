@@ -72,6 +72,7 @@ import {
   downloadServerBackup,
   syncFromServer,
   sendEmail,
+  publicGalleryUrl,
   getEmailStatus,
   getEmailAutomations,
   saveEmailAutomations,
@@ -1176,7 +1177,7 @@ function ShootDayCommandCenterView() {
   const shootDayGalleryPath = (album: Album, absolute = false): string => {
     const target = album.slug || album.id;
     const path = `/gallery/${target}${album.clientToken ? `#token=${encodeURIComponent(album.clientToken)}` : ""}`;
-    return absolute ? `${window.location.origin}${path}` : path;
+    return absolute ? publicGalleryUrl(album) : path;
   };
 
   const openShootDayGallery = async (album: Album) => {
@@ -4723,8 +4724,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
 
   const galleryUrlForAlbum = (album: Album) => {
     const target = album.slug || album.id;
-    const tok = album.clientToken;
-    return `${window.location.origin}/gallery/${target}${tok ? `#token=${encodeURIComponent(tok)}` : ""}`;
+    return publicGalleryUrl(album);
   };
 
   const copyLink = async (album: Album) => {
@@ -5391,8 +5391,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
 
   const copyLink = async (alb: Album) => {
     if (!(await ensurePublicShareReady(alb, "copy this gallery link"))) return;
-    const tok = alb.clientToken;
-    const url = `${window.location.origin}/gallery/${alb.slug || alb.id}${tok ? `#token=${encodeURIComponent(tok)}` : ""}`;
+    const url = publicGalleryUrl(alb);
     await navigator.clipboard.writeText(url);
     toast.success("Gallery link copied!");
   };
@@ -5967,26 +5966,29 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
           let inviteSent = false;
           if (clientEmail) {
             if (await ensurePublicShareReady(updated, "send this proofing invite")) {
-              const galleryUrl = `${window.location.origin}/gallery/${updated.slug || updated.id}#token=${encodeURIComponent(clientToken)}`;
+              const galleryUrl = publicGalleryUrl(updated);
               const expiryDateStr = new Date(proofingExpiresAt).toLocaleString("en-AU", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
-              fetch("/api/email/send", { method: "POST", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify({ to: clientEmail, subject: `📸 Your proofing gallery is ready — ${liveAlbum!.title}`, html: buildProofingEmailHtml(galleryUrl, expiryDateStr, note || undefined) }) }).catch(() => {});
-              inviteSent = true;
+              const emailResponse = await fetch("/api/email/send", { method: "POST", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify({ to: clientEmail, subject: `📸 Your proofing gallery is ready — ${liveAlbum!.title}`, html: buildProofingEmailHtml(galleryUrl, expiryDateStr, note || undefined) }) });
+              const emailResult = await emailResponse.json().catch(() => ({}));
+              if (emailResponse.ok && emailResult.ok !== false) inviteSent = true;
+              else toast.error(emailResult.error || "Proofing saved, but the invite email could not be sent.");
             }
           }
-          toast.success("Proofing round started" + (inviteSent ? " — invite sent to client" : clientEmail ? " — invite blocked until gallery is published" : " (no client email on file)"));
+          toast.success("Proofing round started" + (inviteSent ? " — invite sent to client" : clientEmail ? " — invite was not sent" : " (no client email on file)"));
           onUpdate?.(updated);
         };
 
         const resendProofingEmail = async () => {
           if (!clientEmail) return;
           if (!(await ensurePublicShareReady(liveAlbum!, "resend this proofing invite"))) return;
-          const tok = liveAlbum!.clientToken;
-          const galleryUrl = `${window.location.origin}/gallery/${liveAlbum!.slug || liveAlbum!.id}${tok ? `#token=${encodeURIComponent(tok)}` : ""}`;
+          const galleryUrl = publicGalleryUrl(liveAlbum!);
           const expiryDateStr = liveAlbum!.proofingExpiresAt
             ? new Date(liveAlbum!.proofingExpiresAt as string).toLocaleString("en-AU", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })
             : "";
-          fetch("/api/email/send", { method: "POST", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify({ to: clientEmail, subject: `📸 Your proofing gallery is ready — ${liveAlbum!.title}`, html: buildProofingEmailHtml(galleryUrl, expiryDateStr, latest?.adminNote) }) }).catch(() => {});
-          toast.success("Proofing invite resent to client");
+          const response = await fetch("/api/email/send", { method: "POST", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify({ to: clientEmail, subject: `📸 Your proofing gallery is ready — ${liveAlbum!.title}`, html: buildProofingEmailHtml(galleryUrl, expiryDateStr, latest?.adminNote) }) });
+          const result = await response.json().catch(() => ({}));
+          if (response.ok && result.ok !== false) toast.success("Proofing invite resent to client");
+          else toast.error(result.error || "The proofing invite could not be sent.");
         };
 
         const approveSelections = (free: boolean) => {
@@ -6002,32 +6004,36 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
         const sendEditingEmail = async () => {
           if (!clientEmail) { toast.error("No client email on file"); return; }
           if (!(await ensurePublicShareReady(liveAlbum!, "send this gallery link"))) return;
-          const tok = liveAlbum!.clientToken;
-          const galleryUrl = `${window.location.origin}/gallery/${liveAlbum!.slug || liveAlbum!.id}${tok ? `#token=${encodeURIComponent(tok)}` : ""}`;
-          await fetch("/api/email/send", { method: "POST", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify({ to: clientEmail, subject: `✏️ Your photos are being edited — ${liveAlbum!.title}`, html: `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;"><h2 style="margin:0 0 16px;font-size:20px;">Your photos are being edited ✏️</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${liveAlbum!.clientName || "there"},</p><p style="color:#9ca3af;margin:0 0 20px;">Your selections for <strong style="color:#e5e7eb;">${liveAlbum!.title}</strong> are confirmed and editing has begun. We'll send you another email as soon as your final photos are ready.</p><a href="${galleryUrl}" style="display:inline-block;background:#374151;color:#e5e7eb;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">Preview Gallery →</a></div>` }) }).catch(() => {});
-          toast.success("Editing notification sent to client");
+          const galleryUrl = publicGalleryUrl(liveAlbum!);
+          const response = await fetch("/api/email/send", { method: "POST", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify({ to: clientEmail, subject: `✏️ Your photos are being edited — ${liveAlbum!.title}`, html: `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;"><h2 style="margin:0 0 16px;font-size:20px;">Your photos are being edited ✏️</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${liveAlbum!.clientName || "there"},</p><p style="color:#9ca3af;margin:0 0 20px;">Your selections for <strong style="color:#e5e7eb;">${liveAlbum!.title}</strong> are confirmed and editing has begun. We'll send you another email as soon as your final photos are ready.</p><a href="${galleryUrl}" style="display:inline-block;background:#374151;color:#e5e7eb;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">Preview Gallery →</a></div>` }) });
+          const result = await response.json().catch(() => ({}));
+          if (response.ok && result.ok !== false) toast.success("Editing notification sent to client");
+          else toast.error(result.error || "The editing notification could not be sent.");
         };
 
         const deliverFinals = async (free: boolean) => {
           const updated = { ...liveAlbum!, proofingStage: "finals-delivered" as const, allUnlocked: free ? true : liveAlbum!.allUnlocked, purchasingDisabled: free ? false : liveAlbum!.purchasingDisabled };
           updateLiveAlbum(updated);
           onUpdate?.(updated);
+          let notificationSent = false;
           if (clientEmail) {
             if (!(await ensurePublicShareReady(updated, "send this finals link"))) {
               toast.success("Finals marked delivered. Client email blocked until gallery is published.");
               return;
             }
-            const tok = liveAlbum!.clientToken;
-            const galleryUrl = `${window.location.origin}/gallery/${updated.slug || updated.id}${tok ? `#token=${encodeURIComponent(tok)}` : ""}`;
-            fetch("/api/email/send", { method: "POST", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify({ to: clientEmail, subject: `✨ Your final photos are ready — ${liveAlbum!.title}`, html: free ? `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;"><h2 style="margin:0 0 16px;font-size:20px;">Your edited photos are ready! ✨</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${liveAlbum!.clientName || "there"},</p><p style="color:#9ca3af;margin:0 0 20px;">Your final edited photos for <strong style="color:#e5e7eb;">${liveAlbum!.title}</strong> are ready — no payment needed, they're all yours to download!</p><a href="${galleryUrl}" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">Download Your Photos →</a></div>` : `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;"><h2 style="margin:0 0 16px;font-size:20px;">Your edited photos are ready! ✨</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${liveAlbum!.clientName || "there"},</p><p style="color:#9ca3af;margin:0 0 20px;">Your final edited photos for <strong style="color:#e5e7eb;">${liveAlbum!.title}</strong> are now available to view and download.</p><a href="${galleryUrl}" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">View &amp; Download Photos →</a></div>` }) }).catch(() => {});
+            const galleryUrl = publicGalleryUrl(updated);
+            const response = await fetch("/api/email/send", { method: "POST", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify({ to: clientEmail, subject: `✨ Your final photos are ready — ${liveAlbum!.title}`, html: free ? `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;"><h2 style="margin:0 0 16px;font-size:20px;">Your edited photos are ready! ✨</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${liveAlbum!.clientName || "there"},</p><p style="color:#9ca3af;margin:0 0 20px;">Your final edited photos for <strong style="color:#e5e7eb;">${liveAlbum!.title}</strong> are ready — no payment needed, they're all yours to download!</p><a href="${galleryUrl}" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">Download Your Photos →</a></div>` : `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;"><h2 style="margin:0 0 16px;font-size:20px;">Your edited photos are ready! ✨</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${liveAlbum!.clientName || "there"},</p><p style="color:#9ca3af;margin:0 0 20px;">Your final edited photos for <strong style="color:#e5e7eb;">${liveAlbum!.title}</strong> are now available to view and download.</p><a href="${galleryUrl}" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">View &amp; Download Photos →</a></div>` }) });
+            const result = await response.json().catch(() => ({}));
+            notificationSent = response.ok && result.ok !== false;
+            if (!notificationSent) toast.error(result.error || "Finals were delivered, but the notification email could not be sent.");
           }
-          toast.success("Finals delivered!" + (clientEmail ? " — client notified" : ""));
+          toast.success("Finals delivered!" + (notificationSent ? " — client notified" : clientEmail ? " — client was not notified" : ""));
         };
 
         const resetProofing = () => {
           if (!confirm("Reset proofing? This will un-hide all photos and clear the proofing stage.")) return;
           const updatedPhotos = liveAlbum!.photos.map((p: any) => ({ ...p, hidden: false }));
-          const resetUpdated = { ...liveAlbum!, photos: updatedPhotos, proofingStage: "not-started" as const, proofingRounds: [] };
+          const resetUpdated = { ...liveAlbum!, photos: updatedPhotos, proofingStage: "not-started" as const, proofingRounds: [], proofingExpiresAt: undefined, purchasingDisabled: false, allUnlocked: false };
           updateLiveAlbum(resetUpdated);
           toast.success("Proofing reset");
           onUpdate?.(resetUpdated);
