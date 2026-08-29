@@ -4,13 +4,13 @@
     "versionName":  "1.16",
     "versionCode":  17,
     "buildType":  "debug",
-    "builtAt":  "2026-08-29T13:45:41.0000000Z",
-    "commit":  "b5145a5",
+    "builtAt":  "2026-08-29T13:53:16.0000000Z",
+    "commit":  "2984f75",
     "apk":  {
                 "fileName":  "zuploader-capture-latest.apk",
                 "url":  "/downloads/android/latest.apk",
-                "sizeBytes":  84114424,
-                "sha256":  "5575cc3066c9c5c4253707ad74bcab9c0d867ea458b18150a6293e910ff1ecdb"
+                "sizeBytes":  84114712,
+                "sha256":  "aee4f4c327ed9027f51e61cb7c0ea0713c98d0ef988ff5cd21ece15f1af9dcb7"
             },
     "notes":  [
                   "Built from the current web bundle and synced into the Android shell.",
