@@ -41,6 +41,7 @@ const CAPTURE_TARGET_KEY = "cameraCaptureTarget:v1";
 const AUTO_CULL_KEY = "cameraCaptureAutoCull:v1";
 const AUTO_EDIT_KEY = "cameraCaptureAutoEdit:v1";
 const AUTO_EDIT_STRENGTH_KEY = "cameraCaptureAutoEditStrength:v1";
+const FTP_DESTINATIONS_KEY = "cameraFtpDestinations:v1";
 const FTP_JPEG_EXTENSIONS = new Set([".jpg", ".jpeg"]);
 const FTP_PROOF_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif", ".tif", ".tiff"]);
 const FTP_RAW_EXTENSIONS = new Set([".nef", ".nrw", ".raw", ".cr2", ".cr3", ".arw", ".dng", ".raf", ".orf", ".rw2"]);
@@ -74,6 +75,15 @@ function loadFtpSettings(): { username: string; password: string; port: number }
 }
 function saveFtpSettings(settings: { username: string; password: string; port: number }) {
   localStorage.setItem(FTP_SETTINGS_KEY, JSON.stringify(settings));
+}
+function loadFtpDestinations(): Record<string, string> {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(FTP_DESTINATIONS_KEY) || "{}");
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch { return {}; }
+}
+function saveFtpDestinations(destinations: Record<string, string>) {
+  try { localStorage.setItem(FTP_DESTINATIONS_KEY, JSON.stringify(destinations)); } catch { /* optional */ }
 }
 
 function extensionForName(name: string): string {
@@ -1056,7 +1066,7 @@ function MobileCaptureInner() {
   const drainPendingQueuesRef = useRef<(() => void) | null>(null);
   // ref so drainImportQueue never closes over importCameraFiles before it's defined
   const importCameraFilesRef = useRef<((handles: number[]) => Promise<void>) | null>(null);
-  const importFtpFilesRef = useRef<((paths: string[]) => Promise<void>) | null>(null);
+  const importFtpFilesRef = useRef<((paths: string[], albumId?: string) => Promise<void>) | null>(null);
   // tracks imported filenames — prevents duplicates when "On Camera" count lags behind
   const importedNamesRef = useRef<Set<string>>(new Set());
   const drainImportQueue = useCallback(async () => {
@@ -1082,14 +1092,24 @@ function MobileCaptureInner() {
   }, []);
 
   const drainFtpImportQueue = useCallback(async () => {
-    if (importBusyRef.current || liveCapturePausedRef.current || !targetAlbumRef.current) return;
+    if (importBusyRef.current || liveCapturePausedRef.current) return;
     while (ftpImportQueueRef.current.length > 0) {
       if (liveCapturePausedRef.current) break;
-      const paths = ftpImportQueueRef.current.splice(0).flat();
-      setFtpQueueSize(0);
+      const destinations = loadFtpDestinations();
+      const firstPath = ftpImportQueueRef.current[0]?.[0];
+      const albumId = firstPath ? destinations[firstPath] : undefined;
+      // Never dump unassigned files into whichever booking is selected next.
+      // They remain on the camera/FTP inbox until explicitly associated.
+      if (!albumId) break;
+      const queuedPaths = ftpImportQueueRef.current.splice(0).flat();
+      const paths = queuedPaths.filter(path => destinations[path] === albumId);
+      const remaining = queuedPaths.filter(path => !paths.includes(path));
+      if (remaining.length > 0) ftpImportQueueRef.current.unshift(remaining);
+      if (paths.length === 0) continue;
+      setFtpQueueSize(ftpImportQueueRef.current.reduce((sum, batch) => sum + batch.length, 0));
       if (!importFtpFilesRef.current) break;
       importBusyRef.current = true;
-      try { await importFtpFilesRef.current(paths); }
+      try { await importFtpFilesRef.current(paths, albumId); }
       catch (e) { console.error("FTP queue import error:", e); }
       finally {
         importBusyRef.current = false;
@@ -1175,12 +1195,22 @@ function MobileCaptureInner() {
           );
         }
         const queuedPaths = new Set(ftpImportQueueRef.current.flat());
+        const destinations = loadFtpDestinations();
+        const activeAlbum = targetAlbumRef.current;
         const paths = proofFiles.map(f => f.localPath || f.path).filter((path): path is string => Boolean(path) && !queuedPaths.has(path));
-        if (paths.length === 0) return;
-        ftpImportQueueRef.current.push(paths);
+        if (activeAlbum) {
+          paths.forEach(path => { destinations[path] = activeAlbum.id; });
+          saveFtpDestinations(destinations);
+        }
+        const assignedPaths = paths.filter(path => Boolean(destinations[path]));
+        const unassignedCount = paths.length - assignedPaths.length;
+        if (unassignedCount > 0 && !activeAlbum) {
+          setQuietCaptureStatus("Photos waiting", `${countLabel(unassignedCount, "photo")} need an explicit booking before upload.`, "warning");
+        }
+        if (assignedPaths.length === 0) return;
+        ftpImportQueueRef.current.push(assignedPaths);
         setFtpQueueSize(ftpImportQueueRef.current.reduce((sum, batch) => sum + batch.length, 0));
-        if (targetAlbumRef.current) drainFtpImportQueue();
-        else setQuietCaptureStatus("Photos waiting", `${countLabel(paths.length, "photo")} received. Select a booking album to upload.`, "warning");
+        drainFtpImportQueue();
       };
       listenerHandle = await CameraFtp.addListener("newFiles", async (event) => queueFtpFiles(event?.files || []));
       const pending = await CameraFtp.listFiles({ limit: 500 }).catch(() => ({ files: [] as CameraFtpFile[] }));
@@ -1437,8 +1467,13 @@ function MobileCaptureInner() {
   // Keep ref in sync so drainImportQueue can call it without stale closure
   importCameraFilesRef.current = importCameraFiles;
 
-  const importFtpFiles = async (paths: string[]) => {
-    const album = targetAlbumRef.current;
+  const importFtpFiles = async (paths: string[], destinationAlbumId?: string) => {
+    // A queued FTP batch carries the album selected when the camera delivered it.
+    // Never fall back to the currently selected album: that is how files from a
+    // previous client could be dumped into a newly selected booking.
+    const album = destinationAlbumId
+      ? albumsRef.current.find(item => item.id === destinationAlbumId)
+      : targetAlbumRef.current;
     if (!album || paths.length === 0) return;
     const freshPaths = paths.filter(path => {
       const name = filenameFromFtpPath(path);
@@ -1538,6 +1573,9 @@ function MobileCaptureInner() {
         const localPaths = imported.map(f => f.localPath || f.path).filter((p): p is string => Boolean(p));
         if (localPaths.length > 0 && matched.length === imported.length && decodedFiles.length === imported.length) {
           CameraFtp.deleteLocalFiles({ paths: localPaths }).catch(err => console.warn("FTP cleanup failed:", err));
+          const destinations = loadFtpDestinations();
+          localPaths.forEach(path => delete destinations[path]);
+          saveFtpDestinations(destinations);
         }
         imported.forEach(f => {
           const name = f.name || f.localPath?.split(/[\\/]/).pop();
