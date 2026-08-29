@@ -11,6 +11,15 @@ let serverAvailable: boolean | null = null;
 export const NATIVE_API_ORIGIN = "https://book.zacmclients.photos";
 export const ADMIN_API_TOKEN_KEY = "wv_admin_api_token";
 
+/** Build a client-facing gallery URL. Native WebViews run on https://localhost,
+ * but that origin must never be sent to a client or embedded in an email. */
+export function publicGalleryUrl(album: { slug?: string; id?: string; clientToken?: string }): string {
+  const target = album.slug || album.id;
+  if (!target) return "";
+  const origin = Capacitor.isNativePlatform() ? NATIVE_API_ORIGIN : window.location.origin;
+  return `${origin}/gallery/${encodeURIComponent(target)}${album.clientToken ? `#token=${encodeURIComponent(album.clientToken)}` : ""}`;
+}
+
 export function getAdminApiToken(): string {
   try { return localStorage.getItem(ADMIN_API_TOKEN_KEY) || ""; } catch { return ""; }
 }
