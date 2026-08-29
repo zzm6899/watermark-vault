@@ -6,7 +6,7 @@ import { Switch } from "@/components/ui/switch";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { getBookings, getAlbums, getSettings, updateAlbum, addAlbum, updateBooking, getMobileTenantSession, setMobileTenantSession, isLoggedIn, logout } from "@/lib/storage";
-import { uploadPhotosToServer, runUploadSpeedTest, isSupportedUploadFile, isSupportedPhotoSource, recheckServer, sendEmail, sendTenantEmail, fetchTenantMobileData, saveTenantAlbum, autoCullAlbum, tenantLogout, verifyTenantSession, verifyAdminSession, adminAuthHeaders, NATIVE_API_ORIGIN, PhotoUploadError, type UploadedPhotoResult } from "@/lib/api";
+import { uploadPhotosToServer, runUploadSpeedTest, isSupportedUploadFile, isSupportedPhotoSource, recheckServer, sendEmail, sendTenantEmail, fetchTenantMobileData, saveTenantAlbum, autoCullAlbum, tenantLogout, verifyTenantSession, verifyAdminSession, adminAuthHeaders, NATIVE_API_ORIGIN, publicGalleryUrl, ensurePublicAlbumAvailable, PhotoUploadError, type UploadedPhotoResult } from "@/lib/api";
 import { queueOfflineCapture, getOfflineQueue, useOfflineUploadQueue, type OfflineCaptureItem } from "@/lib/usePwa";
 import { generateThumbnail, formatSpeed } from "@/lib/image-utils";
 import CameraUsb from "@/plugins/camera-usb";
@@ -1199,7 +1199,12 @@ function MobileCaptureInner() {
         const activeAlbum = targetAlbumRef.current;
         const paths = proofFiles.map(f => f.localPath || f.path).filter((path): path is string => Boolean(path) && !queuedPaths.has(path));
         if (activeAlbum) {
-          paths.forEach(path => { destinations[path] = activeAlbum.id; });
+          // A re-scan after restarting FTP can return files that were already
+          // received for a previous booking. Preserve that original binding;
+          // only genuinely new paths may inherit the current booking.
+          paths.forEach(path => {
+            if (!destinations[path]) destinations[path] = activeAlbum.id;
+          });
           saveFtpDestinations(destinations);
         }
         const assignedPaths = paths.filter(path => Boolean(destinations[path]));
@@ -2007,7 +2012,16 @@ function MobileCaptureInner() {
       targetAlbumRef.current = updatedAlbum;
       setAlbums(prev => prev.map(a => a.id === updatedAlbum.id ? updatedAlbum : a));
       if (selectedBooking?.clientEmail && serverOnline) {
-        const galleryUrl = `${window.location.origin}/gallery/${targetAlbum.slug}#token=${encodeURIComponent(clientToken)}`;
+        const published = await ensurePublicAlbumAvailable(updatedAlbum);
+        if (!published.ok) {
+          toast.error(published.error || "Gallery is not published yet; proofing was saved but no invite was sent.");
+          return;
+        }
+        const galleryUrl = publicGalleryUrl(updatedAlbum);
+        if (!galleryUrl) {
+          toast.error("Album needs a slug before it can be shared.");
+          return;
+        }
         const subject = `📸 Your proofing gallery is ready — ${targetAlbum.title}`;
         const html = `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;"><h2 style="margin:0 0 16px;font-size:20px;">Your photos are ready to review! ⭐</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${selectedBooking.clientName || "there"}, your ${selectedBooking.type || "session"} photos are ready for you to star your favourites.</p><p style="color:#9ca3af;margin:0 0 20px;">Click the link below to open your private gallery.</p><a href="${galleryUrl}" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">View My Gallery →</a></div>`;
         const emailResult = tenantSession
