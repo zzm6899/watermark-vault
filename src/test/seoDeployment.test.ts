@@ -14,7 +14,8 @@ describe("portfolio technical SEO", () => {
 
     expect(document.title).toContain("Zac Morgan Photography");
     expect(canonical?.href).toBe("https://zacmorganphotography.com/");
-    expect(document.querySelector('meta[name="description"]')?.getAttribute("content")).toContain("Sydney event photographer");
+    expect(document.querySelector('meta[name="description"]')?.getAttribute("content")).toContain("captures cosplay");
+    expect(html).not.toMatch(/wedding/i);
     expect(document.querySelector('meta[property="og:url"]')?.getAttribute("content")).toBe(canonical?.href);
     expect(document.querySelector('meta[property="og:image"]')?.getAttribute("content")).toMatch(/^https:\/\/zacmorganphotography\.com\/.+\.jpg$/);
     expect(document.querySelector('meta[name="twitter:card"]')?.getAttribute("content")).toBe("summary_large_image");

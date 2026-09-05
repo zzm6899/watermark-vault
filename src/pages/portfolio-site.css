@@ -34,6 +34,7 @@
 .portfolio-site .portfolio-hero-media::after { content:''; background:rgb(0 0 0 / 23%); }
 .portfolio-site .portfolio-hero-media img { object-fit:cover; opacity:0; transition:opacity 1s ease,transform 7s linear; transform:scale(1); }
 .portfolio-site .portfolio-hero-media img.active { opacity:1; transform:scale(1.035); }
+.portfolio-site .portfolio-hero-media img[src$="cosplay-animaga-editorial.jpg"] { object-position:72% center; }
 .portfolio-site .portfolio-hero-copy { text-align:center; padding:40px 70px 80px; width:100%; max-width:1040px; animation:portfolio-copy-in .8s ease both; }
 .portfolio-site .portfolio-hero-copy > p:first-child { font-size:11px; text-transform:uppercase; margin-bottom:20px; }
 .portfolio-site .portfolio-hero-copy h1 { font-size:68px; text-shadow:0 2px 18px rgb(0 0 0 / 18%); }

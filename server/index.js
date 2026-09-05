@@ -1,5 +1,5 @@
 const express = require("express");
-const { upgradePortfolioPresentation } = require("./portfolio-presentation.mjs");
+const { upgradePortfolioPresentation, publicPortfolioFocus } = require("./portfolio-presentation.mjs");
 const multer = require("multer");
 const cors = require("cors");
 const compression = require("compression");
@@ -202,11 +202,11 @@ const CANONICAL_PORTFOLIO_ORIGIN = `https://${CANONICAL_PORTFOLIO_HOST}`;
 const PORTFOLIO_SEO_ROUTES = {
   "/": {
     title: "Zac Morgan Photography | Sydney Event Photographer",
-    description: "Sydney event photographer Zac Morgan captures weddings, concerts, sport, corporate events and hospitality with vivid, candid imagery.",
+    description: "Sydney photographer Zac Morgan captures cosplay, concerts, sport, corporate events and hospitality with vivid, character-led imagery.",
   },
   "/portfolio": {
     title: "Photography Portfolio | Zac Morgan Photography",
-    description: "Explore wedding, live music, sports, cosplay, corporate event and hospitality photography by Sydney photographer Zac Morgan.",
+    description: "Explore cosplay, live music, sports, corporate event and hospitality photography by Sydney photographer Zac Morgan.",
   },
   "/concerts": {
     title: "Concert & Live Music Photography | Zac Morgan",
@@ -216,17 +216,21 @@ const PORTFOLIO_SEO_ROUTES = {
     title: "Commercial & Event Photography | Zac Morgan",
     description: "Brand, corporate event and hospitality photography in Sydney by Zac Morgan.",
   },
+  "/cosplay": {
+    title: "Cosplay Photography Sydney | Zac Morgan",
+    description: "Expressive character portraits and convention photography. Explore Zac Morgan's cosplay work from Animaga, PAX and SMASH.",
+  },
   "/about": {
     title: "About Zac Morgan | Sydney Event Photographer",
-    description: "Meet Sydney event photographer Zac Morgan and learn about his candid, people-focused approach to weddings, sport, music and events.",
+    description: "Meet Sydney photographer Zac Morgan and explore his character-led approach to cosplay, sport, music and events.",
   },
   "/testimonials": {
     title: "Client Testimonials | Zac Morgan Photography",
-    description: "Read feedback from wedding, event and commercial photography clients who have worked with Sydney photographer Zac Morgan.",
+    description: "Read feedback from portrait, event and commercial photography clients who have worked with Sydney photographer Zac Morgan.",
   },
   "/enquire": {
     title: "Photography Enquiry | Zac Morgan Photography",
-    description: "Enquire about wedding, event, concert, sports, corporate or hospitality photography in Sydney and beyond.",
+    description: "Enquire about cosplay, event, concert, sports, corporate or hospitality photography in Sydney and beyond.",
   },
 };
 const PORTFOLIO_ROUTE_ALIASES = new Map([
@@ -270,7 +274,7 @@ function portfolioStructuredData(routePath, title) {
       areaServed: { "@type": "City", name: "Sydney" },
       founder: { "@id": `${CANONICAL_PORTFOLIO_ORIGIN}/#zac-morgan` },
       sameAs: ["https://www.instagram.com/zacmphotos/", "https://www.linkedin.com/in/zacmorgan1/"],
-      knowsAbout: ["Event photography", "Wedding photography", "Concert photography", "Sports photography", "Corporate photography", "Food photography"],
+      knowsAbout: ["Event photography", "Cosplay photography", "Concert photography", "Sports photography", "Corporate photography", "Food photography"],
     },
     {
       "@type": "Person",
@@ -3530,7 +3534,7 @@ app.get("/api/site-context", (req, res) => {
 app.get("/api/portfolio", (_req, res) => {
   const published = dbGet(readDb(), DB_KEYS.PORTFOLIO_PUBLISHED, DEFAULT_PORTFOLIO);
   res.setHeader("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
-  res.json(publicPortfolioContent(published));
+  res.json(publicPortfolioFocus(publicPortfolioContent(published)));
 });
 
 app.get("/api/admin/portfolio", requireAuth, (_req, res) => {

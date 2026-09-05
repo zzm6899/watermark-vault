@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { MemoryRouter } from "react-router-dom";
 import PortfolioSite from "@/pages/PortfolioSite";
 import { defaultPortfolioSite, fetchPublishedPortfolio, submitPortfolioEnquiry } from "@/lib/portfolio";
-import { upgradePortfolioPresentation } from "../../server/portfolio-presentation.mjs";
+import { upgradePortfolioPresentation, publicPortfolioFocus } from "../../server/portfolio-presentation.mjs";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
@@ -50,7 +50,7 @@ describe("public portfolio presentation", () => {
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Selected work");
     expect(container.querySelectorAll(".portfolio-cover figure")).toHaveLength(3);
     fireEvent.click(screen.getByRole("button", { name: "All work" }));
-    expect(container.querySelectorAll(".portfolio-gallery-item")).toHaveLength(defaultPortfolioSite.galleryImages.length);
+    expect(container.querySelectorAll(".portfolio-gallery-item")).toHaveLength(publicPortfolioFocus(defaultPortfolioSite).galleryImages.length);
     const photo = container.querySelector<HTMLButtonElement>(".portfolio-gallery-item")!;
     photo.focus(); fireEvent.click(photo);
     fireEvent.click(screen.getByRole("button", { name: "Next photo" }));
@@ -71,10 +71,27 @@ describe("public portfolio presentation", () => {
     open("/enquire");
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Preview Test" } });
     fireEvent.change(screen.getByLabelText("Email"), { target: { value: "preview@example.com" } });
-    fireEvent.change(screen.getByLabelText("What are you planning?"), { target: { value: "Wedding / engagement" } });
+    fireEvent.change(screen.getByLabelText("What are you planning?"), { target: { value: "Convention / cosplay" } });
     fireEvent.change(screen.getByLabelText("Tell me about it"), { target: { value: "Test only, not sent to a real server." } });
     fireEvent.submit(screen.getByRole("button", { name: "Send enquiry" }).closest("form")!);
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Enquiry received"));
-    expect(submitPortfolioEnquiry).toHaveBeenCalledWith(expect.objectContaining({ email: "preview@example.com", eventTypeTitle: "Wedding / engagement" }));
+    expect(submitPortfolioEnquiry).toHaveBeenCalledWith(expect.objectContaining({ email: "preview@example.com", eventTypeTitle: "Convention / cosplay" }));
+  });
+  it("removes weddings from the public presentation without deleting the archive", () => {
+    const focused = publicPortfolioFocus(defaultPortfolioSite);
+    expect(focused.galleryImages.some(image => image.category === "Weddings")).toBe(false);
+    expect(defaultPortfolioSite.galleryImages.some(image => image.category === "Weddings")).toBe(true);
+    expect(focused.heroCaptions[0].title).toBe("Cosplay & character");
+    expect(focused.featuredGalleryIds[0]).toBe("cosplay-animaga-editorial");
+    expect(focused.enquiryEventTypes.join(" ")).not.toMatch(/wedding/i);
+    expect(focused.testimonials.some(review => /wedding/i.test(review.quote))).toBe(false);
+    expect(publicPortfolioFocus(focused)).toEqual(focused);
+  });
+  it("shows character portraits first on the dedicated cosplay page", () => {
+    const { container } = open("/cosplay");
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Cosplay & character");
+    expect(container.querySelectorAll(".portfolio-gallery-item")).toHaveLength(13);
+    expect(container.querySelector(".portfolio-gallery-item img")).toHaveAttribute("src", "/portfolio/curated/cosplay-animaga-editorial.jpg");
+    expect(container.textContent).not.toMatch(/wedding/i);
   });
 });

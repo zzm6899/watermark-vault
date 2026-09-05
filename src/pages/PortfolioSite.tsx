@@ -3,6 +3,7 @@ import { ArrowRight, Check, ChevronLeft, ChevronRight, Instagram, Linkedin, Mail
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { defaultPortfolioSite, fetchPublishedPortfolio, submitPortfolioEnquiry, type PortfolioEnquiry, type PortfolioGalleryImage, type PortfolioSite as PortfolioSiteData } from "@/lib/portfolio";
 import "./portfolio-site.css";
+import { publicPortfolioFocus } from "../../server/portfolio-presentation.mjs";
 
 function routeFor(preview: boolean, path: string) {
   return preview ? `/portfolio-preview${path === "/" ? "" : path}` : path;
@@ -17,7 +18,7 @@ function SiteHeader({ site, preview }: { site: PortfolioSiteData; preview: boole
   const [open, setOpen] = useState(false);
   const location = useLocation();
   const currentPath = normalizeSitePath(preview ? location.pathname.replace("/portfolio-preview", "") || "/" : location.pathname);
-  const links = [["Home", "/"], ["Portfolio", "/portfolio"], ["Commercial", "/events"], ["Kind words", "/testimonials"], [site.bookingButtonLabel, "/enquire"]];
+  const links = [["Home", "/"], ["Portfolio", "/portfolio"], ["Cosplay", "/cosplay"], ["Commercial", "/events"], ["Kind words", "/testimonials"], [site.bookingButtonLabel, "/enquire"]];
   const menuRef = useRef<HTMLButtonElement>(null);
   useEffect(() => { setOpen(false); }, [location.pathname, location.search]);
   useEffect(() => {
@@ -180,6 +181,7 @@ function PortfolioGallery({ images, initialFilter, showFilters = true }: { image
 }
 
 function WorkPage({ site, preview, category }: { site: PortfolioSiteData; preview: boolean; category?: string | null }) {
+  const dedicatedCosplay = normalizeSitePath(useLocation().pathname).endsWith("/cosplay");
   const categoryRoute = (projectCategory: string) => `${routeFor(preview, "/portfolio")}?category=${encodeURIComponent(projectCategory || "All")}`;
   const covers = (site.featuredGalleryIds || defaultPortfolioSite.featuredGalleryIds || []).map(id => site.galleryImages.find(image => image.id === id)).filter((image): image is PortfolioGalleryImage => !!image).slice(0, 3);
   const requestedCategory = category?.trim().toLowerCase();
@@ -202,7 +204,7 @@ function WorkPage({ site, preview, category }: { site: PortfolioSiteData; previe
       <div><p className="portfolio-kicker">Focused collection · {activeCount} photographs</p><h1>{activeTitle}</h1></div>
       <div><p>{activeDescription}</p><Link to={routeFor(preview, "/portfolio")}>View every category <ArrowRight /></Link></div>
     </section>}
-    <PortfolioGallery images={site.galleryImages} initialFilter={requestedCategory === "all" ? "All" : activeCategory} />
+    <PortfolioGallery images={dedicatedCosplay ? site.galleryImages.filter(image => image.category === "Cosplay & Conventions") : site.galleryImages} initialFilter={requestedCategory === "all" ? "All" : activeCategory} showFilters={!dedicatedCosplay} />
     <section className="portfolio-inline-cta"><div><p className="portfolio-kicker">{site.portfolioCtaEyebrow}</p><h2>{site.portfolioCtaTitle}</h2></div><Link to={routeFor(preview, "/enquire")}>{site.portfolioCtaLabel} <ArrowRight /></Link></section>
   </>;
 }
@@ -290,11 +292,12 @@ function EnquiryPage({ site }: { site: PortfolioSiteData }) {
 }
 
 export default function PortfolioSite() {
-  const [site, setSite] = useState<PortfolioSiteData>(defaultPortfolioSite);
+  const [storedSite, setSite] = useState<PortfolioSiteData>(defaultPortfolioSite);
+  const site: PortfolioSiteData = useMemo(() => publicPortfolioFocus(storedSite), [storedSite]);
   const location = useLocation();
   const preview = location.pathname.startsWith("/portfolio-preview");
   const path = normalizeSitePath(preview ? location.pathname.replace("/portfolio-preview", "") || "/" : location.pathname);
-  const category = new URLSearchParams(location.search).get("category");
+  const category = path === "/cosplay" ? "Cosplay & Conventions" : new URLSearchParams(location.search).get("category");
   const editorPreview = preview && (new URLSearchParams(location.search).get("editor") === "1" || window.self !== window.top);
   useEffect(() => {
     if (!editorPreview) {
@@ -317,6 +320,6 @@ export default function PortfolioSite() {
     elements.forEach(element => { element.classList.add("reveal-pending"); observer.observe(element); });
     return () => observer.disconnect();
   }, [path, category, site, editorPreview]);
-  const page = path === "/portfolio" ? <WorkPage site={site} preview={preview} category={category} /> : path === "/events" ? <CommercialPage site={site} preview={preview} /> : path === "/concerts" || path === "/concert" ? <ConcertPage site={site} preview={preview} /> : path === "/about" ? <AboutPage site={site} preview={preview} /> : path === "/testimonials" ? <TestimonialsPage site={site} preview={preview} /> : path === "/enquire" || path === "/contact" ? <EnquiryPage site={site} /> : <HomePage site={site} preview={preview} editorPreview={editorPreview} />;
+  const page = path === "/portfolio" || path === "/cosplay" ? <WorkPage site={site} preview={preview} category={category} /> : path === "/events" ? <CommercialPage site={site} preview={preview} /> : path === "/concerts" || path === "/concert" ? <ConcertPage site={site} preview={preview} /> : path === "/about" ? <AboutPage site={site} preview={preview} /> : path === "/testimonials" ? <TestimonialsPage site={site} preview={preview} /> : path === "/enquire" || path === "/contact" ? <EnquiryPage site={site} /> : <HomePage site={site} preview={preview} editorPreview={editorPreview} />;
   return <div className={`portfolio-site${editorPreview ? " is-editor-preview" : ""}`}><a className="portfolio-skip" href="#portfolio-main">Skip to content</a><SiteHeader site={site} preview={preview} /><main id="portfolio-main">{page}</main><SiteFooter site={site} preview={preview} /></div>;
 }
