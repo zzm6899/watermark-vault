@@ -1,4 +1,5 @@
 import { adminAuthHeaders } from "./api";
+import { upgradePortfolioPresentation } from "../../server/portfolio-presentation.mjs";
 
 export type PortfolioProject = {
   id: string;
@@ -35,6 +36,9 @@ export type PortfolioStep = {
 };
 
 export type PortfolioSite = {
+  presentationVersion?: number;
+  featuredGalleryIds?: string[];
+  heroCaptions?: { id: string; title: string; description: string; category: string }[];
   gallerySeedVersion: number;
   brandName: string;
   logo: string;
@@ -214,7 +218,7 @@ export const curatedPortfolioGalleryImages = [...corePortfolioGalleryImages, ...
     return (leftFeatured < 0 ? Number.MAX_SAFE_INTEGER : leftFeatured) - (rightFeatured < 0 ? Number.MAX_SAFE_INTEGER : rightFeatured);
   });
 
-export const defaultPortfolioSite: PortfolioSite = {
+export const defaultPortfolioSite: PortfolioSite = upgradePortfolioPresentation({
   gallerySeedVersion: 8,
   brandName: "Zac Morgan Photography",
   logo: "/portfolio/logo.png",
@@ -300,12 +304,12 @@ export const defaultPortfolioSite: PortfolioSite = {
   bookingButtonLabel: "Start an enquiry",
   footerTitle: "Let's make it memorable.",
   enquiryEventTypes: ["Wedding / engagement", "Corporate event", "Party", "Live music", "Sports / race coverage", "Convention / cosplay", "Brand / business shoot", "Other"],
-};
+});
 
 export async function fetchPublishedPortfolio(): Promise<PortfolioSite> {
   try {
     const response = await fetch("/api/portfolio", { cache: "no-store" });
-    if (response.ok) return { ...defaultPortfolioSite, ...(await response.json()) };
+    if (response.ok) return upgradePortfolioPresentation({ ...defaultPortfolioSite, ...(await response.json()) });
   } catch { /* fallback keeps the public site available */ }
   return defaultPortfolioSite;
 }

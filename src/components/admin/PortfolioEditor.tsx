@@ -152,7 +152,7 @@ function LivePortfolioPreview({ draft }: { draft: PortfolioSite }) {
     return () => window.removeEventListener("message", receiveReady);
   }, [sendDraft]);
 
-  const pages = [["Home", "/"], ["Portfolio", "/portfolio"], ["Concerts", "/concerts"], ["About", "/about"], ["Enquire", "/enquire"]] as const;
+  const pages = [["Home", "/"], ["Portfolio", "/portfolio"], ["Commercial", "/events"], ["Concerts", "/concerts"], ["About", "/about"], ["Kind words", "/testimonials"], ["Enquire", "/enquire"]] as const;
   return <section className="overflow-hidden rounded-md border border-border bg-card" aria-label="Live website preview">
     <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-3 py-2">
       <div className="flex flex-wrap gap-1">{pages.map(([label, value]) => <Button key={value} type="button" size="sm" variant={path === value ? "secondary" : "ghost"} onClick={() => setPath(value)}>{label}</Button>)}</div>
@@ -185,7 +185,15 @@ export default function PortfolioEditor() {
     return () => window.removeEventListener("beforeunload", warn);
   }, [dirty]);
 
-  const change = <K extends keyof PortfolioSite>(key: K, value: PortfolioSite[K]) => setDraft(previous => ({ ...previous, [key]: value }));
+  const change = <K extends keyof PortfolioSite>(key: K, value: PortfolioSite[K]) => setDraft(previous => {
+    if (key !== "heroImages") return { ...previous, [key]: value };
+    const images = value as string[];
+    const captions = images.map((image, index) => {
+      const oldIndex = previous.heroImages.indexOf(image);
+      return previous.heroCaptions?.[oldIndex >= 0 ? oldIndex : index] || { id: makeId("slide"), title: "", description: "", category: "" };
+    });
+    return { ...previous, heroImages: images, heroCaptions: captions };
+  });
   const save = async () => { setSaving(true); try { await savePortfolioDraft(draft); setSavedSnapshot(JSON.stringify(draft)); toast.success("Website draft saved"); } catch (error) { toast.error(error instanceof Error ? error.message : "Save failed"); } finally { setSaving(false); } };
   const publish = async () => { setSaving(true); try { await savePortfolioDraft(draft); const result = await publishPortfolio(); setSavedSnapshot(JSON.stringify(draft)); setPublishedAt(result.publishedAt); toast.success("Website published"); } catch (error) { toast.error(error instanceof Error ? error.message : "Publish failed"); } finally { setSaving(false); } };
   const testWebhook = async () => { if (!draft.webhookUrl) return toast.error("Enter a Discord webhook URL first"); setTestingWebhook(true); try { await testPortfolioWebhook(draft.webhookUrl); toast.success("Test notification sent"); } catch (error) { toast.error(error instanceof Error ? error.message : "Webhook test failed"); } finally { setTestingWebhook(false); } };
@@ -218,6 +226,14 @@ export default function PortfolioEditor() {
         <nav className="sticky top-[57px] z-20 -mx-2 flex gap-1 overflow-x-auto border-b border-border bg-background/95 px-2 py-2 backdrop-blur" aria-label="Website editor sections">
           {editorSections.map(section => <Button key={section} type="button" variant="ghost" size="sm" className="shrink-0 text-xs" onClick={() => jumpToSection(section)}>{section.replace(" page", "")}</Button>)}
         </nav>
+        <EditorSection title="Featured photographs" description="Choose the portfolio cover photographs and edit the homepage slideshow captions." open>
+          <div className="grid gap-4">{[0, 1, 2].map(index => <label key={index} className="grid gap-2 text-xs">Portfolio cover {index + 1}<select className="h-10 w-full rounded border border-border bg-background px-3" value={draft.featuredGalleryIds?.[index] || ""} onChange={event => { const ids = [...(draft.featuredGalleryIds || [])]; ids[index] = event.target.value; change("featuredGalleryIds", ids); }}><option value="">No photograph</option>{draft.galleryImages.map(image => <option key={image.id} value={image.id}>{image.category}: {image.alt}</option>)}</select></label>)}</div>
+          {(draft.heroImages || []).map((image, index) => {
+            const caption = draft.heroCaptions?.[index] || { id: `slide-${index}`, title: "", description: "", category: "" };
+            const updateCaption = (patch: Partial<typeof caption>) => { const captions = [...(draft.heroCaptions || [])]; captions[index] = { ...caption, ...patch }; change("heroCaptions", captions); };
+            return <div key={index} className="grid gap-3 border-t border-border pt-4"><ImageUploadField label={`Slide ${index + 1}`} value={image} onChange={url => change("heroImages", draft.heroImages.map((current, position) => position === index ? url : current))} /><label className="grid gap-1 text-xs">Heading<Input value={caption.title} onChange={event => updateCaption({ title: event.target.value })} /></label><label className="grid gap-1 text-xs">Caption<Input value={caption.description} onChange={event => updateCaption({ description: event.target.value })} /></label><label className="grid gap-1 text-xs">Linked gallery category<Input value={caption.category} onChange={event => updateCaption({ category: event.target.value })} /></label></div>;
+          })}
+        </EditorSection>
 
     <EditorSection title="Brand and hero" description="Upload 3200px-wide originals for full-screen display." open><div className="grid gap-4 md:grid-cols-2"><label className="space-y-1 text-xs text-muted-foreground">Business name<Input value={draft.brandName} onChange={event => change("brandName", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground">Hero label<Input value={draft.heroLabel} onChange={event => change("heroLabel", event.target.value)} /></label><label className="space-y-1 text-xs text-muted-foreground md:col-span-2">Hero services line<Input value={draft.heroServicesLabel} onChange={event => change("heroServicesLabel", event.target.value)} /></label><ImageUploadField label="Logo" value={draft.logo} recommendedWidth={1000} onChange={value => change("logo", value)} /></div><ImageCollectionEditor label="Hero slideshow" images={draft.heroImages} recommendedWidth={3200} onChange={images => { change("heroImages", images); if (images[0]) change("heroImage", images[0]); }} /></EditorSection>
 

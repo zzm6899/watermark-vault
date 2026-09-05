@@ -1,4 +1,5 @@
 const express = require("express");
+const { upgradePortfolioPresentation } = require("./portfolio-presentation.mjs");
 const multer = require("multer");
 const cors = require("cors");
 const compression = require("compression");
@@ -210,6 +211,10 @@ const PORTFOLIO_SEO_ROUTES = {
   "/concerts": {
     title: "Concert & Live Music Photography | Zac Morgan",
     description: "Live music and concert photography from Sydney venues, festivals and performances, captured by Zac Morgan.",
+  },
+  "/events": {
+    title: "Commercial & Event Photography | Zac Morgan",
+    description: "Brand, corporate event and hospitality photography in Sydney by Zac Morgan.",
   },
   "/about": {
     title: "About Zac Morgan | Sydney Event Photographer",
@@ -3509,7 +3514,7 @@ function publicPortfolioContent(value) {
       id: item?.id || `${key}-${index + 1}`,
     }));
   }
-  return merged;
+  return upgradePortfolioPresentation(merged);
 }
 
 app.get("/api/site-context", (req, res) => {
