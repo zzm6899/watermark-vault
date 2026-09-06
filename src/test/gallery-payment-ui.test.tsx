@@ -109,8 +109,8 @@ it("preserves the reviewed price when the complimentary allowance changes during
   }));
   render(<MemoryRouter initialEntries={["/gallery/reviewed"]}><Routes><Route path="/gallery/:albumId" element={<AlbumDetail />} /></Routes></MemoryRouter>);
   await screen.findByRole("heading", { name: "Reviewed Gallery" });
-  fireEvent.click(screen.getByRole("button", { name: "Select Photo 1", exact: true }));
-  fireEvent.click(screen.getByRole("button", { name: "Select Photo 2", exact: true }));
+  fireEvent.click(screen.getByRole("button", { name: "Select Photo 1" }));
+  fireEvent.click(screen.getByRole("button", { name: "Select Photo 2" }));
   fireEvent.click(screen.getByRole("button", { name: "Review selection · $10.00" }));
   fireEvent.click(screen.getByRole("button", { name: "Continue to payment · $10.00" }));
   fireEvent.click(screen.getByRole("button", { name: "Bank Transfer / PayID" }));
