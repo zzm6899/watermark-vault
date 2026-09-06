@@ -467,6 +467,8 @@ function calculateAlbumCheckout(album, request) {
   const sessionKey = String(request.sessionKey || "").slice(0, 240);
   if (!sessionKey) return { error: "A gallery session is required" };
   const isFullAlbum = request.isFullAlbum === true;
+  const matchesReviewedAmount = amount => request.expectedAmount === undefined || (typeof request.expectedAmount === "number" && Number.isFinite(request.expectedAmount) && Math.round(request.expectedAmount * 100) === Math.round(amount * 100));
+  const changedPriceError = "Gallery pricing or download allowance changed. Refresh the gallery and review again.";
   const requestedIds = [...new Set(Array.isArray(request.photoIds) ? request.photoIds.map(String) : [])];
   if (!isFullAlbum && requestedIds.length === 0) return { error: "Select at least one photo" };
   if (requestedIds.some(id => !deliverableById.has(id))) return { error: "One or more selected photos are unavailable" };
@@ -482,7 +484,7 @@ function calculateAlbumCheckout(album, request) {
     item?.sessionKey === sessionKey && ["approved", "completed"].includes(item.status)
   );
   if (approvedRequests.some(item => item.fullAlbum === true)) return { error: "This gallery is already unlocked" };
-  for (const item of approvedRequests) for (const id of item.photoIds || []) alreadyPaid.add(id);
+  for (const item of approvedRequests) for (const id of item.billablePhotoIds || item.photoIds || []) alreadyPaid.add(id);
   if (currentPurchase.fullAlbum) return { error: "This gallery is already unlocked" };
   const expiresAtSeconds = accessWindow.downloadExpiry == null
     ? undefined
@@ -491,6 +493,7 @@ function calculateAlbumCheckout(album, request) {
   if (isFullAlbum) {
     const amount = Number(album.priceFullAlbum) || 0;
     if (amount <= 0) return { error: "This gallery does not require payment" };
+    if (!matchesReviewedAmount(amount)) return { error: changedPriceError };
     return { amount, isFullAlbum: true, photoIds: [], photoCount: deliverable.length, sessionKey, albumTitle: album.title || "Photo gallery", expiresAtSeconds };
   }
 
@@ -503,6 +506,7 @@ function calculateAlbumCheckout(album, request) {
     pricePerPhoto: album.pricePerPhoto,
   });
   if (pricing.amount <= 0) return { error: "The selected photos do not require payment" };
+  if (!matchesReviewedAmount(pricing.amount)) return { error: changedPriceError };
   return {
     amount: pricing.amount,
     isFullAlbum: false,

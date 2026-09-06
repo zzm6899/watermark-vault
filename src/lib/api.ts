@@ -1157,6 +1157,7 @@ export async function createBookingCheckout(params: {
 
 export async function createAlbumCheckout(params: {
   albumId: string; albumTitle: string; photoCount: number; amount: number; clientEmail?: string;
+  expectedAmount?: number;
   photoIds?: string[];
   isFullAlbum?: boolean;
   sessionKey?: string;
@@ -2840,6 +2841,7 @@ export async function createTenantBookingCheckout(slug: string, params: {
 /** Create a Stripe checkout session for a tenant album purchase. */
 export async function createTenantAlbumCheckout(slug: string, params: {
   albumId: string; albumTitle: string; photoCount: number; amount: number; clientEmail?: string;
+  expectedAmount?: number;
   photoIds?: string[];
   isFullAlbum?: boolean;
   sessionKey?: string;

@@ -235,6 +235,7 @@ describe("public album safety", () => {
 
     expect(await screen.findByRole("heading", { name: "Free Client Gallery" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Download Free" }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue to download" }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
       "/api/album/free-unlock",

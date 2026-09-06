@@ -9,6 +9,9 @@ import Header from "@/components/Header";
 import Footer from "@/components/Footer";
 import WatermarkedImage from "@/components/WatermarkedImage";
 import PurchasePanel from "@/components/PurchasePanel";
+import GallerySelectionReview from "@/components/GallerySelectionReview";
+import GalleryPurchaseStatus from "@/components/GalleryPurchaseStatus";
+import { useGallerySelection } from "@/hooks/use-gallery-selection";
 import GalleryRecovery from "@/components/GalleryRecovery";
 import { getSettings } from "@/lib/storage";
 import { createAlbumCheckout, createTenantAlbumCheckout, getStripeStatus, getTenantStripeStatus, tenantPhotoSrc } from "@/lib/api";
@@ -26,7 +29,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Label } from "@/components/ui/label";
-import type { Album, DownloadQuality, Photo } from "@/lib/types";
+import type { Album, AlbumDownloadRecord, DownloadQuality, Photo } from "@/lib/types";
 import { generateCapabilityToken } from "@/lib/capability-token";
 import { proofingDraftKey, readProofingDraft } from "@/lib/proofing-draft";
 import { submitProofing } from "@/lib/submit-proofing";
@@ -368,7 +371,11 @@ export default function AlbumDetail() {
     if (!albumId) return 0;
     try { return Number(localStorage.getItem(`${LOCAL_FREE_USED_PREFIX}${albumId}_${viewerSessionKey}`)) || 0; } catch { return 0; }
   });
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [showSelectionReview, setShowSelectionReview] = useState(false);
+  const [reviewFullAlbum, setReviewFullAlbum] = useState(false);
+  const [reviewedCheckout, setReviewedCheckout] = useState<{ amount: number; fullAlbum: boolean } | null>(null);
+  const [activeBankRequest, setActiveBankRequest] = useState<AlbumDownloadRecord | null>(null);
+  const [refreshingPurchases, setRefreshingPurchases] = useState(false);
   const [showBankTransfer, setShowBankTransfer] = useState(false);
   const [showBankTransferRequest, setShowBankTransferRequest] = useState(false);
   const [showPaymentChoice, setShowPaymentChoice] = useState(false);
@@ -417,6 +424,9 @@ export default function AlbumDetail() {
   const tokenMatchesAlbum = !!(urlToken && album?.clientToken && urlToken === album.clientToken);
   const [tokenAuthorized, setTokenAuthorized] = useState(tokenMatchesAlbum);
   const [accessGranted, setAccessGranted] = useState(!album?.accessCode || tokenMatchesAlbum);
+  const { selectedIds, setSelectedIds, selectionSaved } = useGallerySelection(
+    album, gallerySessionKey, !albumLoading && (accessGranted || tokenAuthorized) && !(album?.proofingEnabled && album.proofingStage === "proofing"),
+  );
   const [accessRequirements, setAccessRequirements] = useState<GalleryAccessRequirements | null>(null);
   const [pinInput, setPinInput] = useState("");
   const [unlocking, setUnlocking] = useState(false);
@@ -672,6 +682,29 @@ export default function AlbumDetail() {
     });
     return () => { cancelled = true; };
   }, [albumId, fetchAttempt, urlToken, viewerSessionKey, recoveryToken]);
+
+  const refreshPurchaseStatus = useCallback(async (quiet = false) => {
+    if (!albumId || !album || albumLoading || !(accessGranted || tokenAuthorized)) return;
+    setRefreshingPurchases(true);
+    try {
+      const snapshot = await fetchPublicPurchaseSnapshot(albumId);
+      if (!snapshot) { if (!quiet) toast.error("Could not refresh purchases. Please try again."); return; }
+      setAlbumState(previous => previous?.id === album.id ? applyPurchaseSnapshot(previous, gallerySessionKey, snapshot) : previous);
+    } finally { setRefreshingPurchases(false); }
+  }, [albumId, album, albumLoading, accessGranted, tokenAuthorized, gallerySessionKey]);
+  const hasPendingTransfer = (album?.downloadRequests || []).some(request => request.status === "pending" && (!request.sessionKey || request.sessionKey === gallerySessionKey));
+  useEffect(() => {
+    if (!hasPendingTransfer) return;
+    let busy = false;
+    const check = async () => {
+      if (busy || document.visibilityState === "hidden") return;
+      busy = true;
+      try { await refreshPurchaseStatus(true); } finally { busy = false; }
+    };
+    const timer = window.setInterval(check, 30000);
+    window.addEventListener("focus", check);
+    return () => { clearInterval(timer); window.removeEventListener("focus", check); };
+  }, [hasPendingTransfer, refreshPurchaseStatus]);
 
   const watermarkPosition = settings.watermarkPosition;
   // Tenant galleries must never fall back to the platform account details.
@@ -1080,7 +1113,7 @@ export default function AlbumDetail() {
   );
   const bankFullAlbumUnlocked = approvedBankRequests.some((request: any) => request.fullAlbum === true);
   const bankPaidIds = new Set<string>(
-    approvedBankRequests.flatMap((request: any) => request.photoIds || [])
+    approvedBankRequests.flatMap((request: any) => request.billablePhotoIds || request.photoIds || [])
   );
   const paidPhotoIdSet = new Set<string>([...sessionPaidIds, ...globalPaidSet, ...bankPaidIds]);
 
@@ -1587,6 +1620,14 @@ export default function AlbumDetail() {
     }
   };
 
+  const openSelectionReview = (fullAlbum = false) => {
+    if (isExpired || isPurchasingLocked || isDownloadLockedForProofing) return;
+    setReviewedCheckout(null);
+    setShowGalleryOptions(false);
+    setReviewFullAlbum(fullAlbum);
+    setShowSelectionReview(true);
+  };
+
   const handlePurchaseSelected = () => {
     if (isExpired || isPurchasingLocked || isDownloadLockedForProofing) return;
     setShowGalleryOptions(false);
@@ -1694,6 +1735,7 @@ export default function AlbumDetail() {
           fullAlbum: bankTransferFullAlbum,
           photoIds: bankTransferFullAlbum ? [] : selected.map(photo => photo.id),
           amount: bankTransferFullAlbum ? priceFullAlbum : paidTotal,
+          expectedAmount: reviewedCheckout?.amount ?? (bankTransferFullAlbum ? priceFullAlbum : paidTotal),
           clientNote: clientNote.trim() || undefined,
         }),
       });
@@ -1705,6 +1747,7 @@ export default function AlbumDetail() {
           downloadRequests: [...(previous.downloadRequests || []).filter(request => request.id !== result.request.id), result.request],
         } : previous);
       }
+      setActiveBankRequest(result.request || null);
       setShowBankTransferRequest(false);
       setShowBankTransfer(true);
       setClientNote("");
@@ -1729,9 +1772,11 @@ export default function AlbumDetail() {
   const fullAlbumCheaper = priceFullAlbum > 0 && paidCount > 0 && paidTotal >= priceFullAlbum;
 
   // Preview checkout amount used in the payment dialog to decide which CTAs to show
-  const previewIsFullAlbum = requestedFullAlbum || fullAlbumCheaper || selectedIds.size === 0;
+  const ownRequests = (album.downloadRequests || []).filter(request => (!request.method || request.method === "bank-transfer") && (!request.sessionKey || request.sessionKey === sessionKey));
+  const selectedPhotos = clientDeliverablePhotos.filter(photo => selectedIds.has(photo.id));
+  const previewIsFullAlbum = reviewedCheckout?.fullAlbum ?? (requestedFullAlbum || fullAlbumCheaper || selectedIds.size === 0);
   const previewPaidCount = Math.max(0, unpaidSelected.length - freeRemaining);
-  const previewCheckoutAmount = previewIsFullAlbum ? priceFullAlbum : (previewPaidCount * pricePerPhoto);
+  const previewCheckoutAmount = reviewedCheckout?.amount ?? (previewIsFullAlbum ? priceFullAlbum : (previewPaidCount * pricePerPhoto));
 
 
   const _expiryDaysLeft = downloadExpiryDate
@@ -1916,12 +1961,13 @@ export default function AlbumDetail() {
 
               <div className="gallery-actions">
                 <div className="text-sm text-muted-foreground">
-                  {canDownload ? <p><span>Unlocked</span> · Your full gallery is ready.</p> : isDownloadLockedForProofing ? <p>Downloads will be available when your final images are delivered.</p> : isExpired || isPurchasingLocked ? <p>Browse your gallery. Downloads are currently unavailable.</p> : <p>{freeRemaining > 0 ? `${freeRemaining} complimentary downloads remaining.` : "Select the photographs you’d like to keep."}</p>}
-                  {!isProofing && !isDownloadLockedForProofing && !canDownload && <GalleryRecovery albumId={album.id} compact />}
+                  {canDownload ? <p><span>Unlocked</span> · Your full gallery is ready.</p> : isDownloadLockedForProofing ? <p>Downloads will be available when your final images are delivered.</p> : isExpired || isPurchasingLocked ? <p>Browse your gallery. Downloads are currently unavailable.</p> : <p>{hasPendingTransfer ? "Your bank transfer is awaiting confirmation." : paidPhotoIdSet.size > 0 ? `${clientDeliverablePhotos.filter(photo => paidPhotoIdSet.has(photo.id)).length} purchased photos ready to download.` : freeRemaining > 0 ? `${freeRemaining} complimentary downloads remaining.` : "Select the photographs you’d like to keep."}</p>}
+                  {(ownRequests.length > 0 || paidPhotoIdSet.size > 0 || sessionFullAlbum) && <Button variant="ghost" className="px-0 text-muted-foreground underline underline-offset-4" onClick={() => setShowGalleryOptions(true)}>View purchase status</Button>}
+                  {!isProofing && !isDownloadLockedForProofing && !canDownload && ownRequests.length === 0 && paidPhotoIdSet.size === 0 && <GalleryRecovery albumId={album.id} compact />}
                 </div>
                 {!isProofing && !isDownloadLockedForProofing && !isExpired && !isPurchasingLocked && (
                   canDownload ? <Button onClick={handleDownloadAll} aria-label="Download all photos" className="gap-2"><Download className="size-4" />Download gallery</Button>
-                  : priceFullAlbum === 0 ? <Button onClick={() => void handlePurchaseAlbum()} className="gap-2"><Download className="size-4" />Download Free</Button>
+                  : priceFullAlbum === 0 ? <Button onClick={() => openSelectionReview(true)} className="gap-2"><Download className="size-4" />Download Free</Button>
                   : <Button variant="outline" onClick={() => setShowGalleryOptions(true)} className="gap-2"><Download className="size-4" />Download & pricing</Button>
                 )}
               </div>
@@ -1998,7 +2044,7 @@ export default function AlbumDetail() {
               )}
               {!showProofingGalleryControls && !isPurchasingLocked && !isExpired && !isDownloadLockedForProofing && (
                 <>
-                  <span className="ml-auto text-[11px] font-body text-muted-foreground">{selectedIds.size ? `${selectedIds.size} selected` : "Use the circle to select"}</span>
+                  <span className="ml-auto text-[11px] font-body text-muted-foreground">{selectedIds.size ? `${selectedIds.size} selected · ${selectionSaved ? "saved on this device" : "not saved on this device"}` : "Use the circle to select"}</span>
                   <button
                     type="button"
                     onClick={() => setSelectedIds(previous => selectRenderedPhotos(previous, displayedPhotos, galleryVisibleCount))}
@@ -2185,9 +2231,9 @@ export default function AlbumDetail() {
           freeRemaining={freeRemaining}
           pricePerPhoto={pricePerPhoto}
           priceFullAlbum={priceFullAlbum}
-          onDownloadFree={handleDownloadFree}
-          onPurchaseSelected={handlePurchaseSelected}
-          onPurchaseAlbum={handlePurchaseAlbum}
+          onDownloadFree={() => openSelectionReview(false)}
+          onPurchaseSelected={() => openSelectionReview(false)}
+          onPurchaseAlbum={() => openSelectionReview(true)}
           onClearSelection={() => setSelectedIds(new Set())}
         />
       )}
@@ -2431,13 +2477,40 @@ export default function AlbumDetail() {
         </DialogContent>
       </Dialog>
 
+      <GallerySelectionReview
+        open={showSelectionReview} onOpenChange={setShowSelectionReview}
+        photos={reviewFullAlbum ? clientDeliverablePhotos : selectedPhotos}
+        fullAlbum={reviewFullAlbum} paidIds={paidPhotoIdSet} freeRemaining={freeRemaining}
+        pricePerPhoto={pricePerPhoto} priceFullAlbum={priceFullAlbum}
+        photoSrc={photo => getGalleryPhotoSrc(photo, isCleanDownload(photo.id), { albumId: album.id })}
+        onRemove={id => setSelectedIds(previous => new Set([...previous].filter(value => value !== id)))}
+        onContinue={() => {
+          setReviewedCheckout({ amount: reviewFullAlbum ? priceFullAlbum : Math.round(paidTotal * 100) / 100, fullAlbum: reviewFullAlbum });
+          setShowSelectionReview(false);
+          if (reviewFullAlbum) void handlePurchaseAlbum();
+          else if (paidCount === 0) handleDownloadFree();
+          else handlePurchaseSelected();
+        }}
+      />
+
       <Dialog open={showGalleryOptions} onOpenChange={setShowGalleryOptions}>
         <DialogContent className="gallery-dialog max-w-md">
           <DialogHeader>
             <DialogTitle>Keep your photographs</DialogTitle>
             <DialogDescription>Select individual favourites or keep the complete gallery.</DialogDescription>
           </DialogHeader>
-          <dl className="space-y-3 text-sm">
+          <GalleryPurchaseStatus requests={ownRequests} photos={clientDeliverablePhotos}
+            paidCount={sessionFullAlbum || bankFullAlbumUnlocked ? clientDeliverablePhotos.length : clientDeliverablePhotos.filter(photo => paidPhotoIdSet.has(photo.id)).length} ready={!isExpired && !isPurchasingLocked && !isDownloadLockedForProofing}
+            refreshing={refreshingPurchases} onRefresh={() => void refreshPurchaseStatus()}
+            onBankDetails={bankTransfer.enabled ? request => { setActiveBankRequest(request); setShowGalleryOptions(false); setShowBankTransfer(true); } : undefined}
+            onSelect={request => {
+              setSelectedIds(new Set(request.photoIds.filter(id => clientDeliverablePhotos.some(photo => photo.id === id))));
+              setShowGalleryOptions(false);
+              if (canDownload) setShowDownloadOptions(true);
+              else openSelectionReview(false);
+            }}
+          />
+          {!canDownload && !isExpired && !isPurchasingLocked && !isDownloadLockedForProofing && <dl className="space-y-3 text-sm">
             <div className="flex justify-between gap-3">
               <dt>Complimentary downloads remaining</dt><dd>{freeRemaining}</dd>
             </div>
@@ -2447,8 +2520,8 @@ export default function AlbumDetail() {
             <div className="flex justify-between gap-3 border-t border-border pt-3">
               <dt>Complete gallery · {clientDeliverablePhotos.length} photos</dt><dd>${priceFullAlbum.toFixed(2)}</dd>
             </div>
-          </dl>
-          <Button onClick={() => void handlePurchaseAlbum()}>Get full gallery · ${priceFullAlbum.toFixed(2)}</Button>
+          </dl>}
+          {canDownload ? <Button onClick={() => { setShowGalleryOptions(false); void handleDownloadAll(); }}>Download gallery</Button> : !isExpired && !isPurchasingLocked && !isDownloadLockedForProofing && <Button onClick={() => openSelectionReview(true)}>Get full gallery · ${priceFullAlbum.toFixed(2)}</Button>}
           <p className="text-sm text-muted-foreground">To choose individual photos, close this panel and select them using the circles. Your selection total appears at the bottom.</p>
           <div className="border-t border-border pt-3 text-sm">
             <p className="text-muted-foreground">Checkout email</p>
@@ -2504,6 +2577,7 @@ export default function AlbumDetail() {
                     albumTitle: album.title,
                     photoCount: isFullAlbumPurchase ? clientDeliverablePhotos.length : photosBeingPaid.length,
                     amount: checkoutAmount,
+                    expectedAmount: reviewedCheckout?.amount ?? checkoutAmount,
                     clientEmail: album.clientEmail,
                     photoIds: isFullAlbumPurchase ? [] : unpaidSelected.map(p => p.id),
                     isFullAlbum: isFullAlbumPurchase,
@@ -2560,6 +2634,11 @@ export default function AlbumDetail() {
             <DialogDescription className="sr-only">Bank transfer payment details for your photo purchase.</DialogDescription>
           </DialogHeader>
           <div className="space-y-4 mt-2">
+            {activeBankRequest && <div className="border-b border-border pb-3 text-sm space-y-1">
+              <p className="font-medium">{album.title}</p>
+              <p>{activeBankRequest.fullAlbum ? "Complete gallery" : `${activeBankRequest.photoIds.length} photos`}{typeof activeBankRequest.amount === "number" && ` · $${activeBankRequest.amount.toFixed(2)}`}</p>
+              <p className="text-muted-foreground">Awaiting payment confirmation from your photographer.</p>
+            </div>}
             {bankTransfer.accountName && (
               <DetailRow label="Account Name" value={bankTransfer.accountName} onCopy={() => copyToClipboard(bankTransfer.accountName, "name")} copied={copiedField === "name"} />
             )}
@@ -2604,15 +2683,9 @@ export default function AlbumDetail() {
                 : !bankTransferFullAlbum && freeRemaining > 0 ? <> (all free)</> : null}
             </p>
             <div className="p-3 rounded-lg bg-secondary">
-              <p className="text-xs font-body text-muted-foreground">Estimated total</p>
-              {bankTransferFullAlbum || fullAlbumCheaper ? (
-                <div>
-                  <p className="text-lg font-display text-primary">${priceFullAlbum.toFixed(2)} {paidTotal > priceFullAlbum && <span className="text-xs font-body text-muted-foreground line-through">${paidTotal.toFixed(2)}</span>}</p>
-                  <p className="text-xs font-body text-green-400/80 mt-0.5">Full album price applied{fullAlbumCheaper ? " — better deal!" : ""}</p>
-                </div>
-              ) : (
-                <p className="text-lg font-display text-foreground">${paidTotal}</p>
-              )}
+              <p className="text-xs font-body text-muted-foreground">Reviewed total</p>
+              <p className="text-lg font-display text-foreground">${(reviewedCheckout?.amount ?? (bankTransferFullAlbum ? priceFullAlbum : paidTotal)).toFixed(2)}</p>
+              {bankTransferFullAlbum && <p className="text-xs font-body text-muted-foreground mt-0.5">Complete gallery</p>}
             </div>
             <div>
               <label htmlFor="bank-request-note" className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Note (optional)</label>
@@ -2873,7 +2946,7 @@ function DetailRow({ label, value, onCopy, copied }: { label: string; value: str
         <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">{label}</p>
         <p className="text-sm font-body text-foreground font-medium">{value}</p>
       </div>
-      <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-primary" onClick={onCopy}>
+      <Button variant="ghost" size="icon" aria-label={`Copy ${label.toLowerCase()}`} className="h-8 w-8 text-muted-foreground hover:text-primary" onClick={onCopy}>
         {copied ? <CheckIcon className="w-4 h-4 text-primary" /> : <Copy className="w-4 h-4" />}
       </Button>
     </div>

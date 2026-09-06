@@ -288,6 +288,9 @@ export interface PhotoCullMetadata {
 export type AlbumDisplaySize = "small" | "medium" | "large" | "list";
 
 export interface AlbumDownloadRecord {
+  /** New requests distinguish paid access from photos covered by the free allowance. */
+  billablePhotoIds?: string[];
+  complimentaryPhotoIds?: string[];
   id?: string;
   sessionKey?: string;
   email?: string;

@@ -581,7 +581,7 @@ function galleryPhotoDownloadEntitlement({ album, photo, sessionKey, unlockedPho
   if (sessionPurchase?.photoIds?.includes(photo.id)) return result(true, true, "paid-photo");
   const bankApproved = (album.downloadRequests || []).some(request =>
     ["approved", "completed"].includes(request?.status) && request.sessionKey === sessionKey &&
-    (request.fullAlbum === true || request.photoIds?.includes(photo.id))
+    (request.fullAlbum === true || (request.billablePhotoIds || request.photoIds)?.includes(photo.id))
   );
   if (bankApproved) return result(true, true, "approved-request");
   if (album.allUnlocked) return result(true, true, "album-unlock");

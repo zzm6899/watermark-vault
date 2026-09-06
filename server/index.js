@@ -1799,6 +1799,20 @@ app.get("/api/admin/finance/events", requireAuth, (req, res) => {
   res.json(buildEventRevenue({ bookings: dbGet(db, "wv_bookings", []), albums: dbGet(db, "wv_albums", []), orders: dbGet(db, "wv_album_checkout_orders", {}), eventTypes: dbGet(db, "wv_event_types", []), from, to, groupBy, eventId }));
 });
 
+// Authenticated client chronology. No capability tokens or session credentials leave the server.
+app.get("/api/admin/clients/:contactId/activity", requireAuth, (req, res) => {
+  const { kind = "all", q = "", offset = "0" } = req.query;
+  if (typeof kind !== "string" || !["all", "booking", "payment", "request", "download", "album", "invoice", "email"].includes(kind) || typeof q !== "string" || q.length > 200 || typeof offset !== "string" || !/^\d{1,7}$/.test(offset)) return res.status(400).json({ error: "Invalid activity filter" });
+  const db = readDb();
+  const contact = dbGet(db, DB_KEYS.CONTACTS, []).find(item => item.id === req.params.contactId);
+  if (!contact) return res.status(404).json({ error: "Client not found" });
+  const { buildClientActivity } = require("./client-activity");
+  const query = q.trim().toLowerCase();
+  const items = buildClientActivity({ contact, bookings: dbGet(db, DB_KEYS.BOOKINGS, []), invoices: dbGet(db, DB_KEYS.INVOICES, []), albums: dbGet(db, ALBUMS_KEY, []), orders: dbGet(db, "wv_album_checkout_orders", {}) }).filter(item => (kind === "all" || item.type === kind) && (!query || `${item.title} ${item.detail} ${(item.files || []).join(" ")} ${(item.extras || []).map(extra => `${extra.name} ${extra.description}`).join(" ")}`.toLowerCase().includes(query)));
+  res.setHeader("Cache-Control", "private, no-store");
+  res.json({ items: items.slice(Number(offset), Number(offset) + 40), total: items.length });
+});
+
 // GET /api/albums/stubs — all main albums without photos
 app.get("/api/albums/stubs", requireAuth, (req, res) => {
   const db = readDb();
@@ -9910,7 +9924,7 @@ function hasNonQuotaPhotoEntitlement(album, photoId, sessionKey) {
   if (album.allUnlocked) return true;
   return (album.downloadRequests || []).some(request =>
     request.sessionKey === sessionKey && ["approved", "completed"].includes(request.status) &&
-    (request.fullAlbum === true || request.photoIds?.includes(photoId))
+    (request.fullAlbum === true || (request.billablePhotoIds || request.photoIds)?.includes(photoId))
   );
 }
 
@@ -10021,13 +10035,18 @@ app.post("/api/album/download-request", galleryAccessLimiter, (req, res) => {
     ? (fullAlbumAlreadyEntitled ? 0 : Number(context.album.priceFullAlbum))
     : pricing.amount;
   if (!Number.isFinite(amount) || amount <= 0) return res.status(409).json({ ok: false, error: "This request does not require a bank transfer" });
+  if (req.body.expectedAmount !== undefined && (typeof req.body.expectedAmount !== "number" || !Number.isFinite(req.body.expectedAmount) || Math.round(req.body.expectedAmount * 100) !== Math.round(amount * 100))) return res.status(409).json({ ok: false, error: "Gallery pricing or download allowance changed. Refresh the gallery and review again." });
   const existing = (context.album.downloadRequests || []).find(request => request.sessionKey === sessionKey && request.status === "pending" && request.fullAlbum === fullAlbum && JSON.stringify([...(request.photoIds || [])].sort()) === JSON.stringify([...requestedIds].sort()));
-  if (existing) return res.json({ ok: true, request: existing, duplicate: true });
+  if (existing) {
+    if (Math.round(existing.amount * 100) !== Math.round(amount * 100)) return res.status(409).json({ ok: false, error: "These photos already have a pending transfer at a different price. Open your purchase status to review that request or contact your photographer." });
+    return res.json({ ok: true, request: existing, duplicate: true });
+  }
   const request = {
     id: `download-request-${crypto.randomUUID()}`,
     sessionKey,
     photoIds: requestedIds,
     fullAlbum,
+    ...(!fullAlbum ? { billablePhotoIds: pricing.billablePhotoIds, complimentaryPhotoIds: pricing.freePhotoIds } : {}),
     amount: Math.round(amount * 100) / 100,
     method: "bank-transfer",
     status: "pending",
@@ -10055,8 +10074,10 @@ app.get("/api/public-album/:albumSlug/purchase", galleryAccessLimiter, (req, res
     requests: (context.album.downloadRequests || []).filter(request => request.sessionKey === sessionKey).map(request => ({
       id: request.id,
       status: request.status,
+      method: request.method,
       fullAlbum: request.fullAlbum === true,
       photoIds: request.photoIds || [],
+      ...(Array.isArray(request.billablePhotoIds) ? { billablePhotoIds: request.billablePhotoIds, complimentaryPhotoIds: request.complimentaryPhotoIds || [] } : {}),
       amount: request.amount,
       requestedAt: request.requestedAt,
       approvedAt: request.approvedAt,

@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import AlbumDetail from "@/pages/AlbumDetail";
 
@@ -19,12 +19,15 @@ it("keeps all-photo selections at the cheaper individual price and displays expl
   await screen.findByRole("heading", { name: "Pricing Gallery" });
   fireEvent.click(screen.getByRole("button", { name: "Select Photo 1" }));
   fireEvent.click(screen.getByRole("button", { name: "Select Photo 2" }));
-  fireEvent.click(screen.getByRole("button", { name: "Pay $20.00" }));
+  fireEvent.click(screen.getByRole("button", { name: "Review selection · $20.00" }));
+  expect(screen.getByRole("heading", { name: "Review your photographs" })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Continue to payment · $20.00" }));
   expect(await screen.findByText("$20.00", { selector: "span" })).toBeInTheDocument();
   expect(screen.getByRole("heading", { name: "Choose Payment Method" })).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: /^Close$/ }));
   fireEvent.click(screen.getByRole("button", { name: "Download & pricing" }));
   fireEvent.click(screen.getByRole("button", { name: "Get full gallery · $100.00" }));
+  fireEvent.click(screen.getByRole("button", { name: "Continue to payment · $100.00" }));
   expect(await screen.findByText(/Full album · 2 photos/)).toBeInTheDocument();
   expect(screen.getByText("$100.00", { selector: "span" })).toBeInTheDocument();
 });
@@ -58,7 +61,8 @@ it("opens photos independently of selection and selects only the rendered batch"
 it("does not stack a delayed email dialog over payment choices", async () => {
   await renderGallery();
   fireEvent.click(screen.getByRole("button", { name: "Select Photo 1" }));
-  fireEvent.click(screen.getByRole("button", { name: "Pay $10.00" }));
+  fireEvent.click(screen.getByRole("button", { name: "Review selection · $10.00" }));
+  fireEvent.click(screen.getByRole("button", { name: "Continue to payment · $10.00" }));
   await act(async () => { await new Promise(resolve => setTimeout(resolve, 400)); });
   expect(screen.getAllByRole("dialog")).toHaveLength(1);
   expect(screen.getByRole("heading", { name: "Choose Payment Method" })).toBeInTheDocument();
@@ -87,4 +91,32 @@ it("resets the purchased-only filter along with other gallery filters", async ()
   fireEvent.click(screen.getByRole("button", { name: "Show gallery filters" }));
   fireEvent.click(screen.getByRole("button", { name: "Reset filters" }));
   expect(screen.getByRole("button", { name: "Open Photo 2 in lightbox" })).toBeInTheDocument();
+});
+
+it("preserves the reviewed price when the complimentary allowance changes during email capture", async () => {
+  const sessionKey = "gallery-reviewed-session-123456";
+  let registered = false;
+  let submitted: Record<string, unknown> | undefined;
+  const album = { id: "reviewed", slug: "reviewed", title: "Reviewed Gallery", photos: [{ id: "one", title: "Photo 1", src: "/uploads/one.jpg" }, { id: "two", title: "Photo 2", src: "/uploads/two.jpg" }], enabled: true, freeDownloads: 1, pricePerPhoto: 10, priceFullAlbum: 100 };
+  localStorage.setItem("wv_settings", JSON.stringify({ bankTransfer: { enabled: true } }));
+  vi.stubGlobal("fetch", vi.fn(async (input, options) => {
+    const url = String(input);
+    let body: unknown = {};
+    if (url.endsWith("/api/public-album/reviewed")) body = { album: { ...album, usedFreeDownloads: { [sessionKey]: registered ? 1 : 0 } }, sessionKey };
+    if (url.endsWith("/api/album/register-purchaser")) { registered = true; body = { email: "buyer@example.test" }; }
+    if (url.endsWith("/api/album/download-request")) { submitted = JSON.parse(options.body); body = { error: "Gallery allowance changed; review again." }; }
+    return { ok: !url.endsWith("/download-request"), status: url.endsWith("/download-request") ? 409 : 200, headers: new Headers({ "content-type": "application/json" }), json: async () => body } as Response;
+  }));
+  render(<MemoryRouter initialEntries={["/gallery/reviewed"]}><Routes><Route path="/gallery/:albumId" element={<AlbumDetail />} /></Routes></MemoryRouter>);
+  await screen.findByRole("heading", { name: "Reviewed Gallery" });
+  fireEvent.click(screen.getByRole("button", { name: "Select Photo 1", exact: true }));
+  fireEvent.click(screen.getByRole("button", { name: "Select Photo 2", exact: true }));
+  fireEvent.click(screen.getByRole("button", { name: "Review selection · $10.00" }));
+  fireEvent.click(screen.getByRole("button", { name: "Continue to payment · $10.00" }));
+  fireEvent.click(screen.getByRole("button", { name: "Bank Transfer / PayID" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Checkout email" }), { target: { value: "buyer@example.test" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save & continue" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Submit Request & View Bank Details" }));
+  await waitFor(() => expect(submitted).toMatchObject({ expectedAmount: 10, amount: 20, fullAlbum: false }));
+  expect(screen.getByRole("heading", { name: "Request Photos via Bank Transfer" })).toBeInTheDocument();
 });

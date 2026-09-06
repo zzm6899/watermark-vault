@@ -45,11 +45,11 @@ export default function PurchasePanel({
             <div className="flex items-center justify-between gap-4 sm:justify-end">
               <Button onClick={onClearSelection} variant="ghost" className="text-muted-foreground">Clear selection</Button>
               {paidCount === 0 ? (
-                <Button onClick={onDownloadFree} className="gap-2"><Download className="size-4" />Download Free</Button>
+                <Button onClick={onDownloadFree} className="gap-2"><Download className="size-4" />Review free photos</Button>
               ) : fullAlbumCheaper ? (
-                <Button onClick={onPurchaseAlbum}>Full gallery · ${priceFullAlbum.toFixed(2)}</Button>
+                <Button onClick={onPurchaseAlbum}>Review full gallery · ${priceFullAlbum.toFixed(2)}</Button>
               ) : (
-                <Button onClick={onPurchaseSelected}>Pay ${paidTotal.toFixed(2)}</Button>
+                <Button onClick={onPurchaseSelected}>Review selection · ${paidTotal.toFixed(2)}</Button>
               )}
             </div>
           </div>

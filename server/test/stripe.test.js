@@ -165,6 +165,16 @@ test("album checkout excludes admin and approved bank entitlements and respects 
   assert.equal(bounded.expiresAtSeconds, Math.floor((nowMs + 2 * 60 * 60_000) / 1000));
 });
 
+test("reviewed gallery totals must still match before checkout", () => {
+  const album = { id: "gallery", title: "Gallery", enabled: true, photos: [{ id: "one" }, { id: "two" }], freeDownloads: 1, pricePerPhoto: 10, priceFullAlbum: 15 };
+  const request = { sessionKey: "viewer", photoIds: ["one", "two"], expectedAmount: 10 };
+  assert.equal(calculateAlbumCheckout(album, request).amount, 10);
+  assert.match(calculateAlbumCheckout({ ...album, pricePerPhoto: 12 }, request).error, /pricing or download allowance changed/);
+  assert.match(calculateAlbumCheckout({ ...album, usedFreeDownloads: { viewer: 1 } }, request).error, /pricing or download allowance changed/);
+  assert.match(calculateAlbumCheckout(album, { ...request, isFullAlbum: true }).error, /pricing or download allowance changed/);
+  assert.equal(calculateAlbumCheckout(album, { ...request, isFullAlbum: true, expectedAmount: 15 }).amount, 15);
+});
+
 test("album pricing excludes claimed free IDs and applies the canonical legacy quota", () => {
   const pricing = calculateAlbumSelectionPricing({
     requestedPhotoIds: ["claimed", "free-2", "free-3", "free-4", "free-5", "paid-1"],

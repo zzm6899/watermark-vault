@@ -22,6 +22,7 @@ async function main() {
   fs.writeFileSync(path.join(dataDir, 'db.json'), JSON.stringify({
     wv_profile: { name: 'Preview Studio', businessName: 'Preview Studio', timezone: 'Australia/Sydney', bio: 'Local product preview' },
     wv_event_types: [event],
+    wv_contacts: [{ id: 'preview-client', name: 'Preview Booker', email: 'booker@example.test', address: '', albumIds: ['album-2'], createdAt: new Date().toISOString() }],
     wv_settings: { stripeEnabled: false, bankTransfer: { enabled: true, bankName: 'Preview bank', accountName: 'Preview Studio', bsb: '000000', accountNumber: '00000000' } },
     wv_albums: Array.from({ length: 30 }, (_, i) => ({ id: `album-${i}`, slug: `preview-${i}`, title: i === 0 ? 'Portraits — Alex Example' : i === 2 ? 'Animaga — The Collection' : `Portrait collection ${i + 1}`, description: i === 2 ? 'Melbourne · August 2026' : '', clientName: i === 0 ? 'Alex Example' : `Preview Client ${i + 1}`, date, enabled: true, status: i % 2 ? 'delivered' : 'editing', photos: i === 2 ? galleryPhotos : [{ id: 'photo-one', src: '', originalName: 'portrait-001.jpg' }], photoCount: i === 2 ? 40 : 1, freeDownloads: i === 2 ? 5 : 0, pricePerPhoto: i === 2 ? 5 : 20, priceFullAlbum: i === 2 ? 30 : 20, downloadRequests: i === 0 ? [request] : i === 1 ? [{ ...request, id: 'request-two', email: 'client-two@example.test' }] : [] })),
   }));
@@ -38,10 +39,11 @@ async function main() {
     await new Promise(resolve => setTimeout(resolve, 100));
   }
   assert.ok(ready, 'isolated server started');
-  let cookie = '';
+  let cookie = '', galleryCookie = '';
   async function call(url, body, authenticated = false) {
-    const response = await fetch(base + url, { method: body === undefined ? 'GET' : 'POST', headers: { 'Content-Type': 'application/json', Origin: base, ...(authenticated ? { Cookie: cookie } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) });
+    const response = await fetch(base + url, { method: body === undefined ? 'GET' : 'POST', headers: { 'Content-Type': 'application/json', Origin: base, ...((authenticated ? cookie : galleryCookie) ? { Cookie: authenticated ? cookie : galleryCookie } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) });
     if (url === '/api/auth/verify') cookie = response.headers.getSetCookie().map(value => value.split(';')[0]).join('; ');
+    if (url === '/api/public-album/preview-2/access') galleryCookie = response.headers.getSetCookie().map(value => value.split(';')[0]).join('; ');
     return { status: response.status, body: await response.json() };
   }
   assert.equal((await call('/api/public/config')).body.eventTypes[0].extras[0].name, 'Composite image');
@@ -89,6 +91,37 @@ async function main() {
   assert.equal(auto.status, 200);
   assert.equal(auto.body.summary.due, 0);
   console.log('PASS event finance authentication, stored totals, filters and automation preview');
+  assert.equal((await call('/api/public-album/preview-2/access', {})).status, 200);
+  const transferInput = { albumId: 'album-2', photoIds: galleryPhotos.slice(0, 6).map(photo => photo.id), fullAlbum: false, email: 'booker@example.test', expectedAmount: 5 };
+  assert.equal((await call('/api/album/download-request', { ...transferInput, expectedAmount: 99 })).status, 409);
+  const transfer = await call('/api/album/download-request', transferInput);
+  assert.equal(transfer.status, 201, JSON.stringify(transfer.body));
+  assert.equal(transfer.body.request.amount, 5);
+  assert.equal(transfer.body.request.billablePhotoIds.length, 1);
+  assert.equal(transfer.body.request.complimentaryPhotoIds.length, 5);
+  assert.equal((await call('/api/album/download-request', transferInput)).body.duplicate, true);
+  const snapshotBefore = await call('/api/public-album/preview-2/purchase');
+  assert.equal(snapshotBefore.body.requests.length, 1);
+  assert.equal(snapshotBefore.body.requests[0].status, 'pending');
+  assert.equal((await call(`/api/albums/album-2/download-requests/${transfer.body.request.id}/approve`, transfer.body.request, true)).status, 200);
+  const snapshotAfter = await call('/api/public-album/preview-2/purchase');
+  assert.equal(snapshotAfter.body.requests[0].status, 'approved');
+  assert.equal(snapshotAfter.body.requests[0].billablePhotoIds.length, 1);
+  assert.equal(snapshotAfter.body.freeDownloadsRemaining, 5);
+  console.log('PASS reviewed transfer totals, mixed free/paid requests, retry and purchase-status refresh');
+  assert.equal((await call('/api/admin/clients/preview-client/activity')).status, 401);
+  const activity = await call('/api/admin/clients/preview-client/activity', undefined, true);
+  assert.equal(activity.status, 200);
+  assert.equal(activity.body.items.filter(item => item.type === 'booking').length, 2);
+  assert.equal(activity.body.items.find(item => item.type === 'booking').extras[0].description, event.extras[0].description);
+  assert.ok(activity.body.items.some(item => item.type === 'request' && item.files.includes('ZMP_0001.jpg')));
+  assert.ok(activity.body.items.some(item => item.type === 'payment' && item.detail.includes('1 paid + 5 complimentary')));
+  const searched = await call('/api/admin/clients/preview-client/activity?kind=booking&q=custom%20background', undefined, true);
+  assert.equal(searched.body.total, 2);
+  assert.equal((await call('/api/admin/clients/preview-client/activity?offset=-1', undefined, true)).status, 400);
+  assert.equal((await call('/api/admin/clients/missing/activity', undefined, true)).status, 404);
+  assert.equal((await call('/api/admin/clients/preview-client/activity?offset=40', undefined, true)).body.items.length, 0);
+  console.log('PASS client timeline authentication, saved extras, search, pagination and validation');
   console.log('Preview: ' + base + '/admin/albums');
   console.log('Booking: ' + base + '/');
   console.log('Gallery: ' + base + '/gallery/preview-2');

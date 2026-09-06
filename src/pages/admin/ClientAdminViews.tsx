@@ -4,6 +4,7 @@ import { motion } from "framer-motion";
 import { Calendar, Camera, CheckCircle2, ChevronDown, Clock, Download, Edit, Image, Mail, MessageSquare, Plus, Receipt, Save, Search, Trash2, Upload, Users, X, XSquare } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import ClientActivityTimeline from "@/pages/admin/ClientActivityTimeline";
 import RichTextEditor from "@/components/RichTextEditor";
 import { toast } from "sonner";
 import {
@@ -11,7 +12,7 @@ import {
   getContacts, getEnquiries, getEventTypes, getInvoices, getProfile, setProfile,
   updateContact, updateEnquiry,
 } from "@/lib/storage";
-import { ensurePublicAlbumAvailable, sendEnquiryAcceptedEmail, sendEnquiryDeclinedEmail } from "@/lib/api";
+import { ensurePublicAlbumAvailable, fetchAlbumStubs, sendEnquiryAcceptedEmail, sendEnquiryDeclinedEmail } from "@/lib/api";
 import { generateCapabilityToken } from "@/lib/capability-token";
 import { calcInvTotal, formatInvMoney, invoiceCurrency } from "@/lib/admin-invoice-utils";
 import type { Album, Booking, Contact, Enquiry, EnquiryStatus, Invoice, ProfileSettings } from "@/lib/types";
@@ -347,84 +348,11 @@ function ProfileView() {
 }
 
 // ─── Contacts ────────────────────────────────────────
-type ClientTimelineItem = {
-  id: string;
-  at: string;
-  type: "booking" | "invoice" | "album" | "download" | "email";
-  title: string;
-  detail: string;
-};
-
 function contactMatchesClient(contact: Contact, name?: string, email?: string): boolean {
   const contactEmail = contact.email.trim().toLowerCase();
   const candidateEmail = (email || "").trim().toLowerCase();
-  if (contactEmail && candidateEmail && contactEmail === candidateEmail) return true;
+  if (contactEmail && candidateEmail) return contactEmail === candidateEmail;
   return !!contact.name && !!name && contact.name.trim().toLowerCase() === name.trim().toLowerCase();
-}
-
-function buildClientTimeline(contact: Contact, bookings: Booking[], invoices: Invoice[], albums: Album[]): ClientTimelineItem[] {
-  const items: ClientTimelineItem[] = [];
-  const matchedBookings = bookings.filter(booking => contactMatchesClient(contact, booking.clientName, booking.clientEmail));
-  const matchedInvoices = invoices.filter(invoice => contactMatchesClient(contact, invoice.to?.name, invoice.to?.email));
-  const linkedAlbumIds = new Set(contact.albumIds || []);
-  const matchedAlbums = albums.filter(album => linkedAlbumIds.has(album.id) || contactMatchesClient(contact, album.clientName, album.clientEmail));
-
-  for (const booking of matchedBookings) {
-    items.push({
-      id: `booking-${booking.id}`,
-      at: `${booking.date || booking.createdAt}T${booking.time || "00:00"}`,
-      type: "booking",
-      title: `${booking.type || "Booking"} ${booking.status}`,
-      detail: `${booking.date}${booking.time ? ` at ${booking.time}` : ""}${booking.paymentStatus ? ` · ${booking.paymentStatus.replace("-", " ")}` : ""}`,
-    });
-    for (const entry of booking.emailLog || []) {
-      const sentAt = entry.sentAt || entry.at || entry.createdAt;
-      if (!sentAt) continue;
-      items.push({
-        id: `email-${booking.id}-${sentAt}`,
-        at: sentAt,
-        type: "email",
-        title: entry.subject || entry.type || "Email sent",
-        detail: `Booking email${entry.to ? ` to ${entry.to}` : ""}`,
-      });
-    }
-  }
-
-  for (const invoice of matchedInvoices) {
-    items.push({
-      id: `invoice-${invoice.id}`,
-      at: invoice.paidAt || invoice.sentAt || invoice.createdAt,
-      type: "invoice",
-      title: `${invoice.number} ${invoice.status}`,
-      detail: `${formatInvMoney(invoice, calcInvTotal(invoice))} · due ${invoice.dueDate || "not set"}`,
-    });
-  }
-
-  for (const album of matchedAlbums) {
-    const count = album.photoCount || album.photos?.length || 0;
-    items.push({
-      id: `album-${album.id}`,
-      at: album.deliveredAt || album.date || new Date().toISOString(),
-      type: "album",
-      title: `${album.title} ${album.status || "album"}`,
-      detail: `${count} photo${count !== 1 ? "s" : ""}`,
-    });
-    for (const entry of album.downloadHistory || []) {
-      const downloadCount = entry.photoCount ?? entry.photoIds?.length ?? 0;
-      items.push({
-        id: `download-${album.id}-${entry.downloadedAt}`,
-        at: entry.downloadedAt,
-        type: "download",
-        title: "Gallery downloaded",
-        detail: `${downloadCount} photo${downloadCount !== 1 ? "s" : ""} · ${entry.quality || "original"}`,
-      });
-    }
-  }
-
-  return items
-    .filter(item => item.at)
-    .sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime())
-    .slice(0, 12);
 }
 
 function ContactsView() {
@@ -434,7 +362,15 @@ function ContactsView() {
   const [expandedContactId, setExpandedContactId] = useState<string | null>(null);
   const bookings = getBookings();
   const invoices = getInvoices();
-  const albums = getAlbums();
+  const [albums, setContactAlbums] = useState<Album[]>(getAlbums);
+  const [albumsLoaded, setAlbumsLoaded] = useState(false);
+  React.useEffect(() => {
+    let cancelled = false;
+    void fetchAlbumStubs().then(result => {
+      if (!cancelled && result !== null) { setContactAlbums(result); setAlbumsLoaded(true); }
+    });
+    return () => { cancelled = true; };
+  }, []);
 
   const emptyContact = (): Contact => ({
     id: generateId("contact"),
@@ -630,21 +566,25 @@ function ContactsView() {
           {filtered.map(c => {
             const cBookings = bookings.filter(b => contactMatchesClient(c, b.clientName, b.clientEmail));
             const cInvoices = invoices.filter(i => contactMatchesClient(c, i.to?.name, i.to?.email));
-            const cAlbumIds = new Set(c.albumIds || []);
-            const cAlbums = albums.filter(a => cAlbumIds.has(a.id) || contactMatchesClient(c, a.clientName, a.clientEmail));
+            const cAlbumIds = new Set([...(c.albumIds || []), ...cBookings.map(booking => booking.albumId).filter(Boolean)]);
+            const cBookingIds = new Set(cBookings.map(booking => booking.id));
+            const cAlbums = albums.filter(a => cAlbumIds.has(a.id) || cBookingIds.has(a.bookingId) || contactMatchesClient(c, a.clientName, a.clientEmail));
             const cTotals = Object.entries(cInvoices.reduce<Record<string, number>>((totals, invoice) => {
               const currency = invoiceCurrency(invoice);
               totals[currency] = (totals[currency] || 0) + calcInvTotal(invoice);
               return totals;
             }, {}));
             const isExpanded = expandedContactId === c.id;
-            const sortedBookings = [...cBookings].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-            const timeline = buildClientTimeline(c, bookings, invoices, albums);
             return (
             <div key={c.id} className="glass-panel rounded-xl overflow-hidden">
               {/* ── Header row ── */}
               <div
-                className="px-4 py-3 flex items-center justify-between gap-3 cursor-pointer select-none hover:bg-secondary/20 transition-colors"
+                className="px-4 py-3 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 cursor-pointer select-none hover:bg-secondary/20 transition-colors"
+                role="button"
+                tabIndex={0}
+                aria-label={`View activity for ${c.name}`}
+                aria-expanded={isExpanded}
+                onKeyDown={event => { if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); setExpandedContactId(isExpanded ? null : c.id); } }}
                 onClick={() => setExpandedContactId(isExpanded ? null : c.id)}
               >
                 <div className="min-w-0 flex-1">
@@ -657,16 +597,16 @@ function ContactsView() {
                     </p>
                   )}
                 </div>
-                <div className="flex items-center gap-2 flex-wrap justify-end shrink-0">
-                  <div className="flex items-center gap-1 text-[10px] font-body text-muted-foreground">
+                <div className="flex items-center gap-2 flex-wrap justify-between sm:justify-end">
+                  <div className="flex flex-wrap items-center gap-1 text-[10px] font-body text-muted-foreground">
                     <span className="px-2 py-0.5 rounded-full bg-secondary/60 border border-border/60">{cBookings.length} booking{cBookings.length !== 1 ? "s" : ""}</span>
                     <span className="px-2 py-0.5 rounded-full bg-secondary/60 border border-border/60">{cInvoices.length} invoice{cInvoices.length !== 1 ? "s" : ""}</span>
-                    <span className="px-2 py-0.5 rounded-full bg-secondary/60 border border-border/60">{cAlbums.length} album{cAlbums.length !== 1 ? "s" : ""}</span>
+                    <span className="px-2 py-0.5 rounded-full bg-secondary/60 border border-border/60">{albumsLoaded ? `${cAlbums.length} album${cAlbums.length === 1 ? "" : "s"}` : "Albums not loaded"}</span>
                     {cTotals.map(([currency, total]) => <span key={currency} className="px-2 py-0.5 rounded-full bg-secondary/60 border border-border/60">{formatInvMoney({ currency }, total)}</span>)}
                   </div>
                   <div className="flex gap-1 shrink-0" onClick={e => e.stopPropagation()}>
-                    <button onClick={() => setEditing({ ...c })} className="p-2 rounded hover:bg-secondary text-muted-foreground/60 hover:text-foreground transition-colors"><Edit className="w-4 h-4" /></button>
-                    <button onClick={() => handleDelete(c.id)} className="p-2 rounded hover:bg-red-500/10 text-muted-foreground/60 hover:text-red-400 transition-colors"><Trash2 className="w-4 h-4" /></button>
+                    <button aria-label={`Edit ${c.name}`} onClick={() => setEditing({ ...c })} className="p-2 rounded hover:bg-secondary text-muted-foreground/60 hover:text-foreground transition-colors"><Edit className="w-4 h-4" /></button>
+                    <button aria-label={`Delete ${c.name}`} onClick={() => handleDelete(c.id)} className="p-2 rounded hover:bg-red-500/10 text-muted-foreground/60 hover:text-red-400 transition-colors"><Trash2 className="w-4 h-4" /></button>
                   </div>
                   <ChevronDown className={`w-3.5 h-3.5 text-muted-foreground/50 transition-transform duration-200 ${isExpanded ? "rotate-180" : ""}`} />
                 </div>
@@ -674,36 +614,6 @@ function ContactsView() {
               {/* ── Expanded booking history ── */}
               {isExpanded && (
                 <div className="border-t border-border/40 px-4 pb-3 pt-2">
-                  {sortedBookings.length === 0 ? (
-                    <p className="text-[11px] font-body text-muted-foreground/60 py-1">No bookings found for this contact.</p>
-                  ) : (
-                    <div className="space-y-1.5 mt-1">
-                      {sortedBookings.map(b => {
-                        const statusColor: Record<string, string> = {
-                          confirmed: "bg-emerald-500/15 text-emerald-400 border-emerald-500/20",
-                          pending: "bg-amber-500/15 text-amber-400 border-amber-500/20",
-                          completed: "bg-blue-500/15 text-blue-400 border-blue-500/20",
-                          cancelled: "bg-red-500/15 text-red-400 border-red-500/20",
-                        };
-                        const sColor = statusColor[b.status] || "bg-secondary/60 text-muted-foreground border-border/60";
-                        const dateStr = b.date ? new Date(b.date + "T00:00:00").toLocaleDateString("en-AU", { day: "numeric", month: "short", year: "numeric" }) : "—";
-                        return (
-                          <div key={b.id} className="flex items-center justify-between gap-2 py-1 border-b border-border/20 last:border-0">
-                            <div className="min-w-0 flex-1">
-                              <p className="font-body text-xs text-foreground font-medium truncate">{b.type || b.eventTypeId}</p>
-                              <p className="font-body text-[10px] text-muted-foreground">{dateStr}{b.time ? ` at ${b.time}` : ""}</p>
-                            </div>
-                            <div className="flex items-center gap-1.5 shrink-0">
-                              {b.paymentAmount != null && (
-                                <span className="font-body text-[10px] text-muted-foreground">${b.paymentAmount.toFixed(2)}</span>
-                              )}
-                              <span className={`px-1.5 py-0.5 rounded-full text-[9px] font-body font-medium border ${sColor}`}>{b.status}</span>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
                   {c.notes && (
                     <p className="font-body text-[10px] text-muted-foreground/70 mt-2 pt-2 border-t border-border/20 italic">{c.notes}</p>
                   )}
@@ -729,38 +639,7 @@ function ContactsView() {
                       </div>
                     </div>
                   )}
-                  <div className="mt-3 pt-3 border-t border-border/20">
-                    <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-2">Client Timeline</p>
-                    {timeline.length === 0 ? (
-                      <p className="text-[11px] font-body text-muted-foreground/60">No timeline activity found yet.</p>
-                    ) : (
-                      <div className="space-y-2">
-                        {timeline.map(item => {
-                          const Icon =
-                            item.type === "booking" ? Calendar :
-                            item.type === "invoice" ? Receipt :
-                            item.type === "album" ? Image :
-                            item.type === "download" ? Download :
-                            Mail;
-                          const dateLabel = new Date(item.at).toLocaleDateString("en-AU", { day: "numeric", month: "short", year: "numeric" });
-                          return (
-                            <div key={item.id} className="flex gap-2">
-                              <span className="w-7 h-7 rounded-full bg-secondary border border-border/50 flex items-center justify-center shrink-0">
-                                <Icon className="w-3.5 h-3.5 text-muted-foreground" />
-                              </span>
-                              <div className="min-w-0 flex-1">
-                                <div className="flex items-center justify-between gap-2">
-                                  <p className="text-xs font-body text-foreground truncate">{item.title}</p>
-                                  <span className="text-[10px] font-body text-muted-foreground/60 shrink-0">{dateLabel}</span>
-                                </div>
-                                <p className="text-[10px] font-body text-muted-foreground truncate">{item.detail}</p>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
+                  <ClientActivityTimeline contactId={c.id} />
                 </div>
               )}
             </div>
@@ -778,4 +657,3 @@ function ContactsView() {
 // ─── Settings ────────────────────────────────────────
 
 export { EnquiriesView, ProfileView, ContactsView };
-

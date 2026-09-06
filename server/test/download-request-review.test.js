@@ -24,3 +24,13 @@ test("stale, missing, unsupported and unidentified requests cannot be approved",
   assert.equal(approveDownloadRequest({ ...album, downloadRequests: [{ ...request, sessionKey: undefined }] }, request.id, request).status, 409);
   assert.equal(approveDownloadRequest({ ...album, downloadRequests: [{ ...request, method: "stripe" }] }, request.id, request).status, 409);
 });
+
+test("mixed requests grant paid access only to the billed photos, retaining the free quota rules", () => {
+  const mixedRequest = { ...request, photoIds: ["p1", "p2"], billablePhotoIds: ["p2"], complimentaryPhotoIds: ["p1"] };
+  const mixed = { ...album, freeDownloads: 1, downloadRequests: [mixedRequest] };
+  const result = approveDownloadRequest(mixed, request.id, mixedRequest);
+  const updated = { ...mixed, downloadRequests: result.requests };
+  assert.equal(galleryPhotoDownloadEntitlement({ album: updated, photo: album.photos[1], sessionKey: "visitor-a" }).reason, "approved-request");
+  assert.equal(galleryPhotoDownloadEntitlement({ album: updated, photo: album.photos[0], sessionKey: "visitor-a" }).reason, "free-quota");
+  assert.equal(galleryPhotoDownloadEntitlement({ album: { ...updated, usedFreeDownloads: { "visitor-a": 1 } }, photo: album.photos[0], sessionKey: "visitor-a" }).accessible, false);
+});
