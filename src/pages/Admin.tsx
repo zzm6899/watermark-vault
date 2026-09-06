@@ -22,6 +22,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { toast } from "sonner";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
@@ -719,6 +720,7 @@ export default function Admin() {
   const { tab: routeTab } = useParams<{ tab?: string }>();
   const resolvedTab = (routeTab && TAB_ROUTE_MAP[routeTab]) || "dashboard";
   const [activeTab, setActiveTabState] = useState<Tab>(resolvedTab);
+  const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false);
   const [authed, setAuthed] = useState(() => isLoggedIn());
   const [prefillBookingId, setPrefillBookingId] = useState<string | null>(null);
   const [superAdminFlag, setSuperAdminFlag] = useState(false);
@@ -818,26 +820,25 @@ export default function Admin() {
   };
 
   const tabs = [
-    { id: "dashboard" as Tab, label: "Dashboard", icon: LayoutDashboard },
-    { id: "shoot-day" as Tab, label: "Shoot Day", icon: RadioTower },
-    { id: "bookings" as Tab, label: "Bookings", icon: Calendar },
-    { id: "payments" as Tab, label: "Payments", icon: CreditCard },
-    { id: "automations" as Tab, label: "Automations", icon: Bell },
-    { id: "events" as Tab, label: "Events", icon: Clock },
-    { id: "albums" as Tab, label: "Albums", icon: Image },
-    { id: "photos" as Tab, label: "Photos", icon: Upload },
-    { id: "finance" as Tab, label: "Finance", icon: DollarSign },
-    { id: "invoices" as Tab, label: "Invoices", icon: Receipt },
-    { id: "contacts" as Tab, label: "Contacts", icon: Users },
-    { id: "enquiries" as Tab, label: "Enquiries", icon: MessageSquare },
-    { id: "website" as Tab, label: "Website", icon: Globe },
-    { id: "profile" as Tab, label: "Profile", icon: Camera },
-    { id: "settings" as Tab, label: "Settings", icon: Settings },
-    { id: "storage" as Tab, label: "Storage", icon: HardDrive },
-    { id: "apk" as Tab, label: "APK", icon: Smartphone },
-    ...(superAdminFlag ? [{ id: "platform" as Tab, label: "Platform", icon: Globe }] : []),
+    { id: "dashboard" as Tab, group: "Sessions", label: "Dashboard", icon: LayoutDashboard },
+    { id: "shoot-day" as Tab, group: "Sessions", label: "Shoot Day", icon: RadioTower },
+    { id: "bookings" as Tab, group: "Sessions", label: "Bookings", icon: Calendar },
+    { id: "events" as Tab, group: "Sessions", label: "Events", icon: Clock },
+    { id: "enquiries" as Tab, group: "Sessions", label: "Enquiries", icon: MessageSquare },
+    { id: "contacts" as Tab, group: "Sessions", label: "Contacts", icon: Users },
+    { id: "albums" as Tab, group: "Delivery", label: "Albums", icon: Image },
+    { id: "photos" as Tab, group: "Delivery", label: "Photos", icon: Upload },
+    { id: "payments" as Tab, group: "Business", label: "Payments", icon: CreditCard },
+    { id: "finance" as Tab, group: "Business", label: "Finance", icon: DollarSign },
+    { id: "invoices" as Tab, group: "Business", label: "Invoices", icon: Receipt },
+    { id: "automations" as Tab, group: "Business", label: "Automations", icon: Bell },
+    { id: "website" as Tab, group: "Studio", label: "Website", icon: Globe },
+    { id: "profile" as Tab, group: "Studio", label: "Profile", icon: Camera },
+    { id: "settings" as Tab, group: "Studio", label: "Settings", icon: Settings },
+    { id: "storage" as Tab, group: "Studio", label: "Storage", icon: HardDrive },
+    { id: "apk" as Tab, group: "Studio", label: "APK", icon: Smartphone },
+    ...(superAdminFlag ? [{ id: "platform" as Tab, group: "Studio", label: "Platform", icon: Globe }] : []),
   ];
-
   return (
     <div className="min-h-screen app-shell overflow-x-hidden">
       <div className="flex w-full">
@@ -848,12 +849,11 @@ export default function Admin() {
             </span>
             <div className="min-w-0">
               <span className="block font-display text-lg leading-none text-foreground truncate">{profile.name || "Admin"}</span>
-              <span className="mt-1 block text-[10px] font-body tracking-[0.18em] uppercase text-muted-foreground truncate">Studio cockpit</span>
+              <span className="mt-1 block text-[10px] font-body tracking-[0.18em] uppercase text-muted-foreground truncate">Studio / Workspace</span>
             </div>
           </div>
-          <p className="text-[10px] font-body tracking-[0.26em] uppercase text-muted-foreground mb-3 px-3">Workspace</p>
-          <nav className="flex flex-col gap-1 flex-1">
-            {tabs.map((tab) => {
+          <nav aria-label="Studio navigation" className="flex flex-col gap-1 flex-1 min-h-0 overflow-y-auto pr-1">
+            {tabs.map((tab, index) => {
               const sidebarBadge =
                 tab.id === "albums" && settings.proofingEnabled
                   ? albums.filter(a => a.proofingEnabled && a.proofingStage === "selections-submitted").length
@@ -867,7 +867,9 @@ export default function Admin() {
                         ? getBookings().filter(b => b.archived !== true && b.status === "pending").length
                         : 0;
               return (
-                <button key={tab.id} onClick={() => setActiveTab(tab.id)}
+                <React.Fragment key={tab.id}>
+                {(!index || tabs[index - 1].group !== tab.group) && <p className="admin-nav-group">{tab.group}</p>}
+                <button aria-current={activeTab === tab.id ? "page" : undefined} onClick={() => setActiveTab(tab.id)}
                   className={`admin-nav-item w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-body transition-all ${
                     activeTab === tab.id ? "admin-nav-item-active text-primary" : "text-muted-foreground hover:text-foreground hover:bg-white/[0.055]"
                   }`}
@@ -877,6 +879,7 @@ export default function Admin() {
                     <span className="ml-auto bg-orange-500 text-white text-[10px] font-bold min-w-[16px] h-4 px-0.5 rounded-full flex items-center justify-center">{sidebarBadge}</span>
                   )}
                 </button>
+                </React.Fragment>
               );
             })}
           </nav>
@@ -897,7 +900,7 @@ export default function Admin() {
             <span className="font-display text-sm text-foreground capitalize">{tabs.find(t => t.id === activeTab)?.label ?? "Admin"}</span>
           </div>
           <div className="flex items-center gap-2">
-            <button onClick={() => navigate("/capture")} className="flex items-center gap-1.5 text-xs font-body text-primary px-2.5 py-1.5 rounded-lg bg-primary/10 active:bg-primary/20">
+            <button aria-label="Capture photos" onClick={() => navigate("/capture")} className="flex items-center gap-1.5 text-xs font-body text-primary px-2.5 py-1.5 rounded-lg bg-primary/10 active:bg-primary/20">
               <Upload className="w-3.5 h-3.5" /><span className="hidden xs:inline">Capture</span>
             </button>
             <button onClick={handleLogout} aria-label="Log out" className="flex items-center gap-1.5 text-xs font-body text-muted-foreground px-2.5 py-1.5 rounded-lg hover:bg-secondary">
@@ -908,8 +911,8 @@ export default function Admin() {
 
         {/* ── Mobile: bottom tab bar ── */}
         <div className="lg:hidden fixed bottom-0 left-0 right-0 z-30 bg-card/95 backdrop-blur-xl border-t border-white/10" style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}>
-          <div className="flex overflow-x-auto scrollbar-hide">
-            {tabs.map((tab) => {
+          <div className="grid grid-cols-5">
+            {tabs.filter(tab => ["dashboard", "bookings", "albums", "finance"].includes(tab.id)).map((tab) => {
               const isActive = activeTab === tab.id;
               const pendingBadge = tab.id === "albums" && settings.proofingEnabled
                 ? albums.filter(a => a.proofingEnabled && a.proofingStage === "selections-submitted").length
@@ -921,6 +924,7 @@ export default function Admin() {
               return (
                 <button
                   key={tab.id}
+                  aria-current={isActive ? "page" : undefined}
                   onClick={() => setActiveTab(tab.id)}
                   className={`relative flex flex-col items-center justify-center gap-0.5 px-3 py-2 min-w-[56px] min-h-[52px] flex-shrink-0 transition-colors ${isActive ? "text-primary" : "text-muted-foreground"}`}
                 >
@@ -935,8 +939,15 @@ export default function Admin() {
                 </button>
               );
             })}
+            <button type="button" onClick={() => setMobileNavigationOpen(true)} aria-label="More studio pages" aria-expanded={mobileNavigationOpen} className={`flex min-h-[52px] flex-col items-center justify-center gap-0.5 ${["dashboard", "bookings", "albums", "finance"].includes(activeTab) ? "text-muted-foreground" : "text-primary"}`}><MoreHorizontal className="size-5" /><span className="text-[10px]">More</span></button>
           </div>
         </div>
+        <Dialog open={mobileNavigationOpen} onOpenChange={setMobileNavigationOpen}>
+          <DialogContent className="studio-navigation-dialog max-h-[85dvh] overflow-y-auto">
+            <DialogHeader><DialogTitle>Studio navigation</DialogTitle><DialogDescription>Bookings, delivery and the business behind your work.</DialogDescription></DialogHeader>
+            {Array.from(new Set(tabs.map(tab => tab.group))).map(group => <section key={group}><h3 className="admin-nav-group">{group}</h3><div className="grid grid-cols-2 gap-2">{tabs.filter(tab => tab.group === group).map(tab => <button key={tab.id} type="button" aria-current={activeTab === tab.id ? "page" : undefined} className={`flex min-h-12 items-center gap-2 rounded border border-border px-3 text-sm ${activeTab === tab.id ? "bg-primary/10 text-primary" : "text-foreground"}`} onClick={() => { setActiveTab(tab.id); setMobileNavigationOpen(false); }}><tab.icon className="size-4" />{tab.label}</button>)}</div></section>)}
+          </DialogContent>
+        </Dialog>
 
         <main
           className="flex-1 min-w-0 overflow-x-hidden lg:ml-60 p-4 sm:p-6 lg:p-8 lg:pt-8"

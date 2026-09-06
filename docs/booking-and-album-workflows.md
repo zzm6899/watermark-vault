@@ -40,7 +40,11 @@ Deploy the frontend and backend together: the new approval inbox depends on the 
 
 ## Booking and email refresh
 
-The public booking pages use a dark charcoal layout with gold accents with readable labels, visible progress, larger touch targets, and a responsive two-column details form. Session descriptions collapse in the calendar view. Phone time lists have a bounded scroll area, a full-width Continue button shows the selected time, and step changes return to the top of the page. Extras have bounded plus/minus controls and select their existing value on focus. Main-booking details support keyboard submission through a real form. Shared email templates use a white header, neutral summary cards and a dark primary action, with responsive HTML and plain-text alternatives.
+The public booking pages use a dark charcoal studio layout with gold accents, locally served Barlow body text and Barlow Condensed headings. Sessions use numbered listings, a studio masthead and fine dividers. Forms retain readable labels, visible progress, larger touch targets, and a responsive two-column details form. Session descriptions collapse in the calendar view. Phone time lists have a bounded scroll area, a full-width Continue button shows the selected time, and step changes return to the top of the page. Extras have bounded plus/minus controls and select their existing value on focus. Main-booking details support keyboard submission through a real form. Shared email templates use a white header, neutral summary cards and a dark primary action, with responsive HTML and plain-text alternatives.
+
+## Studio navigation
+
+Admin pages share the studio typography and restrained flat surfaces. Desktop navigation groups all pages under Sessions, Delivery, Business and Studio, with its own scroll area. On phones, Dashboard, Bookings, Albums and Finance stay visible; **More** opens the grouped menu for every other page. The menu supports keyboard focus, Escape dismissal and clear current-page indicators.
 
 ## Event revenue
 

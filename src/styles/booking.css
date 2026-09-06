@@ -14,10 +14,10 @@
   --ring: 40 94% 60%;
   color: hsl(var(--foreground));
   background: hsl(var(--background));
-  font-family: Inter, Arial, sans-serif;
+  font-family: Barlow, Arial, sans-serif;
   color-scheme: dark;
 }
-.booking-shell .font-display { font-family: Inter, Arial, sans-serif; font-weight: 600; letter-spacing: -.035em; }
+.booking-shell .font-display { font-family: "Barlow Condensed", "Arial Narrow", sans-serif; font-weight: 600; letter-spacing: .01em; }
 .booking-shell .glass-panel { background: hsl(var(--card)); border: 1px solid hsl(var(--border)); box-shadow: 0 4px 20px #00000018; backdrop-filter: none; }
 .booking-shell .text-primary { color: hsl(var(--primary)); }
 .booking-shell [class*="text-muted-foreground/"] { color: hsl(var(--muted-foreground)); }
@@ -55,4 +55,39 @@
   .booking-shell .booking-details-card :is(p, label), .booking-shell .booking-service-card { overflow-wrap: anywhere; }
   .booking-shell .booking-progress { gap: 0; }
   .booking-shell .booking-progress li { flex-direction: column; gap: 4px; padding: 6px 10px; font-size: 11px; border-radius: 12px; }
+}
+
+.booking-shell { --background: 210 6% 7%; --card: 210 6% 11%; --secondary: 210 6% 15%; --border: 210 5% 25%; }
+.booking-shell h1, .booking-shell h2, .booking-shell h3 { font-family: 'Barlow Condensed', 'Arial Narrow', sans-serif; font-weight: 600; letter-spacing: .01em; }
+.booking-shell .glass-panel { box-shadow: none; border-radius: 6px; }
+.booking-shell .booking-masthead { padding: 12px 0 32px; border-bottom: 1px solid hsl(var(--border)); margin-bottom: 40px; }
+.booking-shell .booking-masthead h1 { text-transform: uppercase; overflow-wrap: anywhere; }
+.booking-shell .booking-selection-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 28px; }
+.booking-shell .booking-intro h2 { margin-top: 12px; font-size: clamp(3rem, 5.5vw, 5rem); line-height: .95; text-transform: uppercase; }
+.booking-shell .booking-intro > p { max-width: 30ch; }
+.booking-shell .booking-service-card { padding: 24px 0; border: 0; border-top: 1px solid hsl(var(--border)); border-radius: 0; background: transparent; box-shadow: none; }
+.booking-shell .booking-service-card:last-child { border-bottom: 1px solid hsl(var(--border)); }
+.booking-shell .booking-service-card::before { display: none; }
+.booking-shell .booking-service-card h3 { font-size: clamp(1.8rem, 3vw, 2.2rem); text-transform: uppercase; }
+.booking-shell .booking-session-number { flex-shrink: 0; padding-top: 5px; color: hsl(var(--primary)); font: 600 20px/1 'Barlow Condensed', sans-serif; letter-spacing: .05em; }
+.booking-shell .booking-session-price { flex-shrink: 0; align-self: flex-start; padding: 6px 0; color: hsl(var(--foreground)); font-size: 16px; font-weight: 500; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.booking-shell .booking-service-card span.rounded-full { border: 0; border-radius: 0; padding-left: 0; padding-right: 10px; }
+.booking-shell .booking-service-card button.bg-primary { border-radius: 3px; min-height: 48px; padding: 12px 20px; font-size: 14px; gap: 24px; }
+.booking-shell .booking-selection-footer { border-top: 1px solid hsl(var(--border)); padding-top: 24px; margin-top: 40px; }
+.booking-shell .booking-progress { max-width: 1100px; gap: 0; margin-bottom: 36px; }
+.booking-shell .booking-progress li { flex: 1; border-radius: 0; border-bottom: 1px solid hsl(var(--border)); padding: 12px 8px; }
+.booking-shell .booking-progress li[aria-current=step] { background: transparent; border-radius: 0; border-bottom: 2px solid hsl(var(--primary)); }
+.booking-shell .booking-progress span { width: 24px; height: 24px; border: 0; border-radius: 0; font-family: 'Barlow Condensed', sans-serif; font-size: 18px; }
+.booking-shell input:not([type=checkbox]):not([type=radio]), .booking-shell select, .booking-shell textarea { border-radius: 4px; }
+.booking-shell .booking-primary-action { border-radius: 4px; }
+@media (min-width: 1024px) {
+  .booking-shell .booking-selection-layout { grid-template-columns: 260px minmax(0, 1fr); gap: 64px; }
+}
+@media (max-width: 639px) {
+  .booking-shell .booking-masthead { padding-bottom: 24px; margin-bottom: 24px; }
+  .booking-shell .booking-masthead h1 { font-size: 32px; }
+  .booking-shell .booking-masthead .studio-eyebrow { font-size: 9px; letter-spacing: .1em; }
+  .booking-shell .booking-intro > p:last-child { margin-top: 16px; }
+  .booking-shell .booking-progress li { border-radius: 0; }
+  .booking-shell .booking-selection-layout { gap: 20px; }
 }

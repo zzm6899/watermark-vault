@@ -69,8 +69,8 @@ export default {
         },
       },
       fontFamily: {
-        display: ['"Instrument Serif"', 'serif'],
-        sans: ['Inter', 'sans-serif'],
+        display: ['"Barlow Condensed"', '"Arial Narrow"', 'sans-serif'],
+        sans: ['Barlow', 'Arial', 'sans-serif'],
       },
       borderRadius: {
         lg: "var(--radius)",

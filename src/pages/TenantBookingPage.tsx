@@ -658,8 +658,8 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
                   )}
                 </div>
               ) : (
-                <div className="grid gap-4 md:grid-cols-2">
-                  {eventTypes.map((et) => {
+                <div className="booking-session-list">
+                  {eventTypes.map((et, index) => {
                     const minPrice = et.durations.length > 0
                       ? Math.min(...et.durations.map(d => getPriceForDuration(et, d)))
                       : (et.price ?? 0);
@@ -667,17 +667,15 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
                     return (
                       <article
                         key={et.id}
-                        className="booking-service-card glass-panel rounded-2xl p-5 sm:p-6 text-left hover:border-primary/50 hover:-translate-y-0.5 hover:shadow-lg transition-all group"
+                        className="booking-service-card text-left group"
                       >
                         <div className="flex items-start gap-3">
-                          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/15 ring-1 ring-primary/20" aria-hidden="true">
-                            <Camera className="h-4 w-4 text-primary" />
-                          </div>
+                          <span className="booking-session-number" aria-hidden="true">{String(index + 1).padStart(2, "0")}</span>
                           <div className="min-w-0 flex-1">
                             <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                               <h3 className="font-display text-xl leading-tight text-foreground group-hover:text-primary transition-colors">{et.title}</h3>
                               {(et.price ?? 0) > 0 && (
-                                <span className="shrink-0 self-start rounded-full border border-primary/20 bg-primary/10 px-2.5 py-1 text-xs font-body font-semibold text-primary">from ${minPrice}</span>
+                                <span className="booking-session-price">from ${minPrice.toFixed(2)}</span>
                               )}
                             </div>
                         {et.description && (

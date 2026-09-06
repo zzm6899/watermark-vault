@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { usePageTitle } from "@/hooks/use-page-title";
 import {
   Clock, ChevronLeft, ChevronRight, ArrowLeft, Globe,
-  CalendarDays, CheckCircle2, AlertCircle, Camera,
+  CalendarDays, CheckCircle2, AlertCircle,
   MapPin, Calendar as CalendarIcon, ExternalLink, XCircle, Edit,
   CreditCard, Bell, Users, Building2, Copy, Check as CheckIcon,
   MessageSquare, ChevronRight as ArrowRight, MessageCircle,
@@ -872,12 +872,13 @@ export default function Booking() {
 
             {/* ─── Step 1: Event List ─── */}
             {step === "event-select" && (
-              <motion.div key="event-select" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} className="mx-auto w-full max-w-4xl">
-                {/* Profile Card */}
-                <div className="glass-panel rounded-2xl p-6 sm:p-8 mb-5">
-                  <div className="flex flex-col sm:flex-row sm:items-center gap-5">
-                    <BookingAvatar src={profile.avatar} name={profile.name || "Photographer"} className="h-20 w-20 rounded-2xl shadow-lg shadow-primary/10" />
+              <motion.div key="event-select" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} className="booking-selection mx-auto w-full max-w-[1100px]">
+                {/* Studio masthead */}
+                <div className="booking-masthead">
+                  <div className="flex items-center gap-4 sm:gap-6">
+                    <BookingAvatar src={profile.avatar} name={profile.name || "Photographer"} className="size-12 sm:size-16 shrink-0 rounded-sm" />
                     <div className="flex-1 min-w-0 pt-0.5">
+                      <p className="studio-eyebrow mb-2">Photography / Bookings</p>
                       <h1 className="font-display text-4xl sm:text-5xl leading-none text-foreground">{profile.name}</h1>
                       {profile.bio && (
                         <RichTextDisplay html={profile.bio} className="mt-3 text-sm sm:text-base text-muted-foreground max-w-2xl" />
@@ -886,7 +887,9 @@ export default function Booking() {
                   </div>
                 </div>
 
-                <div className="mb-5 mt-8"><h2 className="text-2xl font-semibold tracking-tight">Book a session</h2><p className="mt-2 text-sm text-muted-foreground">Choose your session, find a time and make it yours.</p></div>
+                <div className="booking-selection-layout">
+                <div className="booking-intro"><p className="studio-eyebrow">Sessions / 01</p><h2>Book a<br className="hidden lg:block" /> session.</h2><p className="mt-4 text-base text-muted-foreground leading-relaxed">Choose your session. Then pick a time, add your details and make it yours.</p><p className="mt-6 studio-eyebrow">{eventTypes.length} {eventTypes.length === 1 ? "session" : "sessions"} available</p></div>
+                <div className="min-w-0">
 
                 {configError && (
                   <div className="mb-5 rounded-xl border border-yellow-500/30 bg-yellow-500/10 p-3 text-xs font-body text-yellow-200" role="status">
@@ -905,22 +908,20 @@ export default function Booking() {
                   </div>
                 ) : (
                   <div className="flex flex-col gap-3">
-                    {eventTypes.map((ev) => {
+                    {eventTypes.map((ev, index) => {
                       const minPrice = ev.durations.length > 0
                         ? Math.min(...ev.durations.map(d => getPriceForDuration(ev, d)))
                         : (ev.price ?? 0);
                       const isExpanded = !!expandedDescriptions[ev.id];
                       return (
-                        <article key={ev.id} className="booking-service-card w-full text-left glass-panel rounded-2xl p-5 sm:p-6 hover:border-primary/50 hover:-translate-y-0.5 transition-all group">
+                        <article key={ev.id} className="booking-service-card w-full text-left group">
                           <div className="flex items-start gap-4">
-                            <div className="w-11 h-11 rounded-xl bg-primary/15 flex items-center justify-center flex-shrink-0 mt-0.5 group-hover:bg-primary/25 transition-colors ring-1 ring-primary/20" aria-hidden="true">
-                              <Camera className="w-4 h-4 text-primary" />
-                            </div>
+                            <span className="booking-session-number" aria-hidden="true">{String(index + 1).padStart(2, "0")}</span>
                             <div className="flex-1 min-w-0">
                               <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
                                 <h3 className="font-display text-2xl leading-tight text-foreground">{ev.title}</h3>
                                 {minPrice > 0 && (
-                                  <span className="text-sm font-body font-semibold text-primary bg-primary/10 rounded-full px-3 py-1 border border-primary/20 shrink-0">
+                                  <span className="booking-session-price">
                                     from ${minPrice.toFixed(2)}
                                   </span>
                                 )}
@@ -968,7 +969,9 @@ export default function Booking() {
                   </div>
                 )}
 
-                <div className="flex flex-col items-center gap-1 mt-6">
+                </div>
+                </div>
+                <div className="booking-selection-footer flex flex-col items-center gap-1 mt-6">
                   <div className="flex items-center gap-2 text-xs font-body text-muted-foreground/50">
                     <Globe className="w-3.5 h-3.5" />
                     <span>{profile.timezone ? formatTimezone(profile.timezone) : ""}</span>
