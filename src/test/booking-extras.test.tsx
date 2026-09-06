@@ -10,7 +10,7 @@ describe("booking extras", () => {
     const described = { ...event, extras: [{ ...event.extras![0], description: "Combine photos into one finished artwork." }] };
     render(<BookingExtras event={described} quantities={{}} onChange={() => {}} />);
     expect(screen.getByRole("spinbutton", { name: "Composite image" })).toHaveAccessibleDescription("Combine photos into one finished artwork. $35.25 each · up to 10");
-    expect(bookingQuote(described, 30, { composite: 2 })).toEqual(bookingQuote(event, 30, { composite: 2 }));
+    expect(bookingQuote(described, 30, { composite: 2 })).toMatchObject({ total: 171, deposit: 42.75, lineItems: [{ description: "Combine photos into one finished artwork." }] });
   });
   it("updates the displayed itemized total and enforces quantity bounds", () => {
     function Form() {

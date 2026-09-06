@@ -22,11 +22,25 @@ export function BookingExtras({ event, quantities, onChange }: { event: EventTyp
   </fieldset>;
 }
 
-export function BookingPriceBreakdown({ base, items, total }: { base?: number; items?: BookingLineItem[]; total: number }) {
+export function BookingLineItems({ items, showMissingDescriptions = false }: { items: BookingLineItem[]; showMissingDescriptions?: boolean }) {
+  return <ul className="space-y-3">
+    {items.map((item, index) => <li key={`${item.id}-${index}`} className="flex items-start justify-between gap-3 text-sm">
+      <div className="min-w-0 break-words">
+        <p className="font-medium">{item.name}{Number.isFinite(item.quantity) ? ` × ${item.quantity}` : " · Quantity not recorded"}</p>
+        {item.description ? <p className="mt-1 whitespace-pre-line text-muted-foreground leading-relaxed">{item.description}</p> : showMissingDescriptions && <p className="mt-1 text-xs text-muted-foreground">No description recorded for this purchase.</p>}
+        <p className="mt-1 text-xs text-muted-foreground">{Number.isFinite(item.unitPrice) ? `$${item.unitPrice.toFixed(2)} each` : "Unit price not recorded"}</p>
+      </div>
+      <span className="shrink-0 tabular-nums font-medium">${item.total.toFixed(2)}</span>
+    </li>)}
+  </ul>;
+}
+
+export function BookingPriceBreakdown({ base, items, total, showMissingDescriptions = false, title }: { base?: number; items?: BookingLineItem[]; total: number; showMissingDescriptions?: boolean; title?: string }) {
   if (!items?.length) return null;
   return <div className="rounded-xl border border-border p-4 space-y-2 text-sm" aria-label="Booking price breakdown">
+    {title && <h4 className="mb-3 font-semibold">{title}</h4>}
     {base !== undefined && <div className="flex justify-between gap-3"><span>Session</span><span>${base.toFixed(2)}</span></div>}
-    {items.map(item => <div key={item.id} className="flex justify-between gap-3 text-muted-foreground"><span>{item.name} × {item.quantity} <span className="text-xs">(${item.unitPrice.toFixed(2)} each)</span></span><span className="shrink-0">${item.total.toFixed(2)}</span></div>)}
+    <BookingLineItems items={items} showMissingDescriptions={showMissingDescriptions} />
     <div className="flex justify-between border-t border-border pt-2 font-semibold"><span>Total</span><span>${total.toFixed(2)}</span></div>
   </div>;
 }

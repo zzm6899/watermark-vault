@@ -46,6 +46,7 @@ async function main() {
   assert.equal(created.body.booking.paymentAmount, 171);
   assert.equal(created.body.booking.depositAmount, 42.75);
   assert.equal(created.body.booking.lineItems[0].quantity, 2);
+  assert.equal(created.body.booking.lineItems[0].description, event.extras[0].description);
   const retry = await call('/api/booking', input);
   assert.equal(retry.body.booking.id, created.body.booking.id);
   assert.equal((await call('/api/booking', { ...input, extras: [{ id: 'composite', quantity: 3 }] })).status, 409);
@@ -71,6 +72,9 @@ async function main() {
   assert.equal(report.status, 200);
   const eventRevenue = report.body.rows.find(row => row.eventId === 'portrait');
   assert.equal(eventRevenue.bookings, 2);
+  assert.equal(eventRevenue.extraPurchases.length, 2);
+  assert.equal(eventRevenue.extraPurchases[0].items[0].description, event.extras[0].description);
+  assert.equal(eventRevenue.extraPurchases[0].clientName, input.clientName);
   assert.equal(eventRevenue.booked, 342);
   assert.equal(eventRevenue.collected, 0);
   assert.equal(eventRevenue.outstanding, 342);

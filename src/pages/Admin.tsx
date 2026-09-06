@@ -3070,6 +3070,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
       || (bk.paymentReviewReason || "").toLowerCase().includes(q)
       || (bk.date || "").includes(q)
       || (bk.notes || "").toLowerCase().includes(q)
+      || (bk.lineItems || []).some(item => `${item.name} ${item.description || ""}`.toLowerCase().includes(q))
       || (bk.createdAt ? new Date(bk.createdAt).toLocaleDateString("en-AU") : "").includes(q);
   });
 
@@ -3551,6 +3552,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                           )}
                         </div>
                         <p className={`text-xs font-body text-muted-foreground${bk.status === "cancelled" ? " line-through" : ""}`}>{bk.type} · {bk.date} {formatBookingTimeRange(bk.time, bk.duration) || "Time TBC"} · {formatDuration(bk.duration)}</p>
+                        {!!bk.lineItems?.length && <p className="mt-1 text-xs text-primary break-words">Extras: {bk.lineItems.map(item => `${item.name} × ${item.quantity}`).join(" · ")}</p>}
                         {bk.createdAt && (
                           <p className="text-[10px] font-body text-muted-foreground/50">Booked {new Date(bk.createdAt).toLocaleDateString("en-AU", { day: "numeric", month: "short", year: "numeric" })}</p>
                         )}
@@ -3627,7 +3629,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                 </div>
                 {isExpanded && (
                   <div className="px-4 pb-4 border-t border-border/50 pt-3 space-y-3">
-                    <BookingPriceBreakdown base={bk.sessionPrice} items={bk.lineItems} total={bk.paymentAmount || 0} />
+                    <BookingPriceBreakdown base={bk.sessionPrice} items={bk.lineItems} total={bk.paymentAmount || 0} showMissingDescriptions title="Purchased extras & booking total" />
                     {!!bk.referenceImages?.length && (
                       <section className="rounded-lg border border-border/60 bg-secondary/20 p-3">
                         <p className="mb-2 text-[10px] font-body uppercase tracking-wider text-muted-foreground">Client reference images · {bk.referenceImages.length}</p>

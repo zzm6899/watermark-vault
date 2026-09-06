@@ -6,7 +6,13 @@ Open **Admin → Events → Edit event → Booking extras**. Add a name, an opti
 
 Clients choose a quantity from zero to the configured maximum on the details step. The booking total is the selected duration price plus the extras. Percentage deposits apply to this combined total; fixed deposits remain fixed and cannot exceed the total. Pay-in-full charges the combined total.
 
-The server validates integer quantities and calculates prices from the event configuration. It stores the session price and itemized extras with the booking. Later event edits do not change the agreed booking price. Itemization appears in booking details, payment review, confirmation, the manage-booking page, and confirmation emails. Main and tenant public booking pages support extras.
+The server validates integer quantities and calculates prices from the event configuration. It stores the session price and itemized extras, including each description at purchase time, with the booking. Later event edits do not change the agreed booking price. Itemization appears in booking details, payment review, confirmation, the manage-booking page, and confirmation emails. Main and tenant public booking pages support extras.
+
+## See what a client bought
+
+In **Admin → Bookings**, the client row previews their extras and quantities. Expand it for the purchased description, quantity, unit price and total. Booking search includes extra names and saved descriptions. Missing descriptions on older purchases are labelled; the current event description is never substituted.
+
+In **Finance → Revenue by event**, choose **View purchases** beneath an event’s Extras total. The list identifies clients, shoot dates, booking references and payment statuses. Search by client, extra or description, and export the matching bookings and all their extras to CSV. Results show ten bookings per page. Extras are part of the booking value, not a separate collected-payment figure; cancelled and tenant bookings follow the existing report exclusions.
 
 ## Review download requests
 

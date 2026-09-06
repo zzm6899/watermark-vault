@@ -29,7 +29,7 @@ function priceBookingExtras(definitions = [], selections = []) {
     const cents = Math.round(extra.price * 100);
     const lineCents = cents * selection.quantity;
     totalCents += lineCents;
-    lineItems.push({ id: extra.id, name: extra.name.trim(), quantity: selection.quantity, unitPrice: cents / 100, total: lineCents / 100 });
+    lineItems.push({ id: extra.id, name: extra.name.trim(), ...(extra.description?.trim() ? { description: extra.description.trim() } : {}), quantity: selection.quantity, unitPrice: cents / 100, total: lineCents / 100 });
   }
   if (totalCents > 99999999) throw new Error("Booking total is too large");
   return { lineItems, total: totalCents / 100 };

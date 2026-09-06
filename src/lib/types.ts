@@ -43,6 +43,8 @@ export interface BookingExtra {
 export interface BookingLineItem {
   id: string;
   name: string;
+  /** Description agreed at booking time; never filled from the current event. */
+  description?: string;
   quantity: number;
   unitPrice: number;
   total: number;

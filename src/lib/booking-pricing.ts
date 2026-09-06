@@ -8,7 +8,7 @@ export function bookingQuote(event: EventType, duration: number, quantities: Rec
   const lineItems: BookingLineItem[] = (event.extras || []).flatMap(extra => {
     const quantity = Math.max(0, Math.min(extra.maxQuantity, Math.floor(quantities[extra.id] || 0)));
     const cents = Math.round(extra.price * 100);
-    return quantity ? [{ id: extra.id, name: extra.name, quantity, unitPrice: cents / 100, total: cents * quantity / 100 }] : [];
+    return quantity ? [{ id: extra.id, name: extra.name, ...(extra.description?.trim() ? { description: extra.description.trim() } : {}), quantity, unitPrice: cents / 100, total: cents * quantity / 100 }] : [];
   });
   const base = sessionPrice(event, duration);
   const total = Math.round((base + lineItems.reduce((sum, item) => sum + item.total, 0)) * 100) / 100;

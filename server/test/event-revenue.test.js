@@ -3,6 +3,18 @@ const assert = require('node:assert/strict');
 const { buildEventRevenue } = require('../event-revenue');
 const booking = { id: 'b1', eventTypeId: 'e1', type: 'Convention', date: '2026-09-12', paymentAmount: 171, depositAmount: 42.75, paymentStatus: 'deposit-paid', lineItems: [{ total: 70.5 }] };
 
+test('purchased extras identify clients and preserve agreed descriptions under event filters', () => {
+  const item = { id: 'composite', name: 'Composite', description: 'Original artwork', quantity: 2, unitPrice: 35.25, total: 70.5 };
+  const purchased = { ...booking, clientName: 'Cari', lineItems: [item], modifyToken: 'private-capability' };
+  const { rows } = buildEventRevenue({ bookings: [purchased, { ...purchased, id: 'cancelled', status: 'cancelled' }, { ...purchased, id: 'tenant', tenantSlug: 'another' }, { ...purchased, id: 'later', date: '2026-10-01' }], eventTypes: [{ id: 'e1', title: 'Convention', extras: [{ ...item, description: 'New artwork' }] }], to: '2026-09-12' });
+  assert.equal(rows[0].extraPurchases.length, 1);
+  assert.deepEqual(rows[0].extraPurchases[0], { bookingId: 'b1', clientName: 'Cari', date: '2026-09-12', time: '', status: 'pending', paymentStatus: 'deposit-paid', items: [item] });
+  assert.equal(rows[0].extras, 70.5);
+  assert.equal(rows[0].collected, 42.75);
+  const legacy = buildEventRevenue({ bookings: [booking], eventTypes: [{ id: 'e1', extras: [item] }] });
+  assert.equal(legacy.rows[0].extraPurchases[0].items[0].description, undefined);
+});
+
 test('event totals count deposits once, extras inside total, and outstanding balance', () => {
   const { rows } = buildEventRevenue({ bookings: [booking, { ...booking, id: 'cancelled', status: 'cancelled' }, { ...booking, id: 'tenant', tenantSlug: 'another' }] });
   assert.equal(rows.length, 1);

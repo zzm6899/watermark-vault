@@ -12,7 +12,7 @@ function buildEventRevenue({ bookings = [], albums = [], orders = {}, eventTypes
     const date = booking?.date || album?.date || "";
     if ((eventId && id !== eventId) || (from && (!date || date < from)) || (to && (!date || date > to))) return null;
     const key = `${id}${groupBy === "date" ? `:${date}` : ""}`;
-    if (!groups.has(key)) groups.set(key, { key, eventId: id, event: eventMap.get(id) || booking?.type || "Unassigned galleries", date: groupBy === "date" ? date : "", bookings: 0, booked: 0, bookingCollected: 0, outstanding: 0, extras: 0, galleryCollected: 0, pendingTransfers: 0, unpricedRequests: 0, unpricedPurchases: 0 });
+    if (!groups.has(key)) groups.set(key, { key, eventId: id, event: eventMap.get(id) || booking?.type || "Unassigned galleries", date: groupBy === "date" ? date : "", bookings: 0, booked: 0, bookingCollected: 0, outstanding: 0, extras: 0, extraPurchases: [], galleryCollected: 0, pendingTransfers: 0, unpricedRequests: 0, unpricedPurchases: 0 });
     return groups.get(key);
   };
   for (const booking of bookingMap.values()) {
@@ -23,6 +23,11 @@ function buildEventRevenue({ bookings = [], albums = [], orders = {}, eventTypes
     const paid = ["paid", "cash"].includes(booking.paymentStatus) ? total : booking.paymentStatus === "deposit-paid" ? Math.min(total, cents(booking.depositAmount)) : 0;
     row.bookings++; row.booked += total; row.bookingCollected += paid; row.outstanding += total - paid;
     row.extras += (booking.lineItems || []).reduce((sum, item) => sum + cents(item.total), 0);
+    if (booking.lineItems?.length) row.extraPurchases.push({
+      bookingId: booking.id, clientName: booking.clientName || "Unnamed client", date: booking.date || "", time: booking.time || "",
+      status: booking.status || "pending", paymentStatus: booking.paymentStatus || "unpaid",
+      items: booking.lineItems.map(item => ({ id: item.id, name: item.name || "Unnamed extra", description: item.description || undefined, quantity: item.quantity, unitPrice: item.unitPrice, total: cents(item.total) / 100 })),
+    });
   }
   const fulfilled = Object.values(orders).filter(order => order.status === "fulfilled" && order.fulfilledStripeSessionId);
   const ordersByAlbum = new Map();

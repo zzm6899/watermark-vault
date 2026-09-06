@@ -2,8 +2,9 @@ import { useEffect, useState } from "react";
 import { adminAuthHeaders } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { EventExtraPurchases, type ExtraPurchase } from "@/components/EventExtraPurchases";
 
-type Row = { key: string; eventId: string; event: string; date: string; bookings: number; booked: number; bookingCollected: number; outstanding: number; extras: number; galleryCollected: number; collected: number; pendingTransfers: number; unpricedPurchases: number; unpricedRequests: number };
+type Row = { key: string; eventId: string; event: string; date: string; bookings: number; booked: number; bookingCollected: number; outstanding: number; extras: number; extraPurchases?: ExtraPurchase[]; galleryCollected: number; collected: number; pendingTransfers: number; unpricedPurchases: number; unpricedRequests: number };
 const money = (value: number) => new Intl.NumberFormat("en-AU", { style: "currency", currency: "AUD" }).format(value);
 export function EventRevenueReport() {
   const [rows, setRows] = useState<Row[]>([]);
@@ -14,6 +15,7 @@ export function EventRevenueReport() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
+  const [expandedExtras, setExpandedExtras] = useState<string | null>(null);
   useEffect(() => {
     const controller = new AbortController();
     setLoading(true); setError("");
@@ -24,6 +26,7 @@ export function EventRevenueReport() {
     return () => controller.abort();
   }, [from, to, groupBy, retry]);
   const visible = rows.filter(row => row.event.toLowerCase().includes(search.toLowerCase()));
+  const selectedExtras = visible.find(row => row.key === expandedExtras);
   const sum = (field: "collected" | "outstanding" | "pendingTransfers") => visible.reduce((total, row) => total + row[field], 0);
   const unpriced = visible.reduce((total, row) => total + row.unpricedPurchases + row.unpricedRequests, 0);
   const exportCsv = () => {
@@ -42,7 +45,8 @@ export function EventRevenueReport() {
     </div>
     {loading ? <p role="status">Loading event revenue…</p> : error ? <div role="alert">{error} <Button variant="outline" onClick={() => setRetry(value => value + 1)}>Retry</Button></div> : <>
       <div className="grid sm:grid-cols-3 gap-4">{([['Collected', sum('collected')], ['Booking balances', sum('outstanding')], ['Pending gallery transfers', sum('pendingTransfers')]] as const).map(([label, value]) => <div key={label} className="rounded-lg bg-secondary/40 p-4"><p className="text-sm text-muted-foreground">{label}</p><p className="text-2xl font-semibold tabular-nums mt-1">{money(value)}</p></div>)}</div>
-      <div className="overflow-x-auto"><table className="w-full text-sm text-left"><caption className="sr-only">Event revenue in Australian dollars</caption><thead className="text-xs text-muted-foreground border-b border-border"><tr>{["Event", "Sessions", "Booked", "Extras¹", "Booking paid", "Gallery paid", "Collected", "Balance", "Pending transfer"].map(label => <th key={label} scope="col" className="p-3 whitespace-nowrap">{label}</th>)}</tr></thead><tbody>{visible.map(row => <tr key={row.key} className="border-b border-border/50"><th scope="row" className="p-3 font-medium min-w-44">{row.event}{row.date && <span className="block text-xs text-muted-foreground">{row.date}</span>}{!!(row.unpricedPurchases + row.unpricedRequests) && <span className="block text-xs text-amber-500">{row.unpricedPurchases + row.unpricedRequests} unpriced record(s)</span>}</th><td className="p-3">{row.bookings}</td>{[row.booked, row.extras, row.bookingCollected, row.galleryCollected, row.collected, row.outstanding, row.pendingTransfers].map((value, index) => <td key={index} className={`p-3 tabular-nums whitespace-nowrap ${index === 4 ? "font-semibold" : ""}`}>{money(value)}</td>)}</tr>)}</tbody></table>{!visible.length && <p className="p-6 text-center text-muted-foreground">No events match these filters.</p>}</div>
+      <div className="overflow-x-auto"><table className="w-full text-sm text-left"><caption className="sr-only">Event revenue in Australian dollars</caption><thead className="text-xs text-muted-foreground border-b border-border"><tr>{["Event", "Sessions", "Booked", "Extras¹", "Booking paid", "Gallery paid", "Collected", "Balance", "Pending transfer"].map(label => <th key={label} scope="col" className="p-3 whitespace-nowrap">{label}</th>)}</tr></thead><tbody>{visible.map(row => <tr key={row.key} className="border-b border-border/50"><th scope="row" className="p-3 font-medium min-w-44">{row.event}{row.date && <span className="block text-xs text-muted-foreground">{row.date}</span>}{!!(row.unpricedPurchases + row.unpricedRequests) && <span className="block text-xs text-amber-500">{row.unpricedPurchases + row.unpricedRequests} unpriced record(s)</span>}</th><td className="p-3">{row.bookings}</td>{[row.booked, row.extras, row.bookingCollected, row.galleryCollected, row.collected, row.outstanding, row.pendingTransfers].map((value, index) => <td key={index} className={`p-3 tabular-nums whitespace-nowrap ${index === 4 ? "font-semibold" : ""}`}>{index === 1 && !!row.extraPurchases?.length ? <button type="button" aria-label={`View purchased extras for ${row.event}${row.date ? ` on ${row.date}` : ""}`} aria-expanded={expandedExtras === row.key} onClick={() => setExpandedExtras(expandedExtras === row.key ? null : row.key)} className="min-h-10 text-primary underline underline-offset-4">{money(value)}<span className="block text-xs">View purchases</span></button> : money(value)}</td>)}</tr>)}</tbody></table>{!visible.length && <p className="p-6 text-center text-muted-foreground">No events match these filters.</p>}</div>
+      {selectedExtras && <EventExtraPurchases key={selectedExtras.key} event={`${selectedExtras.event}${selectedExtras.date ? ` · ${selectedExtras.date}` : ""}`} purchases={selectedExtras.extraPurchases || []} onClose={() => setExpandedExtras(null)} />}
       {!!unpriced && <p className="text-sm text-amber-500">{unpriced} historical payment record(s) have no verified amount and are excluded from totals.</p>}
     </>}
     <p className="text-xs text-muted-foreground leading-relaxed">AUD · Dates filter the shoot date, not the payment date. Collected includes confirmed booking payments and recorded gallery sales. ¹ Extras are already included in booking value. Pending transfers are not collected revenue. Cancelled bookings, invoices, refunds, fees and expenses are outside this report.</p>
