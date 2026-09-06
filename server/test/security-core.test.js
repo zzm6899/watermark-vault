@@ -408,3 +408,8 @@ test("gallery share sessions are revocable and cannot retain download access", (
   assert.deepEqual(galleryShareLinkAccess(album, "expired", now), { active: false, allowDownload: false });
   assert.deepEqual(galleryShareLinkAccess(album, "deleted", now), { active: false, allowDownload: false });
 });
+
+test("proofing deadlines are sent as timezone-resolved end-of-day timestamps", () => {
+  const dto = safeGalleryAlbumDto({ id: "proof", proofingExpiresAt: "2026-08-08", photos: [] }, "session", "Pacific/Auckland");
+  assert.equal(dto.proofingExpiresAt, "2026-08-08T11:59:59.999Z");
+});

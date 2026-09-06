@@ -14,12 +14,16 @@ const DEMO_PHOTOS = [
 export default function ProofingDemo() {
   const [picks, setPicks] = useState<Set<number>>(new Set());
   const [active, setActive] = useState<number | null>(null);
-  const toggle = (index: number) => setPicks(previous => {
+  const [submitted, setSubmitted] = useState(false);
+  const toggle = (index: number) => {
+    setSubmitted(false);
+    setPicks(previous => {
     const next = new Set(previous);
     if (next.has(index)) next.delete(index);
     else next.add(index);
     return next;
-  });
+    });
+  };
   const photo = active === null ? null : DEMO_PHOTOS[active];
 
   return (
@@ -59,8 +63,8 @@ export default function ProofingDemo() {
 
       <div className="fixed bottom-0 left-0 right-0 border-t border-amber-300/15 bg-stone-950/90 backdrop-blur-xl p-4">
         <div className="max-w-5xl mx-auto flex items-center justify-between gap-3">
-          <div><p className="font-display text-lg">{picks.size ? `${picks.size} selected` : "No photos selected"}</p><p className="text-xs text-stone-500">You can change your selection before submitting.</p></div>
-          <button className="inline-flex items-center gap-2 rounded-full bg-amber-300 px-5 py-3 text-sm font-semibold text-stone-950"><CheckCircle2 className="w-4 h-4" /> Submit selection</button>
+          <div aria-live="polite"><p className="font-display text-lg">{submitted ? "Demo selection confirmed" : picks.size ? `${picks.size} selected` : "No photos selected"}</p><p className="text-xs text-stone-500">{submitted ? "Preview only — no photos or selections were sent." : "You can change your selection before submitting."}</p></div>
+          <button disabled={picks.size === 0 || submitted} onClick={() => setSubmitted(true)} className="inline-flex items-center gap-2 rounded-full bg-amber-300 px-5 py-3 text-sm font-semibold text-stone-950 disabled:opacity-50 disabled:cursor-not-allowed"><CheckCircle2 className="w-4 h-4" /> {submitted ? "Confirmed" : "Submit selection"}</button>
         </div>
       </div>
 

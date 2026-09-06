@@ -1160,7 +1160,7 @@ export async function createAlbumCheckout(params: {
   photoIds?: string[];
   isFullAlbum?: boolean;
   sessionKey?: string;
-}): Promise<{ url?: string; error?: string }> {
+}): Promise<{ url?: string; photoIds?: string[]; error?: string }> {
   try {
     const res = await fetch("/api/stripe/checkout/album", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(params),
@@ -2840,7 +2840,7 @@ export async function createTenantAlbumCheckout(slug: string, params: {
   photoIds?: string[];
   isFullAlbum?: boolean;
   sessionKey?: string;
-}): Promise<{ url?: string; error?: string }> {
+}): Promise<{ url?: string; photoIds?: string[]; error?: string }> {
   try {
     const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/stripe/checkout/album`, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(params),

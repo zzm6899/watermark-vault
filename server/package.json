@@ -7,7 +7,9 @@
   },
   "scripts": {
     "start": "node index.js",
-    "test": "node --test"
+    "test": "node --test",
+    "test:staging": "node staging-acceptance.cjs",
+    "staging": "node staging-acceptance.cjs --serve"
   },
   "dependencies": {
     "archiver": "^7.0.1",

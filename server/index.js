@@ -1,4 +1,5 @@
 const express = require("express");
+const { normalizeEmail, recoverablePurchase, preserveGalleryServerState, proofingSubmission } = require("./gallery-workflow");
 const { upgradePortfolioPresentation, publicPortfolioFocus } = require("./portfolio-presentation.mjs");
 const multer = require("multer");
 const cors = require("cors");
@@ -670,7 +671,19 @@ async function _flushDbToDisk() {
   }
 }
 
-function writeDb(data) {
+function writeDb(data, { durable = false } = {}) {
+  // Client receipts must not acknowledge a mutation until SQLite commits it.
+  if (durable) {
+    sqliteStore.write(data);
+    if (_writeDebounceTimer) clearTimeout(_writeDebounceTimer);
+    _writeDebounceTimer = null;
+    _dbCache = data;
+    _dbCacheTime = Date.now();
+    _writeGeneration += 1;
+    _flushedGeneration = _writeGeneration;
+    _writePending = false;
+    return;
+  }
   // Always update the in-memory cache synchronously so subsequent reads are
   // consistent with the mutation that just happened.
   _dbCache = data;
@@ -1661,6 +1674,17 @@ app.put("/api/store/:key", requireAuth, authenticatedLargeJson, async (req, res)
   }
   let value = stripBakedFields(key, req.body.value);
   value = mergePreservingStoreSecrets(key, db[key], value);
+  if (key === "wv_albums" || (key.startsWith("t_") && key.endsWith("_wv_albums"))) {
+    const wasString = typeof value === "string";
+    let incoming;
+    try { incoming = wasString ? JSON.parse(value) : value; } catch { return res.status(400).json({ error: "Invalid albums" }); }
+    if (!Array.isArray(incoming)) return res.status(400).json({ error: "Albums must be an array" });
+    const existing = _parseAlbumsFromDb(db[key]);
+    const byId = new Map(existing.map(album => [album.id, album]));
+    const ids = new Set(incoming.map(album => album.id));
+    const merged = [...existing.filter(album => !ids.has(album.id)), ...incoming.map(album => preserveGalleryServerState(byId.get(album.id), album))];
+    value = wasString ? JSON.stringify(merged) : merged;
+  }
   if (key === DB_KEYS.INVOICES) {
     const asString = typeof value === "string";
     let incoming;
@@ -2145,7 +2169,7 @@ app.put("/api/albums/:albumId", requireAuth, authenticatedLargeJson, (req, res) 
     incoming.photos = _mergePhotoArrays(albums[idx].photos || [], incoming.photos);
     incoming.photoCount = incoming.photos.length;
   }
-  const candidate = idx >= 0 ? { ...albums[idx], ...incoming } : incoming;
+  const candidate = preserveGalleryServerState(albums[idx], incoming);
   const invalidUploads = invalidAlbumUploadReferences(db, candidate, null);
   if (invalidUploads.length) return res.status(409).json({ error: "One or more uploads do not belong to this album scope" });
   // A mobile client can create the same booking from two screens before either
@@ -2158,7 +2182,7 @@ app.put("/api/albums/:albumId", requireAuth, authenticatedLargeJson, (req, res) 
       const merged = { ...existing, ...incoming, id: existing.id,
         photos: _mergePhotoArrays(existing.photos || [], incoming.photos || []) };
       merged.photoCount = merged.photos.length;
-      albums[existingIdx] = merged;
+      albums[existingIdx] = preserveGalleryServerState(existing, merged);
       db[ALBUMS_KEY] = JSON.stringify(albums);
       writeDb(db);
       return res.json({ ok: true, merged: true, albumId: existing.id });
@@ -3232,13 +3256,14 @@ app.post("/api/album/register-purchaser", purchaserRegistrationLimiter, (req, re
     ...existing,
     fullAlbum: existing.fullAlbum === true,
     photoIds: [...new Set(existing.photoIds || [])],
-    purchaserEmail: String(email).trim().toLowerCase(),
+    purchaserEmail: existing.purchaserEmailVerified && (existing.fullAlbum || existing.photoIds?.length)
+      ? existing.purchaserEmail : normalizeEmail(email),
   };
   album.sessionPurchases = purchases;
   albums[index] = album;
   db[storeKey] = typeof albumsRaw === "string" ? JSON.stringify(albums) : albums;
   writeDb(db);
-  res.json({ ok: true, sessionKey });
+  res.json({ ok: true, sessionKey, email: purchases[sessionKey].purchaserEmail });
 });
 
 const IMPORTED_PORTFOLIO_GALLERY = [
@@ -5682,6 +5707,80 @@ app.get("/api/super-admin/webhooks", async (req, res) => {
 });
 
 // ── Proofing submission endpoint ──────────────────────
+function publicProofingReceipt(round) {
+  return { submissionId: round.submissionId, submittedAt: round.submittedAt, selectedCount: round.selectedPhotoIds.length };
+}
+
+let proofingDeliveryRunning = false;
+async function deliverProofingNotifications() {
+  if (proofingDeliveryRunning) return;
+  proofingDeliveryRunning = true;
+  try {
+    const queued = Object.values(dbGet(readDb(), "wv_proofing_notifications", {}))
+      .filter(item => item.status === "pending" && item.nextAttemptAt <= Date.now()).slice(0, 10);
+    for (const item of queued) {
+      const db = readDb();
+      const settings = item.tenantSlug ? dbGet(db, `t_${item.tenantSlug}_wv_tenant_settings`, {}) : null;
+      const tenant = item.tenantSlug ? readTenants().find(t => t.slug === item.tenantSlug && tenantIsLicensed(t)) : null;
+      const profile = dbGet(db, DB_KEYS.PROFILE, {});
+      const recipient = normalizeEmail(item.tenantSlug ? tenant?.email : (process.env.EMAIL_NOTIFY_TO || profile.email || getFromAddress()));
+      const transport = item.tenantSlug ? buildTenantTransporter(settings) : getTransporter();
+      let status = "sent";
+      let reason = "";
+      try {
+        if (!transport || !recipient || (item.tenantSlug && !tenant)) throw new Error("Email delivery is not configured");
+        const delivery = await transport.sendMail({ from: item.tenantSlug ? getTenantFromAddress(settings) : getFromAddress(), to: recipient,
+          ...buildAdminAlertEmail({ title: "Client photo selections received", intro: `${item.count} photos selected in ${item.title || "your gallery"}.`,
+            rows: [{ label: "Saved at", value: item.submittedAt }, { label: "Receipt", value: item.id }], message: item.clientNote }) });
+        if (delivery?.rejected?.length && !delivery?.accepted?.length) throw new Error("Recipient rejected");
+      } catch {
+        status = item.attempts + 1 >= 5 ? "failed" : "pending";
+        reason = "Email could not be delivered. The selections are saved in the album.";
+      }
+      // Never write the snapshot taken before the asynchronous email operation.
+      const fresh = readDb();
+      const outbox = dbGet(fresh, "wv_proofing_notifications", {});
+      if (outbox[item.id]) outbox[item.id] = { ...outbox[item.id], status, reason, attempts: item.attempts + 1,
+        nextAttemptAt: Date.now() + (item.attempts + 1) * 5 * 60_000, updatedAt: new Date().toISOString() };
+      fresh.wv_proofing_notifications = JSON.stringify(outbox);
+      const albumKey = item.tenantSlug ? `t_${item.tenantSlug}_wv_albums` : "wv_albums";
+      const albums = dbGet(fresh, albumKey, []);
+      const album = albums.find(album => album.id === item.albumId);
+      if (album) {
+        album.proofingNotifications = { ...album.proofingNotifications, [item.id]: { status, reason, attempts: item.attempts + 1 } };
+        fresh[albumKey] = JSON.stringify(albums);
+      }
+      writeDb(fresh, { durable: true });
+    }
+  } finally { proofingDeliveryRunning = false; }
+}
+setInterval(() => { void deliverProofingNotifications().catch(error => console.warn("Proofing notification retry failed:", error.message)); }, 60_000).unref();
+
+function retryProofingNotification(req, res) {
+  const scope = req.params.slug || null;
+  const db = readDb();
+  const outbox = dbGet(db, "wv_proofing_notifications", {});
+  const item = outbox[req.params.receiptId];
+  if (!item || (item.tenantSlug || null) !== scope) return res.status(404).json({ error: "Notification not found" });
+  if (item.status === "sent") return res.json({ status: "sent", attempts: item.attempts });
+  if (proofingDeliveryRunning) return res.status(409).json({ error: "Notifications are being delivered. Please try again shortly." });
+  if (item.status === "pending" && item.attempts === 0) return res.status(202).json({ status: "pending", attempts: 0 });
+  const albumsKey = scope ? `t_${scope}_wv_albums` : "wv_albums";
+  const albums = dbGet(db, albumsKey, []);
+  const album = albums.find(album => album.id === item.albumId);
+  if (!album) return res.status(404).json({ error: "Album not found" });
+  outbox[item.id] = { ...item, status: "pending", attempts: 0, reason: "", nextAttemptAt: Date.now() };
+  const delivery = { status: "pending", attempts: 0 };
+  album.proofingNotifications = { ...album.proofingNotifications, [item.id]: delivery };
+  db[albumsKey] = JSON.stringify(albums);
+  db.wv_proofing_notifications = JSON.stringify(outbox);
+  writeDb(db, { durable: true });
+  res.status(202).json(delivery);
+  void deliverProofingNotifications().catch(error => console.warn("Proofing notification retry failed:", error.message));
+}
+app.post("/api/admin/proofing-notifications/:receiptId/retry", requireAuth, retryProofingNotification);
+app.post("/api/tenant/:slug/proofing-notifications/:receiptId/retry", requireTenant, retryProofingNotification);
+
 app.post("/api/proofing/submit", async (req, res) => {
   const { albumId, selectedPhotoIds, clientNote } = req.body || {};
   if (!albumId || !Array.isArray(selectedPhotoIds)) {
@@ -5721,36 +5820,21 @@ app.post("/api/proofing/submit", async (req, res) => {
       return res.status(403).json({ ok: false, error: "Proofing window has expired" });
     }
 
-    // Reject submissions if the album is not in the active proofing stage
-    if (album.proofingStage !== "proofing") {
-      return res.status(400).json({ ok: false, error: "Album is not currently accepting proofing submissions" });
-    }
-
-    // Mark starred photos and record the round
-    const selectedSet = new Set(normalizedSelectedIds);
-    const updatedPhotos = (album.photos || []).map(p => ({
-      ...p,
-      starred: selectedSet.has(String(p.id)),
-    }));
-
-    const rounds = album.proofingRounds || [];
-    const normalizedClientNote = typeof clientNote === "string" ? clientNote.trim().slice(0, 5000) : "";
-    const submissionData = { selectedPhotoIds: normalizedSelectedIds, clientNote: normalizedClientNote || undefined, submittedAt: new Date().toISOString() };
-    let updatedRounds;
-    if (rounds.length > 0) {
-      // Update the most recent round with the client's selections
-      updatedRounds = rounds.map((r, i) =>
-        i === rounds.length - 1 ? { ...r, ...submissionData } : r
-      );
-    } else {
-      updatedRounds = [{ roundNumber: 1, sentAt: new Date().toISOString(), ...submissionData }];
-    }
-
-    const updatedAlbum = { ...album, photos: updatedPhotos, proofingStage: "selections-submitted", proofingRounds: updatedRounds };
+    const submission = proofingSubmission(album, req.body);
+    if (submission.error) return res.status(submission.status).json({ ok: false, error: submission.error });
+    const updatedAlbum = submission.album;
+    const updatedPhotos = updatedAlbum.photos;
+    const normalizedClientNote = submission.receipt.clientNote || "";
+    if (submission.replayed) return res.json({ ok: true, replayed: true, receipt: publicProofingReceipt(submission.receipt), album: publicAlbumDto(updatedAlbum, gallerySession) });
     parsed[idx] = updatedAlbum;
     db[storeKey] = JSON.stringify(parsed);
-    writeDb(db);
-
+    const outbox = dbGet(db, "wv_proofing_notifications", {});
+    outbox[submission.receipt.submissionId] = { id: submission.receipt.submissionId, albumId: album.id, tenantSlug,
+      title: album.title, count: normalizedSelectedIds.length, clientNote: normalizedClientNote,
+      submittedAt: submission.receipt.submittedAt, status: "pending", attempts: 0, nextAttemptAt: Date.now() };
+    db.wv_proofing_notifications = JSON.stringify(outbox);
+    writeDb(db, { durable: true });
+    void deliverProofingNotifications().catch(error => console.warn("Proofing notification failed:", error.message));
     // ── FTP: move newly-starred photos to the "-starred" sub-folder ──────────
     // Only runs when ftpStarredFolder is enabled in the applicable FTP settings.
     (async () => {
@@ -5809,7 +5893,7 @@ app.post("/api/proofing/submit", async (req, res) => {
       notifyProofingSubmission(discordUrl, updatedAlbum, normalizedSelectedIds.length, normalizedClientNote).catch(() => {});
     }
 
-    res.json({ ok: true, album: publicAlbumDto(updatedAlbum, gallerySession) });
+    res.json({ ok: true, receipt: publicProofingReceipt(submission.receipt), album: publicAlbumDto(updatedAlbum, gallerySession) });
   } catch (err) {
     console.error("Proofing submit error:", err.message);
     res.status(500).json({ ok: false, error: "Failed to save proofing picks" });
@@ -6029,8 +6113,9 @@ registerGoogleCalendarRoutes(app, {
   verifyOAuthState: state => !!verifySession(state, SESSION_SECRET, { purpose: "admin-gcal" }),
 });
 registerEmailRoutes(app, store, { requireAuth });
-registerStripeRoutes(app, { readDb, writeDb, readLicenseKeys, writeLicenseKeys, requireAuth, getGallerySession: getGallerySessionForAlbum, onBookingPaid: queueInitialBookingCalendarSync });
-registerTenantStripeRoutes(app, { readDb, writeDb, readTenants, readLicenseKeys, getLicKeyLimits, readEventSlotRequests, writeEventSlotRequests, requireTenant, getGallerySession: getGallerySessionForAlbum, sendTenantBookingReceipt, onBookingPaid: queueInitialBookingCalendarSync, isTenantLicensed: tenantIsLicensed });
+const writePaymentDb = data => writeDb(data, { durable: true });
+registerStripeRoutes(app, { readDb, writeDb: writePaymentDb, readLicenseKeys, writeLicenseKeys, requireAuth, getGallerySession: getGallerySessionForAlbum, onBookingPaid: queueInitialBookingCalendarSync });
+registerTenantStripeRoutes(app, { readDb, writeDb: writePaymentDb, readTenants, readLicenseKeys, getLicKeyLimits, readEventSlotRequests, writeEventSlotRequests, requireTenant, getGallerySession: getGallerySessionForAlbum, sendTenantBookingReceipt, onBookingPaid: queueInitialBookingCalendarSync, isTenantLicensed: tenantIsLicensed });
 registerGoogleSheetsRoutes(app, { requireAuth });
 
 const tenantLimiter = rateLimit({ windowMs: 60_000, max: 60, standardHeaders: true, legacyHeaders: false, message: { error: "Too many requests" } });
@@ -6962,7 +7047,14 @@ app.put("/api/tenant/:slug/store/:key", tenantLimiter, requireTenant, (req, res)
   }
 
   const fullKey = `t_${slug}_${req.params.key}`;
-  db[fullKey] = req.body.value;
+  if (req.params.key === "wv_albums") {
+    let incoming;
+    try { incoming = _parseAlbumsFromDb(req.body.value); } catch { return res.status(400).json({ error: "Invalid albums" }); }
+    const existing = _parseAlbumsFromDb(db[fullKey]);
+    const byId = new Map(existing.map(album => [album.id, album]));
+    const ids = new Set(incoming.map(album => album.id));
+    db[fullKey] = JSON.stringify([...existing.filter(album => !ids.has(album.id)), ...incoming.map(album => preserveGalleryServerState(byId.get(album.id), album))]);
+  } else db[fullKey] = req.body.value;
   writeDb(db);
   res.json({ ok: true });
 });
@@ -8733,7 +8825,7 @@ app.put("/api/tenant/:slug/albums/:albumId", tenantLimiter, requireTenant, authe
     incoming.photos = _mergePhotoArrays(albums[idx].photos || [], incoming.photos);
     incoming.photoCount = incoming.photos.length;
   }
-  const candidate = idx >= 0 ? { ...albums[idx], ...incoming } : incoming;
+  const candidate = preserveGalleryServerState(albums[idx], incoming);
   const invalidUploads = invalidAlbumUploadReferences(db, candidate, slug);
   if (invalidUploads.length) return res.status(409).json({ error: "One or more uploads do not belong to this tenant" });
   if (idx < 0 && incoming.bookingId) {
@@ -8743,7 +8835,7 @@ app.put("/api/tenant/:slug/albums/:albumId", tenantLimiter, requireTenant, authe
       const merged = { ...existing, ...incoming, id: existing.id,
         photos: _mergePhotoArrays(existing.photos || [], incoming.photos || []) };
       merged.photoCount = merged.photos.length;
-      albums[existingIdx] = merged;
+      albums[existingIdx] = preserveGalleryServerState(existing, merged);
       db[key] = JSON.stringify(albums);
       writeDb(db);
       return res.json({ ok: true, merged: true, albumId: existing.id });
@@ -9582,7 +9674,9 @@ async function sendClientPortalAlbumGroups({ email, groups, db, tenants, trusted
     const message = buildClientPortalEmail({
       albums: group.albums.map(album => ({
         title: album.title || "Photo gallery",
-        url: clientPortalGalleryLink(trustedBaseUrl, album),
+        url: album.purchaseRecovery
+          ? `${new URL(`/gallery/${encodeURIComponent(album.slug || album.id)}`, trustedBaseUrl)}#recovery=${encodeURIComponent(signSession({ purpose: "gallery-recovery", albumId: album.id, tenantSlug: group.tenantSlug, email }, SESSION_SECRET, { ttlSeconds: 30 * 60 }))}`
+          : clientPortalGalleryLink(trustedBaseUrl, album),
       })),
       brandName: tenantSettings?.businessName || tenantSettings?.brandName || senderName,
     });
@@ -9622,6 +9716,7 @@ app.post("/api/client-portal/request", clientPortalIpLimiter, clientPortalEmailL
       }).map(group => ({
         ...group,
         albums: group.albums.filter(album => {
+          if (req.body?.albumId && ![album.id, album.slug].includes(String(req.body.albumId))) return false;
           const resolved = findAlbumBySlugOrId(db, album.slug || album.id);
           return !!resolved && resolved.tenantSlug === group.tenantSlug && resolved.album.id === album.id;
         }),
@@ -9703,10 +9798,37 @@ function establishGalleryAccess(req, res) {
   setHttpOnlyCookie(req, res, galleryCookieName(chosen.album.id), sessionToken, GALLERY_SESSION_TTL_SECONDS);
   const gallerySession = verifySession(sessionToken, SESSION_SECRET, { purpose: "gallery" });
   res.setHeader("Cache-Control", "no-store");
-  return res.json({ album: publicAlbumDto(chosen.album, gallerySession), tenantSlug: chosen.tenantSlug, protected: protectedAlbum });
+  return res.json({ album: publicAlbumDto(chosen.album, gallerySession), tenantSlug: chosen.tenantSlug, protected: protectedAlbum, sessionKey });
 }
 
 const galleryAccessLimiter = rateLimit({ windowMs: 60_000, max: 30, standardHeaders: true, legacyHeaders: false, message: { error: "Too many gallery access attempts" } });
+app.post("/api/public-album/:albumSlug/recover", galleryAccessLimiter, (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  const claims = verifySession(String(req.body?.recoveryToken || ""), SESSION_SECRET, { purpose: "gallery-recovery" });
+  if (!claims) return res.status(401).json({ error: "This recovery link has expired. Request a new email link." });
+  if (claims.tenantSlug && !licensedTenantBySlug(claims.tenantSlug)) return res.status(404).json({ error: "Gallery unavailable" });
+  const db = readDb();
+  const key = claims.tenantSlug ? `t_${claims.tenantSlug}_wv_albums` : "wv_albums";
+  const albums = dbGet(db, key, []);
+  const index = albums.findIndex(album => album.id === claims.albumId);
+  const album = albums[index];
+  if (!album || album.enabled === false || ![album.id, album.slug].includes(req.params.albumSlug)) return res.status(404).json({ error: "Gallery unavailable" });
+  if (albumAccessWindow(album, Date.now(), galleryTimezone(db, claims.tenantSlug)).galleryExpired) return res.status(410).json({ error: "This gallery has expired. Contact your photographer." });
+  const purchase = recoverablePurchase(album, claims.email);
+  if (!purchase) return res.status(404).json({ error: "No purchases are available to restore. Contact your photographer." });
+  const sessionKey = `gallery-${crypto.createHmac("sha256", SESSION_SECRET).update(JSON.stringify(["recovery", claims.tenantSlug || "", album.id, normalizeEmail(claims.email)])).digest("base64url")}`;
+  const existing = album.sessionPurchases?.[sessionKey];
+  album.sessionPurchases = { ...album.sessionPurchases, [sessionKey]: { ...existing, ...purchase,
+    source: existing?.stripeSessionId ? "stripe" : "email-recovery", purchaserEmail: normalizeEmail(claims.email), purchaserEmailVerified: true,
+    emailVerifiedAt: new Date().toISOString() } };
+  albums[index] = album;
+  db[key] = JSON.stringify(albums);
+  writeDb(db);
+  const gallerySession = { purpose: "gallery", albumId: album.id, tenantSlug: claims.tenantSlug || null, sessionKey };
+  const cookie = signSession(gallerySession, SESSION_SECRET, { ttlSeconds: GALLERY_SESSION_TTL_SECONDS });
+  setHttpOnlyCookie(req, res, galleryCookieName(album.id), cookie, GALLERY_SESSION_TTL_SECONDS);
+  return res.json({ album: publicAlbumDto(album, gallerySession), tenantSlug: claims.tenantSlug || null, sessionKey, recoveredEmail: normalizeEmail(claims.email) });
+});
 app.post("/api/public-album/:albumSlug/access", galleryAccessLimiter, establishGalleryAccess);
 // Compatibility alias for clients built against the earlier session contract.
 app.post("/api/public-album/:albumSlug/session", galleryAccessLimiter, establishGalleryAccess);
@@ -9732,7 +9854,7 @@ app.get("/api/public-album/:albumSlug", (req, res) => {
       });
     }
     res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-    return res.json({ album: publicAlbumDto(chosen.album, gallerySession), tenantSlug: chosen.tenantSlug });
+    return res.json({ album: publicAlbumDto(chosen.album, gallerySession), tenantSlug: chosen.tenantSlug, sessionKey: gallerySession.sessionKey });
   }
 
   return res.status(404).json({ error: "Album not found" });
@@ -11327,7 +11449,7 @@ app.get("*", (req, res) => {
 });
 
 bootstrapPromise.then(() => {
-  app.listen(PORT, "0.0.0.0", () => {
+  app.listen(PORT, process.env.HOST || "0.0.0.0", () => {
     console.log(`🚀 PhotoFlow running on port ${PORT}`);
     console.log(`📁 Data directory: ${DATA_DIR}`);
     console.log(`🖼️  Uploads directory: ${UPLOADS_DIR}`);

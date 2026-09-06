@@ -178,6 +178,8 @@ export interface BookingReferenceImage {
 }
 
 export interface Photo {
+  /** Legacy photographer-granted entitlement, also honored by server checkout. */
+  paid?: boolean;
   id: string;
   src: string;
   thumbnail?: string; // small preview for fast loading
@@ -320,6 +322,8 @@ export interface Album {
   proofingEnabled?: boolean;
   proofingStage?: string;
   proofingRounds?: ProofingRound[];
+  proofingRevision?: string;
+  proofingNotifications?: Record<string, { status: "pending" | "sent" | "failed"; reason?: string; attempts: number }>;
   clientToken?: string;
   /** ISO timestamp of when the proofing window closes. Set automatically when startProofing runs. */
   proofingExpiresAt?: string;
@@ -427,6 +431,7 @@ export interface AppSettings {
 }
 
 export interface ProofingRound {
+  submissionId?: string;
   roundNumber: number;
   sentAt: string;
   selectedPhotoIds: string[];

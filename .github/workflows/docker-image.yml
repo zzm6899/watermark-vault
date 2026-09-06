@@ -47,6 +47,9 @@ jobs:
       - name: Build application
         run: npm run build
 
+      - name: Test proofing and purchase recovery against staging server
+        run: npm run test:staging --prefix server
+
   build-and-push:
     needs: quality
     if: github.event_name != 'pull_request'

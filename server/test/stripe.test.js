@@ -886,3 +886,33 @@ test("manual bank hold is bounded from one hour to seven days", () => {
   assert.equal(manualBankHoldExpiresAt({ unconfirmedBookingHoldHours: -5 }, BANK_TEST_NOW), new Date(BANK_TEST_NOW + 60 * 60_000).toISOString());
   assert.equal(manualBankHoldExpiresAt({ unconfirmedBookingHoldHours: 999 }, BANK_TEST_NOW), new Date(BANK_TEST_NOW + 168 * 60 * 60_000).toISOString());
 });
+
+test("mixed free and paid album selections survive canonical webhook validation", () => {
+  for (const tenantSlug of [null, "studio"]) {
+    for (const isFullAlbum of [false, true]) {
+      const album = { id: "mixed", enabled: true, freeDownloads: 1, pricePerPhoto: 12, priceFullAlbum: 20,
+        photos: [{ id: "free" }, { id: "paid" }] };
+      const checkout = calculateAlbumCheckout(album, { sessionKey: "viewer", photoIds: ["free", "paid"], isFullAlbum });
+      checkout.currency = "aud";
+      assert.equal(checkout.amount, isFullAlbum ? 20 : 12);
+      const intent = albumCheckoutSnapshot(album, checkout, tenantSlug);
+      const order = { ...checkout, id: "order-mixed", albumId: album.id, tenantSlug,
+        checkoutSessionId: "cs_mixed", intentHash: intent.snapshotHash };
+      const metadata = { albumId: album.id, orderId: order.id, expectedAmountCents: String(checkout.amount * 100),
+        expectedCurrency: "aud", checkoutSnapshotHash: intent.snapshotHash };
+      const session = { id: "cs_mixed", client_reference_id: album.id, amount_total: checkout.amount * 100, currency: "aud" };
+      assert.equal(evaluateAlbumStripePayment(album, order, metadata, session, tenantSlug, "Australia/Sydney", "aud").valid, true);
+      assert.equal(evaluateAlbumStripePayment(album, order, metadata, { ...session, amount_total: 1 }, tenantSlug, "Australia/Sydney", "aud").valid, false);
+    }
+  }
+});
+
+test("checkout cannot charge for photos locked during proofing", () => {
+  const album = { id: "proof", enabled: true, freeDownloads: 0, pricePerPhoto: 10, priceFullAlbum: 20,
+    photos: [{ id: "one" }], proofingEnabled: true, lockDownloadsDuringProofing: true };
+  for (const proofingStage of ["proofing", "selections-submitted", "editing"]) {
+    for (const isFullAlbum of [false, true]) {
+      assert.match(calculateAlbumCheckout({ ...album, proofingStage }, { sessionKey: "viewer", photoIds: ["one"], isFullAlbum }).error, /locked during proofing/);
+    }
+  }
+});

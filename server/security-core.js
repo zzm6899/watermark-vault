@@ -150,13 +150,15 @@ function selectClientPortalAlbumGroups({
       const directMatch = normalizeClientPortalEmail(album?.clientEmail) === normalizedEmail;
       const bookingId = String(album?.bookingId || "");
       const bookingMatch = !!bookingId && bookingEmails.get(`${scope}\u0000${bookingId}`) === normalizedEmail;
-      if (!directMatch && !bookingMatch) continue;
+      const purchaseMatch = !!require("./gallery-workflow").recoverablePurchase(album, normalizedEmail);
+      if (!directMatch && !bookingMatch && !purchaseMatch) continue;
       seen.add(identifier);
       selected.push({
         id: album?.id ? String(album.id) : undefined,
         slug: album?.slug ? String(album.slug) : undefined,
         title: String(album?.title || "Photo gallery").slice(0, 200),
         clientToken: album?.clientToken ? String(album.clientToken) : undefined,
+        ...(purchaseMatch ? { purchaseRecovery: true } : {}),
       });
     }
     if (selected.length) groups.push({ tenantSlug: tenantSlug || null, albums: selected });
@@ -501,7 +503,7 @@ function safeGalleryAlbumDto(album, sessionKey, timeZone = album?.timezone || pr
     "showCullRejectsToClient",
   ];
   const safe = Object.fromEntries(allowed.filter(key => album[key] !== undefined).map(key => [key, album[key]]));
-  for (const field of ["expiresAt", "downloadExpiresAt"]) {
+  for (const field of ["expiresAt", "downloadExpiresAt", "proofingExpiresAt"]) {
     const resolved = expiryTimestamp(album[field], timeZone);
     if (resolved != null) safe[field] = new Date(resolved).toISOString();
   }
@@ -510,6 +512,10 @@ function safeGalleryAlbumDto(album, sessionKey, timeZone = album?.timezone || pr
   safe.usedFreeDownloads = album.usedFreeDownloads?.[sessionKey] == null ? {} : { [sessionKey]: album.usedFreeDownloads[sessionKey] };
   safe.proofingRounds = (Array.isArray(album.proofingRounds) ? album.proofingRounds : []).map((round, index) => ({
     roundNumber: Number.isFinite(Number(round?.roundNumber)) ? Number(round.roundNumber) : index + 1,
+    ...(round?.sentAt ? { sentAt: round.sentAt } : {}),
+    ...(round?.submittedAt ? { submittedAt: round.submittedAt, submissionId: round.submissionId,
+      selectedPhotoIds: (Array.isArray(round.selectedPhotoIds) ? round.selectedPhotoIds : []).filter(id =>
+        (album.photos || []).some(photo => photo.id === id && !photo.hidden && (album.showCullRejectsToClient || photo.cull?.status !== "reject"))) } : {}),
     adminNote: round?.adminNote ? String(round.adminNote) : undefined,
   }));
   safe.photos = (Array.isArray(album.photos) ? album.photos : [])

@@ -10,6 +10,7 @@ interface WatermarkedImageProps {
   selected?: boolean;
   onSelect?: () => void;
   locked?: boolean;
+  lockedLabel?: string;
   index?: number;
   showWatermark?: boolean;
   watermarkPosition?: WatermarkPosition;
@@ -40,6 +41,7 @@ export default function WatermarkedImage({
   selected,
   onSelect,
   locked,
+  lockedLabel = "Purchase",
   index = 0,
   showWatermark = true,
   watermarkPosition = "center",
@@ -193,7 +195,7 @@ export default function WatermarkedImage({
           {locked ? (
             <div className="flex items-center gap-2 bg-card/90 backdrop-blur-sm px-3 py-2 rounded-full shadow-lg">
               <Lock className="w-4 h-4 text-primary" />
-              <span className="text-xs font-body tracking-wider uppercase text-foreground">Purchase</span>
+              <span className="text-xs font-body tracking-wider uppercase text-foreground">{lockedLabel}</span>
             </div>
           ) : (
             <div className="flex items-center gap-2 bg-card/90 backdrop-blur-sm px-3 py-2 rounded-full shadow-lg">

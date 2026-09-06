@@ -1,4 +1,5 @@
 const stripe = require("stripe");
+const { normalizeEmail, stripePurchaseIdentity } = require("./gallery-workflow");
 const rateLimit = require("express-rate-limit");
 const crypto = require("crypto");
 const { notifyInvoice, notifyAlbumPurchase, notifyPayment } = require("./discord");
@@ -167,7 +168,7 @@ function evaluateAlbumStripePayment(album, order, metadata, session, tenantSlug,
   const canonical = calculateAlbumCheckout(album, {
     sessionKey: order.sessionKey,
     isFullAlbum: order.isFullAlbum === true,
-    photoIds: order.photoIds,
+    photoIds: order.requestedPhotoIds || order.photoIds,
     unlockedPhotoIds,
     timezone,
   });
@@ -284,6 +285,7 @@ function checkoutSessionMatches(session, expected, nowMs = Date.now()) {
   if (!Number.isFinite(expiresAtMs) || expiresAtMs <= nowMs + 5_000) return false;
   if (Number(session.amount_total) !== Number(expected.amountCents)) return false;
   if (normaliseCurrency(session.currency) !== normaliseCurrency(expected.currency)) return false;
+  if (expected.clientEmail && normalizeEmail(session.customer_email) !== normalizeEmail(expected.clientEmail)) return false;
   return timingSafeTextEqual(session.metadata?.checkoutSnapshotHash, expected.snapshotHash);
 }
 
@@ -456,6 +458,10 @@ function calculateAlbumCheckout(album, request) {
     return { error: "Gallery downloads expire too soon to start a payment" };
   }
   if (album.purchasingDisabled) return { error: "Purchasing is disabled for this gallery" };
+  if (album.proofingEnabled && album.lockDownloadsDuringProofing &&
+      !["not-started", "finals-delivered"].includes(album.proofingStage || "not-started")) {
+    return { error: "Downloads are locked during proofing" };
+  }
   const deliverable = (album.photos || []).filter(photo => !photo.hidden && (album.showCullRejectsToClient || photo.cull?.status !== "reject"));
   const deliverableById = new Map(deliverable.map(photo => [photo.id, photo]));
   const sessionKey = String(request.sessionKey || "").slice(0, 240);
@@ -501,6 +507,7 @@ function calculateAlbumCheckout(album, request) {
     amount: pricing.amount,
     isFullAlbum: false,
     photoIds: pricing.billablePhotoIds,
+    requestedPhotoIds: requestedIds,
     photoCount: pricing.billablePhotoIds.length,
     sessionKey,
     albumTitle: album.title || "Photo gallery",
@@ -1405,6 +1412,9 @@ function registerRoutes(app, { readDb, writeDb, readLicenseKeys, writeLicenseKey
           timezone: parseStored(db["wv_profile"], {})?.timezone,
         });
         if (checkout.error) return res.status(400).json({ error: checkout.error });
+        const priorPurchase = album.sessionPurchases?.[gallerySession.sessionKey];
+        checkout.clientEmail = normalizeEmail(priorPurchase?.purchaserEmailVerified && (priorPurchase.fullAlbum || priorPurchase.photoIds?.length) ? priorPurchase.purchaserEmail : clientEmail);
+        if (!checkout.clientEmail) return res.status(400).json({ error: "Enter your email so you can recover your purchases later" });
         checkout.currency = "aud";
         const intent = albumCheckoutSnapshot(album, checkout, null, clientEmail);
         const orders = pruneCheckoutOrders(parseStored(db["wv_album_checkout_orders"], {}));
@@ -1422,13 +1432,14 @@ function registerRoutes(app, { readDb, writeDb, readLicenseKeys, writeLicenseKey
             amountCents: intent.snapshot.amountCents,
             currency: "aud",
             snapshotHash: intent.snapshotHash,
+            clientEmail: checkout.clientEmail,
           });
           if (existing.action === "reuse" && priorOrder.intentHash === intent.snapshotHash) {
             if (ordersChanged) {
               db["wv_album_checkout_orders"] = orders;
               writeDb(db);
             }
-            return res.json({ url: existing.session.url, sessionId: existing.session.id, reused: true });
+            return res.json({ url: existing.session.url, sessionId: existing.session.id, reused: true, photoIds: checkout.photoIds });
           }
           if (existing.action === "processing") return res.status(409).json({ error: "An album payment is already processing", sessionId: existing.session.id });
           orders[priorOrder.id] = { ...priorOrder, status: "expired", expiredAt: new Date().toISOString() };
@@ -1442,7 +1453,7 @@ function registerRoutes(app, { readDb, writeDb, readLicenseKeys, writeLicenseKey
         const productName = checkout.isFullAlbum ? checkout.albumTitle : `${checkout.photoCount} Photo(s) — ${checkout.albumTitle}`;
         const session = await s.checkout.sessions.create({
           payment_method_types: ["card"],
-          customer_email: clientEmail || undefined,
+          customer_email: checkout.clientEmail,
           client_reference_id: String(album.id),
           line_items: [{
             price_data: {
@@ -1490,7 +1501,7 @@ function registerRoutes(app, { readDb, writeDb, readLicenseKeys, writeLicenseKey
           await s.checkout.sessions.expire(session.id).catch(() => {});
           throw error;
         }
-        return res.json({ url: session.url, sessionId: session.id });
+        return res.json({ url: session.url, sessionId: session.id, photoIds: checkout.photoIds });
       });
     } catch (err) {
       console.error("Stripe checkout error:", err);
@@ -1812,14 +1823,14 @@ function registerRoutes(app, { readDb, writeDb, readLicenseKeys, writeLicenseKey
             const stripeSessionIds = [...new Set([...(currentPurchase.stripeSessionIds || []), currentPurchase.stripeSessionId, session.id].filter(Boolean))];
             if (order.isFullAlbum === true) {
               // Full album — unlock for this session only
-              sessionPurchases[sKey] = { ...currentPurchase, fullAlbum: true, photoIds: [], paidAt: new Date().toISOString(), stripeSessionId: session.id, stripeSessionIds, purchaserEmail: session.customer_email || currentPurchase.purchaserEmail || "", purchaserEmailVerified: !!session.customer_email || currentPurchase.purchaserEmailVerified === true, emailVerifiedAt: session.customer_email ? new Date().toISOString() : currentPurchase.emailVerifiedAt };
+              sessionPurchases[sKey] = { ...currentPurchase, fullAlbum: true, photoIds: [], paidAt: new Date().toISOString(), stripeSessionId: session.id, stripeSessionIds, ...stripePurchaseIdentity(session, order, currentPurchase) };
               album.stripePaidAt = new Date().toISOString(); // for finance view
               console.log(`📝 Album ${metadata.albumId} full album unlocked for session ${sKey}`);
             } else {
               // Per-photo — add to this session's purchased set
               const newIds = Array.isArray(order.photoIds) ? order.photoIds : [];
               const existing = currentPurchase.photoIds || [];
-              sessionPurchases[sKey] = { ...currentPurchase, fullAlbum: currentPurchase.fullAlbum === true, photoIds: [...new Set([...existing, ...newIds])], paidAt: new Date().toISOString(), stripeSessionId: session.id, stripeSessionIds, purchaserEmail: session.customer_email || currentPurchase.purchaserEmail || "", purchaserEmailVerified: !!session.customer_email || currentPurchase.purchaserEmailVerified === true, emailVerifiedAt: session.customer_email ? new Date().toISOString() : currentPurchase.emailVerifiedAt };
+              sessionPurchases[sKey] = { ...currentPurchase, fullAlbum: currentPurchase.fullAlbum === true, photoIds: [...new Set([...existing, ...newIds])], paidAt: new Date().toISOString(), stripeSessionId: session.id, stripeSessionIds, ...stripePurchaseIdentity(session, order, currentPurchase) };
               console.log(`📝 Album ${metadata.albumId}: ${newIds.length} photo(s) unlocked for session ${sKey}`);
             }
             album.sessionPurchases = sessionPurchases;
@@ -2147,6 +2158,9 @@ function registerTenantStripeRoutes(app, { readDb, writeDb, readTenants, require
         const sessionData = parseStored(db[`wv_session_${gallerySession.sessionKey}_${album.id}`], {});
         const checkout = calculateAlbumCheckout(album, { ...req.body, sessionKey: gallerySession.sessionKey, unlockedPhotoIds: sessionData?.unlockedPhotoIds, timezone: currentTenant.timezone });
         if (checkout.error) return res.status(400).json({ error: checkout.error });
+        const priorPurchase = album.sessionPurchases?.[gallerySession.sessionKey];
+        checkout.clientEmail = normalizeEmail(priorPurchase?.purchaserEmailVerified && (priorPurchase.fullAlbum || priorPurchase.photoIds?.length) ? priorPurchase.purchaserEmail : clientEmail);
+        if (!checkout.clientEmail) return res.status(400).json({ error: "Enter your email so you can recover your purchases later" });
         checkout.currency = resolved.currency;
         const intent = albumCheckoutSnapshot(album, checkout, slug);
         const accountHash = stripeAccountHash(ts.stripeSecretKey);
@@ -2168,13 +2182,14 @@ function registerTenantStripeRoutes(app, { readDb, writeDb, readTenants, require
             amountCents: intent.snapshot.amountCents,
             currency: resolved.currency,
             snapshotHash: intent.snapshotHash,
+            clientEmail: checkout.clientEmail,
           });
           if (existing.action === "reuse" && priorOrder.intentHash === intent.snapshotHash) {
             if (ordersChanged) {
               db["wv_album_checkout_orders"] = orders;
               writeDb(db);
             }
-            return res.json({ url: existing.session.url, sessionId: existing.session.id, reused: true });
+            return res.json({ url: existing.session.url, sessionId: existing.session.id, reused: true, photoIds: checkout.photoIds });
           }
           if (existing.action === "processing") return res.status(409).json({ error: "An album payment is already processing", sessionId: existing.session.id });
           orders[priorOrder.id] = { ...priorOrder, status: "expired", expiredAt: new Date().toISOString() };
@@ -2188,7 +2203,7 @@ function registerTenantStripeRoutes(app, { readDb, writeDb, readTenants, require
         const productName = checkout.isFullAlbum ? checkout.albumTitle : `${checkout.photoCount} Photo(s) — ${checkout.albumTitle}`;
         const session = await resolved.client.checkout.sessions.create({
           payment_method_types: ["card"],
-          customer_email: clientEmail || undefined,
+          customer_email: checkout.clientEmail,
           client_reference_id: String(album.id),
           line_items: [{
             price_data: {
@@ -2238,7 +2253,7 @@ function registerTenantStripeRoutes(app, { readDb, writeDb, readTenants, require
           await resolved.client.checkout.sessions.expire(session.id).catch(() => {});
           throw error;
         }
-        return res.json({ url: session.url, sessionId: session.id });
+        return res.json({ url: session.url, sessionId: session.id, photoIds: checkout.photoIds });
       });
     } catch (err) {
       console.error("Tenant album Stripe checkout error:", err);
@@ -2408,12 +2423,12 @@ function registerTenantStripeRoutes(app, { readDb, writeDb, readTenants, require
             const currentPurchase = sessionPurchases[sKey] || {};
             const stripeSessionIds = [...new Set([...(currentPurchase.stripeSessionIds || []), currentPurchase.stripeSessionId, session.id].filter(Boolean))];
             if (order.isFullAlbum === true) {
-              sessionPurchases[sKey] = { ...currentPurchase, fullAlbum: true, photoIds: [], paidAt: new Date().toISOString(), stripeSessionId: session.id, stripeSessionIds, purchaserEmail: session.customer_email || currentPurchase.purchaserEmail || "", purchaserEmailVerified: !!session.customer_email || currentPurchase.purchaserEmailVerified === true, emailVerifiedAt: session.customer_email ? new Date().toISOString() : currentPurchase.emailVerifiedAt };
+              sessionPurchases[sKey] = { ...currentPurchase, fullAlbum: true, photoIds: [], paidAt: new Date().toISOString(), stripeSessionId: session.id, stripeSessionIds, ...stripePurchaseIdentity(session, order, currentPurchase) };
               album.stripePaidAt = new Date().toISOString();
             } else {
               const newIds = Array.isArray(order.photoIds) ? order.photoIds : [];
               const existing = currentPurchase.photoIds || [];
-              sessionPurchases[sKey] = { ...currentPurchase, fullAlbum: currentPurchase.fullAlbum === true, photoIds: [...new Set([...existing, ...newIds])], paidAt: new Date().toISOString(), stripeSessionId: session.id, stripeSessionIds, purchaserEmail: session.customer_email || currentPurchase.purchaserEmail || "", purchaserEmailVerified: !!session.customer_email || currentPurchase.purchaserEmailVerified === true, emailVerifiedAt: session.customer_email ? new Date().toISOString() : currentPurchase.emailVerifiedAt };
+              sessionPurchases[sKey] = { ...currentPurchase, fullAlbum: currentPurchase.fullAlbum === true, photoIds: [...new Set([...existing, ...newIds])], paidAt: new Date().toISOString(), stripeSessionId: session.id, stripeSessionIds, ...stripePurchaseIdentity(session, order, currentPurchase) };
             }
             album.sessionPurchases = sessionPurchases;
             checkoutOrders[order.id] = { ...order, status: "fulfilled", fulfilledStripeSessionId: session.id, fulfilledAt: new Date().toISOString() };

@@ -10,13 +10,14 @@ export default function ClientPortal() {
   const [submitted, setSubmitted] = useState(false);
 
   const handleRequest = async () => {
-    if (!email.includes("@")) { toast.error("Please enter a valid email address"); return; }
+    if (loading) return;
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) { toast.error("Please enter a valid email address"); return; }
     setLoading(true);
     try {
       const res = await fetch("/api/client-portal/request", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email }),
+        body: JSON.stringify({ email: email.trim().toLowerCase() }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Request failed");
@@ -46,16 +47,19 @@ export default function ClientPortal() {
                 </div>
                 <h1 className="font-display text-2xl text-foreground mb-2">Access Your Photos</h1>
                 <p className="text-sm font-body text-muted-foreground">
-                  Enter the email you used when booking and we'll send you links to all your galleries.
+                  Enter the email you used at checkout or when booking. We’ll email secure links to your galleries and restore the photos you’ve already purchased.
                 </p>
               </div>
 
               <div className="glass-panel rounded-xl p-6 space-y-4">
                 <div>
-                  <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">
+                  <label htmlFor="gallery-email" className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">
                     Your Email
                   </label>
                   <Input
+                    id="gallery-email"
+                    autoComplete="email"
+                    maxLength={254}
                     type="email"
                     value={email}
                     onChange={e => setEmail(e.target.value)}
@@ -81,7 +85,7 @@ export default function ClientPortal() {
                 {[
                   { icon: Star, label: "Proof your photos", desc: "Star your favourites for editing" },
                   { icon: Sparkles, label: "Download finals", desc: "Access your edited photos" },
-                  { icon: Clock, label: "Track your booking", desc: "See session status and details" },
+                  { icon: Clock, label: "Keep your purchases", desc: "Restore single photos or full albums on another device" },
                 ].map(({ icon: Icon, label, desc }) => (
                   <div key={label} className="flex items-start gap-3">
                     <div className="w-7 h-7 rounded-lg bg-secondary flex items-center justify-center shrink-0 mt-0.5">

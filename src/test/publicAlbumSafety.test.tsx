@@ -69,7 +69,8 @@ describe("public album safety", () => {
     expect(source).toContain("tenantSlug ? (tenantBankTransfer ?? DISABLED_BANK_TRANSFER)");
     expect(source).toContain("publicInfo?.bankTransfer");
     expect(source).toContain("const billableSelected = unpaidSelected.slice");
-    expect(source).not.toContain("photoIds: isFullAlbumPurchase ? [] : unpaidSelected.map");
+    expect(source).toContain("photoIds: isFullAlbumPurchase ? [] : unpaidSelected.map");
+    expect(source).toContain("photoIds: result.photoIds ||");
     expect(source).toContain('response.status === 428 && result.code === "DOWNLOAD_EMAIL_REQUIRED"');
     expect(source).toContain('localStorage.removeItem(`wv_download_capture_${albumId}`)');
     expect(source).toContain("setPendingDownloadIntent(intent)");

@@ -7,6 +7,7 @@ import Header from "@/components/Header";
 import Footer from "@/components/Footer";
 import WatermarkedImage from "@/components/WatermarkedImage";
 import PurchasePanel from "@/components/PurchasePanel";
+import GalleryRecovery from "@/components/GalleryRecovery";
 import { getSettings } from "@/lib/storage";
 import { Badge } from "@/components/ui/badge";
 import { createAlbumCheckout, createTenantAlbumCheckout, getStripeStatus, getTenantStripeStatus, tenantPhotoSrc } from "@/lib/api";
@@ -26,6 +27,8 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Label } from "@/components/ui/label";
 import type { Album, DownloadQuality, Photo } from "@/lib/types";
 import { generateCapabilityToken } from "@/lib/capability-token";
+import { proofingDraftKey, readProofingDraft } from "@/lib/proofing-draft";
+import { submitProofing } from "@/lib/submit-proofing";
 
 // Scroll wheel zoom sensitivity — smaller = slower zoom per scroll tick
 const ZOOM_WHEEL_SENSITIVITY = 0.002;
@@ -52,6 +55,7 @@ type PublicAlbumResult = {
   sessionKey?: string;
   pinRequired?: boolean;
   tokenRequired?: boolean;
+  recoveredEmail?: string;
 };
 type PublicAlbumFetch = { result: PublicAlbumResult | null; error: "not-found" | "network" | "expired" | null; unauthorized: boolean };
 type GalleryAccessRequirements = { pinRequired: boolean; tokenRequired: boolean; legacyFallback: boolean };
@@ -97,10 +101,16 @@ function parseGalleryExpiry(value?: string | null): Date | null {
 /** Read a redacted gallery without placing credentials in URLs or access logs. */
 async function fetchPublicAlbumCompatible(
   albumSlug: string,
-  access: { token?: string | null; pin?: string; sessionKey?: string } = {},
+  access: { token?: string | null; pin?: string; sessionKey?: string; recoveryToken?: string | null } = {},
 ): Promise<PublicAlbumFetch> {
   const endpoint = `/api/public-album/${encodeURIComponent(albumSlug)}`;
   try {
+    if (access.recoveryToken) {
+      const recovered = await fetch(`${endpoint}/recover`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ recoveryToken: access.recoveryToken }), cache: "no-store" });
+      const body = await recovered.json();
+      if (recovered.ok) return { result: body, error: null, unauthorized: false };
+      toast.error(body.error || "Could not restore purchases. Request a new email link.", { duration: 10000 });
+    }
     // Reuse an existing HttpOnly gallery session first. This is essential after
     // payment redirects and reloads, when the PIN is intentionally no longer held.
     const existingSession = await fetch(endpoint, { cache: "no-store" });
@@ -369,6 +379,15 @@ export default function AlbumDetail() {
   const [zipElapsedSeconds, setZipElapsedSeconds] = useState(0);
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [searchParams] = useSearchParams();
+  const [recoveryToken] = useState(() => new URLSearchParams(window.location.hash.slice(1)).get("recovery"));
+  useEffect(() => {
+    if (!recoveryToken) return;
+    const url = new URL(window.location.href);
+    const hash = new URLSearchParams(url.hash.slice(1));
+    hash.delete("recovery");
+    url.hash = hash.toString();
+    window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+  }, [recoveryToken]);
   const [urlToken] = useState<string | null>(() => {
     const hashToken = new URLSearchParams(window.location.hash.replace(/^#/, "")).get("token");
     const tokenFromUrl = hashToken || searchParams.get("token");
@@ -512,8 +531,28 @@ export default function AlbumDetail() {
   // Proofing state
   const [proofingClientNote, setProofingClientNote] = useState("");
   const [proofingSubmitting, setProofingSubmitting] = useState(false);
-  const [proofingSubmitted, setProofingSubmitted] = useState(false);
+  const proofingInFlight = useRef(false);
+  const [proofingError, setProofingError] = useState("");
+  const proofingSubmissionId = useRef(generateCapabilityToken("proof"));
+  const [proofingDraftSaved, setProofingDraftSaved] = useState(false);
+  useEffect(() => {
+    setProofingClientNote("");
+    setProofingError("");
+    setProofingDraftSaved(false);
+    proofingSubmissionId.current = generateCapabilityToken("proof");
+  }, [albumId]);
+  useEffect(() => {
+    if (!album || !gallerySessionKey || !album.proofingEnabled || album.proofingStage !== "proofing") return;
+    try {
+      localStorage.setItem(proofingDraftKey(album, gallerySessionKey), JSON.stringify({
+        photoIds: album.photos.filter(photo => photo.starred).map(photo => photo.id), note: proofingClientNote,
+        submissionId: proofingSubmissionId.current,
+      }));
+      setProofingDraftSaved(true);
+    } catch { setProofingDraftSaved(false); }
+  }, [album, gallerySessionKey, proofingClientNote]);
   const [showScrollTop, setShowScrollTop] = useState(false);
+  const [showPurchasedOnly, setShowPurchasedOnly] = useState(false);
   const [downloadEmailCaptureId, setDownloadEmailCaptureId] = useState<string>(() => {
     try { return localStorage.getItem(`wv_download_capture_${albumId}`) || ""; } catch { return ""; }
   });
@@ -556,7 +595,7 @@ export default function AlbumDetail() {
     setTenantDisplayName(null);
     setTenantBankTransfer(null);
     setAccessRequirements(null);
-    void fetchPublicAlbumCompatible(albumId, { token: urlToken, sessionKey: viewerSessionKey }).then(async response => {
+    void fetchPublicAlbumCompatible(albumId, { token: urlToken, sessionKey: viewerSessionKey, recoveryToken }).then(async response => {
       if (cancelled) return;
       const result = response.result;
       const requirements = resolveGalleryAccessRequirements(result, response.unauthorized);
@@ -566,7 +605,18 @@ export default function AlbumDetail() {
         setTenantSlug(tSlug);
         if (tSlug) setTenantBankTransfer(DISABLED_BANK_TRANSFER);
         if (result.sessionKey) setGallerySessionKey(result.sessionKey);
-        const loadedAlbum = decorateTenantAlbum(result);
+        if (result.recoveredEmail) {
+          setRegisteredEmail(result.recoveredEmail);
+          try { localStorage.setItem(`wv_email_${albumId}`, result.recoveredEmail); } catch { /* unavailable */ }
+          toast.success("Your purchases are restored on this device.");
+        }
+        let loadedAlbum = decorateTenantAlbum(result);
+        const draft = readProofingDraft(loadedAlbum, result.sessionKey || viewerSessionKey);
+        if (draft) {
+          loadedAlbum = { ...loadedAlbum, photos: loadedAlbum.photos.map(photo => ({ ...photo, starred: draft.photoIds.includes(photo.id) })) };
+          setProofingClientNote(draft.note);
+          proofingSubmissionId.current = draft.submissionId;
+        }
         setAlbumState(loadedAlbum);
         setAlbumFetchError(null);
         setTokenAuthorized(!!urlToken && !response.unauthorized);
@@ -618,7 +668,7 @@ export default function AlbumDetail() {
       }
     });
     return () => { cancelled = true; };
-  }, [albumId, fetchAttempt, urlToken, viewerSessionKey]);
+  }, [albumId, fetchAttempt, urlToken, viewerSessionKey, recoveryToken]);
 
   const watermarkPosition = settings.watermarkPosition;
   // Tenant galleries must never fall back to the platform account details.
@@ -775,12 +825,13 @@ export default function AlbumDetail() {
           email: purchaserEmail,
         }),
       });
+      const registration = await response.json().catch(() => ({}));
       if (!response.ok) {
-        const result = await response.json().catch(() => ({}));
-        throw new Error(result.error || "Failed to save email");
+        throw new Error(registration.error || "Failed to save email");
       }
-      try { localStorage.setItem(`wv_email_${albumId}`, purchaserEmail); } catch { /* localStorage may be unavailable */ }
-      setRegisteredEmail(purchaserEmail);
+      const savedEmail = registration.email || purchaserEmail.trim().toLowerCase();
+      try { localStorage.setItem(`wv_email_${albumId}`, savedEmail); } catch { /* localStorage may be unavailable */ }
+      setRegisteredEmail(savedEmail);
       const restoredResponse = await fetchPublicAlbumCompatible(albumId || "", { token: urlToken, sessionKey: gallerySessionKey });
       const restored = restoredResponse.result;
       const restoredSessionKey = restored?.sessionKey || gallerySessionKey;
@@ -805,7 +856,7 @@ export default function AlbumDetail() {
       setPurchaserEmail("");
       // If the user was mid-checkout, resume with the opaque cookie-bound session.
       if (pendingStripeParams) {
-        const params = { ...pendingStripeParams, sessionKey: gallerySessionKey, clientEmail: purchaserEmail.trim().toLowerCase() };
+        const params = { ...pendingStripeParams, sessionKey: gallerySessionKey, clientEmail: savedEmail };
         setPendingStripeParams(null);
         setProcessingStripe(true);
         const result = tenantSlug
@@ -817,7 +868,7 @@ export default function AlbumDetail() {
             sessionStorage.setItem(`${PENDING_CHECKOUT_PREFIX}${albumId}`, JSON.stringify({
               sessionKey: gallerySessionKey,
               fullAlbum: params.isFullAlbum === true,
-              photoIds: params.photoIds || [],
+              photoIds: result.photoIds || params.photoIds || [],
               startedAt: Date.now(),
             } satisfies PendingAlbumCheckout));
           } catch { /* unavailable */ }
@@ -847,7 +898,13 @@ export default function AlbumDetail() {
       setUnlocking(false);
       return;
     }
-    const loadedAlbum = decorateTenantAlbum(result);
+    let loadedAlbum = decorateTenantAlbum(result);
+    const draft = readProofingDraft(loadedAlbum, result.sessionKey || gallerySessionKey);
+    if (draft) {
+      loadedAlbum = { ...loadedAlbum, photos: loadedAlbum.photos.map(photo => ({ ...photo, starred: draft.photoIds.includes(photo.id) })) };
+      setProofingClientNote(draft.note);
+      proofingSubmissionId.current = draft.submissionId;
+    }
     setAlbumState(loadedAlbum);
     setTenantSlug(result.tenantSlug || null);
     const resolvedSessionKey = result.sessionKey || gallerySessionKey;
@@ -895,6 +952,7 @@ export default function AlbumDetail() {
               <p className="text-xs font-body text-muted-foreground/60 mt-3">Please ask your photographer for a new private link.</p>
             </>
           )}
+          <div className="mt-5 text-left"><GalleryRecovery albumId={albumId} /></div>
         </div>
       </div>
     );
@@ -1008,7 +1066,10 @@ export default function AlbumDetail() {
   const sessionFullAlbum = sessionPurchase?.fullAlbum === true;
   const sessionPaidIds = new Set<string>(sessionPurchase?.photoIds || []);
   // Legacy global paidPhotoIds (kept for backwards compat with old purchases)
-  const globalPaidSet = new Set<string>(album.paidPhotoIds || []);
+  const globalPaidSet = new Set<string>([
+    ...(album.paidPhotoIds || []),
+    ...album.photos.filter(photo => photo.paid).map(photo => photo.id),
+  ]);
   // Approved/completed bank transfer requests also unlock their photos
   const approvedBankRequests = (album.downloadRequests || []).filter((request: any) =>
     (request.status === "approved" || request.status === "completed") &&
@@ -1022,7 +1083,8 @@ export default function AlbumDetail() {
 
   // Proofing derived values (computed before canDownload so we can use proofingStage)
   const proofingStage = album.proofingStage || "not-started";
-  const isProofingWindowExpired = !!(album.proofingExpiresAt && new Date() > new Date(album.proofingExpiresAt));
+  const proofingExpiryDate = parseGalleryExpiry(album.proofingExpiresAt);
+  const isProofingWindowExpired = !!proofingExpiryDate && Date.now() >= proofingExpiryDate.getTime();
   // effectiveProofingEnabled: true when the admin has enabled proofing globally, the album
   // itself has proofing enabled (server-persisted), or the client has a valid token. This
   // allows clients who open a proofing link to see the proofing status banners even though
@@ -1053,26 +1115,18 @@ export default function AlbumDetail() {
   const bestOfPhotos = visiblePhotos.filter((p: any) =>
     p.starred || p.cull?.status === "pick"
   );
-  const pickCount = visiblePhotos.filter((p: any) => p.starred || p.cull?.status === "pick").length;
-  const reviewCount = visiblePhotos.filter((p: any) => !p.cull?.status || p.cull?.status === "review" || p.cull?.status === "unscored").length;
-  const visibleRejectCount = visiblePhotos.filter((p: any) => p.cull?.status === "reject").length;
   const clientFilteredPhotos = showProofingGalleryControls && clientCullFilter === "best" ? bestOfPhotos : visiblePhotos;
   const hasStarred = visiblePhotos.some((p: any) => p.starred);
-  const cullSortRank = (p: any) => p.starred || p.cull?.status === "pick"
-    ? 0
-    : !p.cull?.status || p.cull?.status === "review" || p.cull?.status === "unscored"
-      ? 1
-      : 2;
-  const _dpBase = showProofingGalleryControls && showStarredOnly ? clientFilteredPhotos.filter((p: any) => p.starred) : clientFilteredPhotos;
+  const filteredBySelection = showProofingGalleryControls && showStarredOnly ? clientFilteredPhotos.filter((p: any) => p.starred) : clientFilteredPhotos;
+  const _dpBase = showPurchasedOnly && !isProofing ? filteredBySelection.filter(photo => isPhotoPaid(photo.id)) : filteredBySelection;
   const originalPhotoOrder = new Map(_dpBase.map((photo, index) => [photo.id, index]));
   const displayedPhotos = [..._dpBase].sort((a: any, b: any) => {
     const _dA = new Date((a as any).takenAt || (a as any).uploadedAt || 0).getTime();
     const _dB = new Date((b as any).takenAt || (b as any).uploadedAt || 0).getTime();
     const _tCmp = a.title.localeCompare(b.title, undefined, { numeric: true });
-    const _bestCmp = cullSortRank(a) - cullSortRank(b);
     if (sortOrder === "default") {
       const originalOrder = (originalPhotoOrder.get(a.id) || 0) - (originalPhotoOrder.get(b.id) || 0);
-      return showProofingGalleryControls ? (_bestCmp || originalOrder) : originalOrder;
+      return originalOrder;
     }
     const _timeCmp = _dA !== _dB ? _dA - _dB : _tCmp;
     return sortOrder === "asc" ? _timeCmp : -_timeCmp;
@@ -1096,12 +1150,14 @@ export default function AlbumDetail() {
     });
   };
 
-  const copyToClipboard = (text: string, field: string) => {
-    navigator.clipboard.writeText(text).catch(() => {
+  const copyToClipboard = async (text: string, field: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedField(field);
+      setTimeout(() => setCopiedField(null), 2000);
+    } catch {
       toast.error("Failed to copy to clipboard");
-    });
-    setCopiedField(field);
-    setTimeout(() => setCopiedField(null), 2000);
+    }
   };
 
   const isCleanDownload = (photoId: string): boolean => {
@@ -1295,6 +1351,8 @@ export default function AlbumDetail() {
 
   // ── Proofing handlers ─────────────────────────────────────
   const toggleStar = (photoId: string) => {
+    if (proofingSubmitting) return;
+    proofingSubmissionId.current = generateCapabilityToken("proof");
     setAlbumState(previous => previous ? {
       ...previous,
       photos: previous.photos.map((photo: any) => photo.id === photoId ? { ...photo, starred: !photo.starred } : photo),
@@ -1302,39 +1360,37 @@ export default function AlbumDetail() {
   };
 
   const handleSubmitSelections = async () => {
-    if (!album) return;
+    if (!album || proofingInFlight.current) return;
     const picked = album.photos.filter((p: any) => p.starred).map(p => p.id);
     if (picked.length === 0) {
       toast.error("Please star at least one photo before submitting.");
       return;
     }
+    proofingInFlight.current = true;
     setProofingSubmitting(true);
+    setProofingError("");
     try {
-      const res = await fetch("/api/proofing/submit", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      const body = await submitProofing({
           albumId: album.id,
           selectedPhotoIds: picked,
           clientNote: proofingClientNote,
-          sessionKey: viewerSessionKey,
-          token: urlToken || undefined,
-        }),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || "Server error");
-      }
+          submissionId: proofingSubmissionId.current,
+          roundNumber: album.proofingRounds?.at(-1)?.roundNumber || 1,
+          roundSentAt: album.proofingRounds?.at(-1)?.sentAt,
+        }, album.slug || album.id);
       // Update local UI state only — don't call updateAlbum here or it will
       // overwrite the server's picks data (selectedPhotoIds in rounds) with our
       // stale local version that doesn't have them yet
-      const updated = { ...album, proofingStage: "selections-submitted" as const };
+      const updated = decorateTenantAlbum({ album: body.album, tenantSlug });
+      try { localStorage.removeItem(proofingDraftKey(album, gallerySessionKey)); } catch { /* unavailable */ }
       setAlbumState(updated);
-      setProofingSubmitted(true);
       toast.success(`${picked.length} photo${picked.length !== 1 ? "s" : ""} submitted — the photographer will be in touch!`);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to submit. Please try again.");
+      const message = err instanceof Error ? err.message : "Failed to submit. Please try again.";
+      setProofingError(message);
+      toast.error(message);
     } finally {
+      proofingInFlight.current = false;
       setProofingSubmitting(false);
     }
   };
@@ -1628,7 +1684,7 @@ export default function AlbumDetail() {
         sessionStorage.setItem(`${PENDING_CHECKOUT_PREFIX}${albumId}`, JSON.stringify({
           sessionKey,
           fullAlbum: checkoutParams.isFullAlbum === true,
-          photoIds: checkoutParams.photoIds || [],
+          photoIds: result.photoIds || checkoutParams.photoIds || [],
           startedAt: Date.now(),
         } satisfies PendingAlbumCheckout));
       } catch { /* unavailable */ }
@@ -1683,7 +1739,7 @@ export default function AlbumDetail() {
   const fullAlbumCheaper = priceFullAlbum > 0 && paidCount > 0 && paidTotal >= priceFullAlbum;
 
   // Preview checkout amount used in the payment dialog to decide which CTAs to show
-  const previewIsFullAlbum = requestedFullAlbum || fullAlbumCheaper || selectedIds.size === 0 || selectedIds.size === clientDeliverablePhotos.length;
+  const previewIsFullAlbum = requestedFullAlbum || fullAlbumCheaper || selectedIds.size === 0;
   const previewPaidCount = Math.max(0, unpaidSelected.length - freeRemaining);
   const previewCheckoutAmount = previewIsFullAlbum ? priceFullAlbum : (previewPaidCount * pricePerPhoto);
 
@@ -1718,7 +1774,7 @@ export default function AlbumDetail() {
     <div className="min-h-screen bg-background">
       <Header tenantSlug={tenantSlug} tenantName={tenantDisplayName} clientView />
 
-      <section className="pt-28 pb-32">
+      <section className={`pt-28 ${isProofing ? "pb-72" : "pb-32"}`}>
         <div className="container mx-auto px-4">
           <motion.div
             initial={{ opacity: 0, y: 20 }}
@@ -1807,8 +1863,10 @@ export default function AlbumDetail() {
                   <div className="flex items-start gap-3">
                     <Clock className="w-5 h-5 text-primary mt-0.5 shrink-0" />
                     <div>
-                      <p className="text-sm font-display text-foreground mb-1">Picks received — editing in progress</p>
-                      <p className="text-xs font-body text-muted-foreground">Your selections are with the photographer. Finals will be delivered here once editing is complete.</p>
+                      <p className="text-sm font-display text-foreground mb-1">Your selections are safely submitted</p>
+                      <p className="text-xs font-body text-muted-foreground">{latestRound?.selectedPhotoIds?.length || 0} photos saved to your photographer’s album. You don’t need to submit again.</p>
+                      {latestRound?.submittedAt && <p className="mt-2 text-xs text-muted-foreground">Received {new Date(latestRound.submittedAt).toLocaleString()}</p>}
+                      {latestRound?.submissionId && <p className="mt-1 text-xs text-muted-foreground">Receipt: {latestRound.submissionId}</p>}
                     </div>
                   </div>
                 </div>
@@ -1831,19 +1889,6 @@ export default function AlbumDetail() {
                     <div>
                       <p className="text-sm font-display text-foreground mb-1">Your final photos are ready!</p>
                       <p className="text-xs font-body text-muted-foreground">Select photos below to download your edited finals.</p>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Downloads locked during proofing */}
-              {isDownloadLockedForProofing && (
-                <div className="glass-panel rounded-xl p-5 border border-yellow-500/30 bg-yellow-500/5">
-                  <div className="flex items-start gap-3">
-                    <Lock className="w-5 h-5 text-yellow-400 mt-0.5 shrink-0" />
-                    <div>
-                      <p className="text-sm font-display text-foreground mb-1">Downloads locked during proofing</p>
-                      <p className="text-xs font-body text-muted-foreground">Downloads are unavailable while your photos are being reviewed and edited. They'll be unlocked once your finals are delivered.</p>
                     </div>
                   </div>
                 </div>
@@ -1880,6 +1925,7 @@ export default function AlbumDetail() {
               {_expiryBanner}
 
               <div className="glass-panel rounded-lg p-4 space-y-4">
+                {!isProofing && !isDownloadLockedForProofing && !canDownload && <GalleryRecovery albumId={album.id} />}
                 {canDownload ? (
                   <div className="text-center sm:text-left">
                     <p className="flex items-center justify-center gap-1.5 text-lg font-display text-green-400 sm:justify-start"><CheckCircle2 className="h-4 w-4" /> Unlocked</p>
@@ -1923,7 +1969,7 @@ export default function AlbumDetail() {
                       ) : (
                         <button onClick={() => setShowEmailReg(true)} className="text-center hover:opacity-80 transition-opacity min-w-0">
                           <p className="text-lg font-display text-muted-foreground">@</p>
-                          <p className="text-[10px] font-body uppercase tracking-wider text-primary leading-tight">Link Email</p>
+                          <p className="text-[10px] font-body uppercase tracking-wider text-primary leading-tight">Checkout Email</p>
                         </button>
                       )}
                     </div>
@@ -1947,11 +1993,7 @@ export default function AlbumDetail() {
                             <Button
                               onClick={() => {
                                 setShowPaymentChoice(false);
-                                const isFullAlbumPurchase =
-                                  requestedFullAlbum ||
-                                  fullAlbumCheaper ||
-                                  selectedIds.size === 0 ||
-                                  selectedIds.size === clientDeliverablePhotos.length;
+                                const isFullAlbumPurchase = previewIsFullAlbum;
                                 const checkoutAmount = isFullAlbumPurchase ? album.priceFullAlbum : paidTotal;
                                 if (!isFullAlbumPurchase && checkoutAmount === 0) {
                                   handleDownloadFree();
@@ -1963,7 +2005,7 @@ export default function AlbumDetail() {
                                   photoCount: isFullAlbumPurchase ? clientDeliverablePhotos.length : billableSelected.length,
                                   amount: checkoutAmount,
                                   clientEmail: album.clientEmail,
-                                  photoIds: isFullAlbumPurchase ? [] : billableSelected.map(p => p.id),
+                                  photoIds: isFullAlbumPurchase ? [] : unpaidSelected.map(p => p.id),
                                   isFullAlbum: isFullAlbumPurchase,
                                   sessionKey,
                                 });
@@ -1997,26 +2039,16 @@ export default function AlbumDetail() {
             )}
 
           {showProofingGalleryControls && visiblePhotos.length > 0 && (
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
-              <div className="glass-panel rounded-lg p-3 border border-primary/15 bg-primary/5">
-                <Sparkles className="w-4 h-4 text-primary mb-2" />
-                <p className="font-display text-xl text-foreground">{bestOfPhotos.length}</p>
-                <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Best of</p>
-              </div>
+            <div className="grid grid-cols-2 gap-2 mb-4">
               <div className="glass-panel rounded-lg p-3">
                 <Star className="w-4 h-4 text-yellow-400 mb-2" />
-                <p className="font-display text-xl text-foreground">{pickCount}</p>
-                <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Picks</p>
-              </div>
-              <div className="glass-panel rounded-lg p-3">
-                <Clock className="w-4 h-4 text-cyan-300 mb-2" />
-                <p className="font-display text-xl text-foreground">{reviewCount}</p>
-                <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Review</p>
+                <p className="font-display text-xl text-foreground">{starredIds.size}</p>
+                <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Your selection</p>
               </div>
               <div className="glass-panel rounded-lg p-3">
                 <Images className="w-4 h-4 text-muted-foreground mb-2" />
                 <p className="font-display text-xl text-foreground">{visiblePhotos.length}</p>
-                <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">{visibleRejectCount > 0 ? "All visible" : "Client set"}</p>
+                <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Photos in this gallery</p>
               </div>
             </div>
           )}
@@ -2024,6 +2056,7 @@ export default function AlbumDetail() {
           {/* ── Filter / Sort toolbar ──────────────────────────────── */}
           {visiblePhotos.length > 0 && (
             <div className="sticky top-20 z-30 -mx-2 mb-3 flex items-center gap-2 flex-wrap rounded-xl border border-border/60 bg-background/90 p-2 shadow-lg shadow-black/10 backdrop-blur-xl">
+              {!isProofing && !canDownload && paidPhotoIdSet.size > 0 && <Button size="sm" variant={showPurchasedOnly ? "default" : "outline"} aria-pressed={showPurchasedOnly} onClick={() => setShowPurchasedOnly(value => !value)} className="rounded-full gap-1.5 text-xs"><CheckCircle2 className="h-3.5 w-3.5" />{showPurchasedOnly ? "Show all photos" : `Purchased photos (${visiblePhotos.filter(photo => paidPhotoIdSet.has(photo.id)).length})`}</Button>}
               <button
                 onClick={() => setShowGalleryFilters(v => !v)}
                 aria-pressed={showGalleryFilters}
@@ -2161,6 +2194,7 @@ export default function AlbumDetail() {
                        ? undefined
                        : () => toggleSelect(photo.id)}
                    locked={!isProofing && (isPurchasingLocked || isExpired || isDownloadLockedForProofing || (!isPhotoPaid(photo.id) && freeRemaining <= 0 && !selectedIds.has(photo.id)))}
+                   lockedLabel={isDownloadLockedForProofing ? "Preview" : isExpired || isPurchasingLocked ? "View only" : "Purchase"}
                   index={i}
                   showWatermark={false}
                   renderWatermarkOverlay={false}
@@ -2252,18 +2286,20 @@ export default function AlbumDetail() {
       )}
 
       {/* Proofing submit bar */}
-      {isProofing && !proofingSubmitted && (
+      {isProofing && (
         <motion.div
           initial={{ y: 100, opacity: 0 }} animate={{ y: 0, opacity: 1 }}
           className="fixed bottom-0 left-0 right-0 z-40 bg-background/95 backdrop-blur-sm border-t border-yellow-500/20 p-4"
+          style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 1rem)" }}
         >
           <div className="max-w-2xl mx-auto space-y-3">
+            {proofingError && <p role="alert" className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-foreground">{proofingError}</p>}
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm font-display text-foreground">
                   {starredIds.size === 0 ? "No photos selected" : `${starredIds.size} photo${starredIds.size !== 1 ? "s" : ""} selected`}
                 </p>
-                <p className="text-xs font-body text-muted-foreground">Tap a star to select a photo. You can update your selection before submitting.</p>
+                <p role="status" className="text-xs font-body text-muted-foreground">{proofingSubmitting ? "Sending your picks — wait for a receipt." : proofingDraftSaved ? "Draft saved on this device · not submitted yet" : "Keep this page open until you submit your picks."}</p>
               </div>
               <button
                 onClick={handleSubmitSelections}
@@ -2276,7 +2312,10 @@ export default function AlbumDetail() {
             </div>
             <textarea
               value={proofingClientNote}
-              onChange={e => setProofingClientNote(e.target.value)}
+              onChange={e => { proofingSubmissionId.current = generateCapabilityToken("proof"); setProofingClientNote(e.target.value); }}
+              aria-label="Note for your photographer"
+              maxLength={5000}
+              disabled={proofingSubmitting}
               placeholder="Add a note for the photographer (optional)…"
               rows={1}
               className="w-full bg-secondary border border-border rounded-lg px-3 py-2 text-xs font-body text-foreground placeholder:text-muted-foreground/50 resize-none focus:outline-none focus:ring-1 focus:ring-yellow-500/50"
@@ -2550,14 +2589,15 @@ export default function AlbumDetail() {
             <DialogTitle className="font-display text-xl text-foreground">Choose Payment Method</DialogTitle>
             <DialogDescription className="sr-only">Select how you would like to pay for your selected photos.</DialogDescription>
           </DialogHeader>
+          <GalleryRecovery albumId={album.id} />
           <div className="space-y-3 mt-2">
             <p className="text-sm font-body text-muted-foreground">
-              {selectedIds.size} photo{selectedIds.size !== 1 ? "s" : ""} selected
-              {paidCount > 0 && (
+              {previewIsFullAlbum ? `Full album · ${clientDeliverablePhotos.length} photos` : `${selectedIds.size} photo${selectedIds.size !== 1 ? "s" : ""} selected`}
+              {previewCheckoutAmount > 0 && (
                   <>
                     {" · "}
                     <span className="text-primary font-medium">
-                      ${fullAlbumCheaper ? priceFullAlbum : paidTotal}
+                      ${previewCheckoutAmount.toFixed(2)}
                     </span>
                     {fullAlbumCheaper && (
                       <span className="text-muted-foreground"> (full album)</span>
@@ -2570,12 +2610,8 @@ export default function AlbumDetail() {
               <Button
                 onClick={() => {
                   setShowPaymentChoice(false);
-                  const isFullAlbumPurchase =
-                    requestedFullAlbum ||
-                    fullAlbumCheaper ||
-                    selectedIds.size === 0 ||
-                    selectedIds.size === clientDeliverablePhotos.length;
-                  const photosBeingPaid = isFullAlbumPurchase ? [] : billableSelected;
+                  const isFullAlbumPurchase = previewIsFullAlbum;
+                  const photosBeingPaid = isFullAlbumPurchase ? [] : unpaidSelected;
                   // Recalculate amount using only truly unpaid photos
                   const checkoutAmount = isFullAlbumPurchase ? album.priceFullAlbum : paidTotal;
                   // If nothing actually needs paying, just download
@@ -2606,7 +2642,7 @@ export default function AlbumDetail() {
               <Button
                 onClick={() => {
                   setShowPaymentChoice(false);
-                  const isFullAlbumRequest = requestedFullAlbum || fullAlbumCheaper || selectedIds.size === 0 || selectedIds.size === clientDeliverablePhotos.length;
+                  const isFullAlbumRequest = previewIsFullAlbum;
                   setBankTransferFullAlbum(isFullAlbumRequest);
                   // If user hasn't registered email, show email capture first and remember intent
                   if (!registeredEmail && !emailSkippedThisSession) {
@@ -2714,18 +2750,21 @@ export default function AlbumDetail() {
         <DialogContent className="glass-panel border-border max-w-sm">
           <DialogHeader>
             <DialogTitle className="font-display text-xl text-foreground">
-              {pendingStripeParams ? "Email required for payment" : "Link your email"}
+              {pendingStripeParams ? "Save your purchase email" : "Your checkout email"}
             </DialogTitle>
             <DialogDescription className="sr-only">Link an email address to this gallery session and its purchases.</DialogDescription>
           </DialogHeader>
           <div className="space-y-4 mt-2">
             <p className="text-sm font-body text-muted-foreground">
               {pendingStripeParams
-                ? "Enter your email so the photographer can associate it with this purchase."
-                : "Link an email address to purchases made in this secure gallery session."}
+                ? "We’ll save this email with your purchase so you can recover your photos on any device."
+                : "Use your checkout email for purchases in this gallery. Existing purchases stay linked to their original email."}
             </p>
             <input
               type="email"
+              aria-label="Checkout email"
+              autoComplete="email"
+              maxLength={254}
               placeholder="your@email.com"
               value={purchaserEmail}
               onChange={e => setPurchaserEmail(e.target.value)}

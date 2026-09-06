@@ -1,3 +1,4 @@
+import ProofingReceipt from "@/components/ProofingReceipt";
 import React, { useState, useCallback, useEffect, useRef } from "react";
 import DOMPurify from 'dompurify';
 import { usePageTitle } from "@/hooks/use-page-title";
@@ -6118,6 +6119,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
             {/* PICKS SUBMITTED — paid vs free decision */}
             {stage === "selections-submitted" && latest && (
               <div className="space-y-3">
+                <ProofingReceipt album={liveAlbum!} round={latest} />
                 <div className="bg-secondary rounded-lg p-3 space-y-1">
                   <p className="text-xs font-body text-foreground font-medium">{latest.selectedPhotoIds.length} photos selected by client</p>
                   {latest.clientNote && <p className="text-xs font-body text-muted-foreground italic">"{latest.clientNote}"</p>}

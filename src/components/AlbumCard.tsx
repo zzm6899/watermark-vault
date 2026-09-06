@@ -13,6 +13,7 @@ const STATUS_STYLES: Record<AlbumStatus, { label: string; className: string }> =
 
 interface AlbumCardProps {
   id: string;
+  slug?: string;
   title: string;
   coverImage: string;
   photoCount: number;
@@ -21,7 +22,7 @@ interface AlbumCardProps {
   index?: number;
 }
 
-export default function AlbumCard({ id, title, coverImage, photoCount, date, status, index = 0 }: AlbumCardProps) {
+export default function AlbumCard({ id, slug, title, coverImage, photoCount, date, status, index = 0 }: AlbumCardProps) {
   const statusStyle = status ? STATUS_STYLES[status] : null;
 
   return (
@@ -30,7 +31,7 @@ export default function AlbumCard({ id, title, coverImage, photoCount, date, sta
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay: index * 0.1, duration: 0.5 }}
     >
-      <Link to={`/gallery/${id}`} className="group block">
+      <Link to={`/gallery/${encodeURIComponent(slug || id)}`} className="group block">
         <div className="relative aspect-[4/5] overflow-hidden rounded-lg bg-card">
           <img
             src={coverImage}

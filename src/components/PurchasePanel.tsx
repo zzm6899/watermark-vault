@@ -43,7 +43,7 @@ export default function PurchasePanel({
   const breakdownParts: string[] = [];
   if (alreadyPaidCount > 0) breakdownParts.push(`${alreadyPaidCount} purchased`);
   if (freeUsed > 0) breakdownParts.push(`${freeUsed} free`);
-  if (paidCount > 0) breakdownParts.push(`${paidCount} × $${perPhotoPrice} = $${paidTotal}`);
+  if (paidCount > 0) breakdownParts.push(`${paidCount} × $${perPhotoPrice.toFixed(2)} = $${paidTotal.toFixed(2)}`);
   const breakdown = breakdownParts.length ? breakdownParts.join(" · ") : "No charge";
 
   return (
@@ -88,7 +88,7 @@ export default function PurchasePanel({
                 <Button onClick={onPurchaseSelected} size="sm"
                   className="flex-1 h-9 text-xs bg-primary text-primary-foreground hover:bg-primary/90">
                   <ShoppingCart className="w-3.5 h-3.5 mr-1" />
-                  Pay ${paidTotal}
+                  Pay ${paidTotal.toFixed(2)}
                 </Button>
               )}
 
@@ -96,7 +96,7 @@ export default function PurchasePanel({
                 <Button onClick={onPurchaseAlbum} size="sm"
                   className="flex-1 h-9 text-xs bg-green-600 hover:bg-green-500 text-white">
                   <Package className="w-3.5 h-3.5 mr-1" />
-                  ${albumPrice} Album
+                  ${albumPrice.toFixed(2)} Album
                 </Button>
               )}
 
@@ -112,7 +112,7 @@ export default function PurchasePanel({
                 <Button onClick={onPurchaseAlbum} variant="outline" size="sm"
                   className="flex-1 h-9 text-xs">
                   <Package className="w-3.5 h-3.5 mr-1" />
-                  ${priceFullAlbum} Album
+                  ${albumPrice.toFixed(2)} Album
                 </Button>
               )}
 
