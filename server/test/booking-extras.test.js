@@ -7,6 +7,16 @@ const event = { id: "session", title: "Portrait", durations: [30], active: true,
 const input = { eventTypeId: event.id, date: "2030-01-10", time: "09:00", duration: 30, extras: [{ id: "composite", quantity: 2, price: 0, total: 0 }] };
 const context = { eventTypes: [event], bookings: [], timezone: "UTC", now: new Date("2030-01-01") };
 
+test("optional extra descriptions do not change pricing; invalid descriptions are rejected", () => {
+  const selections = [{ id: "composite", quantity: 2 }];
+  for (const description of [undefined, "", "Combine photos into one finished artwork.", "x".repeat(300)]) {
+    assert.deepEqual(priceBookingExtras([{ ...extras[0], description }], selections), priceBookingExtras(extras, selections));
+  }
+  for (const description of [null, 42, {}, "x".repeat(301)]) {
+    assert.throws(() => priceBookingExtras([{ ...extras[0], description }], selections));
+  }
+});
+
 test("server snapshots extras at catalog prices and includes them in percentage deposits", () => {
   const result = validateBookingRequest(input, context);
   assert.equal(result.ok, true);

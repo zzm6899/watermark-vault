@@ -2,7 +2,7 @@
 
 ## Configure optional booking extras
 
-Open **Admin → Events → Edit event → Booking extras**. Add a name, price per item and maximum quantity. For example: Composite image, $35.25 each, maximum 10.
+Open **Admin → Events → Edit event → Booking extras**. Add a name, an optional description (up to 300 characters), price per item and maximum quantity. Descriptions appear below each extra’s name on both public booking pages. For example: Composite image, $35.25 each, maximum 10.
 
 Clients choose a quantity from zero to the configured maximum on the details step. The booking total is the selected duration price plus the extras. Percentage deposits apply to this combined total; fixed deposits remain fixed and cannot exceed the total. Pay-in-full charges the combined total.
 
@@ -34,7 +34,7 @@ Deploy the frontend and backend together: the new approval inbox depends on the 
 
 ## Booking and email refresh
 
-The public booking pages use a light, neutral layout with readable labels, visible progress, larger touch targets, and a responsive two-column details form. Session descriptions collapse in the calendar view. Extras have bounded plus/minus controls and select their existing value on focus. Main-booking details support keyboard submission through a real form. Shared email templates use a white header, neutral summary cards and a dark primary action, with responsive HTML and plain-text alternatives.
+The public booking pages use a dark charcoal layout with gold accents with readable labels, visible progress, larger touch targets, and a responsive two-column details form. Session descriptions collapse in the calendar view. Phone time lists have a bounded scroll area, a full-width Continue button shows the selected time, and step changes return to the top of the page. Extras have bounded plus/minus controls and select their existing value on focus. Main-booking details support keyboard submission through a real form. Shared email templates use a white header, neutral summary cards and a dark primary action, with responsive HTML and plain-text alternatives.
 
 ## Event revenue
 

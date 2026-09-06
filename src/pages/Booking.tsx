@@ -306,6 +306,7 @@ export default function Booking() {
   const restoredDate = restoredBooking ? (() => { const [y,m,d] = restoredBooking.date.split("-").map(Number); return new Date(y, m-1, d); })() : null;
 
   const [step, setStep] = useState<Step>(restoredBooking ? "confirmed" : "event-select");
+  useEffect(() => { window.scrollTo({ top: 0, behavior: "instant" }); }, [step]);
   const [selectedEvent, setSelectedEvent] = useState<EventType | null>(restoredEventType || null);
   const [extraQuantities, setExtraQuantities] = useState<Record<string, number>>(() => Object.fromEntries((restoredBooking?.lineItems || []).map(item => [item.id, item.quantity])));
   const selectionPrice = (event: EventType, duration: number) => bookingQuote(event, duration, extraQuantities).total;
@@ -1163,7 +1164,7 @@ export default function Booking() {
                               </div>
                             )}
                             
-                            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:max-h-[420px] lg:grid-cols-1 lg:overflow-y-auto lg:overflow-x-hidden lg:pr-1">
+                            <div className="booking-time-slots grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-1">
                               {availabilityLoading ? (
                                 <div className="py-6 text-center text-sm font-body text-muted-foreground" role="status">Checking availability…</div>
                               ) : availabilityError ? (
@@ -1269,8 +1270,8 @@ export default function Booking() {
                             </div>
                             {selectedTime && (
                               <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="mt-3">
-                                <Button onClick={() => setStep("questions")} className="w-full bg-primary text-primary-foreground hover:bg-primary/90 font-body tracking-wider uppercase text-xs py-5">
-                                  Continue
+                                <Button onClick={() => setStep("questions")} className="booking-primary-action w-full bg-primary text-primary-foreground hover:bg-primary/90 font-body tracking-wider uppercase text-xs py-5">
+                                  Continue with {use24h ? selectedTime : formatTime12(selectedTime)}
                                 </Button>
                               </motion.div>
                             )}

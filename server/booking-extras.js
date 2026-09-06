@@ -9,6 +9,7 @@ function priceBookingExtras(definitions = [], selections = []) {
   for (const extra of definitions) {
     if (!extra || typeof extra.id !== "string" || !extra.id || catalog.has(extra.id)
       || typeof extra.name !== "string" || !extra.name.trim() || extra.name.length > 160
+      || (extra.description !== undefined && (typeof extra.description !== "string" || extra.description.length > 300))
       || typeof extra.price !== "number" || !Number.isFinite(extra.price) || extra.price < 0 || extra.price > 100000
       || !Number.isInteger(extra.maxQuantity) || extra.maxQuantity < 1 || extra.maxQuantity > 1000) {
       throw new Error("Booking extras configuration is invalid. Please contact the photographer.");

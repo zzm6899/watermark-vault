@@ -160,7 +160,7 @@ function TenantBookingSteps({ currentStep }: { currentStep: Step }) {
               }`}>
                 {done ? <CheckCircle2 className="w-3.5 h-3.5" /> : idx + 1}
               </div>
-              <span className="hidden sm:inline">{s.label}</span>
+              <span>{s.label}</span>
             </div>
             {idx < TENANT_BOOKING_STEPS.length - 1 && (
               <div className={`h-px w-4 sm:w-6 shrink-0 transition-colors ${idx < currentIdx ? "bg-green-500/40" : "bg-border/50"}`} />
@@ -379,7 +379,7 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
     }
   };
 
-  const scrollTop = () => window.scrollTo({ top: 0, behavior: "smooth" });
+  const scrollTop = () => window.scrollTo({ top: 0, behavior: "instant" });
 
   const openTenantCheckout = async (targetBooking: Booking) => {
     if (!tenantSlug || processingCheckout) return;
@@ -926,7 +926,7 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
                         ) : timeSlots.length === 0 ? (
                           <p className="text-xs font-body text-muted-foreground">No times available</p>
                         ) : (
-                          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:max-h-[420px] lg:grid-cols-1 lg:overflow-y-auto lg:overflow-x-hidden lg:pr-1">
+                          <div className="booking-time-slots grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-1">
                             {timeSlots.map(t => (
                               <button
                                 key={t}
@@ -952,8 +952,8 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
 
               {selectedTime && (
                 <div className="flex justify-end">
-                  <Button onClick={() => { setStep("contact"); scrollTop(); }} className="bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2">
-                    Continue
+                  <Button onClick={() => { setStep("contact"); scrollTop(); }} className="booking-primary-action w-full lg:w-auto bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2">
+                    Continue with {formatTime12(selectedTime)}
                   </Button>
                 </div>
               )}

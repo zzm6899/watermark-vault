@@ -11,7 +11,7 @@ const dataDir = fs.mkdtempSync(path.join(root, 'artifacts', 'product-'));
 let child;
 async function main() {
   const date = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
-  const event = { id: 'portrait', title: 'Portrait session', description: 'A relaxed portrait session.', active: true, durations: [30, 60], price: 100.5, prices: { 60: 180 }, questions: [], depositEnabled: true, depositType: 'percentage', depositAmount: 25, depositMethods: ['bank'], extras: [{ id: 'composite', name: 'Composite image', price: 35.25, maxQuantity: 10 }], availability: { recurring: [], specificDates: [{ date, startTime: '09:00', endTime: '17:00' }], blockedDates: [] } };
+  const event = { id: 'portrait', title: 'Portrait session', description: 'A relaxed portrait session.', active: true, durations: [30, 60], price: 100.5, prices: { 60: 180 }, questions: [], depositEnabled: true, depositType: 'percentage', depositAmount: 25, depositMethods: ['bank'], extras: [{ id: 'composite', name: 'Composite image', description: 'Combine multiple photos into one finished artwork, with a custom background and detailed finishing.', price: 35.25, maxQuantity: 10 }], availability: { recurring: [], specificDates: [{ date, startTime: '09:00', endTime: '17:00' }], blockedDates: [] } };
   const request = { id: 'request-one', sessionKey: 'visitor-one', photoIds: ['photo-one'], amount: 20, method: 'bank-transfer', status: 'pending', email: 'alex@example.test', clientNote: 'Portrait extras', requestedAt: new Date().toISOString() };
   fs.writeFileSync(path.join(dataDir, 'db.json'), JSON.stringify({
     wv_profile: { name: 'Preview Studio', businessName: 'Preview Studio', timezone: 'Australia/Sydney', bio: 'Local product preview' },
@@ -39,6 +39,7 @@ async function main() {
     return { status: response.status, body: await response.json() };
   }
   assert.equal((await call('/api/public/config')).body.eventTypes[0].extras[0].name, 'Composite image');
+  assert.equal((await call('/api/public/config')).body.eventTypes[0].extras[0].description, event.extras[0].description);
   const input = { clientName: 'Preview Booker', clientEmail: 'booker@example.test', eventTypeId: 'portrait', date, time: '09:00', duration: 30, answers: {}, paymentMethod: 'bank', payInFull: false, extras: [{ id: 'composite', quantity: 2, price: 0 }], bookingAttemptId: crypto.randomUUID() };
   const created = await call('/api/booking', input);
   assert.equal(created.status, 201, JSON.stringify(created.body));

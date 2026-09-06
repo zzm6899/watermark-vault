@@ -6,6 +6,12 @@ import { bookingQuote } from "@/lib/booking-pricing";
 import { BookingExtras, BookingPriceBreakdown } from "@/components/BookingExtras";
 const event: EventType = { id: "portrait", title: "Portrait", description: "", active: true, color: "primary", durations: [30, 60], questions: [], availability: { recurring: [], specificDates: [], blockedDates: [] }, price: 100.5, durationPrices: { 60: 200 }, extras: [{ id: "composite", name: "Composite image", price: 35.25, maxQuantity: 10 }], depositEnabled: true, depositType: "percentage", depositAmount: 25 };
 describe("booking extras", () => {
+  it("explains an extra accessibly without changing its price", () => {
+    const described = { ...event, extras: [{ ...event.extras![0], description: "Combine photos into one finished artwork." }] };
+    render(<BookingExtras event={described} quantities={{}} onChange={() => {}} />);
+    expect(screen.getByRole("spinbutton", { name: "Composite image" })).toHaveAccessibleDescription("Combine photos into one finished artwork. $35.25 each · up to 10");
+    expect(bookingQuote(described, 30, { composite: 2 })).toEqual(bookingQuote(event, 30, { composite: 2 }));
+  });
   it("updates the displayed itemized total and enforces quantity bounds", () => {
     function Form() {
       const [quantities, setQuantities] = useState({});

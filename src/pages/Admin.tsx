@@ -4263,12 +4263,12 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
   const handleSave = () => {
     if (!title.trim()) { toast.error("Title is required"); return; }
     if (durations.length === 0) { toast.error("Add at least one duration"); return; }
-    if (extras.length > 50 || extras.some(extra => !extra.name.trim() || extra.name.length > 160 || !Number.isFinite(extra.price) || extra.price < 0 || extra.price > 100000 || !Number.isInteger(extra.maxQuantity) || extra.maxQuantity < 1 || extra.maxQuantity > 1000)) {
+    if (extras.length > 50 || extras.some(extra => !extra.name.trim() || extra.name.length > 160 || (extra.description?.length || 0) > 300 || !Number.isFinite(extra.price) || extra.price < 0 || extra.price > 100000 || !Number.isInteger(extra.maxQuantity) || extra.maxQuantity < 1 || extra.maxQuantity > 1000)) {
       toast.error("Each extra needs a name, a price from $0 to $100,000, and a maximum quantity from 1 to 1,000"); return;
     }
     onSave({
       ...eventType,
-      extras: extras.map(extra => ({ ...extra, name: extra.name.trim(), price: Math.round(extra.price * 100) / 100 })),
+      extras: extras.map(extra => ({ ...extra, name: extra.name.trim(), description: extra.description?.trim() || undefined, price: Math.round(extra.price * 100) / 100 })),
       id: eventType?.id || generateId("et"),
       title: title.trim(),
       description: description.trim(),
@@ -4333,6 +4333,7 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
           <label className="text-xs space-y-1">Price per item ($)<Input aria-label={`Extra ${index + 1} price`} type="number" min={0} step="0.01" value={extra.price} onChange={e => setExtras(extras.map(item => item.id === extra.id ? { ...item, price: Number(e.target.value) } : item))} /></label>
           <label className="text-xs space-y-1">Maximum quantity<Input aria-label={`Extra ${index + 1} maximum quantity`} type="number" min={1} max={1000} step={1} value={extra.maxQuantity} onChange={e => setExtras(extras.map(item => item.id === extra.id ? { ...item, maxQuantity: Number(e.target.value) } : item))} /></label>
           <Button variant="ghost" aria-label={`Remove extra ${index + 1}`} onClick={() => setExtras(extras.filter(item => item.id !== extra.id))}><Trash2 className="size-4" /></Button>
+          <label className="col-span-full text-xs space-y-1">Description (optional)<Input aria-label={`Extra ${index + 1} description`} maxLength={300} placeholder="e.g. Combine multiple photos into one finished artwork." value={extra.description || ""} onChange={e => setExtras(extras.map(item => item.id === extra.id ? { ...item, description: e.target.value } : item))} /><span className="block text-muted-foreground">Shown beneath the extra’s name when booking. Up to 300 characters.</span></label>
         </div>)}
         <p className="text-xs text-muted-foreground">Extras are added to the session total. Percentage deposits apply to that total; fixed deposits stay fixed. Existing bookings keep their agreed prices.</p>
       </section>

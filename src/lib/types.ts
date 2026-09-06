@@ -35,6 +35,7 @@ export interface EventTypeAvailability {
 export interface BookingExtra {
   id: string;
   name: string;
+  description?: string;
   price: number;
   maxQuantity: number;
 }
