@@ -12,6 +12,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import Footer from "@/components/Footer";
+import { bookingQuote, sessionPrice } from "@/lib/booking-pricing";
+import { BookingExtras, BookingPriceBreakdown } from "@/components/BookingExtras";
 import BookingAvatar from "@/components/BookingAvatar";
 import BookingReferenceUploads from "@/components/BookingReferenceUploads";
 import { toast } from "sonner";
@@ -88,8 +90,7 @@ function formatDuration(mins: number) {
 
 /** Get the price for a given duration, with fallback to base price */
 function getPriceForDuration(event: import("@/lib/types").EventType, duration: number): number {
-  if (event.prices && event.prices[duration] !== undefined) return event.prices[duration];
-  return event.price ?? 0;
+  return sessionPrice(event, duration);
 }
 
 function formatTime12(t: string) {
@@ -186,16 +187,20 @@ function QuestionInput({ field, value, onChange, inputId, labelId }: { field: Qu
 }
 
 function bookingMatchesSelection(
-  booking: Pick<BookingRecord, "eventTypeId" | "date" | "time" | "duration">,
+  booking: Pick<BookingRecord, "eventTypeId" | "date" | "time" | "duration" | "lineItems">,
   eventTypeId: string,
   date: string,
   time: string,
   duration: number,
+  quantities: Record<string, number>,
 ): boolean {
+  const selected = Object.entries(quantities).filter(([, quantity]) => quantity > 0).sort(([a], [b]) => a.localeCompare(b));
+  const saved = (booking.lineItems || []).map(item => [item.id, item.quantity] as const).sort(([a], [b]) => a.localeCompare(b));
   return booking.eventTypeId === eventTypeId
     && booking.date === date
     && booking.time === time
-    && booking.duration === duration;
+    && booking.duration === duration
+    && JSON.stringify(selected) === JSON.stringify(saved);
 }
 
 export function BookingQuestionField({ field, value, onChange }: { field: QuestionField; value: string; onChange: (val: string) => void }) {
@@ -321,6 +326,8 @@ export default function Booking() {
 
   const [step, setStep] = useState<Step>(restoredBooking ? "confirmed" : "event-select");
   const [selectedEvent, setSelectedEvent] = useState<EventType | null>(restoredEventType || null);
+  const [extraQuantities, setExtraQuantities] = useState<Record<string, number>>(() => Object.fromEntries((restoredBooking?.lineItems || []).map(item => [item.id, item.quantity])));
+  const selectionPrice = (event: EventType, duration: number) => bookingQuote(event, duration, extraQuantities).total;
   const [selectedDuration, setSelectedDuration] = useState<number | null>(restoredBooking?.duration || null);
   const [selectedDate, setSelectedDate] = useState<Date | null>(restoredDate);
   const [selectedTime, setSelectedTime] = useState<string | null>(restoredBooking?.time || null);
@@ -497,6 +504,7 @@ export default function Booking() {
 
   const handleSelectEvent = (ev: EventType) => {
     setSelectedEvent(ev);
+    setExtraQuantities({});
     setSelectedDate(null);
     setSelectedTime(null);
     setAnswers({});
@@ -567,7 +575,7 @@ export default function Booking() {
     }
 
     // Proceed to payment step (skip if free)
-    if (getPriceForDuration(selectedEvent, selectedDuration!) === 0) {
+    if (selectionPrice(selectedEvent, selectedDuration!) === 0) {
       handleCompletePaymentFree();
     } else {
       setStep("payment");
@@ -578,12 +586,8 @@ export default function Booking() {
     if (!selectedEvent || !selectedDate || !selectedTime || !selectedDuration) return null;
     const modifyToken = generateCapabilityToken("mod");
     const depositEnabled = selectedEvent.depositEnabled && selectedEvent.depositAmount && selectedEvent.depositAmount > 0;
-    const depositAmt = depositEnabled
-      ? selectedEvent.depositType === "percentage"
-        ? Math.round((getPriceForDuration(selectedEvent, selectedDuration!) * (selectedEvent.depositAmount || 0)) / 100)
-        : (selectedEvent.depositAmount || 0)
-      : 0;
-    const totalPrice = getPriceForDuration(selectedEvent, selectedDuration!);
+    const depositAmt = bookingQuote(selectedEvent, selectedDuration, extraQuantities).deposit;
+    const totalPrice = selectionPrice(selectedEvent, selectedDuration!);
     // If user chose pay-in-full, skip deposit logic
     const skipDeposit = payFullInstead && depositEnabled;
     // Booking must stay "pending" until the deposit is actually received
@@ -637,6 +641,7 @@ export default function Booking() {
       clientName: draft.clientName, clientEmail: draft.clientEmail, date: draft.date, time: draft.time,
       eventTypeId: selectedEvent.id, duration: draft.duration, answers: draft.answers,
       paymentMethod, payInFull: payFullInstead,
+      extras: (selectedEvent.extras || []).map(extra => ({ id: extra.id, quantity: extraQuantities[extra.id] || 0 })),
       phone: clientPhone.trim(),
       bookingAttemptId,
     });
@@ -683,7 +688,7 @@ export default function Booking() {
     setPaymentActionError(null);
     try {
       const existing = lastBookingId ? getBookings().find(item => item.id === lastBookingId) : undefined;
-      if (existing && !bookingMatchesSelection(existing, selectedEvent.id, toDateStr(selectedDate), selectedTime, selectedDuration)) {
+      if (existing && !bookingMatchesSelection(existing, selectedEvent.id, toDateStr(selectedDate), selectedTime, selectedDuration, extraQuantities)) {
         setPaymentActionError({
           kind: "api",
           message: "A different booking is already holding your earlier selection. Open that booking to change or cancel it before paying for this new time.",
@@ -878,7 +883,7 @@ export default function Booking() {
                 <p className="truncate text-sm font-medium text-foreground">{selectedEvent.title}</p>
                 <p className="truncate text-xs text-muted-foreground">{selectedDate ? selectedDate.toLocaleDateString("en-AU", { weekday: "short", day: "numeric", month: "short" }) : "Choose a date"}{selectedTime ? ` · ${formatTime12(selectedTime)}` : ""}{selectedDuration ? ` · ${formatDuration(selectedDuration)}` : ""}</p>
               </div>
-              {selectedDuration && <span className="shrink-0 rounded-full border border-primary/20 bg-primary/10 px-2.5 py-1 text-xs font-semibold text-primary">${getPriceForDuration(selectedEvent, selectedDuration)}</span>}
+              {selectedDuration && <span className="shrink-0 rounded-full border border-primary/20 bg-primary/10 px-2.5 py-1 text-xs font-semibold text-primary">${selectionPrice(selectedEvent, selectedDuration)}</span>}
             </aside>
           )}
           <AnimatePresence mode="wait">
@@ -1334,6 +1339,11 @@ export default function Booking() {
                   </div>
                 </div>
 
+                <div className="mb-6">
+                  <h2 className="font-display text-2xl text-foreground">Your details</h2>
+                  <p className="mt-2 text-sm text-muted-foreground">Tell us who’s coming. We’ll use your email for your booking confirmation.</p>
+                  <p className="mt-2 text-xs text-muted-foreground">Fields marked * are required.</p>
+                </div>
                 <div className="space-y-5">
                   <div>
                     <label htmlFor="booking-client-name" className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-2 block">Name <span className="text-destructive">*</span></label>
@@ -1352,8 +1362,13 @@ export default function Booking() {
                   ))}
                 </div>
 
+                <div className="mt-6 space-y-4">
+                  <BookingExtras event={selectedEvent} quantities={extraQuantities} onChange={setExtraQuantities} />
+                  <BookingPriceBreakdown base={sessionPrice(selectedEvent, selectedDuration)} items={bookingQuote(selectedEvent, selectedDuration, extraQuantities).lineItems} total={selectionPrice(selectedEvent, selectedDuration)} />
+                </div>
+
                 <Button onClick={handleSubmitQuestions} disabled={processingPayment} size="lg" className="w-full mt-6 bg-primary text-primary-foreground hover:bg-primary/90 font-body tracking-wider uppercase text-xs py-6">
-                  {processingPayment ? "Submitting…" : getPriceForDuration(selectedEvent, selectedDuration) === 0 ? "Confirm Free Booking" : "Continue to Payment"}
+                  {processingPayment ? "Submitting…" : selectionPrice(selectedEvent, selectedDuration) === 0 ? "Confirm Free Booking" : "Continue to Payment"}
                 </Button>
                 <p className="text-center text-[10px] font-body text-muted-foreground/40 mt-4">By booking, you agree to our terms and conditions.</p>
               </motion.div>
@@ -1368,17 +1383,14 @@ export default function Booking() {
                 toDateStr(selectedDate),
                 selectedTime,
                 selectedDuration,
+                extraQuantities,
               );
               const existingBooking = existingBookingMismatch ? null : existingBookingCandidate;
               const existingChargeKnown = !existingBooking || hasAuthoritativeBookingCharge(existingBooking);
               const storedCharge = existingBooking ? getAuthoritativeBookingCharge(existingBooking) : null;
               const configuredDepositEnabled = !!(selectedEvent.depositEnabled && selectedEvent.depositAmount && selectedEvent.depositAmount > 0);
-              const configuredTotal = getPriceForDuration(selectedEvent, selectedDuration!);
-              const configuredDeposit = configuredDepositEnabled
-                ? selectedEvent.depositType === "percentage"
-                  ? Math.round((configuredTotal * (selectedEvent.depositAmount || 0)) / 100)
-                  : (selectedEvent.depositAmount || 0)
-                : 0;
+              const configuredTotal = selectionPrice(selectedEvent, selectedDuration!);
+              const configuredDeposit = bookingQuote(selectedEvent, selectedDuration, extraQuantities).deposit;
               // Existing bookings retain the exact price and deposit accepted by the server,
               // even if the event type is edited before the client returns to this screen.
               const depositEnabled = storedCharge?.depositRequired ?? configuredDepositEnabled;
@@ -1567,6 +1579,7 @@ export default function Booking() {
                     </div>
                   )}
 
+                  <div className="mb-5"><BookingPriceBreakdown base={existingBooking ? existingBooking.sessionPrice : sessionPrice(selectedEvent, selectedDuration)} items={existingBooking ? existingBooking.lineItems : bookingQuote(selectedEvent, selectedDuration, extraQuantities).lineItems} total={totalPrice} /></div>
                   {/* Booking summary */}
                   <div className="glass-panel rounded-xl p-5 mb-5">
                     <div className="flex items-center gap-3 mb-3">
@@ -1728,6 +1741,7 @@ export default function Booking() {
 
               return (
               <motion.div key="confirmed" initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="max-w-md mx-auto text-center">
+                <div className="mb-5 text-left"><BookingPriceBreakdown base={lastBooking?.sessionPrice} items={lastBooking?.lineItems} total={totalPrice} /></div>
                 <div className="glass-panel rounded-xl p-8">
                   {isCancelled ? <XCircle className="w-12 h-12 text-destructive mx-auto mb-4" /> : <CheckCircle2 className="w-12 h-12 text-green-400 mx-auto mb-4" />}
                   <h2 className="font-display text-2xl text-foreground mb-2">

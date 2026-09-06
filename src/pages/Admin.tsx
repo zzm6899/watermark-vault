@@ -1,3 +1,5 @@
+import DownloadRequestInbox from "@/components/DownloadRequestInbox";
+import { BookingPriceBreakdown } from "@/components/BookingExtras";
 import ProofingReceipt from "@/components/ProofingReceipt";
 import React, { useState, useCallback, useEffect, useRef } from "react";
 import DOMPurify from 'dompurify';
@@ -186,6 +188,7 @@ const PaymentOperationsView = React.lazy(() => import("@/pages/admin/PaymentOper
 const AlbumWorkspaceHeader = React.lazy(() => import("@/pages/admin/AlbumWorkspaceHeader"));
 const SlotIntervalField = React.lazy(() => import("@/pages/admin/SlotIntervalField"));
 const AlbumCardCover = React.lazy(() => import("@/pages/admin/AlbumCardUI").then(module => ({ default: module.AlbumCardCover })));
+const AlbumListRow = React.lazy(() => import("@/pages/admin/AlbumCardUI").then(module => ({ default: module.AlbumListRow })));
 const AlbumCardPrimaryActions = React.lazy(() => import("@/pages/admin/AlbumCardUI").then(module => ({ default: module.AlbumCardPrimaryActions })));
 const AlbumEditorSectionHeading = React.lazy(() => import("@/pages/admin/AlbumEditorSectionHeading"));
 const AlbumSlugField = React.lazy(() => import("@/pages/admin/AlbumSlugField"));
@@ -1714,6 +1717,7 @@ function ShootDayCommandCenterView() {
 // ─── Dashboard ───────────────────────────────────────
 function DashboardView() {
   const navigate = useNavigate();
+  const [, refreshDownloadRequests] = useState(0);
   const bookings = getBookings();
   const albums = getAlbums();
   const settings = getSettings();
@@ -1753,22 +1757,6 @@ function DashboardView() {
     const totalDownloaded = history.reduce((sum, h) => sum + h.photoIds.length, 0);
     return { id: alb.id, title: alb.title, totalPhotos: albumPhotoTotal(alb), totalDownloaded, sessions: history.length, lastDownload: history.length > 0 ? history[history.length - 1].downloadedAt : null };
   }).filter(a => a.totalPhotos > 0);
-
-  const handleApproveRequest = (albumId: string, reqIdx: number) => {
-    const alb = albums.find(a => a.id === albumId);
-    if (!alb) return;
-    const updated = { ...alb };
-    const req = updated.downloadRequests![reqIdx];
-    updated.downloadRequests = updated.downloadRequests!.map((r, i) =>
-      i === reqIdx ? { ...r, status: "approved" as const, approvedAt: new Date().toISOString() } : r
-    );
-    if (req?.photoIds?.length) {
-      const existing = updated.paidPhotoIds || [];
-      updated.paidPhotoIds = [...new Set([...existing, ...req.photoIds])];
-    }
-    updateAlbum(updated);
-    toast.success("Download request approved — client can now download");
-  };
 
   const totalSessionHours = Math.floor(totalSessionMins / 60);
   const totalSessionRemMins = totalSessionMins % 60;
@@ -2300,31 +2288,7 @@ function DashboardView() {
         </div>
       </div>
 
-      {/* ── Pending Download Requests ── */}
-      {allPendingRequests.length > 0 && (
-        <>
-          <h3 className="font-display text-base text-foreground mb-3 flex items-center gap-2">
-            <Download className="w-4 h-4 text-yellow-400" /> Pending Requests
-          </h3>
-          <div className="space-y-2 mb-6">
-            {allPendingRequests.map((req, i) => (
-              <div key={i} className="glass-panel rounded-xl p-3 flex items-center justify-between gap-3">
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-body text-foreground font-medium truncate">{req._albumTitle}</p>
-                  <p className="text-xs font-body text-muted-foreground">
-                    {req.photoIds.length} photos · {req.method} · {new Date(req.requestedAt).toLocaleDateString()}
-                  </p>
-                  {req.clientNote && <p className="text-xs font-body text-muted-foreground mt-0.5 italic">"{req.clientNote}"</p>}
-                </div>
-                <Button size="sm" variant="outline" onClick={() => handleApproveRequest(req._albumId, req._reqIdx)}
-                  className="gap-1 text-xs font-body border-green-500/30 text-green-400 hover:bg-green-500/10 flex-shrink-0 h-8">
-                  <Unlock className="w-3 h-3" /> Approve
-                </Button>
-              </div>
-            ))}
-          </div>
-        </>
-      )}
+      {allPendingRequests.length > 0 && <div className="mb-6"><DownloadRequestInbox albums={albums} onUpdated={() => refreshDownloadRequests(value => value + 1)} /></div>}
 
       {/* ── Album Download Stats — card list on mobile, table on md+ ── */}
       {albumDownloadStats.length > 0 && (
@@ -2852,6 +2816,17 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
   const [archivingBookingIds, setArchivingBookingIds] = useState<Set<string>>(new Set());
   const [resolvingPaymentReviewId, setResolvingPaymentReviewId] = useState<string | null>(null);
   const [showCancelled, setShowCancelled] = useState(false);
+  const [bookingFocus, setBookingFocus] = useState<"all" | "pending" | "today" | "next7" | "payment" | "review">("all");
+  const resetBookingFilters = () => {
+    setBookingSearch("");
+    setStatusFilter("all");
+    setPaymentFilter("all");
+    setPaymentReviewOnly(false);
+    setArchiveFilter("active");
+    setShowCancelled(false);
+    setBookingFocus("all");
+    setSelectedBookingIds(new Set());
+  };
   const albums = getAlbums();
   const [emailLogs, setEmailLogs] = useState<Record<string, { id: string; type: string; sentAt: string; openedAt?: string; subject: string; to: string }[]>>({});
   const [sendingReminder, setSendingReminder] = useState<string | null>(null);
@@ -3067,7 +3042,16 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
     else { setSortKey(key); setSortDir(key === "date" ? "desc" : "asc"); }
   };
 
+  const today = localDateString(new Date());
+  const nextWeek = new Date();
+  nextWeek.setDate(nextWeek.getDate() + 7);
+  const nextWeekStr = localDateString(nextWeek);
   const filteredBookings = bookings.filter(bk => {
+    if (bookingFocus === "pending" && (bk.status !== "pending" || hasExpiredBookingPaymentHold(bk))) return false;
+    if (bookingFocus === "today" && (bk.date !== today || bk.status === "cancelled")) return false;
+    if (bookingFocus === "next7" && (bk.date < today || bk.date > nextWeekStr || bk.status === "cancelled")) return false;
+    if (bookingFocus === "payment" && !bookingNeedsOutstandingPayment(bk)) return false;
+    if (bookingFocus === "review" && !bookingNeedsManualPaymentReview(bk)) return false;
     if (archiveFilter === "active" && bk.archived === true) return false;
     if (archiveFilter === "archived" && bk.archived !== true) return false;
     if (statusFilter !== "all" && bk.status !== statusFilter) return false;
@@ -3075,7 +3059,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
     if (paymentFilter !== "all" && (bk.paymentStatus || "unpaid") !== paymentFilter) return false;
     if (paymentReviewOnly && !bookingNeedsManualPaymentReview(bk)) return false;
     if (!bookingSearch) return true;
-    const q = bookingSearch.toLowerCase();
+    const q = bookingSearch.trim().toLowerCase();
     return (bk.clientName || "").toLowerCase().includes(q)
       || (bk.clientEmail || "").toLowerCase().includes(q)
       || bookingPaymentReference(bk).toLowerCase().includes(q)
@@ -3089,10 +3073,6 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
       || (bk.createdAt ? new Date(bk.createdAt).toLocaleDateString("en-AU") : "").includes(q);
   });
 
-  const today = localDateString(new Date());
-  const nextWeek = new Date();
-  nextWeek.setDate(nextWeek.getDate() + 7);
-  const nextWeekStr = localDateString(nextWeek);
   const operationalBookings = bookings.filter(b => b.archived !== true);
   const paymentReviewCount = operationalBookings.filter(bookingNeedsManualPaymentReview).length;
   const archivedPaymentReviewCount = bookings.filter(b => b.archived === true && bookingNeedsManualPaymentReview(b)).length;
@@ -3197,6 +3177,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
               variant="outline"
               className="gap-1.5 font-body text-xs border-red-500/40 text-red-300 hover:bg-red-500/10 shrink-0"
               onClick={() => {
+                setBookingFocus("all");
                 setArchiveFilter(paymentReviewCount > 0 ? "active" : "archived");
                 setPaymentReviewOnly(true);
                 setPaymentFilter("all");
@@ -3285,16 +3266,26 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
 
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-5">
         {[
-          { label: "Awaiting Confirmation", value: bookingSummary.pending, tone: "text-yellow-400" },
-          { label: "Today", value: bookingSummary.today, tone: "text-primary" },
-          { label: "Next 7 Days", value: bookingSummary.next7, tone: "text-blue-400" },
-          { label: "Needs Payment", value: bookingSummary.needsPayment, tone: "text-red-400" },
-          { label: "Manual Review", value: bookingSummary.paymentReview, tone: "text-red-300" },
+          { id: "pending", label: "Awaiting Confirmation", value: bookingSummary.pending, tone: "text-yellow-400" },
+          { id: "today", label: "Today", value: bookingSummary.today, tone: "text-primary" },
+          { id: "next7", label: "Next 7 Days", value: bookingSummary.next7, tone: "text-blue-400" },
+          { id: "payment", label: "Needs Payment", value: bookingSummary.needsPayment, tone: "text-red-400" },
+          { id: "review", label: "Manual Review", value: bookingSummary.paymentReview, tone: "text-red-300" },
         ].map(item => (
-          <div key={item.label} className={`glass-panel rounded-xl p-3 ${item.label === "Manual Review" && item.value > 0 ? "border border-red-500/40 bg-red-500/5" : ""}`}>
+          <button key={item.label} aria-pressed={bookingFocus === item.id}
+            onClick={() => {
+              resetBookingFilters();
+              if (bookingFocus !== item.id) {
+                setBookingFocus(item.id as typeof bookingFocus);
+                setShowCancelled(true);
+                if (item.id === "today" || item.id === "next7") { setSortKey("date"); setSortDir("asc"); }
+              }
+            }}
+            className={`glass-panel rounded-xl p-4 text-left transition-colors hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${bookingFocus === item.id ? "ring-2 ring-primary bg-primary/5" : ""} ${item.label === "Manual Review" && item.value > 0 ? "border border-red-500/40 bg-red-500/5" : ""}`}>
             <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground">{item.label}</p>
             <p className={`font-display text-2xl mt-1 ${item.tone}`}>{item.value}</p>
-          </div>
+            <p className="mt-2 text-xs text-muted-foreground">{bookingFocus === item.id ? "Showing bookings · click to clear" : "View bookings →"}</p>
+          </button>
         ))}
       </div>
 
@@ -3432,10 +3423,14 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
         </div>
       ) : (
         <>
-          <div className="flex flex-col sm:flex-row sm:items-center gap-2 mb-3">
-            <div className="relative flex-1 max-w-xs">
+          <div className="glass-panel rounded-xl p-4 flex flex-col gap-3 mb-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p role="status" className="text-sm font-body text-muted-foreground">Showing <span className="font-semibold text-foreground">{sortedBookings.length}</span> of {bookings.length} bookings{bookingFocus !== "all" ? ` · ${({ pending: "Awaiting confirmation", today: "Today", next7: "Next 7 days", payment: "Needs payment", review: "Manual review" })[bookingFocus]}` : ""}</p>
+              <Button variant="ghost" size="sm" onClick={resetBookingFilters}>Reset filters</Button>
+            </div>
+            <div className="relative w-full">
               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
-              <Input value={bookingSearch} onChange={e => setBookingSearch(e.target.value)} placeholder="Search bookings…" className="pl-8 h-8 text-xs font-body" />
+              <Input aria-label="Search bookings" value={bookingSearch} onChange={e => setBookingSearch(e.target.value)} placeholder="Search by client, email, reference or date…" className="pl-8 h-11 text-sm font-body" />
             </div>
             <div className="inline-flex items-center rounded-lg border border-border/60 bg-secondary/30 p-0.5" aria-label="Booking archive view">
               {([
@@ -3443,8 +3438,8 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                 { id: "archived" as const, label: "Archived", count: bookings.length - operationalBookings.length },
                 { id: "all" as const, label: "All", count: bookings.length },
               ]).map(option => (
-                <button key={option.id} onClick={() => { setArchiveFilter(option.id); setSelectedBookingIds(new Set()); }}
-                  className={`text-[10px] font-body tracking-wider uppercase px-2 py-1 rounded-md transition-colors ${archiveFilter === option.id ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}>
+                <button key={option.id} aria-pressed={archiveFilter === option.id} onClick={() => { setArchiveFilter(option.id); setBookingFocus("all"); setSelectedBookingIds(new Set()); }}
+                  className={`min-h-10 text-xs font-body px-3 py-2 rounded-md transition-colors ${archiveFilter === option.id ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}>
                   {option.label} <span className="opacity-60">{option.count}</span>
                 </button>
               ))}
@@ -3452,7 +3447,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
             <div className="flex items-center gap-1 flex-wrap overflow-x-auto">
               <span className="text-[10px] font-body text-muted-foreground/50 mr-1">Filter:</span>
               {(["all", "pending", "confirmed", "completed", "cancelled"] as const).map(s => (
-                <button key={s} onClick={() => setStatusFilter(s)} className={`text-[10px] font-body tracking-wider uppercase px-2 py-1 rounded transition-colors capitalize ${statusFilter === s ? "bg-primary/15 text-primary" : "text-muted-foreground hover:text-foreground"}`}>
+                <button key={s} aria-pressed={statusFilter === s} onClick={() => setStatusFilter(s)} className={`min-h-10 text-xs font-body px-3 py-2 rounded-lg transition-colors capitalize ${statusFilter === s ? "bg-primary/15 text-primary" : "text-muted-foreground hover:text-foreground"}`}>
                   {s}
                 </button>
               ))}
@@ -3465,7 +3460,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
             <div className="flex items-center gap-1 flex-wrap overflow-x-auto">
               <span className="text-[10px] font-body text-muted-foreground/50 mr-1">Payment:</span>
               {(["all", "unpaid", "deposit-paid", "pending-confirmation", "paid", "cash"] as const).map(s => (
-                <button key={s} onClick={() => setPaymentFilter(s)} className={`text-[10px] font-body tracking-wider uppercase px-2 py-1 rounded transition-colors capitalize ${paymentFilter === s ? "bg-primary/15 text-primary" : "text-muted-foreground hover:text-foreground"}`}>
+                <button key={s} aria-pressed={paymentFilter === s} onClick={() => setPaymentFilter(s)} className={`min-h-10 text-xs font-body px-3 py-2 rounded-lg transition-colors capitalize ${paymentFilter === s ? "bg-primary/15 text-primary" : "text-muted-foreground hover:text-foreground"}`}>
                   {s.replace("-", " ")}
                 </button>
               ))}
@@ -3493,6 +3488,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
             <div className="glass-panel rounded-xl p-8 text-center">
               <Search className="w-8 h-8 text-muted-foreground/30 mx-auto mb-3" />
               <p className="text-sm font-body text-muted-foreground">No bookings match the current filters.</p>
+              <Button variant="outline" className="mt-4" onClick={resetBookingFilters}>Reset filters</Button>
             </div>
           ) : sortedBookings.map((bk) => {
             const isExpanded = expandedId === bk.id;
@@ -3631,6 +3627,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                 </div>
                 {isExpanded && (
                   <div className="px-4 pb-4 border-t border-border/50 pt-3 space-y-3">
+                    <BookingPriceBreakdown base={bk.sessionPrice} items={bk.lineItems} total={bk.paymentAmount || 0} />
                     {!!bk.referenceImages?.length && (
                       <section className="rounded-lg border border-border/60 bg-secondary/20 p-3">
                         <p className="mb-2 text-[10px] font-body uppercase tracking-wider text-muted-foreground">Client reference images · {bk.referenceImages.length}</p>
@@ -4148,6 +4145,7 @@ function EventTypesView() {
 
       {(showNew || editing) && (
         <EventTypeEditor
+          key={editing?.id || "new-event"}
           eventType={editing}
           onSave={(et) => {
             if (editing) { updateEventType(et); }
@@ -4192,14 +4190,14 @@ function EventTypesView() {
                 </div>
               </div>
               <div className="flex items-center gap-3 pl-5 sm:pl-0">
-                <Switch checked={et.active} onCheckedChange={() => toggleActive(et.id)} />
+                <Switch aria-label={`${et.active ? "Disable" : "Enable"} ${et.title}`} checked={et.active} onCheckedChange={() => toggleActive(et.id)} />
                 <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-foreground" title="Duplicate" onClick={() => handleDuplicate(et)}>
                   <Copy className="w-4 h-4" />
                 </Button>
-                <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-foreground" onClick={() => setEditing(et)}>
+                <Button aria-label={`Edit ${et.title}`} variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-foreground" onClick={() => setEditing(et)}>
                   <Edit className="w-4 h-4" />
                 </Button>
-                <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-destructive" onClick={() => handleDelete(et.id)}>
+                <Button aria-label={`Delete ${et.title}`} variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-destructive" onClick={() => handleDelete(et.id)}>
                   <Trash2 className="w-4 h-4" />
                 </Button>
               </div>
@@ -4219,7 +4217,8 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
   const [location, setLocation] = useState(eventType?.location || "");
   const [durations, setDurations] = useState<number[]>(eventType?.durations || [30]);
   const [price, setPrice] = useState(eventType?.price || 0);
-  const [prices, setPrices] = useState<Record<number, number>>(eventType?.prices || {});
+  const [prices, setPrices] = useState<Record<number, number>>({ ...eventType?.prices, ...eventType?.durationPrices });
+  const [extras, setExtras] = useState<NonNullable<EventType["extras"]>>(eventType?.extras || []);
   const [requiresConfirmation, setRequiresConfirmation] = useState(eventType?.requiresConfirmation || false);
   const [depositEnabled, setDepositEnabled] = useState(eventType?.depositEnabled || false);
   const [depositAmount, setDepositAmount] = useState(eventType?.depositAmount || 0);
@@ -4264,7 +4263,12 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
   const handleSave = () => {
     if (!title.trim()) { toast.error("Title is required"); return; }
     if (durations.length === 0) { toast.error("Add at least one duration"); return; }
+    if (extras.length > 50 || extras.some(extra => !extra.name.trim() || extra.name.length > 160 || !Number.isFinite(extra.price) || extra.price < 0 || extra.price > 100000 || !Number.isInteger(extra.maxQuantity) || extra.maxQuantity < 1 || extra.maxQuantity > 1000)) {
+      toast.error("Each extra needs a name, a price from $0 to $100,000, and a maximum quantity from 1 to 1,000"); return;
+    }
     onSave({
+      ...eventType,
+      extras: extras.map(extra => ({ ...extra, name: extra.name.trim(), price: Math.round(extra.price * 100) / 100 })),
       id: eventType?.id || generateId("et"),
       title: title.trim(),
       description: description.trim(),
@@ -4272,6 +4276,7 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
       color: "primary",
       price,
       prices: Object.keys(prices).length > 0 ? prices : undefined,
+      durationPrices: Object.keys(prices).length > 0 ? prices : undefined,
       active: eventType?.active ?? true,
       requiresConfirmation,
       depositEnabled,
@@ -4318,6 +4323,19 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
           </div>
         </div>
       </div>
+      <section className="rounded-xl border border-border p-4 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div><h4 className="font-medium">Booking extras</h4><p className="text-sm text-muted-foreground">Optional line items, such as composite images. Clients choose 0 up to your limit.</p></div>
+          <Button variant="outline" size="sm" disabled={extras.length >= 50} onClick={() => setExtras([...extras, { id: generateId("extra"), name: "", price: 0, maxQuantity: 10 }])}><Plus className="mr-2 size-4" /> Add extra</Button>
+        </div>
+        {extras.map((extra, index) => <div key={extra.id} className="grid grid-cols-2 sm:grid-cols-[1fr_120px_120px_auto] items-end gap-3 rounded-lg bg-secondary/30 p-3">
+          <label className="col-span-2 sm:col-span-1 text-xs space-y-1">Name<Input aria-label={`Extra ${index + 1} name`} maxLength={160} placeholder="Composite image" value={extra.name} onChange={e => setExtras(extras.map(item => item.id === extra.id ? { ...item, name: e.target.value } : item))} /></label>
+          <label className="text-xs space-y-1">Price per item ($)<Input aria-label={`Extra ${index + 1} price`} type="number" min={0} step="0.01" value={extra.price} onChange={e => setExtras(extras.map(item => item.id === extra.id ? { ...item, price: Number(e.target.value) } : item))} /></label>
+          <label className="text-xs space-y-1">Maximum quantity<Input aria-label={`Extra ${index + 1} maximum quantity`} type="number" min={1} max={1000} step={1} value={extra.maxQuantity} onChange={e => setExtras(extras.map(item => item.id === extra.id ? { ...item, maxQuantity: Number(e.target.value) } : item))} /></label>
+          <Button variant="ghost" aria-label={`Remove extra ${index + 1}`} onClick={() => setExtras(extras.filter(item => item.id !== extra.id))}><Trash2 className="size-4" /></Button>
+        </div>)}
+        <p className="text-xs text-muted-foreground">Extras are added to the session total. Percentage deposits apply to that total; fixed deposits stay fixed. Existing bookings keep their agreed prices.</p>
+      </section>
       <div>
         <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Description</label>
         <RichTextEditor value={description} onChange={setDescription} minHeight="80px" />
@@ -4546,6 +4564,16 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
 
 // ─── Albums ──────────────────────────────────────────
 function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: string | null; onClearPrefill?: () => void }) {
+  const albumLocation = useLocation();
+  const [albumLayout, setAlbumLayout] = useState<"compact" | "comfortable" | "list">(() => {
+    try { const saved = localStorage.getItem("wv_admin_album_layout"); return saved === "comfortable" || saved === "list" ? saved : "compact"; } catch { return "compact"; }
+  });
+  const [albumFilter, setAlbumFilter] = useState("all");
+  const [showRequests, setShowRequests] = useState(() => new URLSearchParams(albumLocation.search).get("panel") === "requests");
+  const [albumPage, setAlbumPage] = useState(1);
+  const albumPageSize = 24;
+  useEffect(() => { try { localStorage.setItem("wv_admin_album_layout", albumLayout); } catch { /* optional preference */ } }, [albumLayout]);
+
   const [albums, setAlbumsState] = useState<Album[]>(() => dedupeAlbumsBySlug(getAlbums()));
   const bookings = getBookings();
   const settings = getSettings();
@@ -4557,6 +4585,15 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
   const [albumSortDir, setAlbumSortDir] = useState<SortDir>("desc");
   const [albumSearch, setAlbumSearch] = useState("");
   const [brokenCovers, setBrokenCovers] = useState<Set<string>>(new Set());
+  useEffect(() => { setAlbumPage(1); }, [albumSearch, albumFilter, albumSortKey, albumSortDir]);
+  useEffect(() => {
+    const albumId = new URLSearchParams(albumLocation.search).get("album");
+    if (albumId) {
+      const target = getAlbums().find(album => album.id === albumId);
+      if (target) { setEditing(target); setShowRequests(true); }
+    }
+  }, [albumLocation.search]);
+
 
   useEffect(() => {
     if (prefillBookingId) {
@@ -4572,6 +4609,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
     let timerId: ReturnType<typeof setTimeout> | undefined;
     const poll = async () => {
       if (cancelled) return;
+      if (document.hidden) { timerId = setTimeout(poll, 15000); return; }
       // Fetch only album stubs (metadata without photos) so the 5-second poll
       // does not re-download the entire photo arrays on every tick.  Photos
       // already loaded into localStorage are preserved by the merge below.
@@ -4772,6 +4810,12 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
         </div>
       </div>
 
+      <div className="flex flex-wrap items-center gap-2 mb-4">
+        <Button variant={showRequests ? "default" : "outline"} onClick={() => setShowRequests(!showRequests)} aria-expanded={showRequests}><Download className="mr-2 size-4" /> Download requests · {albums.reduce((sum, album) => sum + (album.downloadRequests || []).filter(request => request.status === "pending").length, 0)} pending</Button>
+        <span className="text-sm text-muted-foreground">See who requested access, which photos, and the transfer amount.</span>
+      </div>
+      {showRequests && <div className="mb-5"><DownloadRequestInbox albums={albums} onOpenAlbum={album => { setEditing(album); setShowNew(false); }} onUpdated={updated => { setAlbumsState(previous => previous.map(album => album.id === updated.id ? updated : album)); setEditing(previous => previous?.id === updated.id ? { ...previous, downloadRequests: updated.downloadRequests } : previous); }} /></div>}
+
       {mergeMode && (
         <div className="glass-panel rounded-xl p-4 mb-4 flex items-center justify-between">
           <p className="text-sm font-body text-muted-foreground">Select albums to merge ({mergeSelection.size} selected)</p>
@@ -4783,6 +4827,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
 
       {(showNew || editing) && (
         <AlbumEditor
+          key={editing?.id || "new-album"}
           album={editing}
           bookings={bookings}
           settings={settings}
@@ -4808,8 +4853,12 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
           else { setAlbumSortKey(key); setAlbumSortDir(key === "date" ? "desc" : "asc"); }
         };
         const filteredAlbums = albums.filter(a => {
+          if (albumFilter === "requests" && !(a.downloadRequests || []).some(request => request.status === "pending")) return false;
+          if (albumFilter === "picks" && a.proofingStage !== "selections-submitted") return false;
+          if (albumFilter === "hidden" && a.enabled !== false) return false;
+          if (albumFilter === "delivered" && a.status !== "delivered" && a.proofingStage !== "finals-delivered") return false;
           if (!albumSearch) return true;
-          const q = albumSearch.toLowerCase();
+          const q = albumSearch.trim().toLowerCase();
           const linkedInstagram = (a.instagramHandle || bookingMap.get(a.bookingId || "")?.instagramHandle || "").toLowerCase();
           return a.title.toLowerCase().includes(q)
             || (a.clientName || "").toLowerCase().includes(q)
@@ -4833,6 +4882,9 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
             {label} {albumSortKey === k ? (albumSortDir === "asc" ? "↑" : "↓") : ""}
           </button>
         );
+        const pageCount = Math.max(1, Math.ceil(sortedAlbums.length / albumPageSize));
+        const currentPage = Math.min(albumPage, pageCount);
+        const visibleAlbums = sortedAlbums.slice((currentPage - 1) * albumPageSize, currentPage * albumPageSize);
         return albums.length === 0 ? (
         <div className="glass-panel rounded-xl p-12 text-center">
           <Image className="w-10 h-10 text-muted-foreground/30 mx-auto mb-3" />
@@ -4843,7 +4895,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
            <div className="glass-panel rounded-xl p-3 mb-4 flex flex-col sm:flex-row sm:items-center gap-3">
             <div className="relative flex-1 sm:max-w-sm">
               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
-              <Input value={albumSearch} onChange={e => setAlbumSearch(e.target.value)} placeholder="Search albums…" className="soft-input pl-8 h-9 text-xs font-body" />
+              <Input value={albumSearch} onChange={e => setAlbumSearch(e.target.value)} aria-label="Search albums" placeholder="Search albums or clients…" className="soft-input pl-8 h-9 text-xs font-body" />
             </div>
             <div className="flex items-center gap-1 flex-wrap overflow-x-auto">
               <span className="text-[10px] font-body text-muted-foreground/50 mr-1">Sort:</span>
@@ -4853,11 +4905,17 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
               <AlbumSortBtn k="client" label="Client" />
             </div>
           </div>
+          <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+            <div className="flex flex-wrap items-center gap-3"><select aria-label="Filter albums" value={albumFilter} onChange={event => setAlbumFilter(event.target.value)} className="rounded-lg border border-border bg-background px-3 py-2 text-sm"><option value="all">All albums</option><option value="requests">Pending downloads</option><option value="picks">Picks submitted</option><option value="delivered">Delivered</option><option value="hidden">Hidden galleries</option></select><span role="status" className="text-sm text-muted-foreground">{sortedAlbums.length} of {albums.length} albums</span></div>
+            <div className="flex rounded-lg border border-border p-1" aria-label="Album display size">{(["compact", "comfortable", "list"] as const).map(layout => <Button key={layout} size="sm" variant={albumLayout === layout ? "default" : "ghost"} aria-pressed={albumLayout === layout} onClick={() => setAlbumLayout(layout)} className="capitalize">{layout}</Button>)}</div>
+          </div>
+          {sortedAlbums.length === 0 && <div className="rounded-xl border border-border p-8 text-center"><p>No albums match this view.</p><Button variant="outline" className="mt-3" onClick={() => { setAlbumSearch(""); setAlbumFilter("all"); }}>Reset filters</Button></div>}
           <TooltipProvider delayDuration={300}>
-          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-3">
-          {sortedAlbums.map((alb) => {
+          <div className={albumLayout === "list" ? "space-y-3" : albumLayout === "compact" ? "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-3" : "grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-3"}>
+          {visibleAlbums.map((alb) => {
             const coverSrc = adminAlbumCoverSrc(alb);
             const coverKey = `${alb.id}:${coverSrc || ""}`;
+            if (albumLayout === "list") return <React.Suspense key={alb.id} fallback={<div className="h-20 rounded-xl bg-secondary animate-pulse" />}><AlbumListRow album={alb} cover={coverSrc} onEdit={() => { setEditing(alb); setShowNew(false); }} onView={() => openPublicGallery(alb)} onReview={() => { setShowRequests(true); setEditing(alb); }} selected={mergeSelection.has(alb.id)} onSelect={mergeMode ? () => setMergeSelection(previous => { const next = new Set(previous); if (next.has(alb.id)) next.delete(alb.id); else next.add(alb.id); return next; }) : undefined} /></React.Suspense>;
             return (
             <div key={alb.id} className={`glass-panel album-admin-card rounded-xl overflow-hidden transition-all hover:-translate-y-0.5 hover:border-primary/30 ${mergeMode ? "cursor-pointer" : ""} ${mergeSelection.has(alb.id) ? "ring-2 ring-primary" : ""} ${alb.enabled === false ? "opacity-50" : ""}`}
               onClick={() => {
@@ -4870,9 +4928,10 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                 }
               }}
             >
-              <React.Suspense fallback={<div className="aspect-[16/9] bg-secondary animate-pulse" />}><AlbumCardCover src={!brokenCovers.has(coverKey) ? coverSrc : undefined} title={alb.title} enabled={alb.enabled !== false} onError={() => setBrokenCovers(prev => { const n = new Set(prev); n.add(coverKey); return n; })} /></React.Suspense>
-              <div className="p-4 space-y-2">
-                <h3 className="font-display text-xl leading-tight text-foreground truncate">{alb.title}</h3>
+              <React.Suspense fallback={<div className="aspect-[16/9] bg-secondary animate-pulse" />}><AlbumCardCover layout={albumLayout} src={!brokenCovers.has(coverKey) ? coverSrc : undefined} title={alb.title} enabled={alb.enabled !== false} onError={() => setBrokenCovers(prev => { const n = new Set(prev); n.add(coverKey); return n; })} /></React.Suspense>
+              <div className={`min-w-0 flex-1 space-y-2 ${albumLayout === "comfortable" ? "p-4" : "p-3"}`}>
+                <h3 title={alb.title} className={`font-display leading-tight text-foreground ${albumLayout === "comfortable" ? "text-xl" : "text-base"}`}>{alb.title}</h3>
+                {(alb.downloadRequests || []).some(request => request.status === "pending") && <button className="text-xs rounded-lg bg-amber-500/15 text-amber-500 px-2 py-1.5" onClick={event => { event.stopPropagation(); setShowRequests(true); setAlbumSearch(alb.title); setAlbumFilter("requests"); }}>{(alb.downloadRequests || []).filter(request => request.status === "pending").length} pending download request(s) · Review</button>}
                 <p className="text-xs font-body text-muted-foreground">
                   {alb._photosStripped ? (alb.photoCount ?? 0) : alb.photos.length} photos · {alb.freeDownloads} free · ${alb.pricePerPhoto}/photo
                 </p>
@@ -5079,6 +5138,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
           })}
           </div>
           </TooltipProvider>
+          <nav aria-label="Album pages" className="mt-5 flex items-center justify-between gap-3"><Button variant="outline" disabled={currentPage <= 1} onClick={() => setAlbumPage(currentPage - 1)}>Previous</Button><span className="text-sm text-muted-foreground">Page {currentPage} of {pageCount}</span><Button variant="outline" disabled={currentPage >= pageCount} onClick={() => setAlbumPage(currentPage + 1)}>Next</Button></nav>
         </>
       );
       })()}
@@ -6244,47 +6304,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
         );
       })()}
 
-      {/* Download Requests */}
-      {album?.downloadRequests && album.downloadRequests.length > 0 && (
-        <div>
-          <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-3 block">
-            Download Requests ({album.downloadRequests.filter(r => r.status === "pending").length} pending)
-          </label>
-          <div className="space-y-2 max-h-48 overflow-y-auto">
-            {album.downloadRequests.map((req, idx) => (
-              <div key={idx} className={`p-3 rounded-lg border ${req.status === "pending" ? "bg-yellow-500/5 border-yellow-500/20" : req.status === "approved" ? "bg-green-500/5 border-green-500/20" : "bg-secondary/50 border-border/50"}`}>
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-xs font-body text-foreground">{req.photoIds.length} photos · {req.method}</p>
-                    <p className="text-[10px] font-body text-muted-foreground">{new Date(req.requestedAt).toLocaleString()}</p>
-                    {req.clientNote && <p className="text-[10px] font-body text-muted-foreground mt-1">Note: {req.clientNote}</p>}
-                  </div>
-                  {req.status === "pending" && (
-                    <Button size="sm" variant="outline" onClick={() => {
-                      const updated = { ...album };
-                      const req2 = updated.downloadRequests![idx];
-                      updated.downloadRequests = updated.downloadRequests!.map((r, i) => i === idx ? { ...r, status: "approved" as const, approvedAt: new Date().toISOString() } : r);
-                      if (req2?.photoIds?.length) {
-                        const ex = updated.paidPhotoIds || [];
-                        updated.paidPhotoIds = [...new Set([...ex, ...req2.photoIds])];
-                      }
-                      updateAlbum(updated);
-                      toast.success("Download request approved");
-                    }} className="gap-1 text-xs font-body border-green-500/30 text-green-400 hover:bg-green-500/10">
-                      <Unlock className="w-3 h-3" /> Approve
-                    </Button>
-                  )}
-                  {req.status !== "pending" && (
-                    <span className={`text-[10px] font-body px-2 py-0.5 rounded-full ${req.status === "approved" ? "bg-green-500/10 text-green-400" : "bg-secondary text-muted-foreground"}`}>
-                      {req.status}
-                    </span>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+      {album && <DownloadRequestInbox albums={[album]}  />}
 
       {!isNew && album && (
         <div className="rounded-lg border border-border/50 bg-secondary/20 p-4 space-y-3">
@@ -13209,6 +13229,8 @@ function StorageView() {
           <p className="text-[10px] font-body text-muted-foreground/50">No server backend detected — all data stored in localStorage. Enable Docker backend for disk storage.</p>
         </div>
       )}
+
+      <div className="mb-6"><DownloadRequestInbox albums={albums} onUpdated={updated => setAlbumsState(previous => previous.map(album => album.id === updated.id ? updated : album))} /></div>
 
       {/* Activity Summary */}
       <div className="glass-panel rounded-xl p-6">

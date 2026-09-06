@@ -1209,6 +1209,7 @@ export async function sendEmail(to: string, subject: string, html?: string, text
 }
 
 export interface CreatePublicBookingInput {
+  extras?: { id: string; quantity: number }[];
   clientName: string;
   clientEmail: string;
   date: string;
@@ -2084,6 +2085,7 @@ export async function createTenantEnquiry(slug: string, enquiry: {
 
 /** Create a booking for a tenant's public page. */
 export async function createTenantBooking(slug: string, booking: {
+  extras?: { id: string; quantity: number }[];
   clientName: string; clientEmail: string; date: string; time: string;
   eventTypeId?: string; type?: string; duration?: number; notes?: string;
   phone?: string;

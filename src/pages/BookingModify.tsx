@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import { BookingPriceBreakdown } from "@/components/BookingExtras";
 import { useParams, useNavigate } from "react-router-dom";
 import { usePageTitle } from "@/hooks/use-page-title";
 import { motion } from "framer-motion";
@@ -547,6 +548,7 @@ export default function BookingModify() {
 
           {mode === "status" && (
             <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="max-w-md mx-auto">
+              <div className="mb-4"><BookingPriceBreakdown base={booking.sessionPrice} items={booking.lineItems} total={totalAmt} /></div>
               <div className="glass-panel rounded-xl p-8 mb-4">
 
                 {checkoutResult === "success" && (

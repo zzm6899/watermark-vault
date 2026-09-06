@@ -29,7 +29,7 @@ function stripePurchaseIdentity(session, order, current = {}) {
 function preserveGalleryServerState(existing, incoming) {
   if (!existing) return incoming;
   const merged = { ...existing, ...incoming };
-  for (const key of ["sessionPurchases", "usedFreeDownloads", "proofingNotifications"]) {
+  for (const key of ["sessionPurchases", "usedFreeDownloads", "proofingNotifications", "downloadRequests"]) {
     if (existing[key] !== undefined) merged[key] = existing[key];
     else delete merged[key];
   }

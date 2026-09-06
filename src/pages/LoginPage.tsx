@@ -6,11 +6,13 @@ import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { clearAdminClientCredentials, hashPassword, login, logout, setMobileTenantSession, getMobileTenantSession, isLoggedIn } from "@/lib/storage";
 import { getAdminApiToken, syncFromServer, tenantLogin, verifyAdminCredentials, recheckServer } from "@/lib/api";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { Capacitor } from "@capacitor/core";
 
 export default function LoginPage({ onLogin }: { onLogin?: () => void } = {}) {
   const navigate = useNavigate();
+  const location = useLocation();
+  const adminDestination = location.pathname.startsWith("/admin") ? `${location.pathname}${location.search}` : "/admin";
   const isNative = Capacitor.isNativePlatform();
   const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
@@ -30,11 +32,12 @@ export default function LoginPage({ onLogin }: { onLogin?: () => void } = {}) {
         logout();
         return;
       }
-      navigate(isNative ? "/capture" : "/admin", { replace: true });
+      navigate(isNative ? "/capture" : adminDestination, { replace: true });
     }
-  }, [navigate, isNative]);
+  }, [navigate, isNative, adminDestination]);
 
   const handleLogin = async () => {
+    if (loading) return;
     if (!identifier.trim()) {
       toast.error("Please enter your username or account ID");
       return;
@@ -55,7 +58,7 @@ export default function LoginPage({ onLogin }: { onLogin?: () => void } = {}) {
         if (serverOk) await syncFromServer({ awaitLazy: true }).catch(() => false);
         login();
         onLogin?.();
-        navigate(isNative ? "/capture" : "/admin", { replace: true });
+        navigate(isNative ? "/capture" : adminDestination, { replace: true });
         return;
       }
 
@@ -93,14 +96,14 @@ export default function LoginPage({ onLogin }: { onLogin?: () => void } = {}) {
           <div className="mb-5 inline-flex h-14 w-14 items-center justify-center rounded-2xl border border-cyan-300/25 bg-cyan-400/10 text-cyan-100">
             <RadioTower className="h-7 w-7" />
           </div>
-          <p className="text-[11px] font-body uppercase tracking-[0.22em] text-cyan-100/55">Zuploader Capture</p>
-          <h1 className="mt-2 text-4xl font-body font-semibold tracking-normal text-white">Camera intake</h1>
-          <p className="mt-3 text-sm font-body leading-6 text-white/52">Sign in to receive Nikon photos over Wi-Fi, cull them, and publish the client-ready set.</p>
-          <div className="mt-5 grid grid-cols-3 gap-2">
+          <p className="text-[11px] font-body uppercase tracking-[0.22em] text-cyan-100/55">{isNative ? "Zuploader Capture" : "Studio workspace"}</p>
+          <h1 className="mt-2 text-4xl font-body font-semibold tracking-normal text-white">{isNative ? "Camera intake" : "Welcome back"}</h1>
+          <p className="mt-3 text-sm font-body leading-6 text-white/52">{isNative ? "Sign in to receive Nikon photos over Wi-Fi, cull them, and publish the client-ready set." : "Sign in to manage bookings, client galleries, payments and your photography business."}</p>
+          {isNative && <div className="mt-5 grid grid-cols-3 gap-2">
             <div className="capture-mini-metric"><Wifi className="mx-auto mb-1 h-4 w-4 text-cyan-100" /><small>FTP</small></div>
             <div className="capture-mini-metric"><ImageIcon className="mx-auto mb-1 h-4 w-4 text-cyan-100" /><small>Cull</small></div>
             <div className="capture-mini-metric"><Camera className="mx-auto mb-1 h-4 w-4 text-cyan-100" /><small>Client</small></div>
-          </div>
+          </div>}
         </div>
         <div className="glass-panel rounded-2xl p-5 space-y-4">
           <div>

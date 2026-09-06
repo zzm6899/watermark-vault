@@ -1198,7 +1198,7 @@ function registerRoutes(app, { readDb, writeDb, readLicenseKeys, writeLicenseKey
         sendBookingConfirmationEmail({
           to: booking.clientEmail, clientName: booking.clientName, eventTitle: booking.type,
           date: booking.date, time: booking.time, duration: booking.duration,
-          location: booking.location || "", price: booking.paymentAmount || 0,
+          location: booking.location || "", price: booking.paymentAmount || 0, lineItems: booking.lineItems, sessionPrice: booking.sessionPrice,
           depositAmount: booking.depositAmount || 0, paymentMethod: "stripe",
           paymentStatus: booking.paymentStatus, paymentKind: result.paymentKind,
           status: booking.status, modifyToken: booking.modifyToken, bookingId: booking.id,
@@ -1255,7 +1255,7 @@ function registerRoutes(app, { readDb, writeDb, readLicenseKeys, writeLicenseKey
             time: booking.time,
             duration: booking.duration,
             location: booking.location || "",
-            price: booking.paymentAmount || 0,
+            price: booking.paymentAmount || 0, lineItems: booking.lineItems, sessionPrice: booking.sessionPrice,
             depositAmount: booking.depositAmount || 0,
             paymentMethod: "bank",
             paymentStatus: booking.paymentStatus,

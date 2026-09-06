@@ -1,3 +1,5 @@
+import { bookingQuote, sessionPrice } from "@/lib/booking-pricing";
+import { BookingExtras, BookingPriceBreakdown } from "@/components/BookingExtras";
 import { useState, useEffect, useMemo, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { usePageTitle } from "@/hooks/use-page-title";
@@ -70,8 +72,7 @@ function isDayAvailable(et: EventType, date: Date) {
   return getAvailabilityForDate(et, date).length > 0;
 }
 function getPriceForDuration(et: EventType, duration: number): number {
-  if (et.prices?.[String(duration)] !== undefined) return et.prices[String(duration)];
-  return et.price ?? 0;
+  return sessionPrice(et, duration);
 }
 function isValidEmail(email: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
@@ -194,6 +195,8 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
 
   const [step, setStep] = useState<Step>("event-select");
   const [selectedEvent, setSelectedEvent] = useState<EventType | null>(null);
+  const [extraQuantities, setExtraQuantities] = useState<Record<string, number>>({});
+  useEffect(() => { setExtraQuantities({}); }, [selectedEvent?.id]);
   const [selectedDuration, setSelectedDuration] = useState<number | null>(null);
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
   const [selectedTime, setSelectedTime] = useState<string | null>(null);
@@ -303,7 +306,7 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
     [selectedEvent],
   );
   const phoneRequired = selectedQuestions.some(question => contactQuestionRole(question) === "phone" && question.required);
-  const selectedPrice = selectedEvent && selectedDuration ? getPriceForDuration(selectedEvent, selectedDuration) : 0;
+  const selectedPrice = selectedEvent && selectedDuration ? bookingQuote(selectedEvent, selectedDuration, extraQuantities).total : 0;
   const availablePaymentPaths = useMemo<TenantPaymentPath[]>(() => {
     if (selectedPrice <= 0) return ["none"];
     const configuredDepositMethods = selectedEvent?.depositEnabled && Number(selectedEvent.depositAmount) > 0
@@ -506,6 +509,7 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
       eventTypeId: selectedEvent.id,
       type: selectedEvent.title,
       duration: selectedDuration,
+      extras: (selectedEvent.extras || []).map(extra => ({ id: extra.id, quantity: extraQuantities[extra.id] || 0 })),
       notes: notes.trim(),
       phone: phone.trim() || undefined,
       answers,
@@ -608,7 +612,7 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
         <aside aria-label="Current booking selection" className="sticky top-0 z-20 mx-auto mt-3 flex w-[calc(100%-2rem)] max-w-3xl items-center gap-3 rounded-xl border border-primary/20 bg-background/90 px-4 py-3 shadow-lg backdrop-blur">
           <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/15 text-primary"><CalendarDays className="size-4" /></span>
           <div className="min-w-0 flex-1"><p className="truncate text-sm font-medium text-foreground">{selectedEvent.title}</p><p className="truncate text-xs text-muted-foreground">{selectedDate ? selectedDate.toLocaleDateString("en-AU", { weekday: "short", day: "numeric", month: "short" }) : "Choose a date"}{selectedTime ? ` · ${formatTime12(selectedTime)}` : ""}{selectedDuration ? ` · ${formatDuration(selectedDuration)}` : ""}</p></div>
-          {selectedDuration && <span className="shrink-0 rounded-full border border-primary/20 bg-primary/10 px-2.5 py-1 text-xs font-semibold text-primary">${getPriceForDuration(selectedEvent, selectedDuration)}</span>}
+          {selectedDuration && <span className="shrink-0 rounded-full border border-primary/20 bg-primary/10 px-2.5 py-1 text-xs font-semibold text-primary">${selectedPrice}</span>}
         </aside>
       )}
 
@@ -986,10 +990,10 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
                     <p className="text-sm font-body text-foreground">{formatDuration(selectedEvent.bufferMinutes)}</p>
                   </div>
                 )}
-                {selectedDuration && getPriceForDuration(selectedEvent, selectedDuration) > 0 && (
+                {selectedDuration && selectedPrice > 0 && (
                   <div>
                     <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground">Price</p>
-                    <p className="text-sm font-body text-primary">${getPriceForDuration(selectedEvent, selectedDuration)} AUD</p>
+                    <p className="text-sm font-body text-primary">${selectedPrice} AUD</p>
                   </div>
                 )}
               </div>
@@ -1068,6 +1072,8 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
                     </p>
                   </fieldset>
                 )}
+                <BookingExtras event={selectedEvent} quantities={extraQuantities} onChange={setExtraQuantities} />
+                {selectedDuration && <BookingPriceBreakdown base={sessionPrice(selectedEvent, selectedDuration)} items={bookingQuote(selectedEvent, selectedDuration, extraQuantities).lineItems} total={selectedPrice} />}
                 <Button onClick={handleSubmit} disabled={submitting} className="w-full bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2">
                   {submitting
                     ? paymentPath === "stripe" ? "Creating Secure Checkout…" : "Submitting…"
@@ -1127,6 +1133,7 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
                 </div>
                 {confirmedPrice > 0 && (
                   <>
+                    <BookingPriceBreakdown base={submittedBooking?.sessionPrice} items={submittedBooking?.lineItems} total={confirmedPrice} />
                     <div className="flex justify-between text-sm font-body">
                       <span className="text-muted-foreground">Price</span>
                       <span className="text-foreground">${confirmedPrice} AUD</span>

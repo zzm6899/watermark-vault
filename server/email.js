@@ -256,10 +256,10 @@ function prepareCustomEmail({ subject, html, text, brandName = DEFAULT_EMAIL_BRA
 
 // ── Email HTML builder ────────────────────────────────────────
 function buildBookingEmailHtml({ clientName, eventTitle, date, time, duration, location,
-  price, depositAmount, paymentMethod, remainingAmount, isFree, modifyUrl, bookingId,
+  price, depositAmount, paymentMethod, remainingAmount, isFree, modifyUrl, bookingId, lineItems, sessionPrice,
   paymentReference, calendarUrl, trackingPixelUrl, unsubscribeUrl, status, paymentKind, brandName }) {
   const reference = bookingEmailReference(bookingId, paymentReference);
-  const rows = bookingSummaryRows({ eventTitle, date, time, duration, location, price, depositAmount, paymentMethod, remainingAmount, isFree, paymentKind });
+  const rows = bookingSummaryRows({ eventTitle, date, time, duration, location, price, depositAmount, paymentMethod, remainingAmount, isFree, paymentKind, lineItems, sessionPrice });
   const isConfirmed = status === "confirmed";
   const bankNote = paymentMethod === "bank"
     ? buildCallout("Bank transfer pending", `Use booking reference ${reference} as the payment description. Your booking will be confirmed once payment is received.`, "warning")
@@ -285,7 +285,7 @@ function buildBookingEmailHtml({ clientName, eventTitle, date, time, duration, l
   });
 }
 
-function bookingSummaryRows({ eventTitle, date, time, duration, location, price, depositAmount, paymentMethod, remainingAmount, isFree, paymentKind }) {
+function bookingSummaryRows({ eventTitle, date, time, duration, location, price, depositAmount, paymentMethod, remainingAmount, isFree, paymentKind, lineItems, sessionPrice }) {
   const money = value => `$${Number(value) || 0}`;
   const rows = [
     { label: "Session", value: eventTitle || "Booking", emphasis: true },
@@ -294,6 +294,11 @@ function bookingSummaryRows({ eventTitle, date, time, duration, location, price,
     { label: "Duration", value: formatDuration(duration) },
     location ? { label: "Location", value: location } : null,
   ];
+  if (Array.isArray(lineItems) && lineItems.length) {
+    if (Number.isFinite(sessionPrice)) rows.push({ label: "Session price", value: money(sessionPrice) });
+    for (const item of lineItems) rows.push({ label: `${item.name} × ${item.quantity}`, value: money(item.total) });
+    rows.push({ label: "Booking total", value: money(price), emphasis: true });
+  }
   if (isFree) rows.push({ label: "Payment", value: "Free ✓", tone: "success", emphasis: true });
   else if (paymentMethod === "stripe" && paymentKind === "deposit" && Number(depositAmount) > 0) {
     rows.push({ label: "Deposit Paid", value: `${money(depositAmount)} ✓ Card`, tone: "success", emphasis: true });
@@ -353,7 +358,7 @@ function appendEmailLog(store, bookingId, logEntry) {
 // ── Main send function ─────────────────────────────────────────
 async function sendBookingConfirmationEmail({
   to, clientName, eventTitle, date, time, duration, location = "",
-  price = 0, depositAmount = 0, paymentMethod = "none",
+  price = 0, depositAmount = 0, paymentMethod = "none", lineItems = [], sessionPrice,
   paymentKind = null,
   modifyToken, bookingId, paymentReference = "", appBaseUrl, store, status = "pending", paymentStatus = "unpaid",
   transport = null, fromAddress = null, brandName = DEFAULT_EMAIL_BRAND,
@@ -384,7 +389,7 @@ async function sendBookingConfirmationEmail({
 
   const messageParams = {
     clientName, eventTitle, date, time, duration, location,
-    price, depositAmount, paymentMethod, remainingAmount,
+    price, depositAmount, paymentMethod, remainingAmount, lineItems, sessionPrice,
     isFree, modifyUrl, bookingId, paymentReference, calendarUrl, trackingPixelUrl, unsubscribeUrl, status, paymentKind, brandName,
   };
   const html = buildBookingEmailHtml(messageParams);

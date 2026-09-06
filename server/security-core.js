@@ -2,6 +2,7 @@
 
 const crypto = require("crypto");
 const path = require("path");
+const { priceBookingExtras } = require("./booking-extras");
 
 const DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 const TIME_RE = /^(\d{2}):(\d{2})$/;
@@ -219,6 +220,7 @@ function normalizeBookingAttemptIdentity(input) {
     duration: Number.isFinite(numericDuration) ? numericDuration : null,
     paymentMethod: String(input?.paymentMethod || "").trim().toLowerCase(),
     payInFull: input?.payInFull === true,
+    ...(Array.isArray(input?.extras) && input.extras.length ? { extras: input.extras.map(item => ({ id: item?.id, quantity: item?.quantity })).sort((a, b) => String(a.id).localeCompare(String(b.id))) } : {}),
     answers,
   };
 }
@@ -862,7 +864,11 @@ function validateBookingRequest(input, context) {
   })) {
     return { ok: false, status: 409, error: "This time conflicts with an existing booking" };
   }
-  const paymentAmount = getPriceForDuration(eventType, duration);
+  let extraPricing;
+  try { extraPricing = priceBookingExtras(eventType.extras, input?.extras); }
+  catch (error) { return { ok: false, status: 400, error: error.message }; }
+  const sessionPrice = Math.round(getPriceForDuration(eventType, duration) * 100) / 100;
+  const paymentAmount = Math.round((sessionPrice + extraPricing.total) * 100) / 100;
   const deposit = calculateDeposit(eventType, paymentAmount);
   return {
     ok: true,
@@ -870,6 +876,8 @@ function validateBookingRequest(input, context) {
     normalized: {
       ...normalized,
       paymentAmount,
+      sessionPrice,
+      lineItems: extraPricing.lineItems,
       depositRequired: deposit.required,
       depositAmount: deposit.amount,
       requiresConfirmation: eventType.requiresConfirmation === true,

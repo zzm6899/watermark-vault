@@ -32,7 +32,23 @@ export interface EventTypeAvailability {
   blockedDates: string[]; // YYYY-MM-DD
 }
 
+export interface BookingExtra {
+  id: string;
+  name: string;
+  price: number;
+  maxQuantity: number;
+}
+
+export interface BookingLineItem {
+  id: string;
+  name: string;
+  quantity: number;
+  unitPrice: number;
+  total: number;
+}
+
 export interface EventType {
+  extras?: BookingExtra[];
   id: string;
   title: string;
   description: string;
@@ -92,6 +108,8 @@ export interface BookingPaymentReviewEntry {
 }
 
 export interface Booking {
+  sessionPrice?: number;
+  lineItems?: BookingLineItem[];
   id: string;
   /** Short client-facing identifier for bank transfers and support lookups. */
   paymentReference?: string;
@@ -267,6 +285,11 @@ export interface PhotoCullMetadata {
 export type AlbumDisplaySize = "small" | "medium" | "large" | "list";
 
 export interface AlbumDownloadRecord {
+  id?: string;
+  sessionKey?: string;
+  email?: string;
+  fullAlbum?: boolean;
+  amount?: number;
   photoIds: string[];
   method: "free" | "stripe" | "bank-transfer";
   status: "pending" | "approved" | "completed";

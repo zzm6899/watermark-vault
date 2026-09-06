@@ -103,14 +103,14 @@ export default function FinanceView() {
     for (const req of alb.downloadRequests || []) {
       if (req.method === "bank-transfer") {
         const photoCount = req.photoIds?.length || 0;
-        const amount = photoCount * (alb.pricePerPhoto || 0);
+        const amount = typeof req.amount === "number" ? req.amount : photoCount * (alb.pricePerPhoto || 0);
         payments.push({
           id: `bank-${alb.id}-${req.requestedAt}`,
           date: req.approvedAt || req.requestedAt,
-          clientName: req.purchaserEmail || alb.clientName || "Unknown",
+          clientName: req.email || req.purchaserEmail || alb.clientName || "Unknown",
           albumTitle: alb.title,
           albumId: alb.id,
-          purchaserEmail: req.purchaserEmail,
+          purchaserEmail: req.email || req.purchaserEmail,
           photoIds: req.photoIds || [],
           method: "bank-transfer",
           amount,
@@ -171,35 +171,6 @@ export default function FinanceView() {
       outstanding: outstanding.reduce((sum, invoice) => sum + Math.max(0, calcInvTotal(invoice) - (invoice.amountPaid || 0)), 0),
     };
   });
-
-  const handleDelete = (p: PaymentRecord) => {
-    if (!confirm(`Delete this payment record? This will revoke the client's access to the purchased photos.`)) return;
-    const albums = getAlbums();
-    const alb = albums.find(a => a.id === p.albumId);
-    if (!alb) return;
-    const updated = { ...alb } as any;
-
-    if (p.method === "stripe" && p.sessionKey) {
-      // Remove the session purchase entry — revokes their access
-      const sp = { ...(updated.sessionPurchases || {}) };
-      delete sp[p.sessionKey];
-      updated.sessionPurchases = sp;
-      // If it was the legacy stripe flag, clear that too
-      if (p.id.startsWith("stripe-legacy-")) {
-        updated.stripePaidAt = undefined;
-        updated.allUnlocked = false;
-      }
-    } else if (p.method === "bank-transfer" && p.requestedAt) {
-      // Remove the download request entry
-      updated.downloadRequests = (updated.downloadRequests || []).filter(
-        (r: any) => r.requestedAt !== p.requestedAt
-      );
-    }
-
-    updateAlbum(updated);
-    setAlbumsState(getAlbums());
-    toast.success("Payment record deleted — client access revoked");
-  };
 
   const methodLabel = (m: string) => m === "stripe" ? "Stripe" : m === "cash" ? "Cash" : "Bank Transfer";
   const methodColor = (m: string) => m === "stripe" ? "text-purple-400 bg-purple-500/10" : m === "cash" ? "text-yellow-400 bg-yellow-500/10" : "text-blue-400 bg-blue-500/10";
@@ -638,11 +609,12 @@ export default function FinanceView() {
                         <button onClick={() => navigate(`/admin/bookings?search=${encodeURIComponent(p.reference || p.clientName)}`)} className="text-[10px] font-body text-primary hover:underline">Booking</button>
                       ) : (
                         <button
-                          onClick={() => handleDelete(p)}
-                          className="opacity-0 group-hover:opacity-100 transition-opacity ml-1 p-1 rounded hover:bg-red-500/10 text-muted-foreground/40 hover:text-red-400"
-                          title="Delete & revoke access"
+                          onClick={() => navigate(`/admin/albums?album=${encodeURIComponent(p.albumId)}&panel=requests`)}
+                          className="ml-1 p-2 rounded text-primary hover:bg-primary/10"
+                          title="View album and payment requests"
+                          aria-label={`View album and payment requests for ${p.albumTitle}`}
                         >
-                          <Trash2 className="w-3.5 h-3.5" />
+                          <Receipt className="w-3.5 h-3.5" />
                         </button>
                       )}
                     </div>

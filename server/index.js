@@ -1497,7 +1497,7 @@ function sanitizePublicEventType(eventType) {
   const allowed = [
     "id", "title", "description", "durations", "color", "price", "active", "requiresConfirmation",
     "questions", "availability", "location", "depositEnabled", "depositAmount", "depositType", "depositMethods",
-    "prices", "maxAttendees", "bufferMinutes", "slotIntervalMinutes", "isPackage", "packageEventIds", "durationPrices",
+    "extras", "prices", "maxAttendees", "bufferMinutes", "slotIntervalMinutes", "isPackage", "packageEventIds", "durationPrices",
   ];
   return Object.fromEntries(allowed.filter(key => eventType?.[key] !== undefined).map(key => [key, eventType[key]]));
 }
@@ -6007,7 +6007,7 @@ function sendMainBookingReceipt(booking, options = {}) {
     time: booking.time,
     duration: booking.duration,
     location: booking.location || "",
-    price: booking.paymentAmount || 0,
+    price: booking.paymentAmount || 0, lineItems: booking.lineItems, sessionPrice: booking.sessionPrice,
     depositAmount: booking.depositAmount || 0,
     paymentMethod: booking.paymentMethod || booking.depositMethod || booking.paymentPath || (booking.paymentAmount ? "stripe" : "none"),
     paymentStatus: booking.paymentStatus,
@@ -6044,7 +6044,7 @@ async function sendTenantBookingReceipt(booking, eventKey, options = {}) {
     time: booking.time,
     duration: booking.duration,
     location: booking.location || "",
-    price: booking.paymentAmount || 0,
+    price: booking.paymentAmount || 0, lineItems: booking.lineItems, sessionPrice: booking.sessionPrice,
     depositAmount: booking.depositAmount || 0,
     paymentMethod: booking.paymentMethod || booking.depositMethod || booking.paymentPath || (booking.paymentAmount ? "stripe" : "none"),
     paymentStatus: booking.paymentStatus,
@@ -7113,7 +7113,7 @@ const publicBookingLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHead
 function publicBookingDto(booking) {
   const allowed = [
     "id", "paymentReference", "clientName", "clientEmail", "phone", "date", "time", "eventTypeId", "type",
-    "duration", "status", "notes", "answers", "answerLabels", "createdAt", "paymentStatus", "paymentAmount",
+    "duration", "status", "notes", "answers", "answerLabels", "createdAt", "paymentStatus", "paymentAmount", "sessionPrice", "lineItems",
     "instagramHandle", "modifyToken", "depositRequired", "depositAmount", "depositMethod", "depositPaidAt", "paidAt",
     "requiresConfirmation", "tenantSlug", "statusHistory",
   ];
@@ -7868,7 +7868,7 @@ app.post("/api/enquiry", publicBookingLimiter, (req, res) => {
 // store API: public visitors must not be able to overwrite the bookings list.
 app.post("/api/booking", publicBookingLimiter, async (req, res) => {
   const input = req.body || {};
-  const { clientName, clientEmail, phone, date, time, eventTypeId, duration, answers, paymentMethod, payInFull } = input;
+  const { clientName, clientEmail, phone, date, time, eventTypeId, duration, answers, extras, paymentMethod, payInFull } = input;
   if (!clientName || typeof clientName !== "string" || !clientName.trim()) return res.status(400).json({ error: "clientName is required" });
   if (!clientEmail || typeof clientEmail !== "string" || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clientEmail.trim())) return res.status(400).json({ error: "Valid clientEmail is required" });
   if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date) || !time || !/^\d{2}:\d{2}$/.test(time)) return res.status(400).json({ error: "A valid date and time are required" });
@@ -7891,7 +7891,7 @@ app.post("/api/booking", publicBookingLimiter, async (req, res) => {
     console.error("Google Calendar booking check failed:", err.message);
     return res.status(503).json({ error: "Calendar availability is temporarily unavailable" });
   }
-  const validation = validateBookingRequest({ eventTypeId, date, time, duration }, bookingValidationContext(db, null, eventTypes, profile?.timezone, undefined, googleBusy));
+  const validation = validateBookingRequest({ eventTypeId, date, time, duration, extras }, bookingValidationContext(db, null, eventTypes, profile?.timezone, undefined, googleBusy));
   if (!validation.ok) return res.status(validation.status).json({ error: validation.error });
   const { eventType, normalized } = validation;
   const totalPrice = normalized.paymentAmount;
@@ -7926,7 +7926,7 @@ app.post("/api/booking", publicBookingLimiter, async (req, res) => {
     return res.status(200).json({ ok: true, booking: publicBookingDto(commitAttempt.booking), reused: true });
   }
   const commitEventTypes = getStoredArray(commitDb, DB_KEYS.EVENT_TYPES);
-  const commitValidation = validateBookingRequest({ eventTypeId, date, time, duration }, bookingValidationContext(commitDb, null, commitEventTypes, profile?.timezone, undefined, googleBusy));
+  const commitValidation = validateBookingRequest({ eventTypeId, date, time, duration, extras }, bookingValidationContext(commitDb, null, commitEventTypes, profile?.timezone, undefined, googleBusy));
   if (!commitValidation.ok) return res.status(commitValidation.status).json({ error: commitValidation.error });
   if (JSON.stringify(commitValidation.eventType) !== JSON.stringify(eventType)) {
     return res.status(409).json({ error: "Booking configuration changed; please refresh and try again" });
@@ -7944,6 +7944,7 @@ app.post("/api/booking", publicBookingLimiter, async (req, res) => {
     requiresConfirmation: normalized.requiresConfirmation,
     notes: "", answers: safeAnswers, answerLabels, createdAt: new Date().toISOString(),
     paymentStatus: totalPrice === 0 ? "paid" : paymentMethod === "bank" ? "pending-confirmation" : "unpaid",
+    sessionPrice: normalized.sessionPrice, lineItems: normalized.lineItems,
     paymentAmount: totalPrice, depositRequired, depositAmount: depositRequired ? normalized.depositAmount : 0,
     holdExpiresAt: totalPrice > 0 ? unconfirmedBookingHoldExpiresAt(settings, paymentMethod) : undefined,
     ...(commitAttempt.action === "create" ? {
@@ -7977,7 +7978,7 @@ app.post("/api/tenant/:slug/booking", tenantBookingLimiter, async (req, res) => 
   const tenant = licensedTenantBySlug(slug)?.tenant;
   if (!tenant) return res.status(404).json({ error: "Tenant not found" });
 
-  const { clientName, clientEmail, phone, date, time, eventTypeId, type, duration, notes, answers, paymentMethod,
+  const { clientName, clientEmail, phone, date, time, eventTypeId, type, duration, notes, answers, extras, paymentMethod,
     cosplayCharacter, cosplayCostume, conventionName } = req.body || {};
   if (!clientName || typeof clientName !== "string" || !clientName.trim()) {
     return res.status(400).json({ error: "clientName is required" });
@@ -8000,7 +8001,7 @@ app.post("/api/tenant/:slug/booking", tenantBookingLimiter, async (req, res) => 
     console.error(`Tenant ${slug} Google Calendar booking check failed:`, err.message);
     return res.status(503).json({ error: "Calendar availability is temporarily unavailable" });
   }
-  const validation = validateBookingRequest({ eventTypeId, date, time, duration }, bookingValidationContext(db, slug, eventTypes, tenant.timezone, undefined, googleBusy));
+  const validation = validateBookingRequest({ eventTypeId, date, time, duration, extras }, bookingValidationContext(db, slug, eventTypes, tenant.timezone, undefined, googleBusy));
   if (!validation.ok) return res.status(validation.status).json({ error: validation.error });
   const { eventType, normalized } = validation;
   const tenantSettings = dbGet(db, `t_${slug}_wv_tenant_settings`, {});
@@ -8024,7 +8025,7 @@ app.post("/api/tenant/:slug/booking", tenantBookingLimiter, async (req, res) => 
 
   const commitDb = readDb();
   const commitEventTypes = getStoredArray(commitDb, `t_${slug}_wv_event_types`);
-  const commitValidation = validateBookingRequest({ eventTypeId, date, time, duration }, bookingValidationContext(commitDb, slug, commitEventTypes, tenant.timezone, undefined, googleBusy));
+  const commitValidation = validateBookingRequest({ eventTypeId, date, time, duration, extras }, bookingValidationContext(commitDb, slug, commitEventTypes, tenant.timezone, undefined, googleBusy));
   if (!commitValidation.ok) return res.status(commitValidation.status).json({ error: commitValidation.error });
   if (JSON.stringify(commitValidation.eventType) !== JSON.stringify(eventType)) {
     return res.status(409).json({ error: "Booking configuration changed; please refresh and try again" });
@@ -8067,6 +8068,7 @@ app.post("/api/tenant/:slug/booking", tenantBookingLimiter, async (req, res) => 
     conventionName: String(conventionName || "").trim().slice(0, 160) || undefined,
     createdAt: new Date().toISOString(),
     tenantSlug: slug,
+    sessionPrice: normalized.sessionPrice, lineItems: normalized.lineItems,
     paymentAmount: normalized.paymentAmount,
     depositRequired: normalized.depositRequired,
     depositAmount: normalized.depositAmount,
@@ -10800,7 +10802,7 @@ app.delete("/api/tags/:id", requireAuth, (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function shareLinkAlbumStore(db, req) {
-  const tenantSlug = String(req.query.tenant || "").trim() || null;
+  const tenantSlug = req.authContext?.type === "tenant" ? req.authContext.slug : String(req.query.tenant || "").trim() || null;
   const storeKey = tenantSlug ? `t_${tenantSlug}${TENANT_ALBUMS_SUFFIX}` : DB_KEYS.ALBUMS;
   return { tenantSlug, storeKey, albums: dbGet(db, storeKey, []) };
 }
@@ -10811,6 +10813,21 @@ app.get("/api/albums/:id/share-links", requireAdminOrScopedTenant, (req, res) =>
   const album = albums.find(a => a.id === req.params.id);
   if (!album) return res.status(404).json({ error: "Album not found" });
   res.json(album.shareLinks || []);
+});
+
+app.post("/api/albums/:id/download-requests/:requestId/approve", requireAdminOrScopedTenant, (req, res) => {
+  const db = readDb();
+  const { storeKey, albums } = shareLinkAlbumStore(db, req);
+  const album = albums.find(item => item.id === req.params.id);
+  if (!album) return res.status(404).json({ ok: false, error: "Album not found" });
+  const { approveDownloadRequest } = require("./download-request-review");
+  const result = approveDownloadRequest(album, req.params.requestId, req.body);
+  if (!result.ok) return res.status(result.status).json(result);
+  album.downloadRequests = result.requests;
+  album.updatedAt = new Date().toISOString();
+  db[storeKey] = JSON.stringify(albums);
+  writeDb(db);
+  res.json({ ok: true, downloadRequests: result.requests, updatedAt: album.updatedAt });
 });
 
 app.post("/api/albums/:id/share-links", requireAdminOrScopedTenant, (req, res) => {
