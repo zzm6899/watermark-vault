@@ -1789,6 +1789,16 @@ function _parseAlbumsFromDb(raw) {
   return Array.isArray(parsed) ? parsed : [];
 }
 
+// Read-only event report; all prices come from saved bookings and fulfilled orders.
+app.get("/api/admin/finance/events", requireAuth, (req, res) => {
+  const { from = "", to = "", groupBy = "event", eventId = "" } = req.query;
+  if ([from, to].some(value => typeof value !== "string" || (value && !/^\d{4}-\d{2}-\d{2}$/.test(value))) || (from && to && from > to) || !["event", "date"].includes(groupBy) || typeof eventId !== "string") return res.status(400).json({ error: "Choose a valid date range and grouping" });
+  const db = readDb();
+  const { buildEventRevenue } = require("./event-revenue");
+  res.setHeader("Cache-Control", "no-store");
+  res.json(buildEventRevenue({ bookings: dbGet(db, "wv_bookings", []), albums: dbGet(db, "wv_albums", []), orders: dbGet(db, "wv_album_checkout_orders", {}), eventTypes: dbGet(db, "wv_event_types", []), from, to, groupBy, eventId }));
+});
+
 // GET /api/albums/stubs — all main albums without photos
 app.get("/api/albums/stubs", requireAuth, (req, res) => {
   const db = readDb();
@@ -10148,6 +10158,7 @@ const AUTOMATION_MAX_SENDS_PER_RUN = Math.max(1, Number(process.env.EMAIL_AUTOMA
 
 function getAutomationOptions() {
   return {
+    timezone: dbGet(readDb(), DB_KEYS.PROFILE, {}).timezone || "Australia/Sydney",
     intervalMs: AUTOMATION_INTERVAL_MS,
     graceMs: Number.isFinite(AUTOMATION_GRACE_MS) && AUTOMATION_GRACE_MS > 0
       ? AUTOMATION_GRACE_MS
@@ -10260,15 +10271,7 @@ async function runEmailAutomations() {
       const clientName = booking.clientName || "there";
       const eventTitle = booking.type || "Booking";
       const subject = renderAutomationSubject(rule, booking);
-      const body = rule.templateBody
-        ? rule.templateBody
-            .replace(/\{name\}/gi, clientName)
-            .replace(/\{event\}/gi, eventTitle)
-            .replace(/\{date\}/gi, booking.date || "")
-            .replace(/\{time\}/gi, booking.time || "")
-        : isPaymentReminder
-          ? `Hi ${clientName}, this is a friendly reminder that payment is still pending for your ${eventTitle} booking on ${booking.date || "the scheduled date"}.`
-          : `Hi ${clientName}, this is a reminder about your ${eventTitle} session on ${booking.date || "the scheduled date"}${booking.time ? ` at ${booking.time}` : ""}.`;
+      const body = require("./email-automation-core").renderAutomationBody(rule, booking);
       const message = buildAutomationEmail({ subject, body, booking, brandName: automationBrandName });
 
       try {

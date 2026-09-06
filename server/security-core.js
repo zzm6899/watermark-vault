@@ -918,6 +918,7 @@ function generateAvailableSlots({ eventType, date, duration: requestedDuration, 
 }
 
 module.exports = {
+  localDateTimeToUtcMs,
   applyBookingArchiveState,
   albumAllowsFreeFullUnlock,
   albumAccessWindow,

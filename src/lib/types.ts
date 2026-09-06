@@ -782,6 +782,7 @@ export type EmailAutomationTrigger =
   | "after_booking"    // X hours after booking is created
   | "before_event"     // X hours before the event
   | "after_event"      // X hours after the event ends
+  | "after_payment"
   | "payment_overdue"; // X hours after creation when still unpaid
 
 export type EmailAutomationReminderType = "payment" | "booking";
@@ -789,6 +790,10 @@ export type EmailAutomationReminderType = "payment" | "booking";
 /** A server-side email automation rule that fires reminder emails automatically. */
 export interface EmailAutomationRule {
   id: string;
+  name?: string;
+  eventTypeId?: string;
+  bookingStatus?: string;
+  createdAfter?: string;
   enabled: boolean;
   trigger: EmailAutomationTrigger;
   /** How many hours after/before the trigger point to send the email. */

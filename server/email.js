@@ -146,7 +146,7 @@ function buildCallout(title, message, tone = "info") {
     ? { background: "#f0fdf4", border: "#bbf7d0", title: "#166534", body: "#166534" }
     : tone === "warning"
       ? { background: "#fffbeb", border: "#fde68a", title: "#92400e", body: "#92400e" }
-      : { background: "#f5f3ff", border: "#ddd6fe", title: "#5b21b6", body: "#5b21b6" };
+      : { background: "#faf8f3", border: "#e8e0ce", title: "#655334", body: "#655334" };
   return `<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="width:100%;border-collapse:separate;border-spacing:0;background:${palette.background};border:1px solid ${palette.border};border-radius:12px;margin:0 0 24px;"><tr><td style="padding:16px;font-family:Arial,sans-serif;">
     <p style="margin:0 0 4px;color:${palette.title};font-size:14px;font-weight:700;line-height:1.4;">${escapeHtml(title)}</p>
     <p style="margin:0;color:${palette.body};font-size:13px;line-height:1.6;">${escapeHtml(message).replace(/\n/g, "<br>")}</p>
@@ -156,7 +156,7 @@ function buildCallout(title, message, tone = "info") {
 function buildEmailButton(label, url, secondary = false) {
   const href = safeHttpUrl(url);
   if (!href) return "";
-  return `<table role="presentation" cellspacing="0" cellpadding="0" style="border-collapse:separate;margin:${secondary ? "10px" : "0"} auto 0;"><tr><td bgcolor="${secondary ? "#ffffff" : "#6d28d9"}" style="border:${secondary ? "1px solid #cbd5e1" : "1px solid #6d28d9"};border-radius:8px;text-align:center;"><a href="${escapeHtml(href)}" style="display:inline-block;padding:12px 20px;color:${secondary ? "#334155" : "#ffffff"};font-family:Arial,sans-serif;font-size:14px;font-weight:700;line-height:1.2;text-decoration:none;">${escapeHtml(label)}</a></td></tr></table>`;
+  return `<table role="presentation" cellspacing="0" cellpadding="0" style="border-collapse:separate;margin:${secondary ? "10px" : "0"} auto 0;"><tr><td bgcolor="${secondary ? "#ffffff" : "#242930"}" style="border:${secondary ? "1px solid #cbd5e1" : "1px solid #242930"};border-radius:8px;text-align:center;"><a href="${escapeHtml(href)}" style="display:inline-block;padding:12px 20px;color:${secondary ? "#334155" : "#ffffff"};font-family:Arial,sans-serif;font-size:14px;font-weight:700;line-height:1.2;text-decoration:none;">${escapeHtml(label)}</a></td></tr></table>`;
 }
 
 function buildEmailDocument({
@@ -180,13 +180,13 @@ function buildEmailDocument({
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="x-apple-disable-message-reformatting"><title>${escapeHtml(title)}</title>
 <style>@media only screen and (max-width:620px){.email-shell{width:100%!important}.email-pad{padding-left:20px!important;padding-right:20px!important}.email-outer{padding:12px!important}}a[x-apple-data-detectors]{color:inherit!important;text-decoration:none!important}</style></head>
-<body style="margin:0;padding:0;background:#f1f5f9;-webkit-text-size-adjust:100%;-ms-text-size-adjust:100%;">
+<body style="margin:0;padding:0;background:#f7f7f5;-webkit-text-size-adjust:100%;-ms-text-size-adjust:100%;">
   <div style="display:none;max-height:0;overflow:hidden;opacity:0;color:transparent;mso-hide:all;">${escapeHtml(preheader || intro || title)}</div>
-  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" bgcolor="#f1f5f9" style="width:100%;border-collapse:collapse;background:#f1f5f9;"><tr><td class="email-outer" align="center" style="padding:32px 16px;">
-    <table role="presentation" width="600" cellspacing="0" cellpadding="0" class="email-shell" data-photoflow-email="true" style="width:600px;max-width:600px;border-collapse:separate;border-spacing:0;background:#ffffff;border:1px solid #e2e8f0;border-radius:16px;overflow:hidden;">
-      <tr><td class="email-pad" bgcolor="#18181b" style="padding:24px 32px;background:#18181b;border-bottom:4px solid #7c3aed;">
-        <p style="margin:0 0 10px;color:#c4b5fd;font-family:Arial,sans-serif;font-size:11px;font-weight:700;letter-spacing:1.8px;line-height:1.2;text-transform:uppercase;">${escapeHtml(brandName)}</p>
-        <h1 style="margin:0;color:#ffffff;font-family:Arial,sans-serif;font-size:26px;font-weight:700;line-height:1.25;">${escapeHtml(title)}</h1>
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" bgcolor="#f7f7f5" style="width:100%;border-collapse:collapse;background:#f7f7f5;"><tr><td class="email-outer" align="center" style="padding:32px 16px;">
+    <table role="presentation" width="600" cellspacing="0" cellpadding="0" class="email-shell" data-photoflow-email="true" style="width:600px;max-width:600px;border-collapse:separate;border-spacing:0;background:#ffffff;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;">
+      <tr><td class="email-pad" bgcolor="#ffffff" style="padding:32px 32px 24px;background:#ffffff;border-bottom:1px solid #e8e5df;">
+        <p style="margin:0 0 10px;color:#706b60;font-family:Arial,sans-serif;font-size:11px;font-weight:700;letter-spacing:1.8px;line-height:1.2;text-transform:uppercase;">${escapeHtml(brandName)}</p>
+        <h1 style="margin:0;color:#242930;font-family:Arial,sans-serif;font-size:28px;font-weight:600;line-height:1.3;letter-spacing:-0.5px;">${escapeHtml(title)}</h1>
       </td></tr>
       <tr><td class="email-pad" style="padding:30px 32px;color:#334155;font-family:Arial,sans-serif;">
         ${greeting ? `<p style="margin:0 0 12px;color:#0f172a;font-size:16px;font-weight:700;line-height:1.5;">${escapeHtml(greeting)}</p>` : ""}
@@ -536,7 +536,7 @@ function registerRoutes(app, store, options = {}) {
   // ── Email unsubscribe ──────────────────────────────────────────────────────
   const unsubscribeLimiter = rateLimit({ windowMs: 15 * 60_000, max: 20, standardHeaders: true, legacyHeaders: false });
   const unsubscribePage = ({ bookingId, token, complete = false }) => `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="robots" content="noindex"><title>${complete ? "Unsubscribed" : "Confirm unsubscribe"}</title>
-<style>body{font-family:Georgia,serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#0a0a0a;color:#d1d5db}.card{max-width:420px;text-align:center;padding:48px 32px;border:1px solid #1f2937;border-radius:12px;background:#111827}h1{font-size:1.5rem;margin-bottom:.5rem;color:#f9fafb}p{font-size:.9rem;line-height:1.6;color:#9ca3af}button{padding:12px 20px;border:0;border-radius:8px;background:#7c3aed;color:white;font-weight:700;cursor:pointer}</style></head>
+<style>body{font-family:Georgia,serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#0a0a0a;color:#d1d5db}.card{max-width:420px;text-align:center;padding:48px 32px;border:1px solid #1f2937;border-radius:12px;background:#111827}h1{font-size:1.5rem;margin-bottom:.5rem;color:#f9fafb}p{font-size:.9rem;line-height:1.6;color:#9ca3af}button{padding:12px 20px;border:0;border-radius:8px;background:#e7b65a;color:white;font-weight:700;cursor:pointer}</style></head>
 <body><div class="card"><h1>${complete ? "You've been unsubscribed" : "Stop booking emails?"}</h1><p>${complete ? "You won't receive any more booking update emails for this session." : "Confirm that you no longer want reminders or updates for this booking."}</p>${complete ? "" : `<form method="post" action="/api/email/unsubscribe/${encodeURIComponent(bookingId)}"><input type="hidden" name="token" value="${escapeHtml(token)}"><button type="submit">Confirm unsubscribe</button></form>`}</div></body></html>`;
 
   // GET is deliberately read-only so email security scanners cannot unsubscribe.
@@ -1022,7 +1022,7 @@ function buildGalleryDeliveryEmail({ clientName, albumTitle, galleryUrl, accessC
 function buildClientPortalEmail({ albums = [], brandName = DEFAULT_EMAIL_BRAND }) {
   const safeAlbums = albums.map(album => ({ title: String(album?.title || "Photo gallery"), url: safeHttpUrl(album?.url) })).filter(album => album.url);
   const linksHtml = safeAlbums.length
-    ? `<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="width:100%;border-collapse:separate;border-spacing:0;background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;">${safeAlbums.map((album, index) => `<tr><td style="padding:14px 16px;${index ? "border-top:1px solid #e2e8f0;" : ""}"><a href="${escapeHtml(album.url)}" style="color:#6d28d9;font-family:Arial,sans-serif;font-size:14px;font-weight:700;line-height:1.5;text-decoration:none;">${escapeHtml(album.title)} →</a></td></tr>`).join("")}</table>`
+    ? `<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="width:100%;border-collapse:separate;border-spacing:0;background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;">${safeAlbums.map((album, index) => `<tr><td style="padding:14px 16px;${index ? "border-top:1px solid #e2e8f0;" : ""}"><a href="${escapeHtml(album.url)}" style="color:#242930;font-family:Arial,sans-serif;font-size:14px;font-weight:700;line-height:1.5;text-decoration:none;">${escapeHtml(album.title)} →</a></td></tr>`).join("")}</table>`
     : buildCallout("No active galleries", "There are currently no active galleries available from this photographer.");
   const subject = cleanEmailSubject(`Your galleries from ${brandName}`);
   return {

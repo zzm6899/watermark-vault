@@ -1285,6 +1285,7 @@ export interface EmailAutomationPreview {
     windowEndsAt: string | null;
     graceWindowEndsAt?: string | null;
     subject: string;
+    body?: string;
   }>;
 }
 
@@ -3168,7 +3169,7 @@ export async function upsertTenantBookingAdmin(slug: string, booking: import("./
  * Returns null when the server is unavailable.
  */
 export async function fetchAlbumStubs(): Promise<import("./types").Album[] | null> {
-  if (serverAvailable !== true) return null;
+  if (!(await checkServer())) return null;
   try {
     const res = await fetch("/api/albums/stubs", { headers: adminAuthHeaders() });
     return await readJson<import("./types").Album[] | null>(res, null);
@@ -3185,7 +3186,7 @@ export async function fetchAlbumStubs(): Promise<import("./types").Album[] | nul
  * Returns null when the server is unavailable or the album is not found.
  */
 export async function fetchAlbumPhotos(albumId: string): Promise<import("./types").Photo[] | null> {
-  if (serverAvailable !== true) return null;
+  if (!(await checkServer())) return null;
   try {
     const res = await fetch(`/api/albums/${encodeURIComponent(albumId)}/photos`, { headers: adminAuthHeaders() });
     const data = await readJson<{ photos?: import("./types").Photo[] } | null>(res, null);

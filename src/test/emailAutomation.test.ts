@@ -40,7 +40,7 @@ describe("email automation core", () => {
       id: "rule1",
       enabled: true,
       trigger: "after_booking",
-      delayHours: 24,
+      delayHours: 0,
       reminderType: "payment",
       templateSubject: "Hi {name}",
       templateBody: "Body",
@@ -111,12 +111,16 @@ describe("email automation core", () => {
 
   it("provides disabled starter automation drafts", () => {
     const starters = getStarterAutomationRules();
-    expect(starters).toHaveLength(3);
+    expect(starters).toHaveLength(7);
     expect(starters.every((rule: any) => rule.enabled === false)).toBe(true);
     expect(starters.map((rule: any) => rule.id)).toEqual([
       "starter-before-event-24h",
       "starter-payment-overdue-48h",
       "starter-after-event-24h",
+      "starter-after-booking-prep",
+      "starter-before-event-2h",
+      "starter-after-payment",
+      "starter-feedback",
     ]);
 
     starters[0].enabled = true;

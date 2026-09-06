@@ -31,3 +31,19 @@ Display preference is saved in the browser. Filter for pending downloads, submit
 Run `npm run typecheck`, `npm test`, and `npm --prefix server test`. After `npm run build`, run `node server/product-acceptance.cjs` for isolated server checks with synthetic bookings and albums. Add `--serve` to keep the preview open for browser review. The harness uses temporary local data, no Stripe credentials, and no external email service. Preview credentials are defined only in that harness.
 
 Deploy the frontend and backend together: the new approval inbox depends on the new server endpoint. No production bookings, payments or download requests are changed by the test harness.
+
+## Booking and email refresh
+
+The public booking pages use a light, neutral layout with readable labels, visible progress, larger touch targets, and a responsive two-column details form. Session descriptions collapse in the calendar view. Extras have bounded plus/minus controls and select their existing value on focus. Main-booking details support keyboard submission through a real form. Shared email templates use a white header, neutral summary cards and a dark primary action, with responsive HTML and plain-text alternatives.
+
+## Event revenue
+
+Open Finance → Revenue by event. Group by event or event and shoot date, search event names, select a shoot-date range and export the filtered CSV. The report reads the server directly; it does not depend on visiting Albums first.
+
+Booked value includes extras. Booking paid includes confirmed deposits or the full recorded price; balance is the unpaid remainder. Gallery paid uses fulfilled checkout orders and approved transfers with recorded amounts. Pending transfers remain separate. Recovery sessions do not create additional revenue. Legacy gallery entries without a verified amount are flagged and excluded rather than repriced using today's catalog. Invoices, refunds, fees, expenses and cancelled bookings are outside this report; it is not a net-profit or cashflow report. Unlinked galleries appear under Unassigned galleries. Historical activity and invoice analytics remain available in the expandable section.
+
+## Automation controls
+
+Seven paused starter templates cover booking preparation, event reminders, payment reminders, payment follow-up and feedback. Give rules names, limit them to an event and booking status, or select a booking creation start date. Duplicate a rule as a paused draft or pause all rules, then save. Zero-hour delays are supported. After-full-payment rules require a recorded paid timestamp. Event reminders use the studio timezone and are skipped after the session starts.
+
+Preview shows recipient decisions and the same personalised subject/body used for sending. Variables include name, event, date, time, location, duration, total, balance and payment reference. Editing a rule clears its stale preview. Saving enabled rules checks recipients first and reports any messages currently due. Paused templates are not activated automatically. No real email was sent during this change's local verification.

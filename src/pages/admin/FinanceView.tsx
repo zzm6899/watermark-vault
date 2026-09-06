@@ -1,3 +1,4 @@
+import { EventRevenueReport } from "@/components/EventRevenueReport";
 import React from "react";
 import { useNavigate } from "react-router-dom";
 import { DollarSign, Download, Grid, Pencil, PlusCircle, Receipt, Search, Trash2, TrendingUp } from "lucide-react";
@@ -6,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { bookingPaymentReference } from "@/lib/booking-reference";
 import { getAlbums, getBookings, getInvoices, updateAlbum } from "@/lib/storage";
-import { adminAuthHeaders, convertQuoteToInvoice, createExpense, createQuote, deleteExpense, deleteQuote, getExpenses, getQuotes, updateExpense, updateQuote } from "@/lib/api";
+import { fetchAlbumStubs, fetchAlbumPhotos, adminAuthHeaders, convertQuoteToInvoice, createExpense, createQuote, deleteExpense, deleteQuote, getExpenses, getQuotes, updateExpense, updateQuote } from "@/lib/api";
 import type { Expense, Invoice, Quote } from "@/lib/types";
 
 function calcInvTotal(inv: Invoice) {
@@ -21,6 +22,11 @@ function formatInvMoney(inv: Pick<Invoice, "currency">, amount: number) {
 export default function FinanceView() {
   const navigate = useNavigate();
   const [albumsState, setAlbumsState] = React.useState(() => getAlbums());
+  React.useEffect(() => {
+    let cancelled = false;
+    fetchAlbumStubs().then(albums => { if (albums && !cancelled) setAlbumsState(albums); });
+    return () => { cancelled = true; };
+  }, []);
   const [invoicesState] = React.useState(() => getInvoices());
   const [deletingId, setDeletingId] = React.useState<string | null>(null);
   const [expandedDownloadKeys, setExpandedDownloadKeys] = React.useState<Set<string>>(new Set());
@@ -36,6 +42,14 @@ export default function FinanceView() {
   }, []);
 
   const toggleDownloadThumbs = (key: string) => {
+    if (!expandedDownloadKeys.has(key)) {
+      const albumId = payments.find(payment => payment.id === key)?.albumId || albumsState.find(album => key.startsWith(`${album.id}-`))?.id;
+      const album = albumsState.find(album => album.id === albumId);
+      if (album && !album.photos?.length) void fetchAlbumPhotos(album.id).then(photos => {
+        if (photos) setAlbumsState(previous => previous.map(item => item.id === album.id ? { ...item, photos } : item));
+        else toast.error("Photo names could not be loaded. Please try again.");
+      });
+    }
     setExpandedDownloadKeys(prev => {
       const next = new Set(prev);
       if (next.has(key)) next.delete(key);
@@ -183,6 +197,12 @@ export default function FinanceView() {
         <p className="text-sm font-body text-muted-foreground">Payment history and revenue summary</p>
       </div>
 
+      <EventRevenueReport />
+
+      <details className="rounded-xl border border-border p-5">
+        <summary className="cursor-pointer font-semibold">Payment activity, invoices & analytics</summary>
+        <p className="text-sm text-muted-foreground my-4">Historical activity below can include gallery values estimated from current prices. Use the event report above for recorded amounts. Invoice totals are separate.</p>
+        <div className="space-y-6">
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
         <div className="glass-panel rounded-xl p-5">
           <p className="text-xs font-body text-muted-foreground tracking-wider uppercase mb-1">Total Revenue</p>
@@ -649,6 +669,9 @@ export default function FinanceView() {
           </div>
         )}
       </div>
+
+        </div>
+      </details>
 
       {/* Download Log */}
       {(() => {

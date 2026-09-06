@@ -1,3 +1,4 @@
+import "@/styles/booking.css";
 import { bookingQuote, sessionPrice } from "@/lib/booking-pricing";
 import { BookingExtras, BookingPriceBreakdown } from "@/components/BookingExtras";
 import { useState, useEffect, useMemo, useRef } from "react";
@@ -590,7 +591,7 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
   const confirmedNeedsPayment = confirmedPrice > 0 && !confirmedPaymentPaid;
   const confirmationIsFinal = submittedBooking?.status === "confirmed" && !confirmedNeedsPayment;
 
-  return (    <div className="min-h-screen bg-background flex flex-col" style={brandStyle}>
+  return (    <div className="booking-shell min-h-screen bg-background flex flex-col" style={brandStyle}>
       {/* Header */}
       <header className="border-b border-border/50 py-4 px-6 flex items-center gap-4">
         {hasHistory && (

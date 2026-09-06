@@ -1,3 +1,4 @@
+import "@/styles/booking.css";
 import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { usePageTitle } from "@/hooks/use-page-title";
@@ -237,7 +238,7 @@ function BookingTimer({ expiresAt, onExpire }: { expiresAt: number; onExpire: ()
 
   return (
     <div className={`text-xs font-body tabular-nums ${isLow ? "text-destructive" : "text-muted-foreground"}`}>
-      ⏱ Complete within {m}:{s.toString().padStart(2, "0")} · your selection is not held until submitted
+      ⏱ Refresh availability in {m}:{s.toString().padStart(2, "0")} · your selection is not held until submitted
     </div>
   );
 }
@@ -247,38 +248,18 @@ const BOOKING_STEPS: { id: Step; label: string }[] = [
   { id: "event-select", label: "Service" },
   { id: "datetime",     label: "Date & Time" },
   { id: "questions",    label: "Details" },
-  { id: "payment",      label: "Confirm" },
+  { id: "payment",      label: "Payment" },
 ];
 
 function BookingSteps({ currentStep }: { currentStep: Step }) {
   if (currentStep === "confirmed" || currentStep === "enquiry" || currentStep === "enquiry-confirmed") return null;
   const currentIdx = BOOKING_STEPS.findIndex(s => s.id === currentStep);
   if (currentIdx < 0) return null;
-  return (
-    <div className="flex items-center justify-center gap-0 mb-8 max-w-sm mx-auto">
-      {BOOKING_STEPS.map((s, idx) => {
-        const done = idx < currentIdx;
-        const active = idx === currentIdx;
-        return (
-          <div key={s.id} className="flex items-center min-w-0">
-            <div className={`flex items-center gap-1.5 px-2 py-1 rounded-full text-[11px] font-body transition-all ${
-              active ? "text-primary font-semibold" : done ? "text-green-400" : "text-muted-foreground/50"
-            }`}>
-              <div className={`w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-bold shrink-0 transition-all ${
-                active ? "bg-primary text-primary-foreground scale-110" : done ? "bg-green-500/20 text-green-400" : "bg-border text-muted-foreground/50"
-              }`}>
-                {done ? <CheckCircle2 className="w-3 h-3" /> : idx + 1}
-              </div>
-              <span className="hidden sm:inline">{s.label}</span>
-            </div>
-            {idx < BOOKING_STEPS.length - 1 && (
-              <div className={`h-px w-4 sm:w-6 shrink-0 transition-colors ${idx < currentIdx ? "bg-green-500/40" : "bg-border/50"}`} />
-            )}
-          </div>
-        );
-      })}
-    </div>
-  );
+  return <nav aria-label="Booking progress"><ol className="booking-progress">
+    {BOOKING_STEPS.map((item, index) => <li key={item.id} aria-current={index === currentIdx ? "step" : undefined}>
+      <span>{index < currentIdx ? <CheckCircle2 className="size-4" /> : index + 1}</span>{item.label}
+    </li>)}
+  </ol></nav>;
 }
 
 // ─── Main Component ──────────────────────────────────────────
@@ -872,25 +853,25 @@ export default function Booking() {
   };
 
   return (
-    <div className="min-h-screen app-shell">
+    <div className="min-h-screen booking-shell">
       <section className="min-h-screen" style={{ paddingTop: "calc(env(safe-area-inset-top) + 2rem)", paddingBottom: "calc(env(safe-area-inset-bottom) + 6rem)" }}>
-        <div className="mx-auto w-full max-w-5xl px-4 sm:px-6 lg:px-8">
+        <div className="mx-auto w-full max-w-[1240px] px-4 sm:px-6 lg:px-8">
           <BookingSteps currentStep={step} />
-          {selectedEvent && !["event-select", "confirmed", "enquiry", "enquiry-confirmed"].includes(step) && (
-            <aside aria-label="Current booking selection" className="sticky top-3 z-20 mx-auto mb-5 flex max-w-3xl items-center gap-3 rounded-xl border border-primary/20 bg-background/90 px-4 py-3 shadow-xl shadow-black/10 backdrop-blur">
+          {selectedEvent && !["event-select", "datetime", "confirmed", "enquiry", "enquiry-confirmed"].includes(step) && (
+            <aside aria-label="Current booking selection" className="mx-auto mb-6 flex max-w-4xl items-center gap-3 rounded-xl border border-primary/20 bg-background/90 px-4 py-3 ">
               <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/15 text-primary"><CalendarDays className="size-4" /></span>
               <div className="min-w-0 flex-1">
                 <p className="truncate text-sm font-medium text-foreground">{selectedEvent.title}</p>
                 <p className="truncate text-xs text-muted-foreground">{selectedDate ? selectedDate.toLocaleDateString("en-AU", { weekday: "short", day: "numeric", month: "short" }) : "Choose a date"}{selectedTime ? ` · ${formatTime12(selectedTime)}` : ""}{selectedDuration ? ` · ${formatDuration(selectedDuration)}` : ""}</p>
               </div>
-              {selectedDuration && <span className="shrink-0 rounded-full border border-primary/20 bg-primary/10 px-2.5 py-1 text-xs font-semibold text-primary">${selectionPrice(selectedEvent, selectedDuration)}</span>}
+              {selectedDuration && <span className="shrink-0 rounded-full border border-primary/20 bg-primary/10 px-2.5 py-1 text-xs font-semibold text-primary">${selectionPrice(selectedEvent, selectedDuration).toFixed(2)}</span>}
             </aside>
           )}
           <AnimatePresence mode="wait">
 
             {/* ─── Step 1: Event List ─── */}
             {step === "event-select" && (
-              <motion.div key="event-select" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} className="mx-auto w-full max-w-3xl">
+              <motion.div key="event-select" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} className="mx-auto w-full max-w-4xl">
                 {/* Profile Card */}
                 <div className="glass-panel rounded-2xl p-6 sm:p-8 mb-5">
                   <div className="flex flex-col sm:flex-row sm:items-center gap-5">
@@ -903,6 +884,8 @@ export default function Booking() {
                     </div>
                   </div>
                 </div>
+
+                <div className="mb-5 mt-8"><h2 className="text-2xl font-semibold tracking-tight">Book a session</h2><p className="mt-2 text-sm text-muted-foreground">Choose your session, find a time and make it yours.</p></div>
 
                 {configError && (
                   <div className="mb-5 rounded-xl border border-yellow-500/30 bg-yellow-500/10 p-3 text-xs font-body text-yellow-200" role="status">
@@ -935,9 +918,9 @@ export default function Booking() {
                             <div className="flex-1 min-w-0">
                               <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
                                 <h3 className="font-display text-2xl leading-tight text-foreground">{ev.title}</h3>
-                                {(ev.price ?? 0) > 0 && (
+                                {minPrice > 0 && (
                                   <span className="text-sm font-body font-semibold text-primary bg-primary/10 rounded-full px-3 py-1 border border-primary/20 shrink-0">
-                                    from ${minPrice}
+                                    from ${minPrice.toFixed(2)}
                                   </span>
                                 )}
                               </div>
@@ -972,8 +955,8 @@ export default function Booking() {
                                 )}
                               </div>
                               <div className="flex justify-end mt-3">
-                                <button type="button" onClick={() => handleSelectEvent(ev)} className="inline-flex items-center gap-1.5 text-xs font-body font-semibold bg-primary text-primary-foreground px-3.5 py-1.5 rounded-full hover:bg-primary/90 transition-colors">
-                                  Book <ArrowRight className="w-3 h-3" />
+                                <button type="button" onClick={() => handleSelectEvent(ev)} className="inline-flex items-center gap-1.5 text-xs font-body font-semibold bg-primary text-primary-foreground px-5 py-3 rounded-xl hover:bg-primary/90 transition-colors">
+                                  Choose session <ArrowRight className="w-3 h-3" />
                                 </button>
                               </div>
                             </div>
@@ -1022,10 +1005,10 @@ export default function Booking() {
                   </button>
 
                   <div className="glass-panel rounded-2xl overflow-hidden">
-                    <div className="grid min-w-0 lg:grid-cols-[minmax(0,1fr)_220px] xl:grid-cols-[280px_minmax(0,1fr)_220px]">
+                    <div className="grid min-w-0 lg:grid-cols-[240px_minmax(0,1fr)_260px]">
                       
                       {/* Left: Event Info */}
-                      <div className="min-w-0 p-5 sm:p-6 space-y-5 border-b border-border/50 lg:col-span-2 xl:col-span-1 xl:border-b-0 xl:border-r">
+                      <div className="min-w-0 p-5 sm:p-6 space-y-5 border-b border-border/50 lg:border-b-0 lg:border-r">
                         <div className="flex items-center gap-3">
                           <BookingAvatar src={profile.avatar} name={profile.name || "Photographer"} className="h-11 w-11 rounded-full" />
                           <div className="min-w-0">
@@ -1035,9 +1018,7 @@ export default function Booking() {
                         </div>
                         <h2 className="font-display text-2xl leading-tight text-foreground">{selectedEvent.title}</h2>
                         {selectedEvent.description && (
-                          <div className="min-w-0 rounded-xl border border-border/50 bg-secondary/25 p-4">
-                            <RichTextDisplay html={selectedEvent.description} className="text-sm" />
-                          </div>
+                          <details className="text-sm text-muted-foreground"><summary className="cursor-pointer font-medium text-foreground">About this session</summary><RichTextDisplay html={selectedEvent.description} className="mt-3 text-sm" /></details>
                         )}
                         
                         {selectedEvent.requiresConfirmation && (
@@ -1059,7 +1040,7 @@ export default function Booking() {
                                   }`}
                                 >
                                   <span>{formatDuration(d)}</span>
-                                  {dPrice > 0 && <span className={`text-[10px] mt-0.5 ${selectedDuration === d ? "text-primary-foreground/70" : "text-primary"}`}>${dPrice}</span>}
+                                  {dPrice > 0 && <span className={`text-[10px] mt-0.5 ${selectedDuration === d ? "text-primary-foreground/70" : "text-primary"}`}>${dPrice.toFixed(2)}</span>}
                                 </button>
                               );
                             })}
@@ -1310,7 +1291,7 @@ export default function Booking() {
 
             {/* ─── Questionnaire ─── */}
             {step === "questions" && selectedEvent && selectedDate && selectedTime && selectedDuration && (
-              <motion.div key="questions" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} className="max-w-lg mx-auto">
+              <motion.div key="questions" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} className="max-w-3xl mx-auto">
                 <button onClick={() => setStep("datetime")} className="inline-flex items-center gap-2 text-xs font-body tracking-wider uppercase text-muted-foreground hover:text-primary transition-colors mb-6">
                   <ArrowLeft className="w-3.5 h-3.5" /> Back
                 </button>
@@ -1321,30 +1302,13 @@ export default function Booking() {
                   </div>
                 )}
 
-                <div className="glass-panel rounded-xl p-5 mb-6">
-                  <div className="flex items-center gap-3 mb-3">
-                    <div className="w-1.5 h-10 rounded-full bg-primary" />
-                    <div>
-                      <h3 className="font-display text-lg text-foreground">{selectedEvent.title}</h3>
-                      <p className="text-xs font-body text-muted-foreground flex items-center gap-1.5">
-                        <Clock className="w-3 h-3" /> {formatDuration(selectedDuration)}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="border-t border-border/50 pt-3 space-y-1">
-                    <p className="text-sm font-body text-foreground">
-                      {selectedDate.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" })}
-                    </p>
-                    <p className="text-sm font-body text-primary font-medium">{formatTime12(selectedTime)}</p>
-                  </div>
-                </div>
-
+                <form onSubmit={event => { event.preventDefault(); void handleSubmitQuestions(); }} className="booking-details-card glass-panel rounded-2xl">
                 <div className="mb-6">
                   <h2 className="font-display text-2xl text-foreground">Your details</h2>
                   <p className="mt-2 text-sm text-muted-foreground">Tell us who’s coming. We’ll use your email for your booking confirmation.</p>
                   <p className="mt-2 text-xs text-muted-foreground">Fields marked * are required.</p>
                 </div>
-                <div className="space-y-5">
+                <div className="booking-fields">
                   <div>
                     <label htmlFor="booking-client-name" className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-2 block">Name <span className="text-destructive">*</span></label>
                     <Input id="booking-client-name" name="name" autoComplete="name" required value={clientName} onChange={event => setClientName(event.target.value)} className="bg-secondary border-border text-foreground font-body" />
@@ -1367,10 +1331,12 @@ export default function Booking() {
                   <BookingPriceBreakdown base={sessionPrice(selectedEvent, selectedDuration)} items={bookingQuote(selectedEvent, selectedDuration, extraQuantities).lineItems} total={selectionPrice(selectedEvent, selectedDuration)} />
                 </div>
 
-                <Button onClick={handleSubmitQuestions} disabled={processingPayment} size="lg" className="w-full mt-6 bg-primary text-primary-foreground hover:bg-primary/90 font-body tracking-wider uppercase text-xs py-6">
+                <Button type="submit" disabled={processingPayment} size="lg" className="booking-primary-action w-full mt-6 bg-primary text-primary-foreground hover:bg-primary/90">
                   {processingPayment ? "Submitting…" : selectionPrice(selectedEvent, selectedDuration) === 0 ? "Confirm Free Booking" : "Continue to Payment"}
                 </Button>
-                <p className="text-center text-[10px] font-body text-muted-foreground/40 mt-4">By booking, you agree to our terms and conditions.</p>
+                <p className="text-center text-sm text-muted-foreground mt-4">{selectionPrice(selectedEvent, selectedDuration) > 0 ? "Review your total and payment options on the next step." : "Submit to confirm your free session."}</p>
+                <p className="text-center text-xs text-muted-foreground mt-2">By booking, you agree to our terms and conditions.</p>
+                </form>
               </motion.div>
             )}
 
@@ -1568,7 +1534,7 @@ export default function Booking() {
               };
 
               return (
-                <motion.div key="payment" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} className="max-w-md mx-auto">
+                <motion.div key="payment" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} className="max-w-xl mx-auto">
                   <button onClick={() => setStep("questions")} className="inline-flex items-center gap-2 text-xs font-body tracking-wider uppercase text-muted-foreground hover:text-primary transition-colors mb-6">
                     <ArrowLeft className="w-3.5 h-3.5" /> Back
                   </button>
@@ -1740,7 +1706,7 @@ export default function Booking() {
               const paymentLabel = paymentState.paymentLabel;
 
               return (
-              <motion.div key="confirmed" initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="max-w-md mx-auto text-center">
+              <motion.div key="confirmed" initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="max-w-xl mx-auto text-center">
                 <div className="mb-5 text-left"><BookingPriceBreakdown base={lastBooking?.sessionPrice} items={lastBooking?.lineItems} total={totalPrice} /></div>
                 <div className="glass-panel rounded-xl p-8">
                   {isCancelled ? <XCircle className="w-12 h-12 text-destructive mx-auto mb-4" /> : <CheckCircle2 className="w-12 h-12 text-green-400 mx-auto mb-4" />}
@@ -1859,7 +1825,7 @@ export default function Booking() {
 
             {/* ─── Enquiry Form ─── */}
             {step === "enquiry" && (
-              <motion.div key="enquiry" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} className="max-w-lg mx-auto">
+              <motion.div key="enquiry" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} className="max-w-3xl mx-auto">
                 <button
                   onClick={() => setStep(selectedEvent ? "datetime" : "event-select")}
                   className="inline-flex items-center gap-2 text-xs font-body tracking-wider uppercase text-muted-foreground hover:text-primary transition-colors mb-6"
@@ -1992,7 +1958,7 @@ export default function Booking() {
 
             {/* ─── Enquiry Confirmed ─── */}
             {step === "enquiry-confirmed" && (
-              <motion.div key="enquiry-confirmed" initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="max-w-md mx-auto text-center">
+              <motion.div key="enquiry-confirmed" initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="max-w-xl mx-auto text-center">
                 <div className="glass-panel rounded-xl p-8">
                   <CheckCircle2 className="w-12 h-12 text-green-400 mx-auto mb-4" />
                   <h2 className="font-display text-2xl text-foreground mb-2">Enquiry Received!</h2>

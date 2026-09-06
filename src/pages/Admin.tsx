@@ -11660,6 +11660,7 @@ function PlatformView() {
 // ─── Watermark Preview with Sample Images ───────────
 const EMAIL_AUTOMATION_TRIGGER_LABELS: Record<EmailAutomationTrigger, string> = {
   after_booking: "After booking",
+  after_payment: "After full payment",
   before_event: "Before event",
   after_event: "After event",
   payment_overdue: "Payment overdue",
@@ -11693,6 +11694,10 @@ const STARTER_EMAIL_AUTOMATIONS: EmailAutomationRule[] = [
     templateSubject: "Thanks for your {event} session",
     templateBody: "Hi {name}, thanks again for your {event} session on {date}.\n\nI will be in touch as soon as your gallery is ready.",
   },
+  {"id": "starter-after-booking-prep", "name": "Session preparation", "enabled": false, "trigger": "after_booking", "delayHours": 1, "reminderType": "booking", "templateSubject": "Getting ready for {event}", "templateBody": "Hi {name}, your {duration} session is on {date} at {time}.\n\nPlease reply with any ideas or reference images you would like to share.\n\nLocation: {location}"},
+  {"id": "starter-before-event-2h", "name": "On-the-day reminder", "enabled": false, "trigger": "before_event", "delayHours": 2, "reminderType": "booking", "templateSubject": "See you soon for {event}", "templateBody": "Hi {name}, your session starts at {time} today.\n\nLocation: {location}\n\nPlease arrive a few minutes early and reply if you need help finding us."},
+  {"id": "starter-after-payment", "name": "Payment received follow-up", "enabled": false, "trigger": "after_payment", "delayHours": 1, "reminderType": "booking", "templateSubject": "You are all set for {event}", "templateBody": "Hi {name}, your booking is paid in full. Thank you!\n\nYour session: {date} at {time}\nReference: {reference}"},
+  {"id": "starter-feedback", "name": "Post-session feedback", "enabled": false, "trigger": "after_event", "delayHours": 72, "reminderType": "booking", "templateSubject": "How was your {event} session?", "templateBody": "Hi {name}, thank you for joining me for {event}.\n\nI would love to hear how your session went. Reply with any feedback or questions."},
 ];
 
 function AutomationsView() {
@@ -11715,6 +11720,8 @@ function EmailAutomationsManager() {
   const [previews, setPreviews] = useState<Record<string, EmailAutomationPreview>>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [savedSnapshot, setSavedSnapshot] = useState("");
+  const automationEvents = getEventTypes();
   const [previewingId, setPreviewingId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -11723,6 +11730,7 @@ function EmailAutomationsManager() {
     Promise.all([getEmailAutomations(), getEmailStatus()]).then(([loaded, status]) => {
       if (cancelled) return;
       setRules(loaded);
+      setSavedSnapshot(JSON.stringify(loaded));
       setEmailStatus(status);
       setLoading(false);
     });
@@ -11731,12 +11739,14 @@ function EmailAutomationsManager() {
 
   const updateRule = (id: string, patch: Partial<EmailAutomationRule>) => {
     setRules(prev => prev.map(rule => rule.id === id ? { ...rule, ...patch } : rule));
+    setPreviews(prev => { const next = { ...prev }; delete next[id]; return next; });
   };
 
   const addRule = () => {
     const nextRule: EmailAutomationRule = {
       id: generateId("auto"),
-      enabled: true,
+      name: "New reminder",
+      enabled: false,
       trigger: "before_event",
       delayHours: 24,
       reminderType: "booking",
@@ -11780,15 +11790,17 @@ function EmailAutomationsManager() {
   };
 
   const handleSave = async () => {
+    if (saving) return;
+    setSaving(true);
     const enabledRules = rules.filter(rule => rule.enabled);
     if (enabledRules.length > 0) {
       const previews = await Promise.all(enabledRules.map(rule => previewEmailAutomation(rule)));
+      if (previews.some(preview => !preview)) { setSaving(false); toast.error("Could not check recipients. Please try again before enabling emails."); return; }
       const dueCount = previews.reduce((sum, preview) => sum + (preview?.summary?.due || 0), 0);
       if (dueCount > 0 && !confirm(`${dueCount} automation email${dueCount !== 1 ? "s are" : " is"} due now and may send within the next scheduler run. Save enabled rules anyway?`)) {
-        return;
+        setSaving(false); return;
       }
     }
-    setSaving(true);
     const saved = await saveEmailAutomations(rules);
     setSaving(false);
     if (!saved) {
@@ -11796,9 +11808,11 @@ function EmailAutomationsManager() {
       return;
     }
     setRules(saved);
+    setSavedSnapshot(JSON.stringify(saved));
     toast.success("Email automations saved");
   };
 
+  const dirty = !loading && savedSnapshot !== JSON.stringify(rules);
   const enabledCount = rules.filter(rule => rule.enabled).length;
   const disabledCount = rules.length - enabledCount;
 
@@ -11806,24 +11820,26 @@ function EmailAutomationsManager() {
     <div className="glass-panel rounded-xl p-6 space-y-4">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
-          <h3 className="font-display text-base text-foreground">Email Automations</h3>
+          <h3 className="font-display text-base text-foreground">Email automations</h3>
           <p className="text-[10px] font-body text-muted-foreground/60 mt-1">
-            Send booking and payment reminders from the server scheduler. Variables: {"{name}"}, {"{event}"}, {"{date}"}, {"{time}"}.
+            Personal reminders, preparation notes and follow-ups. Each rule sends once per matching booking.
           </p>
         </div>
         <div className="flex items-center gap-2">
           <Button size="sm" variant="outline" onClick={addStarterRules} className="gap-1.5 font-body text-xs">
-            <Sparkles className="w-3 h-3" /> Starters
+            <Sparkles className="w-3 h-3" /> Add templates
           </Button>
           <Button size="sm" variant="outline" onClick={addRule} className="gap-1.5 font-body text-xs">
             <Plus className="w-3 h-3" /> New Rule
           </Button>
-          <Button size="sm" onClick={handleSave} disabled={saving || loading} className="gap-1.5 bg-primary text-primary-foreground font-body text-xs">
+          <Button size="sm" onClick={handleSave} disabled={saving || loading || !dirty} className="gap-1.5 bg-primary text-primary-foreground font-body text-xs">
             <Save className="w-3 h-3" /> {saving ? "Saving..." : "Save"}
           </Button>
         </div>
       </div>
 
+      {dirty && <p role="status" className="text-sm text-amber-500">Unsaved changes · save to apply these rules.</p>}
+      <div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" disabled={!enabledCount || saving} onClick={() => setRules(previous => previous.map(rule => ({ ...rule, enabled: false })))}>Pause all</Button><p className="text-xs text-muted-foreground self-center">New templates start paused. Preview recipients before enabling.</p></div>
       {!loading && (
         <div className="grid grid-cols-3 gap-2">
           <div className="rounded-lg bg-secondary/40 border border-border/40 p-3">
@@ -11894,21 +11910,29 @@ function EmailAutomationsManager() {
             <div key={rule.id} className="rounded-lg border border-border/40 bg-secondary/25 p-4 space-y-4">
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                 <div className="flex items-center gap-3">
-                  <Switch checked={rule.enabled} onCheckedChange={(enabled) => updateRule(rule.id, { enabled })} />
+                  <Switch aria-label={`Enable ${rule.name || EMAIL_AUTOMATION_TRIGGER_LABELS[rule.trigger]}`} checked={rule.enabled} onCheckedChange={(enabled) => updateRule(rule.id, { enabled })} />
                   <div>
                     <p className="text-sm font-body text-foreground font-medium">
-                      {EMAIL_AUTOMATION_TRIGGER_LABELS[rule.trigger]} · {rule.delayHours || 0}h
+                      {rule.name || EMAIL_AUTOMATION_TRIGGER_LABELS[rule.trigger]}
                     </p>
                     <p className="text-[10px] font-body text-muted-foreground/60">
-                      {rule.reminderType === "payment" ? "Payment reminder" : "Booking reminder"}
+                      {EMAIL_AUTOMATION_TRIGGER_LABELS[rule.trigger]} · {rule.delayHours} hours · {rule.enabled ? "Active" : "Paused"}
                     </p>
                   </div>
                 </div>
-                <Button size="icon" variant="ghost" className="h-8 w-8 text-muted-foreground hover:text-destructive self-start sm:self-center" onClick={() => deleteRule(rule.id)}>
+                <Button size="sm" variant="outline" onClick={() => setRules(previous => [...previous, { ...rule, id: generateId("auto"), name: `${rule.name || "Reminder"} copy`, enabled: false }])}>Duplicate</Button>
+                <Button aria-label={`Delete ${rule.name || "reminder"}`} size="icon" variant="ghost" className="h-8 w-8 text-muted-foreground hover:text-destructive self-start sm:self-center" onClick={() => deleteRule(rule.id)}>
                   <Trash2 className="w-4 h-4" />
                 </Button>
               </div>
 
+              <details className="rounded-lg border border-border/50 p-3"><summary className="cursor-pointer text-sm font-medium">Edit timing, audience & message</summary><div className="space-y-4 pt-4">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="text-sm">Rule name<Input value={rule.name || ""} maxLength={100} onChange={event => updateRule(rule.id, { name: event.target.value })} placeholder="Give this reminder a name" /></label>
+                <label className="text-sm">Event<select value={rule.eventTypeId || ""} onChange={event => updateRule(rule.id, { eventTypeId: event.target.value })} className="block h-10 w-full rounded-md border border-border bg-secondary px-3"><option value="">All events</option>{rule.eventTypeId && !automationEvents.some(event => event.id === rule.eventTypeId) && <option value={rule.eventTypeId}>Archived event</option>}{automationEvents.map(event => <option key={event.id} value={event.id}>{event.title}</option>)}</select></label>
+                <label className="text-sm">Booking status<select value={rule.bookingStatus || ""} onChange={event => updateRule(rule.id, { bookingStatus: event.target.value })} className="block h-10 w-full rounded-md border border-border bg-secondary px-3"><option value="">All active bookings</option><option value="confirmed">Confirmed</option><option value="completed">Completed</option><option value="pending">Pending confirmation</option></select></label>
+                <label className="text-sm">Bookings created on or after<Input type="date" value={rule.createdAfter || ""} onChange={event => updateRule(rule.id, { createdAfter: event.target.value })} /></label>
+              </div>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                 <div>
                   <label className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-1 block">Trigger</label>
@@ -11926,9 +11950,11 @@ function EmailAutomationsManager() {
                   <label className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-1 block">Delay Hours</label>
                   <Input
                     type="number"
-                    min={1}
+                    min={0}
+                    max={8760}
+                    aria-label="Delay hours"
                     value={rule.delayHours}
-                    onChange={(e) => updateRule(rule.id, { delayHours: Math.max(1, Number(e.target.value) || 1) })}
+                    onChange={(e) => updateRule(rule.id, { delayHours: Math.min(8760, Math.max(0, Number(e.target.value) || 0)) })}
                     className="bg-secondary border-border text-foreground font-body text-xs"
                   />
                 </div>
@@ -11945,9 +11971,10 @@ function EmailAutomationsManager() {
                 </div>
               </div>
 
+              <p className="text-xs text-muted-foreground">Personalise with {"{name}, {event}, {date}, {time}, {location}, {duration}, {total}, {balance}, {reference}"}.</p>
               <div className="space-y-3">
                 <div>
-                  <label className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-1 block">Subject Override</label>
+                  <label className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-1 block">Email subject</label>
                   <Input
                     value={rule.templateSubject || ""}
                     onChange={(e) => updateRule(rule.id, { templateSubject: e.target.value })}
@@ -11957,7 +11984,7 @@ function EmailAutomationsManager() {
                   />
                 </div>
                 <div>
-                  <label className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-1 block">Body Override</label>
+                  <label className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-1 block">Email message</label>
                   <Textarea
                     value={rule.templateBody || ""}
                     onChange={(e) => updateRule(rule.id, { templateBody: e.target.value })}
@@ -11968,9 +11995,10 @@ function EmailAutomationsManager() {
                 </div>
               </div>
 
+              </div></details>
               <div className="flex items-center justify-between gap-3 border-t border-border/30 pt-3">
                 <p className="text-[10px] font-body text-muted-foreground/60">
-                  Preview uses the same scheduler window and dedupe checks as the server.
+                  Check recipients and read the message without sending an email.
                 </p>
                 <Button
                   size="sm"
@@ -12026,6 +12054,7 @@ function EmailAutomationsManager() {
                           <p className="text-[10px] font-body text-muted-foreground/70 mt-1">
                             {match.reason}{match.sendAt ? ` · ${new Date(match.sendAt).toLocaleString()}` : ""}
                           </p>
+                          {match.body && <details className="text-xs mt-2"><summary className="cursor-pointer text-primary">Read email</summary><p className="whitespace-pre-wrap rounded-md bg-background p-3 mt-2 leading-relaxed">{match.body}</p></details>}
                           {match.subject && (
                             <p className="text-[10px] font-body text-foreground/80 mt-1 truncate">Subject: {match.subject}</p>
                           )}
