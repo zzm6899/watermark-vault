@@ -28,8 +28,8 @@ describe("album workspace UI contracts", () => {
     expect(gallerySource).not.toContain("Review total");
     expect(gallerySource).not.toContain("Free allowance and pricing update automatically");
     expect(gallerySource).toContain("Select visible");
-    expect(gallerySource).toContain("Tap photos to select");
-    expect(gallerySource).toContain("sticky top-20");
+    expect(gallerySource).toContain("Use the circle to select");
+    expect(gallerySource).toContain("sticky top-16");
   });
 
   it("configures start-time increments independently from duration", () => {

@@ -3,18 +3,18 @@ import { Mail, CheckCircle2, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
-export default function GalleryRecovery({ albumId }: { albumId?: string }) {
+export default function GalleryRecovery({ albumId, compact = false }: { albumId?: string; compact?: boolean }) {
   const inputId = useId();
   const [open, setOpen] = useState(false);
   const [email, setEmail] = useState("");
   const [status, setStatus] = useState<"idle" | "sending" | "sent" | "error">("idle");
-  return <section className="rounded-2xl border border-primary/20 bg-primary/5 p-4 sm:p-5">
+  return <section className={compact && !open ? "gallery-recovery-link" : "rounded-lg border border-border p-4"}>
     <div className="flex items-start gap-3">
-      <Mail className="mt-1 h-5 w-5 shrink-0 text-primary" />
+      {(!compact || open) && <Mail className="mt-1 h-5 w-5 shrink-0 text-primary" />}
       <div className="min-w-0 flex-1">
-        <h2 className="text-sm font-semibold">Already purchased photos?</h2>
-        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">Restore your individual photos or full album on this device. You won’t need to buy them again.</p>
-        {!open && <Button type="button" variant="outline" size="sm" className="mt-3" onClick={() => setOpen(true)}>Find my purchases</Button>}
+        {(!compact || open) && <><h2 className="text-sm font-semibold">Already purchased photos?</h2><p className="mt-1 text-xs leading-relaxed text-muted-foreground">Restore purchases on this device using your checkout email.</p></>}
+        {!open && <Button type="button" variant={compact ? "ghost" : "outline"} size="sm" className={compact ? "px-0 text-muted-foreground" : "mt-3"} onClick={() => setOpen(true)}>Find my purchases</Button>}
+        {open && compact && <button type="button" className="mt-2 text-xs underline" onClick={() => setOpen(false)}>Close recovery</button>}
         {open && status !== "sent" && <form className="mt-3 space-y-2" onSubmit={async event => {
           event.preventDefault();
           if (status === "sending") return;

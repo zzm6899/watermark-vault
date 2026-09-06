@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import AlbumDetail from "@/pages/AlbumDetail";
 
@@ -23,7 +23,68 @@ it("keeps all-photo selections at the cheaper individual price and displays expl
   expect(await screen.findByText("$20.00", { selector: "span" })).toBeInTheDocument();
   expect(screen.getByRole("heading", { name: "Choose Payment Method" })).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: /^Close$/ }));
-  fireEvent.click(screen.getByRole("button", { name: "$100.00 Album" }));
+  fireEvent.click(screen.getByRole("button", { name: "Download & pricing" }));
+  fireEvent.click(screen.getByRole("button", { name: "Get full gallery · $100.00" }));
   expect(await screen.findByText(/Full album · 2 photos/)).toBeInTheDocument();
   expect(screen.getByText("$100.00", { selector: "span" })).toBeInTheDocument();
+});
+
+async function renderGallery(overrides: Record<string, unknown> = {}) {
+  const album = { id: "simple", slug: "simple", title: "Client Gallery", description: "", coverImage: "", date: "2026-09-06",
+    photoCount: 40, freeDownloads: 0, pricePerPhoto: 10, priceFullAlbum: 100, isPublic: true, enabled: true,
+    photos: Array.from({ length: 40 }, (_, index) => ({ id: `photo-${index}`, title: `Photo ${index + 1}`, src: `/uploads/${index}.jpg` })), ...overrides };
+  vi.stubGlobal("IntersectionObserver", class { observe() {} unobserve() {} disconnect() {} });
+  vi.stubGlobal("fetch", vi.fn(async (input) => {
+    const body = String(input).endsWith("/api/public-album/simple") ? { album, tenantSlug: null, sessionKey: "gallery-secure-session-123456" } : {};
+    return { ok: true, status: 200, headers: new Headers({ "content-type": "application/json" }), json: async () => body } as Response;
+  }));
+  render(<MemoryRouter initialEntries={["/gallery/simple"]}><Routes><Route path="/gallery/:albumId" element={<AlbumDetail />} /></Routes></MemoryRouter>);
+  await screen.findByRole("heading", { name: "Client Gallery" });
+}
+
+it("opens photos independently of selection and selects only the rendered batch", async () => {
+  await renderGallery();
+  fireEvent.click(screen.getByRole("button", { name: "Open Photo 1 in lightbox" }));
+  expect(screen.getByRole("dialog", { name: "Photo viewer: Photo 1" })).toBeInTheDocument();
+  expect(screen.queryByText("1 photo selected")).not.toBeInTheDocument();
+  fireEvent.keyDown(window, { key: "Escape" });
+  fireEvent.click(screen.getByRole("button", { name: "Select visible" }));
+  expect(screen.getByText("36 photos selected")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Deselect Photo 37" })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Clear selection" }));
+  expect(screen.getByRole("button", { name: "Select Photo 1" })).toHaveAttribute("aria-pressed", "false");
+});
+
+it("does not stack a delayed email dialog over payment choices", async () => {
+  await renderGallery();
+  fireEvent.click(screen.getByRole("button", { name: "Select Photo 1" }));
+  fireEvent.click(screen.getByRole("button", { name: "Pay $10.00" }));
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 400)); });
+  expect(screen.getAllByRole("dialog")).toHaveLength(1);
+  expect(screen.getByRole("heading", { name: "Choose Payment Method" })).toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "Your checkout email" })).not.toBeInTheDocument();
+});
+
+it("keeps expired downloads viewable without offering checkout or selection", async () => {
+  await renderGallery({ downloadExpiresAt: "2020-01-01", allUnlocked: true });
+  expect(screen.getByText("Download access has expired")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Select Photo 1" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Download & pricing" })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Open Photo 1 in lightbox" })).toBeInTheDocument();
+});
+
+it("downloads the full gallery even when an earlier selection is active", async () => {
+  await renderGallery({ allUnlocked: true });
+  fireEvent.click(screen.getByRole("button", { name: "Select Photo 1" }));
+  fireEvent.click(screen.getByRole("button", { name: "Download all photos" }));
+  expect(await screen.findByRole("button", { name: "Download ZIP (40)" })).toBeInTheDocument();
+});
+
+it("resets the purchased-only filter along with other gallery filters", async () => {
+  await renderGallery({ paidPhotoIds: ["photo-0"] });
+  fireEvent.click(screen.getByRole("button", { name: "Purchased photos (1)" }));
+  expect(screen.queryByRole("button", { name: "Open Photo 2 in lightbox" })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Show gallery filters" }));
+  fireEvent.click(screen.getByRole("button", { name: "Reset filters" }));
+  expect(screen.getByRole("button", { name: "Open Photo 2 in lightbox" })).toBeInTheDocument();
 });

@@ -1,4 +1,4 @@
-import { ShoppingCart, Download, Package, Building2 } from "lucide-react";
+import { Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { motion, AnimatePresence } from "framer-motion";
 
@@ -9,113 +9,48 @@ interface PurchasePanelProps {
   freeRemaining: number;
   pricePerPhoto: number;
   priceFullAlbum: number;
-  fullAlbumCheaper?: boolean;
-  totalPhotos: number;
   onDownloadFree: () => void;
   onPurchaseSelected: () => void;
   onPurchaseAlbum: () => void;
-  onBankTransfer?: () => void;
-  bankTransferEnabled?: boolean;
+  onClearSelection: () => void;
 }
 
 export default function PurchasePanel({
-  selectedCount,
-  unpaidCount,
-  alreadyPaidCount = 0,
-  freeRemaining,
-  pricePerPhoto,
-  priceFullAlbum,
-  totalPhotos,
-  onDownloadFree,
-  onPurchaseSelected,
-  onPurchaseAlbum,
-  onBankTransfer,
-  bankTransferEnabled = false,
+  selectedCount, unpaidCount, alreadyPaidCount = 0, freeRemaining,
+  pricePerPhoto, priceFullAlbum, onDownloadFree, onPurchaseSelected,
+  onPurchaseAlbum, onClearSelection,
 }: PurchasePanelProps) {
-  const perPhotoPrice = Number(pricePerPhoto) || 0;
-  const albumPrice = Number(priceFullAlbum) || 0;
   const effectiveUnpaidCount = unpaidCount ?? selectedCount;
-  const paidCount = Math.max(0, effectiveUnpaidCount - freeRemaining);
-  const paidTotal = paidCount * perPhotoPrice;
-  const fullAlbumCheaper = albumPrice > 0 && paidCount > 0 && paidTotal >= albumPrice;
-
   const freeUsed = Math.min(effectiveUnpaidCount, freeRemaining);
-  const breakdownParts: string[] = [];
-  if (alreadyPaidCount > 0) breakdownParts.push(`${alreadyPaidCount} purchased`);
-  if (freeUsed > 0) breakdownParts.push(`${freeUsed} free`);
-  if (paidCount > 0) breakdownParts.push(`${paidCount} × $${perPhotoPrice.toFixed(2)} = $${paidTotal.toFixed(2)}`);
-  const breakdown = breakdownParts.length ? breakdownParts.join(" · ") : "No charge";
+  const paidCount = Math.max(0, effectiveUnpaidCount - freeRemaining);
+  const paidTotal = paidCount * pricePerPhoto;
+  const fullAlbumCheaper = priceFullAlbum > 0 && paidCount > 0 && paidTotal >= priceFullAlbum;
+  const breakdown = [
+    alreadyPaidCount > 0 && `${alreadyPaidCount} purchased`,
+    freeUsed > 0 && `${freeUsed} complimentary`,
+    paidCount > 0 && `${paidCount} × $${pricePerPhoto.toFixed(2)}`,
+  ].filter(Boolean).join(" · ");
 
   return (
     <AnimatePresence>
       {selectedCount > 0 && (
-        <motion.div
-          initial={{ y: 100, opacity: 0 }}
-          animate={{ y: 0, opacity: 1 }}
-          exit={{ y: 100, opacity: 0 }}
-          className="fixed bottom-0 left-0 right-0 z-40 glass-panel border-t border-border/50 px-3 pt-3 pb-3 shadow-[0_-18px_45px_rgba(0,0,0,0.28)]"
-          style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 0.625rem)" }}
-        >
+        <motion.div initial={{ y: 100, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 100, opacity: 0 }}
+          className="gallery-selection-bar fixed bottom-0 left-0 right-0 z-40 border-t border-border px-4 py-4"
+          style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 1rem)" }}>
           <div className="mx-auto flex w-full max-w-6xl flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-
-            {/* Info row */}
-            <div className="flex items-center gap-2">
-              <div className="w-7 h-7 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
-                <ShoppingCart className="w-3.5 h-3.5 text-primary" />
-              </div>
-              <div>
-                <p className="text-sm font-semibold text-foreground font-body leading-tight">
-                  {selectedCount} photo{selectedCount !== 1 ? "s" : ""} selected
-                </p>
-                <p className="text-xs text-muted-foreground font-body leading-tight">
-                  {breakdown}
-                </p>
-              </div>
+            <div className="min-w-0">
+              <p className="text-base font-medium">{selectedCount} photo{selectedCount !== 1 ? "s" : ""} selected</p>
+              <p className="text-sm text-muted-foreground">{fullAlbumCheaper ? `The full gallery costs no more than your $${paidTotal.toFixed(2)} selection.` : breakdown || "Ready to download"}</p>
             </div>
-
-            {/* Buttons row — equal width, always side by side */}
-            <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:justify-end">
-
-              {(effectiveUnpaidCount === 0 || (freeRemaining > 0 && effectiveUnpaidCount <= freeRemaining)) && (
-                <Button onClick={onDownloadFree} variant="outline" size="sm"
-                  className="flex-1 h-9 text-xs border-primary/30 text-primary hover:bg-primary/10">
-                  <Download className="w-3.5 h-3.5 mr-1" />
-                  Download Free
-                </Button>
+            <div className="flex items-center justify-between gap-4 sm:justify-end">
+              <Button onClick={onClearSelection} variant="ghost" className="text-muted-foreground">Clear selection</Button>
+              {paidCount === 0 ? (
+                <Button onClick={onDownloadFree} className="gap-2"><Download className="size-4" />Download Free</Button>
+              ) : fullAlbumCheaper ? (
+                <Button onClick={onPurchaseAlbum}>Full gallery · ${priceFullAlbum.toFixed(2)}</Button>
+              ) : (
+                <Button onClick={onPurchaseSelected}>Pay ${paidTotal.toFixed(2)}</Button>
               )}
-
-              {paidCount > 0 && !fullAlbumCheaper && (
-                <Button onClick={onPurchaseSelected} size="sm"
-                  className="flex-1 h-9 text-xs bg-primary text-primary-foreground hover:bg-primary/90">
-                  <ShoppingCart className="w-3.5 h-3.5 mr-1" />
-                  Pay ${paidTotal.toFixed(2)}
-                </Button>
-              )}
-
-              {paidCount > 0 && fullAlbumCheaper && albumPrice > 0 && (
-                <Button onClick={onPurchaseAlbum} size="sm"
-                  className="flex-1 h-9 text-xs bg-green-600 hover:bg-green-500 text-white">
-                  <Package className="w-3.5 h-3.5 mr-1" />
-                  ${albumPrice.toFixed(2)} Album
-                </Button>
-              )}
-
-              {bankTransferEnabled && onBankTransfer && paidCount > 0 && (
-                <Button onClick={onBankTransfer} variant="outline" size="sm"
-                  className="flex-1 h-9 text-xs">
-                  <Building2 className="w-3.5 h-3.5 mr-1" />
-                  Bank
-                </Button>
-              )}
-
-              {albumPrice > 0 && !fullAlbumCheaper && (
-                <Button onClick={onPurchaseAlbum} variant="outline" size="sm"
-                  className="flex-1 h-9 text-xs">
-                  <Package className="w-3.5 h-3.5 mr-1" />
-                  ${albumPrice.toFixed(2)} Album
-                </Button>
-              )}
-
             </div>
           </div>
         </motion.div>

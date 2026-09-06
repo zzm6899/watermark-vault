@@ -1,15 +1,16 @@
+import "@/styles/gallery.css";
+import { selectRenderedPhotos, sortGalleryPhotos } from "@/lib/gallery-display";
 import { useParams, useSearchParams } from "react-router-dom";
 import { useState, useCallback, useEffect, useRef } from "react";
 import { usePageTitle } from "@/hooks/use-page-title";
 import { motion, AnimatePresence } from "framer-motion";
-import { Info, Building2, Copy, Check as CheckIcon, Lock, Download, Grid, List, LayoutGrid, CreditCard, X, ChevronLeft, ChevronRight, Star, Camera, CheckCircle2, Clock, Sparkles, Maximize2, ArrowUpDown, SlidersHorizontal, ZoomIn, ZoomOut, Images, ChevronUp } from "lucide-react";
+import { Building2, Copy, Check as CheckIcon, Lock, Download, Grid, List, LayoutGrid, CreditCard, X, ChevronLeft, ChevronRight, Star, Camera, CheckCircle2, Clock, Sparkles, ArrowUpDown, SlidersHorizontal, ZoomIn, ZoomOut, Images, ChevronUp } from "lucide-react";
 import Header from "@/components/Header";
 import Footer from "@/components/Footer";
 import WatermarkedImage from "@/components/WatermarkedImage";
 import PurchasePanel from "@/components/PurchasePanel";
 import GalleryRecovery from "@/components/GalleryRecovery";
 import { getSettings } from "@/lib/storage";
-import { Badge } from "@/components/ui/badge";
 import { createAlbumCheckout, createTenantAlbumCheckout, getStripeStatus, getTenantStripeStatus, tenantPhotoSrc } from "@/lib/api";
 import { toast } from "sonner";
 import { resizeToTargetSize } from "@/lib/image-utils";
@@ -466,6 +467,8 @@ export default function AlbumDetail() {
   const [clientCullFilter, setClientCullFilter] = useState<"all" | "best">("all");
   const [sortOrder, setSortOrder] = useState<"default" | "asc" | "desc">("default");
   const [showGalleryFilters, setShowGalleryFilters] = useState(false);
+  const [showGalleryOptions, setShowGalleryOptions] = useState(false);
+  const [submittingBankRequest, setSubmittingBankRequest] = useState(false);
   // Local display size — defaults to admin-set album size (or "medium" fallback)
   const [localDisplaySize, setLocalDisplaySize] = useState<string>(
     "medium"
@@ -739,7 +742,7 @@ export default function AlbumDetail() {
   // Reset visible count when the photo list changes (filter / sort)
   useEffect(() => {
     setGalleryVisibleCount(GALLERY_INITIAL_BATCH);
-  }, [showStarredOnly, clientCullFilter, sortOrder]);
+  }, [showStarredOnly, clientCullFilter, sortOrder, showPurchasedOnly]);
 
   // Keyboard navigation for lightbox
   useEffect(() => {
@@ -1119,18 +1122,7 @@ export default function AlbumDetail() {
   const hasStarred = visiblePhotos.some((p: any) => p.starred);
   const filteredBySelection = showProofingGalleryControls && showStarredOnly ? clientFilteredPhotos.filter((p: any) => p.starred) : clientFilteredPhotos;
   const _dpBase = showPurchasedOnly && !isProofing ? filteredBySelection.filter(photo => isPhotoPaid(photo.id)) : filteredBySelection;
-  const originalPhotoOrder = new Map(_dpBase.map((photo, index) => [photo.id, index]));
-  const displayedPhotos = [..._dpBase].sort((a: any, b: any) => {
-    const _dA = new Date((a as any).takenAt || (a as any).uploadedAt || 0).getTime();
-    const _dB = new Date((b as any).takenAt || (b as any).uploadedAt || 0).getTime();
-    const _tCmp = a.title.localeCompare(b.title, undefined, { numeric: true });
-    if (sortOrder === "default") {
-      const originalOrder = (originalPhotoOrder.get(a.id) || 0) - (originalPhotoOrder.get(b.id) || 0);
-      return originalOrder;
-    }
-    const _timeCmp = _dA !== _dB ? _dA - _dB : _tCmp;
-    return sortOrder === "asc" ? _timeCmp : -_timeCmp;
-  });
+  const displayedPhotos = sortGalleryPhotos(_dpBase, sortOrder);
   // Keep ref in sync with the current displayed photos without a useEffect (direct assignment
   // is safe here and avoids a conditional-hook violation: this code is reached only when
   // album is defined and the early-return guards above have not fired).
@@ -1507,6 +1499,7 @@ export default function AlbumDetail() {
 
   const handleDownloadAll = async () => {
     if (!canDownload) return;
+    setSelectedIds(new Set());
     setShowDownloadOptions(true);
   };
 
@@ -1595,14 +1588,17 @@ export default function AlbumDetail() {
   };
 
   const handlePurchaseSelected = () => {
+    if (isExpired || isPurchasingLocked || isDownloadLockedForProofing) return;
+    setShowGalleryOptions(false);
     setEmailSkippedThisSession(false); // reset on new payment attempt
     setRequestedFullAlbum(false);
     setShowPaymentChoice(true);
-    // Prompt email registration before paying if not already registered
-    if (!registeredEmail && !emailSkippedThisSession) setTimeout(() => setShowEmailReg(true), 300);
+    // Ask for the receipt email only after the client chooses a payment method.
   };
 
   const handlePurchaseAlbum = async () => {
+    if (isExpired || isPurchasingLocked || isDownloadLockedForProofing) return;
+    setShowGalleryOptions(false);
     // An explicitly free full album still needs a server-issued entitlement.
     // Only show the all-photo download flow after that mutation succeeds.
     if (album.priceFullAlbum === 0) {
@@ -1631,8 +1627,7 @@ export default function AlbumDetail() {
     }
     setRequestedFullAlbum(true);
     setShowPaymentChoice(true);
-    // Prompt email registration before paying if not already registered
-    if (!registeredEmail && !emailSkippedThisSession) setTimeout(() => setShowEmailReg(true), 300);
+    // Ask for the receipt email only after the client chooses a payment method.
   };
 
   const handleBankTransferRequest = (fullAlbumRequest = false) => {
@@ -1650,15 +1645,6 @@ export default function AlbumDetail() {
     setRequestedBankTransfer(false);
     setRequestedFullAlbum(false);
     setShowBankTransferRequest(true);
-  };
-
-  const handleBankTransferClick = () => {
-    setBankTransferFullAlbum(false);
-    setRequestedBankTransfer(true);
-    setEmailSkippedThisSession(false);
-    // Prompt email registration before bank transfer if needed
-    if (!registeredEmail && !emailSkippedThisSession) setTimeout(() => setShowEmailReg(true), 300);
-    setShowPaymentChoice(true);
   };
 
   /**
@@ -1694,6 +1680,8 @@ export default function AlbumDetail() {
   };
 
   const submitBankTransferRequest = async () => {
+    if (submittingBankRequest) return;
+    setSubmittingBankRequest(true);
     const selected = clientDeliverablePhotos.filter(p => selectedIds.has(p.id) && !paidPhotoIdSet.has(p.id));
     try {
       const response = await fetch("/api/album/download-request", {
@@ -1714,7 +1702,7 @@ export default function AlbumDetail() {
       if (result.request) {
         setAlbumState(previous => previous ? {
           ...previous,
-          downloadRequests: [...(previous.downloadRequests || []), result.request],
+          downloadRequests: [...(previous.downloadRequests || []).filter(request => request.id !== result.request.id), result.request],
         } : previous);
       }
       setShowBankTransferRequest(false);
@@ -1724,6 +1712,8 @@ export default function AlbumDetail() {
       toast.success("Bank transfer request submitted! Pay using the details shown, then the photographer will unlock your photos.");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not submit the bank transfer request");
+    } finally {
+      setSubmittingBankRequest(false);
     }
   };
 
@@ -1771,23 +1761,23 @@ export default function AlbumDetail() {
   ) : null;
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="client-gallery min-h-screen bg-background">
       <Header tenantSlug={tenantSlug} tenantName={tenantDisplayName} clientView />
 
-      <section className={`pt-28 ${isProofing ? "pb-72" : "pb-32"}`}>
+      <section className={`gallery-content ${isProofing ? "pb-72" : "pb-44"}`}>
         <div className="container mx-auto px-4">
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             className="mb-8"
           >
-            <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(320px,440px)] lg:items-end">
+            <div className="gallery-heading space-y-5">
               <div>
                 <p className="mb-3 text-[10px] font-body uppercase tracking-[0.22em] text-primary">Client gallery</p>
                 <div className="flex items-start gap-3 mb-3">
                   <h1 className="min-w-0 font-display text-3xl sm:text-4xl md:text-6xl text-foreground leading-[0.98] break-words">{album.title}</h1>
                   {visiblePhotos.length > 0 && (
-                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-primary/10 border border-primary/20 text-primary text-xs font-body shrink-0">
+                    <span className="gallery-photo-count">
                       <Images className="w-3 h-3" />
                       {visiblePhotos.length}
                     </span>
@@ -1924,138 +1914,23 @@ export default function AlbumDetail() {
               {_galleryExpiryBanner}
               {_expiryBanner}
 
-              <div className="glass-panel rounded-lg p-4 space-y-4">
-                {!isProofing && !isDownloadLockedForProofing && !canDownload && <GalleryRecovery albumId={album.id} />}
-                {canDownload ? (
-                  <div className="text-center sm:text-left">
-                    <p className="flex items-center justify-center gap-1.5 text-lg font-display text-green-400 sm:justify-start"><CheckCircle2 className="h-4 w-4" /> Unlocked</p>
-                    <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">All Photos</p>
-                  </div>
-                ) : isDownloadLockedForProofing ? (
-                  <div className="flex items-start gap-3 rounded-lg border border-yellow-500/20 bg-yellow-500/5 p-3">
-                    <Lock className="w-4 h-4 text-yellow-400 mt-0.5 shrink-0" />
-                    <div>
-                      <p className="text-xs font-body text-foreground font-medium">Proofing in progress</p>
-                      <p className="text-[10px] font-body text-muted-foreground mt-1">Purchases and downloads are unavailable while the photographer reviews selections. They will return when final images are delivered.</p>
-                    </div>
-                  </div>
-                ) : (
-                  <>
-                    <div className="grid grid-cols-4 gap-3 sm:gap-4 items-start">
-                      <div className="text-center min-w-0">
-                        <p className="text-lg font-display text-primary">{freeRemaining}</p>
-                        <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground leading-tight">Free Left</p>
-                      </div>
-                      <div className="text-center min-w-0">
-                        <p className="text-lg font-display text-foreground">${album.pricePerPhoto}</p>
-                        <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground leading-tight">Per Photo</p>
-                      </div>
-                      <div className="text-center min-w-0">
-                        <p className="text-lg font-display text-foreground">${album.priceFullAlbum}</p>
-                        <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground leading-tight">Full Album</p>
-                      </div>
-                      {registeredEmail ? (
-                        <div className="text-center group/email min-w-0">
-                          <div className="cursor-pointer" onClick={() => setShowEmailReg(true)} title="Change email">
-                            <p className="text-[10px] sm:text-[11px] font-body text-green-400 truncate">{registeredEmail}</p>
-                            <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground group-hover/email:text-foreground transition-colors leading-tight">Linked ✓</p>
-                          </div>
-                          <button
-                            onClick={(e) => { e.stopPropagation(); try { localStorage.removeItem(`wv_email_${albumId}`); } catch { /* localStorage may be unavailable */ } setRegisteredEmail(""); }}
-                            className="text-[9px] font-body text-muted-foreground/30 hover:text-red-400 transition-colors mt-0.5 block w-full leading-none"
-                            title="Unlink email"
-                          >unlink</button>
-                        </div>
-                      ) : (
-                        <button onClick={() => setShowEmailReg(true)} className="text-center hover:opacity-80 transition-opacity min-w-0">
-                          <p className="text-lg font-display text-muted-foreground">@</p>
-                          <p className="text-[10px] font-body uppercase tracking-wider text-primary leading-tight">Checkout Email</p>
-                        </button>
-                      )}
-                    </div>
-
-                    {!isPurchasingLocked && (
-                      <div className="pt-1">
-                        {previewCheckoutAmount === 0 ? (
-                          <Button
-                            onClick={() => {
-                              setShowPaymentChoice(false);
-                              if (previewIsFullAlbum && priceFullAlbum === 0) void handlePurchaseAlbum();
-                              else handleDownloadFree();
-                            }}
-                            className="w-full sm:w-auto gap-3 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-sm h-12"
-                          >
-                            <Download className="w-5 h-5" />
-                            Download Free
-                          </Button>
-                        ) : (
-                          stripeAvailable ? (
-                            <Button
-                              onClick={() => {
-                                setShowPaymentChoice(false);
-                                const isFullAlbumPurchase = previewIsFullAlbum;
-                                const checkoutAmount = isFullAlbumPurchase ? album.priceFullAlbum : paidTotal;
-                                if (!isFullAlbumPurchase && checkoutAmount === 0) {
-                                  handleDownloadFree();
-                                  return;
-                                }
-                                launchStripe({
-                                  albumId: album.id,
-                                  albumTitle: album.title,
-                                  photoCount: isFullAlbumPurchase ? clientDeliverablePhotos.length : billableSelected.length,
-                                  amount: checkoutAmount,
-                                  clientEmail: album.clientEmail,
-                                  photoIds: isFullAlbumPurchase ? [] : unpaidSelected.map(p => p.id),
-                                  isFullAlbum: isFullAlbumPurchase,
-                                  sessionKey,
-                                });
-                              }}
-                              disabled={processingStripe}
-                              className="w-full sm:w-auto gap-3 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-sm h-12"
-                            >
-                              <CreditCard className="w-5 h-5" />
-                              {processingStripe ? "Redirecting to Stripe..." : "Pay with Card (Stripe)"}
-                            </Button>
-                          ) : null
-                        )}
-                      </div>
-                    )}
-                  </>
+              <div className="gallery-actions">
+                <div className="text-sm text-muted-foreground">
+                  {canDownload ? <p><span>Unlocked</span> · Your full gallery is ready.</p> : isDownloadLockedForProofing ? <p>Downloads will be available when your final images are delivered.</p> : isExpired || isPurchasingLocked ? <p>Browse your gallery. Downloads are currently unavailable.</p> : <p>{freeRemaining > 0 ? `${freeRemaining} complimentary downloads remaining.` : "Select the photographs you’d like to keep."}</p>}
+                  {!isProofing && !isDownloadLockedForProofing && !canDownload && <GalleryRecovery albumId={album.id} compact />}
+                </div>
+                {!isProofing && !isDownloadLockedForProofing && !isExpired && !isPurchasingLocked && (
+                  canDownload ? <Button onClick={handleDownloadAll} aria-label="Download all photos" className="gap-2"><Download className="size-4" />Download gallery</Button>
+                  : priceFullAlbum === 0 ? <Button onClick={() => void handlePurchaseAlbum()} className="gap-2"><Download className="size-4" />Download Free</Button>
+                  : <Button variant="outline" onClick={() => setShowGalleryOptions(true)} className="gap-2"><Download className="size-4" />Download & pricing</Button>
                 )}
               </div>
             </div>
           </motion.div>
 
-            {canDownload && (
-              <div className="flex items-center gap-2 mt-4 p-3 rounded-lg bg-green-500/5 border border-green-500/10">
-                <Download className="w-4 h-4 text-green-400 flex-shrink-0" />
-                <p className="text-xs font-body text-muted-foreground">
-                  Your full gallery is ready. Select individual photos or download the complete set.
-                </p>
-                <Button size="sm" variant="outline" onClick={handleDownloadAll} aria-label="Download all photos" className="ml-auto gap-2 border-green-500/30 text-green-400 hover:bg-green-500/10 font-body text-xs">
-                  <Download className="w-3.5 h-3.5" /> Download All
-                </Button>
-              </div>
-            )}
-
-          {showProofingGalleryControls && visiblePhotos.length > 0 && (
-            <div className="grid grid-cols-2 gap-2 mb-4">
-              <div className="glass-panel rounded-lg p-3">
-                <Star className="w-4 h-4 text-yellow-400 mb-2" />
-                <p className="font-display text-xl text-foreground">{starredIds.size}</p>
-                <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Your selection</p>
-              </div>
-              <div className="glass-panel rounded-lg p-3">
-                <Images className="w-4 h-4 text-muted-foreground mb-2" />
-                <p className="font-display text-xl text-foreground">{visiblePhotos.length}</p>
-                <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Photos in this gallery</p>
-              </div>
-            </div>
-          )}
-
           {/* ── Filter / Sort toolbar ──────────────────────────────── */}
           {visiblePhotos.length > 0 && (
-            <div className="sticky top-20 z-30 -mx-2 mb-3 flex items-center gap-2 flex-wrap rounded-xl border border-border/60 bg-background/90 p-2 shadow-lg shadow-black/10 backdrop-blur-xl">
+            <div className="gallery-toolbar sticky top-16 z-30 mb-5 flex items-center gap-3 flex-wrap">
               {!isProofing && !canDownload && paidPhotoIdSet.size > 0 && <Button size="sm" variant={showPurchasedOnly ? "default" : "outline"} aria-pressed={showPurchasedOnly} onClick={() => setShowPurchasedOnly(value => !value)} className="rounded-full gap-1.5 text-xs"><CheckCircle2 className="h-3.5 w-3.5" />{showPurchasedOnly ? "Show all photos" : `Purchased photos (${visiblePhotos.filter(photo => paidPhotoIdSet.has(photo.id)).length})`}</Button>}
               <button
                 onClick={() => setShowGalleryFilters(v => !v)}
@@ -2109,24 +1984,24 @@ export default function AlbumDetail() {
                 >
                   <ArrowUpDown className="w-3 h-3" />
                   {sortOrder === "default"
-                    ? (showProofingGalleryControls ? "Best first" : "Default order")
+                    ? "Original order"
                     : sortOrder === "desc" ? "Newest first" : "Oldest first"}
                 </button>
               )}
-              {showGalleryFilters && (showStarredOnly || clientCullFilter !== "best" || sortOrder !== "default") && (
+              {showGalleryFilters && (showStarredOnly || clientCullFilter !== "all" || showPurchasedOnly || sortOrder !== "default") && (
                 <button
-                  onClick={() => { setShowStarredOnly(false); setClientCullFilter("all"); setSortOrder("default"); }}
+                  onClick={() => { setShowStarredOnly(false); setClientCullFilter("all"); setShowPurchasedOnly(false); setSortOrder("default"); }}
                   className="flex items-center gap-1 px-2 py-1.5 rounded-full text-xs font-body text-muted-foreground/60 hover:text-muted-foreground transition-colors"
                 >
-                  <X className="w-3 h-3" /> Clear
+                  <X className="w-3 h-3" /> Reset filters
                 </button>
               )}
               {!showProofingGalleryControls && !isPurchasingLocked && !isExpired && !isDownloadLockedForProofing && (
                 <>
-                  <span className="ml-auto text-[11px] font-body text-muted-foreground">{selectedIds.size ? `${selectedIds.size} selected` : "Tap photos to select"}</span>
+                  <span className="ml-auto text-[11px] font-body text-muted-foreground">{selectedIds.size ? `${selectedIds.size} selected` : "Use the circle to select"}</span>
                   <button
                     type="button"
-                    onClick={() => setSelectedIds(new Set(displayedPhotos.map(photo => photo.id)))}
+                    onClick={() => setSelectedIds(previous => selectRenderedPhotos(previous, displayedPhotos, galleryVisibleCount))}
                     className="rounded-full border border-border/70 px-3 py-1.5 text-xs font-body text-muted-foreground transition-colors hover:border-primary/40 hover:text-primary"
                   >
                     Select visible
@@ -2137,7 +2012,7 @@ export default function AlbumDetail() {
                 </>
               )}
               {/* Display size controls — push to right on larger screens */}
-              <div className={`items-center gap-1 ${showProofingGalleryControls ? "ml-auto" : ""} ${showGalleryFilters ? "flex" : "hidden sm:flex"}`}>
+              <div className={`items-center gap-1 ${showProofingGalleryControls ? "ml-auto" : ""} ${showGalleryFilters ? "flex" : "hidden"}`}>
                 {([
                   { size: "small", icon: <LayoutGrid className="w-3.5 h-3.5" />, label: "Small" },
                   { size: "medium", icon: <Grid className="w-3.5 h-3.5" />, label: "Medium" },
@@ -2170,29 +2045,24 @@ export default function AlbumDetail() {
           ) : displayedPhotos.length === 0 ? (
             <div className="glass-panel rounded-xl p-12 text-center">
               <p className="text-sm font-body text-muted-foreground mb-4">{showStarredOnly ? "No starred photos yet." : clientCullFilter === "best" ? "No priority photos yet." : "No photos match these filters."}</p>
-              <Button variant="outline" size="sm" onClick={() => { setShowStarredOnly(false); setClientCullFilter("all"); }}>Clear filters</Button>
+              <Button variant="outline" size="sm" onClick={() => { setShowStarredOnly(false); setClientCullFilter("all"); setShowPurchasedOnly(false); setSortOrder("default"); }}>Clear filters</Button>
             </div>
           ) : (
             <>
-            <div className={gridClass}>
+            <div className={`gallery-photo-grid ${gridClass}`}>
               {displayedPhotos.slice(0, galleryVisibleCount).map((photo, i) => (
-                  <div key={photo.id} className={`relative group mb-3 sm:mb-4 overflow-hidden rounded-xl transition-all duration-200 hover:-translate-y-0.5 hover:shadow-xl hover:shadow-black/40 ${isProofing && starredIds.has(photo.id) ? "ring-2 ring-yellow-400 ring-offset-2 ring-offset-background" : ""}`}>
-                  {(sessionFullAlbum || paidPhotoIdSet.has(photo.id)) && (
+                  <div key={photo.id} className={`gallery-photo relative group mb-4 sm:mb-6 overflow-hidden ${isProofing ? starredIds.has(photo.id) ? "gallery-photo-selected" : "" : selectedIds.has(photo.id) ? "gallery-photo-selected" : ""}`}>
+                  {!canDownload && paidPhotoIdSet.has(photo.id) && (
                     <span className="pointer-events-none absolute left-2 top-2 z-20 inline-flex items-center gap-1 rounded-full bg-emerald-950/90 px-2 py-1 text-[10px] font-body uppercase tracking-wider text-emerald-200 shadow-lg backdrop-blur-sm">
                       <CheckCircle2 className="h-3 w-3" /> Purchased
                     </span>
                   )}
-                  <WatermarkedImage
+                  <button type="button" className="gallery-photo-open" onClick={() => setLightboxPhotoId(photo.id)} aria-label={`Open ${(photo.originalName || photo.title || "Photo").replace(/\.[^.]+$/, "")} in lightbox`}>
+                  <WatermarkedImage previewMode
                 src={getGalleryPhotoSrc(photo, isCleanDownload(photo.id), { albumId: album.id })}
                    title={photo.title}
                    width={photo.width}
                    height={photo.height}
-                   selected={isProofing ? starredIds.has(photo.id) : selectedIds.has(photo.id)}
-                   onSelect={isProofing
-                     ? () => toggleStar(photo.id)
-                     : isPurchasingLocked || isExpired || isDownloadLockedForProofing
-                       ? undefined
-                       : () => toggleSelect(photo.id)}
                    locked={!isProofing && (isPurchasingLocked || isExpired || isDownloadLockedForProofing || (!isPhotoPaid(photo.id) && freeRemaining <= 0 && !selectedIds.has(photo.id)))}
                    lockedLabel={isDownloadLockedForProofing ? "Preview" : isExpired || isPurchasingLocked ? "View only" : "Purchase"}
                   index={i}
@@ -2204,31 +2074,13 @@ export default function AlbumDetail() {
                   watermarkOpacity={settings.watermarkOpacity}
                   watermarkSize={settings.watermarkSize ?? 40}
                 />
-                  {/* Expand button — always visible on touch devices, hover-only on pointer devices */}
-                  <button
-                    onClick={e => { e.stopPropagation(); setLightboxPhotoId(photo.id); }}
-                    aria-label={`Open ${((photo as any).originalName || photo.title).replace(/\.[^.]+$/, "")} in lightbox`}
-                    className="absolute bottom-2 right-2 w-7 h-7 rounded-full bg-black/60 backdrop-blur-sm text-white flex items-center justify-center [@media(hover:none)]:opacity-100 opacity-0 group-hover:opacity-100 transition-opacity z-10"
-                  >
-                    <Maximize2 className="w-3 h-3" />
                   </button>
-                  {isProofing && (
-                    <button
-                      onClick={() => toggleStar(photo.id)}
-                      aria-label={`${starredIds.has(photo.id) ? "Remove" : "Add"} ${((photo as any).originalName || photo.title).replace(/\.[^.]+$/, "")} ${starredIds.has(photo.id) ? "from" : "to"} starred picks`}
-                      aria-pressed={starredIds.has(photo.id)}
-                      className={`absolute top-2 right-2 w-10 h-10 rounded-full flex items-center justify-center transition-all shadow-lg ${
-                        starredIds.has(photo.id)
-                          ? "bg-yellow-400 text-yellow-900 scale-110"
-                          : "bg-black/60 backdrop-blur-sm text-white/70 [@media(hover:none)]:opacity-100 opacity-0 group-hover:opacity-100"
-                      }`}
-                    >
-                      <Star className={`w-5 h-5 ${starredIds.has(photo.id) ? "fill-yellow-900" : ""}`} />
-                    </button>
-                  )}
+                  {(isProofing || (!isPurchasingLocked && !isExpired && !isDownloadLockedForProofing)) && <button type="button" aria-label={`${(isProofing ? starredIds.has(photo.id) : selectedIds.has(photo.id)) ? "Deselect" : "Select"} ${photo.title || photo.originalName || "Photo"}`} aria-pressed={isProofing ? starredIds.has(photo.id) : selectedIds.has(photo.id)} onClick={() => isProofing ? toggleStar(photo.id) : toggleSelect(photo.id)} className="gallery-photo-select">
+                    {isProofing ? <Star className="size-4" /> : (selectedIds.has(photo.id) ? <CheckIcon className="size-4" /> : <span className="size-4 rounded-full border border-current" />)}
+                  </button>}
                   {/* Filename overlay on hover */}
                   <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent px-2 pt-4 pb-1.5 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
-                    <p className="text-[10px] font-body text-white/80 truncate">{((photo as any).originalName || photo.title).replace(/\.[^.]+$/, "")}</p>
+                    <p className="text-[10px] font-body text-white/80 truncate">{(photo.originalName || photo.title || "Photo").replace(/\.[^.]+$/, "")}</p>
                   </div>
                 </div>
               ))}
@@ -2325,7 +2177,7 @@ export default function AlbumDetail() {
       )}
 
       {/* Show PurchasePanel unless every selected photo is already paid, or we're in proofing mode, or purchasing disabled, or downloads locked */}
-      {!canDownload && !isProofing && !album.purchasingDisabled && !isDownloadLockedForProofing && !(selectedIds.size > 0 && Array.from(selectedIds).every(id => isPhotoPaid(id))) && (
+      {!canDownload && !isExpired && !isProofing && !album.purchasingDisabled && !isDownloadLockedForProofing && !(selectedIds.size > 0 && Array.from(selectedIds).every(id => isPhotoPaid(id))) && (
         <PurchasePanel
           selectedCount={selectedIds.size}
           unpaidCount={unpaidSelected.length}
@@ -2333,18 +2185,15 @@ export default function AlbumDetail() {
           freeRemaining={freeRemaining}
           pricePerPhoto={pricePerPhoto}
           priceFullAlbum={priceFullAlbum}
-          fullAlbumCheaper={fullAlbumCheaper}
-          totalPhotos={clientDeliverablePhotos.length}
           onDownloadFree={handleDownloadFree}
           onPurchaseSelected={handlePurchaseSelected}
           onPurchaseAlbum={handlePurchaseAlbum}
-          onBankTransfer={handleBankTransferClick}
-          bankTransferEnabled={bankTransfer.enabled}
+          onClearSelection={() => setSelectedIds(new Set())}
         />
       )}
 
       {/* Download bar when all selected photos are individually paid */}
-      {!canDownload && !isDownloadLockedForProofing && selectedIds.size > 0 && Array.from(selectedIds).every(id => isPhotoPaid(id)) && (
+      {!canDownload && !isExpired && !isDownloadLockedForProofing && selectedIds.size > 0 && Array.from(selectedIds).every(id => isPhotoPaid(id)) && (
         <motion.div initial={{ y: 100, opacity: 0 }} animate={{ y: 0, opacity: 1 }}
           className="fixed bottom-0 left-0 right-0 z-40 glass-panel border-t border-border/50 p-4" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 1rem)' }}>
           <div className="container mx-auto flex items-center justify-between">
@@ -2377,7 +2226,7 @@ export default function AlbumDetail() {
 
       {/* Download Quality Options */}
       <Dialog open={showDownloadOptions} onOpenChange={setShowDownloadOptions}>
-        <DialogContent className="glass-panel border-border max-w-sm">
+        <DialogContent className="gallery-dialog max-w-sm">
           <DialogHeader>
             <DialogTitle className="font-display text-xl text-foreground flex items-center gap-2">
               <Download className="w-5 h-5 text-primary" />
@@ -2537,7 +2386,7 @@ export default function AlbumDetail() {
         setShowDownloadEmailCapture(open);
         if (!open) setPendingDownloadIntent(null);
       }}>
-        <DialogContent className="glass-panel border-border max-w-sm">
+        <DialogContent className="gallery-dialog max-w-sm">
           <DialogHeader>
             <DialogTitle className="font-display text-xl text-foreground">Email your download receipt</DialogTitle>
             <DialogDescription className="text-sm font-body text-muted-foreground">
@@ -2582,14 +2431,45 @@ export default function AlbumDetail() {
         </DialogContent>
       </Dialog>
 
+      <Dialog open={showGalleryOptions} onOpenChange={setShowGalleryOptions}>
+        <DialogContent className="gallery-dialog max-w-md">
+          <DialogHeader>
+            <DialogTitle>Keep your photographs</DialogTitle>
+            <DialogDescription>Select individual favourites or keep the complete gallery.</DialogDescription>
+          </DialogHeader>
+          <dl className="space-y-3 text-sm">
+            <div className="flex justify-between gap-3">
+              <dt>Complimentary downloads remaining</dt><dd>{freeRemaining}</dd>
+            </div>
+            <div className="flex justify-between gap-3">
+              <dt>Each additional photo</dt><dd>${pricePerPhoto.toFixed(2)}</dd>
+            </div>
+            <div className="flex justify-between gap-3 border-t border-border pt-3">
+              <dt>Complete gallery · {clientDeliverablePhotos.length} photos</dt><dd>${priceFullAlbum.toFixed(2)}</dd>
+            </div>
+          </dl>
+          <Button onClick={() => void handlePurchaseAlbum()}>Get full gallery · ${priceFullAlbum.toFixed(2)}</Button>
+          <p className="text-sm text-muted-foreground">To choose individual photos, close this panel and select them using the circles. Your selection total appears at the bottom.</p>
+          <div className="border-t border-border pt-3 text-sm">
+            <p className="text-muted-foreground">Checkout email</p>
+            {registeredEmail && <p className="mt-1 break-all">{registeredEmail}</p>}
+            <Button variant="ghost" className="mt-1 px-0" onClick={() => {
+              setShowGalleryOptions(false);
+              setPurchaserEmail(registeredEmail);
+              setShowEmailReg(true);
+            }}>{registeredEmail ? "Change email" : "Add email for your receipt"}</Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       {/* Payment Method Choice */}
       <Dialog open={showPaymentChoice} onOpenChange={(v) => { setShowPaymentChoice(v); if (!v) { setRequestedFullAlbum(false); setRequestedBankTransfer(false); } }}>
-        <DialogContent className="glass-panel border-border max-w-sm">
+        <DialogContent className="gallery-dialog max-w-sm">
           <DialogHeader>
             <DialogTitle className="font-display text-xl text-foreground">Choose Payment Method</DialogTitle>
             <DialogDescription className="sr-only">Select how you would like to pay for your selected photos.</DialogDescription>
           </DialogHeader>
-          <GalleryRecovery albumId={album.id} />
+          <GalleryRecovery albumId={album.id} compact />
           <div className="space-y-3 mt-2">
             <p className="text-sm font-body text-muted-foreground">
               {previewIsFullAlbum ? `Full album · ${clientDeliverablePhotos.length} photos` : `${selectedIds.size} photo${selectedIds.size !== 1 ? "s" : ""} selected`}
@@ -2625,7 +2505,7 @@ export default function AlbumDetail() {
                     photoCount: isFullAlbumPurchase ? clientDeliverablePhotos.length : photosBeingPaid.length,
                     amount: checkoutAmount,
                     clientEmail: album.clientEmail,
-                    photoIds: isFullAlbumPurchase ? [] : photosBeingPaid.map(p => p.id),
+                    photoIds: isFullAlbumPurchase ? [] : unpaidSelected.map(p => p.id),
                     isFullAlbum: isFullAlbumPurchase,
                     sessionKey,
                   });
@@ -2634,7 +2514,7 @@ export default function AlbumDetail() {
                 className="w-full gap-3 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-sm h-12"
               >
                 <CreditCard className="w-5 h-5" />
-                {processingStripe ? "Redirecting to Stripe..." : "Pay with Card (Stripe)"}
+                {processingStripe ? "Redirecting to Stripe..." : "Pay by card"}
               </Button>
             )}
 
@@ -2671,7 +2551,7 @@ export default function AlbumDetail() {
 
       {/* Bank Transfer Details Dialog */}
       <Dialog open={showBankTransfer} onOpenChange={setShowBankTransfer}>
-        <DialogContent className="glass-panel border-border max-w-md">
+        <DialogContent className="gallery-dialog max-w-md">
           <DialogHeader>
             <DialogTitle className="font-display text-xl text-foreground flex items-center gap-2">
               <Building2 className="w-5 h-5 text-primary" />
@@ -2704,7 +2584,7 @@ export default function AlbumDetail() {
 
       {/* Bank Transfer Request Dialog */}
       <Dialog open={showBankTransferRequest} onOpenChange={setShowBankTransferRequest}>
-        <DialogContent className="glass-panel border-border max-w-md">
+        <DialogContent className="gallery-dialog max-w-md">
           <DialogHeader>
             <DialogTitle className="font-display text-xl text-foreground flex items-center gap-2">
               <Building2 className="w-5 h-5 text-primary" />
@@ -2727,7 +2607,7 @@ export default function AlbumDetail() {
               <p className="text-xs font-body text-muted-foreground">Estimated total</p>
               {bankTransferFullAlbum || fullAlbumCheaper ? (
                 <div>
-                  <p className="text-lg font-display text-green-400">${priceFullAlbum} <span className="text-xs font-body text-muted-foreground line-through">${paidTotal}</span></p>
+                  <p className="text-lg font-display text-primary">${priceFullAlbum.toFixed(2)} {paidTotal > priceFullAlbum && <span className="text-xs font-body text-muted-foreground line-through">${paidTotal.toFixed(2)}</span>}</p>
                   <p className="text-xs font-body text-green-400/80 mt-0.5">Full album price applied{fullAlbumCheaper ? " — better deal!" : ""}</p>
                 </div>
               ) : (
@@ -2735,19 +2615,19 @@ export default function AlbumDetail() {
               )}
             </div>
             <div>
-              <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Note (optional)</label>
-              <Textarea value={clientNote} onChange={(e) => setClientNote(e.target.value)} placeholder="Your name or reference..." className="bg-secondary border-border text-foreground font-body min-h-[60px]" />
+              <label htmlFor="bank-request-note" className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Note (optional)</label>
+              <Textarea id="bank-request-note" maxLength={2000} value={clientNote} onChange={(e) => setClientNote(e.target.value)} placeholder="Your name or reference..." className="bg-secondary border-border text-foreground font-body min-h-[60px]" />
             </div>
-            <Button onClick={submitBankTransferRequest} className="w-full bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs tracking-wider uppercase gap-2">
-              <Building2 className="w-4 h-4" /> Submit Request & View Bank Details
+            <Button onClick={submitBankTransferRequest} disabled={submittingBankRequest} className="w-full bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs tracking-wider uppercase gap-2">
+              <Building2 className="w-4 h-4" /> {submittingBankRequest ? "Submitting…" : "Submit Request & View Bank Details"}
             </Button>
           </div>
         </DialogContent>
       </Dialog>
 
       {/* Post-payment email registration */}
-      <Dialog open={showEmailReg} onOpenChange={(open) => { setShowEmailReg(open); if (!open && !registeredEmail) { setPendingStripeParams(null); } }}>
-        <DialogContent className="glass-panel border-border max-w-sm">
+      <Dialog open={showEmailReg} onOpenChange={(open) => { setShowEmailReg(open); if (!open) { setPendingStripeParams(null); setRequestedBankTransfer(false); setRequestedFullAlbum(false); } }}>
+        <DialogContent className="gallery-dialog max-w-sm">
           <DialogHeader>
             <DialogTitle className="font-display text-xl text-foreground">
               {pendingStripeParams ? "Save your purchase email" : "Your checkout email"}
@@ -2777,7 +2657,7 @@ export default function AlbumDetail() {
                 disabled={savingEmail}
                 className="flex-1 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-sm"
               >
-                {savingEmail ? "Saving…" : pendingStripeParams ? "Save & Pay" : "Link Email"}
+                {savingEmail ? "Saving…" : pendingStripeParams ? "Save & Pay" : requestedBankTransfer ? "Save & continue" : "Save email"}
               </Button>
               {/* Don't offer Skip when Stripe payment is waiting — email is required */}
               {!pendingStripeParams && (
@@ -2789,7 +2669,7 @@ export default function AlbumDetail() {
                     setShowBankTransferRequest(true);
                   }
                 }} className="font-body text-sm border-border">
-                  Skip
+                  {requestedBankTransfer ? "Skip" : "Cancel"}
                 </Button>
               )}
             </div>
@@ -2925,7 +2805,7 @@ export default function AlbumDetail() {
               {/* Simple, image-first review controls */}
               <div className="absolute bottom-0 left-0 right-0 p-3 sm:p-4 bg-gradient-to-t from-black/90 via-black/50 to-transparent rounded-b-lg flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2" style={{ pointerEvents: lbZoom > 1 ? "none" : undefined }}>
                 <div>
-                  <p className="text-sm font-body text-white/90">{((lbPhoto as any).originalName || lbPhoto.title).replace(/\.[^.]+$/, "")}</p>
+                  <p className="text-sm font-body text-white/90">{(lbPhoto.originalName || lbPhoto.title || "Photo").replace(/\.[^.]+$/, "")}</p>
                   {isProofing && <p className="text-[11px] font-body text-white/55 mt-0.5">Swipe left or right to browse</p>}
                 </div>
                 <div className="flex gap-2">

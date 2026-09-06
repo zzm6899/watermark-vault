@@ -13,11 +13,17 @@ async function main() {
   const date = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
   const event = { id: 'portrait', title: 'Portrait session', description: 'A relaxed portrait session.', active: true, durations: [30, 60], price: 100.5, prices: { 60: 180 }, questions: [], depositEnabled: true, depositType: 'percentage', depositAmount: 25, depositMethods: ['bank'], extras: [{ id: 'composite', name: 'Composite image', description: 'Combine multiple photos into one finished artwork, with a custom background and detailed finishing.', price: 35.25, maxQuantity: 10 }], availability: { recurring: [], specificDates: [{ date, startTime: '09:00', endTime: '17:00' }], blockedDates: [] } };
   const request = { id: 'request-one', sessionKey: 'visitor-one', photoIds: ['photo-one'], amount: 20, method: 'bank-transfer', status: 'pending', email: 'alex@example.test', clientNote: 'Portrait extras', requestedAt: new Date().toISOString() };
+  const galleryAssets = ['cosplay-animaga-editorial.jpg', 'cosplay-animaga-sunlight.jpg', 'cosplay-animaga-armour.jpg', 'cosplay-animaga-steps.jpg', 'cosplay-animaga-harbour.jpg'];
+  const galleryPhotos = await Promise.all(Array.from({ length: 40 }, async (_, index) => {
+    const file = galleryAssets[index % galleryAssets.length];
+    const metadata = await require('sharp')(path.join(root, 'public', 'portfolio', 'curated', file)).metadata();
+    return { id: `preview-photo-${index}`, title: `Photo ${index + 1}`, originalName: `ZMP_${String(index + 1).padStart(4, '0')}.jpg`, src: `/portfolio/curated/${file}`, width: metadata.width, height: metadata.height };
+  }));
   fs.writeFileSync(path.join(dataDir, 'db.json'), JSON.stringify({
     wv_profile: { name: 'Preview Studio', businessName: 'Preview Studio', timezone: 'Australia/Sydney', bio: 'Local product preview' },
     wv_event_types: [event],
     wv_settings: { stripeEnabled: false, bankTransfer: { enabled: true, bankName: 'Preview bank', accountName: 'Preview Studio', bsb: '000000', accountNumber: '00000000' } },
-    wv_albums: Array.from({ length: 30 }, (_, i) => ({ id: `album-${i}`, slug: `preview-${i}`, title: i === 0 ? 'Portraits — Alex Example' : `Portrait collection ${i + 1}`, clientName: i === 0 ? 'Alex Example' : `Preview Client ${i + 1}`, date, enabled: true, status: i % 2 ? 'delivered' : 'editing', photos: [{ id: 'photo-one', src: '', originalName: 'portrait-001.jpg' }], photoCount: 1, freeDownloads: 0, pricePerPhoto: 20, priceFullAlbum: 20, downloadRequests: i === 0 ? [request] : i === 1 ? [{ ...request, id: 'request-two', email: 'client-two@example.test' }] : [] })),
+    wv_albums: Array.from({ length: 30 }, (_, i) => ({ id: `album-${i}`, slug: `preview-${i}`, title: i === 0 ? 'Portraits — Alex Example' : i === 2 ? 'Animaga — The Collection' : `Portrait collection ${i + 1}`, description: i === 2 ? 'Melbourne · August 2026' : '', clientName: i === 0 ? 'Alex Example' : `Preview Client ${i + 1}`, date, enabled: true, status: i % 2 ? 'delivered' : 'editing', photos: i === 2 ? galleryPhotos : [{ id: 'photo-one', src: '', originalName: 'portrait-001.jpg' }], photoCount: i === 2 ? 40 : 1, freeDownloads: i === 2 ? 5 : 0, pricePerPhoto: i === 2 ? 5 : 20, priceFullAlbum: i === 2 ? 30 : 20, downloadRequests: i === 0 ? [request] : i === 1 ? [{ ...request, id: 'request-two', email: 'client-two@example.test' }] : [] })),
   }));
   const probe = net.createServer(); await new Promise(resolve => probe.listen(0, '127.0.0.1', resolve));
   const port = probe.address().port; await new Promise(resolve => probe.close(resolve));
@@ -85,6 +91,7 @@ async function main() {
   console.log('PASS event finance authentication, stored totals, filters and automation preview');
   console.log('Preview: ' + base + '/admin/albums');
   console.log('Booking: ' + base + '/');
+  console.log('Gallery: ' + base + '/gallery/preview-2');
   fs.writeFileSync(path.join(dataDir, 'result.json'), JSON.stringify({ base, date, status: 'passed' }, null, 2));
   if (process.argv.includes('--serve')) await new Promise(() => {});
 }
