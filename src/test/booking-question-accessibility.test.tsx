@@ -44,6 +44,8 @@ describe.each(renderers)("%s custom-question labels", (_name, QuestionFieldRende
     render(<QuestionFieldRenderer field={question("boolean")} value="No" onChange={onChange} />);
 
     expect(screen.getByRole("group", { name: /Preferred setting/ })).toBeInTheDocument();
+    expect(screen.getByText("Tell us")).toBeVisible();
+    expect(screen.getByRole("group", { name: /Preferred setting/ })).toHaveAccessibleDescription("Tell us");
     expect(screen.getByRole("button", { name: "No" })).toHaveAttribute("aria-pressed", "true");
     fireEvent.click(screen.getByRole("button", { name: "Yes" }));
     expect(onChange).toHaveBeenCalledWith("Yes");

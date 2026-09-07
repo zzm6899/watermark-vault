@@ -174,7 +174,7 @@ function QuestionInput({ field, value, onChange, inputId, labelId }: { field: Qu
       );
     case "boolean":
       return (
-        <div className="flex gap-3" role="group" aria-labelledby={labelId}>
+        <div className="flex gap-3" role="group" aria-labelledby={labelId} aria-describedby={field.placeholder?.trim() ? `${inputId}-description` : undefined}>
           {["Yes", "No"].map((opt) => (
             <button key={opt} type="button" aria-pressed={value === opt} onClick={() => onChange(opt)} className={`flex-1 py-2.5 px-4 rounded-md border text-sm font-body transition-all ${value === opt ? "bg-primary text-primary-foreground border-primary" : "border-border text-muted-foreground hover:border-primary/50"}`}>
               {opt}
@@ -208,10 +208,15 @@ export function BookingQuestionField({ field, value, onChange }: { field: Questi
   const inputId = `booking-question-${field.id}`;
   const labelId = `${inputId}-label`;
   return (
-    <div>
+    <div className={field.type === "boolean" && field.placeholder?.trim() ? "sm:col-span-2 min-w-0" : undefined}>
       <label id={labelId} htmlFor={field.type === "boolean" ? undefined : inputId} className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-2 block">
         {field.label} {field.required && <span className="text-destructive">*</span>}
       </label>
+      {field.type === "boolean" && field.placeholder?.trim() && (
+        <p id={`${inputId}-description`} className="mb-3 whitespace-pre-wrap break-words text-sm leading-relaxed font-body text-muted-foreground">
+          {field.placeholder}
+        </p>
+      )}
       <QuestionInput field={field} value={value} onChange={onChange} inputId={inputId} labelId={labelId} />
     </div>
   );

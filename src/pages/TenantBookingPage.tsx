@@ -108,7 +108,7 @@ function TenantQuestionInput({ field, value, onChange, inputId, labelId }: { fie
   }
   if (field.type === "boolean") {
     return (
-      <div className="flex gap-2" role="group" aria-labelledby={labelId}>
+      <div className="flex gap-2" role="group" aria-labelledby={labelId} aria-describedby={field.placeholder?.trim() ? `${inputId}-description` : undefined}>
         {["Yes", "No"].map(option => <Button key={option} type="button" aria-pressed={value === option} variant={value === option ? "default" : "outline"} onClick={() => onChange(option)} className="flex-1">{option}</Button>)}
       </div>
     );
@@ -123,10 +123,15 @@ export function TenantBookingQuestionField({ field, value, onChange }: { field: 
   const inputId = `tenant-booking-question-${field.id}`;
   const labelId = `${inputId}-label`;
   return (
-    <div>
+    <div className={field.type === "boolean" && field.placeholder?.trim() ? "sm:col-span-2 min-w-0" : undefined}>
       <label id={labelId} htmlFor={field.type === "boolean" ? undefined : inputId} className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">
         {field.label} {field.required && <span className="text-destructive">*</span>}
       </label>
+      {field.type === "boolean" && field.placeholder?.trim() && (
+        <p id={`${inputId}-description`} className="mb-3 whitespace-pre-wrap break-words text-sm leading-relaxed font-body text-muted-foreground">
+          {field.placeholder}
+        </p>
+      )}
       <TenantQuestionInput field={field} value={value} onChange={onChange} inputId={inputId} labelId={labelId} />
     </div>
   );
