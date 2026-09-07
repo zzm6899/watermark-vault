@@ -430,6 +430,8 @@ export interface AppSettings {
   instagramFieldEnabled: boolean;
   notificationEmailTemplate: string;
   discordWebhookUrl: string;
+  /** Returned by the server when a webhook is saved; the secret itself stays masked. */
+  discordWebhookUrlSet?: boolean;
   discordNotifyBookings: boolean;
   discordNotifyDownloads: boolean;
   discordNotifyProofing: boolean;

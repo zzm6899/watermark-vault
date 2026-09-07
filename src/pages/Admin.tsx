@@ -9872,10 +9872,10 @@ function SettingsView() {
             <div className="space-y-3">
               <div>
                 <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Webhook URL</label>
-                <Input value={settings.discordWebhookUrl} onChange={(e) => setSettingsState({ ...settings, discordWebhookUrl: e.target.value })} placeholder="https://discord.com/api/webhooks/..." className="bg-secondary border-border text-foreground font-body" />
-                <p className="text-[10px] font-body text-muted-foreground/50 mt-1">Receive notifications for new bookings, status changes, payments, downloads and proofing submissions.</p>
+                <Input value={settings.discordWebhookUrl} onChange={(e) => setSettingsState({ ...settings, discordWebhookUrl: e.target.value })} placeholder={settings.discordWebhookUrlSet ? "Configured — enter a new URL to replace it" : "https://discord.com/api/webhooks/..."} className="bg-secondary border-border text-foreground font-body" />
+                <p className="text-[10px] font-body text-muted-foreground/50 mt-1">{settings.discordWebhookUrlSet ? "Webhook configured. The saved URL is hidden for security; enter a new URL only if you need to replace it." : "Receive notifications for new bookings, status changes, payments, downloads and proofing submissions."}</p>
               </div>
-              {settings.discordWebhookUrl && (
+              {(settings.discordWebhookUrl || settings.discordWebhookUrlSet) && (
                 <>
                   <div className="space-y-2 pt-1">
                     {[
