@@ -18,9 +18,10 @@ it("keeps all-photo selections at the cheaper individual price and displays expl
   render(<MemoryRouter initialEntries={["/gallery/pricing"]}><Routes><Route path="/gallery/:albumId" element={<AlbumDetail />} /></Routes></MemoryRouter>);
   await screen.findByRole("heading", { name: "Pricing Gallery" });
   fireEvent.click(screen.getByRole("button", { name: "Select Photo 1" }));
+  await screen.findByRole("button", { name: "Deselect Photo 1" });
   fireEvent.click(screen.getByRole("button", { name: "Select Photo 2" }));
-  fireEvent.click(screen.getByRole("button", { name: "Review selection · $20.00" }));
-  expect(screen.getByRole("heading", { name: "Review your photographs" })).toBeInTheDocument();
+  fireEvent.click(await screen.findByRole("button", { name: "Review selection · $20.00" }));
+  expect(await screen.findByRole("heading", { name: "Review your photographs" })).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Continue to payment · $20.00" }));
   expect(await screen.findByText("$20.00", { selector: "span" })).toBeInTheDocument();
   expect(screen.getByRole("heading", { name: "Choose Payment Method" })).toBeInTheDocument();
