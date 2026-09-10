@@ -76,6 +76,38 @@ describe("public album safety", () => {
     expect(source).toContain("setPendingDownloadIntent(intent)");
   });
 
+  it("opens admin galleries with the token-aware URL builder", () => {
+    const source = readFileSync(join(process.cwd(), "src/pages/Admin.tsx"), "utf8");
+    const tenantSource = readFileSync(join(process.cwd(), "src/pages/TenantAdmin.tsx"), "utf8");
+    expect(source).not.toMatch(/window\.open\(`\/gallery\//);
+    expect(source).toContain("window.open(publicGalleryUrl(activeCaptureAlbum)");
+    expect(source).toContain("window.open(publicGalleryUrl(album)");
+    expect(source).toContain("window.open(publicGalleryUrl(matchingAlbum)");
+    expect(tenantSource).toContain("href={publicGalleryUrl(alb)}");
+  });
+
+  it("keeps private-link tokens portable in the address bar", () => {
+    const source = readFileSync(join(process.cwd(), "src/pages/AlbumDetail.tsx"), "utf8");
+
+    expect(source).toContain('const queryToken = searchParams.get("token")');
+    expect(source).toContain('hashParams.set("token", queryToken)');
+    expect(source).not.toContain('hashParams.delete("token")');
+  });
+
+  it("confirms gallery publication before reporting an existing-album upload complete", () => {
+    const source = readFileSync(join(process.cwd(), "src/pages/Admin.tsx"), "utf8");
+    const uploadStart = source.indexOf("const handlePhotoUpload = async");
+    const uploadEnd = source.indexOf("const handleBookingLink", uploadStart);
+    const uploadHandler = source.slice(uploadStart, uploadEnd);
+
+    expect(uploadStart).toBeGreaterThan(-1);
+    expect(uploadEnd).toBeGreaterThan(uploadStart);
+    expect(uploadHandler).toContain("await saveAlbumToServer(uploadUpdate.id, uploadUpdate)");
+    expect(uploadHandler).toContain("await ensurePublicAlbumAvailable(uploadUpdate, 2)");
+    expect(uploadHandler).toContain("uploaded safely, but the gallery update was not confirmed");
+    expect(uploadHandler).toContain("photos uploaded and gallery updated");
+  });
+
   it("never downloads a non-clean server photo directly from uploads", () => {
     const source = readFileSync(join(process.cwd(), "src/pages/AlbumDetail.tsx"), "utf8");
     const resolverStart = source.indexOf("const resolveDownloadSource = async");

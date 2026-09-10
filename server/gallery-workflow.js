@@ -50,6 +50,30 @@ function preserveGalleryServerState(existing, incoming) {
   return merged;
 }
 
+// Photo uploads are merged additively so concurrent camera/mobile uploads are
+// not lost. Deletions therefore need explicit tombstones; otherwise a stale
+// full-album save can merge the removed photos straight back into the album.
+function applyAlbumPhotoRemovals(album, removedPhotoIds) {
+  const removed = new Set((removedPhotoIds || []).map(String).filter(Boolean));
+  if (!removed.size) return album;
+
+  const photos = (album.photos || []).filter(photo => !removed.has(String(photo.id)));
+  const photoSources = new Set(photos.map(photo => photo.src).filter(Boolean));
+  const coverImage = album.coverImage && photoSources.has(album.coverImage)
+    ? album.coverImage
+    : (photos[0]?.src || "");
+  const proofingRounds = Array.isArray(album.proofingRounds)
+    ? album.proofingRounds.map(round => ({
+        ...round,
+        selectedPhotoIds: Array.isArray(round.selectedPhotoIds)
+          ? round.selectedPhotoIds.filter(id => !removed.has(String(id)))
+          : round.selectedPhotoIds,
+      }))
+    : album.proofingRounds;
+
+  return { ...album, photos, photoCount: photos.length, coverImage, proofingRounds };
+}
+
 function proofingSubmission(album, { selectedPhotoIds, clientNote, submissionId, roundNumber, roundSentAt }, now = new Date().toISOString()) {
   const ids = [...new Set(selectedPhotoIds.map(String).filter(Boolean))];
   const note = typeof clientNote === "string" ? clientNote.trim().slice(0, 5000) : "";
@@ -76,4 +100,4 @@ function proofingSubmission(album, { selectedPhotoIds, clientNote, submissionId,
     photos: (album.photos || []).map(photo => ({ ...photo, starred: selected.has(String(photo.id)) })) }, receipt, replayed: false };
 }
 
-module.exports = { normalizeEmail, recoverablePurchase, preserveGalleryServerState, proofingSubmission, stripePurchaseIdentity };
+module.exports = { applyAlbumPhotoRemovals, normalizeEmail, recoverablePurchase, preserveGalleryServerState, proofingSubmission, stripePurchaseIdentity };

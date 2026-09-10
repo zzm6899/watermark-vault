@@ -2148,7 +2148,7 @@ function DashboardView() {
               <div className="flex items-center gap-2 mt-4">
                 <Button size="sm" variant="outline" onClick={async () => {
                   if (await ensurePublicShareReady(activeCaptureAlbum, "open this gallery")) {
-                    window.open(`/gallery/${activeCaptureAlbum.slug || activeCaptureAlbum.id}`, "_blank");
+                    window.open(publicGalleryUrl(activeCaptureAlbum), "_blank", "noopener,noreferrer");
                   }
                 }} className="gap-2 text-xs font-body">
                   <Eye className="w-3.5 h-3.5" /> Client View
@@ -3992,7 +3992,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                               return;
                             }
                             if (await ensurePublicShareReady(album, "open this gallery")) {
-                              window.open(`/gallery/${album.slug || album.id}`, "_blank", "noopener,noreferrer");
+                              window.open(publicGalleryUrl(album), "_blank", "noopener,noreferrer");
                             }
                           }}
                         >
@@ -5054,7 +5054,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                             />
                           </div>
                         </TooltipTrigger>
-                        <TooltipContent>Toggle Public/Private</TooltipContent>
+                        <TooltipContent>{alb.enabled !== false ? "Hide gallery" : "Show gallery"}</TooltipContent>
                       </Tooltip>
                       <Tooltip>
                         <TooltipTrigger asChild>
@@ -5513,16 +5513,43 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
       setPhotos(allPhotos);
       const newCover = coverImage || (allPhotos[0]?.src ?? "");
       if (!coverImage && newPhotos.length > 0) setCoverImage(newPhotos[0].src);
+      let galleryConfirmed = !album || newPhotos.length === 0;
+      let galleryConfirmationError = "";
       if (album && newPhotos.length > 0) {
         const updated = buildAlbumDraft(allPhotos, newCover);
-        if (updated) onUpdate?.(updated);
+        if (updated) {
+          // Uploads append to the server album. Never inherit a one-shot replace
+          // marker from an earlier manual correction/deletion save.
+          const uploadUpdate = { ...updated, _replacePhotos: undefined, _removedPhotoIds: undefined };
+          updateAlbum(uploadUpdate);
+          setLiveAlbum(uploadUpdate);
+          onUpdate?.(uploadUpdate);
+
+          setSavingAlbum(true);
+          const saveResult = await saveAlbumToServer(uploadUpdate.id, uploadUpdate);
+          if (saveResult.ok && uploadUpdate.enabled !== false) {
+            const publicResult = await ensurePublicAlbumAvailable(uploadUpdate, 2);
+            galleryConfirmed = publicResult.ok;
+            galleryConfirmationError = publicResult.error || "";
+          } else {
+            galleryConfirmed = saveResult.ok;
+            galleryConfirmationError = saveResult.error || "";
+          }
+          setSavingAlbum(false);
+        }
       }
       setUploadStats(prev => prev ? { ...prev, done: fileArr.length, errors: fileArr.length - results.length, savedBytes: 0 } : null);
       if (results.length > 0) {
-        if (results.length === fileArr.length) {
-          toast.success(`${results.length} photos uploaded to server`);
+        if (!album) {
+          toast.success(`${results.length} photo${results.length === 1 ? "" : "s"} uploaded. Save the album to publish the gallery.`);
+        } else if (!galleryConfirmed) {
+          toast.warning(
+            `${results.length}${results.length < fileArr.length ? ` of ${fileArr.length}` : ""} photo${results.length === 1 ? "" : "s"} uploaded safely, but the gallery update was not confirmed. ${galleryConfirmationError || "Use Save changes to retry publishing."}`
+          );
+        } else if (results.length === fileArr.length) {
+          toast.success(`${results.length} photo${results.length === 1 ? "" : "s"} uploaded and gallery updated`);
         } else {
-          toast.warning(`${results.length} of ${fileArr.length} photos uploaded. ${fileArr.length - results.length} failed.`);
+          toast.warning(`${results.length} of ${fileArr.length} photos uploaded and gallery updated. ${fileArr.length - results.length} failed.`);
         }
         window.dispatchEvent(new CustomEvent("storage-synced"));
       } else {
@@ -5708,7 +5735,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
     const albumId = album?.id || generateId("alb");
     const draft = buildAlbumDraft(photos);
     if (!draft) return;
-    const savedAlbum = { ...draft, id: albumId };
+    const savedAlbum = { ...draft, id: albumId, ...(!isNew && !photosStripped ? { _replacePhotos: true } : {}) };
     setSavingAlbum(true);
     let confirmed = true;
     if (isNew || !isServerMode()) {
@@ -5755,7 +5782,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
           <AlbumTitleField value={title} onChange={(value) => { setTitle(value); if (!slug || slug === slugify(album?.title || "")) setSlug(slugify(value)); }} />
         </React.Suspense>
         <React.Suspense fallback={<div className="h-16 rounded-lg bg-secondary/30 animate-pulse" />}>
-          <AlbumSlugField value={slug} onChange={(value) => setSlug(slugify(value))} taken={existingAlbums.some(a => a.slug === slug && a.id !== album?.id)} />
+          <AlbumSlugField value={slug} onChange={(value) => setSlug(slugify(value))} taken={existingAlbums.some(a => a.slug === slug && a.id !== album?.id)} privateLink={!!album?.clientToken} />
         </React.Suspense>
       </div>
 
@@ -6601,13 +6628,14 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
                 <button onClick={() => {
                   const filtered = photos.filter(pp => pp.id !== p.id);
                   const newCover = coverImage === p.src ? (filtered[0]?.src || "") : coverImage;
+                  const removedPhotoIds = Array.from(new Set([...(album?._removedPhotoIds || []), p.id]));
                   setPhotos(filtered);
                   setCoverImage(newCover);
                   // Immediately persist the deletion to the server when editing
                   // an existing album so that the gallery reflects the change
                   // without the admin needing to click "Save Album" first.
                   if (!isNew && album?.id && onUpdate) {
-                    onUpdate({ ...album, photos: filtered, photoCount: filtered.length, coverImage: newCover });
+                    onUpdate({ ...album, photos: filtered, photoCount: filtered.length, coverImage: newCover, _removedPhotoIds: removedPhotoIds });
                   }
                 }}
                   className="absolute top-1 right-1 w-5 h-5 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
@@ -7540,7 +7568,8 @@ function PhotosView() {
         const newCover = (deletedPhoto?.src && deletedPhoto.src === alb.coverImage)
           ? (filtered[0]?.src || "")
           : alb.coverImage;
-        const updated = { ...alb, photos: filtered, photoCount: filtered.length, coverImage: newCover };
+        const updated = { ...alb, photos: filtered, photoCount: filtered.length, coverImage: newCover,
+          _removedPhotoIds: Array.from(new Set([...(alb._removedPhotoIds || []), id])) };
         updateAlbum(updated);
         setAlbumsState(getAlbums());
         // Delete the physical file if it isn't referenced anywhere else
@@ -7600,7 +7629,8 @@ function PhotosView() {
         // Auto-update cover image if the cover photo was among those deleted
         const coverStillExists = filtered.some(p => p.src === alb.coverImage);
         const newCover = coverStillExists ? alb.coverImage : (filtered[0]?.src || "");
-        const updated = { ...alb, photos: filtered, photoCount: filtered.length, coverImage: newCover };
+        const updated = { ...alb, photos: filtered, photoCount: filtered.length, coverImage: newCover,
+          _removedPhotoIds: Array.from(new Set([...(alb._removedPhotoIds || []), ...photoIds])) };
         updateAlbum(updated);
         // Delete physical files not referenced elsewhere
         if (isServerMode()) {
@@ -13228,7 +13258,7 @@ function StorageView() {
                                   type="button"
                                   onClick={async () => {
                                     if (await ensurePublicShareReady(matchingAlbum, "open this gallery")) {
-                                      window.open(`/gallery/${matchingAlbum.slug || matchingAlbum.id}`, "_blank", "noopener,noreferrer");
+                                      window.open(publicGalleryUrl(matchingAlbum), "_blank", "noopener,noreferrer");
                                     }
                                   }}
                                   className="text-primary hover:underline inline-flex items-center gap-1"

@@ -278,9 +278,16 @@ export function setAlbums(albs: Album[]) {
   set(KEYS.ALBUMS, albs);
 }
 
+function albumForLocalStorage(alb: Album): Album {
+  // These fields are one-shot server merge controls. Keeping them in localStorage
+  // can make a later ordinary upload accidentally replay an old replace/delete.
+  const { _replacePhotos: _replacePhotos, _removedPhotoIds: _removedPhotoIds, ...localAlbum } = alb;
+  return localAlbum;
+}
+
 export function addAlbum(alb: Album) {
   const list = getAlbums();
-  list.push(alb);
+  list.push(albumForLocalStorage(alb));
   // Write the full list to localStorage so subsequent getAlbums() reads are consistent.
   // Persist only the new album to the server via the per-album endpoint to avoid
   // overwriting other albums' photos with stale stub (empty) data.
@@ -295,7 +302,8 @@ export function updateAlbum(alb: Album) {
   // If the album doesn't exist yet, add it to the list.
   const existing = getAlbums();
   const found = existing.some(a => a.id === alb.id);
-  const all = found ? existing.map((a) => (a.id === alb.id ? alb : a)) : [...existing, alb];
+  const localAlbum = albumForLocalStorage(alb);
+  const all = found ? existing.map((a) => (a.id === alb.id ? localAlbum : a)) : [...existing, localAlbum];
   try { localStorage.setItem(KEYS.ALBUMS, JSON.stringify(all)); } catch (e) {
     console.error("localStorage save failed:", e);
   }

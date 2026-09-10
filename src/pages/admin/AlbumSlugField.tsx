@@ -1,9 +1,10 @@
 import { Input } from "@/components/ui/input";
 
-export default function AlbumSlugField({ value, onChange, taken }: {
+export default function AlbumSlugField({ value, onChange, taken, privateLink = false }: {
   value: string;
   onChange: (value: string) => void;
   taken: boolean;
+  privateLink?: boolean;
 }) {
   return <div>
     <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Custom URL Slug</label>
@@ -14,5 +15,8 @@ export default function AlbumSlugField({ value, onChange, taken }: {
         {taken ? "⚠ Already taken" : "✓ Available"}
       </span>}
     </div>
+    {privateLink && <p className="mt-1 text-[10px] font-body text-amber-500">
+      Private-link protection is active. Share using “Copy gallery link” so the required access token is included.
+    </p>}
   </div>;
 }

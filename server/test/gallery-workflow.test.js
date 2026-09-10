@@ -1,12 +1,28 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { proofingSubmission, preserveGalleryServerState, recoverablePurchase, stripePurchaseIdentity } = require("../gallery-workflow");
+const { applyAlbumPhotoRemovals, proofingSubmission, preserveGalleryServerState, recoverablePurchase, stripePurchaseIdentity } = require("../gallery-workflow");
 const { selectClientPortalAlbumGroups, signSession, verifySession } = require("../security-core");
 
 function proof() { return { id: "album", proofingEnabled: true, proofingStage: "proofing",
   photos: [{ id: "one" }, { id: "two" }, { id: "hidden", hidden: true }],
   proofingRounds: [{ roundNumber: 1, sentAt: "2026-09-06T00:00:00Z" }] }; }
 const request = { selectedPhotoIds: ["one"], clientNote: "Edit this please", submissionId: "proof-1234567890123456", roundNumber: 1, roundSentAt: "2026-09-06T00:00:00Z" };
+
+test("explicit photo removals repair the album photo count, cover, and proofing picks", () => {
+  const album = {
+    coverImage: "/uploads/removed.jpg",
+    photos: [
+      { id: "removed", src: "/uploads/removed.jpg" },
+      { id: "kept", src: "/uploads/kept.jpg" },
+    ],
+    proofingRounds: [{ roundNumber: 1, selectedPhotoIds: ["removed", "kept"] }],
+  };
+  const updated = applyAlbumPhotoRemovals(album, ["removed"]);
+  assert.deepEqual(updated.photos.map(photo => photo.id), ["kept"]);
+  assert.equal(updated.photoCount, 1);
+  assert.equal(updated.coverImage, "/uploads/kept.jpg");
+  assert.deepEqual(updated.proofingRounds[0].selectedPhotoIds, ["kept"]);
+});
 
 test("proofing saves a receipt and a lost-response retry returns the same submission", () => {
   const first = proofingSubmission(proof(), request);

@@ -410,14 +410,16 @@ export default function AlbumDetail() {
   });
   useEffect(() => {
     const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
-    const hasHashToken = hashParams.has("token");
-    if (!searchParams.has("token") && !hasHashToken) return;
+    // Preserve the token in the URL fragment so a gallery opened with "View"
+    // can be copied from the address bar and opened on another device. Migrate
+    // legacy query-string tokens into the fragment, which browsers do not send
+    // to the server or include in referrer requests.
+    const queryToken = searchParams.get("token");
+    if (!queryToken) return;
     const url = new URL(window.location.href);
     url.searchParams.delete("token");
-    if (hasHashToken) {
-      hashParams.delete("token");
-      url.hash = hashParams.toString() ? `#${hashParams.toString()}` : "";
-    }
+    if (!hashParams.has("token")) hashParams.set("token", queryToken);
+    url.hash = `#${hashParams.toString()}`;
     window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
   }, [searchParams]);
   // Token in URL grants access without PIN — verified against album.clientToken

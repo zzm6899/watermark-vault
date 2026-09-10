@@ -1545,7 +1545,7 @@ function TenantAlbums({ slug }: { slug: string }) {
                       <Button aria-label={`Email client for ${alb.title}`} variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary" title="Email client" onClick={() => handleSendNotification(alb)}>
                         <Send className="w-3.5 h-3.5" />
                       </Button>
-                      <a href={`/gallery/${alb.slug}`} target="_blank" rel="noopener noreferrer">
+                      <a href={publicGalleryUrl(alb)} target="_blank" rel="noopener noreferrer">
                         <Button aria-label={`View gallery ${alb.title}`} variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary" title="View gallery">
                           <ExternalLink className="w-3.5 h-3.5" />
                         </Button>
@@ -1800,6 +1800,7 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
       downloadExpiresAt: downloadExpiresAt || undefined,
       displaySize,
       _photosStripped: false,
+      ...(!isNew && !existingAlbum?._photosStripped ? { _replacePhotos: true } : {}),
       // Preserve the enabled/disabled state so editing an album does not silently
       // re-enable a disabled one via the server-side merge.
       ...(album?.enabled !== undefined ? { enabled: album.enabled } : {}),
@@ -2532,7 +2533,8 @@ function TenantPhotos({ slug }: { slug: string }) {
         const filtered = (alb.photos || []).filter(p => p.id !== id);
         // If the deleted photo was the cover image, pick the next available photo
         const newCover = (src && src === alb.coverImage) ? (filtered[0]?.src || "") : alb.coverImage;
-        const updatedAlb = { ...alb, photos: filtered, photoCount: filtered.length, coverImage: newCover };
+        const updatedAlb = { ...alb, photos: filtered, photoCount: filtered.length, coverImage: newCover,
+          _removedPhotoIds: Array.from(new Set([...(alb._removedPhotoIds || []), id])) };
         setAlbums(prev => prev.map(a => a.id === alb.id ? updatedAlb : a));
         await saveTenantAlbum(slug, updatedAlb);
         // Delete file if not referenced elsewhere
@@ -2590,7 +2592,8 @@ function TenantPhotos({ slug }: { slug: string }) {
         // Auto-update cover image if the cover photo was among those deleted
         const coverStillExists = filteredPhotos.some(p => p.src === alb.coverImage);
         const newCover = coverStillExists ? alb.coverImage : (filteredPhotos[0]?.src || "");
-        const updatedAlb = { ...alb, photos: filteredPhotos, photoCount: filteredPhotos.length, coverImage: newCover };
+        const updatedAlb = { ...alb, photos: filteredPhotos, photoCount: filteredPhotos.length, coverImage: newCover,
+          _removedPhotoIds: Array.from(new Set([...(alb._removedPhotoIds || []), ...photoIds])) };
         await saveTenantAlbum(slug, updatedAlb);
         setAlbums(prev => prev.map(a => a.id === albumId ? updatedAlb : a));
         // Delete physical files not referenced elsewhere

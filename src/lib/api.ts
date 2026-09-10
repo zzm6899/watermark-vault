@@ -422,35 +422,13 @@ export function persistToServer(key: string, value: unknown): void {
  *  keepalive: true ensures the request is not cancelled on page unload.
  *  If the server check has not yet completed, queues the write and flushes once it has. */
 export function persistAlbumToServer(albumId: string, album: import("./types").Album): void {
-  if (serverAvailable === true) {
-    fetch(`/api/albums/${encodeURIComponent(albumId)}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
-      body: JSON.stringify(album),
-      keepalive: true,
-    }).then((res) => {
-      if (!res.ok) {
-        const existing = _albumWriteQueue.findIndex(w => w.albumId === albumId);
-        if (existing >= 0) _albumWriteQueue[existing].album = album;
-        else _albumWriteQueue.push({ albumId, album });
-        _scheduleAlbumFlush(5000);
-      }
-    }).catch(() => {
-      const existing = _albumWriteQueue.findIndex(w => w.albumId === albumId);
-      if (existing >= 0) _albumWriteQueue[existing].album = album;
-      else _albumWriteQueue.push({ albumId, album });
-      _scheduleAlbumFlush(5000);
-    });
-    return;
-  }
-  // Server availability is unknown or was previously false. Queue and retry so
-  // a temporary offline/health-check miss does not strand albums in localStorage.
-  // Deduplicate: if the same album is already queued, replace it.
+  // Always serialize writes for the same album. Rapid photo deletions otherwise
+  // race one another and an older additive save can restore a later deletion.
   const existing = _albumWriteQueue.findIndex(w => w.albumId === albumId);
   if (existing >= 0) _albumWriteQueue[existing].album = album;
   else _albumWriteQueue.push({ albumId, album });
 
-  _scheduleAlbumFlush();
+  _scheduleAlbumFlush(serverAvailable === true ? 0 : 5000);
 }
 
 /** Persist one album and report whether the server accepted it. */

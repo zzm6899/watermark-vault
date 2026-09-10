@@ -392,6 +392,10 @@ export interface Album {
    * via GET /api/albums/:id/photos and clears this flag.
    */
   _photosStripped?: boolean;
+  /** Tombstones sent with an album save so additive server merges do not restore deleted photos. */
+  _removedPhotoIds?: string[];
+  /** Set only by an explicit save of a fully loaded album to reconcile older photo-list drift. */
+  _replacePhotos?: boolean;
   // ── New feature fields (AlbumExtensions) ───────────────────
   tags?: string[];
   shareLinks?: GalleryShareLink[];
