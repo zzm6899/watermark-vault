@@ -23,6 +23,7 @@ import { getMobileTenantSession, setMobileTenantSession, hashPassword } from "@/
 import type { MobileTenantSession } from "@/lib/storage";
 import { generateThumbnail, compressImage, formatBytes, formatSpeed } from "@/lib/image-utils";
 import { generateCapabilityToken } from "@/lib/capability-token";
+import { albumIdFromPhotoSourceKey, albumPhotoSourceKey } from "@/lib/album-photo-source";
 import {
   fetchTenantMobileData, getTenantSettings, saveTenantSettings,
   deleteTenantBooking, updateTenantBookingFull,
@@ -2343,26 +2344,29 @@ function TenantPhotos({ slug }: { slug: string }) {
 
   // ── Persist library ────────────────────────────────────────────────────────
   const saveLibrary = async (photos: Photo[]) => {
-    await saveTenantStoreKey(slug, "wv_photo_library", photos);
+    return saveTenantStoreKey(slug, "wv_photo_library", photos);
   };
 
   // ── Build unified photo list ───────────────────────────────────────────────
   // Photos are keyed by src to avoid cross-source duplicates in "All" view
-  const allPhotos: (Photo & { source: string })[] = [];
+  type SourcedPhoto = Photo & { source: string; sourceAlbumId?: string };
+  const allPhotos: SourcedPhoto[] = [];
   const seenSrc = new Set<string>();
+  // Prefer album entries in the combined view so album actions update the
+  // actual gallery rather than only a duplicate library record.
+  for (const alb of albums) {
+    for (const p of alb.photos || []) {
+      if (!seenSrc.has(p.src)) { allPhotos.push({ ...p, source: alb.title, sourceAlbumId: alb.id }); seenSrc.add(p.src); }
+    }
+  }
   for (const p of libraryPhotos) {
     if (!seenSrc.has(p.src)) { allPhotos.push({ ...p, source: "Library" }); seenSrc.add(p.src); }
   }
-  for (const alb of albums) {
-    for (const p of alb.photos || []) {
-      if (!seenSrc.has(p.src)) { allPhotos.push({ ...p, source: alb.title }); seenSrc.add(p.src); }
-    }
-  }
 
   // For per-album filter, pull directly from that album's photos array
-  const getAlbumPhotos = (albumTitle: string): (Photo & { source: string })[] => {
-    const alb = albums.find(a => a.title === albumTitle);
-    return alb ? (alb.photos || []).map(p => ({ ...p, source: alb.title })) : [];
+  const getAlbumPhotos = (albumId: string): SourcedPhoto[] => {
+    const alb = albums.find(a => a.id === albumId);
+    return alb ? (alb.photos || []).map(p => ({ ...p, source: alb.title, sourceAlbumId: alb.id })) : [];
   };
 
   // Compute library photos that aren't referenced by any album (orphans)
@@ -2370,11 +2374,11 @@ function TenantPhotos({ slug }: { slug: string }) {
   const unassignedPhotos = libraryPhotos.filter(p => !albumPhotoSrcs.has(p.src));
 
   const starredPhotos = allPhotos.filter(p => p.starred);
-  const sourcePhotos =
+  const sourcePhotos: SourcedPhoto[] =
     viewSource === "all" ? allPhotos
-    : viewSource === "library" ? libraryPhotos.map(p => ({ ...p, source: "Library" }))
-    : viewSource === "unassigned" ? unassignedPhotos.map(p => ({ ...p, source: "Library" }))
-    : getAlbumPhotos(viewSource);
+    : viewSource === "library" ? libraryPhotos.map<SourcedPhoto>(p => ({ ...p, source: "Library" }))
+    : viewSource === "unassigned" ? unassignedPhotos.map<SourcedPhoto>(p => ({ ...p, source: "Library" }))
+    : getAlbumPhotos(albumIdFromPhotoSourceKey(viewSource) || "");
   const afterStarFilter = starredOnly ? sourcePhotos.filter(p => p.starred) : sourcePhotos;
   const afterSearchFilter = searchQuery.trim()
     ? afterStarFilter.filter(p =>
@@ -2404,10 +2408,8 @@ function TenantPhotos({ slug }: { slug: string }) {
   const hasActiveFilters = !!(filterDateFrom || filterDateTo || filterSize);
 
   // Album corresponding to the current view source (for upload targeting)
-  const selectedAlbum =
-    viewSource !== "all" && viewSource !== "library"
-      ? albums.find(a => a.title === viewSource)
-      : null;
+  const selectedAlbumId = albumIdFromPhotoSourceKey(viewSource);
+  const selectedAlbum = selectedAlbumId ? albums.find(a => a.id === selectedAlbumId) || null : null;
 
   // ── Toolbar actions ────────────────────────────────────────────────────────
   const handleClearDuplicates = async () => {
@@ -2423,10 +2425,15 @@ function TenantPhotos({ slug }: { slug: string }) {
         return true;
       });
       if (deduped.length < (alb.photos || []).length) {
-        totalRemoved += (alb.photos || []).length - deduped.length;
         const updated = { ...alb, photos: deduped, photoCount: deduped.length };
-        await saveTenantAlbum(slug, updated);
-        updatedAlbums.push(updated);
+        const saved = await saveTenantAlbum(slug, updated);
+        if (saved.ok) {
+          totalRemoved += (alb.photos || []).length - deduped.length;
+          updatedAlbums.push(updated);
+        } else {
+          updatedAlbums.push(alb);
+          toast.error(saved.error || `Could not clear duplicates from ${alb.title}`);
+        }
       } else {
         updatedAlbums.push(alb);
       }
@@ -2469,10 +2476,19 @@ function TenantPhotos({ slug }: { slug: string }) {
         });
         if (brokenPhotos.length > 0) {
           const repaired = (alb.photos || []).filter(p => !brokenPhotos.includes(p));
-          const updated = { ...alb, photos: repaired, photoCount: repaired.length };
-          await saveTenantAlbum(slug, updated);
-          updatedAlbums.push(updated);
-          repairedAlbums++;
+          const updated = {
+            ...alb,
+            photos: repaired,
+            photoCount: repaired.length,
+            _removedPhotoIds: brokenPhotos.map(photo => photo.id),
+          };
+          const saved = await saveTenantAlbum(slug, updated);
+          if (saved.ok) {
+            updatedAlbums.push(updated);
+            repairedAlbums++;
+          } else {
+            updatedAlbums.push(alb);
+          }
         } else {
           updatedAlbums.push(alb);
         }
@@ -2498,21 +2514,26 @@ function TenantPhotos({ slug }: { slug: string }) {
   };
 
   // ── Toggle star ────────────────────────────────────────────────────────────
-  const handleToggleStar = async (photo: Photo & { source: string }) => {
+  const handleToggleStar = async (photo: SourcedPhoto) => {
     const nowStarred = !photo.starred;
     if (photo.source === "Library") {
       const updated = libraryPhotos.map(p => p.id === photo.id ? { ...p, starred: nowStarred } : p);
+      const saved = await saveLibrary(updated);
+      if (!saved.ok) { toast.error(saved.error || "Could not update the photo"); return; }
       setLibraryPhotos(updated);
-      await saveLibrary(updated);
     } else {
-      const alb = albums.find(a => a.title === photo.source);
+      const alb = photo.sourceAlbumId ? albums.find(a => a.id === photo.sourceAlbumId) : undefined;
       if (!alb) return;
       const updatedAlb: Album = {
         ...alb,
         photos: (alb.photos || []).map(p => p.id === photo.id ? { ...p, starred: nowStarred } : p),
       };
+      const saved = await saveTenantAlbum(slug, updatedAlb);
+      if (!saved.ok) {
+        toast.error(saved.error || "Could not update the photo");
+        return;
+      }
       setAlbums(prev => prev.map(a => a.id === alb.id ? updatedAlb : a));
-      await saveTenantAlbum(slug, updatedAlb);
       if (nowStarred) {
         ftpMoveToStarred({ photoSrc: photo.src, albumTitle: alb.title, albumSlug: alb.slug, tenantSlug: slug, originalName: photo.originalName }).catch(() => {});
       }
@@ -2520,26 +2541,31 @@ function TenantPhotos({ slug }: { slug: string }) {
   };
 
   // ── Delete single photo ────────────────────────────────────────────────────
-  const handleDeletePhoto = async (id: string, source: string, src: string) => {
+  const handleDeletePhoto = async (id: string, source: string, src: string, sourceAlbumId?: string) => {
     if (source === "Library") {
       const updated = libraryPhotos.filter(p => p.id !== id);
+      const saved = await saveLibrary(updated);
+      if (!saved.ok) { toast.error(saved.error || "Could not remove the photo"); return; }
       setLibraryPhotos(updated);
-      await saveLibrary(updated);
       // Delete file only if it isn't referenced by any album
       if (isServerMode()) {
         const usedInAlbum = albums.some(a => (a.photos || []).some(p => p.src === src));
         if (!usedInAlbum) deletePhotoFromServer(src, slug);
       }
     } else {
-      const alb = albums.find(a => a.title === source);
+      const alb = sourceAlbumId ? albums.find(a => a.id === sourceAlbumId) : undefined;
       if (alb) {
         const filtered = (alb.photos || []).filter(p => p.id !== id);
         // If the deleted photo was the cover image, pick the next available photo
         const newCover = (src && src === alb.coverImage) ? (filtered[0]?.src || "") : alb.coverImage;
         const updatedAlb = { ...alb, photos: filtered, photoCount: filtered.length, coverImage: newCover,
           _removedPhotoIds: Array.from(new Set([...(alb._removedPhotoIds || []), id])) };
+        const saved = await saveTenantAlbum(slug, updatedAlb);
+        if (!saved.ok) {
+          toast.error(saved.error || "Could not remove the photo");
+          return;
+        }
         setAlbums(prev => prev.map(a => a.id === alb.id ? updatedAlb : a));
-        await saveTenantAlbum(slug, updatedAlb);
         // Delete file if not referenced elsewhere
         if (isServerMode()) {
           const usedElsewhere = albums.some(a => a.id !== alb.id && (a.photos || []).some(p => p.src === src))
@@ -2560,18 +2586,12 @@ function TenantPhotos({ slug }: { slug: string }) {
     const albumUpdates = new Map<string, Set<string>>();
 
     for (const id of selectedIds) {
-      const photo = allPhotos.find(p => p.id === id);
+      const photo = displayPhotos.find(p => p.id === id) || allPhotos.find(p => p.id === id);
       if (!photo) continue;
       if (photo.source === "Library") {
         libToDelete.add(id);
-        const lp = libraryPhotos.find(p => p.id === id);
-        // Delete file only if not referenced by any album
-        if (lp && isServerMode()) {
-          const usedInAlbum = albums.some(a => (a.photos || []).some(p => p.src === lp.src));
-          if (!usedInAlbum) deletePhotoFromServer(lp.src, slug);
-        }
       } else {
-        const alb = albums.find(a => a.title === photo.source);
+        const alb = photo.sourceAlbumId ? albums.find(a => a.id === photo.sourceAlbumId) : undefined;
         if (alb) {
           if (!albumUpdates.has(alb.id)) albumUpdates.set(alb.id, new Set());
           albumUpdates.get(alb.id)!.add(id);
@@ -2581,8 +2601,18 @@ function TenantPhotos({ slug }: { slug: string }) {
 
     if (libToDelete.size > 0) {
       const remaining = libraryPhotos.filter(p => !libToDelete.has(p.id));
-      setLibraryPhotos(remaining);
-      await saveLibrary(remaining);
+      const saved = await saveLibrary(remaining);
+      if (saved.ok) {
+        setLibraryPhotos(remaining);
+        if (isServerMode()) {
+          for (const photo of libraryPhotos.filter(p => libToDelete.has(p.id))) {
+            const usedInAlbum = albums.some(album => (album.photos || []).some(candidate => candidate.src === photo.src));
+            if (!usedInAlbum) deletePhotoFromServer(photo.src, slug);
+          }
+        }
+      } else {
+        toast.error(saved.error || "Could not remove photos from the library");
+      }
     }
 
     // Build remaining-library src set once — used in per-album file deletion checks below
@@ -2597,7 +2627,11 @@ function TenantPhotos({ slug }: { slug: string }) {
         const newCover = coverStillExists ? alb.coverImage : (filteredPhotos[0]?.src || "");
         const updatedAlb = { ...alb, photos: filteredPhotos, photoCount: filteredPhotos.length, coverImage: newCover,
           _removedPhotoIds: Array.from(new Set([...(alb._removedPhotoIds || []), ...photoIds])) };
-        await saveTenantAlbum(slug, updatedAlb);
+        const saved = await saveTenantAlbum(slug, updatedAlb);
+        if (!saved.ok) {
+          toast.error(saved.error || `Could not remove photos from ${alb.title}`);
+          continue;
+        }
         setAlbums(prev => prev.map(a => a.id === albumId ? updatedAlb : a));
         // Delete physical files not referenced elsewhere
         if (isServerMode()) {
@@ -2880,8 +2914,8 @@ function TenantPhotos({ slug }: { slug: string }) {
           </button>
         )}
         {albums.map(a => (
-          <button key={a.id} onClick={() => setViewSource(a.title)}
-            className={`text-xs font-body px-3 py-1.5 rounded-full whitespace-nowrap transition-all ${viewSource === a.title ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground hover:text-foreground"}`}>
+          <button key={a.id} onClick={() => setViewSource(albumPhotoSourceKey(a.id))}
+            className={`text-xs font-body px-3 py-1.5 rounded-full whitespace-nowrap transition-all ${viewSource === albumPhotoSourceKey(a.id) ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground hover:text-foreground"}`}>
             {a.title} ({(a.photos || []).length})
           </button>
         ))}
@@ -3044,7 +3078,7 @@ function TenantPhotos({ slug }: { slug: string }) {
                 <p className="text-[8px] font-body text-muted-foreground truncate">{p.source}</p>
               </div>
               <button
-                onClick={e => { e.stopPropagation(); handleDeletePhoto(p.id, p.source, p.src); }}
+                onClick={e => { e.stopPropagation(); void handleDeletePhoto(p.id, p.source, p.src, p.sourceAlbumId); }}
                 className="absolute bottom-1 right-1 w-6 h-6 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
               >
                 <X className="w-3.5 h-3.5" />

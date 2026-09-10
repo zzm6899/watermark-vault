@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { applyAlbumPhotoRemovals, markAlbumDelivered, mergeAlbumPhotos, proofingSubmission, preserveGalleryServerState, recoverablePurchase, repairDeliveredAlbumWorkflows, stripePurchaseIdentity } = require("../gallery-workflow");
+const { applyAlbumPhotoRemovals, dedupeAlbumPhotos, markAlbumDelivered, mergeAlbumPhotos, proofingSubmission, preserveGalleryServerState, recoverablePurchase, repairDeliveredAlbumWorkflows, stripePurchaseIdentity } = require("../gallery-workflow");
 
 test("a stale empty editor does not erase photos added by another device", () => {
   const phonePhotos = [{ id: "phone-1", src: "/uploads/phone-1.jpg" }, { id: "phone-2", src: "/uploads/phone-2.jpg" }];
@@ -14,6 +14,22 @@ test("an editor can remove photos from the snapshot it actually loaded", () => {
     mergeAlbumPhotos(existing, incoming, { replacePhotos: true, basePhotoIds: ["old-1", "old-2"] }),
     [{ id: "old-2", title: "Retitled" }, { id: "concurrent" }],
   );
+});
+
+test("album saves collapse duplicate photo ids and sources", () => {
+  assert.deepEqual(dedupeAlbumPhotos([
+    { id: "one", src: "/one.jpg" },
+    { id: "one", src: "/duplicate-id.jpg" },
+    { id: "two", src: "/one.jpg" },
+    { id: "three", src: "/three.jpg" },
+  ]), [
+    { id: "one", src: "/one.jpg" },
+    { id: "three", src: "/three.jpg" },
+  ]);
+  assert.deepEqual(mergeAlbumPhotos(
+    [{ id: "one", src: "/one.jpg" }, { id: "one", src: "/one.jpg" }],
+    [{ id: "one", src: "/one.jpg", title: "Updated" }],
+  ), [{ id: "one", src: "/one.jpg", title: "Updated" }]);
 });
 
 test("one-click delivery completes proofing and releases its temporary purchase lock", () => {

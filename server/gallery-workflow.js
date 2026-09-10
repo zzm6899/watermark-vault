@@ -10,9 +10,22 @@ function normalizeEmail(value) {
 // photos that were present in the editor's base snapshot; concurrent additions
 // remain in the album. Legacy replacements without a base retain their previous
 // full-replacement behaviour.
+function dedupeAlbumPhotos(photos) {
+  const seenIds = new Set();
+  const seenSources = new Set();
+  return (Array.isArray(photos) ? photos : []).filter(photo => {
+    const id = String(photo?.id || "");
+    const src = String(photo?.src || "");
+    if ((id && seenIds.has(id)) || (src && seenSources.has(src))) return false;
+    if (id) seenIds.add(id);
+    if (src) seenSources.add(src);
+    return true;
+  });
+}
+
 function mergeAlbumPhotos(existingPhotos, incomingPhotos, { replacePhotos = false, basePhotoIds } = {}) {
-  const existing = Array.isArray(existingPhotos) ? existingPhotos : [];
-  const incoming = Array.isArray(incomingPhotos) ? incomingPhotos : [];
+  const existing = dedupeAlbumPhotos(existingPhotos);
+  const incoming = dedupeAlbumPhotos(incomingPhotos);
   if (replacePhotos && !Array.isArray(basePhotoIds)) return [...incoming];
 
   const incomingIds = new Set(incoming.map(photo => String(photo?.id || "")).filter(Boolean));
@@ -154,4 +167,4 @@ function proofingSubmission(album, { selectedPhotoIds, clientNote, submissionId,
     photos: (album.photos || []).map(photo => ({ ...photo, starred: selected.has(String(photo.id)) })) }, receipt, replayed: false };
 }
 
-module.exports = { applyAlbumPhotoRemovals, markAlbumDelivered, mergeAlbumPhotos, normalizeEmail, recoverablePurchase, preserveGalleryServerState, proofingSubmission, repairDeliveredAlbumWorkflows, stripePurchaseIdentity };
+module.exports = { applyAlbumPhotoRemovals, dedupeAlbumPhotos, markAlbumDelivered, mergeAlbumPhotos, normalizeEmail, recoverablePurchase, preserveGalleryServerState, proofingSubmission, repairDeliveredAlbumWorkflows, stripePurchaseIdentity };

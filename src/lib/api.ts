@@ -455,6 +455,26 @@ export async function saveAlbumToServer(albumId: string, album: import("./types"
   }
 }
 
+/** Persist one generic store key and wait for server confirmation. */
+export async function saveStoreKeyToServer(key: string, value: unknown): Promise<{ ok: boolean; error?: string }> {
+  const online = await checkServer();
+  if (!online) return { ok: false, error: "Server is offline. Changes are saved locally and will retry when sync reconnects." };
+  try {
+    const res = await fetch(`/api/store/${encodeURIComponent(key)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
+      body: JSON.stringify({ value }),
+    });
+    if (!res.ok) {
+      const body = await readJson<{ error?: string } | null>(res, null);
+      return { ok: false, error: body?.error || `Server rejected the save (${res.status})` };
+    }
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Could not reach the server" };
+  }
+}
+
 /** Fire-and-forget delete a single album from the server. */
 export function deleteAlbumFromServer(albumId: string): void {
   if (serverAvailable !== true) return;

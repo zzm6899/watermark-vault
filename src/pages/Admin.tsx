@@ -66,7 +66,7 @@ import {
   isSupportedUploadFile,
   isSupportedPhotoSource,
   isServerMode,
-  deletePhotoFromServer,
+  deletePhotoFromServer, saveStoreKeyToServer,
   getGoogleCalendarStatus,
   startGoogleCalendarAuth,
   disconnectGoogleCalendar,
@@ -183,6 +183,7 @@ import ProgressiveImg from "@/components/ProgressiveImg";
 import { useBackfillThumbnails } from "@/hooks/use-backfill-thumbnails";
 import { generateCapabilityToken } from "@/lib/capability-token";
 import { buildAlbumPhotoSaveMarkers } from "@/lib/album-photo-save";
+import { albumIdFromPhotoSourceKey, albumPhotoSourceKey } from "@/lib/album-photo-source";
 import { drawServerAlignedWatermark } from "@/lib/watermark-render";
 import { Slider } from "@/components/ui/slider";
 
@@ -7052,7 +7053,12 @@ function PhotosView() {
         if (brokenPhotos.length > 0) {
           // Remove broken references
           const repairedPhotos = (alb.photos || []).filter(p => !brokenPhotos.includes(p));
-          updateAlbum({ ...alb, photos: repairedPhotos, photoCount: repairedPhotos.length });
+          updateAlbum({
+            ...alb,
+            photos: repairedPhotos,
+            photoCount: repairedPhotos.length,
+            _removedPhotoIds: brokenPhotos.map(photo => photo.id),
+          });
           repairedAlbums++;
         }
       }
@@ -7214,12 +7220,13 @@ function PhotosView() {
   // Build unified photo list — dedup by id so a photo that lives in both the
   // library and an album only appears once (as its album entry, which has richer context).
   // Library-only photos (no album) are included from the library list.
-  const allPhotos: (Photo & { source: string })[] = [];
+  type SourcedPhoto = Photo & { source: string; sourceAlbumId?: string };
+  const allPhotos: SourcedPhoto[] = [];
   const seenInAll = new Set<string>();
   // Add album photos first so their source label takes priority in "all" view
   for (const alb of albums) {
     for (const p of alb.photos) {
-      if (!seenInAll.has(p.id)) { allPhotos.push({ ...p, source: alb.title }); seenInAll.add(p.id); }
+      if (!seenInAll.has(p.id)) { allPhotos.push({ ...p, source: alb.title, sourceAlbumId: alb.id }); seenInAll.add(p.id); }
     }
   }
   // Add library photos that aren't already represented by an album entry
@@ -7228,9 +7235,9 @@ function PhotosView() {
   }
 
   // For album-specific filters, pull directly from album.photos (not allPhotos) so added photos always appear
-  const getAlbumPhotos = (albumTitle: string): (Photo & { source: string })[] => {
-    const alb = albums.find(a => a.title === albumTitle);
-    return alb ? alb.photos.map(p => ({ ...p, source: alb.title })) : [];
+  const getAlbumPhotos = (albumId: string): SourcedPhoto[] => {
+    const alb = albums.find(a => a.id === albumId);
+    return alb ? alb.photos.map(p => ({ ...p, source: alb.title, sourceAlbumId: alb.id })) : [];
   };
 
   // Compute library photos that aren't referenced by any album (orphans) — match by id
@@ -7238,10 +7245,10 @@ function PhotosView() {
   const unassignedPhotos = libraryPhotos.filter(p => !albumPhotoIds.has(p.id));
 
   const starredPhotos = allPhotos.filter(p => (p as any).starred);
-  const sourcePhotos = viewSource === "all" ? allPhotos
-    : viewSource === "library" ? libraryPhotos.map(p => ({ ...p, source: "Library" }))
-    : viewSource === "unassigned" ? unassignedPhotos.map(p => ({ ...p, source: "Library" }))
-    : getAlbumPhotos(viewSource);
+  const sourcePhotos: SourcedPhoto[] = viewSource === "all" ? allPhotos
+    : viewSource === "library" ? libraryPhotos.map<SourcedPhoto>(p => ({ ...p, source: "Library" }))
+    : viewSource === "unassigned" ? unassignedPhotos.map<SourcedPhoto>(p => ({ ...p, source: "Library" }))
+    : getAlbumPhotos(albumIdFromPhotoSourceKey(viewSource) || "");
   const unfilteredPhotos = starredOnly ? sourcePhotos.filter(p => (p as any).starred) : sourcePhotos;
 
   let displayPhotos = unfilteredPhotos;
@@ -7253,7 +7260,7 @@ function PhotosView() {
       if (p.title.toLowerCase().includes(q)) return true;
       if (p.src.toLowerCase().includes(q)) return true;
       if (p.source.toLowerCase().includes(q)) return true;
-      const alb = albums.find(a => a.title === p.source);
+      const alb = p.sourceAlbumId ? albums.find(a => a.id === p.sourceAlbumId) : undefined;
       if (alb?.clientName?.toLowerCase().includes(q)) return true;
       return false;
     });
@@ -7277,7 +7284,7 @@ function PhotosView() {
   if (filterAlbum) {
     const targetAlb = albums.find(a => a.id === filterAlbum);
     if (targetAlb) {
-      displayPhotos = displayPhotos.filter(p => p.source === targetAlb.title);
+      displayPhotos = displayPhotos.filter(p => p.sourceAlbumId === targetAlb.id);
     }
   }
 
@@ -7297,7 +7304,8 @@ function PhotosView() {
   displayPhotosRef.current = displayPhotos;
 
   // Determine if we're viewing a specific album (for upload-to-album)
-  const selectedAlbum = viewSource !== "all" && viewSource !== "library" ? albums.find(a => a.title === viewSource) : null;
+  const selectedAlbumId = albumIdFromPhotoSourceKey(viewSource);
+  const selectedAlbum = selectedAlbumId ? albums.find(a => a.id === selectedAlbumId) || null : null;
 
   const loadAlbumForPhotoAppend = async (target: Album): Promise<Album | null> => {
     const stored = getAlbums().find(a => a.id === target.id) || target;
@@ -7429,14 +7437,14 @@ function PhotosView() {
     });
   };
 
-  const handleToggleStar = async (photo: Photo & { source: string }) => {
+  const handleToggleStar = async (photo: SourcedPhoto) => {
     const nowStarred = !photo.starred;
     if (photo.source === "Library") {
       const updated = libraryPhotos.map(p => p.id === photo.id ? { ...p, starred: nowStarred } : p);
       setPhotoLibrary(updated);
       setLibraryPhotosState(updated);
     } else {
-      const alb = albums.find(a => a.title === photo.source);
+      const alb = photo.sourceAlbumId ? albums.find(a => a.id === photo.sourceAlbumId) : undefined;
       if (alb) {
         const updated = { ...alb, photos: alb.photos.map(p => p.id === photo.id ? { ...p, starred: nowStarred } : p) };
         updateAlbum(updated);
@@ -7561,12 +7569,18 @@ function PhotosView() {
     toast.success("Original restored");
   };
 
-  const handleDeletePhoto = (id: string, source: string) => {
+  const handleDeletePhoto = async (id: string, source: string, sourceAlbumId?: string) => {
     if (source === "Library") {
       const lp = libraryPhotos.find(p => p.id === id);
       const updated = libraryPhotos.filter(p => p.id !== id);
       setPhotoLibrary(updated);
       setLibraryPhotosState(updated);
+      const saveResult = isServerMode() ? await saveStoreKeyToServer("wv_photo_library", updated) : { ok: true };
+      if (!saveResult.ok) {
+        toast.warning(saveResult.error || "Library removal is queued, but the server has not confirmed it yet.");
+        setSelectedIds(prev => { const next = new Set(prev); next.delete(id); return next; });
+        return;
+      }
       // Delete the physical file if it isn't referenced by any album
       if (lp && isServerMode()) {
         const usedInAlbum = albums.some(a => (a.photos || []).some(p => p.src === lp.src));
@@ -7574,7 +7588,7 @@ function PhotosView() {
       }
     } else {
       // Remove from the album it belongs to
-      const alb = albums.find(a => a.title === source);
+      const alb = sourceAlbumId ? albums.find(a => a.id === sourceAlbumId) : undefined;
       if (alb) {
         const deletedPhoto = alb.photos.find(p => p.id === id);
         const filtered = alb.photos.filter(p => p.id !== id);
@@ -7586,6 +7600,12 @@ function PhotosView() {
           _removedPhotoIds: Array.from(new Set([...(alb._removedPhotoIds || []), id])) };
         updateAlbum(updated);
         setAlbumsState(getAlbums());
+        const saveResult = isServerMode() ? await saveAlbumToServer(updated.id, updated) : { ok: true };
+        if (!saveResult.ok) {
+          toast.warning(saveResult.error || "Photo removal is queued, but the server has not confirmed it yet.");
+          setSelectedIds(prev => { const next = new Set(prev); next.delete(id); return next; });
+          return;
+        }
         // Delete the physical file if it isn't referenced anywhere else
         if (deletedPhoto && isServerMode()) {
           const usedElsewhere = albums.some(a => a.id !== alb.id && (a.photos || []).some(p => p.src === deletedPhoto.src))
@@ -7597,7 +7617,7 @@ function PhotosView() {
     setSelectedIds(prev => { const next = new Set(prev); next.delete(id); return next; });
   };
 
-  const handleMassDelete = () => {
+  const handleMassDelete = async () => {
     if (selectedIds.size === 0) return;
     if (!confirm(`Delete ${selectedIds.size} selected photo(s)?`)) return;
 
@@ -7606,18 +7626,12 @@ function PhotosView() {
     const albumUpdates = new Map<string, Set<string>>(); // albumId -> photoIds to remove
 
     for (const id of selectedIds) {
-      const photo = allPhotos.find(p => p.id === id);
+      const photo = displayPhotos.find(p => p.id === id) || allPhotos.find(p => p.id === id);
       if (!photo) continue;
       if (photo.source === "Library") {
         libToDelete.add(id);
-        const lp = libraryPhotos.find(p => p.id === id);
-        // Delete file only if not referenced by any album
-        if (lp && isServerMode()) {
-          const usedInAlbum = albums.some(a => (a.photos || []).some(p => p.src === lp.src));
-          if (!usedInAlbum) deletePhotoFromServer(lp.src);
-        }
       } else {
-        const alb = albums.find(a => a.title === photo.source);
+        const alb = photo.sourceAlbumId ? albums.find(a => a.id === photo.sourceAlbumId) : undefined;
         if (alb) {
           if (!albumUpdates.has(alb.id)) albumUpdates.set(alb.id, new Set());
           albumUpdates.get(alb.id)!.add(id);
@@ -7630,6 +7644,15 @@ function PhotosView() {
       const remaining = libraryPhotos.filter(p => !libToDelete.has(p.id));
       setPhotoLibrary(remaining);
       setLibraryPhotosState(remaining);
+      const saveResult = isServerMode() ? await saveStoreKeyToServer("wv_photo_library", remaining) : { ok: true };
+      if (saveResult.ok && isServerMode()) {
+        for (const photo of libraryPhotos.filter(p => libToDelete.has(p.id))) {
+          const usedInAlbum = albums.some(album => (album.photos || []).some(candidate => candidate.src === photo.src));
+          if (!usedInAlbum) deletePhotoFromServer(photo.src);
+        }
+      } else if (!saveResult.ok) {
+        toast.warning(saveResult.error || "Library removals are queued but not yet confirmed.");
+      }
     }
 
     // Build remaining-library src set once — used in per-album file deletion checks below
@@ -7646,6 +7669,11 @@ function PhotosView() {
         const updated = { ...alb, photos: filtered, photoCount: filtered.length, coverImage: newCover,
           _removedPhotoIds: Array.from(new Set([...(alb._removedPhotoIds || []), ...photoIds])) };
         updateAlbum(updated);
+        const saveResult = isServerMode() ? await saveAlbumToServer(updated.id, updated) : { ok: true };
+        if (!saveResult.ok) {
+          toast.warning(saveResult.error || `Removal from ${alb.title} is queued but not yet confirmed.`);
+          continue;
+        }
         // Delete physical files not referenced elsewhere
         if (isServerMode()) {
           for (const photo of alb.photos.filter(p => photoIds.has(p.id))) {
@@ -8164,7 +8192,7 @@ function PhotosView() {
             </div>
             <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide cursor-grab active:cursor-grabbing select-none min-w-0">
               {albums.filter(a => !albumFilterSearch || a.title.toLowerCase().includes(albumFilterSearch.toLowerCase())).map(a => (
-                <button key={a.id} onClick={() => setViewSource(viewSource === a.title ? "all" : a.title)} className={`text-xs font-body px-3 py-1.5 rounded-full whitespace-nowrap transition-all flex-shrink-0 ${viewSource === a.title ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground hover:text-foreground"}`}>
+                <button key={a.id} onClick={() => setViewSource(viewSource === albumPhotoSourceKey(a.id) ? "all" : albumPhotoSourceKey(a.id))} className={`text-xs font-body px-3 py-1.5 rounded-full whitespace-nowrap transition-all flex-shrink-0 ${viewSource === albumPhotoSourceKey(a.id) ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground hover:text-foreground"}`}>
                   {a.title} ({albumPhotoTotal(a)})
                 </button>
               ))}
@@ -8306,7 +8334,7 @@ function PhotosView() {
             : "grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-7 xl:grid-cols-9"
         }`}>
           {displayPhotos.slice(0, visibleCount).map(p => (
-            <div key={p.id + p.source} className={`relative group aspect-square rounded-md overflow-hidden bg-secondary cursor-pointer border-2 transition-all ${selectedIds.has(p.id) ? "border-primary ring-2 ring-primary/20" : "border-transparent hover:border-border"}`}
+            <div key={`${p.id}:${p.sourceAlbumId || p.source}`} className={`relative group aspect-square rounded-md overflow-hidden bg-secondary cursor-pointer border-2 transition-all ${selectedIds.has(p.id) ? "border-primary ring-2 ring-primary/20" : "border-transparent hover:border-border"}`}
               onClick={() => toggleSelect(p.id)}>
               <ProgressiveImg thumbSrc={adminThumbSrc(p.thumbnail) ?? p.thumbnail} fullSrc={adminThumbSrc(p.src) ?? p.src} alt={p.title} className="w-full h-full object-cover" loading="lazy" />
               <button
@@ -8343,7 +8371,7 @@ function PhotosView() {
               {selectedIds.has(p.id) && (
                 <div className="absolute bottom-1 right-1 w-6 h-6 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-[10px] font-bold">✓</div>
               )}
-              <button onClick={(e) => { e.stopPropagation(); handleDeletePhoto(p.id, p.source); }}
+              <button onClick={(e) => { e.stopPropagation(); void handleDeletePhoto(p.id, p.source, p.sourceAlbumId); }}
                 className="absolute bottom-1 left-1 w-6 h-6 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
                 <X className="w-3.5 h-3.5" />
               </button>
@@ -12714,7 +12742,12 @@ function StorageView() {
         }));
         if (missingSet.size > 0) {
           const kept = (alb.photos || []).filter(p => !missingSet.has(p));
-          updateAlbum({ ...alb, photos: kept, photoCount: kept.length });
+          updateAlbum({
+            ...alb,
+            photos: kept,
+            photoCount: kept.length,
+            _removedPhotoIds: [...missingSet].map(photo => photo.id),
+          });
           removedAlbumPhotos += missingSet.size;
         }
       }
