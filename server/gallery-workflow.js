@@ -5,6 +5,32 @@ function normalizeEmail(value) {
   return email.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : "";
 }
 
+// Reconcile an editor's photo snapshot without deleting photos that another
+// device added after that editor was opened. A replacement may only remove
+// photos that were present in the editor's base snapshot; concurrent additions
+// remain in the album. Legacy replacements without a base retain their previous
+// full-replacement behaviour.
+function mergeAlbumPhotos(existingPhotos, incomingPhotos, { replacePhotos = false, basePhotoIds } = {}) {
+  const existing = Array.isArray(existingPhotos) ? existingPhotos : [];
+  const incoming = Array.isArray(incomingPhotos) ? incomingPhotos : [];
+  if (replacePhotos && !Array.isArray(basePhotoIds)) return [...incoming];
+
+  const incomingIds = new Set(incoming.map(photo => String(photo?.id || "")).filter(Boolean));
+  const removedBaseIds = replacePhotos
+    ? new Set(basePhotoIds.map(String).filter(id => id && !incomingIds.has(id)))
+    : new Set();
+  const merged = existing.filter(photo => !removedBaseIds.has(String(photo?.id || ""))).map(photo => ({ ...photo }));
+
+  for (const photo of incoming) {
+    if (!photo || typeof photo !== "object") continue;
+    let idx = photo.id ? merged.findIndex(candidate => candidate?.id === photo.id) : -1;
+    if (idx < 0 && photo.src) idx = merged.findIndex(candidate => candidate?.src === photo.src);
+    if (idx >= 0) merged[idx] = { ...merged[idx], ...photo };
+    else merged.push(photo);
+  }
+  return merged;
+}
+
 function recoverablePurchase(album, email) {
   const normalized = normalizeEmail(email);
   if (!normalized) return null;
@@ -100,4 +126,4 @@ function proofingSubmission(album, { selectedPhotoIds, clientNote, submissionId,
     photos: (album.photos || []).map(photo => ({ ...photo, starred: selected.has(String(photo.id)) })) }, receipt, replayed: false };
 }
 
-module.exports = { applyAlbumPhotoRemovals, normalizeEmail, recoverablePurchase, preserveGalleryServerState, proofingSubmission, stripePurchaseIdentity };
+module.exports = { applyAlbumPhotoRemovals, mergeAlbumPhotos, normalizeEmail, recoverablePurchase, preserveGalleryServerState, proofingSubmission, stripePurchaseIdentity };

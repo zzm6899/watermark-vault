@@ -281,7 +281,7 @@ export function setAlbums(albs: Album[]) {
 function albumForLocalStorage(alb: Album): Album {
   // These fields are one-shot server merge controls. Keeping them in localStorage
   // can make a later ordinary upload accidentally replay an old replace/delete.
-  const { _replacePhotos: _replacePhotos, _removedPhotoIds: _removedPhotoIds, ...localAlbum } = alb;
+  const { _replacePhotos: _replacePhotos, _removedPhotoIds: _removedPhotoIds, _basePhotoIds: _basePhotoIds, ...localAlbum } = alb;
   return localAlbum;
 }
 

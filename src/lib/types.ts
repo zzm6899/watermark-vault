@@ -396,6 +396,8 @@ export interface Album {
   _removedPhotoIds?: string[];
   /** Set only by an explicit save of a fully loaded album to reconcile older photo-list drift. */
   _replacePhotos?: boolean;
+  /** Photo IDs visible when an editor opened; protects later concurrent additions during replacement. */
+  _basePhotoIds?: string[];
   // ── New feature fields (AlbumExtensions) ───────────────────
   tags?: string[];
   shareLinks?: GalleryShareLink[];

@@ -1,6 +1,20 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { applyAlbumPhotoRemovals, proofingSubmission, preserveGalleryServerState, recoverablePurchase, stripePurchaseIdentity } = require("../gallery-workflow");
+const { applyAlbumPhotoRemovals, mergeAlbumPhotos, proofingSubmission, preserveGalleryServerState, recoverablePurchase, stripePurchaseIdentity } = require("../gallery-workflow");
+
+test("a stale empty editor does not erase photos added by another device", () => {
+  const phonePhotos = [{ id: "phone-1", src: "/uploads/phone-1.jpg" }, { id: "phone-2", src: "/uploads/phone-2.jpg" }];
+  assert.deepEqual(mergeAlbumPhotos(phonePhotos, [], { replacePhotos: true, basePhotoIds: [] }), phonePhotos);
+});
+
+test("an editor can remove photos from the snapshot it actually loaded", () => {
+  const existing = [{ id: "old-1" }, { id: "old-2" }, { id: "concurrent" }];
+  const incoming = [{ id: "old-2", title: "Retitled" }];
+  assert.deepEqual(
+    mergeAlbumPhotos(existing, incoming, { replacePhotos: true, basePhotoIds: ["old-1", "old-2"] }),
+    [{ id: "old-2", title: "Retitled" }, { id: "concurrent" }],
+  );
+});
 const { selectClientPortalAlbumGroups, signSession, verifySession } = require("../security-core");
 
 function proof() { return { id: "album", proofingEnabled: true, proofingStage: "proofing",

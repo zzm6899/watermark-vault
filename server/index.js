@@ -1,5 +1,5 @@
 const express = require("express");
-const { applyAlbumPhotoRemovals, normalizeEmail, recoverablePurchase, preserveGalleryServerState, proofingSubmission } = require("./gallery-workflow");
+const { applyAlbumPhotoRemovals, mergeAlbumPhotos, normalizeEmail, recoverablePurchase, preserveGalleryServerState, proofingSubmission } = require("./gallery-workflow");
 const { upgradePortfolioPresentation, publicPortfolioFocus } = require("./portfolio-presentation.mjs");
 const multer = require("multer");
 const cors = require("cors");
@@ -1011,25 +1011,7 @@ function _isSupportedPersistedPhotoRecord(photo) {
 }
 
 function _mergePhotoArrays(existingPhotos, incomingPhotos) {
-  const merged = Array.isArray(existingPhotos) ? [...existingPhotos] : [];
-  const findIndex = (photo) => {
-    if (!photo || typeof photo !== "object") return -1;
-    if (photo.id) {
-      const byId = merged.findIndex(p => p?.id === photo.id);
-      if (byId >= 0) return byId;
-    }
-    if (photo.src) {
-      return merged.findIndex(p => p?.src === photo.src);
-    }
-    return -1;
-  };
-
-  for (const photo of _stripBakedFromPhotos(incomingPhotos) || []) {
-    const idx = findIndex(photo);
-    if (idx >= 0) merged[idx] = { ...merged[idx], ...photo };
-    else merged.push(photo);
-  }
-  return merged;
+  return mergeAlbumPhotos(existingPhotos, _stripBakedFromPhotos(incomingPhotos) || []);
 }
 
 function _chooseAlbumStoreMatch(mainMatch, tenantMatches) {
@@ -2169,8 +2151,10 @@ app.put("/api/albums/:albumId", requireAuth, authenticatedLargeJson, (req, res) 
   const incoming = { ...req.body, id: albumId };
   const removedPhotoIds = Array.isArray(incoming._removedPhotoIds) ? incoming._removedPhotoIds : [];
   const replacePhotos = incoming._replacePhotos === true;
+  const basePhotoIds = Array.isArray(incoming._basePhotoIds) ? incoming._basePhotoIds : undefined;
   delete incoming._removedPhotoIds;
   delete incoming._replacePhotos;
+  delete incoming._basePhotoIds;
   if (Object.prototype.hasOwnProperty.call(incoming, "downloadEmailCapture")) {
     incoming.downloadEmailCapture = normalizeDownloadEmailPolicy(incoming.downloadEmailCapture);
   }
@@ -2193,8 +2177,8 @@ app.put("/api/albums/:albumId", requireAuth, authenticatedLargeJson, (req, res) 
   // Multiple photographers may save the same booking album concurrently.
   // Treat photo arrays as additive here so a stale full-album save cannot
   // erase photos uploaded by another device moments earlier.
-  if (idx >= 0 && Array.isArray(incoming.photos) && !replacePhotos) {
-    incoming.photos = _mergePhotoArrays(albums[idx].photos || [], incoming.photos);
+  if (idx >= 0 && Array.isArray(incoming.photos)) {
+    incoming.photos = mergeAlbumPhotos(albums[idx].photos || [], incoming.photos, { replacePhotos, basePhotoIds });
     incoming.photoCount = incoming.photos.length;
   }
   const candidate = applyAlbumPhotoRemovals(preserveGalleryServerState(albums[idx], incoming), removedPhotoIds);
@@ -2208,7 +2192,7 @@ app.put("/api/albums/:albumId", requireAuth, authenticatedLargeJson, (req, res) 
     if (existingIdx >= 0) {
       const existing = albums[existingIdx];
       const merged = { ...existing, ...incoming, id: existing.id,
-        photos: replacePhotos ? (incoming.photos || []) : _mergePhotoArrays(existing.photos || [], incoming.photos || []) };
+        photos: mergeAlbumPhotos(existing.photos || [], incoming.photos || [], { replacePhotos, basePhotoIds }) };
       merged.photoCount = merged.photos.length;
       albums[existingIdx] = applyAlbumPhotoRemovals(preserveGalleryServerState(existing, merged), removedPhotoIds);
       db[ALBUMS_KEY] = JSON.stringify(albums);
@@ -8836,8 +8820,10 @@ app.put("/api/tenant/:slug/albums/:albumId", tenantLimiter, requireTenant, authe
   const incoming = { ...req.body, id: albumId };
   const removedPhotoIds = Array.isArray(incoming._removedPhotoIds) ? incoming._removedPhotoIds : [];
   const replacePhotos = incoming._replacePhotos === true;
+  const basePhotoIds = Array.isArray(incoming._basePhotoIds) ? incoming._basePhotoIds : undefined;
   delete incoming._removedPhotoIds;
   delete incoming._replacePhotos;
+  delete incoming._basePhotoIds;
   if (Object.prototype.hasOwnProperty.call(incoming, "downloadEmailCapture")) {
     incoming.downloadEmailCapture = normalizeDownloadEmailPolicy(incoming.downloadEmailCapture);
   }
@@ -8855,8 +8841,8 @@ app.put("/api/tenant/:slug/albums/:albumId", tenantLimiter, requireTenant, authe
   } else if (incoming.photos) {
     incoming.photos = _stripBakedFromPhotos(incoming.photos).map(_ensurePhotoProofIdentity);
   }
-  if (idx >= 0 && Array.isArray(incoming.photos) && !replacePhotos) {
-    incoming.photos = _mergePhotoArrays(albums[idx].photos || [], incoming.photos);
+  if (idx >= 0 && Array.isArray(incoming.photos)) {
+    incoming.photos = mergeAlbumPhotos(albums[idx].photos || [], incoming.photos, { replacePhotos, basePhotoIds });
     incoming.photoCount = incoming.photos.length;
   }
   const candidate = applyAlbumPhotoRemovals(preserveGalleryServerState(albums[idx], incoming), removedPhotoIds);
@@ -8867,7 +8853,7 @@ app.put("/api/tenant/:slug/albums/:albumId", tenantLimiter, requireTenant, authe
     if (existingIdx >= 0) {
       const existing = albums[existingIdx];
       const merged = { ...existing, ...incoming, id: existing.id,
-        photos: replacePhotos ? (incoming.photos || []) : _mergePhotoArrays(existing.photos || [], incoming.photos || []) };
+        photos: mergeAlbumPhotos(existing.photos || [], incoming.photos || [], { replacePhotos, basePhotoIds }) };
       merged.photoCount = merged.photos.length;
       albums[existingIdx] = applyAlbumPhotoRemovals(preserveGalleryServerState(existing, merged), removedPhotoIds);
       db[key] = JSON.stringify(albums);

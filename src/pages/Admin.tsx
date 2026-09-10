@@ -4640,14 +4640,10 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
             const existingMap = new Map(existing.map(a => [a.id, a]));
             const merged = stubs.map(s => {
               const local = existingMap.get(s.id);
-              // If the local album was fully loaded (not a stub), preserve its
-              // photos array even when it is empty (all photos were deleted).
-              // Falling through to the raw stub here would mark the album as
-              // _photosStripped: true, which triggers fetchAlbumPhotos() on the
-              // next render and can re-populate deleted photos from the server
-              // if the stub arrives in localStorage before the deletion PUT
-              // has propagated.
-              if (local && !local._photosStripped) {
+              // Preserve a fully loaded local photo array only while its count
+              // agrees with the server. A mismatch means another device changed
+              // the album, so keep the stub marker and hydrate the current list.
+              if (local && !local._photosStripped && (s.photoCount ?? 0) === (local.photos?.length || 0)) {
                 const photos = local.photos || [];
                 // When picks have been submitted, sync starred flags from the
                 // authoritative proofingRounds record — the locally-cached photo
@@ -5735,7 +5731,14 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
     const albumId = album?.id || generateId("alb");
     const draft = buildAlbumDraft(photos);
     if (!draft) return;
-    const savedAlbum = { ...draft, id: albumId, ...(!isNew && !photosStripped ? { _replacePhotos: true } : {}) };
+    const savedAlbum = {
+      ...draft,
+      id: albumId,
+      ...(!isNew && !photosStripped ? {
+        _replacePhotos: true,
+        _basePhotoIds: (album?.photos || []).map(photo => photo.id),
+      } : {}),
+    };
     setSavingAlbum(true);
     let confirmed = true;
     if (isNew || !isServerMode()) {

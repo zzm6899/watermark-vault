@@ -77,7 +77,7 @@ if ($starredLines.Count -eq 0) {
 Write-Host ""
 Write-Host "  Watermark Vault → Lightroom XMP Export" -ForegroundColor Cyan
 Write-Host "  ───────────────────────────────────────" -ForegroundColor DarkGray
-Write-Host "  Starred list : $StarredTxt ($($starredLines.Count) entries)" -ForegroundColor Gray
+Write-Host ("  Starred list : {0} ({1} entries)" -f $StarredTxt, $starredLines.Count) -ForegroundColor Gray
 Write-Host "  NEF folder   : $NefFolder" -ForegroundColor Gray
 Write-Host "  Extension    : .$NefExtension" -ForegroundColor Gray
 Write-Host ""

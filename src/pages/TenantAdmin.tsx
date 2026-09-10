@@ -1800,7 +1800,10 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
       downloadExpiresAt: downloadExpiresAt || undefined,
       displaySize,
       _photosStripped: false,
-      ...(!isNew && !existingAlbum?._photosStripped ? { _replacePhotos: true } : {}),
+      ...(!isNew && !existingAlbum?._photosStripped ? {
+        _replacePhotos: true,
+        _basePhotoIds: (album?.photos || []).map(photo => photo.id),
+      } : {}),
       // Preserve the enabled/disabled state so editing an album does not silently
       // re-enable a disabled one via the server-side merge.
       ...(album?.enabled !== undefined ? { enabled: album.enabled } : {}),

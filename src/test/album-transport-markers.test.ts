@@ -41,7 +41,7 @@ describe("album transport markers", () => {
   });
 
   it("sends one-shot merge controls to the server without storing them locally", () => {
-    const update = { ...album, _replacePhotos: true, _removedPhotoIds: ["old-photo"] };
+    const update = { ...album, _replacePhotos: true, _removedPhotoIds: ["old-photo"], _basePhotoIds: ["photo-1"] };
 
     updateAlbum(update);
 
@@ -49,5 +49,6 @@ describe("album transport markers", () => {
     expect(getAlbums()).toEqual([album]);
     expect(getAlbums()[0]._replacePhotos).toBeUndefined();
     expect(getAlbums()[0]._removedPhotoIds).toBeUndefined();
+    expect(getAlbums()[0]._basePhotoIds).toBeUndefined();
   });
 });
