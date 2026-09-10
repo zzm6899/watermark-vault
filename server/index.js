@@ -1,5 +1,5 @@
 const express = require("express");
-const { applyAlbumPhotoRemovals, markAlbumDelivered, mergeAlbumPhotos, normalizeEmail, recoverablePurchase, preserveGalleryServerState, proofingSubmission, repairDeliveredAlbumWorkflows } = require("./gallery-workflow");
+const { applyAlbumPhotoRemovals, markAlbumDelivered, mergeAlbumPhotos, normalizeEmail, recoverablePurchase, preserveGalleryServerState, proofingSubmission, repairDeliveredAlbumWorkflows, updateManualAlbumStatus } = require("./gallery-workflow");
 const { upgradePortfolioPresentation, publicPortfolioFocus } = require("./portfolio-presentation.mjs");
 const multer = require("multer");
 const cors = require("cors");
@@ -2205,6 +2205,21 @@ app.put("/api/albums/:albumId", requireAuth, authenticatedLargeJson, (req, res) 
   db[ALBUMS_KEY] = JSON.stringify(albums);
   writeDb(db);
   res.json({ ok: true });
+});
+
+// PATCH /api/albums/:albumId/status — acknowledge a manual workflow change
+// without sending a stale photo/proofing snapshot back to the server.
+app.patch("/api/albums/:albumId/status", requireAuth, (req, res) => {
+  const { albumId } = req.params;
+  const db = readDb();
+  const albums = _parseAlbumsFromDb(db[ALBUMS_KEY]);
+  const idx = albums.findIndex(album => album.id === albumId);
+  const result = updateManualAlbumStatus(albums[idx], req.body);
+  if (!result.album) return res.status(result.status || 400).json({ error: result.error });
+  albums[idx] = result.album;
+  db[ALBUMS_KEY] = JSON.stringify(albums);
+  writeDb(db);
+  res.json({ ok: true, album: _makeAlbumStub(result.album) });
 });
 
 // DELETE /api/albums/:albumId — remove a single album without touching other albums.
@@ -5295,7 +5310,10 @@ function collectAccessibleZipFiles(fileList, sessionKey, albumId, quality = "ori
       deniedCount++;
       continue;
     }
-    const serveClean = clean && access.clean;
+    // The server entitlement is authoritative. Paid, delivered, or explicitly
+    // clean-download-only albums must never receive a watermarked ZIP merely
+    // because a stale client sent `clean: false`.
+    const serveClean = access.clean;
     if (clean && !access.clean) downgradedCount++;
     const photo = albumPhotosByStoredName.get(safeName);
     const preferredName = photo?.originalName || (photo?.title ? `${photo.title}${path.extname(safeName)}` : safeName);

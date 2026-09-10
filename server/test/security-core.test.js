@@ -321,6 +321,18 @@ test("gallery download entitlement honors admin grants and rejects hidden or exp
   assert.equal(galleryPhotoDownloadEntitlement({ album: { allUnlocked: true, downloadExpiresAt: "2026-08-07T00:00:00Z" }, photo, sessionKey: "s", nowMs: Date.parse("2026-08-08T00:00:00Z") }).accessible, false);
 });
 
+test("clean-download-only albums keep the normal quota but grant clean complimentary files", () => {
+  const photo = { id: "free-photo" };
+  const protectedFree = galleryPhotoDownloadEntitlement({ album: { freeDownloads: 5 }, photo, sessionKey: "viewer" });
+  const cleanFree = galleryPhotoDownloadEntitlement({ album: { freeDownloads: 5, cleanDownloadsOnly: true }, photo, sessionKey: "viewer" });
+  const claimedClean = galleryPhotoDownloadEntitlement({ album: { freeDownloads: 5, cleanDownloadsOnly: true, usedFreeDownloads: { viewer: 5 } }, photo, sessionKey: "viewer", unlockedPhotoIds: ["free-photo"] });
+  assert.equal(protectedFree.clean, false);
+  assert.equal(cleanFree.clean, true);
+  assert.equal(cleanFree.reason, "free-quota");
+  assert.equal(claimedClean.clean, true);
+  assert.equal(safeGalleryAlbumDto({ id: "a", cleanDownloadsOnly: true, photos: [] }, "viewer").cleanDownloadsOnly, true);
+});
+
 test("free full-album unlock requires an explicit finite zero price and enabled purchasing", () => {
   assert.equal(albumAllowsFreeFullUnlock({ priceFullAlbum: 0 }), true);
   assert.equal(albumAllowsFreeFullUnlock({}), false);

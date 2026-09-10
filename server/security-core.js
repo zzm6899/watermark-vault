@@ -501,7 +501,7 @@ function safeGalleryAlbumDto(album, sessionKey, timeZone = album?.timezone || pr
     "id", "slug", "title", "description", "coverImage", "date", "photoCount",
     "freeDownloads", "pricePerPhoto", "priceFullAlbum", "isPublic", "enabled", "allUnlocked", "displaySize",
     "paidPhotoIds", "proofingEnabled", "proofingStage", "proofingExpiresAt", "expiresAt", "downloadExpiresAt",
-    "watermarkDisabled", "purchasingDisabled", "downloadEmailCapture", "lockDownloadsDuringProofing",
+    "watermarkDisabled", "cleanDownloadsOnly", "purchasingDisabled", "downloadEmailCapture", "lockDownloadsDuringProofing",
     "showCullRejectsToClient",
   ];
   const safe = Object.fromEntries(allowed.filter(key => album[key] !== undefined).map(key => [key, album[key]]));
@@ -585,7 +585,7 @@ function galleryPhotoDownloadEntitlement({ album, photo, sessionKey, unlockedPho
   );
   if (bankApproved) return result(true, true, "approved-request");
   if (album.allUnlocked) return result(true, true, "album-unlock");
-  const albumClean = album.watermarkDisabled === true;
+  const albumClean = album.watermarkDisabled === true || album.cleanDownloadsOnly === true;
   if (unlockedPhotoIds.includes(photo.id)) return result(true, albumClean, "session-unlock");
   const used = Math.max(0, Number(album.usedFreeDownloads?.[sessionKey]) || 0);
   const quota = Math.max(0, Number.isFinite(Number(album.freeDownloads)) ? Number(album.freeDownloads) : 5);

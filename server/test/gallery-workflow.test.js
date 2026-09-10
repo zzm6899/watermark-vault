@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { applyAlbumPhotoRemovals, dedupeAlbumPhotos, markAlbumDelivered, mergeAlbumPhotos, proofingSubmission, preserveGalleryServerState, recoverablePurchase, repairDeliveredAlbumWorkflows, stripePurchaseIdentity } = require("../gallery-workflow");
+const { applyAlbumPhotoRemovals, dedupeAlbumPhotos, markAlbumDelivered, mergeAlbumPhotos, proofingSubmission, preserveGalleryServerState, recoverablePurchase, repairDeliveredAlbumWorkflows, stripePurchaseIdentity, updateManualAlbumStatus } = require("../gallery-workflow");
 
 test("a stale empty editor does not erase photos added by another device", () => {
   const phonePhotos = [{ id: "phone-1", src: "/uploads/phone-1.jpg" }, { id: "phone-2", src: "/uploads/phone-2.jpg" }];
@@ -65,6 +65,24 @@ test("startup repair advances albums delivered by an older build", () => {
   assert.equal(result.albums[1].proofingStage, "finals-delivered");
   assert.equal(result.albums[1].deliveredAt, stale.deliveredAt);
   assert.equal(result.albums[2], editing);
+});
+
+test("manual album status changes preserve photos and client proofing receipts", () => {
+  const album = {
+    id: "album",
+    status: "proofing",
+    proofingStage: "selections-submitted",
+    proofingRevision: "receipt-1",
+    proofingRounds: [{ submissionId: "receipt-1", selectedPhotoIds: ["one"] }],
+    photos: [{ id: "one" }],
+  };
+  const result = updateManualAlbumStatus(album, { status: "editing", proofingStage: "editing" }, "2026-09-10T05:00:00.000Z");
+  assert.equal(result.album.status, "editing");
+  assert.equal(result.album.proofingStage, "editing");
+  assert.equal(result.album.updatedAt, "2026-09-10T05:00:00.000Z");
+  assert.equal(result.album.photos, album.photos);
+  assert.equal(result.album.proofingRounds, album.proofingRounds);
+  assert.equal(updateManualAlbumStatus(album, { status: "unknown" }).status, 400);
 });
 const { selectClientPortalAlbumGroups, signSession, verifySession } = require("../security-core");
 

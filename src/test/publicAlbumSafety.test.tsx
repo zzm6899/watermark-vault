@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { cleanAdminThumbnailUrl } from "@/hooks/use-backfill-thumbnails";
-import AlbumDetail, { getOrCreateViewerSessionKey, isServerHostedPhotoSrc } from "@/pages/AlbumDetail";
+import AlbumDetail, { getOrCreateViewerSessionKey, isServerHostedPhotoSrc, shouldShowCleanGalleryPreview } from "@/pages/AlbumDetail";
 import type { Album } from "@/lib/types";
 
 describe("public album safety", () => {
@@ -38,6 +38,12 @@ describe("public album safety", () => {
     expect(isServerHostedPhotoSrc("/uploads/photo.jpg?tenant=studio")).toBe(true);
     expect(isServerHostedPhotoSrc("https://example.test/uploads/photo.jpg?tenant=studio")).toBe(true);
     expect(isServerHostedPhotoSrc("data:image/jpeg;base64,abc")).toBe(false);
+  });
+
+  it("keeps previews watermarked when clean-download-only mode is enabled", () => {
+    expect(shouldShowCleanGalleryPreview({ watermarkDisabled: false, cleanDownloadsOnly: true }, true)).toBe(false);
+    expect(shouldShowCleanGalleryPreview({ watermarkDisabled: true, cleanDownloadsOnly: true }, true)).toBe(true);
+    expect(shouldShowCleanGalleryPreview({ watermarkDisabled: false, cleanDownloadsOnly: false }, true)).toBe(true);
   });
 
   it("adds thumbnail parameters without corrupting an existing tenant query", () => {

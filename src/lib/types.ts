@@ -361,6 +361,8 @@ export interface Album {
   expiresAt?: string;         // YYYY-MM-DD — gallery access blocked after this date
   downloadExpiresAt?: string;
   watermarkDisabled?: boolean;
+  /** Keep gallery previews watermarked while serving clean files for every otherwise-authorized download, including the free allowance. */
+  cleanDownloadsOnly?: boolean;
   purchasingDisabled?: boolean;
   /** Collect an email before free/open downloads. Optional prompts can be skipped; required prompts cannot. */
   downloadEmailCapture?: "off" | "optional" | "required";

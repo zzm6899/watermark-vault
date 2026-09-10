@@ -31,7 +31,7 @@ import {
   deleteEventType, updateEventType, getBookings, addBooking, deleteBooking,
   updateBooking, getSettings, setSettings, logout, isLoggedIn, isSetupComplete,
   cacheBookingLocally,
-  getAlbums, addAlbum, updateAlbum, deleteAlbum,
+  getAlbums, addAlbum, updateAlbum, cacheAlbumLocally, deleteAlbum,
   getPhotoLibrary, setPhotoLibrary,
   getEmailTemplates, addEmailTemplate, updateEmailTemplate, deleteEmailTemplate,
   getInvoices, setInvoices as saveInvoices, cacheInvoicesLocally, addInvoice, updateInvoice, deleteInvoice, getNextInvoiceNumber,
@@ -157,6 +157,7 @@ import {
   deleteXmpPreset,
   ensurePublicAlbumAvailable,
   saveAlbumToServer,
+  saveAlbumStatusToServer,
   autoCullAlbum,
   adminLogout,
   adminAuthHeaders,
@@ -4601,6 +4602,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
   const [albumSortDir, setAlbumSortDir] = useState<SortDir>("desc");
   const [albumSearch, setAlbumSearch] = useState("");
   const [brokenCovers, setBrokenCovers] = useState<Set<string>>(new Set());
+  const pendingAlbumStatusRef = useRef(new Map<string, Partial<Pick<Album, "status" | "proofingStage">>>());
   useEffect(() => { setAlbumPage(1); }, [albumSearch, albumFilter, albumSortKey, albumSortDir]);
   useEffect(() => {
     const albumId = new URLSearchParams(albumLocation.search).get("album");
@@ -4633,6 +4635,17 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
         try {
           const stubs = await fetchAlbumStubs();
           if (stubs !== null) {
+            const statusAwareStubs = stubs.map(stub => {
+              const pending = pendingAlbumStatusRef.current.get(stub.id);
+              if (!pending) return stub;
+              const confirmed = stub.status === pending.status
+                && (pending.proofingStage === undefined || stub.proofingStage === pending.proofingStage);
+              if (confirmed) {
+                pendingAlbumStatusRef.current.delete(stub.id);
+                return stub;
+              }
+              return { ...stub, ...pending };
+            });
             // Merge: keep any photos already present in localStorage so that
             // opening an album editor (which loads photos on demand) is not
             // undone by the next poll cycle.
@@ -4640,7 +4653,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
             // Index by full album object (not just photos) so we can check
             // whether the local copy was fully loaded vs still a stub.
             const existingMap = new Map(existing.map(a => [a.id, a]));
-            const merged = stubs.map(s => {
+            const merged = statusAwareStubs.map(s => {
               const local = existingMap.get(s.id);
               // Preserve a fully loaded local photo array only while its count
               // agrees with the server. A mismatch means another device changed
@@ -4664,8 +4677,8 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
             });
             // Preserve any albums that exist in localStorage but haven't yet been
             // confirmed by the server (e.g. newly created, persistToServer in-flight).
-            const stubIds = new Set(stubs.map(s => s.id));
-            const stubKeys = new Set(stubs.map(albumDedupeKey));
+            const stubIds = new Set(statusAwareStubs.map(s => s.id));
+            const stubKeys = new Set(statusAwareStubs.map(albumDedupeKey));
             const localOnly = existing.filter(e => !stubIds.has(e.id) && !stubKeys.has(albumDedupeKey(e)));
             localOnly.filter(e => !e._photosStripped).forEach(updateAlbum);
             localStorage.setItem("wv_albums", JSON.stringify(dedupeAlbumsBySlug([...merged, ...localOnly])));
@@ -4957,7 +4970,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                   const useProofing = settings.proofingEnabled && alb.proofingEnabled;
                   const linkedBooking = bookingMap.get(alb.bookingId || "");
 
-                  const handleChange = (val: string) => {
+                  const handleChange = async (val: string) => {
                     const updated = { ...alb };
                     if (useProofing) {
                       updated.proofingStage = val as Album["proofingStage"];
@@ -4968,7 +4981,24 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                     } else {
                       updated.status = val as Album["status"];
                     }
-                    updateAlbum(updated);
+                    const pendingStatus: Partial<Pick<Album, "status" | "proofingStage">> = {
+                      status: updated.status,
+                      ...(useProofing ? { proofingStage: updated.proofingStage } : {}),
+                    };
+                    setAlbumsState(previous => previous.map(album => album.id === updated.id ? updated : album));
+                    if (!isServerMode()) {
+                      updateAlbum(updated);
+                    } else {
+                      pendingAlbumStatusRef.current.set(updated.id, pendingStatus);
+                      const result = await saveAlbumStatusToServer(updated.id, updated.status || "editing", useProofing ? updated.proofingStage : undefined);
+                      if (!result.ok) {
+                        pendingAlbumStatusRef.current.delete(updated.id);
+                        setAlbumsState(previous => previous.map(album => album.id === alb.id ? alb : album));
+                        toast.error(result.error || "Album status was not saved");
+                        return;
+                      }
+                      cacheAlbumLocally({ ...updated, updatedAt: result.album?.updatedAt || updated.updatedAt });
+                    }
                     // Sync to linked booking
                     if (linkedBooking) {
                       const isDelivered = useProofing ? val === "finals-delivered" : val === "delivered";
@@ -4984,7 +5014,6 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                     } else {
                       toast.success("Album status updated");
                     }
-                    refresh();
                   };
 
                   const currentVal = useProofing
@@ -5264,6 +5293,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
   const [accessCode, setAccessCode] = useState(album?.accessCode || "");
   const [allUnlocked, setAllUnlocked] = useState(album?.allUnlocked || false);
   const [watermarkDisabled, setWatermarkDisabled] = useState(album?.watermarkDisabled || false);
+  const [cleanDownloadsOnly, setCleanDownloadsOnly] = useState(album?.cleanDownloadsOnly || false);
   const [purchasingDisabled, setPurchasingDisabled] = useState(album?.purchasingDisabled || false);
   const [downloadEmailCapture, setDownloadEmailCapture] = useState<"off" | "optional" | "required">(album?.downloadEmailCapture || "off");
   const [savingAlbum, setSavingAlbum] = useState(false);
@@ -5378,6 +5408,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
       proofingEnabled: albumProofingEnabled,
       lockDownloadsDuringProofing: lockDownloadsDuringProofing ? true : undefined,
       watermarkDisabled,
+      cleanDownloadsOnly,
       purchasingDisabled,
       downloadEmailCapture,
       displaySize,
@@ -5940,7 +5971,22 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
               });
             }} />
           </div>
-          <p className="text-[10px] font-body text-muted-foreground/50 mt-1">Serve clean, watermark-free downloads for this album.</p>
+          <p className="text-[10px] font-body text-muted-foreground/50 mt-1">Remove watermarks from both website previews and downloads for this album.</p>
+
+          <div className="flex items-center justify-between mt-4">
+            <span className="text-xs font-body text-muted-foreground flex items-center gap-2">
+              <Download className="w-3.5 h-3.5" /> Watermarked Previews, Clean Downloads
+            </span>
+            <Switch checked={cleanDownloadsOnly} onCheckedChange={(checked) => {
+              setCleanDownloadsOnly(checked);
+              if (checked) setPurchasingDisabled(false);
+              saveAlbumSettingsPatch({
+                cleanDownloadsOnly: checked,
+                purchasingDisabled: checked ? false : purchasingDisabled,
+              });
+            }} />
+          </div>
+          <p className="text-[10px] font-body text-muted-foreground/50 mt-1">Keep watermarks on website previews, but send clean originals for every allowed download, including the free-photo allowance.</p>
 
           {/* Purchasing toggle */}
           <div className="flex items-center justify-between mt-4">
@@ -5952,11 +5998,13 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
               if (checked) {
                 setAllUnlocked(false);
                 setWatermarkDisabled(false);
+                setCleanDownloadsOnly(false);
               }
               saveAlbumSettingsPatch({
                 purchasingDisabled: checked,
                 allUnlocked: checked ? false : allUnlocked,
                 watermarkDisabled: checked ? false : watermarkDisabled,
+                cleanDownloadsOnly: checked ? false : cleanDownloadsOnly,
               });
             }} />
           </div>

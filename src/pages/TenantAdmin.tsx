@@ -1622,6 +1622,7 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
   const [accessCode, setAccessCode] = useState(album?.accessCode || "");
   const [allUnlocked, setAllUnlocked] = useState(album?.allUnlocked || false);
   const [watermarkDisabled, setWatermarkDisabled] = useState((album as any)?.watermarkDisabled || false);
+  const [cleanDownloadsOnly, setCleanDownloadsOnly] = useState(album?.cleanDownloadsOnly || false);
   const [purchasingDisabled, setPurchasingDisabled] = useState((album as any)?.purchasingDisabled || false);
   const [proofingEnabled, setProofingEnabled] = useState(album?.proofingEnabled || false);
   const [lockDownloadsDuringProofing, setLockDownloadsDuringProofing] = useState(album?.lockDownloadsDuringProofing || false);
@@ -1794,6 +1795,7 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
       accessCode: accessCode || undefined,
       allUnlocked,
       watermarkDisabled,
+      cleanDownloadsOnly,
       purchasingDisabled,
       proofingEnabled,
       lockDownloadsDuringProofing: lockDownloadsDuringProofing ? true : undefined,
@@ -1878,12 +1880,21 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
             }} />
           </div>
           <div className="flex items-center justify-between">
+            <span className="text-xs font-body text-muted-foreground flex items-center gap-2"><Download className="w-3.5 h-3.5" /> Watermarked Previews, Clean Downloads</span>
+            <Switch checked={cleanDownloadsOnly} onCheckedChange={(checked) => {
+              setCleanDownloadsOnly(checked);
+              if (checked) setPurchasingDisabled(false);
+            }} />
+          </div>
+          <p className="text-[10px] font-body text-muted-foreground/50">Keep watermarks on website previews, but send clean originals for every allowed download, including the free-photo allowance.</p>
+          <div className="flex items-center justify-between">
             <span className="text-xs font-body text-muted-foreground flex items-center gap-2"><CreditCard className="w-3.5 h-3.5" /> Purchasing Disabled</span>
             <Switch checked={purchasingDisabled} onCheckedChange={(checked) => {
               setPurchasingDisabled(checked);
               if (checked) {
                 setAllUnlocked(false);
                 setWatermarkDisabled(false);
+                setCleanDownloadsOnly(false);
               }
             }} />
           </div>

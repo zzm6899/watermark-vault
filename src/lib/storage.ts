@@ -297,7 +297,8 @@ export function addAlbum(alb: Album) {
   persistAlbumToServer(alb.id, alb);
 }
 
-export function updateAlbum(alb: Album) {
+/** Update the browser cache without scheduling another server write. */
+export function cacheAlbumLocally(alb: Album) {
   // Update localStorage with the full array (read-modify-write).
   // If the album doesn't exist yet, add it to the list.
   const existing = getAlbums();
@@ -307,6 +308,10 @@ export function updateAlbum(alb: Album) {
   try { localStorage.setItem(KEYS.ALBUMS, JSON.stringify(all)); } catch (e) {
     console.error("localStorage save failed:", e);
   }
+}
+
+export function updateAlbum(alb: Album) {
+  cacheAlbumLocally(alb);
   // Persist only this album to the server via the per-album endpoint.
   // This avoids the full-array write that would overwrite other albums'
   // photos with stale stub (empty) data when those albums haven't been

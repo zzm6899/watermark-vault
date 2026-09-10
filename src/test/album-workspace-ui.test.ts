@@ -22,6 +22,9 @@ describe("album workspace UI contracts", () => {
     expect(workspaceHeaderSource).toContain("Album workspace");
     expect(sectionHeadingSource).toContain("scroll-mt-40");
     expect(slugFieldSource).toContain("Already taken");
+    expect(adminSource).toContain("Watermarked Previews, Clean Downloads");
+    expect(adminSource).toContain("saveAlbumStatusToServer");
+    expect(adminSource).toContain("pendingAlbumStatusRef");
   });
 
   it("keeps gallery selection controls without the instructional step cards", () => {

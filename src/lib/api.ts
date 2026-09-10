@@ -455,6 +455,28 @@ export async function saveAlbumToServer(albumId: string, album: import("./types"
   }
 }
 
+/** Persist only the manually selected album/proofing status and wait for acknowledgement. */
+export async function saveAlbumStatusToServer(
+  albumId: string,
+  status: NonNullable<import("./types").Album["status"]>,
+  proofingStage?: string,
+): Promise<{ ok: boolean; album?: import("./types").Album; error?: string }> {
+  const online = await checkServer();
+  if (!online) return { ok: false, error: "Server is offline. The status was not changed." };
+  try {
+    const res = await fetch(`/api/albums/${encodeURIComponent(albumId)}/status`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
+      body: JSON.stringify({ status, ...(proofingStage ? { proofingStage } : {}) }),
+    });
+    const body = await readJson<{ ok?: boolean; album?: import("./types").Album; error?: string } | null>(res, null);
+    if (!res.ok || !body?.ok) return { ok: false, error: body?.error || `Server rejected the status change (${res.status})` };
+    return { ok: true, album: body.album };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : "Could not save the album status." };
+  }
+}
+
 /** Persist one generic store key and wait for server confirmation. */
 export async function saveStoreKeyToServer(key: string, value: unknown): Promise<{ ok: boolean; error?: string }> {
   const online = await checkServer();

@@ -322,6 +322,13 @@ function getGalleryPhotoSrc(photo: Photo, disableWatermark: boolean, access?: { 
   return getPhotoVariantSrc(photo, "thumbnail", disableWatermark, access);
 }
 
+/** Clean-download-only albums deliberately keep every website preview watermarked. */
+export function shouldShowCleanGalleryPreview(album: Pick<Album, "watermarkDisabled" | "cleanDownloadsOnly">, downloadIsClean: boolean): boolean {
+  if (album.watermarkDisabled) return true;
+  if (album.cleanDownloadsOnly) return false;
+  return downloadIsClean;
+}
+
 function formatZipDuration(seconds: number): string {
   const safe = Math.max(0, Math.ceil(seconds));
   if (safe < 60) return `${safe}s`;
@@ -1193,8 +1200,10 @@ export default function AlbumDetail() {
     if (sessionFullAlbum) return true;
     if (bankFullAlbumUnlocked) return true;
     if (paidPhotoIdSet.has(photoId)) return true;
+    if (album.cleanDownloadsOnly && freeRemaining > 0) return true;
     return album.photos.some((photo: any) => photo.id === photoId && photo.paid === true);
   };
+  const isCleanPreview = (photoId: string): boolean => shouldShowCleanGalleryPreview(album, isCleanDownload(photoId));
 
   const estimateZipSeconds = (photos: Photo[]): number => {
     const serverPhotos = photos.filter(p => isServerHostedPhotoSrc(p.src));
@@ -2107,7 +2116,7 @@ export default function AlbumDetail() {
                   )}
                   <button type="button" className="gallery-photo-open" onClick={() => setLightboxPhotoId(photo.id)} aria-label={`Open ${(photo.originalName || photo.title || "Photo").replace(/\.[^.]+$/, "")} in lightbox`}>
                   <WatermarkedImage previewMode
-                src={getGalleryPhotoSrc(photo, isCleanDownload(photo.id), { albumId: album.id })}
+                src={getGalleryPhotoSrc(photo, isCleanPreview(photo.id), { albumId: album.id })}
                    title={photo.title}
                    width={photo.width}
                    height={photo.height}
@@ -2484,7 +2493,7 @@ export default function AlbumDetail() {
         photos={reviewFullAlbum ? clientDeliverablePhotos : selectedPhotos}
         fullAlbum={reviewFullAlbum} paidIds={paidPhotoIdSet} freeRemaining={freeRemaining}
         pricePerPhoto={pricePerPhoto} priceFullAlbum={priceFullAlbum}
-        photoSrc={photo => getGalleryPhotoSrc(photo, isCleanDownload(photo.id), { albumId: album.id })}
+        photoSrc={photo => getGalleryPhotoSrc(photo, isCleanPreview(photo.id), { albumId: album.id })}
         onRemove={id => setSelectedIds(previous => new Set([...previous].filter(value => value !== id)))}
         onContinue={() => {
           setReviewedCheckout({ amount: reviewFullAlbum ? priceFullAlbum : Math.round(paidTotal * 100) / 100, fullAlbum: reviewFullAlbum });
@@ -2870,7 +2879,7 @@ export default function AlbumDetail() {
                   photo={lbPhoto}
                   cache={lightboxSrcCache}
                   onCacheUpdate={handleLightboxCacheUpdate}
-                  wmDisabled={isCleanDownload(lbPhoto.id)}
+                  wmDisabled={isCleanPreview(lbPhoto.id)}
                   watermarkVersion={(settings as any).watermarkVersion || (lbPhoto as any).watermarkVersion || 0}
                   albumId={album.id}
                   sessionKey={sessionKey}

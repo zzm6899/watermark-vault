@@ -72,6 +72,26 @@ function repairDeliveredAlbumWorkflows(albums) {
   return { albums: next, repaired };
 }
 
+const ALBUM_STATUSES = new Set(["editing", "proofing", "delivered", "archived"]);
+const PROOFING_STAGES = new Set(["not-started", "proofing", "selections-submitted", "editing", "finals-delivered"]);
+
+/** Apply an explicit admin status change without replacing client proofing rounds or photo data. */
+function updateManualAlbumStatus(album, input, updatedAt = new Date().toISOString()) {
+  if (!album) return { error: "Album not found", status: 404 };
+  const status = String(input?.status || "");
+  const proofingStage = input?.proofingStage == null ? undefined : String(input.proofingStage);
+  if (!ALBUM_STATUSES.has(status)) return { error: "Invalid album status", status: 400 };
+  if (proofingStage !== undefined && !PROOFING_STAGES.has(proofingStage)) return { error: "Invalid proofing stage", status: 400 };
+  return {
+    album: {
+      ...album,
+      status,
+      ...(proofingStage !== undefined ? { proofingStage } : {}),
+      updatedAt,
+    },
+  };
+}
+
 function recoverablePurchase(album, email) {
   const normalized = normalizeEmail(email);
   if (!normalized) return null;
@@ -167,4 +187,4 @@ function proofingSubmission(album, { selectedPhotoIds, clientNote, submissionId,
     photos: (album.photos || []).map(photo => ({ ...photo, starred: selected.has(String(photo.id)) })) }, receipt, replayed: false };
 }
 
-module.exports = { applyAlbumPhotoRemovals, dedupeAlbumPhotos, markAlbumDelivered, mergeAlbumPhotos, normalizeEmail, recoverablePurchase, preserveGalleryServerState, proofingSubmission, repairDeliveredAlbumWorkflows, stripePurchaseIdentity };
+module.exports = { applyAlbumPhotoRemovals, dedupeAlbumPhotos, markAlbumDelivered, mergeAlbumPhotos, normalizeEmail, recoverablePurchase, preserveGalleryServerState, proofingSubmission, repairDeliveredAlbumWorkflows, stripePurchaseIdentity, updateManualAlbumStatus };
