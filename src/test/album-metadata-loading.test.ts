@@ -27,6 +27,7 @@ it("reloads a locally hydrated album when another device changes its photo count
 it("sends the editor's base photo IDs with explicit replacements", () => {
   const admin = readFileSync(join(process.cwd(), "src/pages/Admin.tsx"), "utf8");
   const tenant = readFileSync(join(process.cwd(), "src/pages/TenantAdmin.tsx"), "utf8");
-  expect(admin).toContain("_basePhotoIds: (album?.photos || []).map(photo => photo.id)");
+  expect(admin).toContain("buildAlbumPhotoSaveMarkers(editorBasePhotoIds, updated.photos || [], pendingRemovedPhotoIds)");
+  expect(admin).toContain("setEditorBasePhotoIds(fetched.map(photo => photo.id))");
   expect(tenant).toContain("_basePhotoIds: (album?.photos || []).map(photo => photo.id)");
 });

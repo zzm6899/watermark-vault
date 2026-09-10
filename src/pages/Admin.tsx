@@ -182,6 +182,7 @@ import type {
 import ProgressiveImg from "@/components/ProgressiveImg";
 import { useBackfillThumbnails } from "@/hooks/use-backfill-thumbnails";
 import { generateCapabilityToken } from "@/lib/capability-token";
+import { buildAlbumPhotoSaveMarkers } from "@/lib/album-photo-save";
 import { drawServerAlignedWatermark } from "@/lib/watermark-render";
 import { Slider } from "@/components/ui/slider";
 
@@ -5248,6 +5249,16 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
   const [pricePerPhoto, setPricePerPhoto] = useState(album?.pricePerPhoto ?? settings.defaultPricePerPhoto);
   const [priceFullAlbum, setPriceFullAlbum] = useState(album?.priceFullAlbum ?? settings.defaultPriceFullAlbum);
   const [photos, setPhotos] = useState<Photo[]>(album?.photos || []);
+  // Keep the snapshot from when this editor loaded separate from the mutable
+  // album prop. Parent polling refreshes that prop while the editor is open.
+  // If a deleted photo disappears from the prop too, using the prop as the
+  // snapshot makes the server think that deletion was never intentional.
+  const [editorBasePhotoIds, setEditorBasePhotoIds] = useState<string[]>(
+    () => (album?.photos || []).map(photo => photo.id),
+  );
+  const [pendingRemovedPhotoIds, setPendingRemovedPhotoIds] = useState<string[]>(
+    () => album?._removedPhotoIds || [],
+  );
   const [coverImage, setCoverImage] = useState(album?.coverImage || "");
   const [accessCode, setAccessCode] = useState(album?.accessCode || "");
   const [allUnlocked, setAllUnlocked] = useState(album?.allUnlocked || false);
@@ -5267,6 +5278,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
     fetchAlbumPhotos(albumId).then(fetched => {
       if (fetched) {
         setPhotos(fetched);
+        setEditorBasePhotoIds(fetched.map(photo => photo.id));
         // Keep liveAlbum in sync so the picks export can look up photo titles.
         // Without this, liveAlbum.photos stays empty (stub) even after the photo
         // grid is hydrated, causing the export to fall back to raw server IDs.
@@ -5376,9 +5388,12 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
   };
 
   const persistExistingAlbum = async (updated: Album, message: string) => {
-    updateAlbum(updated);
-    setLiveAlbum(updated);
-    onUpdate?.(updated);
+    const persisted = !isNew && !updated._photosStripped
+      ? { ...updated, ...buildAlbumPhotoSaveMarkers(editorBasePhotoIds, updated.photos || [], pendingRemovedPhotoIds) }
+      : updated;
+    updateAlbum(persisted);
+    setLiveAlbum(persisted);
+    onUpdate?.(persisted);
 
     if (!isServerMode()) {
       toast.success(message);
@@ -5386,7 +5401,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
     }
 
     setSavingAlbum(true);
-    const result = await saveAlbumToServer(updated.id, updated);
+    const result = await saveAlbumToServer(persisted.id, persisted);
     setSavingAlbum(false);
     if (result.ok) {
       toast.success(message);
@@ -5734,10 +5749,6 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
     const savedAlbum = {
       ...draft,
       id: albumId,
-      ...(!isNew && !photosStripped ? {
-        _replacePhotos: true,
-        _basePhotoIds: (album?.photos || []).map(photo => photo.id),
-      } : {}),
     };
     setSavingAlbum(true);
     let confirmed = true;
@@ -6633,10 +6644,10 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
                   const newCover = coverImage === p.src ? (filtered[0]?.src || "") : coverImage;
                   const removedPhotoIds = Array.from(new Set([...(album?._removedPhotoIds || []), p.id]));
                   setPhotos(filtered);
+                  setPendingRemovedPhotoIds(previous => Array.from(new Set([...previous, p.id])));
                   setCoverImage(newCover);
-                  // Immediately persist the deletion to the server when editing
-                  // an existing album so that the gallery reflects the change
-                  // without the admin needing to click "Save Album" first.
+                  // Keep the parent cache in sync while the explicit snapshot
+                  // and tombstone are retained locally until Save Album.
                   if (!isNew && album?.id && onUpdate) {
                     onUpdate({ ...album, photos: filtered, photoCount: filtered.length, coverImage: newCover, _removedPhotoIds: removedPhotoIds });
                   }
