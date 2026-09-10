@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { applyAlbumPhotoRemovals, markAlbumDelivered, mergeAlbumPhotos, proofingSubmission, preserveGalleryServerState, recoverablePurchase, stripePurchaseIdentity } = require("../gallery-workflow");
+const { applyAlbumPhotoRemovals, markAlbumDelivered, mergeAlbumPhotos, proofingSubmission, preserveGalleryServerState, recoverablePurchase, repairDeliveredAlbumWorkflows, stripePurchaseIdentity } = require("../gallery-workflow");
 
 test("a stale empty editor does not erase photos added by another device", () => {
   const phonePhotos = [{ id: "phone-1", src: "/uploads/phone-1.jpg" }, { id: "phone-2", src: "/uploads/phone-2.jpg" }];
@@ -36,6 +36,19 @@ test("one-click delivery completes proofing and releases its temporary purchase 
   assert.equal(delivered.watermarkDisabled, true);
   assert.equal(delivered.isPublic, true);
   assert.equal(delivered.deliveredAt, deliveredAt);
+});
+
+test("startup repair advances albums delivered by an older build", () => {
+  const alreadyFinal = { id: "final", status: "delivered", proofingEnabled: true, proofingStage: "finals-delivered" };
+  const stale = { id: "stale", status: "delivered", deliveredAt: "2026-09-02T12:00:00.000Z", proofingEnabled: true, proofingStage: "selections-submitted", purchasingDisabled: true };
+  const editing = { id: "editing", status: "editing", proofingEnabled: true, proofingStage: "selections-submitted" };
+  const result = repairDeliveredAlbumWorkflows([alreadyFinal, stale, editing]);
+
+  assert.equal(result.repaired, 1);
+  assert.equal(result.albums[0], alreadyFinal);
+  assert.equal(result.albums[1].proofingStage, "finals-delivered");
+  assert.equal(result.albums[1].deliveredAt, stale.deliveredAt);
+  assert.equal(result.albums[2], editing);
 });
 const { selectClientPortalAlbumGroups, signSession, verifySession } = require("../security-core");
 

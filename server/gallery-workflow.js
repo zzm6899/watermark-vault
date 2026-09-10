@@ -49,6 +49,16 @@ function markAlbumDelivered(album, deliveredAt = new Date().toISOString()) {
   return delivered;
 }
 
+function repairDeliveredAlbumWorkflows(albums) {
+  let repaired = 0;
+  const next = (Array.isArray(albums) ? albums : []).map(album => {
+    if (album?.status !== "delivered" || !album.proofingEnabled || album.proofingStage === "finals-delivered") return album;
+    repaired += 1;
+    return markAlbumDelivered(album, album.deliveredAt || new Date().toISOString());
+  });
+  return { albums: next, repaired };
+}
+
 function recoverablePurchase(album, email) {
   const normalized = normalizeEmail(email);
   if (!normalized) return null;
@@ -144,4 +154,4 @@ function proofingSubmission(album, { selectedPhotoIds, clientNote, submissionId,
     photos: (album.photos || []).map(photo => ({ ...photo, starred: selected.has(String(photo.id)) })) }, receipt, replayed: false };
 }
 
-module.exports = { applyAlbumPhotoRemovals, markAlbumDelivered, mergeAlbumPhotos, normalizeEmail, recoverablePurchase, preserveGalleryServerState, proofingSubmission, stripePurchaseIdentity };
+module.exports = { applyAlbumPhotoRemovals, markAlbumDelivered, mergeAlbumPhotos, normalizeEmail, recoverablePurchase, preserveGalleryServerState, proofingSubmission, repairDeliveredAlbumWorkflows, stripePurchaseIdentity };

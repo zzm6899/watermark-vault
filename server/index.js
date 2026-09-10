@@ -1,5 +1,5 @@
 const express = require("express");
-const { applyAlbumPhotoRemovals, markAlbumDelivered, mergeAlbumPhotos, normalizeEmail, recoverablePurchase, preserveGalleryServerState, proofingSubmission } = require("./gallery-workflow");
+const { applyAlbumPhotoRemovals, markAlbumDelivered, mergeAlbumPhotos, normalizeEmail, recoverablePurchase, preserveGalleryServerState, proofingSubmission, repairDeliveredAlbumWorkflows } = require("./gallery-workflow");
 const { upgradePortfolioPresentation, publicPortfolioFocus } = require("./portfolio-presentation.mjs");
 const multer = require("multer");
 const cors = require("cors");
@@ -11482,6 +11482,22 @@ app.get("*", (req, res) => {
 });
 
 bootstrapPromise.then(() => {
+  // Repair albums delivered by older builds that updated the album status but
+  // left proofing active. Without this migration, existing client links remain
+  // stuck on their selections receipt even after the fixed endpoint deploys.
+  const db = readDb();
+  let repaired = 0;
+  for (const key of Object.keys(db).filter(key => key === ALBUMS_KEY || /^t_.+_wv_albums$/.test(key))) {
+    const result = repairDeliveredAlbumWorkflows(_parseAlbumsFromDb(db[key]));
+    if (result.repaired > 0) {
+      db[key] = JSON.stringify(result.albums);
+      repaired += result.repaired;
+    }
+  }
+  if (repaired > 0) {
+    writeDb(db);
+    console.log(`✅ Repaired ${repaired} delivered album proofing workflow${repaired === 1 ? "" : "s"}`);
+  }
   app.listen(PORT, process.env.HOST || "0.0.0.0", () => {
     console.log(`🚀 PhotoFlow running on port ${PORT}`);
     console.log(`📁 Data directory: ${DATA_DIR}`);
