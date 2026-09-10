@@ -1,5 +1,5 @@
 const express = require("express");
-const { applyAlbumPhotoRemovals, mergeAlbumPhotos, normalizeEmail, recoverablePurchase, preserveGalleryServerState, proofingSubmission } = require("./gallery-workflow");
+const { applyAlbumPhotoRemovals, markAlbumDelivered, mergeAlbumPhotos, normalizeEmail, recoverablePurchase, preserveGalleryServerState, proofingSubmission } = require("./gallery-workflow");
 const { upgradePortfolioPresentation, publicPortfolioFocus } = require("./portfolio-presentation.mjs");
 const multer = require("multer");
 const cors = require("cors");
@@ -11255,21 +11255,19 @@ app.post("/api/albums/:id/deliver", requireAuth, async (req, res) => {
   const idx = albums.findIndex(a => a.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: "Album not found" });
 
-  const album = albums[idx];
+  let album = albums[idx];
   const now = new Date().toISOString();
 
-  // 1. Disable watermarks
-  album.watermarkDisabled = true;
-  // 2. Mark as delivered
-  album.status = "delivered";
-  album.deliveredAt = now;
-  // 3. Make public
-  album.isPublic = true;
+  // Delivery completes both the album lifecycle and any active proofing
+  // workflow. Leaving proofing at "selections-submitted" keeps the client
+  // gallery locked behind its old receipt even though the album says delivered.
+  album = markAlbumDelivered(album, now);
+  albums[idx] = album;
 
   db["wv_albums"] = albums;
   writeDb(db);
 
-  // 4. Send client email if email + bookingId available
+  // Send client email when one is available.
   const result = { ok: true, deliveredAt: now };
   if (album.clientEmail) {
     try {

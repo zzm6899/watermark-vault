@@ -31,6 +31,24 @@ function mergeAlbumPhotos(existingPhotos, incomingPhotos, { replacePhotos = fals
   return merged;
 }
 
+function markAlbumDelivered(album, deliveredAt = new Date().toISOString()) {
+  const delivered = {
+    ...album,
+    watermarkDisabled: true,
+    status: "delivered",
+    deliveredAt,
+    isPublic: true,
+  };
+  if (album?.proofingEnabled) {
+    delivered.proofingStage = "finals-delivered";
+    delivered.proofingExpiresAt = undefined;
+    // Starting proofing disables purchasing. Delivery must release that
+    // temporary workflow lock so the normal free/paid download rules apply.
+    delivered.purchasingDisabled = false;
+  }
+  return delivered;
+}
+
 function recoverablePurchase(album, email) {
   const normalized = normalizeEmail(email);
   if (!normalized) return null;
@@ -126,4 +144,4 @@ function proofingSubmission(album, { selectedPhotoIds, clientNote, submissionId,
     photos: (album.photos || []).map(photo => ({ ...photo, starred: selected.has(String(photo.id)) })) }, receipt, replayed: false };
 }
 
-module.exports = { applyAlbumPhotoRemovals, mergeAlbumPhotos, normalizeEmail, recoverablePurchase, preserveGalleryServerState, proofingSubmission, stripePurchaseIdentity };
+module.exports = { applyAlbumPhotoRemovals, markAlbumDelivered, mergeAlbumPhotos, normalizeEmail, recoverablePurchase, preserveGalleryServerState, proofingSubmission, stripePurchaseIdentity };

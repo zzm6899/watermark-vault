@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { applyAlbumPhotoRemovals, mergeAlbumPhotos, proofingSubmission, preserveGalleryServerState, recoverablePurchase, stripePurchaseIdentity } = require("../gallery-workflow");
+const { applyAlbumPhotoRemovals, markAlbumDelivered, mergeAlbumPhotos, proofingSubmission, preserveGalleryServerState, recoverablePurchase, stripePurchaseIdentity } = require("../gallery-workflow");
 
 test("a stale empty editor does not erase photos added by another device", () => {
   const phonePhotos = [{ id: "phone-1", src: "/uploads/phone-1.jpg" }, { id: "phone-2", src: "/uploads/phone-2.jpg" }];
@@ -14,6 +14,28 @@ test("an editor can remove photos from the snapshot it actually loaded", () => {
     mergeAlbumPhotos(existing, incoming, { replacePhotos: true, basePhotoIds: ["old-1", "old-2"] }),
     [{ id: "old-2", title: "Retitled" }, { id: "concurrent" }],
   );
+});
+
+test("one-click delivery completes proofing and releases its temporary purchase lock", () => {
+  const deliveredAt = "2026-09-10T03:30:00.000Z";
+  const delivered = markAlbumDelivered({
+    id: "album",
+    proofingEnabled: true,
+    proofingStage: "selections-submitted",
+    proofingExpiresAt: "2026-09-12T00:00:00.000Z",
+    purchasingDisabled: true,
+    watermarkDisabled: false,
+    status: "editing",
+    isPublic: false,
+  }, deliveredAt);
+
+  assert.equal(delivered.status, "delivered");
+  assert.equal(delivered.proofingStage, "finals-delivered");
+  assert.equal(delivered.proofingExpiresAt, undefined);
+  assert.equal(delivered.purchasingDisabled, false);
+  assert.equal(delivered.watermarkDisabled, true);
+  assert.equal(delivered.isPublic, true);
+  assert.equal(delivered.deliveredAt, deliveredAt);
 });
 const { selectClientPortalAlbumGroups, signSession, verifySession } = require("../security-core");
 
