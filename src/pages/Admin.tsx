@@ -3074,11 +3074,13 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
     if (paymentReviewOnly && !bookingNeedsManualPaymentReview(bk)) return false;
     if (!bookingSearch) return true;
     const q = bookingSearch.trim().toLowerCase();
+    const instagramQuery = q.replace(/^@+/, "");
+    const instagramHandle = (bk.instagramHandle || "").trim().toLowerCase().replace(/^@+/, "");
     return (bk.clientName || "").toLowerCase().includes(q)
       || (bk.clientEmail || "").toLowerCase().includes(q)
       || bookingPaymentReference(bk).toLowerCase().includes(q)
       || (bk.id || "").toLowerCase().includes(q)
-      || (bk.instagramHandle || "").toLowerCase().includes(q)
+      || (!!instagramQuery && instagramHandle.includes(instagramQuery))
       || (bk.type || "").toLowerCase().includes(q)
       || (bk.status || "").toLowerCase().includes(q)
       || (bk.paymentReviewReason || "").toLowerCase().includes(q)
@@ -3445,7 +3447,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
             </div>
             <div className="relative w-full">
               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
-              <Input aria-label="Search bookings" value={bookingSearch} onChange={e => setBookingSearch(e.target.value)} placeholder="Search by client, email, reference or date…" className="pl-8 h-11 text-sm font-body" />
+              <Input aria-label="Search bookings by client, Instagram, email, reference, or date" value={bookingSearch} onChange={e => setBookingSearch(e.target.value)} placeholder="Client, @Instagram, email, reference or date…" className="pl-8 h-11 text-sm font-body" />
             </div>
             <div className="inline-flex items-center rounded-lg border border-border/60 bg-secondary/30 p-0.5" aria-label="Booking archive view">
               {([
