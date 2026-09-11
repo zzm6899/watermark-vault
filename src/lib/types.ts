@@ -298,9 +298,10 @@ export interface AlbumDownloadRecord {
   amount?: number;
   photoIds: string[];
   method: "free" | "stripe" | "bank-transfer";
-  status: "pending" | "approved" | "completed";
+  status: "pending" | "approved" | "completed" | "cancelled";
   requestedAt: string;
   approvedAt?: string;
+  cancelledAt?: string;
   clientNote?: string;
   albumTitle?: string;
   albumId?: string;

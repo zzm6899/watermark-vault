@@ -20,4 +20,19 @@ function approveDownloadRequest(album, requestId, expected, now = new Date()) {
   return { ok: true, request: approved, requests: requests.map(item => item === request ? approved : item) };
 }
 
-module.exports = { approveDownloadRequest };
+function cancelDownloadRequest(album, requestId, expected, now = new Date()) {
+  const requests = Array.isArray(album.downloadRequests) ? album.downloadRequests : [];
+  const request = requests.find((item, index) => (item.id || `legacy-${index}`) === requestId);
+  if (!request) return { ok: false, status: 404, error: "Download request not found" };
+  if (request.requestedAt !== expected?.requestedAt || JSON.stringify(request.photoIds) !== JSON.stringify(expected?.photoIds)) {
+    return { ok: false, status: 409, error: "The request changed. Refresh and review it again." };
+  }
+  if (request.status === "cancelled") return { ok: true, request, requests };
+  if (request.status !== "pending") {
+    return { ok: false, status: 409, error: "Only pending download requests can be cancelled" };
+  }
+  const cancelled = { ...request, status: "cancelled", cancelledAt: now.toISOString() };
+  return { ok: true, request: cancelled, requests: requests.map(item => item === request ? cancelled : item) };
+}
+
+module.exports = { approveDownloadRequest, cancelDownloadRequest };

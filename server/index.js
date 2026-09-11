@@ -10093,6 +10093,7 @@ app.get("/api/public-album/:albumSlug/purchase", galleryAccessLimiter, (req, res
       amount: request.amount,
       requestedAt: request.requestedAt,
       approvedAt: request.approvedAt,
+      cancelledAt: request.cancelledAt,
     })),
   });
 });
@@ -10858,6 +10859,21 @@ app.post("/api/albums/:id/download-requests/:requestId/approve", requireAdminOrS
   if (!album) return res.status(404).json({ ok: false, error: "Album not found" });
   const { approveDownloadRequest } = require("./download-request-review");
   const result = approveDownloadRequest(album, req.params.requestId, req.body);
+  if (!result.ok) return res.status(result.status).json(result);
+  album.downloadRequests = result.requests;
+  album.updatedAt = new Date().toISOString();
+  db[storeKey] = JSON.stringify(albums);
+  writeDb(db);
+  res.json({ ok: true, downloadRequests: result.requests, updatedAt: album.updatedAt });
+});
+
+app.post("/api/albums/:id/download-requests/:requestId/cancel", requireAdminOrScopedTenant, (req, res) => {
+  const db = readDb();
+  const { storeKey, albums } = shareLinkAlbumStore(db, req);
+  const album = albums.find(item => item.id === req.params.id);
+  if (!album) return res.status(404).json({ ok: false, error: "Album not found" });
+  const { cancelDownloadRequest } = require("./download-request-review");
+  const result = cancelDownloadRequest(album, req.params.requestId, req.body);
   if (!result.ok) return res.status(result.status).json(result);
   album.downloadRequests = result.requests;
   album.updatedAt = new Date().toISOString();

@@ -18,7 +18,7 @@ In **Finance → Revenue by event**, choose **View purchases** beneath an event�
 
 Open **Admin → Albums → Download requests**, or use the inbox in Dashboard or Storage. A request means a gallery visitor chose bank transfer for paid photo access; it is not proof that payment arrived.
 
-The inbox identifies the album, album client, requesting visitor email when recorded, selected photos or full album, recorded amount, date, note and status. Search by album, visitor, note or photo ID. Open an album to inspect its photos. Check the actual bank transfer before selecting **Confirm transfer & approve**.
+The inbox identifies the album, album client, requesting visitor email when recorded, selected photos or full album, recorded amount, date, note and status. Search by album, visitor, note or photo ID. Open an album to inspect its photos. Check the actual bank transfer before selecting **Confirm transfer & approve**. Pending requests can also be cancelled after confirmation; they remain in the **Cancelled** view for audit history and do not unlock photos.
 
 Approval is a dedicated authenticated server operation. It grants access only to the requesting visitor, is safe to retry, rejects changed requests, and preserves photos and payment history. Stale album saves cannot revert or remove request records. Older requests without a visitor session require a fresh request from the gallery; they cannot safely be assigned to an arbitrary visitor.
 
