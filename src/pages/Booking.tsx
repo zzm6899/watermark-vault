@@ -378,6 +378,7 @@ export default function Booking() {
   const [waitlistNote, setWaitlistNote] = useState("");
   const [waitlistSubmitting, setWaitlistSubmitting] = useState(false);
   const [waitlistDone, setWaitlistDone] = useState(false);
+  const [waitlistError, setWaitlistError] = useState<string | null>(null);
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [stripeAvailable, setStripeAvailable] = useState(false);
   const [stripeChecked, setStripeChecked] = useState(false);
@@ -397,6 +398,7 @@ export default function Booking() {
   const [enquiryEndTime, setEnquiryEndTime] = useState("");
   const [enquiryMessage, setEnquiryMessage] = useState("");
   const [enquirySubmitting, setEnquirySubmitting] = useState(false);
+  const [enquiryError, setEnquiryError] = useState<string | null>(null);
 
   // Per-card "Read more" expanded state for event type descriptions
   const [expandedDescriptions, setExpandedDescriptions] = useState<Record<string, boolean>>({});
@@ -520,8 +522,13 @@ export default function Booking() {
 
   const handleJoinWaitlist = async () => {
     if (!selectedEvent || !selectedDate) return;
-    if (!waitlistName.trim() || !isValidEmail(waitlistEmail)) {
-      toast.error("Please enter your name and a valid email.");
+    setWaitlistError(null);
+    if (!waitlistName.trim()) {
+      setWaitlistError("Enter your name to join the waitlist.");
+      return;
+    }
+    if (!isValidEmail(waitlistEmail)) {
+      setWaitlistError("Enter a valid email address so we can notify you.");
       return;
     }
     setWaitlistSubmitting(true);
@@ -539,7 +546,7 @@ export default function Booking() {
       setWaitlistDone(true);
       toast.success(result.duplicate ? "You're already on the waitlist for this date!" : "You're on the waitlist! We'll email you if a spot opens.");
     } else {
-      toast.error("Couldn't join waitlist. Please try again.");
+      setWaitlistError(result.error || "Couldn't join the waitlist. Please try again.");
     }
   };
 
@@ -806,17 +813,21 @@ export default function Booking() {
     setEnquiryDate(prefillDate || (selectedDate ? toDateStr(selectedDate) : ""));
     setEnquiryStartTime("");
     setEnquiryEndTime("");
-    setEnquiryName("");
-    setEnquiryEmail("");
-    setEnquiryPhone("");
+    setEnquiryName(current => current || waitlistName || clientName);
+    setEnquiryEmail(current => current || waitlistEmail || clientEmail);
+    setEnquiryPhone(current => current || clientPhone);
     setEnquiryMessage("");
+    setEnquiryError(null);
     setStep("enquiry");
   };
 
   const handleSubmitEnquiry = async () => {
-    if (!enquiryName.trim()) { toast.error("Please enter your name"); return; }
-    if (!isValidEmail(enquiryEmail)) { toast.error("Please enter a valid email address"); return; }
-    if (!enquiryMessage.trim()) { toast.error("Please describe what you're looking for"); return; }
+    setEnquiryError(null);
+    if (!enquiryName.trim()) { setEnquiryError("Enter your name."); return; }
+    if (!isValidEmail(enquiryEmail)) { setEnquiryError("Enter a valid email address."); return; }
+    if (enquiryDate && isPastBookingDate(enquiryDate, availabilityTimezone || profile.timezone)) { setEnquiryError("Choose today or a future date."); return; }
+    if (enquiryStartTime && enquiryEndTime && enquiryEndTime <= enquiryStartTime) { setEnquiryError("The preferred end time must be after the start time."); return; }
+    if (!enquiryMessage.trim()) { setEnquiryError("Tell us what time you need or what would work for you."); return; }
     setEnquirySubmitting(true);
     const matchedEvent = eventTypes.find(e => e.id === enquiryEventId);
     try {
@@ -833,7 +844,7 @@ export default function Booking() {
       });
       setStep("enquiry-confirmed");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not send your enquiry. Please try again.");
+      setEnquiryError(error instanceof Error ? error.message : "Could not send your enquiry. Please try again.");
     } finally {
       setEnquirySubmitting(false);
     }
@@ -1108,7 +1119,7 @@ export default function Booking() {
                             const isAvailable = !isPast && isDayAvailable(selectedEvent, date);
                             const isToday = toDateStr(date) === toDateStr(new Date());
                             return (
-                              <button key={day} type="button" aria-label={`${date.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" })}${isAvailable ? ", available" : ", unavailable"}`} aria-pressed={isSelected} disabled={!isAvailable} onClick={() => { setSelectedDate(date); setSelectedTime(null); setTimerExpiresAt(null); setShowWaitlist(false); setWaitlistDone(false); setWaitlistName(""); setWaitlistEmail(""); setWaitlistNote(""); }}
+                              <button key={day} type="button" aria-label={`${date.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" })}${isAvailable ? ", available" : ", unavailable"}`} aria-pressed={isSelected} disabled={!isAvailable} onClick={() => { setSelectedDate(date); setSelectedTime(null); setTimerExpiresAt(null); setShowWaitlist(false); setWaitlistDone(false); setWaitlistError(null); setWaitlistName(""); setWaitlistEmail(""); setWaitlistNote(""); }}
                                 className={`aspect-square rounded-lg text-sm font-body transition-all relative ${
                                   isSelected ? "bg-primary text-primary-foreground font-medium ring-2 ring-primary ring-offset-2 ring-offset-background"
                                     : isAvailable ? "text-foreground font-medium hover:bg-amber-500/10 hover:text-amber-500"
@@ -1174,9 +1185,9 @@ export default function Booking() {
                             
                             <div className="booking-time-slots grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-1">
                               {availabilityLoading ? (
-                                <div className="py-6 text-center text-sm font-body text-muted-foreground" role="status">Checking availability…</div>
+                                <div className="col-span-full py-6 text-center text-sm font-body text-muted-foreground" role="status">Checking availability…</div>
                               ) : availabilityError ? (
-                                <div className="py-6 text-center space-y-3" role="alert">
+                                <div className="col-span-full py-6 text-center space-y-3" role="alert">
                                   <p className="text-sm font-body text-destructive">We couldn't load live availability.</p>
                                   <Button type="button" variant="outline" size="sm" onClick={() => setAvailabilityRetry(retry => retry + 1)}>Try again</Button>
                                 </div>
@@ -1194,72 +1205,58 @@ export default function Booking() {
                                   </button>
                                 ))
                               ) : (
-                                <div className="py-6 text-center space-y-4">
+                                <div className="col-span-full py-4 text-center space-y-4">
                                   {!waitlistDone ? (
                                     <>
-                                      <div className="flex items-center justify-center gap-2 text-muted-foreground/60">
-                                        <Users className="w-4 h-4" />
-                                        <p className="text-sm font-body">No slots available on this date</p>
+                                      <div className="space-y-1">
+                                        <div className="flex items-center justify-center gap-2 text-foreground">
+                                          <Users className="w-4 h-4 text-primary" />
+                                          <p className="text-sm font-body font-medium">No times left on this date</p>
+                                        </div>
+                                        <p className="text-xs font-body text-muted-foreground">Choose how you'd like us to help.</p>
                                       </div>
                                       {!showWaitlist ? (
-                                        <div className="flex flex-col items-center gap-2">
+                                        <div className="mx-auto flex w-full max-w-sm flex-col gap-2">
                                           <button
-                                            onClick={() => setShowWaitlist(true)}
-                                            className="flex items-center gap-2 mx-auto text-xs font-body text-primary hover:text-primary/80 border border-primary/30 hover:border-primary/60 px-4 py-2 rounded-full transition-colors"
+                                            type="button"
+                                            onClick={() => { setShowWaitlist(true); setWaitlistError(null); }}
+                                            className="flex w-full items-center gap-3 rounded-lg border border-primary/40 bg-primary/10 px-4 py-3 text-left transition-colors hover:border-primary/70 hover:bg-primary/15"
                                           >
-                                            <Bell className="w-3.5 h-3.5" />
-                                            Join waitlist — get notified if a spot opens
+                                            <Bell className="h-5 w-5 shrink-0 text-primary" />
+                                            <span><span className="block text-sm font-body font-medium text-foreground">Join the cancellation waitlist</span><span className="mt-0.5 block text-xs font-body text-muted-foreground">Email me if a booked time becomes available.</span></span>
                                           </button>
                                           {settings.enquiryEnabled && (
                                             <button
+                                              type="button"
                                               onClick={() => handleOpenEnquiry(selectedEvent.id, toDateStr(selectedDate))}
-                                              className="flex items-center gap-2 mx-auto text-xs font-body text-muted-foreground hover:text-foreground border border-border/50 hover:border-primary/40 px-4 py-2 rounded-full transition-colors"
+                                              className="flex w-full items-center gap-3 rounded-lg border border-border bg-secondary/40 px-4 py-3 text-left transition-colors hover:border-primary/50"
                                             >
-                                              <MessageSquare className="w-3.5 h-3.5" />
-                                              Enquire for a custom time
+                                              <MessageSquare className="h-5 w-5 shrink-0 text-primary" />
+                                              <span><span className="block text-sm font-body font-medium text-foreground">Request a custom time</span><span className="mt-0.5 block text-xs font-body text-muted-foreground">Ask about a time outside the listed availability.</span></span>
                                             </button>
                                           )}
                                         </div>
                                       ) : (
                                         <motion.div
                                           initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
-                                          className="glass-panel rounded-xl p-4 text-left space-y-3"
+                                          className="glass-panel mx-auto w-full max-w-sm rounded-xl p-4 text-left"
                                         >
-                                          <div className="flex items-center justify-between">
-                                            <p className="text-xs font-display text-foreground">Join the waitlist</p>
-                                            <button onClick={() => setShowWaitlist(false)} className="text-muted-foreground/50 hover:text-muted-foreground">
-                                              <XCircle className="w-3.5 h-3.5" />
+                                          <div className="mb-4 flex items-start justify-between gap-3">
+                                            <div><p className="text-base font-display text-foreground">Join the cancellation waitlist</p><p className="mt-1 text-xs font-body text-muted-foreground">{selectedEvent.title} · {selectedDate.toLocaleDateString("en-AU", { weekday: "short", day: "numeric", month: "short" })}</p></div>
+                                            <button type="button" aria-label="Close waitlist form" onClick={() => { setShowWaitlist(false); setWaitlistError(null); }} className="rounded p-2 text-muted-foreground hover:text-foreground">
+                                              <XCircle className="w-4 h-4" />
                                             </button>
                                           </div>
-                                          <input
-                                            type="text"
-                                            value={waitlistName}
-                                            onChange={e => setWaitlistName(e.target.value)}
-                                            placeholder="Your name"
-                                            className="w-full bg-secondary border border-border rounded-lg px-3 py-2 text-xs font-body text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary/50"
-                                          />
-                                          <input
-                                            type="email"
-                                            value={waitlistEmail}
-                                            onChange={e => setWaitlistEmail(e.target.value)}
-                                            placeholder="Your email"
-                                            className="w-full bg-secondary border border-border rounded-lg px-3 py-2 text-xs font-body text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary/50"
-                                          />
-                                          <input
-                                            type="text"
-                                            value={waitlistNote}
-                                            onChange={e => setWaitlistNote(e.target.value)}
-                                            placeholder="Anything to add? (optional)"
-                                            className="w-full bg-secondary border border-border rounded-lg px-3 py-2 text-xs font-body text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary/50"
-                                          />
-                                          <button
-                                            onClick={handleJoinWaitlist}
-                                            disabled={waitlistSubmitting}
-                                            className="w-full bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 rounded-lg px-4 py-2 text-xs font-body tracking-wider uppercase transition-colors flex items-center justify-center gap-2"
-                                          >
-                                            <Bell className="w-3.5 h-3.5" />
-                                            {waitlistSubmitting ? "Joining…" : "Notify Me"}
-                                          </button>
+                                          <form onSubmit={event => { event.preventDefault(); void handleJoinWaitlist(); }} className="space-y-3">
+                                            <label className="block text-sm font-body">Name <span className="text-destructive">*</span><input type="text" autoComplete="name" required value={waitlistName} onChange={e => { setWaitlistName(e.target.value); setWaitlistError(null); }} placeholder="Your name" className="mt-1.5 w-full border border-border bg-secondary px-3 py-2 font-body text-foreground placeholder:text-muted-foreground/60" /></label>
+                                            <label className="block text-sm font-body">Email <span className="text-destructive">*</span><input type="email" autoComplete="email" inputMode="email" required value={waitlistEmail} onChange={e => { setWaitlistEmail(e.target.value); setWaitlistError(null); }} placeholder="you@example.com" className="mt-1.5 w-full border border-border bg-secondary px-3 py-2 font-body text-foreground placeholder:text-muted-foreground/60" /></label>
+                                            <label className="block text-sm font-body">Note <span className="font-normal text-muted-foreground">(optional)</span><textarea value={waitlistNote} onChange={e => setWaitlistNote(e.target.value)} placeholder="Times that work best, accessibility needs, or anything else" rows={3} className="mt-1.5 w-full resize-y border border-border bg-secondary px-3 py-2 font-body text-foreground placeholder:text-muted-foreground/60" /></label>
+                                            {waitlistError && <p role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 p-2.5 text-xs font-body text-destructive">{waitlistError}</p>}
+                                            <p className="text-xs font-body leading-relaxed text-muted-foreground">This does not reserve a booking. We'll only email you if availability opens for this date.</p>
+                                            <button type="submit" disabled={waitlistSubmitting} className="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-3 text-sm font-body font-semibold text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50">
+                                              <Bell className="w-4 h-4" />{waitlistSubmitting ? "Joining waitlist…" : "Join waitlist"}
+                                            </button>
+                                          </form>
                                         </motion.div>
                                       )}
                                     </>
@@ -1269,8 +1266,8 @@ export default function Booking() {
                                       className="flex flex-col items-center gap-2"
                                     >
                                       <CheckCircle2 className="w-8 h-8 text-green-400" />
-                                      <p className="text-sm font-display text-foreground">You're on the waitlist!</p>
-                                      <p className="text-xs font-body text-muted-foreground">We'll email you at {waitlistEmail} if a spot opens up.</p>
+                                      <p className="text-base font-display text-foreground">You're on the cancellation waitlist</p>
+                                      <p className="max-w-sm text-xs font-body leading-relaxed text-muted-foreground">We'll email {waitlistEmail} if a time opens for {selectedDate.toLocaleDateString("en-AU", { weekday: "long", day: "numeric", month: "long" })}. Availability is not held until you complete a booking.</p>
                                     </motion.div>
                                   )}
                                 </div>
@@ -1842,22 +1839,30 @@ export default function Booking() {
                   <ArrowLeft className="w-3.5 h-3.5" /> Back
                 </button>
 
-                <div className="glass-panel rounded-xl p-6 space-y-5">
+                <form onSubmit={event => { event.preventDefault(); void handleSubmitEnquiry(); }} className="glass-panel rounded-xl p-5 sm:p-6 space-y-5">
                   <div className="flex items-center gap-3 mb-1">
                     <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
                       <MessageSquare className="w-5 h-5 text-primary" />
                     </div>
                     <div>
-                      <h2 className="font-display text-xl text-foreground">Make an Enquiry</h2>
-                      <p className="text-xs font-body text-muted-foreground">Tell us what you're looking for and we'll get back to you</p>
+                      <h2 className="font-display text-xl text-foreground">{enquiryDate ? "Request a custom time" : (settings.enquiryLabel || "Make an Enquiry")}</h2>
+                      <p className="text-xs font-body text-muted-foreground">Send your preferred details for review. This is an enquiry, not a confirmed booking.</p>
                     </div>
                   </div>
+
+                  {(enquiryEventId || enquiryDate) && (
+                    <div className="rounded-lg border border-primary/20 bg-primary/5 p-3 text-sm font-body">
+                      <p className="text-xs text-muted-foreground">Enquiring about</p>
+                      <p className="mt-1 font-medium text-foreground">{eventTypes.find(event => event.id === enquiryEventId)?.title || "Custom photography session"}{enquiryDate ? ` · ${new Date(`${enquiryDate}T12:00:00`).toLocaleDateString("en-AU", { weekday: "short", day: "numeric", month: "long" })}` : ""}</p>
+                    </div>
+                  )}
 
                   {/* Event type selector */}
                   {eventTypes.length > 0 && (
                     <div>
-                      <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Event Type (optional)</label>
+                      <label htmlFor="enquiry-event" className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Session type <span className="font-normal text-muted-foreground">(optional)</span></label>
                       <select
+                        id="enquiry-event"
                         value={enquiryEventId}
                         onChange={e => setEnquiryEventId(e.target.value)}
                         className="w-full bg-secondary border border-border text-foreground font-body text-sm rounded-md px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-ring"
@@ -1869,31 +1874,35 @@ export default function Booking() {
                   )}
 
                   {/* Preferred date + time range */}
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                    <div>
-                      <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Preferred Date</label>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="sm:col-span-2">
+                      <label htmlFor="enquiry-date" className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Preferred date</label>
                       <input
+                        id="enquiry-date"
                         type="date"
+                        min={toDateStr(new Date())}
                         value={enquiryDate}
-                        onChange={e => setEnquiryDate(e.target.value)}
+                        onChange={e => { setEnquiryDate(e.target.value); setEnquiryError(null); }}
                         className="w-full bg-secondary border border-border rounded-md px-3 py-2.5 text-sm font-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
                       />
                     </div>
                     <div>
-                      <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">From</label>
+                      <label htmlFor="enquiry-start" className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Earliest time</label>
                       <input
+                        id="enquiry-start"
                         type="time"
                         value={enquiryStartTime}
-                        onChange={e => setEnquiryStartTime(e.target.value)}
+                        onChange={e => { setEnquiryStartTime(e.target.value); setEnquiryError(null); }}
                         className="w-full bg-secondary border border-border rounded-md px-3 py-2.5 text-sm font-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
                       />
                     </div>
                     <div>
-                      <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">To</label>
+                      <label htmlFor="enquiry-end" className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Latest finish</label>
                       <input
+                        id="enquiry-end"
                         type="time"
                         value={enquiryEndTime}
-                        onChange={e => setEnquiryEndTime(e.target.value)}
+                        onChange={e => { setEnquiryEndTime(e.target.value); setEnquiryError(null); }}
                         className="w-full bg-secondary border border-border rounded-md px-3 py-2.5 text-sm font-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
                       />
                     </div>
@@ -1902,25 +1911,32 @@ export default function Booking() {
                   {/* Name + email */}
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
-                      <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">
+                      <label htmlFor="enquiry-name" className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">
                         Your Name <span className="text-destructive">*</span>
                       </label>
                       <input
+                        id="enquiry-name"
                         type="text"
+                        autoComplete="name"
+                        required
                         value={enquiryName}
-                        onChange={e => setEnquiryName(e.target.value)}
+                        onChange={e => { setEnquiryName(e.target.value); setEnquiryError(null); }}
                         placeholder="Jane Smith"
                         className="w-full bg-secondary border border-border rounded-md px-3 py-2.5 text-sm font-body text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-ring"
                       />
                     </div>
                     <div>
-                      <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">
+                      <label htmlFor="enquiry-email" className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">
                         Email <span className="text-destructive">*</span>
                       </label>
                       <input
+                        id="enquiry-email"
                         type="email"
+                        autoComplete="email"
+                        inputMode="email"
+                        required
                         value={enquiryEmail}
-                        onChange={e => setEnquiryEmail(e.target.value)}
+                        onChange={e => { setEnquiryEmail(e.target.value); setEnquiryError(null); }}
                         placeholder="jane@example.com"
                         className="w-full bg-secondary border border-border rounded-md px-3 py-2.5 text-sm font-body text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-ring"
                       />
@@ -1929,9 +1945,11 @@ export default function Booking() {
 
                   {/* Phone (optional) */}
                   <div>
-                    <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Phone (optional)</label>
+                    <label htmlFor="enquiry-phone" className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Phone <span className="font-normal text-muted-foreground">(optional)</span></label>
                     <input
+                      id="enquiry-phone"
                       type="tel"
+                      autoComplete="tel"
                       value={enquiryPhone}
                       onChange={e => setEnquiryPhone(e.target.value)}
                       placeholder="+61 4xx xxx xxx"
@@ -1941,27 +1959,32 @@ export default function Booking() {
 
                   {/* Message */}
                   <div>
-                    <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">
-                      Message / Details <span className="text-destructive">*</span>
+                    <label htmlFor="enquiry-message" className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">
+                      What time would work? <span className="text-destructive">*</span>
                     </label>
                     <textarea
+                      id="enquiry-message"
+                      required
                       value={enquiryMessage}
-                      onChange={e => setEnquiryMessage(e.target.value)}
-                      placeholder="Tell us what you have in mind, any special requirements, or questions you have…"
+                      onChange={e => { setEnquiryMessage(e.target.value); setEnquiryError(null); }}
+                      placeholder="For example: Any time after 5:30 pm works, or I can also do Sunday afternoon."
                       rows={4}
                       className="w-full bg-secondary border border-border rounded-md px-3 py-2.5 text-sm font-body text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-ring resize-none"
                     />
                   </div>
 
+                  {enquiryError && <p role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm font-body text-destructive">{enquiryError}</p>}
+
                   <Button
-                    onClick={handleSubmitEnquiry}
+                    type="submit"
                     disabled={enquirySubmitting}
                     size="lg"
                     className="w-full bg-primary text-primary-foreground hover:bg-primary/90 font-body tracking-wider uppercase text-xs py-6"
                   >
-                    {enquirySubmitting ? "Sending…" : "Send Enquiry"}
+                    {enquirySubmitting ? "Sending request…" : enquiryDate ? "Send custom time request" : "Send enquiry"}
                   </Button>
-                </div>
+                  <p className="text-center text-xs font-body text-muted-foreground">We'll reply by email. Your requested time is not held until the booking is confirmed.</p>
+                </form>
               </motion.div>
             )}
 

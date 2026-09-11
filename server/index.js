@@ -7868,6 +7868,9 @@ app.post("/api/enquiry", publicBookingLimiter, (req, res) => {
   if ((preferredDate && !parseDate(preferredDate)) || (preferredStartTime && !parseTime(preferredStartTime)) || (preferredEndTime && !parseTime(preferredEndTime))) {
     return res.status(400).json({ ok: false, error: "Preferred date or time is invalid" });
   }
+  if (preferredStartTime && preferredEndTime && preferredEndTime <= preferredStartTime) {
+    return res.status(400).json({ ok: false, error: "Preferred end time must be after the start time" });
+  }
   const enquiries = getStoredArray(db, DB_KEYS.ENQUIRIES);
   const recentCutoff = Date.now() - 60 * 60_000;
   const duplicate = enquiries.find(item => item.email === email && item.message === message && Date.parse(item.createdAt || 0) >= recentCutoff);
@@ -8163,6 +8166,9 @@ app.post("/api/tenant/:slug/enquiry", tenantBookingLimiter, (req, res) => {
   if (eventTypeId && !eventType) return res.status(400).json({ error: "Event type is unavailable" });
   if ((preferredDate && !parseDate(preferredDate)) || (preferredStartTime && !parseTime(preferredStartTime)) || (preferredEndTime && !parseTime(preferredEndTime))) {
     return res.status(400).json({ error: "Preferred date or time is invalid" });
+  }
+  if (preferredStartTime && preferredEndTime && preferredEndTime <= preferredStartTime) {
+    return res.status(400).json({ error: "Preferred end time must be after the start time" });
   }
 
   const enquiry = {
