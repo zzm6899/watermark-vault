@@ -654,7 +654,7 @@ export function isSupportedUploadFile(file: File): boolean {
  *  Uploads are split into batches and sent concurrently to maximise throughput. */
 export async function uploadPhotosToServer(
   files: File[],
-  onProgress?: (done: number, total: number, bytesPerSecond?: number) => void,
+  onProgress?: (done: number, total: number, bytesPerSecond?: number, processedBytes?: number) => void,
   tenantSlug?: string,
   concurrency = 3,
   albumFolder?: string,
@@ -767,7 +767,7 @@ export async function uploadPhotosToServer(
       doneBytes += batchBytes;
       const elapsedSec = (Date.now() - startTime) / 1000;
       const bytesPerSecond = elapsedSec > 0 ? doneBytes / elapsedSec : 0;
-      onProgress?.(Math.min(done, uploadFiles.length), uploadFiles.length, bytesPerSecond);
+      onProgress?.(Math.min(done, uploadFiles.length), uploadFiles.length, bytesPerSecond, doneBytes);
     }
   };
 

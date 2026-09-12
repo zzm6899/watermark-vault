@@ -1,3 +1,4 @@
+import ShootDayUploadButton from "@/components/ShootDayUploadButton";
 import BulkProofingPanel from "@/components/BulkProofingPanel";
 import EmailMessageEditor from "@/components/EmailMessageEditor";
 import { buildClientEmail, buildGalleryStatusEmail } from "@/lib/client-email";
@@ -1059,7 +1060,7 @@ function findShootDayAlbumCandidate(booking: Booking, albums: Album[]): Album | 
 
 function ShootDayCommandCenterView() {
   const navigate = useNavigate();
-  const [selectedDate, setSelectedDate] = useState(localDateString());
+  const [selectedDate, setSelectedDate] = useState(() => { const date = new URLSearchParams(window.location.search).get("date"); return date && /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : localDateString(); });
   const [refreshTick, setRefreshTick] = useState(0);
   const [messageSubject, setMessageSubject] = useState("Quick update for your {{eventTitle}} session");
   const [messageBody, setMessageBody] = useState("Hi {{firstName}},\n\nJust a quick update about your {{eventTitle}} session today at {{timeFormatted}}.\n\nThanks!");
@@ -1460,7 +1461,7 @@ function ShootDayCommandCenterView() {
           <Button size="sm" variant="outline" onClick={printRunSheet} disabled={sessions.length === 0} className="gap-2 font-body text-xs border-border text-foreground">
             <Printer className="w-4 h-4" /> Print
           </Button>
-          <Button size="sm" onClick={() => navigate("/capture")} className="gap-2 font-body text-xs">
+          <Button size="sm" onClick={() => navigate(`/capture?from=shoot-day&date=${selectedDate}`)} className="gap-2 font-body text-xs">
             <Upload className="w-4 h-4" /> Capture
           </Button>
         </div>
@@ -1513,9 +1514,10 @@ function ShootDayCommandCenterView() {
                         <p className="text-xs font-body text-muted-foreground truncate">{eventType?.title || booking.type} · {formatDuration(booking.duration || eventType?.durations?.[0] || 0)}</p>
                       </div>
                       <div className="grid grid-cols-2 sm:flex sm:flex-wrap gap-2">
-                        <Button size="sm" variant="outline" onClick={() => navigate(`/capture?bookingId=${encodeURIComponent(booking.id)}`)} className="gap-1.5 text-xs font-body border-border text-foreground">
+                        <Button size="sm" variant="outline" onClick={() => navigate(`/capture?bookingId=${encodeURIComponent(booking.id)}&from=shoot-day&date=${selectedDate}`)} className="gap-1.5 text-xs font-body border-border text-foreground">
                           <Camera className="w-3.5 h-3.5" /> Capture
                         </Button>
+                        <ShootDayUploadButton clientName={booking.clientName} resolveAlbum={() => getBookingAlbum(booking, getAlbums()) || createShootDayAlbum(booking, eventType)} onComplete={() => { setRefreshTick(tick => tick + 1); window.dispatchEvent(new CustomEvent("storage-synced")); }} />
                         {album && (
                           <Button size="sm" variant="outline" onClick={() => openShootDayGallery(album)} className="gap-1.5 text-xs font-body border-border text-foreground">
                             <Eye className="w-3.5 h-3.5" /> Gallery
@@ -1531,8 +1533,8 @@ function ShootDayCommandCenterView() {
                             <CheckCircle2 className="w-3.5 h-3.5" /> Complete
                           </Button>
                         )}
-                        <Button size="sm" variant="outline" onClick={() => wrapShootDaySession(booking, album, eventType)} className="gap-1.5 text-xs font-body border-blue-500/40 text-blue-300">
-                          <Check className="w-3.5 h-3.5" /> Wrap
+                        <Button size="sm" variant="outline" disabled={booking.status === "completed"} onClick={() => wrapShootDaySession(booking, album, eventType)} className="gap-1.5 text-xs font-body border-blue-500/40 text-blue-300">
+                          <Check className="w-3.5 h-3.5" /> {booking.status === "completed" ? "Wrapped" : "Wrap"}
                         </Button>
                         {!album && candidateAlbum && (
                           <Button size="sm" variant="outline" onClick={() => linkShootDayAlbum(booking, candidateAlbum)} className="gap-1.5 text-xs font-body border-green-500/40 text-green-400">
@@ -1668,9 +1670,10 @@ function ShootDayCommandCenterView() {
                 </p>
               )}
               <div className="flex flex-col gap-2 mt-4">
-                <Button onClick={() => navigate(`/capture?bookingId=${encodeURIComponent(activeSession.booking.id)}`)} className="gap-2 font-body text-xs">
+                <Button onClick={() => navigate(`/capture?bookingId=${encodeURIComponent(activeSession.booking.id)}&from=shoot-day&date=${selectedDate}`)} className="gap-2 font-body text-xs">
                   <Upload className="w-4 h-4" /> Open Capture
                 </Button>
+                <ShootDayUploadButton clientName={activeSession.booking.clientName} resolveAlbum={() => getBookingAlbum(activeSession.booking, getAlbums()) || createShootDayAlbum(activeSession.booking, activeSession.eventType)} onComplete={() => { setRefreshTick(tick => tick + 1); window.dispatchEvent(new CustomEvent("storage-synced")); }} />
                 {activeSession.album && (
                   <Button variant="outline" onClick={() => openShootDayGallery(activeSession.album!)} className="gap-2 font-body text-xs border-border text-foreground">
                     <ExternalLink className="w-4 h-4" /> Open Client Gallery
@@ -1681,8 +1684,8 @@ function ShootDayCommandCenterView() {
                     <Copy className="w-4 h-4" /> Copy Gallery Link
                   </Button>
                 )}
-                <Button variant="outline" onClick={() => wrapShootDaySession(activeSession.booking, activeSession.album, activeSession.eventType)} className="gap-2 font-body text-xs border-blue-500/40 text-blue-300">
-                  <Check className="w-4 h-4" /> Wrap Session
+                <Button variant="outline" disabled={activeSession.booking.status === "completed"} onClick={() => wrapShootDaySession(activeSession.booking, activeSession.album, activeSession.eventType)} className="gap-2 font-body text-xs border-blue-500/40 text-blue-300">
+                  <Check className="w-4 h-4" /> {activeSession.booking.status === "completed" ? "Wrapped" : "Wrap Session"}
                 </Button>
               </div>
 

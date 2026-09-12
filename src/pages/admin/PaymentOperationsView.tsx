@@ -49,7 +49,7 @@ export default function PaymentOperationsView() {
   }, []);
   useEffect(() => { void refresh(); }, [refresh]);
 
-  const actionable = useMemo(() => bookings.filter(booking => !["paid", "cash"].includes(booking.paymentStatus || "") || booking.paymentNeedsReview), [bookings]);
+  const actionable = useMemo(() => bookings.filter(booking => booking.status !== "cancelled" && (!["paid", "cash"].includes(booking.paymentStatus || "") || booking.paymentNeedsReview)), [bookings]);
   const counts = useMemo(() => Object.fromEntries(Object.keys(queueMeta).map(key => [key, actionable.filter(booking => queueFor(booking) === key).length])), [actionable]);
   const visible = useMemo(() => actionable.filter(booking => {
     if (queue !== "all" && queueFor(booking) !== queue) return false;

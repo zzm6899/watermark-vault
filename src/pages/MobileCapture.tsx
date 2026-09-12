@@ -1,3 +1,4 @@
+import { uploadTimeRemaining } from "@/lib/upload-time";
 import { buildClientEmail } from "@/lib/client-email";
 import { buildProofingEmail, proofingEmailSubject } from "@/lib/proofing-email";
 import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
@@ -553,6 +554,7 @@ function MobileCaptureInner() {
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadSpeed, setUploadSpeed] = useState<number | null>(null);
+  const [uploadRemainingBytes, setUploadRemainingBytes] = useState<number | null>(null);
   const [importSpeed, setImportSpeed] = useState<number | null>(null);
   const [uploadedCount, setUploadedCount] = useState(0);
   const [uploadQueue, setUploadQueue] = useState<UploadQueueItem[]>([]);
@@ -1772,6 +1774,8 @@ function MobileCaptureInner() {
       status: "pending",
     }));
     setUploadQueue(queueItems);
+    const totalUploadBytes = sortedFiles.reduce((sum, file) => sum + file.size, 0);
+    setUploadRemainingBytes(totalUploadBytes);
 
     // ── Local preview: show photos in the album grid immediately while uploading ──
     // Each queueItem already has a blob URL (preview) — create a separate blob URL for
@@ -1796,6 +1800,7 @@ function MobileCaptureInner() {
         // Upload in chunks of 5 — checks pause state between each chunk
         const CHUNK = 5;
         let totalDone = 0;
+        let processedUploadBytes = 0;
         for (let i = 0; i < sortedFiles.length; i += CHUNK) {
           // Wait while paused (user can still cancel by navigating away)
           while (uploadPausedRef.current) {
@@ -1807,7 +1812,8 @@ function MobileCaptureInner() {
             chunkIds.includes(item.id) ? { ...item, status: "uploading" } : item
           ));
           try {
-            const chunkResults = await uploadPhotosToServer(chunk, (done, _total, bytesPerSecond) => {
+            const chunkResults = await uploadPhotosToServer(chunk, (done, _total, bytesPerSecond, processedBytes) => {
+              setUploadRemainingBytes(Math.max(0, totalUploadBytes - processedUploadBytes - (processedBytes || 0)));
               setUploadProgress(Math.round((totalDone + done) / sortedFiles.length * 100));
               if (bytesPerSecond != null) setUploadSpeed(bytesPerSecond);
             }, tenantSession?.slug, uploadConcurrency, activeAlbum.title || undefined, uploadAlbumId, autoEditEnabled, autoEditStrength, activeAlbum.editProfile);
@@ -1835,6 +1841,8 @@ function MobileCaptureInner() {
             queuedOfflineCount += chunk.length;
             totalDone += chunk.length;
           }
+          processedUploadBytes += chunk.reduce((sum, file) => sum + file.size, 0);
+          setUploadRemainingBytes(Math.max(0, totalUploadBytes - processedUploadBytes));
         }
       } else {
         setOfflineQueue(q => [...q, ...toLocalOfflineItems(sortedFiles, activeAlbum)]);
@@ -1862,7 +1870,7 @@ function MobileCaptureInner() {
       if (queuedOfflineCount > 0) queueCaptureSummary({ queued: queuedOfflineCount });
     } catch { toast.error("Upload error"); }
     finally {
-      setUploading(false); setUploadSpeed(null);
+      setUploading(false); setUploadSpeed(null); setUploadRemainingBytes(null);
       // Revoke upload-queue preview URLs and clear queue after a brief moment so done state is visible.
       // Also clear local-preview album grid entries and revoke their blob URLs at the same time.
       const toRevoke = queueItems.map(q => q.preview);
@@ -2212,7 +2220,7 @@ function MobileCaptureInner() {
           <div className="p-4 space-y-3">
             {/* Top row — compact so system time doesn't overlap pills */}
             <div className="flex items-center gap-2">
-              <button onClick={() => navigate(tenantSession ? `/tenant-admin/${tenantSession.slug}` : "/admin")} className="capture-icon-button flex-shrink-0">
+              <button onClick={() => navigate(new URLSearchParams(window.location.search).get("from") === "shoot-day" ? "/admin/shoot-day" : tenantSession ? `/tenant-admin/${tenantSession.slug}` : "/admin")} className="capture-icon-button flex-shrink-0">
                 <ArrowLeft className="w-4 h-4" />
               </button>
               <div className="flex-1 min-w-0">
@@ -2361,13 +2369,22 @@ function MobileCaptureInner() {
         <button
           onClick={() => {
             if (sessionUploadedRef.current && notifyClient) sendClientNotification("photos-uploaded", uploadedCount);
+            const captureParams = new URLSearchParams(window.location.search);
+            const fromShootDay = captureParams.get("from") === "shoot-day";
+            const shootDayDate = captureParams.get("date");
+            captureParams.delete("bookingId");
+            captureParams.delete("from");
+            captureParams.delete("date");
+            window.history.replaceState(window.history.state, "", `${window.location.pathname}${captureParams.size ? `?${captureParams}` : ""}`);
             sessionUploadedRef.current = false;
             setSelectedBooking(null); setTargetAlbum(null); setUploadedCount(0);
             targetAlbumRef.current = null;
             try { localStorage.removeItem(CAPTURE_TARGET_KEY); } catch { /* unavailable */ }
             setHeldRawCount(0); setLastHeldRawName("");
             if (watching) { setWatching(false); CameraUsb.stopWatching().catch(() => {}); }
+            if (fromShootDay) navigate(`/admin/shoot-day${shootDayDate && /^\d{4}-\d{2}-\d{2}$/.test(shootDayDate) ? `?date=${shootDayDate}` : ""}`, { replace: true });
           }}
+          aria-label="Back from capture"
           className="capture-icon-button"
         >
           <ArrowLeft className="w-5 h-5" />
@@ -2583,6 +2600,7 @@ function MobileCaptureInner() {
                     const willPause = !uploadPaused;
                     uploadPausedRef.current = willPause;
                     setUploadPaused(willPause);
+                    if (!willPause) setUploadSpeed(null);
                   }}
                   className="inline-flex items-center gap-1 text-[10px] font-body tracking-wider uppercase px-2 py-1 rounded-full border border-border text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
                 >
@@ -2595,6 +2613,11 @@ function MobileCaptureInner() {
               )}
             </div>
           </div>
+          {uploading && !importing && uploadRemainingBytes !== null && (
+            <p className="mb-2 text-xs font-body text-muted-foreground">
+              {uploadPaused ? "Time estimate paused" : uploadTimeRemaining(uploadRemainingBytes, uploadSpeed)}
+            </p>
+          )}
           {(importing || uploading) && (
             <Progress value={importing ? importProgress : uploadProgress} className="h-1.5" />
           )}
