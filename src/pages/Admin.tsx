@@ -1,3 +1,4 @@
+import { canSendProofingInvite, proofingInviteAction, sendAlbumProofingInvite } from "@/lib/bulk-proofing";
 import ShootDayUploadButton from "@/components/ShootDayUploadButton";
 import BulkProofingPanel from "@/components/BulkProofingPanel";
 import EmailMessageEditor from "@/components/EmailMessageEditor";
@@ -1058,10 +1059,20 @@ function findShootDayAlbumCandidate(booking: Booking, albums: Album[]): Album | 
   return candidates.length === 1 ? candidates[0] : null;
 }
 
+function shootDayProofingLabel(album: Album | null) {
+  if (!album) return "No album linked";
+  const stage = album.proofingStage || "not-started";
+  if (stage === "proofing" && album.proofingExpiresAt && new Date(album.proofingExpiresAt).getTime() <= Date.now()) return "Proofing expired";
+  return ({ "not-started": "Not started", proofing: "Awaiting client picks", "selections-submitted": "Selections submitted", editing: "Editing", "finals-delivered": "Finals delivered" } as Record<string, string>)[stage] || stage.replaceAll("-", " ");
+}
+
 function ShootDayCommandCenterView() {
   const navigate = useNavigate();
   const [selectedDate, setSelectedDate] = useState(() => { const date = new URLSearchParams(window.location.search).get("date"); return date && /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : localDateString(); });
   const [refreshTick, setRefreshTick] = useState(0);
+  const [focusedBookingId, setFocusedBookingId] = useState("");
+  const [proofingBusy, setProofingBusy] = useState<string | null>(null);
+  useEffect(() => { setFocusedBookingId(""); }, [selectedDate]);
   const [messageSubject, setMessageSubject] = useState("Quick update for your {{eventTitle}} session");
   const [messageBody, setMessageBody] = useState("Hi {{firstName}},\n\nJust a quick update about your {{eventTitle}} session today at {{timeFormatted}}.\n\nThanks!");
   const [sendingShootDayMessage, setSendingShootDayMessage] = useState(false);
@@ -1085,7 +1096,26 @@ function ShootDayCommandCenterView() {
       status: getSessionStatus(booking, album),
     };
   });
-  const activeSession = sessions.find((session) => session.status === "next-up" || session.status === "in-progress") || sessions[0] || null;
+  const activeSession = sessions.find(session => session.booking.id === focusedBookingId) || sessions.find((session) => session.status === "next-up" || session.status === "in-progress") || sessions[0] || null;
+  const sendShootDayProofing = async (booking: Booking, album: Album) => {
+    if (proofingBusy) return;
+    setProofingBusy(album.id);
+    try {
+      const fresh = (await fetchAlbumStubs())?.find(item => item.id === album.id);
+      if (!fresh) throw new Error("Could not load the album. Refresh and try again.");
+      const recipientAlbum = { ...fresh, clientEmail: fresh.clientEmail || booking.clientEmail, clientName: fresh.clientName || booking.clientName };
+      await sendAlbumProofingInvite(recipientAlbum, fresh.proofingExpiryHours ?? settings.defaultProofingExpiryHours ?? 48, "", booking.duration);
+      toast.success(`Proofing invite sent to ${recipientAlbum.clientEmail}`);
+    } catch (error) { toast.error(error instanceof Error ? error.message : "Could not send proofing invite"); }
+    finally { setProofingBusy(null); setRefreshTick(tick => tick + 1); window.dispatchEvent(new CustomEvent("storage-synced")); }
+  };
+  const proofingButton = (booking: Booking, album: Album | null) => {
+    const recipientAlbum = album ? { ...album, clientEmail: album.clientEmail || booking.clientEmail } : null;
+    const action = recipientAlbum ? proofingInviteAction(recipientAlbum) : "Link an album first";
+    return <Button size="sm" variant="outline" disabled={proofingBusy !== null || !recipientAlbum || !canSendProofingInvite(recipientAlbum)} title={action} onClick={() => album && void sendShootDayProofing(booking, album)} className="gap-1.5 text-xs font-body border-primary/40 text-primary">
+      <Send className="w-3.5 h-3.5" /> {proofingBusy === album?.id ? "Sending…" : action === "Resend invite" ? "Resend Proofing Invite" : "Send for Proofing"}
+    </Button>;
+  };
   const totals = sessions.reduce((acc, session) => {
     acc.photos += session.stats.total;
     acc.picks += session.stats.picks;
@@ -1502,7 +1532,7 @@ function ShootDayCommandCenterView() {
                 const location = eventType?.location || "";
                 const candidateAlbum = !album ? findShootDayAlbumCandidate(booking, albums) : null;
                 return (
-                  <div key={booking.id} className="rounded-xl border border-border/60 bg-secondary/25 p-4">
+                  <div key={booking.id} className={`rounded-xl border bg-secondary/25 p-4 ${activeSession?.booking.id === booking.id ? "border-primary ring-1 ring-primary/30" : "border-border/60"}`}>
                     <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-3">
                       <div className="min-w-0">
                         <div className="flex items-center gap-2 flex-wrap mb-1">
@@ -1514,6 +1544,8 @@ function ShootDayCommandCenterView() {
                         <p className="text-xs font-body text-muted-foreground truncate">{eventType?.title || booking.type} · {formatDuration(booking.duration || eventType?.durations?.[0] || 0)}</p>
                       </div>
                       <div className="grid grid-cols-2 sm:flex sm:flex-wrap gap-2">
+                        <Button size="sm" variant="outline" aria-pressed={activeSession?.booking.id === booking.id} onClick={() => setFocusedBookingId(booking.id)} className="text-xs">{activeSession?.booking.id === booking.id ? "Focused" : "Focus"}</Button>
+                        {proofingButton(booking, album)}
                         <Button size="sm" variant="outline" onClick={() => navigate(`/capture?bookingId=${encodeURIComponent(booking.id)}&from=shoot-day&date=${selectedDate}`)} className="gap-1.5 text-xs font-body border-border text-foreground">
                           <Camera className="w-3.5 h-3.5" /> Capture
                         </Button>
@@ -1587,7 +1619,7 @@ function ShootDayCommandCenterView() {
                       </div>
                       <div className="rounded-lg bg-background/50 border border-border/40 p-2">
                         <p className="text-[10px] font-body text-muted-foreground">Proofing</p>
-                        <p className="text-xs font-body text-foreground truncate">{album?.proofingStage || album?.status || "Not started"}</p>
+                        <p className="text-xs font-body text-foreground truncate">{shootDayProofingLabel(album)}</p>
                       </div>
                       <div className="rounded-lg bg-background/50 border border-border/40 p-2">
                         <p className="text-[10px] font-body text-muted-foreground">Tasks</p>
@@ -1639,13 +1671,21 @@ function ShootDayCommandCenterView() {
         </div>
 
         <div className="glass-panel rounded-xl p-4 sm:p-5 h-fit">
-          <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-2">Current Focus</p>
+          <label htmlFor="shoot-day-focus" className="block text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-2">Current Focus</label>
+          <select id="shoot-day-focus" value={sessions.some(session => session.booking.id === focusedBookingId) ? focusedBookingId : ""} onChange={event => setFocusedBookingId(event.target.value)} className="w-full rounded-md border border-border bg-background p-2 text-sm mb-3">
+            <option value="">Automatic — next session</option>
+            {sessions.map(session => <option key={session.booking.id} value={session.booking.id}>{session.booking.time} · {session.booking.clientName || "Unnamed client"}</option>)}
+          </select>
           {activeSession ? (
             <>
               <h3 className="font-display text-lg text-foreground truncate">{activeSession.booking.clientName || "Unnamed client"}</h3>
               <p className="text-xs font-body text-muted-foreground mt-1">
                 {activeSession.booking.time} · {activeSession.eventType?.title || activeSession.booking.type}
               </p>
+              <div className="mt-3 rounded-lg border border-border p-3">
+                <p className="text-[10px] uppercase text-muted-foreground">Proofing</p>
+                <p className="text-sm">{shootDayProofingLabel(activeSession.album)}</p>
+              </div>
               <div className="grid grid-cols-2 gap-2 mt-4">
                 <div className="rounded-lg bg-secondary/40 border border-border/40 p-3">
                   <p className="font-display text-xl text-primary">{activeSession.stats.total}</p>
@@ -1670,6 +1710,7 @@ function ShootDayCommandCenterView() {
                 </p>
               )}
               <div className="flex flex-col gap-2 mt-4">
+                {proofingButton(activeSession.booking, activeSession.album)}
                 <Button onClick={() => navigate(`/capture?bookingId=${encodeURIComponent(activeSession.booking.id)}&from=shoot-day&date=${selectedDate}`)} className="gap-2 font-body text-xs">
                   <Upload className="w-4 h-4" /> Open Capture
                 </Button>

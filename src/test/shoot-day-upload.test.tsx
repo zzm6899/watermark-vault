@@ -29,3 +29,28 @@ it("does not upload when the existing album cannot be loaded", async () => {
   await waitFor(() => expect(screen.getByRole("button", { name: "Upload Photos" })).toBeEnabled());
   expect(uploadPhotosToServer).not.toHaveBeenCalled();
 });
+
+it("uploads two session albums concurrently and keeps their photos separate", async () => {
+  const finish = new Map<string, (value: any[]) => void>();
+  vi.mocked(uploadPhotosToServer).mockImplementation((_files, _progress, _tenant, _concurrency, _title, albumId) => new Promise(resolve => { finish.set(albumId!, resolve); }));
+  const completedA = vi.fn();
+  const completedB = vi.fn();
+  const first = { ...album, id: "album-a" };
+  const second = { ...album, id: "album-b" };
+  render(<><ShootDayUploadButton clientName="Client A" resolveAlbum={() => first} onComplete={completedA} /><ShootDayUploadButton clientName="Client B" resolveAlbum={() => second} onComplete={completedB} /></>);
+  fireEvent.change(screen.getByLabelText("Upload photos for Client A"), { target: { files: [new File(["a"], "a.jpg")] } });
+  await waitFor(() => expect(finish.has("album-a")).toBe(true));
+  fireEvent.change(screen.getByLabelText("Upload photos for Client B"), { target: { files: [new File(["b"], "b.jpg")] } });
+  await waitFor(() => expect(finish.has("album-b")).toBe(true));
+  expect(completedA).not.toHaveBeenCalled();
+  expect(completedB).not.toHaveBeenCalled();
+  finish.get("album-b")!([{ id: "photo-b", url: "/b.jpg", originalName: "b.jpg", size: 1 }]);
+  await waitFor(() => expect(completedB).toHaveBeenCalledOnce());
+  expect(completedA).not.toHaveBeenCalled();
+  finish.get("album-a")!([{ id: "photo-a", url: "/a.jpg", originalName: "a.jpg", size: 1 }]);
+  await waitFor(() => expect(completedA).toHaveBeenCalledOnce());
+  const savedA = vi.mocked(saveAlbumToServer).mock.calls.filter(([id]) => id === "album-a").at(-1)![1];
+  const savedB = vi.mocked(saveAlbumToServer).mock.calls.filter(([id]) => id === "album-b").at(-1)![1];
+  expect(savedA.photos?.map(photo => photo.id)).toEqual(["old", "photo-a"]);
+  expect(savedB.photos?.map(photo => photo.id)).toEqual(["old", "photo-b"]);
+});
