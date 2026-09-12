@@ -10,7 +10,7 @@ test('purchased extras identify clients and preserve agreed descriptions under e
   assert.equal(rows[0].extraPurchases.length, 1);
   assert.deepEqual(rows[0].extraPurchases[0], { bookingId: 'b1', clientName: 'Cari', date: '2026-09-12', time: '', status: 'pending', paymentStatus: 'deposit-paid', items: [item] });
   assert.equal(rows[0].extras, 70.5);
-  assert.equal(rows[0].collected, 42.75);
+  assert.equal(rows[0].collected, 85.5);
   const legacy = buildEventRevenue({ bookings: [booking], eventTypes: [{ id: 'e1', extras: [item] }] });
   assert.equal(legacy.rows[0].extraPurchases[0].items[0].description, undefined);
 });
@@ -20,7 +20,7 @@ test('event totals count deposits once, extras inside total, and outstanding bal
   assert.equal(rows.length, 1);
   assert.equal(rows[0].bookings, 1);
   assert.equal(rows[0].booked, 171);
-  assert.equal(rows[0].collected, 42.75);
+  assert.equal(rows[0].collected, 85.5);
   assert.equal(rows[0].outstanding, 128.25);
   assert.equal(rows[0].extras, 70.5);
 });
@@ -48,4 +48,17 @@ test('foreign currency and legacy entitlements without recorded prices never inf
   const { rows } = buildEventRevenue({ albums: [{ id: 'a', sessionPurchases: { one: { fullAlbum: true, stripeSessionId: 'legacy' }, two: { fullAlbum: true, stripeSessionId: 'legacy' } } }], orders: { o: { albumId: 'a', status: 'fulfilled', fulfilledStripeSessionId: 'eur1', currency: 'eur', expectedAmountCents: 10000 } } });
   assert.equal(rows[0].collected, 0);
   assert.equal(rows[0].unpricedPurchases, 2);
+});
+
+
+test('cancelled shoots retain received deposits without booked value or debt; full refunds remove them', () => {
+  const cancelled = { ...booking, status: 'cancelled' };
+  const { rows } = buildEventRevenue({ bookings: [cancelled] });
+  assert.equal(rows[0].collected, 42.75);
+  assert.equal(rows[0].bookings, 0);
+  assert.equal(rows[0].booked, 0);
+  assert.equal(rows[0].outstanding, 0);
+  assert.equal(rows[0].extras, 0);
+  assert.deepEqual(buildEventRevenue({ bookings: [{ ...cancelled, paymentStatus: 'unpaid' }] }).rows, []);
+  assert.deepEqual(buildEventRevenue({ bookings: [{ ...cancelled, paymentRefundStatus: 'full' }] }).rows, []);
 });

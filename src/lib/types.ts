@@ -129,6 +129,9 @@ export interface Booking {
   answers?: Record<string, string>;
   createdAt: string;
   paymentStatus?: PaymentStatus;
+  paymentRefundStatus?: "full";
+  paymentRefundedAt?: string;
+  paymentRefundAmount?: number;
   paymentAmount?: number;
   instagramHandle?: string;
   modifyToken?: string;

@@ -112,3 +112,31 @@ test("admin Stripe reconciliation verifies the canonical paid session under the 
   assert.match(section, /markStripeResourceFulfilled/);
   assert.doesNotMatch(section, /req\.body.*paymentStatus/);
 });
+
+
+test("full refund recording retains history, rejects unpaid shoots and is idempotent", async () => {
+  const section = source.slice(source.indexOf('app.patch("/api/admin/bookings/:id/full-refund"'), source.indexOf('app.patch("/api/admin/bookings/:id/complete-balance"'));
+  let handler;
+  let writes = 0;
+  const db = { bookings: JSON.stringify([{ id: "b1", status: "cancelled", paymentStatus: "deposit-paid", depositAmount: 50, paymentHistory: [{ action: "deposit-paid" }] }]) };
+  new Function("app", "superLimiter", "requireAuth", "withCheckoutResourceLock", "bookingCheckoutResourceLockKey", "readDb", "getStoredArray", "DB_KEYS", "writeDb", section)(
+    { patch: (...args) => { handler = args.at(-1); } }, null, null, async (key, fn) => fn(), () => "main:b1", () => db, (db, key) => JSON.parse(db[key]), { BOOKINGS: "bookings" }, () => { writes++; }
+  );
+  let status = 200, result;
+  const res = { status(code) { status = code; return this; }, json(body) { result = body; return this; } };
+  await handler({ params: { id: "b1" } }, res);
+  assert.equal(result.booking.paymentRefundAmount, 50);
+  assert.equal(result.booking.paymentStatus, "deposit-paid");
+  assert.equal(result.booking.paymentHistory.length, 2);
+  assert.equal(result.booking.paymentRefundStatus, "full");
+  await handler({ params: { id: "b1" } }, res);
+  assert.equal(writes, 1);
+  db.bookings = JSON.stringify([{ id: "b1", status: "cancelled", paymentStatus: "unpaid", depositAmount: 50 }]);
+  await handler({ params: { id: "b1" } }, res);
+  assert.equal(status, 409);
+  assert.equal(writes, 1);
+  db.bookings = JSON.stringify([{ id: "b1", status: "confirmed", paymentStatus: "paid", paymentAmount: 200 }]);
+  await handler({ params: { id: "b1" } }, res);
+  assert.equal(status, 409);
+  assert.equal(writes, 1);
+});

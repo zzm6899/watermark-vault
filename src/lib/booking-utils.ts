@@ -228,3 +228,10 @@ export function buildBookingCalendarUrl(options: BookingCalendarOptions): string
   });
   return `https://calendar.google.com/calendar/render?${params.toString()}`;
 }
+
+/** Confirmed booking money retained after any recorded full refund. */
+export function retainedBookingPayment(booking: { paymentStatus?: string; paymentAmount?: number; depositAmount?: number; paymentRefundStatus?: string }): number {
+  if (booking.paymentRefundStatus === "full") return 0;
+  const amount = booking.paymentStatus === "deposit-paid" ? booking.depositAmount : ["paid", "cash"].includes(booking.paymentStatus || "") ? booking.paymentAmount : 0;
+  return typeof amount === "number" && Number.isFinite(amount) ? Math.max(0, Math.round(amount * 100) / 100) : 0;
+}

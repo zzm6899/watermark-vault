@@ -1,3 +1,4 @@
+import { retainedBookingPayment } from "@/lib/booking-utils";
 import { EventRevenueReport } from "@/components/EventRevenueReport";
 import React from "react";
 import { useNavigate } from "react-router-dom";
@@ -6,7 +7,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { bookingPaymentReference } from "@/lib/booking-reference";
-import { getAlbums, getBookings, getInvoices, updateAlbum } from "@/lib/storage";
+import { getAlbums, getBookings, getInvoices, updateAlbum, cacheBookingLocally } from "@/lib/storage";
 import { fetchAlbumStubs, fetchAlbumPhotos, adminAuthHeaders, convertQuoteToInvoice, createExpense, createQuote, deleteExpense, deleteQuote, getExpenses, getQuotes, updateExpense, updateQuote } from "@/lib/api";
 import type { Expense, Invoice, Quote } from "@/lib/types";
 
@@ -31,6 +32,22 @@ export default function FinanceView() {
   const [deletingId, setDeletingId] = React.useState<string | null>(null);
   const [expandedDownloadKeys, setExpandedDownloadKeys] = React.useState<Set<string>>(new Set());
   const [financeSearch, setFinanceSearch] = React.useState("");
+  const [refundRevision, setRefundRevision] = React.useState(0);
+  const [refundBusy, setRefundBusy] = React.useState<string | null>(null);
+  const recordFullRefund = async (bookingId: string) => {
+    if (!confirm("Record that all money received for this cancelled booking has been refunded? This only updates the record; it does not send money.")) return;
+    setRefundBusy(bookingId);
+    try {
+      const response = await fetch(`/api/admin/bookings/${encodeURIComponent(bookingId)}/full-refund`, { method: "PATCH", headers: adminAuthHeaders() });
+      const result = await response.json();
+      if (!response.ok || !result.booking) throw new Error(result.error || "Could not record refund");
+      cacheBookingLocally(result.booking);
+      window.dispatchEvent(new CustomEvent("storage-synced"));
+      setRefundRevision(value => value + 1);
+      toast.success("Full refund recorded");
+    } catch (error) { toast.error(error instanceof Error ? error.message : "Could not record refund"); }
+    finally { setRefundBusy(null); }
+  };
   const [financeExpenses, setFinanceExpenses] = React.useState<Expense[]>([]);
   const [downloadCaptureStats, setDownloadCaptureStats] = React.useState<any>(null);
   React.useEffect(() => { getExpenses().then(setFinanceExpenses).catch(() => {}); }, []);
@@ -141,8 +158,8 @@ export default function FinanceView() {
     .filter(booking => booking.status !== "cancelled" && !["paid", "cash", "deposit-paid"].includes(booking.paymentStatus || "unpaid") && (booking.paymentAmount || 0) > 0)
     .map(booking => ({ booking, due: booking.depositRequired && booking.depositAmount ? booking.depositAmount : (booking.paymentAmount || 0) }));
   for (const booking of bookingPayments) {
-    if (booking.status === "cancelled" || !["paid", "cash", "deposit-paid"].includes(booking.paymentStatus || "unpaid")) continue;
-    const amount = booking.paymentStatus === "deposit-paid" ? (booking.depositAmount || 0) : (booking.paymentAmount || 0);
+    if (!retainedBookingPayment(booking)) continue;
+    const amount = retainedBookingPayment(booking);
     if (amount <= 0) continue;
     payments.push({
       id: `booking-${booking.id}-${booking.depositPaidAt || booking.paidAt || booking.createdAt}`,
@@ -155,7 +172,7 @@ export default function FinanceView() {
         : ((booking.paymentMethod || booking.depositMethod) === "bank" ? "bank-transfer" : "stripe"),
       amount,
       status: "completed",
-      description: booking.paymentStatus === "deposit-paid" ? "Booking deposit" : "Booking paid in full",
+      description: booking.status === "cancelled" ? "Cancelled — retained payment" : booking.paymentStatus === "deposit-paid" ? "Booking deposit" : "Booking paid in full",
       bookingId: booking.id,
       reference: bookingPaymentReference(booking),
     });
@@ -197,7 +214,7 @@ export default function FinanceView() {
         <p className="text-sm font-body text-muted-foreground">Payment history and revenue summary</p>
       </div>
 
-      <EventRevenueReport />
+      <EventRevenueReport revision={refundRevision} />
 
       <details className="rounded-xl border border-border p-5">
         <summary className="cursor-pointer font-semibold">Payment activity, invoices & analytics</summary>
@@ -276,17 +293,17 @@ export default function FinanceView() {
         const bookings = getBookings();
         const byService: Record<string, { count: number; rev: number }> = {};
         for (const bk of bookings) {
-          if (!bk.paymentAmount || !["paid", "cash", "deposit-paid"].includes(bk.paymentStatus || "unpaid")) continue;
+          if (!retainedBookingPayment(bk)) continue;
           const key = bk.type || "Other";
           if (!byService[key]) byService[key] = { count: 0, rev: 0 };
           byService[key].count++;
-          byService[key].rev += bk.paymentStatus === "deposit-paid" ? (bk.depositAmount || 0) : bk.paymentAmount;
+          byService[key].rev += retainedBookingPayment(bk);
         }
         const serviceEntries = Object.entries(byService).sort((a, b) => b[1].rev - a[1].rev);
         const confirmedPayments = payments.filter(p => p.status === "completed");
-        const paidBookings = bookings.filter(b => ["paid", "cash", "deposit-paid"].includes(b.paymentStatus || "unpaid"));
+        const paidBookings = bookings.filter(b => retainedBookingPayment(b) > 0);
         const avgBookingValue = paidBookings.length > 0
-          ? paidBookings.reduce((s, b) => s + (b.paymentStatus === "deposit-paid" ? (b.depositAmount || 0) : (b.paymentAmount || 0)), 0) / paidBookings.length
+          ? paidBookings.reduce((s, b) => s + retainedBookingPayment(b), 0) / paidBookings.length
           : 0;
         const conversionRate = bookings.length > 0
           ? bookings.filter(b => b.status === "confirmed" || b.status === "completed").length / bookings.length
@@ -382,11 +399,11 @@ export default function FinanceView() {
         };
         const revenueBySource: Record<string, { count: number; rev: number }> = {};
         for (const bk of bookings) {
-          if (!bk.paymentAmount || bk.status === "cancelled" || !["paid", "cash", "deposit-paid"].includes(bk.paymentStatus || "unpaid")) continue;
+          if (!retainedBookingPayment(bk)) continue;
           const src = (bk.source as string) || "direct";
           if (!revenueBySource[src]) revenueBySource[src] = { count: 0, rev: 0 };
           revenueBySource[src].count++;
-          revenueBySource[src].rev += bk.paymentStatus === "deposit-paid" ? (bk.depositAmount || 0) : bk.paymentAmount;
+          revenueBySource[src].rev += retainedBookingPayment(bk);
         }
         const srcEntries = Object.entries(revenueBySource).sort((a, b) => b[1].rev - a[1].rev);
         const maxSrcRev = srcEntries.length > 0 ? Math.max(...srcEntries.map(e => e[1].rev), 1) : 1;
@@ -625,6 +642,7 @@ export default function FinanceView() {
                       <span className={`text-[10px] font-body px-2 py-0.5 rounded-full ${methodColor(p.method)}`}>{methodLabel(p.method)}</span>
                       <span className={`text-[10px] font-body px-2 py-0.5 rounded-full capitalize ${statusColor(p.status)}`}>{p.status}</span>
                       <p className="text-sm font-display text-foreground w-16 text-right">${p.amount.toFixed(2)}</p>
+                      {p.bookingId && bookingPayments.find(booking => booking.id === p.bookingId)?.status === "cancelled" && <button disabled={refundBusy !== null} onClick={() => void recordFullRefund(p.bookingId!)} className="text-xs text-primary hover:underline">{refundBusy === p.bookingId ? "Saving…" : "Record full refund"}</button>}
                       {p.bookingId ? (
                         <button onClick={() => navigate(`/admin/bookings?search=${encodeURIComponent(p.reference || p.clientName)}`)} className="text-[10px] font-body text-primary hover:underline">Booking</button>
                       ) : (

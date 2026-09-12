@@ -16,11 +16,15 @@ function buildEventRevenue({ bookings = [], albums = [], orders = {}, eventTypes
     return groups.get(key);
   };
   for (const booking of bookingMap.values()) {
-    if (booking.status === "cancelled") continue;
+    if (booking.paymentRefundStatus === "full") continue;
     const row = groupFor(booking);
     if (!row) continue;
     const total = cents(booking.paymentAmount);
     const paid = ["paid", "cash"].includes(booking.paymentStatus) ? total : booking.paymentStatus === "deposit-paid" ? Math.min(total, cents(booking.depositAmount)) : 0;
+    if (booking.status === "cancelled") {
+      row.bookingCollected += paid;
+      continue;
+    }
     row.bookings++; row.booked += total; row.bookingCollected += paid; row.outstanding += total - paid;
     row.extras += (booking.lineItems || []).reduce((sum, item) => sum + cents(item.total), 0);
     if (booking.lineItems?.length) row.extraPurchases.push({
@@ -64,7 +68,7 @@ function buildEventRevenue({ bookings = [], albums = [], orders = {}, eventTypes
       else row.galleryCollected += cents(request.amount);
     }
   }
-  const rows = [...groups.values()].filter(row => row.bookings || row.galleryCollected || row.pendingTransfers || row.unpricedRequests || row.unpricedPurchases).map(row => {
+  const rows = [...groups.values()].filter(row => row.bookings || row.bookingCollected || row.galleryCollected || row.pendingTransfers || row.unpricedRequests || row.unpricedPurchases).map(row => {
     for (const field of ["booked", "bookingCollected", "outstanding", "extras", "galleryCollected", "pendingTransfers"]) row[field] /= 100;
     return { ...row, collected: Math.round((row.bookingCollected + row.galleryCollected) * 100) / 100 };
   }).sort((a, b) => b.collected - a.collected || a.event.localeCompare(b.event) || a.date.localeCompare(b.date));

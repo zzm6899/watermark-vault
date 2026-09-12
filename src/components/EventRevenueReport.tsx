@@ -6,7 +6,7 @@ import { EventExtraPurchases, type ExtraPurchase } from "@/components/EventExtra
 
 type Row = { key: string; eventId: string; event: string; date: string; bookings: number; booked: number; bookingCollected: number; outstanding: number; extras: number; extraPurchases?: ExtraPurchase[]; galleryCollected: number; collected: number; pendingTransfers: number; unpricedPurchases: number; unpricedRequests: number };
 const money = (value: number) => new Intl.NumberFormat("en-AU", { style: "currency", currency: "AUD" }).format(value);
-export function EventRevenueReport() {
+export function EventRevenueReport({ revision = 0 }: { revision?: number }) {
   const [rows, setRows] = useState<Row[]>([]);
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
@@ -24,7 +24,7 @@ export function EventRevenueReport() {
       .then(data => { setRows(data.rows); setLoading(false); })
       .catch(error => { if (!controller.signal.aborted) { setError(error.message); setLoading(false); } });
     return () => controller.abort();
-  }, [from, to, groupBy, retry]);
+  }, [from, to, groupBy, retry, revision]);
   const visible = rows.filter(row => row.event.toLowerCase().includes(search.toLowerCase()));
   const selectedExtras = visible.find(row => row.key === expandedExtras);
   const sum = (field: "collected" | "outstanding" | "pendingTransfers") => visible.reduce((total, row) => total + row[field], 0);
@@ -49,6 +49,6 @@ export function EventRevenueReport() {
       {selectedExtras && <EventExtraPurchases key={selectedExtras.key} event={`${selectedExtras.event}${selectedExtras.date ? ` · ${selectedExtras.date}` : ""}`} purchases={selectedExtras.extraPurchases || []} onClose={() => setExpandedExtras(null)} />}
       {!!unpriced && <p className="text-sm text-amber-500">{unpriced} historical payment record(s) have no verified amount and are excluded from totals.</p>}
     </>}
-    <p className="text-xs text-muted-foreground leading-relaxed">AUD · Dates filter the shoot date, not the payment date. Collected includes confirmed booking payments and recorded gallery sales. ¹ Extras are already included in booking value. Pending transfers are not collected revenue. Cancelled bookings, invoices, refunds, fees and expenses are outside this report.</p>
+    <p className="text-xs text-muted-foreground leading-relaxed">AUD · Dates filter the shoot date, not the payment date. Collected includes confirmed booking payments and recorded gallery sales. ¹ Extras are already included in booking value. Pending transfers are not collected revenue. Cancelled shoots contribute only retained payments; bookings marked fully refunded are excluded. Invoices, fees and expenses are outside this report.</p>
   </section>;
 }

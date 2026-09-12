@@ -3734,7 +3734,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                       </div>
                       <div className="p-3 rounded-lg bg-secondary/50">
                         <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-1">Payment</p>
-                        <p className="text-sm font-body text-foreground">{bk.paymentStatus === "paid" ? "Paid in Full" : bk.paymentStatus === "deposit-paid" ? "Deposit Paid" : bk.paymentStatus === "pending-confirmation" ? "Bank Transfer Pending" : bk.paymentStatus || "Unpaid"}</p>
+                        <p className="text-sm font-body text-foreground">{bk.paymentRefundStatus === "full" ? "Fully Refunded" : bk.paymentStatus === "paid" ? "Paid in Full" : bk.paymentStatus === "deposit-paid" ? "Deposit Paid" : bk.paymentStatus === "pending-confirmation" ? "Bank Transfer Pending" : bk.paymentStatus || "Unpaid"}</p>
                         <p className="text-[11px] font-body text-muted-foreground mt-1">
                           Method: {bk.paymentMethod === "bank" || bk.depositMethod === "bank" ? "Bank transfer" : bk.paymentMethod === "cash" || bk.paymentStatus === "cash" ? "Cash" : bk.stripeCheckoutSessionId ? "Card via Stripe — checkout opened" : bk.paymentMethod === "stripe" || bk.depositMethod === "stripe" ? "Card selected — no checkout/payment recorded" : bk.paymentStatus === "unpaid" ? "Not selected — no payment started" : "Not recorded"}
                         </p>

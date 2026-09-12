@@ -8303,6 +8303,7 @@ const ADMIN_BOOKING_EDITABLE_FIELDS = new Set([
 ]);
 
 const ADMIN_BOOKING_SERVER_MANAGED_FIELDS = new Set([
+  "paymentRefundStatus", "paymentRefundedAt", "paymentRefundAmount",
   "paymentStatus", "paymentAmount", "depositRequired", "depositAmount", "depositMethod",
   "paymentMethod", "requiresConfirmation",
 ]);
@@ -8535,6 +8536,29 @@ app.patch("/api/admin/bookings/:id/bank-payment", superLimiter, requireAuth, asy
     console.error(`Bank payment confirmation failed for ${bookingId}:`, error?.message || error);
     return res.status(500).json({ ok: false, error: "Bank payment confirmation failed" });
   }
+});
+
+// Record an externally completed refund; this endpoint never moves funds.
+app.patch("/api/admin/bookings/:id/full-refund", superLimiter, requireAuth, async (req, res) => {
+  const bookingId = String(req.params.id || "");
+  return withCheckoutResourceLock(bookingCheckoutResourceLockKey("main", bookingId), async () => {
+    const db = readDb();
+    const bookings = getStoredArray(db, DB_KEYS.BOOKINGS);
+    const index = bookings.findIndex(booking => !booking.tenantSlug && booking.id === bookingId);
+    if (index < 0) return res.status(404).json({ ok: false, error: "Booking not found" });
+    const current = bookings[index];
+    if (current.paymentRefundStatus === "full") return res.json({ ok: true, booking: current });
+    if (current.status !== "cancelled") return res.status(409).json({ ok: false, error: "Only cancelled bookings can be marked fully refunded here" });
+    const amount = current.paymentStatus === "deposit-paid" ? Number(current.depositAmount) : ["paid", "cash"].includes(current.paymentStatus) ? Number(current.paymentAmount) : 0;
+    if (!Number.isFinite(amount) || amount <= 0) return res.status(409).json({ ok: false, error: "No confirmed payment to refund" });
+    const changedAt = new Date().toISOString();
+    const updated = { ...current, paymentRefundStatus: "full", paymentRefundAmount: Math.round(amount * 100) / 100, paymentRefundedAt: changedAt,
+      paymentHistory: [...(Array.isArray(current.paymentHistory) ? current.paymentHistory : []), { action: "full-refund-recorded", source: "admin", changedAt, amount }] };
+    bookings[index] = updated;
+    db[DB_KEYS.BOOKINGS] = JSON.stringify(bookings);
+    writeDb(db);
+    return res.json({ ok: true, booking: updated });
+  });
 });
 
 app.patch("/api/admin/bookings/:id/complete-balance", superLimiter, requireAuth, async (req, res) => {

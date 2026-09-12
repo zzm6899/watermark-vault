@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  retainedBookingPayment,
   buildBookingCalendarUrl,
   bookingNeedsOutstandingPayment,
   contactQuestionRole,
@@ -165,5 +166,16 @@ describe("calendar links", () => {
       timeZone: "Australia/Sydney",
     }));
     expect(url.searchParams.get("dates")).toBe("20260807T233000/20260808T010000");
+  });
+});
+
+
+describe("retained booking payments", () => {
+  it("counts confirmed receipts and removes fully refunded receipts", () => {
+    expect(retainedBookingPayment({ paymentStatus: "unpaid", paymentAmount: 200 })).toBe(0);
+    expect(retainedBookingPayment({ paymentStatus: "deposit-paid", paymentAmount: 200, depositAmount: 50 })).toBe(50);
+    expect(retainedBookingPayment({ paymentStatus: "paid", paymentAmount: 200 })).toBe(200);
+    expect(retainedBookingPayment({ paymentStatus: "deposit-paid", depositAmount: 50, paymentRefundStatus: "full" })).toBe(0);
+    expect(retainedBookingPayment({ paymentStatus: "paid", paymentAmount: 200, paymentRefundStatus: "full" })).toBe(0);
   });
 });
