@@ -1,3 +1,4 @@
+import BulkProofingPanel from "@/components/BulkProofingPanel";
 import EmailMessageEditor from "@/components/EmailMessageEditor";
 import { buildClientEmail, buildGalleryStatusEmail } from "@/lib/client-email";
 import { buildProofingEmail, proofingEmailSubject } from "@/lib/proofing-email";
@@ -4626,6 +4627,8 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
   const [showNew, setShowNew] = useState(false);
   const [editing, setEditing] = useState<Album | null>(null);
   const [mergeMode, setMergeMode] = useState(false);
+  const [proofingSelectMode, setProofingSelectMode] = useState(false);
+  const [bulkProofingBusy, setBulkProofingBusy] = useState(false);
   const [mergeSelection, setMergeSelection] = useState<Set<string>>(new Set());
   const [albumSortKey, setAlbumSortKey] = useState<AlbumSortKey>("date");
   const [albumSortDir, setAlbumSortDir] = useState<SortDir>("desc");
@@ -4853,8 +4856,9 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
           <p className="mt-2 text-sm font-body text-muted-foreground">Manage galleries, proofing state, sharing, and client delivery.</p>
         </div>
         <div className="flex gap-2 flex-wrap">
+          <Button variant="outline" size="sm" disabled={bulkProofingBusy} onClick={() => { setMergeMode(false); setProofingSelectMode(!proofingSelectMode); setMergeSelection(new Set()); }} className="gap-2"><CheckSquare className="w-4 h-4" />{proofingSelectMode ? "Cancel selection" : "Select albums"}</Button>
           {albums.length >= 2 && (
-            <Button variant="outline" size="sm" onClick={() => { setMergeMode(!mergeMode); setMergeSelection(new Set()); }} className="gap-2 font-body text-xs border-border text-foreground">
+            <Button variant="outline" size="sm" disabled={bulkProofingBusy} onClick={() => { setProofingSelectMode(false); setMergeMode(!mergeMode); setMergeSelection(new Set()); }} className="gap-2 font-body text-xs border-border text-foreground">
               <Merge className="w-4 h-4" /> {mergeMode ? "Cancel Merge" : "Merge"}
             </Button>
           )}
@@ -4869,6 +4873,8 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
         <span className="text-sm text-muted-foreground">See who requested access, which photos, and the transfer amount.</span>
       </div>
       {showRequests && <div className="mb-5"><DownloadRequestInbox albums={albums} onOpenAlbum={album => { setEditing(album); setShowNew(false); }} onUpdated={updated => { setAlbumsState(previous => previous.map(album => album.id === updated.id ? updated : album)); setEditing(previous => previous?.id === updated.id ? { ...previous, downloadRequests: updated.downloadRequests } : previous); }} /></div>}
+
+      {proofingSelectMode && <BulkProofingPanel albums={albums} bookings={bookings} selected={mergeSelection} defaultHours={settings.defaultProofingExpiryHours || 48} onBusy={setBulkProofingBusy} onSent={id => { setMergeSelection(previous => { const next = new Set(previous); next.delete(id); return next; }); refresh(); }} />}
 
       {mergeMode && (
         <div className="glass-panel rounded-xl p-4 mb-4 flex items-center justify-between">
@@ -4959,6 +4965,11 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
               <AlbumSortBtn k="client" label="Client" />
             </div>
           </div>
+          {proofingSelectMode && <div className="flex flex-wrap gap-2 mb-3">
+            <Button size="sm" variant="outline" disabled={bulkProofingBusy} onClick={() => setMergeSelection(previous => new Set([...previous, ...visibleAlbums.map(album => album.id)]))}>Select this page ({visibleAlbums.length})</Button>
+            <Button size="sm" variant="outline" disabled={bulkProofingBusy} onClick={() => setMergeSelection(new Set(sortedAlbums.map(album => album.id)))}>Select all matching ({sortedAlbums.length})</Button>
+            <Button size="sm" variant="ghost" disabled={bulkProofingBusy} onClick={() => setMergeSelection(new Set())}>Clear selection</Button>
+          </div>}
           <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
             <div className="flex flex-wrap items-center gap-3"><select aria-label="Filter albums" value={albumFilter} onChange={event => setAlbumFilter(event.target.value)} className="rounded-lg border border-border bg-background px-3 py-2 text-sm"><option value="all">All albums</option><option value="requests">Pending downloads</option><option value="picks">Picks submitted</option><option value="delivered">Delivered</option><option value="hidden">Hidden galleries</option></select><span role="status" className="text-sm text-muted-foreground">{sortedAlbums.length} of {albums.length} albums</span></div>
             <div className="flex rounded-lg border border-border p-1" aria-label="Album display size">{(["compact", "comfortable", "list"] as const).map(layout => <Button key={layout} size="sm" variant={albumLayout === layout ? "default" : "ghost"} aria-pressed={albumLayout === layout} onClick={() => setAlbumLayout(layout)} className="capitalize">{layout}</Button>)}</div>
@@ -4969,7 +4980,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
           {visibleAlbums.map((alb) => {
             const coverSrc = adminAlbumCoverSrc(alb);
             const coverKey = `${alb.id}:${coverSrc || ""}`;
-            if (albumLayout === "list") return <React.Suspense key={alb.id} fallback={<div className="h-20 rounded-xl bg-secondary animate-pulse" />}><AlbumListRow album={alb} cover={coverSrc} onEdit={() => { setEditing(alb); setShowNew(false); }} onView={() => openPublicGallery(alb)} onReview={() => { setShowRequests(true); setEditing(alb); }} selected={mergeSelection.has(alb.id)} onSelect={mergeMode ? () => setMergeSelection(previous => { const next = new Set(previous); if (next.has(alb.id)) next.delete(alb.id); else next.add(alb.id); return next; }) : undefined} /></React.Suspense>;
+            if (albumLayout === "list") return <React.Suspense key={alb.id} fallback={<div className="h-20 rounded-xl bg-secondary animate-pulse" />}><AlbumListRow album={alb} cover={coverSrc} onEdit={() => { setEditing(alb); setShowNew(false); }} onView={() => openPublicGallery(alb)} onReview={() => { setShowRequests(true); setEditing(alb); }} selected={mergeSelection.has(alb.id)} onSelect={(mergeMode || proofingSelectMode) && !bulkProofingBusy ? () => setMergeSelection(previous => { const next = new Set(previous); if (next.has(alb.id)) next.delete(alb.id); else next.add(alb.id); return next; }) : undefined} /></React.Suspense>;
             return (
             <div key={alb.id} className={`glass-panel album-admin-card rounded-xl overflow-hidden transition-all hover:-translate-y-0.5 hover:border-primary/30 ${mergeMode ? "cursor-pointer" : ""} ${mergeSelection.has(alb.id) ? "ring-2 ring-primary" : ""} ${alb.enabled === false ? "opacity-50" : ""}`}
               onClick={() => {
@@ -4982,6 +4993,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                 }
               }}
             >
+              {proofingSelectMode && <label className="flex items-center gap-2 px-3 py-2 text-xs" onClick={event => event.stopPropagation()}><input type="checkbox" aria-label={`Select ${alb.title}`} checked={mergeSelection.has(alb.id)} disabled={bulkProofingBusy} onChange={() => setMergeSelection(previous => { const next = new Set(previous); if (next.has(alb.id)) next.delete(alb.id); else next.add(alb.id); return next; })} />Select album</label>}
               <React.Suspense fallback={<div className="aspect-[16/9] bg-secondary animate-pulse" />}><AlbumCardCover layout={albumLayout} src={!brokenCovers.has(coverKey) ? coverSrc : undefined} title={alb.title} enabled={alb.enabled !== false} onError={() => setBrokenCovers(prev => { const n = new Set(prev); n.add(coverKey); return n; })} /></React.Suspense>
               <div className={`min-w-0 flex-1 space-y-2 ${albumLayout === "comfortable" ? "p-4" : "p-3"}`}>
                 <h3 title={alb.title} className={`font-display leading-tight text-foreground ${albumLayout === "comfortable" ? "text-xl" : "text-base"}`}>{alb.title}</h3>
@@ -4996,7 +5008,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                 })()}
                 {/* ── Unified status dropdown — proofing stage when enabled, otherwise album status ── */}
                 {(() => {
-                  const useProofing = settings.proofingEnabled && alb.proofingEnabled;
+                  const useProofing = alb.proofingEnabled;
                   const linkedBooking = bookingMap.get(alb.bookingId || "");
 
                   const handleChange = async (val: string) => {
@@ -6139,7 +6151,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
         const clientEmail = buildAlbumDraft(photos)?.clientEmail ?? liveAlbum!.clientEmail;
 
         const buildProofingEmailHtml = (galleryUrl: string, expiryDateStr: string, adminNote?: string) =>
-          buildProofingEmail({ albumTitle: liveAlbum!.title, clientName: liveAlbum!.clientName, galleryUrl, expiryDate: expiryDateStr, note: adminNote });
+          buildProofingEmail({ albumTitle: liveAlbum!.title, clientName: liveAlbum!.clientName, galleryUrl, expiryDate: expiryDateStr, note: adminNote, durationMinutes: (linkedBooking || bookings.find(booking => booking.albumId === liveAlbum!.id))?.duration });
 
         const startProofing = async () => {
           if (sendingProofing || savingAlbum || !photos.length) return;

@@ -4,6 +4,19 @@ import { buildProofingEmail, proofingEmailSubject } from "@/lib/proofing-email";
 describe("proofing email", () => {
   const options = { albumTitle: "Portrait session", clientName: "Alex", galleryUrl: "https://example.com/album/portraits?token=abc&round=1" };
 
+  it.each([[20, "5–8"], [40, "10–15"]])("uses the booked %i-minute session allowance", (duration, range) => {
+    const html = buildProofingEmail({ ...options, durationMinutes: Number(duration) });
+    expect(html).toContain(`For your ${duration}-minute session, please pick ${range} photos to be edited.`);
+    expect(html).toContain("Submit Picks");
+  });
+
+  it.each([undefined, 0, 30, 60])("does not invent an allowance for duration %s", durationMinutes => {
+    const html = buildProofingEmail({ ...options, durationMinutes });
+    expect(html).toContain("Please pick the photos you’d like edited.");
+    expect(html).not.toContain("5–8");
+    expect(html).not.toContain("10–15");
+  });
+
   it("includes selection instructions and preserves the private gallery link", () => {
     const html = buildProofingEmail(options);
     expect(html).toContain("Hi Alex,");

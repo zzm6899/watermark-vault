@@ -7,7 +7,7 @@ export function AlbumListRow({ album, cover, onEdit, onView, onReview, selected,
 }) {
   const pending = (album.downloadRequests || []).filter(request => request.status === "pending");
   return <article className={`glass-panel rounded-xl p-3 flex flex-wrap sm:flex-nowrap items-center gap-3 ${selected ? "ring-2 ring-primary" : ""}`}>
-    {onSelect && <input type="checkbox" aria-label={`Select ${album.title} for merge`} checked={selected} onChange={onSelect} className="size-4" />}
+    {onSelect && <input type="checkbox" aria-label={`Select ${album.title}`} checked={selected} onChange={onSelect} className="size-4" />}
     <div className="size-14 shrink-0 rounded-lg overflow-hidden bg-secondary flex items-center justify-center">{cover ? <img src={cover} alt="" loading="lazy" className="size-full object-cover" /> : <Images className="size-5 text-muted-foreground" />}</div>
     <div className="min-w-0 flex-1 basis-40"><button onClick={onEdit} className="text-left font-medium text-sm hover:text-primary break-words">{album.title}</button><p className="text-xs text-muted-foreground">{album.clientName || "No linked client"} · {album._photosStripped ? album.photoCount || 0 : album.photos.length} photos · {album.date}</p></div>
     <div className="min-w-0 sm:w-44"><p className="text-xs capitalize text-muted-foreground">{album.enabled === false ? "Hidden · " : ""}{(album.proofingEnabled ? album.proofingStage : album.status)?.replaceAll("-", " ") || "Editing"}</p>{pending.length > 0 && <button onClick={onReview} className="text-xs text-amber-500 hover:underline">{pending.length} download request{pending.length === 1 ? "" : "s"} · Review</button>}</div>

@@ -2033,6 +2033,7 @@ function MobileCaptureInner() {
         const html = buildProofingEmail({
           albumTitle: targetAlbum.title,
           clientName: selectedBooking.clientName,
+          durationMinutes: selectedBooking.duration,
           galleryUrl,
           expiryDate: updatedAlbum.proofingExpiresAt ? new Date(updatedAlbum.proofingExpiresAt).toLocaleString("en-AU", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : undefined,
         });

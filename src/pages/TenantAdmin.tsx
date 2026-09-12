@@ -1612,6 +1612,12 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
   onSave: (alb: Album) => void;
   onCancel: () => void;
 }) {
+  const [proofingBookings, setProofingBookings] = useState<Booking[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    fetchTenantMobileData(slug).then(data => { if (!cancelled) setProofingBookings(data?.bookings || []); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [slug]);
   const isNew = !album;
   const [title, setTitle] = useState(album?.title || "");
   const [albumSlug, setAlbumSlug] = useState(album?.slug || "");
@@ -1968,7 +1974,7 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
         const email = liveAlbum.clientEmail;
 
         const buildProofingEmailHtml = (galleryUrl: string, expiryDateStr: string, adminNote?: string) =>
-          buildProofingEmail({ albumTitle: liveAlbum.title, clientName: liveAlbum.clientName, galleryUrl, expiryDate: expiryDateStr, note: adminNote });
+          buildProofingEmail({ albumTitle: liveAlbum.title, clientName: liveAlbum.clientName, galleryUrl, expiryDate: expiryDateStr, note: adminNote, durationMinutes: proofingBookings.find(booking => booking.id === liveAlbum.bookingId || booking.albumId === liveAlbum.id)?.duration });
 
         const startProofing = async () => {
           const noteEl = document.getElementById("t-proofing-note") as HTMLTextAreaElement;
