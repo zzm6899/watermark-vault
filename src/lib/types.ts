@@ -51,6 +51,7 @@ export interface BookingLineItem {
 }
 
 export interface EventType {
+  proofingMessages?: Record<string, string>;
   extras?: BookingExtra[];
   id: string;
   title: string;
@@ -451,6 +452,7 @@ export interface AppSettings {
   watermarkSize: number;
   proofingEnabled: boolean;
   /** Default number of hours a proofing window stays open after being started. Default: 48. */
+  proofingMessages?: Record<string, string>;
   defaultProofingExpiryHours?: number;
   invoiceFrom?: InvoiceParty;
   invoiceNotes?: string;
@@ -766,6 +768,7 @@ export interface TenantSettings {
   enquiryLabel?: string;
   // ── Client Proofing ───────────────────────────────────────
   proofingEnabled?: boolean;
+  proofingMessages?: Record<string, string>;
   defaultProofingExpiryHours?: number;
   // ── FTP Upload ───────────────────────────────────────────
   ftpEnabled?: boolean;

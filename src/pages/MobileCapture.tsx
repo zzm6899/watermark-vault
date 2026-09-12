@@ -1,3 +1,4 @@
+import { configuredProofingMessage } from "@/lib/proofing-message-settings";
 import { uploadTimeRemaining } from "@/lib/upload-time";
 import { buildClientEmail } from "@/lib/client-email";
 import { buildProofingEmail, proofingEmailSubject } from "@/lib/proofing-email";
@@ -2042,6 +2043,7 @@ function MobileCaptureInner() {
           albumTitle: targetAlbum.title,
           clientName: selectedBooking.clientName,
           durationMinutes: selectedBooking.duration,
+          selectionGuidance: tenantSession ? undefined : configuredProofingMessage(targetAlbum, selectedBooking),
           galleryUrl,
           expiryDate: updatedAlbum.proofingExpiresAt ? new Date(updatedAlbum.proofingExpiresAt).toLocaleString("en-AU", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : undefined,
         });

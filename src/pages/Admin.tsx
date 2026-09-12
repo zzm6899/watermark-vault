@@ -1,3 +1,5 @@
+import ProofingMessageEditor from "@/components/ProofingMessageEditor";
+import { configuredProofingMessage } from "@/lib/proofing-message-settings";
 import { canSendProofingInvite, proofingInviteAction, sendAlbumProofingInvite } from "@/lib/bulk-proofing";
 import ShootDayUploadButton from "@/components/ShootDayUploadButton";
 import BulkProofingPanel from "@/components/BulkProofingPanel";
@@ -1104,7 +1106,7 @@ function ShootDayCommandCenterView() {
       const fresh = (await fetchAlbumStubs())?.find(item => item.id === album.id);
       if (!fresh) throw new Error("Could not load the album. Refresh and try again.");
       const recipientAlbum = { ...fresh, clientEmail: fresh.clientEmail || booking.clientEmail, clientName: fresh.clientName || booking.clientName };
-      await sendAlbumProofingInvite(recipientAlbum, fresh.proofingExpiryHours ?? settings.defaultProofingExpiryHours ?? 48, "", booking.duration);
+      await sendAlbumProofingInvite(recipientAlbum, fresh.proofingExpiryHours ?? settings.defaultProofingExpiryHours ?? 48, "", booking.duration, configuredProofingMessage(recipientAlbum, booking));
       toast.success(`Proofing invite sent to ${recipientAlbum.clientEmail}`);
     } catch (error) { toast.error(error instanceof Error ? error.message : "Could not send proofing invite"); }
     finally { setProofingBusy(null); setRefreshTick(tick => tick + 1); window.dispatchEvent(new CustomEvent("storage-synced")); }
@@ -4306,6 +4308,7 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
   const [description, setDescription] = useState(eventType?.description || "");
   const [location, setLocation] = useState(eventType?.location || "");
   const [durations, setDurations] = useState<number[]>(eventType?.durations || [30]);
+  const [proofingMessages, setProofingMessages] = useState(eventType?.proofingMessages || {});
   const [price, setPrice] = useState(eventType?.price || 0);
   const [prices, setPrices] = useState<Record<number, number>>({ ...eventType?.prices, ...eventType?.durationPrices });
   const [extras, setExtras] = useState<NonNullable<EventType["extras"]>>(eventType?.extras || []);
@@ -4363,6 +4366,7 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
       title: title.trim(),
       description: description.trim(),
       durations,
+      proofingMessages,
       color: "primary",
       price,
       prices: Object.keys(prices).length > 0 ? prices : undefined,
@@ -4437,6 +4441,7 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
       </div>
 
       <div>
+        <ProofingMessageEditor event value={proofingMessages} onChange={setProofingMessages} durations={durations} defaults={currentSettings.proofingMessages} />
         <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Durations (minutes)</label>
         <div className="flex flex-wrap gap-2 mb-2">
           {durations.map((d) => (
@@ -6195,7 +6200,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
         const clientEmail = buildAlbumDraft(photos)?.clientEmail ?? liveAlbum!.clientEmail;
 
         const buildProofingEmailHtml = (galleryUrl: string, expiryDateStr: string, adminNote?: string) =>
-          buildProofingEmail({ albumTitle: liveAlbum!.title, clientName: liveAlbum!.clientName, galleryUrl, expiryDate: expiryDateStr, note: adminNote, durationMinutes: (linkedBooking || bookings.find(booking => booking.albumId === liveAlbum!.id))?.duration });
+          buildProofingEmail({ albumTitle: liveAlbum!.title, clientName: liveAlbum!.clientName, galleryUrl, selectionGuidance: configuredProofingMessage(liveAlbum!, linkedBooking || undefined), expiryDate: expiryDateStr, note: adminNote, durationMinutes: (linkedBooking || bookings.find(booking => booking.albumId === liveAlbum!.id))?.duration });
 
         const startProofing = async () => {
           if (sendingProofing || savingAlbum || !photos.length) return;
@@ -10069,6 +10074,7 @@ function SettingsView() {
         {/* ── Email Templates tab ── */}
         {activeSettingsTab === "email" && (
           <div id="settings-email-templates" className="lg:col-span-2">
+            <ProofingMessageEditor value={settings.proofingMessages} onChange={proofingMessages => setSettingsState({ ...settings, proofingMessages })} durations={[20, 40, ...getEventTypes().flatMap(event => event.durations)]} />
             <EmailTemplatesManager />
           </div>
         )}

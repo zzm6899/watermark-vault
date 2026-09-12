@@ -22,7 +22,7 @@ export function proofingInviteAction(album: Album): string {
 export const canSendProofingInvite = (album: Album) => ["Start proofing", "Resend invite"].includes(proofingInviteAction(album));
 
 /** Caller supplies fresh server metadata. Save and verify before sending any email. */
-export async function sendAlbumProofingInvite(album: Album, hours: number, note: string, durationMinutes?: number): Promise<Album> {
+export async function sendAlbumProofingInvite(album: Album, hours: number, note: string, durationMinutes?: number, selectionGuidance?: string): Promise<Album> {
   const action = proofingInviteAction(album);
   if (!canSendProofingInvite(album)) throw new Error(action);
   let updated = album;
@@ -46,7 +46,7 @@ export async function sendAlbumProofingInvite(album: Album, hours: number, note:
   if (!published.ok) throw new Error(published.error || "Gallery link could not be verified");
   const galleryUrl = publicGalleryUrl(updated);
   const result = await sendEmail(updated.clientEmail!.trim(), proofingEmailSubject(updated.title), buildProofingEmail({
-    albumTitle: updated.title, clientName: updated.clientName, galleryUrl, durationMinutes,
+    albumTitle: updated.title, clientName: updated.clientName, galleryUrl, durationMinutes, selectionGuidance,
     expiryDate: updated.proofingExpiresAt ? new Date(updated.proofingExpiresAt).toLocaleString("en-AU", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : undefined,
     note: updated.proofingRounds?.at(-1)?.adminNote,
   }));

@@ -5,7 +5,7 @@ import { canSendProofingInvite, proofingInviteAction, sendAlbumProofingInvite } 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { proofingSelectionGuidance } from "@/lib/proofing-email";
+import { configuredProofingMessage } from "@/lib/proofing-message-settings";
 import { toast } from "sonner";
 
 export default function BulkProofingPanel({ albums, bookings, selected, defaultHours, onSent, onBusy }: {
@@ -33,7 +33,7 @@ export default function BulkProofingPanel({ albums, bookings, selected, defaultH
           if (!fresh) throw new Error("Server unavailable; no email sent");
           const album = fresh.find(item => item.id === original.id);
           if (!album) throw new Error("Album no longer available");
-          await sendAlbumProofingInvite(album, hours, note, durationFor(album));
+          await sendAlbumProofingInvite(album, hours, note, durationFor(album), configuredProofingMessage(album));
           sent++; onSent(album.id);
           setResults(previous => [...previous, `${album.title}: invite sent`]);
         } catch (error) {
@@ -49,7 +49,7 @@ export default function BulkProofingPanel({ albums, bookings, selected, defaultH
     <h3 className="font-display text-lg">Send proofing emails · {chosen.length} selected</h3>
     <p className="text-xs text-muted-foreground">New rounds publish the selected galleries and disable purchasing. Active rounds resend the existing link without changing picks or deadlines. Albums already submitted, in editing or delivered need individual review.</p>
     <div className="max-h-52 overflow-auto space-y-2">
-      {chosen.map(album => <div key={album.id} className="text-sm"><strong>{album.title}</strong> · {album.clientEmail || "No email"}<span className="block text-xs text-muted-foreground">{proofingInviteAction(album)} · {proofingSelectionGuidance(durationFor(album))}</span></div>)}
+      {chosen.map(album => <div key={album.id} className="text-sm"><strong>{album.title}</strong> · {album.clientEmail || "No email"}<span className="block text-xs text-muted-foreground">{proofingInviteAction(album)} · {configuredProofingMessage(album)}</span></div>)}
     </div>
     <label className="block text-xs">Window for new rounds (hours)<Input aria-label="Proofing window hours" type="number" min={1} max={720} value={hours} disabled={busy} onChange={event => setHours(Number(event.target.value))} className="mt-1 w-28" /></label>
     <Textarea aria-label="Message for new proofing rounds" placeholder="Optional message for new rounds" value={note} disabled={busy} onChange={event => setNote(event.target.value)} />

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildProofingEmail, proofingEmailSubject } from "@/lib/proofing-email";
+import { buildProofingEmail, proofingEmailSubject, proofingSelectionGuidance } from "@/lib/proofing-email";
 
 describe("proofing email", () => {
   const options = { albumTitle: "Portrait session", clientName: "Alex", galleryUrl: "https://example.com/album/portraits?token=abc&round=1" };
@@ -37,5 +37,22 @@ describe("proofing email", () => {
 
   it("rejects unsafe gallery links", () => {
     expect(() => buildProofingEmail({ ...options, galleryUrl: "javascript:alert(1)" })).toThrow("Invalid email link");
+  });
+});
+
+
+describe("custom proofing guidance", () => {
+  it("uses event overrides, then settings, then built-in defaults", () => {
+    const defaults = { "20": "Pick 6 photos.", default: "Pick your favourites." };
+    expect(proofingSelectionGuidance(20, defaults, { "20": "Pick 4 photos." })).toBe("Pick 4 photos.");
+    expect(proofingSelectionGuidance(20, defaults, { "20": "  " })).toBe("Pick 6 photos.");
+    expect(proofingSelectionGuidance(60, defaults)).toBe("Pick your favourites.");
+    expect(proofingSelectionGuidance(20, defaults, { default: "Event instructions" })).toBe("Event instructions");
+    expect(proofingSelectionGuidance(40, {})).toContain("10\u201315");
+  });
+  it("replaces the built-in allowance and escapes custom wording", () => {
+    const html = buildProofingEmail({ albumTitle: "Portraits", galleryUrl: "https://example.com/gallery", durationMinutes: 20, selectionGuidance: "Choose <6> favourites & submit." });
+    expect(html).toContain("Choose &lt;6&gt; favourites &amp; submit.");
+    expect(html).not.toContain("5\u20138");
   });
 });
