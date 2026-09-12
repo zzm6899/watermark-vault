@@ -148,6 +148,19 @@ export function hasExpiredBookingPaymentHold(
   return Number.isFinite(expiresAt) && expiresAt <= nowMs;
 }
 
+/** Remaining recorded booking charge, deducting only confirmed payments. */
+export function getRecordedBookingBalance(booking: Pick<Booking, "paymentAmount" | "depositAmount" | "paymentStatus">): { total: number; paid: number; remaining: number } | null {
+  if (typeof booking.paymentAmount !== "number" || !Number.isFinite(booking.paymentAmount) || booking.paymentAmount < 0) return null;
+  const totalCents = Math.round(booking.paymentAmount * 100);
+  let paidCents = 0;
+  if (booking.paymentStatus === "paid" || booking.paymentStatus === "cash") paidCents = totalCents;
+  else if (booking.paymentStatus === "deposit-paid") {
+    if (typeof booking.depositAmount !== "number" || !Number.isFinite(booking.depositAmount) || booking.depositAmount < 0) return null;
+    paidCents = Math.min(totalCents, Math.round(booking.depositAmount * 100));
+  }
+  return { total: totalCents / 100, paid: paidCents / 100, remaining: (totalCents - paidCents) / 100 };
+}
+
 export function bookingNeedsOutstandingPayment(
   booking: Pick<Booking, "status" | "paymentStatus" | "paymentAmount" | "depositAmount" | "holdExpiresAt"> | null | undefined,
   nowMs = Date.now(),
