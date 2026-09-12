@@ -1,3 +1,6 @@
+import EmailMessageEditor from "@/components/EmailMessageEditor";
+import { buildClientEmail, buildGalleryStatusEmail } from "@/lib/client-email";
+import { buildProofingEmail, proofingEmailSubject } from "@/lib/proofing-email";
 import DownloadRequestInbox from "@/components/DownloadRequestInbox";
 import { BookingPriceBreakdown } from "@/components/BookingExtras";
 import ProofingReceipt from "@/components/ProofingReceipt";
@@ -1297,7 +1300,7 @@ function ShootDayCommandCenterView() {
     const varsBooking = { ...session.booking, galleryLink } as Booking & { galleryLink?: string };
     const subject = replaceBookingVars(messageSubject, varsBooking, eventTypes).replace(/\{\{galleryLink\}\}/g, galleryLink);
     const text = replaceBookingVars(messageBody, varsBooking, eventTypes).replace(/\{\{galleryLink\}\}/g, galleryLink);
-    const html = `<div style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:32px;background:#0a0a0a;color:#f5f5f5;border-radius:12px;"><p style="color:#ccc;line-height:1.8;white-space:pre-wrap;">${escapeRunSheetHtml(text)}</p></div>`;
+    const html = buildClientEmail({ title: subject, body: text });
     setSendingShootDayMessage(true);
     const result = await sendCustomEmail(session.booking.clientEmail, subject, html, text, session.booking.id);
     setSendingShootDayMessage(false);
@@ -2854,6 +2857,8 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
   const [selectMode, setSelectMode] = useState(false);
   const [bulkEmailSubject, setBulkEmailSubject] = useState("");
   const [bulkEmailBody, setBulkEmailBody] = useState("");
+  const [bulkTemplateId, setBulkTemplateId] = useState("");
+  const [bulkTemplateName, setBulkTemplateName] = useState("");
   const [sendingBulkEmail, setSendingBulkEmail] = useState(false);
   const [showBulkPreview, setShowBulkPreview] = useState(true);
   const [bulkPreviewIndex, setBulkPreviewIndex] = useState(0);
@@ -3332,7 +3337,9 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
               <label className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Load Template</label>
               <div className="flex flex-wrap gap-1.5">
                 {emailTemplates.map(t => (
-                  <button key={t.id} onClick={() => {
+                  <button key={t.id} disabled={sendingBulkEmail} onClick={() => {
+                    setBulkTemplateId(t.id);
+                    setBulkTemplateName(t.name);
                     setBulkEmailSubject(t.subject);
                     setBulkEmailBody(t.body);
                     setBulkPreviewIndex(0);
@@ -3344,8 +3351,22 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
             </div>
           )}
 
-          <Input value={bulkEmailSubject} onChange={e => setBulkEmailSubject(e.target.value)} placeholder="Email subject… (supports {{clientName}}, {{eventTitle}}, etc.)" className="bg-secondary border-border text-foreground font-body text-sm" />
-          <Textarea value={bulkEmailBody} onChange={e => setBulkEmailBody(e.target.value)} placeholder="Email body… Variables will be replaced per recipient." className="bg-secondary border-border text-foreground font-body text-sm min-h-[100px]" />
+          <EmailMessageEditor subject={bulkEmailSubject} body={bulkEmailBody} onSubjectChange={setBulkEmailSubject} onBodyChange={setBulkEmailBody} variables={EMAIL_TEMPLATE_VARS} disabled={sendingBulkEmail} />
+          {findUnknownEmailVars(bulkEmailSubject, bulkEmailBody).length > 0 && <p role="alert" className="text-xs text-amber-400">Check these placeholders before sending: {findUnknownEmailVars(bulkEmailSubject, bulkEmailBody).map(name => `{{${name}}}`).join(", ")}</p>}
+          <div className="flex flex-wrap items-end gap-2 rounded-lg border border-border p-3">
+            <div className="flex-1 min-w-40">
+              <label htmlFor="bulk-template-name" className="block text-xs text-muted-foreground mb-1.5">Template name</label>
+              <Input id="bulk-template-name" value={bulkTemplateName} onChange={event => setBulkTemplateName(event.target.value)} placeholder="e.g. Session preparation" disabled={sendingBulkEmail} />
+            </div>
+            <Button type="button" variant="outline" disabled={sendingBulkEmail || !bulkTemplateName.trim() || !bulkEmailSubject.trim() || !bulkEmailBody.trim()} onClick={() => {
+              const existing = emailTemplates.find(template => template.id === bulkTemplateId);
+              const template = { id: existing?.id || generateId("tpl"), name: bulkTemplateName.trim(), subject: bulkEmailSubject, body: bulkEmailBody, createdAt: existing?.createdAt || new Date().toISOString() };
+              if (existing) updateEmailTemplate(template); else addEmailTemplate(template);
+              setBulkTemplateId(template.id);
+              toast.success(existing ? "Template updated" : "Template saved");
+            }}><Save className="mr-2 h-3.5 w-3.5" />{bulkTemplateId ? "Update template" : "Save template"}</Button>
+            {bulkTemplateId && <Button type="button" variant="ghost" disabled={sendingBulkEmail} onClick={() => { setBulkTemplateId(""); setBulkTemplateName(""); }}>Save as new</Button>}
+          </div>
 
           {/* Bulk Live Preview — cycles through selected recipients */}
           {showBulkPreview && bulkEmailSubject.trim() && bulkEmailBody.trim() && (() => {
@@ -3379,9 +3400,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                 <div className="p-4 bg-background/50">
                   <p className="text-xs font-body text-muted-foreground mb-1">To: <span className="text-foreground">{sample.clientEmail}</span></p>
                   <p className="text-xs font-body text-muted-foreground mb-3">Subject: <span className="text-foreground font-medium" dangerouslySetInnerHTML={{ __html: previewBookingVarsHtml(bulkEmailSubject, sample, eventTypes) }} /></p>
-                  <div className="rounded-lg p-4" style={{ background: "#0a0a0a", color: "#f5f5f5", fontFamily: "sans-serif", maxWidth: 520 }}>
-                    <p style={{ color: "#ccc", lineHeight: 1.8, whiteSpace: "pre-wrap" }} dangerouslySetInnerHTML={{ __html: previewBookingVarsHtml(bulkEmailBody, sample, eventTypes) }} />
-                  </div>
+                  <iframe title="Bulk email preview" sandbox="" srcDoc={buildClientEmail({ title: replaceBookingVars(bulkEmailSubject, sample, eventTypes), body: replaceBookingVars(bulkEmailBody, sample, eventTypes) })} className="w-full h-[520px] border-0 bg-white" />
                 </div>
               </div>
             );
@@ -3401,7 +3420,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
               className="gap-1.5 font-body text-xs border-border text-foreground hover:bg-secondary">
               <Eye className="w-3 h-3" /> {showBulkPreview ? "Hide Preview" : "Show Preview"}
             </Button>
-            <Button size="sm" disabled={sendingBulkEmail || !bulkEmailSubject.trim() || !bulkEmailBody.trim()}
+            <Button size="sm" disabled={sendingBulkEmail || !bulkEmailSubject.trim() || !bulkEmailBody.trim() || findUnknownEmailVars(bulkEmailSubject, bulkEmailBody).length > 0}
               className="gap-1.5 bg-primary text-primary-foreground font-body text-xs"
               onClick={async () => {
                 const selected = bookings.filter(b => selectedBookingIds.has(b.id) && b.archived !== true && b.clientEmail);
@@ -3410,21 +3429,31 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                 setSendingBulkEmail(true);
                 setBulkEmailProgress({ sent: 0, total: selected.length });
                 let sent = 0;
-                for (const bk of selected) {
-                  const subj = replaceBookingVars(bulkEmailSubject, bk, eventTypes);
-                  const body = replaceBookingVars(bulkEmailBody, bk, eventTypes);
-                  const html = `<div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:32px;background:#0a0a0a;color:#f5f5f5;border-radius:12px;"><p style="color:#ccc;line-height:1.8;white-space:pre-wrap;">${body.replace(/\n/g, "<br/>")}</p></div>`;
-                  await sendCustomEmail(bk.clientEmail, subj, html, body, bk.id);
-                  sent++;
-                  setBulkEmailProgress({ sent, total: selected.length });
+                const failed = new Set<string>();
+                try {
+                  for (const [index, bk] of selected.entries()) {
+                    try {
+                      const subj = replaceBookingVars(bulkEmailSubject, bk, eventTypes);
+                      const body = replaceBookingVars(bulkEmailBody, bk, eventTypes);
+                      const result = await sendCustomEmail(bk.clientEmail, subj, buildClientEmail({ title: subj, body }), body, bk.id);
+                      if (result.ok) sent++; else failed.add(bk.id);
+                    } catch { failed.add(bk.id); }
+                    setBulkEmailProgress({ sent: index + 1, total: selected.length });
+                  }
+                  if (failed.size) toast.error(`Sent ${sent} emails; ${failed.size} failed. Failed recipients remain selected.`);
+                  else toast.success(`Sent ${sent} emails successfully`);
+                  setSelectedBookingIds(failed);
+                  if (!failed.size) {
+                    setBulkEmailOpen(false);
+                    setBulkEmailSubject("");
+                    setBulkEmailBody("");
+                    setBulkTemplateId("");
+                    setBulkTemplateName("");
+                  }
+                } finally {
+                  setSendingBulkEmail(false);
+                  setBulkEmailProgress(null);
                 }
-                setSendingBulkEmail(false);
-                setBulkEmailProgress(null);
-                toast.success(`Sent ${sent} emails successfully`);
-                setBulkEmailOpen(false);
-                setSelectedBookingIds(new Set());
-                setBulkEmailSubject("");
-                setBulkEmailBody("");
               }}>
               <Send className="w-3 h-3" />
               {sendingBulkEmail ? "Sending…" : `Send to ${selectedEmailCount} Clients`}
@@ -3944,9 +3973,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                                 <div className="p-4 bg-background/50">
                                   <p className="text-xs font-body text-muted-foreground mb-1">To: <span className="text-foreground">{bk.clientEmail}</span></p>
                                   <p className="text-xs font-body text-muted-foreground mb-3">Subject: <span className="text-foreground font-medium" dangerouslySetInnerHTML={{ __html: previewBookingVarsHtml(customEmailSubject, bk, eventTypes) }} /></p>
-                                  <div className="rounded-lg p-4" style={{ background: "#0a0a0a", color: "#f5f5f5", fontFamily: "sans-serif", maxWidth: 520 }}>
-                                    <p style={{ color: "#ccc", lineHeight: 1.8, whiteSpace: "pre-wrap" }} dangerouslySetInnerHTML={{ __html: previewBookingVarsHtml(customEmailBody, bk, eventTypes) }} />
-                                  </div>
+                                  <iframe title="Email preview" sandbox="" srcDoc={buildClientEmail({ title: replaceBookingVars(customEmailSubject, bk, eventTypes), body: replaceBookingVars(customEmailBody, bk, eventTypes) })} className="w-full h-[520px] border-0 bg-white" />
                                 </div>
                               </div>
                             )}
@@ -3963,7 +3990,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                                   setSendingCustomEmail(true);
                                   const finalSubject = replaceBookingVars(customEmailSubject, bk, eventTypes);
                                   const finalBody = replaceBookingVars(customEmailBody, bk, eventTypes);
-                                  const html = `<div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:32px;background:#0a0a0a;color:#f5f5f5;border-radius:12px;"><p style="color:#ccc;line-height:1.8;white-space:pre-wrap;">${finalBody.replace(/\n/g, "<br/>")}</p></div>`;
+                                  const html = buildClientEmail({ title: finalSubject, body: finalBody });
                                   const result = await sendCustomEmail(bk.clientEmail, finalSubject, html, finalBody, bk.id);
                                   setSendingCustomEmail(false);
                                   if (result.ok) {
@@ -4807,10 +4834,10 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
   const handleSendNotification = async (album: Album) => {
     if (!album.clientEmail) { toast.error("No client email on this album"); return; }
     if (!(await ensurePublicShareReady(album, "send this gallery link"))) return;
-    const template = settings.notificationEmailTemplate || "Hey {name}, your photos are ready! Check them out here: {link}";
+    const template = settings.notificationEmailTemplate || "Hi {name}, your photos are ready. You can view them here: {link}";
     const link = galleryUrlForAlbum(album);
     const message = template.replace("{name}", album.clientName || "there").replace("{link}", link).replace("{instagram}", (album as any).instagramHandle || album.clientEmail || "");
-    const html = `<div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:32px;background:#0a0a0a;color:#f5f5f5;border-radius:12px;"><h2 style="font-size:22px;margin:0 0 16px;">📸 Your photos are ready!</h2><p style="color:#aaa;line-height:1.6;">${message.replace(link, "")}</p><a href="${link}" style="display:inline-block;margin-top:24px;padding:12px 28px;background:#fff;color:#000;border-radius:8px;text-decoration:none;font-weight:600;">View Your Gallery →</a><p style="margin-top:32px;font-size:11px;color:#555;">${link}</p></div>`;
+    const html = buildClientEmail({ title: album.title, body: message.replace(link, ""), action: { label: "View your gallery", url: link } });
     try {
       const result = await sendEmail(album.clientEmail, `Your photos are ready — ${album.clientName || "Gallery"}`, html, message);
       if (result.ok) toast.success(`Email sent to ${album.clientEmail}`);
@@ -5299,6 +5326,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
   const [purchasingDisabled, setPurchasingDisabled] = useState(album?.purchasingDisabled || false);
   const [downloadEmailCapture, setDownloadEmailCapture] = useState<"off" | "optional" | "required">(album?.downloadEmailCapture || "off");
   const [savingAlbum, setSavingAlbum] = useState(false);
+  const [sendingProofing, setSendingProofing] = useState(false);
   const [albumProofingEnabled, setAlbumProofingEnabled] = useState(album?.proofingEnabled || false);
   const [lockDownloadsDuringProofing, setLockDownloadsDuringProofing] = useState(album?.lockDownloadsDuringProofing || false);
 
@@ -6068,8 +6096,8 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
         </div>
       </div>
 
-      {/* ── Per-album proofing toggle (only visible when global proofing is on) ── */}
-      {album && settings.proofingEnabled && (
+      {/* ── Per-album proofing toggle ── */}
+      {album && (
         <div id="album-editor-workflow" className="scroll-mt-40 flex items-center justify-between p-3 rounded-lg bg-secondary">
           <div>
             <p className="text-xs font-body text-foreground font-medium">Proofing for this album</p>
@@ -6093,7 +6121,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
       )}
 
       {/* ── Lock downloads during proofing (only visible when proofing is on for this album) ── */}
-      {album && settings.proofingEnabled && albumProofingEnabled && (
+      {album && albumProofingEnabled && (
         <div className="flex items-center justify-between p-3 rounded-lg bg-secondary border border-yellow-500/20">
           <div>
             <p className="text-xs font-body text-foreground font-medium flex items-center gap-1.5"><Lock className="w-3 h-3 text-yellow-400" /> Lock downloads during proofing</p>
@@ -6104,45 +6132,56 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
       )}
 
       {/* ── Proofing Controls ─────────────────────────────── */}
-      {liveAlbum && settings.proofingEnabled && albumProofingEnabled && (() => {
-        const stage = liveAlbum!.proofingStage || "not-started";
+      {liveAlbum && (() => {
+        const stage = albumProofingEnabled ? liveAlbum!.proofingStage || "not-started" : "not-started";
         const rounds = liveAlbum!.proofingRounds || [];
         const latest = rounds[rounds.length - 1];
-        const clientEmail = liveAlbum!.clientEmail;
+        const clientEmail = buildAlbumDraft(photos)?.clientEmail ?? liveAlbum!.clientEmail;
 
         const buildProofingEmailHtml = (galleryUrl: string, expiryDateStr: string, adminNote?: string) =>
-          `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;"><h2 style="margin:0 0 16px;font-size:20px;">Your photos are ready to review!</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${liveAlbum!.clientName || "there"},</p><p style="color:#9ca3af;margin:0 0 12px;">Your proofing gallery for <strong style="color:#e5e7eb;">${liveAlbum!.title}</strong> is ready. Browse and star the ones you love, then hit Submit Picks.</p>${expiryDateStr ? `<p style="color:#ef4444;margin:0 0 12px;padding:10px 14px;background:#1f1f1f;border-radius:8px;font-size:13px;">⏰ <strong>Proofing window closes: ${expiryDateStr}</strong></p>` : ""}${adminNote ? `<p style="color:#9ca3af;margin:0 0 20px;padding:12px;background:#1f1f1f;border-radius:8px;"><em>"${adminNote}"</em></p>` : ""}<a href="${galleryUrl}" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">View Your Gallery →</a></div>`;
+          buildProofingEmail({ albumTitle: liveAlbum!.title, clientName: liveAlbum!.clientName, galleryUrl, expiryDate: expiryDateStr, note: adminNote });
 
         const startProofing = async () => {
-          const note = (document.getElementById("proofing-admin-note") as HTMLInputElement)?.value || "";
-          const expiryInput = document.getElementById("proofing-expiry-hours") as HTMLInputElement;
-          const expiryHours = expiryInput && expiryInput.value !== ""
-            ? Math.max(1, parseInt(expiryInput.value, 10) || 48)
-            : (liveAlbum!.proofingExpiryHours ?? settings.defaultProofingExpiryHours ?? 48);
-          const proofingExpiresAt = new Date(Date.now() + expiryHours * 3600 * 1000).toISOString();
-          const clientToken = liveAlbum!.clientToken || generateCapabilityToken("ct");
-          const newRound = { roundNumber: rounds.length + 1, sentAt: new Date().toISOString(), selectedPhotoIds: [], adminNote: note || undefined };
-          // Every photo is sent to the client for proofing by default, including
-          // unscored / "review later" photos uploaded from desktop or mobile.
-          // Only an explicit "not sending" choice hides a photo from the client.
-          const proofingPhotos = (liveAlbum!.photos || []).map(photo =>
-            photo.cull?.status === "reject" ? { ...photo, hidden: true } : photo
-          );
-          const updated = { ...liveAlbum!, photos: proofingPhotos, proofingEnabled: true, proofingStage: "proofing" as const, proofingRounds: [...rounds, newRound], clientToken, proofingExpiresAt, purchasingDisabled: true, allUnlocked: false };
-          updateLiveAlbum(updated);
-          let inviteSent = false;
-          if (clientEmail) {
-            if (await ensurePublicShareReady(updated, "send this proofing invite")) {
-              const galleryUrl = publicGalleryUrl(updated);
-              const expiryDateStr = new Date(proofingExpiresAt).toLocaleString("en-AU", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
-              const emailResponse = await fetch("/api/email/send", { method: "POST", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify({ to: clientEmail, subject: `📸 Your proofing gallery is ready — ${liveAlbum!.title}`, html: buildProofingEmailHtml(galleryUrl, expiryDateStr, note || undefined) }) });
-              const emailResult = await emailResponse.json().catch(() => ({}));
-              if (emailResponse.ok && emailResult.ok !== false) inviteSent = true;
-              else toast.error(emailResult.error || "Proofing saved, but the invite email could not be sent.");
+          if (sendingProofing || savingAlbum || !photos.length) return;
+          const draft = buildAlbumDraft(photos);
+          if (!draft) { toast.error("Add an album title before sending for proofing"); return; }
+          setSendingProofing(true);
+          try {
+            const note = (document.getElementById("proofing-admin-note") as HTMLInputElement)?.value || "";
+            const expiryInput = document.getElementById("proofing-expiry-hours") as HTMLInputElement;
+            const expiryHours = expiryInput && expiryInput.value !== ""
+              ? Math.max(1, parseInt(expiryInput.value, 10) || 48)
+              : (liveAlbum!.proofingExpiryHours ?? settings.defaultProofingExpiryHours ?? 48);
+            const proofingExpiresAt = new Date(Date.now() + expiryHours * 3600 * 1000).toISOString();
+            const clientToken = liveAlbum!.clientToken || generateCapabilityToken("ct");
+            const newRound = { roundNumber: rounds.length + 1, sentAt: new Date().toISOString(), selectedPhotoIds: [], adminNote: note || undefined };
+            // Every photo is sent to the client for proofing by default, including
+            // unscored / "review later" photos uploaded from desktop or mobile.
+            // Only an explicit "not sending" choice hides a photo from the client.
+            const proofingPhotos = photos.map(photo =>
+              photo.cull?.status === "reject" ? { ...photo, hidden: true } : photo
+            );
+            const updated = { ...liveAlbum!, ...draft, enabled: true, photos: proofingPhotos, proofingEnabled: true, proofingStage: "proofing" as const, proofingRounds: [...rounds, newRound], clientToken, proofingExpiresAt, purchasingDisabled: true, allUnlocked: false };
+            if (!(await persistExistingAlbum(updated, "Proofing round saved"))) return;
+            setAlbumProofingEnabled(true);
+            setPurchasingDisabled(true);
+            setAllUnlocked(false);
+            let inviteSent = false;
+            if (clientEmail) {
+              if (await ensurePublicShareReady(updated, "send this proofing invite")) {
+                const galleryUrl = publicGalleryUrl(updated);
+                const expiryDateStr = new Date(proofingExpiresAt).toLocaleString("en-AU", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+                const emailResponse = await fetch("/api/email/send", { method: "POST", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify({ to: clientEmail, subject: proofingEmailSubject(liveAlbum!.title), html: buildProofingEmailHtml(galleryUrl, expiryDateStr, note || undefined) }) });
+                const emailResult = await emailResponse.json().catch(() => ({}));
+                if (emailResponse.ok && emailResult.ok !== false) inviteSent = true;
+                else toast.error(emailResult.error || "Proofing saved, but the invite email could not be sent.");
+              }
             }
-          }
-          toast.success("Proofing round started" + (inviteSent ? " — invite sent to client" : clientEmail ? " — invite was not sent" : " (no client email on file)"));
-          onUpdate?.(updated);
+            toast.success("Proofing round started" + (inviteSent ? " — invite sent to client" : clientEmail ? " — invite was not sent" : " (no client email on file)"));
+            onUpdate?.(updated);
+          } catch {
+            toast.error("Could not complete proofing. Check the album before trying again.");
+          } finally { setSendingProofing(false); }
         };
 
         const resendProofingEmail = async () => {
@@ -6152,7 +6191,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
           const expiryDateStr = liveAlbum!.proofingExpiresAt
             ? new Date(liveAlbum!.proofingExpiresAt as string).toLocaleString("en-AU", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })
             : "";
-          const response = await fetch("/api/email/send", { method: "POST", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify({ to: clientEmail, subject: `📸 Your proofing gallery is ready — ${liveAlbum!.title}`, html: buildProofingEmailHtml(galleryUrl, expiryDateStr, latest?.adminNote) }) });
+          const response = await fetch("/api/email/send", { method: "POST", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify({ to: clientEmail, subject: proofingEmailSubject(liveAlbum!.title), html: buildProofingEmailHtml(galleryUrl, expiryDateStr, latest?.adminNote) }) });
           const result = await response.json().catch(() => ({}));
           if (response.ok && result.ok !== false) toast.success("Proofing invite resent to client");
           else toast.error(result.error || "The proofing invite could not be sent.");
@@ -6172,7 +6211,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
           if (!clientEmail) { toast.error("No client email on file"); return; }
           if (!(await ensurePublicShareReady(liveAlbum!, "send this gallery link"))) return;
           const galleryUrl = publicGalleryUrl(liveAlbum!);
-          const response = await fetch("/api/email/send", { method: "POST", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify({ to: clientEmail, subject: `✏️ Your photos are being edited — ${liveAlbum!.title}`, html: `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;"><h2 style="margin:0 0 16px;font-size:20px;">Your photos are being edited ✏️</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${liveAlbum!.clientName || "there"},</p><p style="color:#9ca3af;margin:0 0 20px;">Your selections for <strong style="color:#e5e7eb;">${liveAlbum!.title}</strong> are confirmed and editing has begun. We'll send you another email as soon as your final photos are ready.</p><a href="${galleryUrl}" style="display:inline-block;background:#374151;color:#e5e7eb;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">Preview Gallery →</a></div>` }) });
+          const response = await fetch("/api/email/send", { method: "POST", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify({ to: clientEmail, subject: `Editing your photos — ${liveAlbum!.title}`, html: buildGalleryStatusEmail(liveAlbum!, galleryUrl, "editing") }) });
           const result = await response.json().catch(() => ({}));
           if (response.ok && result.ok !== false) toast.success("Editing notification sent to client");
           else toast.error(result.error || "The editing notification could not be sent.");
@@ -6189,7 +6228,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
               return;
             }
             const galleryUrl = publicGalleryUrl(updated);
-            const response = await fetch("/api/email/send", { method: "POST", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify({ to: clientEmail, subject: `✨ Your final photos are ready — ${liveAlbum!.title}`, html: free ? `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;"><h2 style="margin:0 0 16px;font-size:20px;">Your edited photos are ready! ✨</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${liveAlbum!.clientName || "there"},</p><p style="color:#9ca3af;margin:0 0 20px;">Your final edited photos for <strong style="color:#e5e7eb;">${liveAlbum!.title}</strong> are ready — no payment needed, they're all yours to download!</p><a href="${galleryUrl}" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">Download Your Photos →</a></div>` : `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;"><h2 style="margin:0 0 16px;font-size:20px;">Your edited photos are ready! ✨</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${liveAlbum!.clientName || "there"},</p><p style="color:#9ca3af;margin:0 0 20px;">Your final edited photos for <strong style="color:#e5e7eb;">${liveAlbum!.title}</strong> are now available to view and download.</p><a href="${galleryUrl}" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">View &amp; Download Photos →</a></div>` }) });
+            const response = await fetch("/api/email/send", { method: "POST", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify({ to: clientEmail, subject: `Your finished photos — ${liveAlbum!.title}`, html: buildGalleryStatusEmail(liveAlbum!, galleryUrl, "delivered", free) }) });
             const result = await response.json().catch(() => ({}));
             notificationSent = response.ok && result.ok !== false;
             if (!notificationSent) toast.error(result.error || "Finals were delivered, but the notification email could not be sent.");
@@ -6207,7 +6246,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
         };
 
         return (
-          <div className="border border-border rounded-lg p-4 space-y-3">
+          <div id="album-proofing-controls" className="scroll-mt-40 border border-border rounded-lg p-4 space-y-3">
             <div className="flex items-center justify-between">
               <label className="text-xs font-body tracking-wider uppercase text-muted-foreground">
                   Proofing{rounds.length > 0 ? ` — Round ${rounds.length}` : ""}
@@ -6243,8 +6282,8 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
                   />
                   <label className="text-[11px] font-body text-muted-foreground">hours</label>
                 </div>
-                <button onClick={startProofing} className="flex items-center gap-2 w-full justify-center bg-yellow-500/15 hover:bg-yellow-500/25 text-yellow-400 border border-yellow-500/30 rounded-lg px-4 py-2 text-xs font-body tracking-wider uppercase transition-colors">
-                  <Star className="w-3.5 h-3.5" /> Start Proofing Round {rounds.length + 1}
+                <button onClick={startProofing} disabled={sendingProofing || savingAlbum || !photos.length} className="flex items-center gap-2 w-full justify-center bg-yellow-500/15 hover:bg-yellow-500/25 text-yellow-400 border border-yellow-500/30 rounded-lg px-4 py-2 text-xs font-body tracking-wider uppercase transition-colors">
+                  <Star className="w-3.5 h-3.5" /> {sendingProofing ? "Sending…" : "Send for Proofing"}
                 </button>
               </div>
             )}
@@ -12221,7 +12260,7 @@ function EmailTemplatesManager() {
   const [showForm, setShowForm] = useState(false);
 
   const handleSave = () => {
-    if (!newName.trim() || !newSubject.trim()) return;
+    if (!newName.trim() || !newSubject.trim() || !newBody.trim()) return;
     // Warn on unknown variables so the admin can catch typos before sending
     const unknownVars = findUnknownEmailVars(newSubject, newBody);
     if (unknownVars.length > 0) {
@@ -12296,15 +12335,10 @@ function EmailTemplatesManager() {
             <label className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-1 block">Template Name</label>
             <Input value={newName} onChange={e => setNewName(e.target.value)} placeholder="e.g. Follow Up, Thank You…" className="bg-secondary border-border text-foreground font-body text-sm" />
           </div>
-          <div>
-            <label className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-1 block">Subject Line</label>
-            <Input value={newSubject} onChange={e => setNewSubject(e.target.value)} placeholder="e.g. Your {{eventTitle}} session on {{dateFormatted}}" className="bg-secondary border-border text-foreground font-body text-sm" />
-          </div>
-          <div>
-            <label className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-1 block">Body</label>
-            <Textarea value={newBody} onChange={e => setNewBody(e.target.value)} placeholder="Hey {{firstName}},&#10;&#10;Thanks for booking your {{eventTitle}} session on {{dateFormatted}} at {{timeFormatted}}." className="bg-secondary border-border text-foreground font-body text-sm min-h-[120px]" />
-          </div>
-          <Button size="sm" onClick={handleSave} disabled={!newName.trim() || !newSubject.trim()} className="gap-1.5 bg-primary text-primary-foreground font-body text-xs">
+          <EmailMessageEditor subject={newSubject} body={newBody} onSubjectChange={setNewSubject} onBodyChange={setNewBody} variables={EMAIL_TEMPLATE_VARS} />
+          <p className="text-xs text-muted-foreground">Layout preview — placeholders are filled for each client when sending.</p>
+          <iframe title="Template layout preview" sandbox="" srcDoc={buildClientEmail({ title: newSubject || "Email subject", body: newBody })} className="w-full h-[480px] border-0 bg-white" />
+          <Button size="sm" onClick={handleSave} disabled={!newName.trim() || !newSubject.trim() || !newBody.trim()} className="gap-1.5 bg-primary text-primary-foreground font-body text-xs">
             <Save className="w-3 h-3" /> {editingId ? "Update Template" : "Save Template"}
           </Button>
         </motion.div>

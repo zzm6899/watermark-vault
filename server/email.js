@@ -133,21 +133,21 @@ function formatMoney(value, currency = "AUD") {
 function buildSummaryCard(rows = []) {
   const visibleRows = rows.filter(row => row && row.value !== undefined && row.value !== null && String(row.value) !== "");
   if (!visibleRows.length) return "";
-  return `<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="width:100%;border-collapse:separate;border-spacing:0;background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;margin:0 0 24px;">
+  return `<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="width:100%;border-collapse:separate;border-spacing:0;background:#f7f6f3;border:1px solid #e8e6e1;margin:0 0 24px;">
     ${visibleRows.map((row, index) => `<tr>
-      <td style="padding:${index === 0 ? "16px" : "10px"} 16px ${index === visibleRows.length - 1 ? "16px" : "10px"};color:#64748b;font-family:Arial,sans-serif;font-size:13px;line-height:1.45;${index ? "border-top:1px solid #e2e8f0;" : ""}">${escapeHtml(row.label)}</td>
-      <td align="right" style="padding:${index === 0 ? "16px" : "10px"} 16px ${index === visibleRows.length - 1 ? "16px" : "10px"};color:${row.tone === "success" ? "#15803d" : row.tone === "warning" ? "#a16207" : "#0f172a"};font-family:Arial,sans-serif;font-size:13px;font-weight:${row.emphasis ? "700" : "600"};line-height:1.45;text-align:right;${index ? "border-top:1px solid #e2e8f0;" : ""}">${escapeHtml(row.value)}</td>
+      <td style="padding:${index === 0 ? "16px" : "10px"} 16px ${index === visibleRows.length - 1 ? "16px" : "10px"};color:#73716c;font-family:Arial,sans-serif;font-size:13px;line-height:1.45;${index ? "border-top:1px solid #e8e6e1;" : ""}">${escapeHtml(row.label)}</td>
+      <td align="right" style="padding:${index === 0 ? "16px" : "10px"} 16px ${index === visibleRows.length - 1 ? "16px" : "10px"};color:${row.tone === "success" ? "#15803d" : row.tone === "warning" ? "#a16207" : "#252525"};font-family:Arial,sans-serif;font-size:13px;font-weight:${row.emphasis ? "700" : "600"};line-height:1.45;text-align:right;${index ? "border-top:1px solid #e8e6e1;" : ""}">${escapeHtml(row.value)}</td>
     </tr>`).join("")}
   </table>`;
 }
 
 function buildCallout(title, message, tone = "info") {
   const palette = tone === "success"
-    ? { background: "#f0fdf4", border: "#bbf7d0", title: "#166534", body: "#166534" }
+    ? { background: "#f7f6f3", border: "#e8e6e1", title: "#252525", body: "#494742" }
     : tone === "warning"
-      ? { background: "#fffbeb", border: "#fde68a", title: "#92400e", body: "#92400e" }
+      ? { background: "#faf8f3", border: "#e8e0ce", title: "#655334", body: "#655334" }
       : { background: "#faf8f3", border: "#e8e0ce", title: "#655334", body: "#655334" };
-  return `<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="width:100%;border-collapse:separate;border-spacing:0;background:${palette.background};border:1px solid ${palette.border};border-radius:12px;margin:0 0 24px;"><tr><td style="padding:16px;font-family:Arial,sans-serif;">
+  return `<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="width:100%;border-collapse:separate;border-spacing:0;background:${palette.background};border:1px solid ${palette.border};margin:0 0 24px;"><tr><td style="padding:16px;font-family:Arial,sans-serif;">
     <p style="margin:0 0 4px;color:${palette.title};font-size:14px;font-weight:700;line-height:1.4;">${escapeHtml(title)}</p>
     <p style="margin:0;color:${palette.body};font-size:13px;line-height:1.6;">${escapeHtml(message).replace(/\n/g, "<br>")}</p>
   </td></tr></table>`;
@@ -156,7 +156,7 @@ function buildCallout(title, message, tone = "info") {
 function buildEmailButton(label, url, secondary = false) {
   const href = safeHttpUrl(url);
   if (!href) return "";
-  return `<table role="presentation" cellspacing="0" cellpadding="0" style="border-collapse:separate;margin:${secondary ? "10px" : "0"} auto 0;"><tr><td bgcolor="${secondary ? "#ffffff" : "#242930"}" style="border:${secondary ? "1px solid #cbd5e1" : "1px solid #242930"};border-radius:8px;text-align:center;"><a href="${escapeHtml(href)}" style="display:inline-block;padding:12px 20px;color:${secondary ? "#334155" : "#ffffff"};font-family:Arial,sans-serif;font-size:14px;font-weight:700;line-height:1.2;text-decoration:none;">${escapeHtml(label)}</a></td></tr></table>`;
+  return `<table role="presentation" cellspacing="0" cellpadding="0" style="border-collapse:separate;margin:${secondary ? "10px" : "0"} 0 0;"><tr><td bgcolor="${secondary ? "#ffffff" : "#252525"}" style="border:${secondary ? "1px solid #cbd5e1" : "1px solid #252525"};text-align:left;"><a href="${escapeHtml(href)}" style="display:inline-block;padding:12px 20px;color:${secondary ? "#252525" : "#ffffff"};font-family:Arial,sans-serif;font-size:14px;font-weight:700;line-height:1.2;text-decoration:none;">${escapeHtml(label)}</a></td></tr></table>`;
 }
 
 function buildEmailDocument({
@@ -169,7 +169,7 @@ function buildEmailDocument({
   secondaryAction = null,
   reference = "",
   brandName = DEFAULT_EMAIL_BRAND,
-  footerNote = "Questions? Reply to this email and we’ll be happy to help.",
+  footerNote = "You can reply to this email with any questions.",
   unsubscribeUrl = "",
   trackingPixelUrl = "",
 }) {
@@ -180,24 +180,24 @@ function buildEmailDocument({
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="x-apple-disable-message-reformatting"><title>${escapeHtml(title)}</title>
 <style>@media only screen and (max-width:620px){.email-shell{width:100%!important}.email-pad{padding-left:20px!important;padding-right:20px!important}.email-outer{padding:12px!important}}a[x-apple-data-detectors]{color:inherit!important;text-decoration:none!important}</style></head>
-<body style="margin:0;padding:0;background:#f7f7f5;-webkit-text-size-adjust:100%;-ms-text-size-adjust:100%;">
+<body style="margin:0;padding:0;background:#f3f2ef;-webkit-text-size-adjust:100%;-ms-text-size-adjust:100%;">
   <div style="display:none;max-height:0;overflow:hidden;opacity:0;color:transparent;mso-hide:all;">${escapeHtml(preheader || intro || title)}</div>
-  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" bgcolor="#f7f7f5" style="width:100%;border-collapse:collapse;background:#f7f7f5;"><tr><td class="email-outer" align="center" style="padding:32px 16px;">
-    <table role="presentation" width="600" cellspacing="0" cellpadding="0" class="email-shell" data-photoflow-email="true" style="width:600px;max-width:600px;border-collapse:separate;border-spacing:0;background:#ffffff;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;">
-      <tr><td class="email-pad" bgcolor="#ffffff" style="padding:32px 32px 24px;background:#ffffff;border-bottom:1px solid #e8e5df;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" bgcolor="#f3f2ef" style="width:100%;border-collapse:collapse;background:#f3f2ef;"><tr><td class="email-outer" align="center" style="padding:32px 16px;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" class="email-shell" data-photoflow-email="true" style="width:100%;max-width:560px;border-collapse:separate;border-spacing:0;background:#ffffff;border-top:3px solid #252525;overflow:hidden;">
+      <tr><td class="email-pad" bgcolor="#ffffff" style="padding:32px 24px 24px;background:#ffffff;border-bottom:1px solid #e8e5df;">
         <p style="margin:0 0 10px;color:#706b60;font-family:Arial,sans-serif;font-size:11px;font-weight:700;letter-spacing:1.8px;line-height:1.2;text-transform:uppercase;">${escapeHtml(brandName)}</p>
-        <h1 style="margin:0;color:#242930;font-family:Arial,sans-serif;font-size:28px;font-weight:600;line-height:1.3;letter-spacing:-0.5px;">${escapeHtml(title)}</h1>
+        <h1 style="margin:0;color:#252525;font-family:Georgia,'Times New Roman',serif;font-size:30px;font-weight:normal;line-height:1.3;letter-spacing:-0.5px;">${escapeHtml(title)}</h1>
       </td></tr>
-      <tr><td class="email-pad" style="padding:30px 32px;color:#334155;font-family:Arial,sans-serif;">
-        ${greeting ? `<p style="margin:0 0 12px;color:#0f172a;font-size:16px;font-weight:700;line-height:1.5;">${escapeHtml(greeting)}</p>` : ""}
-        ${intro ? `<p style="margin:0 0 24px;color:#475569;font-size:15px;line-height:1.7;">${escapeHtml(intro).replace(/\n/g, "<br>")}</p>` : ""}
+      <tr><td class="email-pad" style="padding:24px;color:#252525;font-family:Arial,sans-serif;">
+        ${greeting ? `<p style="margin:0 0 12px;color:#252525;font-size:16px;font-weight:700;line-height:1.5;">${escapeHtml(greeting)}</p>` : ""}
+        ${intro ? `<p style="margin:0 0 24px;color:#494742;font-size:15px;line-height:1.7;">${escapeHtml(intro).replace(/\n/g, "<br>")}</p>` : ""}
         ${bodyHtml}
-        ${(primaryButton || secondaryButton) ? `<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="width:100%;border-collapse:collapse;margin-top:8px;"><tr><td align="center">${primaryButton}${secondaryButton}</td></tr></table>` : ""}
+        ${(primaryButton || secondaryButton) ? `<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="width:100%;border-collapse:collapse;margin-top:8px;"><tr><td align="left">${primaryButton}${secondaryButton}</td></tr></table>` : ""}
       </td></tr>
-      <tr><td class="email-pad" bgcolor="#f8fafc" style="padding:20px 32px;background:#f8fafc;border-top:1px solid #e2e8f0;text-align:center;">
-        <p style="margin:0;color:#64748b;font-family:Arial,sans-serif;font-size:12px;line-height:1.6;">${escapeHtml(footerNote)}</p>
-        ${reference ? `<p style="margin:6px 0 0;color:#94a3b8;font-family:Arial,sans-serif;font-size:11px;line-height:1.5;">Reference: ${escapeHtml(reference)}</p>` : ""}
-        ${unsubscribeHref ? `<p style="margin:8px 0 0;font-family:Arial,sans-serif;font-size:11px;line-height:1.5;"><a href="${escapeHtml(unsubscribeHref)}" style="color:#64748b;text-decoration:underline;">Unsubscribe from booking emails</a></p>` : ""}
+      <tr><td class="email-pad" bgcolor="#f7f6f3" style="padding:20px 24px;background:#f7f6f3;border-top:1px solid #e8e6e1;text-align:left;">
+        <p style="margin:0;color:#73716c;font-family:Arial,sans-serif;font-size:12px;line-height:1.6;">${escapeHtml(footerNote)}</p>
+        ${reference ? `<p style="margin:6px 0 0;color:#73716c;font-family:Arial,sans-serif;font-size:11px;line-height:1.5;">Reference: ${escapeHtml(reference)}</p>` : ""}
+        ${unsubscribeHref ? `<p style="margin:8px 0 0;font-family:Arial,sans-serif;font-size:11px;line-height:1.5;"><a href="${escapeHtml(unsubscribeHref)}" style="color:#73716c;text-decoration:underline;">Unsubscribe from booking emails</a></p>` : ""}
       </td></tr>
     </table>
   </td></tr></table>
@@ -299,17 +299,17 @@ function bookingSummaryRows({ eventTitle, date, time, duration, location, price,
     for (const item of lineItems) rows.push({ label: `${item.name} × ${item.quantity}`, value: money(item.total) });
     rows.push({ label: "Booking total", value: money(price), emphasis: true });
   }
-  if (isFree) rows.push({ label: "Payment", value: "Free ✓", tone: "success", emphasis: true });
+  if (isFree) rows.push({ label: "Payment", value: "Free", tone: "success", emphasis: true });
   else if (paymentMethod === "stripe" && paymentKind === "deposit" && Number(depositAmount) > 0) {
-    rows.push({ label: "Deposit Paid", value: `${money(depositAmount)} ✓ Card`, tone: "success", emphasis: true });
+    rows.push({ label: "Deposit Paid", value: `${money(depositAmount)} · Card`, tone: "success", emphasis: true });
     if (Number(remainingAmount) > 0) rows.push({ label: "Remaining Balance", value: money(remainingAmount), tone: "warning", emphasis: true });
   } else if (paymentMethod === "stripe" && paymentKind === "balance") {
-    rows.push({ label: "Remaining Balance Paid", value: `${money(remainingAmount)} ✓ Card`, tone: "success", emphasis: true });
+    rows.push({ label: "Remaining Balance Paid", value: `${money(remainingAmount)} · Card`, tone: "success", emphasis: true });
   } else if (paymentMethod === "bank" && Number(depositAmount) > 0) {
     rows.push({ label: "Deposit", value: `${money(depositAmount)} · Bank transfer pending`, tone: "warning", emphasis: true });
     if (Number(remainingAmount) > 0) rows.push({ label: "Remaining balance", value: money(remainingAmount), tone: "warning" });
   } else if (paymentMethod === "stripe") {
-    rows.push({ label: "Payment", value: `${money(price)} ✓ Paid in Full`, tone: "success", emphasis: true });
+    rows.push({ label: "Payment", value: `${money(price)} · Paid in full`, tone: "success", emphasis: true });
   } else if (paymentMethod === "bank") {
     rows.push({ label: "Payment", value: `${money(price)} · Bank transfer pending`, tone: "warning", emphasis: true });
   } else {
@@ -664,7 +664,7 @@ function registerRoutes(app, store, options = {}) {
     const html = buildEnquiryReceivedHtml(params);
     const text = buildEnquiryEmailText("received", params);
     try {
-      const info = await t.sendMail({ from: getFromAddress(), to, subject: "We've received your enquiry!", html, text });
+      const info = await t.sendMail({ from: getFromAddress(), to, subject: "We’ve received your enquiry", html, text });
       console.log(`📧 Enquiry received auto-reply sent to ${to}: ${info.messageId}`);
       res.json({ ok: true, messageId: info.messageId });
     } catch (err) {
@@ -686,7 +686,7 @@ function registerRoutes(app, store, options = {}) {
     const html = buildEnquiryAcceptedHtml(params);
     const text = buildEnquiryEmailText("accepted", params);
     try {
-      const info = await t.sendMail({ from: getFromAddress(), to, subject: "Your enquiry has been accepted!", html, text });
+      const info = await t.sendMail({ from: getFromAddress(), to, subject: "Your enquiry has been accepted", html, text });
       console.log(`📧 Enquiry accepted email sent to ${to}: ${info.messageId}`);
       res.json({ ok: true, messageId: info.messageId });
     } catch (err) {
@@ -732,13 +732,13 @@ function buildReminderEmailHtml({ clientName, eventTitle, date, time, duration,
   ].filter(Boolean);
   const callout = isPaymentReminder
     ? buildCallout("Payment outstanding", `Please use booking reference ${reference} as the payment description. If you’ve already paid, no action is needed.`, "warning")
-    : buildCallout("Your session is coming up", "We’re looking forward to seeing you. Please review the date and time below and arrive ready for your session.", "success");
+    : buildCallout("Your session is coming up", "Please check the date, time and location before your session.", "success");
   return buildEmailDocument({
     title: isPaymentReminder ? "Payment reminder" : "Booking reminder",
     preheader: isPaymentReminder ? `${formatMoney(due)} remains due for ${eventTitle}` : `${eventTitle} is coming up on ${formatDateNice(date)}`,
     greeting: `Hi ${clientName || "there"},`,
     intro: isPaymentReminder
-      ? "This is a friendly reminder that payment is still outstanding for your booking."
+      ? "Payment is still outstanding for your booking."
       : "A quick reminder with the details for your upcoming photography session.",
     bodyHtml: `${buildSummaryCard(rows)}${callout}`,
     primaryAction: safeHttpUrl(modifyUrl)
@@ -797,9 +797,9 @@ function buildEnquiryAcceptedHtml({ clientName, eventTitle, preferredDate, prefe
   const rows = enquirySummaryRows({ eventTitle, preferredDate, preferredStartTime, preferredEndTime });
   return buildEmailDocument({
     title: "Enquiry accepted",
-    preheader: "Good news — your enquiry has been accepted.",
+    preheader: "Your enquiry has been accepted.",
     greeting: `Hi ${clientName || "there"},`,
-    intro: "Good news — we’d love to work with you. Your booking has been created with the details below.",
+    intro: "Your booking has been created. The details are below.",
     bodyHtml: `${buildSummaryCard(rows)}${buildCallout("Next steps", "We’ll be in touch to confirm the remaining details and payment arrangements.", "success")}`,
     primaryAction: safeHttpUrl(modifyUrl) ? { label: "View your booking", url: modifyUrl } : null,
     reference: bookingEmailReference(bookingId, paymentReference),
@@ -891,7 +891,7 @@ function buildInvoicePaidEmail(invoice, shareUrl) {
     { label: "Paid on", value: paidAt },
     { label: "Total paid", value: formatMoney(total, currency), tone: "success", emphasis: true },
   ];
-  const subject = cleanEmailSubject(`Payment Received — ${invoiceNumber}`);
+  const subject = cleanEmailSubject(`Payment received — ${invoiceNumber}`);
   const html = buildEmailDocument({
     title: "Payment received",
     preheader: `${formatMoney(total, currency)} received for invoice ${invoiceNumber}`,

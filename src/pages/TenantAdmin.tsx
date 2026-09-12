@@ -1,3 +1,5 @@
+import { buildClientEmail, buildGalleryStatusEmail } from "@/lib/client-email";
+import { buildProofingEmail, proofingEmailSubject } from "@/lib/proofing-email";
 import DownloadRequestInbox from "@/components/DownloadRequestInbox";
 import ProofingReceipt from "@/components/ProofingReceipt";
 import React, { useState, useEffect, useCallback, useRef } from "react";
@@ -1404,8 +1406,8 @@ function TenantAlbums({ slug }: { slug: string }) {
   const handleSendNotification = async (alb: Album) => {
     if (!alb.clientEmail) { toast.error("No client email on this album"); return; }
     const link = publicGalleryUrl(alb);
-    const message = `Hey ${alb.clientName || "there"}, your photos are ready! Check them out here: ${link}`;
-    const html = `<div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:32px;background:#0a0a0a;color:#f5f5f5;border-radius:12px;"><h2 style="font-size:22px;margin:0 0 16px;">📸 Your photos are ready!</h2><p style="color:#aaa;line-height:1.6;">${message.replace(link, "")}</p><a href="${link}" style="display:inline-block;margin-top:24px;padding:12px 28px;background:#fff;color:#000;border-radius:8px;text-decoration:none;font-weight:600;">View Your Gallery →</a><p style="margin-top:32px;font-size:11px;color:#555;">${link}</p></div>`;
+    const message = `Hi ${alb.clientName || "there"}, your photos are ready. You can view them here: ${link}`;
+    const html = buildClientEmail({ title: alb.title, body: message.replace(link, ""), action: { label: "View your gallery", url: link } });
     const result = await sendTenantEmail(slug, alb.clientEmail, `Your photos are ready — ${alb.clientName || "Gallery"}`, html, message);
     if (result.ok) toast.success(`Email sent to ${alb.clientEmail}`);
     else toast.error(`Failed: ${result.error || "Unknown error"}`);
@@ -1966,7 +1968,7 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
         const email = liveAlbum.clientEmail;
 
         const buildProofingEmailHtml = (galleryUrl: string, expiryDateStr: string, adminNote?: string) =>
-          `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;"><h2 style="margin:0 0 16px;font-size:20px;">Your photos are ready to review!</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${liveAlbum.clientName || "there"},</p><p style="color:#9ca3af;margin:0 0 12px;">Your proofing gallery for <strong style="color:#e5e7eb;">${liveAlbum.title}</strong> is ready. Browse and star the ones you love, then hit Submit Picks.</p>${expiryDateStr ? `<p style="color:#ef4444;margin:0 0 12px;padding:10px 14px;background:#1f1f1f;border-radius:8px;font-size:13px;">⏰ <strong>Proofing window closes: ${expiryDateStr}</strong></p>` : ""}${adminNote ? `<p style="color:#9ca3af;margin:0 0 20px;padding:12px;background:#1f1f1f;border-radius:8px;"><em>"${adminNote}"</em></p>` : ""}<a href="${galleryUrl}" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">View Your Gallery →</a></div>`;
+          buildProofingEmail({ albumTitle: liveAlbum.title, clientName: liveAlbum.clientName, galleryUrl, expiryDate: expiryDateStr, note: adminNote });
 
         const startProofing = async () => {
           const noteEl = document.getElementById("t-proofing-note") as HTMLTextAreaElement;
@@ -1989,7 +1991,7 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
           if (email) {
             const galleryUrl = publicGalleryUrl({ ...liveAlbum, clientToken });
             const expiryDateStr = new Date(proofingExpiresAt).toLocaleString("en-AU", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
-            const emailResult = await sendTenantEmail(slug, email, `📸 Your proofing gallery is ready — ${liveAlbum.title}`, buildProofingEmailHtml(galleryUrl, expiryDateStr, note || undefined));
+            const emailResult = await sendTenantEmail(slug, email, proofingEmailSubject(liveAlbum.title), buildProofingEmailHtml(galleryUrl, expiryDateStr, note || undefined));
             inviteSent = emailResult.ok;
             if (!inviteSent) toast.error(emailResult.error || "Proofing saved, but the invite email could not be sent.");
           }
@@ -2002,7 +2004,7 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
           const expiryDateStr = liveAlbum.proofingExpiresAt
             ? new Date(liveAlbum.proofingExpiresAt as string).toLocaleString("en-AU", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })
             : "";
-          const result = await sendTenantEmail(slug, email, `📸 Your proofing gallery is ready — ${liveAlbum.title}`, buildProofingEmailHtml(galleryUrl, expiryDateStr, latest?.adminNote));
+          const result = await sendTenantEmail(slug, email, proofingEmailSubject(liveAlbum.title), buildProofingEmailHtml(galleryUrl, expiryDateStr, latest?.adminNote));
           if (result.ok) toast.success("Proofing invite resent to client");
           else toast.error(result.error || "The proofing invite could not be sent.");
         };
@@ -2019,8 +2021,8 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
         const sendEditingEmail = async () => {
           if (!email) { toast.error("No client email on file"); return; }
           const galleryUrl = publicGalleryUrl(liveAlbum);
-          const html = `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;"><h2 style="margin:0 0 16px;font-size:20px;">Your photos are being edited ✏️</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${liveAlbum.clientName || "there"},</p><p style="color:#9ca3af;margin:0 0 20px;">Your selections for <strong style="color:#e5e7eb;">${liveAlbum.title}</strong> are confirmed and editing has begun.</p><a href="${galleryUrl}" style="display:inline-block;background:#374151;color:#e5e7eb;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">Preview Gallery →</a></div>`;
-          const result = await sendTenantEmail(slug, email, `✏️ Your photos are being edited — ${liveAlbum.title}`, html);
+          const html = buildGalleryStatusEmail(liveAlbum, galleryUrl, "editing");
+          const result = await sendTenantEmail(slug, email, `Editing your photos — ${liveAlbum.title}`, html);
           if (result.ok) toast.success("Editing notification sent");
           else toast.error(result.error || "The editing notification could not be sent.");
         };
@@ -2031,8 +2033,8 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
           let notificationSent = false;
           if (email) {
             const galleryUrl = publicGalleryUrl(liveAlbum);
-            const html = `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;"><h2 style="margin:0 0 16px;font-size:20px;">Your edited photos are ready! ✨</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${liveAlbum.clientName || "there"},</p><p style="color:#9ca3af;margin:0 0 20px;">Your final edited photos for <strong style="color:#e5e7eb;">${liveAlbum.title}</strong> are now available.</p><a href="${galleryUrl}" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">${free ? "Download Your Photos →" : "View & Download Photos →"}</a></div>`;
-            const result = await sendTenantEmail(slug, email, `✨ Your final photos are ready — ${liveAlbum.title}`, html);
+            const html = buildGalleryStatusEmail(liveAlbum, galleryUrl, "delivered", free);
+            const result = await sendTenantEmail(slug, email, `Your finished photos — ${liveAlbum.title}`, html);
             notificationSent = result.ok;
             if (!notificationSent) toast.error(result.error || "Finals were delivered, but the notification email could not be sent.");
           }

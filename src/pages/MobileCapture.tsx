@@ -1,3 +1,5 @@
+import { buildClientEmail } from "@/lib/client-email";
+import { buildProofingEmail, proofingEmailSubject } from "@/lib/proofing-email";
 import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
@@ -913,9 +915,12 @@ function MobileCaptureInner() {
     const subject = type === "album-created"
       ? `Your ${sessionType} gallery is being prepared`
       : `${photoCount} new photo${photoCount !== 1 ? "s" : ""} added to your ${sessionType} gallery`;
-    const html = type === "album-created"
-      ? `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;overflow:hidden;border:1px solid #1f1f1f;padding:32px;color:#e5e7eb;"><h1 style="font-size:20px;margin:0 0 12px;">📸 Your Photos Are On The Way!</h1><p style="color:#6b7280;">Hi ${clientName}, we're uploading your ${sessionType} photos now. You'll receive another email when your gallery is ready.</p></div>`
-      : `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;overflow:hidden;border:1px solid #1f1f1f;padding:32px;color:#e5e7eb;"><h1 style="font-size:20px;margin:0 0 12px;">🖼️ ${photoCount} New Photos Added!</h1><p style="color:#6b7280;">Proofing previews for your ${sessionType} session are ready. Final edited photos coming soon.</p></div>`;
+    const html = buildClientEmail({
+      title: type === "album-created" ? "Preparing your gallery" : "New photos in your gallery",
+      body: `Hi ${clientName},\n\n${type === "album-created"
+        ? `Your ${sessionType} photos are uploading. You’ll receive another email when the gallery is ready.`
+        : `${photoCount} new photo${photoCount !== 1 ? "s have" : " has"} been added to your ${sessionType} gallery. These are previews; the finished edits will follow.`}`,
+    });
     try {
       const result = tenantSession
         ? await sendTenantEmail(tenantSession.slug, selectedBooking.clientEmail, subject, html)
@@ -1990,7 +1995,7 @@ function MobileCaptureInner() {
   };
 
   const handleSendForProofing = async () => {
-    if (!targetAlbum || !getSettings().proofingEnabled) return;
+    if (!targetAlbum || !targetAlbum.photos.length || sendingProofing) return;
     setSendingProofing(true);
     try {
       const clientToken = targetAlbum.clientToken || `ct-${crypto.randomUUID()}`;
@@ -2004,6 +2009,8 @@ function MobileCaptureInner() {
         enabled: true,
         proofingEnabled: true,
         proofingStage: "proofing",
+        purchasingDisabled: true,
+        allUnlocked: false,
         proofingRounds: [...(targetAlbum.proofingRounds || []), newRound],
         clientToken,
       };
@@ -2022,8 +2029,13 @@ function MobileCaptureInner() {
           toast.error("Album needs a slug before it can be shared.");
           return;
         }
-        const subject = `📸 Your proofing gallery is ready — ${targetAlbum.title}`;
-        const html = `<div style="font-family:sans-serif;max-width:560px;margin:40px auto;background:#111;border-radius:16px;padding:32px;color:#e5e7eb;border:1px solid #1f1f1f;"><h2 style="margin:0 0 16px;font-size:20px;">Your photos are ready to review! ⭐</h2><p style="color:#9ca3af;margin:0 0 12px;">Hi ${selectedBooking.clientName || "there"}, your ${selectedBooking.type || "session"} photos are ready for you to star your favourites.</p><p style="color:#9ca3af;margin:0 0 20px;">Click the link below to open your private gallery.</p><a href="${galleryUrl}" style="display:inline-block;background:#7c3aed;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">View My Gallery →</a></div>`;
+        const subject = proofingEmailSubject(targetAlbum.title);
+        const html = buildProofingEmail({
+          albumTitle: targetAlbum.title,
+          clientName: selectedBooking.clientName,
+          galleryUrl,
+          expiryDate: updatedAlbum.proofingExpiresAt ? new Date(updatedAlbum.proofingExpiresAt).toLocaleString("en-AU", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : undefined,
+        });
         const emailResult = tenantSession
           ? await sendTenantEmail(tenantSession.slug, selectedBooking.clientEmail, subject, html)
           : await sendEmail(selectedBooking.clientEmail, subject, html);
@@ -2032,6 +2044,8 @@ function MobileCaptureInner() {
       } else {
         toast.success("Proofing enabled!");
       }
+    } catch {
+      toast.error("Could not complete proofing. Check the album before trying again.");
     } finally {
       setSendingProofing(false);
     }
@@ -2398,6 +2412,42 @@ function MobileCaptureInner() {
         </select>
         <p className="mt-1.5 text-[10px] font-body text-white/45">New FTP and USB photos upload straight to this booking album for preview.</p>
       </div>
+
+      {/* Send for Proofing */}
+      {targetAlbum && (
+        <div className="mt-3">
+          {(!targetAlbum.proofingEnabled || !targetAlbum.proofingStage || targetAlbum.proofingStage === "not-started") ? (
+            <button
+              onClick={handleSendForProofing}
+              disabled={sendingProofing || !targetAlbum.photos.length}
+              className="w-full flex items-center justify-center gap-2 py-3 rounded-xl border border-yellow-500/30 text-yellow-400 bg-yellow-500/5 text-xs font-body tracking-wider uppercase hover:bg-yellow-500/10 transition-colors active:scale-[0.99] disabled:opacity-50"
+            >
+              <Star className="w-4 h-4" />
+              {sendingProofing ? "Sending…" : "Send for Proofing"}
+            </button>
+          ) : (
+            <div className="flex items-center justify-between p-3 rounded-xl border border-yellow-500/20 bg-yellow-500/5">
+              <div className="flex items-center gap-2">
+                <Star className="w-4 h-4 text-yellow-400 fill-yellow-400/30" />
+                <div>
+                  <p className="text-xs font-body text-foreground font-medium">{targetAlbum.proofingStage === "finals-delivered" ? "Finals Delivered" : targetAlbum.proofingStage === "editing" ? "Editing" : targetAlbum.proofingStage === "selections-submitted" ? "Picks Submitted" : "Proofing Active"}</p>
+                  <p className="text-[10px] font-body text-muted-foreground/70 mt-0.5">Round {targetAlbum.proofingRounds?.length || 1}</p>
+                </div>
+              </div>
+              {targetAlbum.proofingStage === "selections-submitted" && (
+                <button
+                  onClick={handleSendForProofing}
+                  disabled={sendingProofing || !targetAlbum.photos.length}
+                  className="text-[10px] font-body tracking-wider uppercase px-2.5 py-1.5 rounded-full border border-yellow-500/40 text-yellow-400 hover:bg-yellow-500/10 disabled:opacity-50 transition-all"
+                >
+                  {sendingProofing ? "Sending…" : "New Round"}
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
 
       <div className="mt-4 capture-hero-panel">
         <div className="flex items-center justify-between gap-3">
@@ -3461,41 +3511,6 @@ function MobileCaptureInner() {
           </div>
         );
       })()}
-
-      {/* Send for Proofing */}
-      {getSettings().proofingEnabled && targetAlbum && targetAlbum.photos.length > 0 && (
-        <div className={`${captureTab === "publish" ? "" : "hidden"} mt-4`}>
-          {(!targetAlbum.proofingStage || targetAlbum.proofingStage === "not-started") ? (
-            <button
-              onClick={handleSendForProofing}
-              disabled={sendingProofing}
-              className="w-full flex items-center justify-center gap-2 py-3 rounded-xl border border-yellow-500/30 text-yellow-400 bg-yellow-500/5 text-xs font-body tracking-wider uppercase hover:bg-yellow-500/10 transition-colors active:scale-[0.99] disabled:opacity-50"
-            >
-              <Star className="w-4 h-4" />
-              {sendingProofing ? "Sending…" : "Send for Proofing"}
-            </button>
-          ) : (
-            <div className="flex items-center justify-between p-3 rounded-xl border border-yellow-500/20 bg-yellow-500/5">
-              <div className="flex items-center gap-2">
-                <Star className="w-4 h-4 text-yellow-400 fill-yellow-400/30" />
-                <div>
-                  <p className="text-xs font-body text-foreground font-medium">Proofing Active</p>
-                  <p className="text-[10px] font-body text-muted-foreground/70 mt-0.5">Round {targetAlbum.proofingRounds?.length || 1}</p>
-                </div>
-              </div>
-              {targetAlbum.proofingStage === "selections-submitted" && (
-                <button
-                  onClick={handleSendForProofing}
-                  disabled={sendingProofing}
-                  className="text-[10px] font-body tracking-wider uppercase px-2.5 py-1.5 rounded-full border border-yellow-500/40 text-yellow-400 hover:bg-yellow-500/10 disabled:opacity-50 transition-all"
-                >
-                  {sendingProofing ? "Sending…" : "New Round"}
-                </button>
-              )}
-            </div>
-          )}
-        </div>
-      )}
 
       {/* Mark Complete */}
       {selectedBooking && selectedBooking.status !== "completed" && (

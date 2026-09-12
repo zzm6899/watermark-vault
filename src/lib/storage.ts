@@ -356,7 +356,7 @@ const defaultSettings: AppSettings = {
   stripeEnabled: false,
   bookingTimerMinutes: 15,
   instagramFieldEnabled: true,
-  notificationEmailTemplate: "Hey {name}, your photos are ready! Check them out here: {link}",
+  notificationEmailTemplate: "Hi {name}, your photos are ready. You can view them here: {link}",
   discordWebhookUrl: "",
   discordNotifyBookings: true,
   discordNotifyDownloads: true,

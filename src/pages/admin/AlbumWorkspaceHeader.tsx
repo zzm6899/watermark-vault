@@ -1,4 +1,4 @@
-import { Save } from "lucide-react";
+import { Save, Star } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { Album } from "@/lib/types";
 
@@ -18,7 +18,10 @@ export default function AlbumWorkspaceHeader({ isNew, title, photoCount, clientN
         <h3 className="font-display text-xl text-foreground truncate">{title || (isNew ? "New Album" : "Untitled album")}</h3>
         <p className="text-[11px] font-body text-muted-foreground">{photoCount} photos · {clientName || "No client linked"} · {status}</p>
       </div>
-      <div className="flex gap-2 shrink-0">
+      <div className="flex flex-wrap gap-2 shrink-0">
+        {!isNew && <Button variant="outline" size="sm" className="gap-2 text-yellow-400" onClick={() => document.getElementById("album-proofing-controls")?.scrollIntoView({ behavior: "smooth", block: "start" })}>
+          <Star className="h-4 w-4" /> Send for Proofing
+        </Button>}
         <Button variant="outline" size="sm" onClick={onClose}>Close</Button>
         <Button size="sm" onClick={onSave} disabled={saving} className="gap-2">
           <Save className="h-4 w-4" /> {saving ? "Saving…" : isNew ? "Create album" : "Save changes"}

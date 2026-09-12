@@ -45,12 +45,12 @@ test("booking email references stay short while canonical IDs remain internal", 
 
 test("pay-in-full booking receipts do not mislabel the configured deposit as the amount paid", () => {
   const full = buildBookingEmailHtml({ ...base, paymentMethod: "stripe", paymentKind: "full" });
-  assert.match(full, /\$500 ✓ Paid in Full/);
+  assert.match(full, /\$500 · Paid in full/);
   assert.doesNotMatch(full, /Deposit Paid/);
 
   const deposit = buildBookingEmailHtml({ ...base, paymentMethod: "stripe", paymentKind: "deposit" });
   assert.match(deposit, /Deposit Paid/);
-  assert.match(deposit, /\$100 ✓ Card/);
+  assert.match(deposit, /\$100 · Card/);
 });
 
 test("booking emails use the responsive branded shell and escape untrusted booking fields", () => {
@@ -89,7 +89,7 @@ test("booking plain text mirrors the operational details and safe actions", () =
   assert.match(text, /Booking confirmed/);
   assert.match(text, /Session: Portrait/);
   assert.match(text, /Date: Monday,? 10 August 2026/);
-  assert.match(text, /Deposit Paid: \$100 ✓ Card/);
+  assert.match(text, /Deposit Paid: \$100 · Card/);
   assert.match(text, /View or manage booking: https:\/\/photos\.example\/booking\/modify\/token/);
   assert.match(text, /Unsubscribe: https:\/\/photos\.example\/unsubscribe\/token/);
   assert.doesNotMatch(text, /<[^>]+>/);
@@ -167,7 +167,7 @@ test("invoice-paid email presents the settled total without exposing unsafe acti
     from: { name: "North & Co" },
   }, "javascript:alert(1)");
 
-  assert.equal(message.subject, "Payment Received — INV-42<script>");
+  assert.equal(message.subject, "Payment received — INV-42<script>");
   assert.match(message.html, /Client &lt;One&gt;/);
   assert.match(message.html, /INV-42&lt;script&gt;/);
   assert.match(message.html, /\$247\.50/);
