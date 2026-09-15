@@ -1,3 +1,4 @@
+import LinkedText from "@/components/LinkedText";
 import ProofingMessageEditor from "@/components/ProofingMessageEditor";
 import { configuredProofingMessage } from "@/lib/proofing-message-settings";
 import { canSendProofingInvite, proofingInviteAction, sendAlbumProofingInvite } from "@/lib/bulk-proofing";
@@ -3832,7 +3833,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                             return (
                               <div key={qId} className="p-2 rounded-lg bg-secondary/30 border border-border/30">
                                 <p className="text-[10px] font-body text-muted-foreground">{label}</p>
-                                <p className="text-sm font-body text-foreground">{answer}</p>
+                                <p className="text-sm font-body text-foreground"><LinkedText text={String(answer)} /></p>
                               </div>
                             );
                           })}

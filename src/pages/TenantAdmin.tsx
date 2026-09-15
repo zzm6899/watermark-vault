@@ -1,3 +1,4 @@
+import LinkedText from "@/components/LinkedText";
 import { buildClientEmail, buildGalleryStatusEmail } from "@/lib/client-email";
 import { buildProofingEmail, proofingEmailSubject } from "@/lib/proofing-email";
 import DownloadRequestInbox from "@/components/DownloadRequestInbox";
@@ -814,7 +815,7 @@ function TenantBookings({ slug }: { slug: string }) {
                   <div className="grid grid-cols-2 gap-3 text-xs font-body">
                     <div><span className="text-muted-foreground">Email: </span><span className="text-foreground">{bk.clientEmail}</span></div>
                     {bk.instagramHandle && <div><span className="text-muted-foreground">Instagram: </span><span className="text-foreground">{bk.instagramHandle}</span></div>}
-                    {bk.notes && <div className="col-span-2"><span className="text-muted-foreground">Notes: </span><span className="text-foreground">{bk.notes}</span></div>}
+                    {bk.notes && <div className="col-span-2"><span className="text-muted-foreground">Notes: </span><span className="text-foreground"><LinkedText text={bk.notes} /></span></div>}
                     {bk.paymentStatus && <div><span className="text-muted-foreground">Payment: </span><span className="text-foreground">{bk.paymentStatus}</span></div>}
                     {bk.paymentAmount && <div><span className="text-muted-foreground">Amount: </span><span className="text-foreground">${bk.paymentAmount}</span></div>}
                     {bk.createdAt && <div><span className="text-muted-foreground">Booked: </span><span className="text-foreground">{new Date(bk.createdAt).toLocaleDateString("en-AU")}</span></div>}
@@ -828,7 +829,7 @@ function TenantBookings({ slug }: { slug: string }) {
                       {Object.entries(bk.answers).map(([key, val]) => (
                         <div key={key} className="text-xs font-body">
                           <span className="text-muted-foreground">{(bk.answerLabels?.[key] || key)}: </span>
-                          <span className="text-foreground">{String(val)}</span>
+                          <span className="text-foreground"><LinkedText text={String(val)} /></span>
                         </div>
                       ))}
                     </div>
