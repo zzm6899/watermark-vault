@@ -1771,6 +1771,13 @@ function _parseAlbumsFromDb(raw) {
   return Array.isArray(parsed) ? parsed : [];
 }
 
+app.get("/api/admin/finance/gallery-payments", requireAuth, (req, res) => {
+  const db = readDb();
+  const { buildGalleryPayments } = require("./gallery-payments");
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ payments: buildGalleryPayments({ albums: dbGet(db, "wv_albums", []), orders: dbGet(db, "wv_album_checkout_orders", {}) }) });
+});
+
 // Read-only event report; all prices come from saved bookings and fulfilled orders.
 app.get("/api/admin/finance/events", requireAuth, (req, res) => {
   const { from = "", to = "", groupBy = "event", eventId = "" } = req.query;

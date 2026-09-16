@@ -86,6 +86,7 @@ export default function FinanceView() {
     photoIds?: string[];
     method: "stripe" | "bank-transfer" | "cash";
     amount: number;
+    amountUnknown?: boolean;
     status: "completed" | "pending";
     description: string;
     requestedAt?: string; // for bank-transfer deletion key
@@ -93,43 +94,19 @@ export default function FinanceView() {
     reference?: string;
   };
 
-  const payments: PaymentRecord[] = [];
+  const [galleryPayments, setGalleryPayments] = React.useState<PaymentRecord[]>([]);
+  const [galleryError, setGalleryError] = React.useState("");
+  React.useEffect(() => {
+    const controller = new AbortController();
+    fetch("/api/admin/finance/gallery-payments", { headers: adminAuthHeaders(), signal: controller.signal })
+      .then(async response => { if (!response.ok) throw new Error("Album purchases could not be loaded. Refresh to retry."); return response.json(); })
+      .then(data => setGalleryPayments(data.payments))
+      .catch(error => { if (!controller.signal.aborted) setGalleryError(error.message); });
+    return () => controller.abort();
+  }, []);
+  const payments: PaymentRecord[] = [...galleryPayments];
 
   for (const alb of albumsState) {
-    // Stripe — per-session purchases
-    for (const [sKey, sp] of Object.entries((alb as any).sessionPurchases || {})) {
-      const s = sp as any;
-      const photoCount = s.fullAlbum ? (alb.photos?.length || 0) : (s.photoIds?.length || 0);
-      const amount = s.fullAlbum ? (alb.priceFullAlbum || 0) : photoCount * (alb.pricePerPhoto || 0);
-      payments.push({
-        id: `session-${alb.id}-${sKey}`,
-        date: s.paidAt || new Date().toISOString(),
-        clientName: s.purchaserEmail || alb.clientName || "Unknown",
-        albumTitle: alb.title,
-        albumId: alb.id,
-        sessionKey: sKey,
-        purchaserEmail: s.purchaserEmail,
-        photoIds: s.fullAlbum ? undefined : (s.photoIds || []),
-        method: "stripe",
-        amount,
-        status: "completed",
-        description: s.fullAlbum ? `Full album — ${photoCount} photos` : `${photoCount} photo${photoCount !== 1 ? "s" : ""} — Stripe`,
-      });
-    }
-    // Legacy stripe full-album (pre-session-purchase)
-    if (alb.stripePaidAt && alb.priceFullAlbum && !Object.keys((alb as any).sessionPurchases || {}).length) {
-      payments.push({
-        id: `stripe-legacy-${alb.id}`,
-        date: alb.stripePaidAt,
-        clientName: alb.clientName || "Unknown",
-        albumTitle: alb.title,
-        albumId: alb.id,
-        method: "stripe",
-        amount: alb.priceFullAlbum,
-        status: "completed",
-        description: `Full album — ${alb.photos?.length || 0} photos (legacy)`,
-      });
-    }
     // Bank transfer requests
     for (const req of alb.downloadRequests || []) {
       if (req.method === "bank-transfer") {
@@ -215,8 +192,10 @@ export default function FinanceView() {
       </div>
 
       <EventRevenueReport revision={refundRevision} />
+      {galleryError && <p role="alert" className="text-destructive">{galleryError}</p>}
+      {galleryPayments.some(payment => payment.amountUnknown) && <p className="text-sm text-muted-foreground">Purchases without a verified AUD amount are listed but excluded from revenue totals.</p>}
 
-      <details className="rounded-xl border border-border p-5">
+      <details open className="rounded-xl border border-border p-5">
         <summary className="cursor-pointer font-semibold">Payment activity, invoices & analytics</summary>
         <p className="text-sm text-muted-foreground my-4">Historical activity below can include gallery values estimated from current prices. Use the event report above for recorded amounts. Invoice totals are separate.</p>
         <div className="space-y-6">
@@ -453,7 +432,7 @@ export default function FinanceView() {
               p.clientName || "",
               p.albumTitle || "",
               p.method || "",
-              p.amount.toFixed(2),
+              p.amountUnknown ? "Not recorded" : p.amount.toFixed(2),
               p.status || "",
               p.description || "",
             ])
@@ -641,7 +620,7 @@ export default function FinanceView() {
                       )}
                       <span className={`text-[10px] font-body px-2 py-0.5 rounded-full ${methodColor(p.method)}`}>{methodLabel(p.method)}</span>
                       <span className={`text-[10px] font-body px-2 py-0.5 rounded-full capitalize ${statusColor(p.status)}`}>{p.status}</span>
-                      <p className="text-sm font-display text-foreground w-16 text-right">${p.amount.toFixed(2)}</p>
+                      <p className="text-sm font-display text-foreground w-16 text-right">{p.amountUnknown ? "Not recorded" : `$${p.amount.toFixed(2)}`}</p>
                       {p.bookingId && bookingPayments.find(booking => booking.id === p.bookingId)?.status === "cancelled" && <button disabled={refundBusy !== null} onClick={() => void recordFullRefund(p.bookingId!)} className="text-xs text-primary hover:underline">{refundBusy === p.bookingId ? "Saving…" : "Record full refund"}</button>}
                       {p.bookingId ? (
                         <button onClick={() => navigate(`/admin/bookings?search=${encodeURIComponent(p.reference || p.clientName)}`)} className="text-[10px] font-body text-primary hover:underline">Booking</button>
