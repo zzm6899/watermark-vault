@@ -21,7 +21,8 @@ export function useGallerySelection(album: Album | undefined, sessionKey: string
   const [saved, setSaved] = useState(true);
   useEffect(() => {
     if (!key) return;
-    setSelection(previous => previous.key === key ? previous : { key, ids: readGallerySelection(key, allowed) });
+    const restored = readGallerySelection(key, allowed);
+    setSelection(previous => previous.key === key ? previous : { key, ids: restored });
   }, [key, allowed]);
   useEffect(() => {
     if (!key || selection.key !== key) return;
