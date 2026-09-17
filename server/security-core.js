@@ -502,7 +502,7 @@ function safeGalleryAlbumDto(album, sessionKey, timeZone = album?.timezone || pr
     "freeDownloads", "pricePerPhoto", "priceFullAlbum", "isPublic", "enabled", "allUnlocked", "displaySize",
     "paidPhotoIds", "proofingEnabled", "proofingStage", "proofingExpiresAt", "expiresAt", "downloadExpiresAt",
     "watermarkDisabled", "cleanDownloadsOnly", "purchasingDisabled", "downloadEmailCapture", "lockDownloadsDuringProofing",
-    "showCullRejectsToClient", "proofingAddonRequirements",
+    "showCullRejectsToClient", "proofingAddonRequirements", "proofingPhotoSelection", "proofingInstructions",
   ];
   const safe = Object.fromEntries(allowed.filter(key => album[key] !== undefined).map(key => [key, album[key]]));
   for (const field of ["expiresAt", "downloadExpiresAt", "proofingExpiresAt"]) {

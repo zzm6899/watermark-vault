@@ -53,6 +53,8 @@ export interface BookingLineItem {
 }
 
 export interface EventType {
+  proofingPhotoSelection?: "off" | "optional" | "required";
+  proofingInstructions?: string;
   proofingMessages?: Record<string, string>;
   extras?: BookingExtra[];
   id: string;
@@ -327,6 +329,9 @@ export interface DownloadHistoryEntry {
 
 export interface Album {
   proofingAddonRequirements?: ProofingAddonRequirement[];
+  /** Null clears an override and inherits the event policy; legacy default is required. */
+  proofingPhotoSelection?: "off" | "optional" | "required" | null;
+  proofingInstructions?: string | null;
   id: string;
   updatedAt?: string;
   slug: string;

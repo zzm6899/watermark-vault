@@ -1654,6 +1654,11 @@ app.put("/api/store/:key", requireAuth, authenticatedLargeJson, async (req, res)
   if (key === DB_KEYS.BOOKINGS) {
     return res.status(409).json({ error: "Bookings must be changed through the atomic booking endpoints" });
   }
+  if (/(^|_)wv_(albums|event_types)$/.test(key)) {
+    let records;
+    try { records = typeof req.body.value === "string" ? JSON.parse(req.body.value) : req.body.value; } catch { return res.status(400).json({ error: "Invalid proofing configuration" }); }
+    if (!Array.isArray(records) || records.some(record => !require("./gallery-workflow").validProofingPolicy(record))) return res.status(400).json({ error: "Invalid proofing configuration" });
+  }
   let value = stripBakedFields(key, req.body.value);
   value = mergePreservingStoreSecrets(key, db[key], value);
   if (key === "wv_albums" || (key.startsWith("t_") && key.endsWith("_wv_albums"))) {
@@ -2160,6 +2165,7 @@ app.put("/api/albums/:albumId", requireAuth, authenticatedLargeJson, (req, res) 
   const albums = _parseAlbumsFromDb(db[ALBUMS_KEY]);
   const idx = albums.findIndex(a => a.id === albumId);
   const incoming = { ...req.body, id: albumId };
+  if (!require("./gallery-workflow").validProofingPolicy(incoming)) return res.status(400).json({ error: "Invalid proofing configuration" });
   const removedPhotoIds = Array.isArray(incoming._removedPhotoIds) ? incoming._removedPhotoIds : [];
   const replacePhotos = incoming._replacePhotos === true;
   const basePhotoIds = Array.isArray(incoming._basePhotoIds) ? incoming._basePhotoIds : undefined;
@@ -5856,7 +5862,7 @@ app.post("/api/proofing/submit", async (req, res) => {
       return res.status(403).json({ ok: false, error: "Proofing window has expired" });
     }
 
-    const submission = proofingSubmission({ ...album, proofingAddonRequirements: galleryProofingAddonRequirements(db, album, tenantSlug) }, req.body);
+    const submission = proofingSubmission({ ...album, proofingAddonRequirements: galleryProofingAddonRequirements(db, album, tenantSlug) }, req.body, undefined, galleryProofingPolicy(db, album, tenantSlug));
     if (submission.error) return res.status(submission.status).json({ ok: false, error: submission.error });
     const updatedAlbum = submission.album;
     const updatedPhotos = updatedAlbum.photos;
@@ -7051,6 +7057,12 @@ app.put("/api/tenant/:slug/store/:key", tenantLimiter, requireTenant, (req, res)
     return res.status(403).json({ error: "This tenant store key is not available through the generic store" });
   }
   const db = readDb();
+
+  if (["wv_albums", "wv_event_types"].includes(req.params.key)) {
+    let records;
+    try { records = typeof req.body.value === "string" ? JSON.parse(req.body.value) : req.body.value; } catch { return res.status(400).json({ error: "Invalid proofing configuration" }); }
+    if (!Array.isArray(records) || records.some(record => !require("./gallery-workflow").validProofingPolicy(record))) return res.status(400).json({ error: "Invalid proofing configuration" });
+  }
 
   // ── License key enforcement for event types ────────────────────────────
   if (req.params.key === "wv_event_types") {
@@ -8874,6 +8886,7 @@ app.put("/api/tenant/:slug/albums/:albumId", tenantLimiter, requireTenant, authe
   const idx = albums.findIndex(a => a.id === albumId);
   // Strip baked watermark fields before persisting to keep the database lean.
   const incoming = { ...req.body, id: albumId };
+  if (!require("./gallery-workflow").validProofingPolicy(incoming)) return res.status(400).json({ error: "Invalid proofing configuration" });
   const removedPhotoIds = Array.isArray(incoming._removedPhotoIds) ? incoming._removedPhotoIds : [];
   const replacePhotos = incoming._replacePhotos === true;
   const basePhotoIds = Array.isArray(incoming._basePhotoIds) ? incoming._basePhotoIds : undefined;
@@ -9855,10 +9868,16 @@ function galleryProofingAddonRequirements(db, album, tenantSlug) {
   return require("./gallery-workflow").proofingAddonRequirements(booking, events.find(event => event.id === booking?.eventTypeId));
 }
 
+function galleryProofingPolicy(db, album, tenantSlug) {
+  const booking = dbGet(db, DB_KEYS.BOOKINGS, []).find(item => (album.bookingId ? item.id === album.bookingId : item.albumId === album.id) && (item.tenantSlug || null) === (tenantSlug || null));
+  const events = dbGet(db, tenantSlug ? `t_${tenantSlug}_wv_event_types` : "wv_event_types", []);
+  return require("./gallery-workflow").proofingPolicy(album, events.find(event => event.id === booking?.eventTypeId));
+}
+
 function publicAlbumDto(album, gallerySession) {
   const sessionKey = gallerySession.sessionKey;
   const db = readDb();
-  const safe = safeGalleryAlbumDto({ ...album, proofingAddonRequirements: galleryProofingAddonRequirements(db, album, gallerySession.tenantSlug) }, sessionKey, galleryTimezone(db, gallerySession.tenantSlug));
+  const safe = safeGalleryAlbumDto({ ...album, ...galleryProofingPolicy(db, album, gallerySession.tenantSlug), proofingAddonRequirements: galleryProofingAddonRequirements(db, album, gallerySession.tenantSlug) }, sessionKey, galleryTimezone(db, gallerySession.tenantSlug));
   safe.downloadEmailCapture = normalizeDownloadEmailPolicy(album.downloadEmailCapture);
   return safe;
 }

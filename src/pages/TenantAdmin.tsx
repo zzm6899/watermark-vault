@@ -1094,6 +1094,8 @@ function TenantEventEditor({ eventType, onSave, onCancel }: { eventType: EventTy
   const [depositMethods, setDepositMethods] = useState<("stripe" | "bank")[]>(eventType?.depositMethods || ["stripe", "bank"]);
   const [slotIntervalMinutes, setSlotIntervalMinutes] = useState<number>(eventType?.slotIntervalMinutes || 10);
   const [extras, setExtras] = useState(eventType?.extras || []);
+  const [proofingPhotoSelection, setProofingPhotoSelection] = useState<"off" | "optional" | "required">(eventType?.proofingPhotoSelection || "required");
+  const [proofingInstructions, setProofingInstructions] = useState(eventType?.proofingInstructions || "");
   const [recurring, setRecurring] = useState<AvailabilitySlot[]>(eventType?.availability?.recurring || []);
   const [specificDates, setSpecificDates] = useState<SpecificDateSlot[]>(eventType?.availability?.specificDates || []);
   const [blockedDates, setBlockedDates] = useState<string[]>(eventType?.availability?.blockedDates || []);
@@ -1125,9 +1127,12 @@ function TenantEventEditor({ eventType, onSave, onCancel }: { eventType: EventTy
   const handleSave = () => {
     if (!title.trim()) { toast.error("Title is required"); return; }
     if (durations.length === 0) { toast.error("Add at least one duration"); return; }
+    if (extras.length > 50 || extras.some(extra => !extra.name.trim() || extra.name.length > 160 || !Number.isFinite(extra.price) || extra.price < 0 || extra.price > 100000 || !Number.isInteger(extra.maxQuantity) || extra.maxQuantity < 1 || extra.maxQuantity > 1000)) { toast.error("Each add-on needs a name, a price from $0 to $100,000, and a maximum quantity from 1 to 1,000 (up to 50 add-ons)"); return; }
     onSave({
       ...eventType,
       extras,
+      proofingPhotoSelection,
+      proofingInstructions: proofingInstructions.trim(),
       id: eventType?.id || generateId("et"),
       title: title.trim(),
       description: description.trim(),
@@ -1210,18 +1215,36 @@ function TenantEventEditor({ eventType, onSave, onCancel }: { eventType: EventTy
 
       <React.Suspense fallback={<div className="h-20 rounded-lg bg-secondary/30 animate-pulse" />}><SlotIntervalField value={slotIntervalMinutes} onChange={setSlotIntervalMinutes} tenant /></React.Suspense>
 
-      {!!extras.length && <section className="space-y-3 rounded-lg border border-border p-4" aria-label="Add-on proofing choices">
-        <h4 className="font-medium">Add-on photo choices</h4>
-        <p className="text-sm text-muted-foreground">Applies to linked bookings in active proofing. Clients choose from their normal picks, up to the quantity purchased. Optional choices can be left to the photographer.</p>
-        {extras.map(extra => <div key={extra.id} className="space-y-2">
+      <section className="space-y-3 rounded-lg border border-border p-4" aria-label="Whole album proofing choices">
+        <h4 className="font-medium">Whole album photo choices</h4>
+        <p className="text-sm text-muted-foreground">Default for albums linked to this event during proofing. An album can override this setting.</p>
+        <label className="block text-sm">Photo selection
+          <select aria-label="Whole album photo selection" value={proofingPhotoSelection} onChange={e => setProofingPhotoSelection(e.target.value as "off" | "optional" | "required")} className="block w-full min-h-11 rounded-md border border-border bg-secondary px-3">
+            <option value="off">Off — photographer chooses</option><option value="optional">Optional — client can choose or skip</option><option value="required">Required — client chooses or asks photographer to choose</option>
+          </select>
+        </label>
+        <label className="block text-sm">Whole album instructions (optional)<Textarea aria-label="Whole album proofing instructions" maxLength={300} value={proofingInstructions} onChange={e => setProofingInstructions(e.target.value)} /></label>
+      </section>
+
+      <section className="space-y-3 rounded-lg border border-border p-4" aria-label="Add-on proofing choices">
+        <div className="flex items-center justify-between gap-3"><h4 className="font-medium">Add-ons and photo choices</h4><Button type="button" variant="outline" size="sm" onClick={() => setExtras([...extras, { id: generateId("extra"), name: "New add-on", price: 0, maxQuantity: 1 }])}>Add add-on</Button></div>
+        <p className="text-sm text-muted-foreground">Applies to purchased extras on linked bookings. Clients choose from their normal picks, or all photos when normal selection is off or skipped. Clients can also ask the photographer to choose.</p>
+        {extras.length === 0 && <p className="text-sm text-muted-foreground">Add an extra such as VFX to configure its Off, Optional or Required photo choices.</p>}
+        {extras.map(extra => <div key={extra.id} className="space-y-2 rounded-md border border-border p-3">
+          <div className="grid gap-2 sm:grid-cols-3">
+            <label className="block text-sm">Name<Input aria-label="Add-on name" value={extra.name} onChange={e => setExtras(extras.map(item => item.id === extra.id ? { ...item, name: e.target.value } : item))} /></label>
+            <label className="block text-sm">Price ($)<Input aria-label={`${extra.name} price`} type="number" min={0} step="0.01" value={extra.price} onChange={e => setExtras(extras.map(item => item.id === extra.id ? { ...item, price: Math.max(0, Number(e.target.value)) } : item))} /></label>
+            <label className="block text-sm">Maximum quantity<Input aria-label={`${extra.name} maximum quantity`} type="number" min={1} step={1} value={extra.maxQuantity} onChange={e => setExtras(extras.map(item => item.id === extra.id ? { ...item, maxQuantity: Math.max(1, Math.floor(Number(e.target.value))) } : item))} /></label>
+          </div>
           <label className="block text-sm">{extra.name}
             <select aria-label={`${extra.name} photo choice`} value={extra.proofingPhotoSelection || "off"} onChange={e => setExtras(extras.map(item => item.id === extra.id ? { ...item, proofingPhotoSelection: e.target.value as "off" | "optional" | "required" } : item))} className="block w-full min-h-11 rounded-md border border-border bg-secondary px-3">
               <option value="off">Off — no extra photo choice</option><option value="optional">Optional — client can choose preferred photos</option><option value="required">Required — choose one photo per purchased item</option>
             </select>
           </label>
           {extra.proofingPhotoSelection && extra.proofingPhotoSelection !== "off" && <label className="block text-sm">Photo choice instructions (optional)<Input aria-label={`${extra.name} photo choice instructions`} maxLength={300} value={extra.proofingInstructions || ""} onChange={e => setExtras(extras.map(item => item.id === extra.id ? { ...item, proofingInstructions: e.target.value } : item))} /></label>}
+          <Button type="button" variant="ghost" size="sm" onClick={() => setExtras(extras.filter(item => item.id !== extra.id))}>Remove {extra.name}</Button>
         </div>)}
-      </section>}
+      </section>
 
       {/* Deposit */}
       <div className="space-y-3 p-4 rounded-lg bg-secondary/30 border border-border/50">
@@ -1653,6 +1676,8 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
   const [cleanDownloadsOnly, setCleanDownloadsOnly] = useState(album?.cleanDownloadsOnly || false);
   const [purchasingDisabled, setPurchasingDisabled] = useState((album as any)?.purchasingDisabled || false);
   const [proofingEnabled, setProofingEnabled] = useState(album?.proofingEnabled || false);
+  const [proofingPhotoSelection, setProofingPhotoSelection] = useState<"inherit" | "off" | "optional" | "required">(album?.proofingPhotoSelection || "inherit");
+  const [proofingInstructions, setProofingInstructions] = useState(album?.proofingInstructions || "");
   const [lockDownloadsDuringProofing, setLockDownloadsDuringProofing] = useState(album?.lockDownloadsDuringProofing || false);
   const [expiresAt, setExpiresAt] = useState(album?.expiresAt || "");
   const [downloadExpiresAt, setDownloadExpiresAt] = useState(album?.downloadExpiresAt || "");
@@ -1826,6 +1851,8 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
       cleanDownloadsOnly,
       purchasingDisabled,
       proofingEnabled,
+      proofingPhotoSelection: proofingPhotoSelection === "inherit" ? null : proofingPhotoSelection,
+      proofingInstructions: proofingPhotoSelection === "inherit" ? null : proofingInstructions.trim(),
       lockDownloadsDuringProofing: lockDownloadsDuringProofing ? true : undefined,
       expiresAt: expiresAt || undefined,
       downloadExpiresAt: downloadExpiresAt || undefined,
@@ -1965,6 +1992,18 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
         </div>
       </div>
 
+      <section className="space-y-3 rounded-lg border border-border p-4" aria-label="Whole album proofing choices">
+        <h4 className="font-medium">Whole album photo choices</h4>
+        <p className="text-sm text-muted-foreground">Applies while proofing is active. Inherit uses the linked event setting, or Required if there is no linked event.</p>
+        <label className="block text-sm">Photo selection
+          <select aria-label="Whole album photo selection" value={proofingPhotoSelection} onChange={e => setProofingPhotoSelection(e.target.value as "inherit" | "off" | "optional" | "required")} className="block w-full min-h-11 rounded-md border border-border bg-secondary px-3">
+            <option value="inherit">Inherit event setting</option><option value="off">Off — photographer chooses</option><option value="optional">Optional — client can choose or skip</option><option value="required">Required — client chooses or asks photographer to choose</option>
+          </select>
+        </label>
+        {proofingPhotoSelection !== "inherit" && <label className="block text-sm">Whole album instructions (optional)<Textarea aria-label="Whole album proofing instructions" maxLength={300} value={proofingInstructions} onChange={e => setProofingInstructions(e.target.value)} /></label>}
+        <p className="text-xs text-muted-foreground">Save the album to apply these choices before starting a proofing round.</p>
+      </section>
+
       {/* Proofing toggle */}
       {album && settings.proofingEnabled && (
         <div className="flex items-center justify-between p-3 rounded-lg bg-secondary">
@@ -2036,12 +2075,13 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
         };
 
         const approveSelections = async (free: boolean) => {
-          if (!latest?.selectedPhotoIds?.length && !latest?.photographerChooses) { toast.error("No selections to approve yet"); return; }
+          if (!latest || stage !== "selections-submitted") { toast.error("No selections to approve yet"); return; }
+          const photographerChooses = latest.photographerChooses || !latest.selectedPhotoIds?.length;
           const selectedSet = new Set(latest.selectedPhotoIds);
-          const updatedPhotos = (liveAlbum.photos || []).map(p => ({ ...p, hidden: latest.photographerChooses ? p.hidden : !selectedSet.has(p.id) }));
+          const updatedPhotos = (liveAlbum.photos || []).map(p => ({ ...p, hidden: photographerChooses ? p.hidden : !selectedSet.has(p.id) }));
           const updated = { ...liveAlbum, photos: updatedPhotos, proofingStage: "editing" as const, allUnlocked: free ? true : liveAlbum.allUnlocked };
           await updateLiveAlbum(updated);
-          toast.success(latest.photographerChooses ? "Moving to editing. Choose the final photos; no photos were automatically hidden." : `${latest.selectedPhotoIds.length} photos kept — ${free ? "album unlocked" : "moving to editing"}`);
+          toast.success(photographerChooses ? "Moving to editing. Choose the final photos; no photos were automatically hidden." : `${latest.selectedPhotoIds.length} photos kept — ${free ? "album unlocked" : "moving to editing"}`);
         };
 
         const sendEditingEmail = async () => {

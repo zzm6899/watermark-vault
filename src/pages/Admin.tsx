@@ -4310,6 +4310,8 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
   const [location, setLocation] = useState(eventType?.location || "");
   const [durations, setDurations] = useState<number[]>(eventType?.durations || [30]);
   const [proofingMessages, setProofingMessages] = useState(eventType?.proofingMessages || {});
+  const [proofingPhotoSelection, setProofingPhotoSelection] = useState<EventType["proofingPhotoSelection"]>(eventType?.proofingPhotoSelection || "required");
+  const [proofingInstructions, setProofingInstructions] = useState(eventType?.proofingInstructions || "");
   const [price, setPrice] = useState(eventType?.price || 0);
   const [prices, setPrices] = useState<Record<number, number>>({ ...eventType?.prices, ...eventType?.durationPrices });
   const [extras, setExtras] = useState<NonNullable<EventType["extras"]>>(eventType?.extras || []);
@@ -4368,6 +4370,8 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
       description: description.trim(),
       durations,
       proofingMessages,
+      proofingPhotoSelection,
+      proofingInstructions: proofingInstructions.trim(),
       color: "primary",
       price,
       prices: Object.keys(prices).length > 0 ? prices : undefined,
@@ -4418,9 +4422,20 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
           </div>
         </div>
       </div>
+      <section className="rounded-xl border border-primary/30 p-4 space-y-3" aria-label="Whole-album proofing choices">
+        <h3 className="font-medium">Proofing photo choices — whole album</h3>
+        <p className="text-sm text-muted-foreground">Default for albums linked to this event. Each album can override it. Add-on choices are configured separately below.</p>
+        <label className="block text-sm space-y-1">Normal photo selection
+          <select aria-label="Whole-album photo choice" value={proofingPhotoSelection} onChange={e => setProofingPhotoSelection(e.target.value as EventType["proofingPhotoSelection"])} className="block w-full min-h-11 rounded-md border border-border bg-secondary px-3">
+            <option value="off">Off — photographer chooses normal photos</option><option value="optional">Optional — client may suggest favourites</option><option value="required">Required — client chooses photos or delegates to photographer</option>
+          </select>
+        </label>
+        <label className="block text-sm space-y-1">Whole-album instructions<Input aria-label="Whole-album proofing instructions" maxLength={300} value={proofingInstructions} onChange={e => setProofingInstructions(e.target.value)} placeholder="e.g. Choose your favourite photos for editing." /></label>
+        <p className="text-xs text-muted-foreground">Required still allows the client to explicitly ask you to choose. Off does not disable add-on photo choices or the proofing workflow.</p>
+      </section>
       <section className="rounded-xl border border-border p-4 space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <div><h4 className="font-medium">Booking extras</h4><p className="text-sm text-muted-foreground">Optional line items, such as composite images. Clients choose 0 up to your limit.</p></div>
+          <div><h4 className="font-medium">Booking extras &amp; add-on proofing</h4><p className="text-sm text-muted-foreground">Add extras such as VFX, then set each add-on’s photo choices to Off, Optional or Required.</p></div>
           <Button variant="outline" size="sm" disabled={extras.length >= 50} onClick={() => setExtras([...extras, { id: generateId("extra"), name: "", price: 0, maxQuantity: 10 }])}><Plus className="mr-2 size-4" /> Add extra</Button>
         </div>
         {extras.map((extra, index) => <div key={extra.id} className="grid grid-cols-2 sm:grid-cols-[1fr_120px_120px_auto] items-end gap-3 rounded-lg bg-secondary/30 p-3">
@@ -4433,7 +4448,7 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
             <select aria-label={`Extra ${index + 1} photo choice`} value={extra.proofingPhotoSelection || "off"} onChange={e => setExtras(extras.map(item => item.id === extra.id ? { ...item, proofingPhotoSelection: e.target.value as "off" | "optional" | "required" } : item))} className="block w-full min-h-11 rounded-md border border-border bg-secondary px-3">
               <option value="off">Off — no extra photo choice</option><option value="optional">Optional — client can choose preferred photos</option><option value="required">Required — choose one photo per purchased item</option>
             </select>
-            <span className="block text-xs text-muted-foreground">Applies to linked bookings in active proofing. Clients choose from their normal picks, up to the quantity purchased. Optional choices can be left to the photographer.</span>
+            <span className="block text-xs text-muted-foreground">Applies to purchased extras on linked bookings. Clients choose from their normal picks, or all photos when normal selection is off or skipped. Clients can also ask the photographer to choose.</span>
           </label>
           {extra.proofingPhotoSelection && extra.proofingPhotoSelection !== "off" && <label className="col-span-full text-sm space-y-1">Photo choice instructions (optional)<Input aria-label={`Extra ${index + 1} photo choice instructions`} maxLength={300} placeholder="e.g. Choose your preferred photo for the VFX edit." value={extra.proofingInstructions || ""} onChange={e => setExtras(extras.map(item => item.id === extra.id ? { ...item, proofingInstructions: e.target.value } : item))} /></label>}
         </div>)}
@@ -4755,7 +4770,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                 if (s.proofingStage === "selections-submitted") {
                   const latestRound = s.proofingRounds?.[s.proofingRounds.length - 1];
                   const selectedIds = latestRound?.selectedPhotoIds;
-                  if (selectedIds?.length) {
+                  if (selectedIds) {
                     const selectedSet = new Set(selectedIds);
                     return { ...s, photos: photos.map(p => ({ ...p, starred: selectedSet.has(p.id) })), _photosStripped: false };
                   }
@@ -4794,7 +4809,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
         if (updated.proofingStage === "selections-submitted") {
           const latestRound = updated.proofingRounds?.[updated.proofingRounds.length - 1];
           const selectedIds = latestRound?.selectedPhotoIds;
-          if (selectedIds?.length) {
+          if (selectedIds) {
             const selectedSet = new Set(selectedIds);
             photos = photos.map(p => ({ ...p, starred: selectedSet.has(p.id) }));
           }
@@ -5397,6 +5412,8 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
   const [savingAlbum, setSavingAlbum] = useState(false);
   const [sendingProofing, setSendingProofing] = useState(false);
   const [albumProofingEnabled, setAlbumProofingEnabled] = useState(album?.proofingEnabled || false);
+  const [albumProofingChoice, setAlbumProofingChoice] = useState<NonNullable<Album["proofingPhotoSelection"]> | "inherit">(album?.proofingPhotoSelection || "inherit");
+  const [albumProofingInstructions, setAlbumProofingInstructions] = useState(album?.proofingInstructions || "");
   const [lockDownloadsDuringProofing, setLockDownloadsDuringProofing] = useState(album?.lockDownloadsDuringProofing || false);
 
   // When a stub album is opened (photos stripped during sync to save bandwidth),
@@ -5505,6 +5522,8 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
       expiresAt: expiresAt || undefined,
       downloadExpiresAt: downloadExpiresAt || undefined,
       proofingEnabled: albumProofingEnabled,
+      proofingPhotoSelection: albumProofingChoice === "inherit" ? null : albumProofingChoice,
+      proofingInstructions: albumProofingInstructions.trim() || null,
       lockDownloadsDuringProofing: lockDownloadsDuringProofing ? true : undefined,
       watermarkDisabled,
       cleanDownloadsOnly,
@@ -6166,6 +6185,16 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
       </div>
 
       {/* ── Per-album proofing toggle ── */}
+      <section className="rounded-xl border border-border p-4 space-y-3" aria-label="Album proofing choices">
+        <h3 className="font-medium">Whole-album photo choices</h3>
+        <p className="text-sm text-muted-foreground">Applies when this album is sent for proofing. Add-on choices keep their separate event settings.</p>
+        <label className="block text-sm space-y-1">Normal photo selection
+          <select aria-label="Album photo choice" value={albumProofingChoice} onChange={e => setAlbumProofingChoice(e.target.value as typeof albumProofingChoice)} className="block w-full min-h-11 rounded-md border border-border bg-secondary px-3">
+            <option value="inherit">Use event setting (Required if no event)</option><option value="off">Off — photographer chooses normal photos</option><option value="optional">Optional — client may suggest favourites</option><option value="required">Required — client chooses photos or delegates to photographer</option>
+          </select>
+        </label>
+        <label className="block text-sm space-y-1">Instructions for this album<Input aria-label="Album proofing instructions" maxLength={300} value={albumProofingInstructions} onChange={e => setAlbumProofingInstructions(e.target.value)} placeholder="Leave blank to use the event instructions" /></label>
+      </section>
       {album && (
         <div id="album-editor-workflow" className="scroll-mt-40 flex items-center justify-between p-3 rounded-lg bg-secondary">
           <div>
@@ -6267,12 +6296,13 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
         };
 
         const approveSelections = (free: boolean) => {
-          if (!latest?.selectedPhotoIds?.length && !latest?.photographerChooses) { toast.error("No selections to approve yet"); return; }
+          if (!latest?.submittedAt && !latest?.selectedPhotoIds?.length && !latest?.photographerChooses) { toast.error("No submission to approve yet"); return; }
           const selectedSet = new Set(latest.selectedPhotoIds);
-          const updatedPhotos = liveAlbum!.photos.map((p: any) => ({ ...p, hidden: latest.photographerChooses ? p.hidden : !selectedSet.has(p.id) }));
+          const keepAllPhotos = latest.photographerChooses || selectedSet.size === 0;
+          const updatedPhotos = liveAlbum!.photos.map((p: any) => ({ ...p, hidden: keepAllPhotos ? p.hidden : !selectedSet.has(p.id) }));
           const updated = { ...liveAlbum!, photos: updatedPhotos, proofingStage: "editing" as const, allUnlocked: free ? true : liveAlbum!.allUnlocked, purchasingDisabled: false };
           updateLiveAlbum(updated);
-          toast.success(latest.photographerChooses ? "Moving to editing. Choose the final photos; no photos were automatically hidden." : `${latest.selectedPhotoIds.length} photos kept, ${liveAlbum!.photos.length - latest.selectedPhotoIds.length} hidden — ${free ? "album unlocked" : "moving to editing"}`);
+          toast.success(keepAllPhotos ? "Moving to editing. Choose the final photos; no photos were automatically hidden." : `${latest.selectedPhotoIds.length} photos kept, ${liveAlbum!.photos.length - latest.selectedPhotoIds.length} hidden — ${free ? "album unlocked" : "moving to editing"}`);
           onUpdate?.(updated);
         };
 
@@ -6396,6 +6426,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
                 <ProofingReceipt album={liveAlbum!} round={latest} />
                 <div className="bg-secondary rounded-lg p-3 space-y-1">
                   <p className="text-xs font-body text-foreground font-medium">{latest.selectedPhotoIds.length} photos selected by client</p>
+                  {!latest.selectedPhotoIds.length && !latest.photographerChooses && <p className="text-sm text-muted-foreground">No normal photo preferences were submitted. Moving to editing keeps all photos available for you to choose.</p>}
                   {latest.photographerChooses && <p className="rounded-lg border border-primary/30 bg-primary/10 p-3 text-sm">Client asked you to choose the normal photos. Their favourites are suggestions. Moving to editing keeps the gallery unchanged so you can make the final selection.</p>}
                   {!!latest.addonPhotographerChoices?.length && <div className="text-sm"><p className="font-medium">Client asked you to choose add-on photos:</p>{latest.addonPhotographerChoices.map(id => <p key={id}>{liveAlbum!.proofingAddonRequirements?.find(rule => rule.id === id)?.name || id}</p>)}</div>}
                   {latest.clientNote && <p className="text-xs font-body text-muted-foreground italic">"{latest.clientNote}"</p>}
@@ -9775,7 +9806,12 @@ function SettingsView() {
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-2"><h2 className="font-display text-2xl text-foreground">Settings</h2><p className="text-xs text-muted-foreground" aria-label="Application version">Version {__APP_VERSION__} <span className="mx-1">/</span> Build {__BUILD_REVISION__}</p></div>
+      <h2 className="mb-4 font-display text-2xl text-foreground">Settings</h2>
+      <section aria-label="Application version" className="mb-6 rounded-xl border border-primary/30 bg-secondary p-4">
+        <h3 className="font-medium text-foreground">Application version</h3>
+        <p className="mt-1 text-sm text-foreground">Version <strong>{__APP_VERSION__}</strong> <span className="mx-2">·</span> Build <code className="break-all">{__BUILD_REVISION__.slice(0, 7)}</code></p>
+        <p className="mt-2 text-xs text-muted-foreground">This is the version loaded in your browser. Refresh this page after an update to load the latest build.</p>
+      </section>
       {/* Tab navigation */}
       <div className="flex items-center gap-1 flex-wrap mb-6 pb-2 border-b border-border/40">
         {(([

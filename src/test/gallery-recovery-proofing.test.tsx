@@ -95,3 +95,35 @@ it("lets clients delegate normal and required addon choices without selecting ph
   await screen.findByText('Your selections are safely submitted');
   expect(submitted).toMatchObject({ photographerChooses: true, addonPhotographerChoices: ['vfx'], selectedPhotoIds: [] });
 });
+
+it.each(["off", "optional"])("allows %s normal proofing choices while requiring addon preferences", async (mode) => {
+  let album = { id: "policy", title: "Policy Gallery", enabled: true, proofingEnabled: true, proofingStage: "proofing", proofingPhotoSelection: mode, proofingInstructions: "Please review the VFX pose.", freeDownloads: 0,
+    photos: [{ id: "one", title: "Photo 1", src: "/uploads/one.jpg" }], proofingAddonRequirements: [{ id: "vfx", name: "VFX", quantity: 1, mode: "required" }], proofingRounds: [{ roundNumber: 1, sentAt: "2026-09-18", selectedPhotoIds: [] }] };
+  let submitted: any;
+  vi.stubGlobal("fetch", vi.fn(async (url, options) => {
+    if (String(url).endsWith("/api/proofing/submit")) {
+      submitted = JSON.parse(options.body);
+      album = { ...album, proofingStage: "selections-submitted", proofingRounds: [{ ...album.proofingRounds[0], ...submitted, submittedAt: "2026-09-18" }] };
+      return response({ ok: true, album, receipt: { submissionId: submitted.submissionId, submittedAt: "2026-09-18", selectedCount: 0 } });
+    }
+    return response({ album, sessionKey: "gallery-policy-session-123" });
+  }));
+  const gallery = () => render(<MemoryRouter initialEntries={["/gallery/policy"]}><Routes><Route path="/gallery/:albumId" element={<AlbumDetail />} /></Routes></MemoryRouter>);
+  const first = gallery();
+  await screen.findByText("Please review the VFX pose.");
+  if (mode === "off") {
+    expect(screen.queryByRole("button", { name: "Select Photo 1" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: /choose my normal photos/ })).not.toBeInTheDocument();
+  } else expect(screen.getByRole("button", { name: "Select Photo 1" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Submit selection" })).toBeDisabled();
+  fireEvent.click(screen.getByRole("checkbox", { name: "Photo 1" }));
+  await waitFor(() => expect(Object.keys(localStorage).some(key => key.startsWith("wv_proofing_draft:") && localStorage.getItem(key)?.includes('"vfx":["one"]'))).toBe(true));
+  first.unmount();
+  gallery();
+  await screen.findByText("Please review the VFX pose.");
+  expect(screen.getByRole("checkbox", { name: "Photo 1" })).toBeChecked();
+  expect(screen.getByRole("button", { name: "Submit selection" })).toBeEnabled();
+  fireEvent.click(screen.getByRole("button", { name: "Submit selection" }));
+  await screen.findByText("Your selections are safely submitted");
+  expect(submitted).toMatchObject({ selectedPhotoIds: [], addonSelections: { vfx: ["one"] } });
+});

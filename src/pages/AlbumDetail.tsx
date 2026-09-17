@@ -1161,7 +1161,9 @@ export default function AlbumDetail() {
     proofingStage !== "finals-delivered");
 
   const canDownload = (isFullyUnlocked || sessionFullAlbum || bankFullAlbumUnlocked) && !isExpired && !isDownloadLockedForProofing && !isPurchasingLocked;
-  const showProofingGalleryControls = isProofing && !canDownload;
+  const normalSelectionMode = album.proofingPhotoSelection || "required";
+  const canSelectNormalPhotos = isProofing && normalSelectionMode !== "off";
+  const showProofingGalleryControls = canSelectNormalPhotos && !canDownload;
   const isPhotoPaid = (id: string) => !isPurchasingLocked && (canDownload || paidPhotoIdSet.has(id));
   const latestRound = album.proofingRounds?.[album.proofingRounds.length - 1];
   const adminNote = latestRound?.adminNote;
@@ -1187,7 +1189,8 @@ export default function AlbumDetail() {
   const lbPhoto = lightboxPhotoId ? displayedPhotos.find((p: any) => p.id === lightboxPhotoId) ?? null : null;
   const lbIdx = lbPhoto ? displayedPhotos.findIndex((p: any) => p.id === lightboxPhotoId) : -1;
   // During proofing, starred photos = client's current picks
-  const starredIds = new Set<string>(album.photos.filter((p: any) => p.starred).map(p => p.id));
+  const starredIds = new Set<string>(normalSelectionMode === "off" ? [] : visiblePhotos.filter((p: any) => p.starred).map(p => p.id));
+  const addonUsesAllPhotos = photographerChooses || (normalSelectionMode !== "required" && starredIds.size === 0);
 
   const toggleSelect = (id: string) => {
     setSelectedIds((prev) => {
@@ -1401,9 +1404,10 @@ export default function AlbumDetail() {
 
   // ── Proofing handlers ─────────────────────────────────────
   const toggleStar = (photoId: string) => {
-    if (proofingSubmitting) return;
+    if (proofingSubmitting || !canSelectNormalPhotos) return;
     proofingSubmissionId.current = generateCapabilityToken("proof");
-    if (!photographerChooses && starredIds.has(photoId)) setAddonSelections(previous => Object.fromEntries(Object.entries(previous).map(([id, picks]) => [id, picks.filter(id => id !== photoId)])));
+    if (!photographerChooses && normalSelectionMode === "optional" && starredIds.size === 0) setAddonSelections(previous => Object.fromEntries(Object.entries(previous).map(([id, picks]) => [id, picks.filter(id => id === photoId)])));
+    if (!photographerChooses && starredIds.has(photoId) && (normalSelectionMode === "required" || starredIds.size > 1)) setAddonSelections(previous => Object.fromEntries(Object.entries(previous).map(([id, picks]) => [id, picks.filter(id => id !== photoId)])));
     setAlbumState(previous => previous ? {
       ...previous,
       photos: previous.photos.map((photo: any) => photo.id === photoId ? { ...photo, starred: !photo.starred } : photo),
@@ -1411,7 +1415,7 @@ export default function AlbumDetail() {
   };
 
   const addonRequirements = album.proofingAddonRequirements || [];
-  const missingAddonCount = addonRequirements.filter(addon => addon.mode === "required" && !addonPhotographerChoices.includes(addon.id) && (addonSelections[addon.id] || []).filter(id => photographerChooses || starredIds.has(id)).length < addon.quantity).length;
+  const missingAddonCount = addonRequirements.filter(addon => addon.mode === "required" && !addonPhotographerChoices.includes(addon.id) && (addonSelections[addon.id] || []).filter(id => visiblePhotos.some(photo => photo.id === id) && (addonUsesAllPhotos || starredIds.has(id))).length < addon.quantity).length;
 
   const handleSubmitSelections = async () => {
     if (!album || proofingInFlight.current) return;
@@ -1420,8 +1424,8 @@ export default function AlbumDetail() {
       document.getElementById("proofing-preferences")?.scrollIntoView({ behavior: "smooth", block: "center" });
       return;
     }
-    const picked = album.photos.filter((p: any) => p.starred).map(p => p.id);
-    if (picked.length === 0 && !photographerChooses) {
+    const picked = [...starredIds];
+    if (normalSelectionMode === "required" && picked.length === 0 && !photographerChooses) {
       toast.error("Please star at least one photo before submitting.");
       return;
     }
@@ -1432,7 +1436,7 @@ export default function AlbumDetail() {
       const body = await submitProofing({
           albumId: album.id,
           selectedPhotoIds: picked,
-          addonSelections, photographerChooses, addonPhotographerChoices,
+          addonSelections, photographerChooses: normalSelectionMode === "off" || photographerChooses, addonPhotographerChoices,
           clientNote: proofingClientNote,
           submissionId: proofingSubmissionId.current,
           roundNumber: album.proofingRounds?.at(-1)?.roundNumber || 1,
@@ -1893,7 +1897,7 @@ export default function AlbumDetail() {
                     </div>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 mb-1.5">
-                        <p className="text-lg font-display text-foreground">Select your photos</p>
+                        <p className="text-lg font-display text-foreground">{normalSelectionMode === "off" ? "Review your preferences" : normalSelectionMode === "optional" ? "Select your photos (optional)" : "Select your photos"}</p>
                         {album.proofingRounds && album.proofingRounds.length > 0 && (
                           <span className="text-[10px] font-body px-1.5 py-0.5 rounded-full bg-yellow-500/20 text-yellow-400">
                             Round {album.proofingRounds.length}
@@ -1901,8 +1905,9 @@ export default function AlbumDetail() {
                         )}
                       </div>
                       <p className="text-sm font-body leading-5 text-muted-foreground">
-                        {adminNote || "Open a photo, tap the star to select it, then use the arrows or swipe to continue."}
+                        {album.proofingInstructions || adminNote || (normalSelectionMode === "off" ? "Your photographer will choose the normal photos. Review any add-on preferences below." : normalSelectionMode === "optional" ? "Mark any favourites, or submit without choosing normal photos." : "Open a photo, tap the star to select it, then use the arrows or swipe to continue.")}
                       </p>
+                      {album.proofingInstructions && adminNote && <p className="text-sm font-body leading-5 text-muted-foreground">{adminNote}</p>}
                       {album.proofingExpiresAt && (() => {
                         const expiresAt = new Date(album.proofingExpiresAt!);
                         const msLeft = expiresAt.getTime() - Date.now();
@@ -1922,7 +1927,7 @@ export default function AlbumDetail() {
                         );
                       })()}
                       <p className="text-xs font-body text-yellow-300 mt-2">
-                        {photographerChooses ? "Photographer will choose your photos" : starredIds.size === 0 ? "No photos selected" : `${starredIds.size} photo${starredIds.size !== 1 ? "s" : ""} selected`}
+                        {normalSelectionMode === "off" || photographerChooses ? "Photographer will choose your photos" : starredIds.size === 0 ? "No photos selected" : `${starredIds.size} photo${starredIds.size !== 1 ? "s" : ""} selected`}
                       </p>
                     </div>
                   </div>
@@ -2158,11 +2163,11 @@ export default function AlbumDetail() {
                   watermarkSize={settings.watermarkSize ?? 40}
                 />
                   </button>
-                  {(isProofing || (!isPurchasingLocked && !isExpired && !isDownloadLockedForProofing)) && <button type="button" aria-label={`${(isProofing ? starredIds.has(photo.id) : selectedIds.has(photo.id)) ? "Deselect" : "Select"} ${photo.title || photo.originalName || "Photo"}`} aria-pressed={isProofing ? starredIds.has(photo.id) : selectedIds.has(photo.id)} onClick={() => isProofing ? toggleStar(photo.id) : toggleSelect(photo.id)} className="gallery-photo-select">
+                  {(canSelectNormalPhotos || (!isProofing && !isPurchasingLocked && !isExpired && !isDownloadLockedForProofing)) && <button type="button" aria-label={`${(isProofing ? starredIds.has(photo.id) : selectedIds.has(photo.id)) ? "Deselect" : "Select"} ${photo.title || photo.originalName || "Photo"}`} aria-pressed={isProofing ? starredIds.has(photo.id) : selectedIds.has(photo.id)} onClick={() => isProofing ? toggleStar(photo.id) : toggleSelect(photo.id)} className="gallery-photo-select">
                     {isProofing ? <Star className="size-4" /> : (selectedIds.has(photo.id) ? <CheckIcon className="size-4" /> : <span className="size-4 rounded-full border border-current" />)}
                   </button>}
                   {/* Filename overlay on hover */}
-                  {isProofing && starredIds.has(photo.id) && <span className="absolute top-2 left-2 rounded bg-primary px-2 py-1 text-xs font-semibold text-primary-foreground pointer-events-none">Selected</span>}
+                  {canSelectNormalPhotos && starredIds.has(photo.id) && <span className="absolute top-2 left-2 rounded bg-primary px-2 py-1 text-xs font-semibold text-primary-foreground pointer-events-none">Selected</span>}
                   <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent px-2 pt-4 pb-1.5 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
                     <p className="text-[10px] font-body text-white/80 truncate">{(photo.originalName || photo.title || "Photo").replace(/\.[^.]+$/, "")}</p>
                   </div>
@@ -2222,7 +2227,7 @@ export default function AlbumDetail() {
       )}
 
       {isProofing && <section id="proofing-preferences" aria-label="Review proofing preferences" className="container max-w-3xl mx-auto px-4 pb-52 space-y-6 scroll-mt-28">
-        <label className="flex min-h-12 items-start gap-3 rounded-xl border border-border p-4"><input type="checkbox" className="mt-1 size-5 accent-primary" checked={photographerChooses} disabled={proofingSubmitting} onChange={event => { setPhotographerChooses(event.target.checked); proofingSubmissionId.current = generateCapabilityToken("proof"); if (!event.target.checked) setAddonSelections(previous => Object.fromEntries(Object.entries(previous).map(([id, picks]) => [id, picks.filter(photoId => starredIds.has(photoId))]))); }} /><span><span className="block font-medium">Let the photographer choose my normal photos</span><span className="block text-sm text-muted-foreground">You can still mark favourites as suggestions. Your photographer will make the final selection.</span></span></label>
+        {normalSelectionMode !== "off" && <label className="flex min-h-12 items-start gap-3 rounded-xl border border-border p-4"><input type="checkbox" className="mt-1 size-5 accent-primary" checked={photographerChooses} disabled={proofingSubmitting} onChange={event => { setPhotographerChooses(event.target.checked); proofingSubmissionId.current = generateCapabilityToken("proof"); if (!event.target.checked && (normalSelectionMode === "required" || starredIds.size > 0)) setAddonSelections(previous => Object.fromEntries(Object.entries(previous).map(([id, picks]) => [id, picks.filter(photoId => starredIds.has(photoId))]))); }} /><span><span className="block font-medium">Let the photographer choose my normal photos</span><span className="block text-sm text-muted-foreground">You can still mark favourites as suggestions. Your photographer will make the final selection.</span></span></label>}
         <h2 className="text-xl font-display">Review your photo choices</h2>
         {addonRequirements.length > 0 && <p className="text-sm text-muted-foreground">Choose your own photos or hand the choice to your photographer. You can decide separately for normal photos and each add-on.</p>}
         {addonRequirements.map(addon => {
@@ -2232,8 +2237,8 @@ export default function AlbumDetail() {
             <p className="text-sm text-muted-foreground">{addon.mode === "required" ? `Choose ${addon.quantity} preferred photo${addon.quantity === 1 ? "" : "s"}, or let your photographer choose.` : `Choose up to ${addon.quantity}, or leave blank for your photographer to choose.`} <span role="status">{picks.length}/{addon.quantity} chosen</span></p>
             <label className="flex min-h-11 items-center gap-3 text-sm"><input type="checkbox" className="size-5 accent-primary" checked={addonPhotographerChoices.includes(addon.id)} onChange={event => { const checked = event.target.checked; proofingSubmissionId.current = generateCapabilityToken("proof"); setAddonPhotographerChoices(previous => checked ? [...previous, addon.id] : previous.filter(id => id !== addon.id)); if (checked) setAddonSelections(previous => ({ ...previous, [addon.id]: [] })); }} />Let the photographer choose for {addon.name}</label>
             {addon.instructions && <p className="text-sm">{addon.instructions}</p>}
-            {starredIds.size === 0 && !photographerChooses && !addonPhotographerChoices.includes(addon.id) && <p className="text-sm text-muted-foreground">Select normal photos above to see your choices here.</p>}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">{album.photos.filter(photo => (photographerChooses || starredIds.has(photo.id)) && !photo.hidden).map(photo => <label key={photo.id} className={`flex items-center gap-2 min-h-12 rounded-lg border p-3 cursor-pointer ${picks.includes(photo.id) ? "border-primary bg-primary/10" : "border-border"}`}>
+            {starredIds.size === 0 && !addonUsesAllPhotos && !addonPhotographerChoices.includes(addon.id) && <p className="text-sm text-muted-foreground">Select normal photos above to see your choices here.</p>}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">{visiblePhotos.filter(photo => addonUsesAllPhotos || starredIds.has(photo.id)).map(photo => <label key={photo.id} className={`flex items-center gap-2 min-h-12 rounded-lg border p-3 cursor-pointer ${picks.includes(photo.id) ? "border-primary bg-primary/10" : "border-border"}`}>
               <input type="checkbox" className="size-5 shrink-0 accent-primary" checked={picks.includes(photo.id)} disabled={addonPhotographerChoices.includes(addon.id) || (!picks.includes(photo.id) && picks.length >= addon.quantity)} onChange={event => {
                 proofingSubmissionId.current = generateCapabilityToken("proof");
                 const checked = event.target.checked;
@@ -2257,13 +2262,13 @@ export default function AlbumDetail() {
             <div className="flex flex-wrap gap-3 items-center justify-between">
               <div>
                 <p role="status" aria-live="polite" className="text-sm font-display text-foreground">
-                  {photographerChooses ? "Photographer will choose your photos" : starredIds.size === 0 ? "No photos selected" : `${starredIds.size} photo${starredIds.size !== 1 ? "s" : ""} selected`}
+                  {normalSelectionMode === "off" || photographerChooses ? "Photographer will choose your photos" : starredIds.size === 0 ? "No photos selected" : `${starredIds.size} photo${starredIds.size !== 1 ? "s" : ""} selected`}
                 </p>
                 <p role="status" className="text-xs font-body text-muted-foreground">{proofingSubmitting ? "Sending your picks — wait for a receipt." : proofingDraftSaved ? "Draft saved on this device · not submitted yet" : "Keep this page open until you submit your picks."}</p>
               </div>
               <button
                 onClick={handleSubmitSelections}
-                disabled={proofingSubmitting || (starredIds.size === 0 && !photographerChooses) || missingAddonCount > 0}
+                disabled={proofingSubmitting || (normalSelectionMode === "required" && starredIds.size === 0 && !photographerChooses) || missingAddonCount > 0}
                 className="min-h-11 flex items-center gap-2 bg-yellow-500 hover:bg-yellow-400 disabled:opacity-50 disabled:cursor-not-allowed text-yellow-950 font-body text-xs tracking-wider uppercase px-5 py-2.5 rounded-full transition-colors font-semibold"
               >
                 <CheckCircle2 className="w-4 h-4" />
@@ -2813,7 +2818,7 @@ export default function AlbumDetail() {
             aria-label={`Photo viewer: ${lbPhoto.title}`}
             onKeyDown={event => {
               if (event.key.toLowerCase() === "s" && !event.ctrlKey && !event.metaKey && !event.altKey && !(event.target as HTMLElement).closest("input, textarea, select, [contenteditable=true]")) {
-                if (isProofing) { event.preventDefault(); toggleStar(lbPhoto.id); }
+                if (canSelectNormalPhotos) { event.preventDefault(); toggleStar(lbPhoto.id); }
               }
             }}
             initial={{ opacity: 0 }}
@@ -2937,10 +2942,10 @@ export default function AlbumDetail() {
               <div className="absolute bottom-0 left-0 right-0 p-3 sm:p-4 bg-gradient-to-t from-black/90 via-black/50 to-transparent rounded-b-lg flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2" style={{ pointerEvents: lbZoom > 1 ? "none" : undefined }}>
                 <div>
                   <p className="text-sm font-body text-white/90">{(lbPhoto.originalName || lbPhoto.title || "Photo").replace(/\.[^.]+$/, "")}</p>
-                  {isProofing && <p className="text-[11px] font-body text-white/55 mt-0.5">Swipe or use arrow keys to browse. Press S to select.</p>}
+                  {canSelectNormalPhotos && <p className="text-[11px] font-body text-white/55 mt-0.5">Swipe or use arrow keys to browse. Press S to select.</p>}
                 </div>
                 <div className="flex gap-2">
-                  {isProofing && (
+                  {canSelectNormalPhotos && (
                     <Button
                      size="default"
                       onClick={() => toggleStar(lbPhoto.id)}

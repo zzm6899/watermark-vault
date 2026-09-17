@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { proofingAddonRequirements, proofingSubmission, applyAlbumPhotoRemovals } = require("../gallery-workflow");
+const { proofingPolicy, proofingAddonRequirements, proofingSubmission, applyAlbumPhotoRemovals, preserveGalleryServerState } = require("../gallery-workflow");
 const { safeGalleryAlbumDto } = require("../security-core");
 
 const requirement = { id: "vfx", name: "VFX", quantity: 2, mode: "required" };
@@ -92,7 +92,7 @@ test("gallery addon rules resolve bookings and events within the album tenant", 
   const helper = source.slice(source.indexOf("function galleryProofingAddonRequirements("), source.indexOf("function publicAlbumDto("));
   const derive = vm.runInNewContext(`${helper}; galleryProofingAddonRequirements`, {
     DB_KEYS: { BOOKINGS: "wv_bookings" }, dbGet: (db, key, fallback) => db[key] || fallback,
-    require: () => ({ proofingAddonRequirements }),
+    require: () => ({ proofingAddonRequirements, proofingPolicy }),
   });
   const booked = { id: "booking", albumId: "linked-gallery", eventTypeId: "event", lineItems: [{ id: "vfx", name: "VFX", quantity: 1 }] };
   const db = {
@@ -105,6 +105,28 @@ test("gallery addon rules resolve bookings and events within the album tenant", 
   assert.equal(derive(db, { id: "linked-gallery", bookingId: "different" }, null).length, 0);
   assert.equal(derive(db, { bookingId: "booking" }, "tenant")[0].mode, "required");
   assert.equal(derive(db, { bookingId: "booking" }, "missing").length, 0);
+  const resolvePolicy = vm.runInNewContext(`${helper}; galleryProofingPolicy`, {
+    DB_KEYS: { BOOKINGS: "wv_bookings" }, dbGet: (db, key, fallback) => db[key] || fallback,
+    require: () => ({ proofingPolicy }),
+  });
+  db.wv_event_types[0].proofingPhotoSelection = "off";
+  db.t_tenant_wv_event_types[0].proofingPhotoSelection = "optional";
+  assert.equal(resolvePolicy(db, { bookingId: "booking" }, null).proofingPhotoSelection, "off");
+  assert.equal(resolvePolicy(db, { bookingId: "booking" }, "tenant").proofingPhotoSelection, "optional");
+  assert.equal(resolvePolicy(db, { bookingId: "booking" }, "missing").proofingPhotoSelection, "required");
+  db.t_other_wv_event_types = [{ id: "event", proofingPhotoSelection: "required", proofingInstructions: "Other tenant only" }];
+  db.t_tenant_wv_event_types[0].proofingInstructions = "This tenant only";
+  assert.equal(resolvePolicy(db, { bookingId: "booking" }, "other").proofingInstructions, "Other tenant only");
+  assert.equal(resolvePolicy(db, { bookingId: "booking" }, "tenant").proofingInstructions, "This tenant only");
+  const overridden = { ...album([]), bookingId: "booking", proofingPhotoSelection: "off", proofingInstructions: "Album override" };
+  const reset = preserveGalleryServerState(overridden, { id: overridden.id, proofingPhotoSelection: null, proofingInstructions: null });
+  assert.equal(reset.proofingPhotoSelection, null);
+  assert.equal(reset.proofingInstructions, null);
+  assert.equal(resolvePolicy(db, reset, "tenant").proofingPhotoSelection, "optional");
+  assert.equal(resolvePolicy(db, reset, "tenant").proofingInstructions, "This tenant only");
+  assert.deepEqual(reset.photos, overridden.photos);
+
+
 });
 
 test("explicit delegation satisfies normal and required addon choices and is retry-safe", () => {
@@ -125,4 +147,30 @@ test("explicit delegation satisfies normal and required addon choices and is ret
   const preferredAddon = proofingSubmission(album(), { ...payload, addonPhotographerChoices: [], addonSelections: { vfx: ['one', 'two'] } });
   assert.deepEqual(preferredAddon.receipt.addonSelections.vfx, ['one', 'two']);
   assert.equal(proofingSubmission(album(), { ...payload, addonPhotographerChoices: [], addonSelections: { vfx: ['one', 'hidden'] } }).status, 400);
+});
+
+
+test("whole-album policy inherits event settings, supports overrides, and enforces selection boundaries", () => {
+  const { proofingPolicy, validProofingPolicy } = require("../gallery-workflow");
+  assert.equal(proofingPolicy({}).proofingPhotoSelection, "required");
+  const event = { proofingPhotoSelection: "optional", proofingInstructions: "Pick favourites" };
+  assert.deepEqual(proofingPolicy({}, event), event);
+  assert.deepEqual(proofingPolicy({ proofingPhotoSelection: null, proofingInstructions: null }, event), event);
+  assert.deepEqual(proofingPolicy({ proofingPhotoSelection: "off", proofingInstructions: "" }, event), { proofingPhotoSelection: "off", proofingInstructions: "" });
+  assert.equal(validProofingPolicy({ proofingPhotoSelection: "bad" }), false);
+  assert.equal(validProofingPolicy({ proofingInstructions: "x".repeat(301) }), false);
+  const empty = { ...request({}), selectedPhotoIds: [] };
+  assert.equal(proofingSubmission(album([]), empty).status, 400);
+  for (const mode of ["off", "optional"]) {
+    const source = { ...album([]), proofingPhotoSelection: mode, proofingInstructions: "Instructions" };
+    assert.equal(proofingSubmission(source, empty).error, undefined);
+    assert.equal(proofingSubmission(source, { ...empty, photographerChooses: true }).error, undefined);
+    assert.equal(safeGalleryAlbumDto(source, "viewer").proofingPhotoSelection, mode);
+    assert.equal(safeGalleryAlbumDto(source, "viewer").proofingInstructions, "Instructions");
+    const withAddons = { ...album(), proofingPhotoSelection: mode };
+    assert.equal(proofingSubmission(withAddons, { ...empty, addonSelections: { vfx: ["one", "two"] } }).error, undefined);
+    assert.equal(proofingSubmission(withAddons, { ...empty, addonSelections: { vfx: ["one", "hidden"] } }).status, 400);
+  }
+  assert.equal(proofingSubmission({ ...album([]), proofingPhotoSelection: "off" }, request({})).status, 400);
+  assert.equal(proofingSubmission(album([]), { ...empty, photographerChooses: true }).error, undefined);
 });
