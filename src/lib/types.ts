@@ -33,6 +33,8 @@ export interface EventTypeAvailability {
 }
 
 export interface BookingExtra {
+  proofingPhotoSelection?: "off" | "optional" | "required";
+  proofingInstructions?: string;
   id: string;
   name: string;
   description?: string;
@@ -324,6 +326,7 @@ export interface DownloadHistoryEntry {
 }
 
 export interface Album {
+  proofingAddonRequirements?: ProofingAddonRequirement[];
   id: string;
   updatedAt?: string;
   slug: string;
@@ -475,7 +478,12 @@ export interface AppSettings {
   vapidPublicKey?: string;
 }
 
+export interface ProofingAddonRequirement {
+  id: string; name: string; quantity: number; mode: "optional" | "required"; instructions?: string;
+}
+
 export interface ProofingRound {
+  addonSelections?: Record<string, string[]>;
   submissionId?: string;
   roundNumber: number;
   sentAt: string;

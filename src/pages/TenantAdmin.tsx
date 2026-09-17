@@ -1090,6 +1090,7 @@ function TenantEventEditor({ eventType, onSave, onCancel }: { eventType: EventTy
   const [depositType, setDepositType] = useState<"fixed" | "percentage">(eventType?.depositType || "fixed");
   const [depositMethods, setDepositMethods] = useState<("stripe" | "bank")[]>(eventType?.depositMethods || ["stripe", "bank"]);
   const [slotIntervalMinutes, setSlotIntervalMinutes] = useState<number>(eventType?.slotIntervalMinutes || 10);
+  const [extras, setExtras] = useState(eventType?.extras || []);
   const [recurring, setRecurring] = useState<AvailabilitySlot[]>(eventType?.availability?.recurring || []);
   const [specificDates, setSpecificDates] = useState<SpecificDateSlot[]>(eventType?.availability?.specificDates || []);
   const [blockedDates, setBlockedDates] = useState<string[]>(eventType?.availability?.blockedDates || []);
@@ -1122,6 +1123,8 @@ function TenantEventEditor({ eventType, onSave, onCancel }: { eventType: EventTy
     if (!title.trim()) { toast.error("Title is required"); return; }
     if (durations.length === 0) { toast.error("Add at least one duration"); return; }
     onSave({
+      ...eventType,
+      extras,
       id: eventType?.id || generateId("et"),
       title: title.trim(),
       description: description.trim(),
@@ -1203,6 +1206,19 @@ function TenantEventEditor({ eventType, onSave, onCancel }: { eventType: EventTy
       </div>
 
       <React.Suspense fallback={<div className="h-20 rounded-lg bg-secondary/30 animate-pulse" />}><SlotIntervalField value={slotIntervalMinutes} onChange={setSlotIntervalMinutes} tenant /></React.Suspense>
+
+      {!!extras.length && <section className="space-y-3 rounded-lg border border-border p-4" aria-label="Add-on proofing choices">
+        <h4 className="font-medium">Add-on photo choices</h4>
+        <p className="text-sm text-muted-foreground">Applies to linked bookings in active proofing. Clients choose from their normal picks, up to the quantity purchased. Optional choices can be left to the photographer.</p>
+        {extras.map(extra => <div key={extra.id} className="space-y-2">
+          <label className="block text-sm">{extra.name}
+            <select aria-label={`${extra.name} photo choice`} value={extra.proofingPhotoSelection || "off"} onChange={e => setExtras(extras.map(item => item.id === extra.id ? { ...item, proofingPhotoSelection: e.target.value as "off" | "optional" | "required" } : item))} className="block w-full min-h-11 rounded-md border border-border bg-secondary px-3">
+              <option value="off">Off — no extra photo choice</option><option value="optional">Optional — client can choose preferred photos</option><option value="required">Required — choose one photo per purchased item</option>
+            </select>
+          </label>
+          {extra.proofingPhotoSelection && extra.proofingPhotoSelection !== "off" && <label className="block text-sm">Photo choice instructions (optional)<Input aria-label={`${extra.name} photo choice instructions`} maxLength={300} value={extra.proofingInstructions || ""} onChange={e => setExtras(extras.map(item => item.id === extra.id ? { ...item, proofingInstructions: e.target.value } : item))} /></label>}
+        </div>)}
+      </section>}
 
       {/* Deposit */}
       <div className="space-y-3 p-4 rounded-lg bg-secondary/30 border border-border/50">
@@ -2121,6 +2137,13 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
                 <div className="bg-secondary rounded-lg p-3 space-y-1">
                   <p className="text-xs font-body text-foreground font-medium">{latest.selectedPhotoIds.length} photos selected by client</p>
                   {latest.clientNote && <p className="text-xs font-body text-muted-foreground italic">"{latest.clientNote}"</p>}
+                  {!!Object.keys(latest.addonSelections || {}).length && <div className="space-y-2 border-t border-border pt-3 mt-3" aria-label="Add-on photo selections">
+                    <h4 className="text-sm font-medium">Add-on photo choices</h4>
+                    {Object.entries(latest.addonSelections || {}).map(([extraId, ids]) => {
+                      const item = proofingBookings.find(booking => booking.id === liveAlbum!.bookingId || booking.albumId === liveAlbum!.id)?.lineItems?.find(extra => extra.id === extraId);
+                      return <div key={extraId} className="text-sm"><p className="font-medium">{item?.name || extraId}</p><p className="text-muted-foreground">{ids.length ? ids.map(id => { const photo = liveAlbum!.photos?.find(photo => photo.id === id); return photo?.originalName || photo?.title || id; }).join(", ") : "Photographer to choose"}</p></div>;
+                    })}
+                  </div>}
                   <button
                     onClick={() => {
                       const photoMap = new Map((liveAlbum.photos || []).map(p => [p.id, p]));
@@ -2130,6 +2153,10 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
                         `# Exported: ${new Date().toISOString().slice(0, 10)}`,
                         `# ${latest.selectedPhotoIds.length} of ${(liveAlbum.photos || []).length} photos selected`,
                         ``,
+                        ...Object.entries(latest.addonSelections || {}).flatMap(([extraId, ids]) => {
+                          const item = proofingBookings.find(booking => booking.id === liveAlbum!.bookingId || booking.albumId === liveAlbum!.id)?.lineItems?.find(extra => extra.id === extraId);
+                          return [`# ${item?.name || extraId}: ${ids.length ? ids.map(id => { const photo = photoMap.get(id); return photo?.originalName || photo?.title || id; }).join(", ") : "Photographer to choose"}`];
+                        }),
                         ...latest.selectedPhotoIds.map((id: string) => {
                           const p = photoMap.get(id);
                           // Prefer original filename (with extension), fall back to title (no ext), then ID

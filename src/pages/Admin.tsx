@@ -4429,6 +4429,13 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
           <label className="text-xs space-y-1">Maximum quantity<Input aria-label={`Extra ${index + 1} maximum quantity`} type="number" min={1} max={1000} step={1} value={extra.maxQuantity} onChange={e => setExtras(extras.map(item => item.id === extra.id ? { ...item, maxQuantity: Number(e.target.value) } : item))} /></label>
           <Button variant="ghost" aria-label={`Remove extra ${index + 1}`} onClick={() => setExtras(extras.filter(item => item.id !== extra.id))}><Trash2 className="size-4" /></Button>
           <label className="col-span-full text-xs space-y-1">Description (optional)<Input aria-label={`Extra ${index + 1} description`} maxLength={300} placeholder="e.g. Combine multiple photos into one finished artwork." value={extra.description || ""} onChange={e => setExtras(extras.map(item => item.id === extra.id ? { ...item, description: e.target.value } : item))} /><span className="block text-muted-foreground">Shown beneath the extra’s name when booking. Up to 300 characters.</span></label>
+          <label className="col-span-full text-sm space-y-1">Photo choice during proofing
+            <select aria-label={`Extra ${index + 1} photo choice`} value={extra.proofingPhotoSelection || "off"} onChange={e => setExtras(extras.map(item => item.id === extra.id ? { ...item, proofingPhotoSelection: e.target.value as "off" | "optional" | "required" } : item))} className="block w-full min-h-11 rounded-md border border-border bg-secondary px-3">
+              <option value="off">Off — no extra photo choice</option><option value="optional">Optional — client can choose preferred photos</option><option value="required">Required — choose one photo per purchased item</option>
+            </select>
+            <span className="block text-xs text-muted-foreground">Applies to linked bookings in active proofing. Clients choose from their normal picks, up to the quantity purchased. Optional choices can be left to the photographer.</span>
+          </label>
+          {extra.proofingPhotoSelection && extra.proofingPhotoSelection !== "off" && <label className="col-span-full text-sm space-y-1">Photo choice instructions (optional)<Input aria-label={`Extra ${index + 1} photo choice instructions`} maxLength={300} placeholder="e.g. Choose your preferred photo for the VFX edit." value={extra.proofingInstructions || ""} onChange={e => setExtras(extras.map(item => item.id === extra.id ? { ...item, proofingInstructions: e.target.value } : item))} /></label>}
         </div>)}
         <p className="text-xs text-muted-foreground">Extras are added to the session total. Percentage deposits apply to that total; fixed deposits stay fixed. Existing bookings keep their agreed prices.</p>
       </section>
@@ -6390,6 +6397,13 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
                 <div className="bg-secondary rounded-lg p-3 space-y-1">
                   <p className="text-xs font-body text-foreground font-medium">{latest.selectedPhotoIds.length} photos selected by client</p>
                   {latest.clientNote && <p className="text-xs font-body text-muted-foreground italic">"{latest.clientNote}"</p>}
+                  {!!Object.keys(latest.addonSelections || {}).length && <div className="space-y-2 border-t border-border pt-3 mt-3" aria-label="Add-on photo selections">
+                    <h4 className="text-sm font-medium">Add-on photo choices</h4>
+                    {Object.entries(latest.addonSelections || {}).map(([extraId, ids]) => {
+                      const item = bookings.find(booking => booking.id === liveAlbum!.bookingId || booking.albumId === liveAlbum!.id)?.lineItems?.find(extra => extra.id === extraId);
+                      return <div key={extraId} className="text-sm"><p className="font-medium">{item?.name || extraId}</p><p className="text-muted-foreground">{ids.length ? ids.map(id => { const photo = liveAlbum!.photos?.find(photo => photo.id === id); return photo?.originalName || photo?.title || id; }).join(", ") : "Photographer to choose"}</p></div>;
+                    })}
+                  </div>}
                   <p className="text-[10px] font-body text-muted-foreground/60">{latest.submittedAt ? new Date(latest.submittedAt).toLocaleString() : ""}</p>
                   {(() => {
                     const selectedSet = new Set(latest.selectedPhotoIds);
@@ -6431,6 +6445,10 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
                         `# Exported: ${new Date().toISOString().slice(0, 10)}`,
                         `# ${latest.selectedPhotoIds.length} of ${albumPhotos.length} photos selected`,
                         ``,
+                        ...Object.entries(latest.addonSelections || {}).flatMap(([extraId, ids]) => {
+                          const item = bookings.find(booking => booking.id === liveAlbum!.bookingId || booking.albumId === liveAlbum!.id)?.lineItems?.find(extra => extra.id === extraId);
+                          return [`# ${item?.name || extraId}: ${ids.length ? ids.map(id => { const photo = photoMap.get(id); return photo?.originalName || photo?.title || id; }).join(", ") : "Photographer to choose"}`];
+                        }),
                         ...latest.selectedPhotoIds.map((id: string) => {
                           const p = photoMap.get(id);
                           // Prefer original filename (with extension), fall back to title (no ext), then ID

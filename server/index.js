@@ -5857,7 +5857,7 @@ app.post("/api/proofing/submit", async (req, res) => {
       return res.status(403).json({ ok: false, error: "Proofing window has expired" });
     }
 
-    const submission = proofingSubmission(album, req.body);
+    const submission = proofingSubmission({ ...album, proofingAddonRequirements: galleryProofingAddonRequirements(db, album, tenantSlug) }, req.body);
     if (submission.error) return res.status(submission.status).json({ ok: false, error: submission.error });
     const updatedAlbum = submission.album;
     const updatedPhotos = updatedAlbum.photos;
@@ -9840,10 +9840,16 @@ function getGallerySessionForAlbum(req, album) {
   return session;
 }
 
+function galleryProofingAddonRequirements(db, album, tenantSlug) {
+  const booking = dbGet(db, DB_KEYS.BOOKINGS, []).find(item => (album.bookingId ? item.id === album.bookingId : item.albumId === album.id) && (item.tenantSlug || null) === (tenantSlug || null));
+  const events = dbGet(db, tenantSlug ? `t_${tenantSlug}_wv_event_types` : "wv_event_types", []);
+  return require("./gallery-workflow").proofingAddonRequirements(booking, events.find(event => event.id === booking?.eventTypeId));
+}
+
 function publicAlbumDto(album, gallerySession) {
   const sessionKey = gallerySession.sessionKey;
   const db = readDb();
-  const safe = safeGalleryAlbumDto(album, sessionKey, galleryTimezone(db, gallerySession.tenantSlug));
+  const safe = safeGalleryAlbumDto({ ...album, proofingAddonRequirements: galleryProofingAddonRequirements(db, album, gallerySession.tenantSlug) }, sessionKey, galleryTimezone(db, gallerySession.tenantSlug));
   safe.downloadEmailCapture = normalizeDownloadEmailPolicy(album.downloadEmailCapture);
   return safe;
 }

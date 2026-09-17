@@ -502,7 +502,7 @@ function safeGalleryAlbumDto(album, sessionKey, timeZone = album?.timezone || pr
     "freeDownloads", "pricePerPhoto", "priceFullAlbum", "isPublic", "enabled", "allUnlocked", "displaySize",
     "paidPhotoIds", "proofingEnabled", "proofingStage", "proofingExpiresAt", "expiresAt", "downloadExpiresAt",
     "watermarkDisabled", "cleanDownloadsOnly", "purchasingDisabled", "downloadEmailCapture", "lockDownloadsDuringProofing",
-    "showCullRejectsToClient",
+    "showCullRejectsToClient", "proofingAddonRequirements",
   ];
   const safe = Object.fromEntries(allowed.filter(key => album[key] !== undefined).map(key => [key, album[key]]));
   for (const field of ["expiresAt", "downloadExpiresAt", "proofingExpiresAt"]) {
@@ -516,6 +516,8 @@ function safeGalleryAlbumDto(album, sessionKey, timeZone = album?.timezone || pr
     roundNumber: Number.isFinite(Number(round?.roundNumber)) ? Number(round.roundNumber) : index + 1,
     ...(round?.sentAt ? { sentAt: round.sentAt } : {}),
     ...(round?.submittedAt ? { submittedAt: round.submittedAt, submissionId: round.submissionId,
+      clientNote: round.clientNote,
+      addonSelections: Object.fromEntries(Object.entries(round.addonSelections || {}).map(([key, ids]) => [key, ids.filter(id => (album.photos || []).some(photo => photo.id === id && !photo.hidden && (album.showCullRejectsToClient || photo.cull?.status !== "reject")))])),
       selectedPhotoIds: (Array.isArray(round.selectedPhotoIds) ? round.selectedPhotoIds : []).filter(id =>
         (album.photos || []).some(photo => photo.id === id && !photo.hidden && (album.showCullRejectsToClient || photo.cull?.status !== "reject"))) } : {}),
     adminNote: round?.adminNote ? String(round.adminNote) : undefined,

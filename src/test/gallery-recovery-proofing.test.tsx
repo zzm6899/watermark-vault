@@ -22,6 +22,7 @@ it("requests a verified purchase recovery link without claiming to unlock by ema
 it("restores unsent proofing drafts after refresh and submits the canonical album ID with a receipt", async () => {
   let album = { id: "canonical-id", slug: "client-friendly-link", title: "Proofing Gallery", description: "", coverImage: "", date: "2026-09-06", photoCount: 2,
     freeDownloads: 0, pricePerPhoto: 10, priceFullAlbum: 100, enabled: true, isPublic: true, proofingEnabled: true, proofingStage: "proofing", lockDownloadsDuringProofing: true,
+    proofingAddonRequirements: [{ id: "vfx", name: "VFX", quantity: 1, mode: "required" }, { id: "retouch", name: "Retouch", quantity: 1, mode: "optional" }],
     proofingRounds: [{ roundNumber: 1, sentAt: "2026-09-06T00:00:00Z", selectedPhotoIds: [] as string[] }],
     photos: [{ id: "one", title: "Photo 1", src: "/uploads/one.jpg" }, { id: "two", title: "Photo 2", src: "/uploads/two.jpg" }] };
   const fetcher = vi.fn(async (input: RequestInfo | URL, options?: RequestInit) => {
@@ -39,17 +40,27 @@ it("restores unsent proofing drafts after refresh and submits the canonical albu
   const first = gallery();
   await screen.findByRole("heading", { name: "Proofing Gallery" });
   fireEvent.click(screen.getByRole("button", { name: "Select Photo 1" }));
+  expect(screen.getByRole("button", { name: "Submit selection" })).toBeDisabled();
+  fireEvent.click(screen.getAllByRole("checkbox", { name: "Photo 1" })[0]);
+  expect(screen.getByRole("button", { name: "Submit selection" })).toBeEnabled();
+  fireEvent.click(screen.getByRole("button", { name: "Deselect Photo 1" }));
+  fireEvent.click(screen.getByRole("button", { name: "Select Photo 1" }));
+  expect(screen.getAllByRole("checkbox", { name: "Photo 1" })[0]).not.toBeChecked();
+  expect(screen.getByRole("button", { name: "Submit selection" })).toBeDisabled();
+  fireEvent.click(screen.getAllByRole("checkbox", { name: "Photo 1" })[0]);
   fireEvent.change(screen.getByLabelText("Note for your photographer"), { target: { value: "Please keep the warm tones." } });
   await waitFor(() => expect(Object.keys(localStorage).some(key => key.startsWith("wv_proofing_draft:") && localStorage.getItem(key)?.includes("warm tones"))).toBe(true));
   first.unmount();
   gallery();
   await screen.findByRole("heading", { name: "Proofing Gallery" });
   expect(screen.getByRole("button", { name: "Deselect Photo 1" })).toBeInTheDocument();
+  expect(screen.getAllByRole("checkbox", { name: "Photo 1" })[0]).toBeChecked();
+  expect(screen.getAllByRole("checkbox", { name: "Photo 1" })[1]).not.toBeChecked();
   expect(screen.getByLabelText("Note for your photographer")).toHaveValue("Please keep the warm tones.");
   fireEvent.click(screen.getByRole("button", { name: "Submit selection" }));
   await screen.findByText("Your selections are safely submitted");
   const submission = fetcher.mock.calls.find(call => String(call[0]).endsWith("/api/proofing/submit"));
-  expect(JSON.parse(String(submission?.[1]?.body))).toMatchObject({ albumId: "canonical-id", selectedPhotoIds: ["one"], clientNote: "Please keep the warm tones.", roundNumber: 1 });
+  expect(JSON.parse(String(submission?.[1]?.body))).toMatchObject({ albumId: "canonical-id", selectedPhotoIds: ["one"], addonSelections: { vfx: ["one"] }, clientNote: "Please keep the warm tones.", roundNumber: 1 });
   expect(Object.keys(localStorage).filter(key => key.startsWith("wv_proofing_draft:"))).toHaveLength(0);
 });
 

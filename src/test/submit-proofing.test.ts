@@ -6,7 +6,7 @@ const submission = { albumId: "album", selectedPhotoIds: ["one"], clientNote: "K
 const response = (body: unknown, ok = true) => ({ ok, json: async () => body }) as Response;
 
 it("recovers a committed receipt when the submission response is lost", async () => {
-  const album = { id: "album", proofingRounds: [{ submissionId: submission.submissionId, submittedAt: "2026-09-06", selectedPhotoIds: ["one"] }] };
+  const album = { id: "album", proofingRounds: [{ submissionId: submission.submissionId, submittedAt: "2026-09-06", clientNote: submission.clientNote, selectedPhotoIds: ["one"] }] };
   const fetcher = vi.fn().mockRejectedValueOnce(new TypeError("Network interrupted")).mockResolvedValueOnce(response({ album }));
   vi.stubGlobal("fetch", fetcher);
   const result = await submitProofing(submission, "friendly slug");
@@ -17,7 +17,7 @@ it("recovers a committed receipt when the submission response is lost", async ()
 
 it("never treats another client's receipt as confirmation of this submission", async () => {
   vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(response({ error: "A new round has started" }, false))
-    .mockResolvedValueOnce(response({ album: { proofingRounds: [{ submissionId: "other", submittedAt: "2026-09-06", selectedPhotoIds: ["one"] }] } })));
+    .mockResolvedValueOnce(response({ album: { proofingRounds: [{ submissionId: "other", submittedAt: "2026-09-06", clientNote: submission.clientNote, selectedPhotoIds: ["one"] }] } })));
   await expect(submitProofing(submission, "album")).rejects.toThrow("A new round has started");
 });
 
@@ -38,10 +38,17 @@ it("aborts a stalled request and checks for a saved receipt", async () => {
   vi.useFakeTimers();
   const fetcher = vi.fn().mockImplementationOnce((_url, options) => new Promise((_resolve, reject) => {
     options.signal.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
-  })).mockResolvedValueOnce(response({ album: { id: "album", proofingRounds: [{ submissionId: submission.submissionId, submittedAt: "2026-09-06", selectedPhotoIds: ["one"] }] } }));
+  })).mockResolvedValueOnce(response({ album: { id: "album", proofingRounds: [{ submissionId: submission.submissionId, submittedAt: "2026-09-06", clientNote: submission.clientNote, selectedPhotoIds: ["one"] }] } }));
   vi.stubGlobal("fetch", fetcher);
   const pending = submitProofing(submission, "album");
   await vi.advanceTimersByTimeAsync(20000);
   expect((await pending).receipt.submissionId).toBe(submission.submissionId);
   expect(fetcher).toHaveBeenCalledTimes(2);
+});
+
+
+it("does not confirm a lost response when addon choices differ", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockRejectedValueOnce(new TypeError("offline"))
+    .mockResolvedValueOnce(response({ album: { id: "album", proofingRounds: [{ ...submission, submittedAt: "2026-09-18", addonSelections: { vfx: [] } }] } })));
+  await expect(submitProofing({ ...submission, addonSelections: { vfx: ["one"] } }, "album")).rejects.toThrow();
 });

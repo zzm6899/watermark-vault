@@ -11,6 +11,11 @@ export function readProofingDraft(album: Album, sessionKey: string) {
     const draft = JSON.parse(localStorage.getItem(proofingDraftKey(album, sessionKey)) || "null");
     if (!draft || !Array.isArray(draft.photoIds) || typeof draft.note !== "string" || typeof draft.submissionId !== "string") return null;
     const available = new Set(album.photos.map(photo => photo.id));
-    return { photoIds: draft.photoIds.filter((id: unknown): id is string => typeof id === "string" && available.has(id)), note: draft.note.slice(0, 5000), submissionId: draft.submissionId };
+    const addonSelections: Record<string, string[]> = {};
+    for (const requirement of album.proofingAddonRequirements || []) {
+      const picks = draft.addonSelections?.[requirement.id];
+      if (Array.isArray(picks)) addonSelections[requirement.id] = [...new Set(picks.filter((id: unknown): id is string => typeof id === "string" && available.has(id) && draft.photoIds.includes(id)))].slice(0, requirement.quantity) as string[];
+    }
+    return { addonSelections, photoIds: draft.photoIds.filter((id: unknown): id is string => typeof id === "string" && available.has(id)), note: draft.note.slice(0, 5000), submissionId: draft.submissionId };
   } catch { return null; }
 }

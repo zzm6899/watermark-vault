@@ -160,6 +160,7 @@ function applyAlbumPhotoRemovals(album, removedPhotoIds) {
   const proofingRounds = Array.isArray(album.proofingRounds)
     ? album.proofingRounds.map(round => ({
         ...round,
+        ...(round.addonSelections ? { addonSelections: Object.fromEntries(Object.entries(round.addonSelections).map(([id, picks]) => [id, picks.filter(photoId => !removed.has(String(photoId)))])) } : {}),
         selectedPhotoIds: Array.isArray(round.selectedPhotoIds)
           ? round.selectedPhotoIds.filter(id => !removed.has(String(id)))
           : round.selectedPhotoIds,
@@ -169,14 +170,32 @@ function applyAlbumPhotoRemovals(album, removedPhotoIds) {
   return { ...album, photos, photoCount: photos.length, coverImage, proofingRounds };
 }
 
-function proofingSubmission(album, { selectedPhotoIds, clientNote, submissionId, roundNumber, roundSentAt }, now = new Date().toISOString()) {
+function proofingAddonRequirements(booking, eventType) {
+  if (!booking || booking.status === "cancelled") return [];
+  const extras = new Map((eventType?.extras || []).map(extra => [extra.id, extra]));
+  return (booking.lineItems || []).flatMap(item => {
+    const extra = extras.get(item.id);
+    if (!extra || !["optional", "required"].includes(extra.proofingPhotoSelection) || !Number.isInteger(item.quantity) || item.quantity < 1) return [];
+    return [{ id: item.id, name: item.name, quantity: item.quantity, mode: extra.proofingPhotoSelection,
+      ...(extra.proofingInstructions ? { instructions: extra.proofingInstructions } : {}) }];
+  });
+}
+
+function normalizedAddonSelections(value = {}) {
+  return Object.fromEntries(Object.entries(value).filter(([, ids]) => ids.length).sort(([a], [b]) => a.localeCompare(b)).map(([id, ids]) => [id, [...new Set(ids)].sort()]));
+}
+
+function proofingSubmission(album, { selectedPhotoIds, clientNote, submissionId, roundNumber, roundSentAt, addonSelections = {} }, now = new Date().toISOString()) {
+  if (!Array.isArray(selectedPhotoIds)) return { error: "Select valid photos", status: 400 };
+  if (!addonSelections || typeof addonSelections !== "object" || Array.isArray(addonSelections) || Object.entries(addonSelections).some(([, ids]) => !Array.isArray(ids) || ids.some(id => typeof id !== "string"))) return { error: "Invalid add-on photo choices", status: 400 };
+  const addons = normalizedAddonSelections(addonSelections);
   const ids = [...new Set(selectedPhotoIds.map(String).filter(Boolean))];
   const note = typeof clientNote === "string" ? clientNote.trim().slice(0, 5000) : "";
   const rounds = album.proofingRounds || [];
   const latest = rounds.at(-1);
   const receiptId = /^[a-zA-Z0-9_-]{16,100}$/.test(String(submissionId || "")) ? submissionId : crypto.randomUUID();
   if (latest?.submittedAt && latest.submissionId === receiptId) {
-    if (JSON.stringify([...latest.selectedPhotoIds].sort()) !== JSON.stringify([...ids].sort()) || (latest.clientNote || "") !== note) {
+    if (JSON.stringify([...latest.selectedPhotoIds].sort()) !== JSON.stringify([...ids].sort()) || (latest.clientNote || "") !== note || JSON.stringify(normalizedAddonSelections(latest.addonSelections)) !== JSON.stringify(addons)) {
       return { error: "This submission reference was already used for different selections", status: 409 };
     }
     return { album, receipt: latest, replayed: true };
@@ -189,10 +208,17 @@ function proofingSubmission(album, { selectedPhotoIds, clientNote, submissionId,
   if (!ids.length) return { error: "Select at least one photo", status: 400 };
   const selectable = new Set((album.photos || []).filter(photo => !photo.hidden && (album.showCullRejectsToClient || photo.cull?.status !== "reject")).map(photo => String(photo.id)));
   if (ids.some(id => !selectable.has(id))) return { error: "One or more selected photos are unavailable", status: 400 };
-  const receipt = { ...(latest || { roundNumber: 1, sentAt: now }), selectedPhotoIds: ids, clientNote: note || undefined, submittedAt: now, submissionId: receiptId };
+  const requirements = album.proofingAddonRequirements || [];
+  if (Object.keys(addonSelections).some(id => !requirements.some(rule => rule.id === id))) return { error: "An add-on is no longer available. Reload and review your choices.", status: 409 };
+  for (const rule of requirements) {
+    const picks = addons[rule.id] || [];
+    if (picks.some(id => !ids.includes(id))) return { error: `Choose ${rule.name} photos from your proofing selection`, status: 400 };
+    if (picks.length > rule.quantity || (rule.mode === "required" && picks.length !== rule.quantity)) return { error: `Choose ${rule.mode === "required" ? "exactly" : "up to"} ${rule.quantity} photo(s) for ${rule.name}`, status: 400 };
+  }
+  const receipt = { ...(latest || { roundNumber: 1, sentAt: now }), selectedPhotoIds: ids, addonSelections: addons, clientNote: note || undefined, submittedAt: now, submissionId: receiptId };
   const selected = new Set(ids);
   return { album: { ...album, proofingRevision: receiptId, proofingStage: "selections-submitted", proofingRounds: [...rounds.slice(0, -1), receipt],
     photos: (album.photos || []).map(photo => ({ ...photo, starred: selected.has(String(photo.id)) })) }, receipt, replayed: false };
 }
 
-module.exports = { applyAlbumPhotoRemovals, dedupeAlbumPhotos, markAlbumDelivered, mergeAlbumPhotos, normalizeEmail, recoverablePurchase, preserveGalleryServerState, proofingSubmission, repairDeliveredAlbumWorkflows, stripePurchaseIdentity, updateManualAlbumStatus };
+module.exports = { proofingAddonRequirements, applyAlbumPhotoRemovals, dedupeAlbumPhotos, markAlbumDelivered, mergeAlbumPhotos, normalizeEmail, recoverablePurchase, preserveGalleryServerState, proofingSubmission, repairDeliveredAlbumWorkflows, stripePurchaseIdentity, updateManualAlbumStatus };
