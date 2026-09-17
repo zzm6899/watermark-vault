@@ -221,7 +221,7 @@ test("the recovery route restores only the signed buyer's album and rejects wron
   let handler;
   let cookieCount = 0;
   const secret = "recovery-test-secret-at-least-32-characters";
-  const db = { wv_albums: [{ id: "a", slug: "friendly", enabled: true, photos: [{ id: "one" }, { id: "two" }], sessionPurchases: {
+  const db = { wv_albums: [{ id: "a", slug: "friendly", enabled: true, downloadRequests: [{ method: "bank-transfer", status: "approved", email: "buyer@example.com", photoIds: ["two"] }, { method: "bank-transfer", status: "pending", email: "buyer@example.com", fullAlbum: true }], photos: [{ id: "one" }, { id: "two" }], sessionPurchases: {
     first: { purchaserEmail: "buyer@example.com", purchaserEmailVerified: true, photoIds: ["one"] },
     stranger: { purchaserEmail: "stranger@example.com", purchaserEmailVerified: true, fullAlbum: true },
   } }] };
@@ -230,7 +230,7 @@ test("the recovery route restores only the signed buyer's album and rejects wron
     verifySession, signSession, SESSION_SECRET: secret, licensedTenantBySlug: () => false, readDb: () => db,
     dbGet: (db, key, fallback) => typeof db[key] === "string" ? JSON.parse(db[key]) : db[key] || fallback,
     albumAccessWindow, galleryTimezone: () => "Australia/Sydney", recoverablePurchase,
-    normalizeEmail: require("../gallery-workflow").normalizeEmail, crypto, writeDb: () => {}, GALLERY_SESSION_TTL_SECONDS: 86400,
+    normalizeEmail: require("../gallery-workflow").normalizeEmail, crypto, writeDb: (_db, options) => { assert.equal(options.durable, true); }, GALLERY_SESSION_TTL_SECONDS: 86400,
     galleryCookieName: id => `gallery-${id}`, setHttpOnlyCookie: () => { cookieCount++; },
     publicAlbumDto: (album, session) => safeGalleryAlbumDto(album, session.sessionKey), Date,
   });
@@ -242,12 +242,15 @@ test("the recovery route restores only the signed buyer's album and rejects wron
   };
   const token = signSession({ purpose: "gallery-recovery", albumId: "a", tenantSlug: null, email: "buyer@example.com" }, secret, { ttlSeconds: 1800 });
   assert.equal(call("typed-email-is-not-a-token").status, 401);
+  const expired = signSession({ purpose: "gallery-recovery", albumId: "a", email: "buyer@example.com" }, secret, { ttlSeconds: 60, nowMs: Date.now() - 120000 });
+  assert.equal(call(expired).status, 401);
+  assert.equal(call(token + "tampered").status, 401);
   assert.equal(call(token, "another-gallery").status, 404);
   const restored = call(token);
   assert.equal(restored.status, 200);
   const purchase = restored.body.album.sessionPurchases[restored.body.sessionKey];
   assert.equal(purchase.fullAlbum, false);
-  assert.deepEqual([...purchase.photoIds], ["one"]);
+  assert.deepEqual([...purchase.photoIds], ["one", "two"]);
   assert.equal(restored.body.recoveredEmail, "buyer@example.com");
   assert.equal(call(token).body.sessionKey, restored.body.sessionKey);
   assert.equal(cookieCount, 2);
@@ -287,4 +290,74 @@ test("notification failure preserves picks, retries, and never overwrites newer 
   await context.deliver();
   assert.equal(JSON.parse(db.wv_proofing_notifications).receipt.status, "sent");
   assert.equal(JSON.parse(db.wv_albums)[0].proofingNotifications.receipt.status, "sent");
+});
+
+test("bank-transfer recovery includes only the buyer's approved paid entitlements", () => {
+  const approved = { method: "bank-transfer", status: "approved", email: "BUYER@example.com", photoIds: ["paid", "free"], billablePhotoIds: ["paid"] };
+  const album = { freeDownloads: 0, pricePerPhoto: 10, downloadRequests: [approved,
+    { ...approved, email: "other@example.com", fullAlbum: true },
+    { ...approved, status: "pending", fullAlbum: true },
+    { ...approved, status: "cancelled", fullAlbum: true },
+    { ...approved, method: "stripe", fullAlbum: true },
+    { method: "bank-transfer", status: "completed", purchaserEmail: "buyer@example.com", photoIds: ["legacy"] },
+  ] };
+  const purchase = recoverablePurchase(album, " buyer@example.com ");
+  assert.deepEqual(purchase, { fullAlbum: false, photoIds: ["paid", "legacy"] });
+  assert.equal(recoverablePurchase(album, "stranger@example.com"), null);
+  const { galleryPhotoDownloadEntitlement } = require('../security-core');
+  const restored = { ...album, sessionPurchases: { recovered: purchase } };
+  assert.equal(galleryPhotoDownloadEntitlement({ album: restored, photo: { id: "paid" }, sessionKey: "recovered" }).clean, true);
+  assert.equal(galleryPhotoDownloadEntitlement({ album: restored, photo: { id: "free" }, sessionKey: "recovered" }).clean, false);
+  assert.equal(galleryPhotoDownloadEntitlement({ album: restored, photo: { id: "paid" }, sessionKey: "stranger" }).clean, false);
+  assert.equal(selectClientPortalAlbumGroups({ email: "buyer@example.com", mainAlbums: [ { ...album, id: "bank", enabled: true } ] })[0].albums[0].purchaseRecovery, true);
+  album.downloadRequests[0].fullAlbum = true;
+  assert.equal(recoverablePurchase(album, "buyer@example.com").fullAlbum, true);
+});
+
+test("approval and portal recovery links use signed expiring buyer and tenant scope", () => {
+  const source = fs.readFileSync(require.resolve("../index.js"), "utf8");
+  const start = source.indexOf('function galleryRecoveryLink(');
+  const end = source.indexOf('async function sendClientPortalAlbumGroups', start);
+  const secret = "recovery-link-test-secret-at-least-32-characters";
+  const context = { signSession, normalizeEmail: require('../gallery-workflow').normalizeEmail, SESSION_SECRET: secret, URL, encodeURIComponent };
+  vm.createContext(context);
+  vm.runInContext(source.slice(start, end), context);
+  const url = new URL(context.galleryRecoveryLink('https://example.com/', { id: 'bank', slug: 'my-gallery' }, 'studio', 'BUYER@example.com'));
+  const token = new URLSearchParams(url.hash.slice(1)).get('recovery');
+  const claims = verifySession(token, secret, { purpose: 'gallery-recovery' });
+  assert.equal(url.pathname, '/gallery/my-gallery');
+  assert.equal(claims.albumId, 'bank');
+  assert.equal(claims.tenantSlug, 'studio');
+  assert.equal(claims.email, 'buyer@example.com');
+  assert.equal(claims.exp - claims.iat, 1800);
+});
+
+test("recovery email validation rejects mail address syntax and oversized inputs", () => {
+  const { normalizeEmail } = require('../gallery-workflow');
+  const { normalizeClientPortalEmail } = require('../security-core');
+  for (const normalize of [normalizeEmail, normalizeClientPortalEmail]) {
+    assert.equal(normalize(' Buyer+photos@Example.com '), 'buyer+photos@example.com');
+    for (const value of ['buyer@example.com,other', 'buyer@example.com;', '<buyer@example.com>', 'Name:buyer@example.com', 'buyer@example.com\r\nBcc:other@example.com', `${'a'.repeat(250)}@example.com`]) {
+      assert.equal(normalize(value), '', value);
+    }
+  }
+});
+
+test("download requests reject invalid email before recording a payment request", () => {
+  const source = fs.readFileSync(require.resolve('../index.js'), 'utf8');
+  const start = source.indexOf('app.post("/api/album/download-request"');
+  const end = source.indexOf('\napp.', start + 5);
+  let handler;
+  vm.runInNewContext(source.slice(start, end), {
+    app: { post: (_route, _limiter, fn) => { handler = fn; } }, galleryAccessLimiter: () => {},
+    resolveGalleryMutation: () => ({ match: {}, db: {}, album: {} }),
+    dbGet: () => ({ bankTransfer: { enabled: true } }), DB_KEYS: { SETTINGS: 'settings' },
+    normalizeEmail: require('../gallery-workflow').normalizeEmail,
+  });
+  for (const email of ['', 'invalid', 'name:buyer@example.com']) {
+    let status;
+    const res = { status(code) { status = code; return this; }, json(body) { assert.match(body.error, /valid email/); } };
+    handler({ body: { email } }, res);
+    assert.equal(status, 400);
+  }
 });

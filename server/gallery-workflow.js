@@ -2,7 +2,7 @@ const crypto = require("crypto");
 
 function normalizeEmail(value) {
   const email = String(value || "").trim().toLowerCase();
-  return email.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : "";
+  return email.length <= 254 && /^[^\s@,;<>:"\\]+@[^\s@,;<>:"\\]+\.[^\s@,;<>:"\\]+$/.test(email) ? email : "";
 }
 
 // Reconcile an editor's photo snapshot without deleting photos that another
@@ -99,6 +99,14 @@ function recoverablePurchase(album, email) {
     purchase && purchase.source !== "email-recovery" && purchase.source !== "share-link" &&
     normalizeEmail(purchase.purchaserEmail) === normalized && purchase.purchaserEmailVerified === true &&
     (purchase.fullAlbum === true || purchase.photoIds?.length));
+  // Only payment-approved requests are recoverable; opening the signed email
+  // link proves ownership of the address recorded on the request.
+  for (const request of album.downloadRequests || []) {
+    if (request.method !== "bank-transfer" || !["approved", "completed"].includes(request.status) ||
+        normalizeEmail(request.email || request.purchaserEmail) !== normalized) continue;
+    const photoIds = request.billablePhotoIds || request.photoIds || [];
+    if (request.fullAlbum === true || photoIds.length) purchases.push({ fullAlbum: request.fullAlbum === true, photoIds });
+  }
   if (!purchases.length) return null;
   return { fullAlbum: purchases.some(purchase => purchase.fullAlbum === true),
     photoIds: [...new Set(purchases.flatMap(purchase => purchase.photoIds || []))] };

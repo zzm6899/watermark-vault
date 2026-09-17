@@ -12,7 +12,7 @@ it("requests a verified purchase recovery link without claiming to unlock by ema
   vi.stubGlobal("fetch", fetcher);
   render(<GalleryRecovery albumId="album-id" />);
   fireEvent.click(screen.getByRole("button", { name: "Find my purchases" }));
-  fireEvent.change(screen.getByLabelText("Email used at checkout"), { target: { value: "Buyer@Example.com" } });
+  fireEvent.change(screen.getByLabelText("Email used for your purchase or download request"), { target: { value: "Buyer@Example.com" } });
   fireEvent.submit(screen.getByRole("button", { name: "Email secure link" }).closest("form")!);
   await screen.findByText("Check your inbox");
   expect(fetcher).toHaveBeenCalledWith("/api/client-portal/request", expect.objectContaining({ body: JSON.stringify({ email: "buyer@example.com", albumId: "album-id" }) }));
@@ -51,4 +51,14 @@ it("restores unsent proofing drafts after refresh and submits the canonical albu
   const submission = fetcher.mock.calls.find(call => String(call[0]).endsWith("/api/proofing/submit"));
   expect(JSON.parse(String(submission?.[1]?.body))).toMatchObject({ albumId: "canonical-id", selectedPhotoIds: ["one"], clientNote: "Please keep the warm tones.", roundNumber: 1 });
   expect(Object.keys(localStorage).filter(key => key.startsWith("wv_proofing_draft:"))).toHaveLength(0);
+});
+
+it("explains rate limits without claiming an email was sent", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => new Response("Too many requests", { status: 429 })));
+  render(<GalleryRecovery albumId="album-id" />);
+  fireEvent.click(screen.getByRole("button", { name: "Find my purchases" }));
+  fireEvent.change(screen.getByLabelText("Email used for your purchase or download request"), { target: { value: "buyer@example.com" } });
+  fireEvent.submit(screen.getByRole("button", { name: "Email secure link" }).closest("form")!);
+  expect(await screen.findByRole("alert")).toHaveTextContent("Too many link requests");
+  expect(screen.queryByText("Check your inbox")).not.toBeInTheDocument();
 });

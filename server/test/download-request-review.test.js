@@ -52,3 +52,21 @@ test("only pending requests can be cancelled and stale requests are rejected", (
   assert.equal(cancelDownloadRequest({ ...album, downloadRequests: [{ ...request, status: "approved" }] }, request.id, request).status, 409);
   assert.equal(cancelDownloadRequest({ ...album, downloadRequests: [{ ...request, status: "completed" }] }, request.id, request).status, 409);
 });
+
+const { sendDownloadApprovalEmail } = require('../download-request-review');
+test('approval emails the requester once and preserves approval when delivery fails', async () => {
+  const result = approveDownloadRequest({ ...album, downloadRequests: [{ ...request, email: 'visitor@example.com' }] }, request.id, request);
+  const messages = [];
+  const options = { result, album: { ...album, clientEmail: 'owner@example.com' }, from: 'studio@example.com', galleryUrl: 'https://example.com/gallery/album', transport: { sendMail: async message => { messages.push(message); return { accepted: [message.to] }; } } };
+  assert.equal((await sendDownloadApprovalEmail(options)).status, 'sent');
+  assert.equal(messages[0].to, 'visitor@example.com');
+  assert.match(messages[0].text, /https:\/\/example.com\/gallery\/album/);
+  const repeated = approveDownloadRequest({ ...album, downloadRequests: result.requests }, request.id, request);
+  assert.equal((await sendDownloadApprovalEmail({ ...options, result: repeated })).status, 'not-needed');
+  assert.equal(messages.length, 1);
+  assert.equal((await sendDownloadApprovalEmail({ ...options, transport: null })).status, 'failed');
+  assert.equal(result.request.status, 'approved');
+  assert.equal((await sendDownloadApprovalEmail({ ...options, transport: { sendMail: async () => { throw new Error('SMTP unavailable'); } } })).status, 'failed');
+  assert.equal((await sendDownloadApprovalEmail({ ...options, result: { ...result, request } })).status, 'failed');
+  assert.equal(messages.length, 1);
+});

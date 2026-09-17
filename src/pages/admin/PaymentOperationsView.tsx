@@ -1,3 +1,4 @@
+import DownloadRequestInbox from "@/components/DownloadRequestInbox";
 import { getRecordedBookingBalance } from "@/lib/booking-utils";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, Building2, CheckCircle2, Clock3, CreditCard, RefreshCw, Search } from "lucide-react";
@@ -5,9 +6,9 @@ import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { completeAdminBookingBalance, confirmAdminBankPayment, getAdminPaymentHealth, getDataIntegrityReport, reconcileAdminStripePayment, repairDataIntegrity, sendBookingReminder, syncFromServer, type AdminPaymentHealth, type DataIntegrityReport } from "@/lib/api";
+import { fetchAlbumStubs, completeAdminBookingBalance, confirmAdminBankPayment, getAdminPaymentHealth, getDataIntegrityReport, reconcileAdminStripePayment, repairDataIntegrity, sendBookingReminder, syncFromServer, type AdminPaymentHealth, type DataIntegrityReport } from "@/lib/api";
 import { bookingPaymentReference } from "@/lib/booking-reference";
-import { getBookings } from "@/lib/storage";
+import { getAlbums, getBookings } from "@/lib/storage";
 import type { Booking } from "@/lib/types";
 
 type Queue = "all" | "review" | "bank" | "card" | "expired" | "outstanding";
@@ -33,6 +34,7 @@ const queueMeta = {
 
 export default function PaymentOperationsView() {
   const navigate = useNavigate();
+  const [albums, setAlbums] = useState(() => getAlbums());
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [health, setHealth] = useState<AdminPaymentHealth | null>(null);
   const [integrity, setIntegrity] = useState<DataIntegrityReport | null>(null);
@@ -45,6 +47,8 @@ export default function PaymentOperationsView() {
   const refresh = useCallback(async () => {
     setLoading(true);
     await syncFromServer();
+    const freshAlbums = await fetchAlbumStubs();
+    if (freshAlbums) setAlbums(freshAlbums);
     setBookings(getBookings().filter(booking => !booking.tenantSlug && booking.archived !== true));
     setHealth(await getAdminPaymentHealth());
     setIntegrity(await getDataIntegrityReport());
@@ -138,6 +142,7 @@ export default function PaymentOperationsView() {
     {health?.stripe.ready && !health.stripe.unsafeUnsignedWebhooks && health.counts.reviews === 0 && <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/10 p-3 text-sm text-emerald-200 flex items-center gap-2"><CheckCircle2 className="w-4 h-4" />Stripe secret and webhook verification are configured.</div>}
     {integrity && integrity.total > 0 && <div className="rounded-xl border border-cyan-500/25 bg-cyan-500/10 p-4 text-sm text-cyan-100 flex flex-col sm:flex-row sm:items-center gap-3"><AlertTriangle className="w-5 h-5 shrink-0" /><div className="flex-1"><strong>{integrity.total} legacy data issue{integrity.total === 1 ? "" : "s"} found.</strong><span className="block text-xs text-cyan-100/70 mt-1">Short references: {integrity.issues.bookingReferences} · timestamps: {integrity.issues.paymentTimestamps} · paid awaiting confirmation: {integrity.issues.paidPendingBookings} · expired holds: {integrity.issues.expiredHolds} · invoice numbers: {integrity.issues.invoiceNumbers}</span></div><Button size="sm" onClick={() => void runRepair()} disabled={loading}>Repair safely</Button></div>}
     <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">{Object.entries(queueMeta).map(([key, meta]) => { const Icon = meta.icon; return <button key={key} onClick={() => setQueue(key as Queue)} className={`text-left rounded-xl border p-4 transition ${meta.tone} ${queue === key ? "ring-2 ring-primary/50" : "hover:border-primary/30"}`}><Icon className="w-4 h-4 mb-3" /><span className="block text-2xl font-display">{counts[key] || 0}</span><span className="text-xs">{meta.label}</span></button>; })}</div>
+    <DownloadRequestInbox albums={albums} onUpdated={updated => setAlbums(current => current.map(album => album.id === updated.id ? updated : album))} />
     <div className="flex flex-col gap-3 sm:flex-row"><div className="relative flex-1"><Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" /><Input value={search} onChange={event => setSearch(event.target.value)} placeholder="Search client, email, reference or shoot…" className="pl-9" /></div><Button variant="outline" disabled={bulkReminding} onClick={() => void remindVisible()}>{bulkReminding ? "Sending reminders…" : "Remind visible clients"}</Button></div>
     <div className="space-y-3">{visible.map(booking => { const kind = queueFor(booking); const meta = queueMeta[kind]; const Icon = meta.icon; const busy = acting.has(booking.id); const balance = getRecordedBookingBalance(booking); return <article key={booking.id} className="w-full rounded-xl border border-border bg-card/60 p-4 transition hover:border-primary/40"><button type="button" onClick={() => navigate(`/admin/bookings?search=${encodeURIComponent(bookingPaymentReference(booking))}`)} className="flex w-full flex-col gap-3 text-left sm:flex-row sm:items-center"><span className={`rounded-lg border p-2 ${meta.tone}`}><Icon className="w-4 h-4" /></span><span className="min-w-0 flex-1"><span className="font-medium text-foreground block truncate">{booking.clientName} · {booking.type}</span><span className="text-xs text-muted-foreground">{booking.date} at {booking.time} · {bookingPaymentReference(booking)}</span></span><span className={`text-xs border rounded-full px-2.5 py-1 ${meta.tone}`}>{meta.label}</span></button>
       <div className="mt-3 rounded-lg bg-background/60 p-3">

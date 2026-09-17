@@ -110,7 +110,7 @@ function galleryShareLinkAccess(album, shareLinkId, nowMs = Date.now(), timeZone
 function normalizeClientPortalEmail(value) {
   const email = String(value || "").trim().toLowerCase();
   if (!email || email.length > 254 || /[\r\n]/.test(email)) return "";
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : "";
+  return /^[^\s@,;<>:"\\]+@[^\s@,;<>:"\\]+\.[^\s@,;<>:"\\]+$/.test(email) ? email : "";
 }
 
 /**

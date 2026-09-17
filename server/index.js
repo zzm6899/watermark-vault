@@ -9735,6 +9735,11 @@ function clientPortalGalleryLink(trustedBaseUrl, album) {
   return album.clientToken ? `${url}#token=${encodeURIComponent(album.clientToken)}` : url;
 }
 
+function galleryRecoveryLink(trustedBaseUrl, album, tenantSlug, email) {
+  const token = signSession({ purpose: "gallery-recovery", albumId: album.id, tenantSlug, email: normalizeEmail(email) }, SESSION_SECRET, { ttlSeconds: 30 * 60 });
+  return `${new URL(`/gallery/${encodeURIComponent(album.slug || album.id)}`, trustedBaseUrl)}#recovery=${encodeURIComponent(token)}`;
+}
+
 async function sendClientPortalAlbumGroups({ email, groups, db, tenants, trustedBaseUrl }) {
   const tenantBySlug = new Map(tenants.map(tenant => [tenant.slug, tenant]));
   const profile = dbGet(db, DB_KEYS.PROFILE, {});
@@ -9750,7 +9755,7 @@ async function sendClientPortalAlbumGroups({ email, groups, db, tenants, trusted
       albums: group.albums.map(album => ({
         title: album.title || "Photo gallery",
         url: album.purchaseRecovery
-          ? `${new URL(`/gallery/${encodeURIComponent(album.slug || album.id)}`, trustedBaseUrl)}#recovery=${encodeURIComponent(signSession({ purpose: "gallery-recovery", albumId: album.id, tenantSlug: group.tenantSlug, email }, SESSION_SECRET, { ttlSeconds: 30 * 60 }))}`
+          ? galleryRecoveryLink(trustedBaseUrl, album, group.tenantSlug, email)
           : clientPortalGalleryLink(trustedBaseUrl, album),
       })),
       brandName: tenantSettings?.businessName || tenantSettings?.brandName || senderName,
@@ -9898,7 +9903,7 @@ app.post("/api/public-album/:albumSlug/recover", galleryAccessLimiter, (req, res
     emailVerifiedAt: new Date().toISOString() } };
   albums[index] = album;
   db[key] = JSON.stringify(albums);
-  writeDb(db);
+  writeDb(db, { durable: true });
   const gallerySession = { purpose: "gallery", albumId: album.id, tenantSlug: claims.tenantSlug || null, sessionKey };
   const cookie = signSession(gallerySession, SESSION_SECRET, { ttlSeconds: GALLERY_SESSION_TTL_SECONDS });
   setHttpOnlyCookie(req, res, galleryCookieName(album.id), cookie, GALLERY_SESSION_TTL_SECONDS);
@@ -10062,6 +10067,8 @@ app.post("/api/album/download-request", galleryAccessLimiter, (req, res) => {
   const globalSettings = dbGet(context.db, DB_KEYS.SETTINGS, {});
   const bankEnabled = context.match.tenantSlug ? tenantSettings?.bankTransferEnabled === true : globalSettings?.bankTransfer?.enabled === true;
   if (!bankEnabled || context.album.purchasingDisabled) return res.status(403).json({ ok: false, error: "Bank transfer is not available for this gallery" });
+  const email = normalizeEmail(req.body?.email);
+  if (!email) return res.status(400).json({ ok: false, error: "Enter a valid email address so you can receive approval and recover your downloads." });
   const sessionKey = context.session.sessionKey;
   const deliverable = deliverableAlbumPhotos(context.album);
   const deliverableById = new Map(deliverable.map(photo => [photo.id, photo]));
@@ -10100,7 +10107,7 @@ app.post("/api/album/download-request", galleryAccessLimiter, (req, res) => {
     method: "bank-transfer",
     status: "pending",
     requestedAt: new Date().toISOString(),
-    email: typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase().slice(0, 254) : undefined,
+    email,
     clientNote: typeof req.body?.clientNote === "string" ? req.body.clientNote.trim().slice(0, 2000) : undefined,
   };
   context.album.downloadRequests = [...(context.album.downloadRequests || []), request];
@@ -10889,19 +10896,26 @@ app.get("/api/albums/:id/share-links", requireAdminOrScopedTenant, (req, res) =>
   res.json(album.shareLinks || []);
 });
 
-app.post("/api/albums/:id/download-requests/:requestId/approve", requireAdminOrScopedTenant, (req, res) => {
+app.post("/api/albums/:id/download-requests/:requestId/approve", requireAdminOrScopedTenant, async (req, res) => {
   const db = readDb();
-  const { storeKey, albums } = shareLinkAlbumStore(db, req);
+  const { tenantSlug, storeKey, albums } = shareLinkAlbumStore(db, req);
   const album = albums.find(item => item.id === req.params.id);
   if (!album) return res.status(404).json({ ok: false, error: "Album not found" });
-  const { approveDownloadRequest } = require("./download-request-review");
+  const { approveDownloadRequest, sendDownloadApprovalEmail } = require("./download-request-review");
   const result = approveDownloadRequest(album, req.params.requestId, req.body);
   if (!result.ok) return res.status(result.status).json(result);
   album.downloadRequests = result.requests;
   album.updatedAt = new Date().toISOString();
   db[storeKey] = JSON.stringify(albums);
-  writeDb(db);
-  res.json({ ok: true, downloadRequests: result.requests, updatedAt: album.updatedAt });
+  try { writeDb(db, { durable: true }); }
+  catch { return res.status(503).json({ ok: false, error: "Approval could not be saved. Please refresh and try again." }); }
+  const settings = tenantSlug ? dbGet(db, `t_${tenantSlug}_wv_tenant_settings`, {}) : null;
+  const email = await sendDownloadApprovalEmail({ result, album,
+    transport: tenantSlug ? buildTenantTransporter(settings) : getTransporter(),
+    from: tenantSlug ? getTenantFromAddress(settings) : getFromAddress(),
+    galleryUrl: galleryRecoveryLink(safeCheckoutReturnUrl(req, null, "/"), album, tenantSlug, result.request.email || result.request.purchaserEmail),
+  });
+  res.json({ ok: true, downloadRequests: result.requests, updatedAt: album.updatedAt, email });
 });
 
 app.post("/api/albums/:id/download-requests/:requestId/cancel", requireAdminOrScopedTenant, (req, res) => {
@@ -10915,7 +10929,7 @@ app.post("/api/albums/:id/download-requests/:requestId/cancel", requireAdminOrSc
   album.downloadRequests = result.requests;
   album.updatedAt = new Date().toISOString();
   db[storeKey] = JSON.stringify(albums);
-  writeDb(db);
+  writeDb(db, { durable: true });
   res.json({ ok: true, downloadRequests: result.requests, updatedAt: album.updatedAt });
 });
 
