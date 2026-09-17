@@ -2033,12 +2033,12 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
         };
 
         const approveSelections = async (free: boolean) => {
-          if (!latest?.selectedPhotoIds?.length) { toast.error("No selections to approve yet"); return; }
+          if (!latest?.selectedPhotoIds?.length && !latest?.photographerChooses) { toast.error("No selections to approve yet"); return; }
           const selectedSet = new Set(latest.selectedPhotoIds);
-          const updatedPhotos = (liveAlbum.photos || []).map(p => ({ ...p, hidden: !selectedSet.has(p.id) }));
+          const updatedPhotos = (liveAlbum.photos || []).map(p => ({ ...p, hidden: latest.photographerChooses ? p.hidden : !selectedSet.has(p.id) }));
           const updated = { ...liveAlbum, photos: updatedPhotos, proofingStage: "editing" as const, allUnlocked: free ? true : liveAlbum.allUnlocked };
           await updateLiveAlbum(updated);
-          toast.success(`${latest.selectedPhotoIds.length} photos kept — ${free ? "album unlocked" : "moving to editing"}`);
+          toast.success(latest.photographerChooses ? "Moving to editing. Choose the final photos; no photos were automatically hidden." : `${latest.selectedPhotoIds.length} photos kept — ${free ? "album unlocked" : "moving to editing"}`);
         };
 
         const sendEditingEmail = async () => {
@@ -2136,6 +2136,8 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
                 <ProofingReceipt album={liveAlbum!} round={latest} tenantSlug={slug} />
                 <div className="bg-secondary rounded-lg p-3 space-y-1">
                   <p className="text-xs font-body text-foreground font-medium">{latest.selectedPhotoIds.length} photos selected by client</p>
+                  {latest.photographerChooses && <p className="rounded-lg border border-primary/30 bg-primary/10 p-3 text-sm">Client asked you to choose the normal photos. Their favourites are suggestions. Moving to editing keeps the gallery unchanged so you can make the final selection.</p>}
+                  {!!latest.addonPhotographerChoices?.length && <div className="text-sm"><p className="font-medium">Client asked you to choose add-on photos:</p>{latest.addonPhotographerChoices.map(id => <p key={id}>{liveAlbum!.proofingAddonRequirements?.find(rule => rule.id === id)?.name || id}</p>)}</div>}
                   {latest.clientNote && <p className="text-xs font-body text-muted-foreground italic">"{latest.clientNote}"</p>}
                   {!!Object.keys(latest.addonSelections || {}).length && <div className="space-y-2 border-t border-border pt-3 mt-3" aria-label="Add-on photo selections">
                     <h4 className="text-sm font-medium">Add-on photo choices</h4>
@@ -2153,6 +2155,8 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
                         `# Exported: ${new Date().toISOString().slice(0, 10)}`,
                         `# ${latest.selectedPhotoIds.length} of ${(liveAlbum.photos || []).length} photos selected`,
                         ``,
+                        ...(latest.photographerChooses ? ["# Normal photos: photographer to choose; client favourites are suggestions"] : []),
+                        ...(latest.addonPhotographerChoices || []).map(id => `# ${liveAlbum!.proofingAddonRequirements?.find(rule => rule.id === id)?.name || id}: photographer to choose`),
                         ...Object.entries(latest.addonSelections || {}).flatMap(([extraId, ids]) => {
                           const item = proofingBookings.find(booking => booking.id === liveAlbum!.bookingId || booking.albumId === liveAlbum!.id)?.lineItems?.find(extra => extra.id === extraId);
                           return [`# ${item?.name || extraId}: ${ids.length ? ids.map(id => { const photo = photoMap.get(id); return photo?.originalName || photo?.title || id; }).join(", ") : "Photographer to choose"}`];

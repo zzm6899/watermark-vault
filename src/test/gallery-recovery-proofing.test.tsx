@@ -73,3 +73,25 @@ it("explains rate limits without claiming an email was sent", async () => {
   expect(await screen.findByRole("alert")).toHaveTextContent("Too many link requests");
   expect(screen.queryByText("Check your inbox")).not.toBeInTheDocument();
 });
+
+it("lets clients delegate normal and required addon choices without selecting photos", async () => {
+  let album = { id: 'delegated', slug: 'delegated', title: 'Delegate Gallery', enabled: true, proofingEnabled: true, proofingStage: 'proofing', freeDownloads: 0, photos: [{ id: 'one', title: 'Photo 1', src: '/uploads/one.jpg' }], proofingAddonRequirements: [{ id: 'vfx', name: 'VFX', quantity: 1, mode: 'required' }], proofingRounds: [{ roundNumber: 1, sentAt: '2026-09-18', selectedPhotoIds: [] }] };
+  let submitted: any;
+  vi.stubGlobal('fetch', vi.fn(async (url, options) => {
+    if (String(url).endsWith('/api/proofing/submit')) {
+      submitted = JSON.parse(options.body);
+      album = { ...album, proofingStage: 'selections-submitted', proofingRounds: [{ ...album.proofingRounds[0], ...submitted, submittedAt: '2026-09-18' }] };
+      return response({ ok: true, album, receipt: { submissionId: submitted.submissionId, submittedAt: '2026-09-18', selectedCount: 0 } });
+    }
+    return response({ album, sessionKey: 'gallery-delegation-session-123' });
+  }));
+  render(<MemoryRouter initialEntries={['/gallery/delegated']}><Routes><Route path='/gallery/:albumId' element={<AlbumDetail />} /></Routes></MemoryRouter>);
+  await screen.findByRole('heading', { name: 'Delegate Gallery' });
+  fireEvent.click(screen.getByRole('checkbox', { name: /Let the photographer choose my normal photos/ }));
+  expect(screen.getByRole('button', { name: 'Submit selection' })).toBeDisabled();
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Let the photographer choose for VFX' }));
+  expect(screen.getByRole('button', { name: 'Submit selection' })).toBeEnabled();
+  fireEvent.click(screen.getByRole('button', { name: 'Submit selection' }));
+  await screen.findByText('Your selections are safely submitted');
+  expect(submitted).toMatchObject({ photographerChooses: true, addonPhotographerChoices: ['vfx'], selectedPhotoIds: [] });
+});

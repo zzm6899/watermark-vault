@@ -106,3 +106,23 @@ test("gallery addon rules resolve bookings and events within the album tenant", 
   assert.equal(derive(db, { bookingId: "booking" }, "tenant")[0].mode, "required");
   assert.equal(derive(db, { bookingId: "booking" }, "missing").length, 0);
 });
+
+test("explicit delegation satisfies normal and required addon choices and is retry-safe", () => {
+  const payload = { ...request({}), selectedPhotoIds: [], photographerChooses: true, addonPhotographerChoices: ['vfx'] };
+  const saved = proofingSubmission(album(), payload);
+  assert.equal(saved.album.proofingStage, 'selections-submitted');
+  assert.equal(saved.receipt.photographerChooses, true);
+  assert.deepEqual(saved.receipt.addonPhotographerChoices, ['vfx']);
+  assert.deepEqual(saved.receipt.selectedPhotoIds, []);
+  assert.equal(proofingSubmission(saved.album, payload).replayed, true);
+  assert.equal(proofingSubmission(saved.album, { ...payload, photographerChooses: false }).status, 409);
+  assert.equal(proofingSubmission(saved.album, { ...payload, addonPhotographerChoices: [] }).status, 409);
+  assert.equal(proofingSubmission(album(), { ...payload, addonSelections: { vfx: ['one'] } }).status, 400);
+  assert.equal(proofingSubmission(album(), { ...payload, addonPhotographerChoices: ['unknown'] }).status, 409);
+  assert.equal(proofingSubmission(album(), { ...payload, photographerChooses: 'yes' }).status, 400);
+  const independent = proofingSubmission(album(), { ...request({}), addonPhotographerChoices: ['vfx'] });
+  assert.equal(independent.receipt.photographerChooses, false);
+  const preferredAddon = proofingSubmission(album(), { ...payload, addonPhotographerChoices: [], addonSelections: { vfx: ['one', 'two'] } });
+  assert.deepEqual(preferredAddon.receipt.addonSelections.vfx, ['one', 'two']);
+  assert.equal(proofingSubmission(album(), { ...payload, addonPhotographerChoices: [], addonSelections: { vfx: ['one', 'hidden'] } }).status, 400);
+});

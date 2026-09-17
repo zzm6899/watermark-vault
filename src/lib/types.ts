@@ -483,6 +483,8 @@ export interface ProofingAddonRequirement {
 }
 
 export interface ProofingRound {
+  photographerChooses?: boolean;
+  addonPhotographerChoices?: string[];
   addonSelections?: Record<string, string[]>;
   submissionId?: string;
   roundNumber: number;

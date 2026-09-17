@@ -185,17 +185,20 @@ function normalizedAddonSelections(value = {}) {
   return Object.fromEntries(Object.entries(value).filter(([, ids]) => ids.length).sort(([a], [b]) => a.localeCompare(b)).map(([id, ids]) => [id, [...new Set(ids)].sort()]));
 }
 
-function proofingSubmission(album, { selectedPhotoIds, clientNote, submissionId, roundNumber, roundSentAt, addonSelections = {} }, now = new Date().toISOString()) {
+function proofingSubmission(album, { selectedPhotoIds, clientNote, submissionId, roundNumber, roundSentAt, addonSelections = {}, photographerChooses = false, addonPhotographerChoices = [] }, now = new Date().toISOString()) {
   if (!Array.isArray(selectedPhotoIds)) return { error: "Select valid photos", status: 400 };
   if (!addonSelections || typeof addonSelections !== "object" || Array.isArray(addonSelections) || Object.entries(addonSelections).some(([, ids]) => !Array.isArray(ids) || ids.some(id => typeof id !== "string"))) return { error: "Invalid add-on photo choices", status: 400 };
+  if (typeof photographerChooses !== "boolean" || !Array.isArray(addonPhotographerChoices) || addonPhotographerChoices.some(id => typeof id !== "string")) return { error: "Invalid photographer choice", status: 400 };
+  const delegated = [...new Set(addonPhotographerChoices)].sort();
   const addons = normalizedAddonSelections(addonSelections);
+  if (delegated.some(id => addons[id]?.length)) return { error: "Choose photos or let the photographer choose for each add-on", status: 400 };
   const ids = [...new Set(selectedPhotoIds.map(String).filter(Boolean))];
   const note = typeof clientNote === "string" ? clientNote.trim().slice(0, 5000) : "";
   const rounds = album.proofingRounds || [];
   const latest = rounds.at(-1);
   const receiptId = /^[a-zA-Z0-9_-]{16,100}$/.test(String(submissionId || "")) ? submissionId : crypto.randomUUID();
   if (latest?.submittedAt && latest.submissionId === receiptId) {
-    if (JSON.stringify([...latest.selectedPhotoIds].sort()) !== JSON.stringify([...ids].sort()) || (latest.clientNote || "") !== note || JSON.stringify(normalizedAddonSelections(latest.addonSelections)) !== JSON.stringify(addons)) {
+    if ((latest.photographerChooses === true) !== photographerChooses || JSON.stringify([...(latest.addonPhotographerChoices || [])].sort()) !== JSON.stringify(delegated) || JSON.stringify([...latest.selectedPhotoIds].sort()) !== JSON.stringify([...ids].sort()) || (latest.clientNote || "") !== note || JSON.stringify(normalizedAddonSelections(latest.addonSelections)) !== JSON.stringify(addons)) {
       return { error: "This submission reference was already used for different selections", status: 409 };
     }
     return { album, receipt: latest, replayed: true };
@@ -205,17 +208,18 @@ function proofingSubmission(album, { selectedPhotoIds, clientNote, submissionId,
       (roundSentAt != null && String(roundSentAt) !== String(latest?.sentAt || ""))) {
     return { error: "A new proofing round has started. Reload the gallery before submitting.", status: 409 };
   }
-  if (!ids.length) return { error: "Select at least one photo", status: 400 };
+  if (!ids.length && !photographerChooses) return { error: "Select at least one photo", status: 400 };
   const selectable = new Set((album.photos || []).filter(photo => !photo.hidden && (album.showCullRejectsToClient || photo.cull?.status !== "reject")).map(photo => String(photo.id)));
   if (ids.some(id => !selectable.has(id))) return { error: "One or more selected photos are unavailable", status: 400 };
   const requirements = album.proofingAddonRequirements || [];
-  if (Object.keys(addonSelections).some(id => !requirements.some(rule => rule.id === id))) return { error: "An add-on is no longer available. Reload and review your choices.", status: 409 };
+  if ([...Object.keys(addonSelections), ...delegated].some(id => !requirements.some(rule => rule.id === id))) return { error: "An add-on is no longer available. Reload and review your choices.", status: 409 };
   for (const rule of requirements) {
     const picks = addons[rule.id] || [];
-    if (picks.some(id => !ids.includes(id))) return { error: `Choose ${rule.name} photos from your proofing selection`, status: 400 };
+    if (delegated.includes(rule.id)) continue;
+    if (picks.some(id => photographerChooses ? !selectable.has(id) : !ids.includes(id))) return { error: `Choose ${rule.name} photos from your proofing selection`, status: 400 };
     if (picks.length > rule.quantity || (rule.mode === "required" && picks.length !== rule.quantity)) return { error: `Choose ${rule.mode === "required" ? "exactly" : "up to"} ${rule.quantity} photo(s) for ${rule.name}`, status: 400 };
   }
-  const receipt = { ...(latest || { roundNumber: 1, sentAt: now }), selectedPhotoIds: ids, addonSelections: addons, clientNote: note || undefined, submittedAt: now, submissionId: receiptId };
+  const receipt = { ...(latest || { roundNumber: 1, sentAt: now }), selectedPhotoIds: ids, addonSelections: addons, photographerChooses, addonPhotographerChoices: delegated, clientNote: note || undefined, submittedAt: now, submissionId: receiptId };
   const selected = new Set(ids);
   return { album: { ...album, proofingRevision: receiptId, proofingStage: "selections-submitted", proofingRounds: [...rounds.slice(0, -1), receipt],
     photos: (album.photos || []).map(photo => ({ ...photo, starred: selected.has(String(photo.id)) })) }, receipt, replayed: false };

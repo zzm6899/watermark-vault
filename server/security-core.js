@@ -516,7 +516,7 @@ function safeGalleryAlbumDto(album, sessionKey, timeZone = album?.timezone || pr
     roundNumber: Number.isFinite(Number(round?.roundNumber)) ? Number(round.roundNumber) : index + 1,
     ...(round?.sentAt ? { sentAt: round.sentAt } : {}),
     ...(round?.submittedAt ? { submittedAt: round.submittedAt, submissionId: round.submissionId,
-      clientNote: round.clientNote,
+      clientNote: round.clientNote, photographerChooses: round.photographerChooses === true, addonPhotographerChoices: round.addonPhotographerChoices || [],
       addonSelections: Object.fromEntries(Object.entries(round.addonSelections || {}).map(([key, ids]) => [key, ids.filter(id => (album.photos || []).some(photo => photo.id === id && !photo.hidden && (album.showCullRejectsToClient || photo.cull?.status !== "reject")))])),
       selectedPhotoIds: (Array.isArray(round.selectedPhotoIds) ? round.selectedPhotoIds : []).filter(id =>
         (album.photos || []).some(photo => photo.id === id && !photo.hidden && (album.showCullRejectsToClient || photo.cull?.status !== "reject"))) } : {}),

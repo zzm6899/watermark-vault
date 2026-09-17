@@ -1,6 +1,6 @@
 import type { Album } from "./types";
 
-type Submission = { addonSelections?: Record<string, string[]>; albumId: string; selectedPhotoIds: string[]; clientNote: string; submissionId: string; roundNumber: number; roundSentAt?: string };
+type Submission = { photographerChooses?: boolean; addonPhotographerChoices?: string[]; addonSelections?: Record<string, string[]>; albumId: string; selectedPhotoIds: string[]; clientNote: string; submissionId: string; roundNumber: number; roundSentAt?: string };
 type SubmissionResult = { album: Album; receipt: { submissionId: string; submittedAt: string; selectedCount: number } };
 
 async function timedJson(url: string, options?: RequestInit) {
@@ -34,6 +34,8 @@ export async function submitProofing(submission: Submission, slug: string): Prom
         item.submissionId === submission.submissionId && item.submittedAt &&
         JSON.stringify([...new Set(item.selectedPhotoIds)].sort()) === requestedIds &&
         (item.clientNote || "") === submission.clientNote.trim().slice(0, 5000) &&
+        (item.photographerChooses === true) === (submission.photographerChooses === true) &&
+        JSON.stringify([...(item.addonPhotographerChoices || [])].sort()) === JSON.stringify([...(submission.addonPhotographerChoices || [])].sort()) &&
         canonicalAddons(item.addonSelections) === canonicalAddons(submission.addonSelections));
       if (round) return { album, receipt: { submissionId: submission.submissionId, submittedAt: round.submittedAt!, selectedCount: round.selectedPhotoIds.length } };
     }
