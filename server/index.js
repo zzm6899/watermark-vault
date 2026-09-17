@@ -786,7 +786,7 @@ app.use((req, res, next) => {
 app.get("/api/health", (_req, res) => {
   try {
     readDb();
-    res.json({ ok: true, uptimeSeconds: Math.floor(process.uptime()) });
+    res.json({ ok: true, uptimeSeconds: Math.floor(process.uptime()), version: require("./package.json").version, buildRevision: process.env.APP_BUILD_REVISION || "development" });
   } catch {
     res.status(503).json({ ok: false, error: "Database unavailable" });
   }
@@ -2084,10 +2084,14 @@ app.post("/api/albums/:id/auto-cull", requireAdminOrScopedTenant, async (req, re
     photoIds: group.items.map(item => item.photoId || photos[item.index]?.id || null).filter(Boolean),
   }));
 
-  albums[idx] = {
-    ...album,
-    photos: updatedPhotos,
-    photoCount: updatedPhotos.length,
+  const latestDb = readDb();
+  const latestStore = _resolveAlbumStore(latestDb, tenantSlug, req.params.id);
+  if (!latestStore.album) return res.status(404).json({ error: "Album was removed during analysis" });
+  const mergedPhotos = require("./cull-merge").mergeCullPhotos(latestStore.album.photos || [], updatedPhotos);
+  latestStore.albums[latestStore.idx] = {
+    ...latestStore.album,
+    photos: mergedPhotos,
+    photoCount: mergedPhotos.length,
     _photosStripped: false,
     autoCull: {
       analysedAt,
@@ -2110,8 +2114,8 @@ app.post("/api/albums/:id/auto-cull", requireAdminOrScopedTenant, async (req, re
     },
   };
 
-  db[storeKey] = JSON.stringify(albums);
-  writeDb(db);
+  latestDb[latestStore.storeKey] = JSON.stringify(latestStore.albums);
+  writeDb(latestDb);
 
   res.json({
     ok: true,
@@ -2126,10 +2130,10 @@ app.post("/api/albums/:id/auto-cull", requireAdminOrScopedTenant, async (req, re
     heldBack,
     culled,
     counts,
-    album: albums[idx],
+    album: latestStore.albums[latestStore.idx],
     duplicateGroups: responseGroups,
     errors,
-    photos: updatedPhotos.map(photo => ({
+    photos: mergedPhotos.map(photo => ({
       id: photo.id,
       src: photo.src,
       originalName: photo.originalName,
@@ -2741,13 +2745,8 @@ app.post("/api/upload", uploadLimiter, requireAdminOrScopedTenant, upload.array(
   // albumFolder: optional sub-directory name (album title or booking type)
   const albumFolder = req.query.albumFolder ? String(req.query.albumFolder) : null;
   const albumId = req.query.albumId ? String(req.query.albumId) : null;
-  const db = readDb();
-  const uploadOwners = dbGet(db, "wv_upload_owners", {});
-  for (const file of uploadedFiles) {
-    const filename = path.basename(String(file.url || ""));
-    if (filename) uploadOwners[filename] = tenantSlug ? { tenantSlug: String(tenantSlug), uploadedAt: new Date().toISOString() } : { admin: true, uploadedAt: new Date().toISOString() };
-  }
-  db["wv_upload_owners"] = uploadOwners;
+  let db = readDb();
+
 
   if (tenantSlug) {
     const raw = db[`t_${tenantSlug}_wv_tenant_settings`];
@@ -2770,6 +2769,15 @@ app.post("/api/upload", uploadLimiter, requireAdminOrScopedTenant, upload.array(
       console.warn(`[FTP] Upload failed: ${result.error || "unknown error"} (${result.failed}/${uploadedFiles.length} file(s) failed)`);
     }
   }
+
+  // FTP can yield while other tenants write. Merge into the current snapshot.
+  db = readDb();
+  const uploadOwners = dbGet(db, "wv_upload_owners", {});
+  for (const file of uploadedFiles) {
+    const filename = path.basename(String(file.url || ""));
+    if (filename) uploadOwners[filename] = tenantSlug ? { tenantSlug: String(tenantSlug), uploadedAt: new Date().toISOString() } : { admin: true, uploadedAt: new Date().toISOString() };
+  }
+  db["wv_upload_owners"] = uploadOwners;
 
   const files = uploadedFiles.map(({ localPath: _lp, ...rest }) => ({ ...rest, ftpUploaded }));
   let albumPersisted = false;
@@ -3069,12 +3077,12 @@ app.delete("/api/upload/:filename", uploadDeleteLimiter, requireAdminOrScopedTen
   const filepath = path.join(UPLOADS_DIR, safeName);
   try {
     const db = readDb();
-    const references = uploadReferenceKeys(db, safeName);
-    if (references.length > 0) return res.status(409).json({ error: "File is still referenced by an album or photo library", referenceKeys: references });
     if (req.authContext?.type === "tenant") {
       const owner = dbGet(db, "wv_upload_owners", {})?.[safeName];
       if (!owner || owner.tenantSlug !== req.authContext.slug) return res.status(403).json({ error: "This file is not owned by the authenticated tenant" });
     }
+    const references = uploadReferenceKeys(db, safeName);
+    if (references.length > 0) return res.status(409).json({ error: "File is still referenced by an album or photo library", referenceKeys: references });
     if (fs.existsSync(filepath)) fs.unlinkSync(filepath);
     const purgedCacheFiles = purgeCacheVariantsForUpload(safeName);
     const owners = dbGet(db, "wv_upload_owners", {});
@@ -3093,32 +3101,13 @@ app.delete("/api/upload/:filename", uploadDeleteLimiter, requireAdminOrScopedTen
 function getWatermarkSettings(tenantSlug) {
   try {
     const db = readDb();
-    // If a tenant slug is provided, prefer their watermark settings (stored in t_{slug}_wv_tenant_settings)
-    if (tenantSlug) {
-      const raw = db[`t_${tenantSlug}_wv_tenant_settings`];
-      const ts = raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : {};
-      // Only use tenant watermark if at least one watermark field is explicitly configured
-      if (ts.watermarkText || ts.watermarkImage || ts.watermarkPosition) {
-        const globalSettings = (() => {
-          try { const s = db["wv_settings"]; return typeof s === "string" ? JSON.parse(s) : (s || {}); } catch { return {}; }
-        })();
-        return {
-          text: ts.watermarkText || globalSettings.watermarkText || "WATERMARK VAULT",
-          opacity: Math.min(1, Math.max(0, (ts.watermarkOpacity ?? globalSettings.watermarkOpacity ?? 20) / 100)),
-          position: ts.watermarkPosition || globalSettings.watermarkPosition || "tiled",
-          imageBase64: ts.watermarkImage || null,
-          size: ts.watermarkSize ?? globalSettings.watermarkSize ?? 40,
-        };
-      }
-    }
-    const settings = db["wv_settings"];
-    const parsed = typeof settings === "string" ? JSON.parse(settings) : settings;
+    const settings = dbGet(db, tenantSlug ? `t_${tenantSlug}_wv_tenant_settings` : "wv_settings", {});
     return {
-      text: parsed?.watermarkText || "WATERMARK VAULT",
-      opacity: Math.min(1, Math.max(0, (parsed?.watermarkOpacity ?? 20) / 100)),
-      position: parsed?.watermarkPosition || "tiled",
-      imageBase64: parsed?.watermarkImage || null, // base64 data URL
-      size: parsed?.watermarkSize ?? 40,
+      text: settings.watermarkText || "WATERMARK VAULT",
+      opacity: Math.min(1, Math.max(0, (settings.watermarkOpacity ?? 20) / 100)),
+      position: settings.watermarkPosition || "tiled",
+      imageBase64: settings.watermarkImage || null,
+      size: settings.watermarkSize ?? 40,
     };
   } catch {
     return { text: "WATERMARK VAULT", opacity: 0.2, position: "tiled", imageBase64: null, size: 40 };
@@ -4669,7 +4658,7 @@ async function autoEditAlbumUploads({ albumId, tenantSlug, uploadedFiles, streng
   const idx = albums.findIndex(a => a.id === albumId || a.slug === albumId);
   if (idx < 0) return;
   const album = albums[idx];
-  let changed = false;
+  const edits = new Map();
   for (const file of uploadedFiles) {
     const photo = (album.photos || []).find(p => p.id === file.id);
     if (!photo || !file.localPath || !fs.existsSync(file.localPath)) continue;
@@ -4683,19 +4672,29 @@ async function autoEditAlbumUploads({ albumId, tenantSlug, uploadedFiles, streng
       const editedPath = path.join(UPLOADS_DIR, editedName);
       await applyEditParams(file.localPath, params, editedPath);
       const editedUrl = `/uploads/${editedName}`;
-      if (!photo.beforeSrc) photo.beforeSrc = photo.src;
-      photo.editedSrc = editedUrl;
-      photo.src = editedUrl;
-      photo.editRecipe = { engine: "photoflow-auto-v1", params, processedAt: new Date().toISOString() };
-      changed = true;
+      edits.set(photo.id, { source: photo.src, editedUrl, editedName, params });
     } catch (err) {
       console.warn(`[AUTO-EDIT] Failed for ${file.originalName || file.id}:`, err.message);
     }
   }
-  if (changed) {
-    albums[idx] = { ...album, photos: album.photos, photoCount: album.photos.length, _photosStripped: false };
-    db[storeKey] = JSON.stringify(albums);
-    writeDb(db);
+  if (edits.size) {
+    const latestDb = readDb();
+    const currentAlbums = _parseAlbumsFromDb(latestDb[storeKey]);
+    const currentIndex = currentAlbums.findIndex(item => item.id === album.id);
+    if (currentIndex < 0) return;
+    const current = currentAlbums[currentIndex];
+    const owners = dbGet(latestDb, "wv_upload_owners", {});
+    const currentPhotos = (current.photos || []).map(photo => {
+      const edit = edits.get(photo.id);
+      if (!edit || photo.src !== edit.source) return photo;
+      owners[edit.editedName] = tenantSlug ? { tenantSlug, uploadedAt: new Date().toISOString() } : { admin: true, uploadedAt: new Date().toISOString() };
+      return { ...photo, beforeSrc: photo.beforeSrc || photo.src, editedSrc: edit.editedUrl, src: edit.editedUrl,
+        editRecipe: { engine: "photoflow-auto-v1", params: edit.params, processedAt: new Date().toISOString() } };
+    });
+    currentAlbums[currentIndex] = { ...current, photos: currentPhotos, photoCount: currentPhotos.length, _photosStripped: false };
+    latestDb["wv_upload_owners"] = owners;
+    latestDb[storeKey] = JSON.stringify(currentAlbums);
+    writeDb(latestDb);
   }
 }
 
@@ -6306,8 +6305,10 @@ const tenantBookingLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHead
     const { slug } = req.params;
     const auth = getAuthenticatedTenantClient(slug);
     if (!auth) return res.status(401).json({ error: "Not connected" });
-    const { booking, calendarId } = req.body;
-    if (!booking) return res.status(400).json({ error: "Missing booking" });
+    const { booking: suppliedBooking, calendarId } = req.body || {};
+    if (!suppliedBooking?.id) return res.status(400).json({ error: "Missing booking" });
+    const booking = getStoredArray(readDb(), DB_KEYS.BOOKINGS).find(item => item.id === suppliedBooking.id && item.tenantSlug === slug);
+    if (!booking) return res.status(404).json({ error: "Booking not found" });
     const calId = calendarId || loadTenantCalSettings(slug).calendarId || "primary";
     try {
       const cal = google.calendar({ version: "v3", auth });
@@ -6346,7 +6347,7 @@ const tenantBookingLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHead
           eventId = data.id;
         }
       }
-      persistBookingCalendarEventLink(booking.id, eventId, calId);
+      persistBookingCalendarEventLink(booking.id, eventId, calId, slug);
       res.json({ ok: true, eventId, updated });
     } catch (err) {
       console.error("Tenant calendar event error:", err.message);
@@ -7020,7 +7021,11 @@ app.get("/api/tenant/:slug/public", tenantPublicLimiter, (req, res) => {
   // Allow browsers and CDNs to cache for 60 s; revalidate after that.
   res.setHeader("Cache-Control", SHORT_CACHE);
   res.json({ tenant: safeTenantPublicDto(tenant), eventTypes: eventTypes.map(sanitizePublicEventType), bookingLimitReached, enquiryEnabled, enquiryLabel, brandColor,
-    cosplayFieldsEnabled, conventionFieldEnabled, bankTransfer });
+    cosplayFieldsEnabled, conventionFieldEnabled, bankTransfer,
+    bookingPageTitle: String(tenantSettings.bookingPageTitle || "").slice(0, 120),
+    bookingPageIntro: String(tenantSettings.bookingPageIntro || "").slice(0, 1000),
+    bookingConfirmationMessage: String(tenantSettings.bookingConfirmationMessage || "").slice(0, 1000),
+    bookingShowBio: tenantSettings.bookingShowBio !== false });
 });
 
 const TENANT_SERVER_MANAGED_STORE_KEYS = new Set([
@@ -7409,7 +7414,7 @@ async function syncBookingCalendarMutation(booking, action) {
       }
     }
     if (!eventId) throw new Error("Google Calendar did not return an event ID");
-    persistBookingCalendarEventLink(booking.id, eventId, connection.calendarId);
+    persistBookingCalendarEventLink(booking.id, eventId, connection.calendarId, booking.tenantSlug || null);
     return "synced";
   }
   if (action === "cancel") {
@@ -7429,10 +7434,10 @@ async function syncBookingCalendarMutation(booking, action) {
   return "not-linked";
 }
 
-function persistBookingCalendarEventLink(bookingId, gcalEventId, gcalCalendarId) {
+function persistBookingCalendarEventLink(bookingId, gcalEventId, gcalCalendarId, tenantSlug = null) {
   const db = readDb();
   const bookings = getStoredArray(db, DB_KEYS.BOOKINGS);
-  const index = bookings.findIndex(item => item.id === bookingId);
+  const index = bookings.findIndex(item => item.id === bookingId && (item.tenantSlug || null) === tenantSlug);
   if (index < 0) return;
   bookings[index] = { ...bookings[index], gcalEventId, gcalCalendarId };
   db[DB_KEYS.BOOKINGS] = JSON.stringify(bookings);
@@ -8124,15 +8129,11 @@ app.post("/api/tenant/:slug/booking", tenantBookingLimiter, async (req, res) => 
   commitDb["wv_bookings"] = JSON.stringify(bookings);
   writeDb(commitDb);
 
-  // Fire Discord notification — use tenant-specific webhook if configured, else fall back to global
+  // Tenant notifications use only the tenant webhook; absence means disabled.
   try {
     const tenantSettingsRaw = commitDb[`t_${slug}_wv_tenant_settings`];
     const tenantSettings = tenantSettingsRaw ? (typeof tenantSettingsRaw === "string" ? JSON.parse(tenantSettingsRaw) : tenantSettingsRaw) : {};
-    const settingsRaw = commitDb["wv_settings"];
-    const globalSettings = typeof settingsRaw === "string" ? JSON.parse(settingsRaw) : (settingsRaw || {});
-    // Prefer tenant-specific settings when a tenant webhook is configured
-    const useTenantSettings = !!tenantSettings?.discordWebhookUrl;
-    const activeSettings = useTenantSettings ? tenantSettings : globalSettings;
+    const activeSettings = tenantSettings;
     const webhookUrl = activeSettings?.discordWebhookUrl;
     const notifyBookings = activeSettings?.discordNotifyBookings !== false;
     if (webhookUrl && notifyBookings) {
@@ -8207,10 +8208,7 @@ app.post("/api/tenant/:slug/enquiry", tenantBookingLimiter, (req, res) => {
 
   // Discord notification (non-blocking)
   try {
-    const settingsRaw = db["wv_settings"];
-    const globalSettings = typeof settingsRaw === "string" ? JSON.parse(settingsRaw) : (settingsRaw || {});
-    const useTenantSettings = !!tenantSettings?.discordWebhookUrl;
-    const activeSettings = useTenantSettings ? tenantSettings : globalSettings;
+    const activeSettings = tenantSettings;
     const webhookUrl = activeSettings?.discordWebhookUrl;
     if (webhookUrl && activeSettings?.discordNotifyBookings !== false) {
       notifyNewEnquiry(webhookUrl, enquiry).catch(() => {});
@@ -8806,8 +8804,8 @@ app.get("/api/tenant/:slug/session", tenantLimiter, requireTenant, (req, res) =>
 });
 
 app.put("/api/tenant/:slug/profile", tenantLimiter, requireTenant, async (req, res) => {
-  const tenants = readTenants();
-  const index = tenants.findIndex(tenant => tenant.slug === req.params.slug);
+  let tenants = readTenants();
+  let index = tenants.findIndex(tenant => tenant.slug === req.params.slug);
   if (index < 0) return res.status(404).json({ ok: false, error: "Tenant not found" });
   const updates = {};
   if (req.body?.displayName !== undefined) {
@@ -8830,6 +8828,9 @@ app.put("/api/tenant/:slug/profile", tenantLimiter, requireTenant, async (req, r
     const passwordHash = String(req.body.passwordHash);
     if (passwordHash.length < 32 || passwordHash.length > 256) return res.status(400).json({ ok: false, error: "Invalid password hash" });
     updates.passwordHash = await bcryptHash(passwordHash);
+    tenants = readTenants();
+    index = tenants.findIndex(tenant => tenant.slug === req.params.slug);
+    if (index < 0) return res.status(404).json({ ok: false, error: "Tenant not found" });
   }
   tenants[index] = { ...tenants[index], ...updates };
   writeTenants(tenants);
@@ -9221,6 +9222,14 @@ app.put("/api/tenant/:slug/settings", tenantLimiter, requireTenant, (req, res) =
   })();
 
   const incoming = { ...req.body };
+  for (const [field, limit] of Object.entries({ bookingPageTitle: 120, bookingPageIntro: 1000, bookingConfirmationMessage: 1000 })) {
+    if (incoming[field] !== undefined) {
+      if (typeof incoming[field] !== "string") return res.status(400).json({ error: `${field} must be text` });
+      incoming[field] = incoming[field].trim().slice(0, limit);
+    }
+  }
+  if (incoming.bookingShowBio !== undefined && typeof incoming.bookingShowBio !== "boolean") return res.status(400).json({ error: "bookingShowBio must be a boolean" });
+
 
   // Strip server-computed *Set indicators so they cannot override real data
   for (const field of TENANT_SECRET_FIELDS) {

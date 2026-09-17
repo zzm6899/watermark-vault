@@ -5,6 +5,7 @@
 
 import { useEffect, useRef, useCallback } from "react";
 import { subscribePush, unsubscribePush, getVapidPublicKey } from "./api";
+import { ownsCapture } from "./capture-scope";
 
 const PUSH_SUBSCRIPTION_IDS_KEY = "wv_push_subscription_ids";
 
@@ -148,6 +149,7 @@ function openIdb(): Promise<IDBDatabase> {
 
 export interface OfflineCaptureItem {
   id: string;
+  tenantSlug: string | null;
   albumId?: string;
   file: Blob;
   fileName: string;
@@ -174,12 +176,12 @@ export async function queueOfflineCapture(item: Omit<OfflineCaptureItem, "id" | 
   });
 }
 
-export async function getOfflineQueue(): Promise<OfflineCaptureItem[]> {
+export async function getOfflineQueue(tenantSlug: string | null = null): Promise<OfflineCaptureItem[]> {
   const db = await openIdb();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(IDB_STORE, "readonly");
     const req = tx.objectStore(IDB_STORE).getAll();
-    req.onsuccess = () => resolve(req.result || []);
+    req.onsuccess = () => resolve((req.result || []).filter((item: OfflineCaptureItem) => ownsCapture(item, tenantSlug)));
     req.onerror = () => reject(req.error);
   });
 }
@@ -217,7 +219,8 @@ export async function removeOfflineItem(id: string): Promise<void> {
  * @param uploadFn - function that takes an OfflineCaptureItem and uploads it to the server
  */
 export function useOfflineUploadQueue(
-  uploadFn: (item: OfflineCaptureItem) => Promise<boolean>
+  uploadFn: (item: OfflineCaptureItem) => Promise<boolean>,
+  tenantSlug: string | null = null,
 ) {
   const flushingRef = useRef(false);
 
@@ -225,7 +228,7 @@ export function useOfflineUploadQueue(
     if (flushingRef.current) return;
     flushingRef.current = true;
     try {
-      const queue = await getOfflineQueue();
+      const queue = await getOfflineQueue(tenantSlug);
       const pending = queue.filter((i) => i.status === "queued" || i.status === "error");
       for (const item of pending) {
         await updateOfflineItem(item.id, { status: "uploading" });
@@ -243,7 +246,7 @@ export function useOfflineUploadQueue(
     } finally {
       flushingRef.current = false;
     }
-  }, [uploadFn]);
+  }, [uploadFn, tenantSlug]);
 
   useEffect(() => {
     const handleOnline = () => flush();

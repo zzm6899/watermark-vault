@@ -87,6 +87,8 @@ jobs:
         with:
           context: .        # ← root of repo, where Dockerfile lives
           push: true
+          build-args: |
+            GIT_COMMIT=${{ github.sha }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha

@@ -1996,7 +1996,7 @@ function resolveTenantStripe(tenantSettings) {
       publishableKey: tenantSettings.stripePublishableKey || null,
       currency: (tenantSettings.stripeCurrency || "aud").toLowerCase(),
       usingFallback: false,
-      webhookReady: !!tenantSettings.stripeWebhookSecret || unsignedWebhookAllowed(),
+      webhookReady: !!tenantSettings.stripeWebhookSecret,
     };
   }
   // Do not silently fall back to the global account: global Stripe webhooks are
@@ -2020,7 +2020,7 @@ function registerTenantStripeRoutes(app, { readDb, writeDb, readTenants, require
     return tenant && (!isTenantLicensed || isTenantLicensed(tenant)) ? tenant : null;
   };
 
-  // Status — check if a tenant has Stripe configured (or falls back to superuser)
+  // Status — check the tenant's own Stripe configuration.
   app.get("/api/tenant/:slug/stripe/status", tenantCheckoutLimiter, (req, res) => {
     const { slug } = req.params;
     const tenant = findLicensedTenant(slug);
@@ -2036,7 +2036,7 @@ function registerTenantStripeRoutes(app, { readDb, writeDb, readTenants, require
     });
   });
 
-  // Checkout — booking deposit using tenant Stripe keys (falls back to superuser)
+  // Checkout — booking deposit using tenant Stripe keys.
   app.post("/api/tenant/:slug/stripe/checkout/booking", tenantCheckoutLimiter, async (req, res) => {
     const { slug } = req.params;
     if (!findLicensedTenant(slug)) return res.status(404).json({ error: "Tenant not found" });
@@ -2137,7 +2137,7 @@ function registerTenantStripeRoutes(app, { readDb, writeDb, readTenants, require
     }
   });
 
-  // Checkout — album purchase using tenant Stripe keys (falls back to superuser)
+  // Checkout — album purchase using tenant Stripe keys.
   app.post("/api/tenant/:slug/stripe/checkout/album", tenantCheckoutLimiter, async (req, res) => {
     const { slug } = req.params;
     const tenant = findLicensedTenant(slug);
@@ -2282,14 +2282,11 @@ function registerTenantStripeRoutes(app, { readDb, writeDb, readTenants, require
     const resolved = resolveTenantStripe(ts);
     if (!resolved) return res.status(400).json({ error: "Stripe not configured for this tenant" });
     const sig = req.headers["stripe-signature"];
-    // Use tenant webhook secret; fall back to superuser secret when using fallback Stripe
-    const webhookSecret = ts.stripeWebhookSecret || (resolved.usingFallback ? process.env.STRIPE_WEBHOOK_SECRET : null);
+    const webhookSecret = ts.stripeWebhookSecret;
     let event;
     try {
       if (webhookSecret && sig) {
         event = resolved.client.webhooks.constructEvent(req.body, sig, webhookSecret);
-      } else if (!webhookSecret && unsignedWebhookAllowed()) {
-        event = JSON.parse(req.body.toString());
       } else {
         return res.status(webhookSecret ? 400 : 503).json({ error: webhookSecret ? "Stripe signature is required" : "A Stripe webhook secret is not configured" });
       }
@@ -2447,9 +2444,7 @@ function registerTenantStripeRoutes(app, { readDb, writeDb, readTenants, require
             try {
               const tenantSettingsRaw = dbData[`t_${slug}_wv_tenant_settings`];
               const tenantSettings = tenantSettingsRaw ? (typeof tenantSettingsRaw === "string" ? JSON.parse(tenantSettingsRaw) : tenantSettingsRaw) : {};
-              const globalSettingsRaw = dbData["wv_settings"];
-              const globalSettings = typeof globalSettingsRaw === "string" ? JSON.parse(globalSettingsRaw) : (globalSettingsRaw || {});
-              const activeSettings = tenantSettings?.discordWebhookUrl ? tenantSettings : globalSettings;
+              const activeSettings = tenantSettings;
               const discordUrl = activeSettings?.discordWebhookUrl;
               if (discordUrl && activeSettings?.discordNotifyDownloads !== false) {
                 const purchaseType = metadata.isFullAlbum === "true" ? "full" : "individual";

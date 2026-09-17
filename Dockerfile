@@ -9,6 +9,7 @@ RUN npm ci
 
 # Copy the rest of the source and build
 COPY . .
+ARG GIT_COMMIT=development
 RUN npm run build
 
 # Stage 2: Node.js server (serves React app + API)
@@ -32,6 +33,8 @@ RUN mkdir -p /data/uploads
 
 EXPOSE 5066
 
+ARG GIT_COMMIT=development
+ENV APP_BUILD_REVISION=$GIT_COMMIT
 ENV PORT=5066
 ENV DATA_DIR=/data
 # Tell sharp to use the system vips rather than downloading its own

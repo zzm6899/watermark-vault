@@ -1,10 +1,17 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { componentTagger } from "lovable-tagger";
 
+const appVersion = JSON.parse(readFileSync(new URL("./server/package.json", import.meta.url), "utf8")).version;
+let buildRevision = process.env.GIT_COMMIT || "development";
+try { buildRevision = execFileSync("git", ["rev-parse", "--short", "HEAD"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); } catch { /* Source archives use the deployment-provided revision. */ }
+
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => ({
+  define: { __APP_VERSION__: JSON.stringify(appVersion), __BUILD_REVISION__: JSON.stringify(buildRevision) },
   server: {
     host: "::",
     port: 8080,

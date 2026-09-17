@@ -37,8 +37,7 @@ function buildTenantTransporter(tenantSettings) {
 }
 
 function getTenantFromAddress(tenantSettings) {
-  if (!tenantSettings) return getFromAddress();
-  return tenantSettings.smtpFrom || tenantSettings.smtpUser || getFromAddress();
+  return tenantSettings?.smtpFrom || tenantSettings?.smtpUser || "";
 }
 
 // ── Helpers ───────────────────────────────────────────────────
@@ -361,9 +360,9 @@ async function sendBookingConfirmationEmail({
   price = 0, depositAmount = 0, paymentMethod = "none", lineItems = [], sessionPrice,
   paymentKind = null,
   modifyToken, bookingId, paymentReference = "", appBaseUrl, store, status = "pending", paymentStatus = "unpaid",
-  transport = null, fromAddress = null, brandName = DEFAULT_EMAIL_BRAND,
+  transport, fromAddress = null, brandName = DEFAULT_EMAIL_BRAND,
 }) {
-  const t = transport || getTransporter();
+  const t = transport === undefined ? getTransporter() : transport;
   if (!t) { console.warn("📧 SMTP not configured"); return { ok: false, reason: "not_configured" }; }
 
   const isFree = price === 0;
@@ -969,8 +968,8 @@ function buildBookingUpdateEmail({
   };
 }
 
-async function sendBookingUpdateEmail({ transport = null, fromAddress = null, to, store = null, ...params }) {
-  const t = transport || getTransporter();
+async function sendBookingUpdateEmail({ transport, fromAddress = null, to, store = null, ...params }) {
+  const t = transport === undefined ? getTransporter() : transport;
   if (!t) return { ok: false, reason: "not_configured" };
   const message = buildBookingUpdateEmail(params);
   try {

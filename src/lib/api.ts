@@ -791,7 +791,7 @@ export function deletePhotoFromServer(url: string, tenantSlug?: string): void {
 }
 
 /** Send disposable bytes to measure upload connectivity without creating a photo. */
-export async function runUploadSpeedTest(sizeBytes = 1 * 1024 * 1024): Promise<{ bytesPerSecond: number; elapsedMs: number }> {
+export async function runUploadSpeedTest(sizeBytes = 1 * 1024 * 1024, tenantSlug?: string): Promise<{ bytesPerSecond: number; elapsedMs: number }> {
   // Some Android WebViews serialize binary fetch bodies to only a few bytes.
   // A plain-text payload uses the reliable string bridge while still measuring
   // a real upload over the same route.
@@ -801,7 +801,8 @@ export async function runUploadSpeedTest(sizeBytes = 1 * 1024 * 1024): Promise<{
   const timeout = controller ? window.setTimeout(() => controller.abort(), 20000) : undefined;
   let res: Response;
   try {
-    res = await fetch("/api/upload/speed-test", { method: "POST", headers: { ...adminAuthHeaders(), "Content-Type": "text/plain; charset=utf-8" }, body: payload, signal: controller?.signal });
+    const query = tenantSlug ? `?tenant=${encodeURIComponent(tenantSlug)}` : "";
+    res = await fetch(`/api/upload/speed-test${query}`, { method: "POST", headers: { ...adminAuthHeaders(), "Content-Type": "text/plain; charset=utf-8" }, body: payload, signal: controller?.signal });
   } finally {
     if (timeout != null) window.clearTimeout(timeout);
   }
@@ -2067,6 +2068,10 @@ export async function getTenantPublicData(slug: string): Promise<{
   enquiryEnabled?: boolean;
   enquiryLabel?: string;
   brandColor?: string | null;
+  bookingPageTitle?: string;
+  bookingPageIntro?: string;
+  bookingConfirmationMessage?: string;
+  bookingShowBio?: boolean;
   cosplayFieldsEnabled?: boolean;
   conventionFieldEnabled?: boolean;
   bankTransfer?: {

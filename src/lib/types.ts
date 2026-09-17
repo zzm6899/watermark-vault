@@ -772,6 +772,10 @@ export interface TenantSettings {
   invoiceNotes?: string;
   // ── Booking Settings ─────────────────────────────────────
   bookingTimerMinutes?: number;
+  bookingPageTitle?: string;
+  bookingPageIntro?: string;
+  bookingConfirmationMessage?: string;
+  bookingShowBio?: boolean;
   instagramFieldEnabled?: boolean;
   notificationEmailTemplate?: string;
   enquiryEnabled?: boolean;

@@ -21,7 +21,7 @@ import {
   getTenantStripeStatus,
   type PublicTenant,
 } from "@/lib/api";
-import type { Booking, EventType, QuestionField } from "@/lib/types";
+import type { Booking, EventType, QuestionField, TenantSettings } from "@/lib/types";
 import { RichTextDisplay } from "@/components/RichTextEditor";
 import BookingAvatar from "@/components/BookingAvatar";
 import BookingReferenceUploads from "@/components/BookingReferenceUploads";
@@ -140,6 +140,19 @@ export function TenantBookingQuestionField({ field, value, onChange }: { field: 
 type Step = "event-select" | "datetime" | "contact" | "confirmed" | "enquiry" | "enquiry-confirmed";
 type TenantPaymentPath = "stripe" | "bank" | "contact" | "none";
 
+export function tenantBookingBrandStyle(color: string | null): React.CSSProperties {
+  if (!color || !/^#[\da-f]{6}$/i.test(color)) return {};
+  const rgb = [1, 3, 5].map(start => parseInt(color.slice(start, start + 2), 16) / 255);
+  const [r, g, b] = rgb;
+  const max = Math.max(...rgb), min = Math.min(...rgb), delta = max - min;
+  const lightness = (max + min) / 2;
+  const hue = delta === 0 ? 0 : ((max === r ? (g - b) / delta : max === g ? (b - r) / delta + 2 : (r - g) / delta + 4) * 60 + 360) % 360;
+  const saturation = delta === 0 ? 0 : delta / (1 - Math.abs(2 * lightness - 1));
+  const linear = rgb.map(value => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4);
+  const luminance = linear[0] * 0.2126 + linear[1] * 0.7152 + linear[2] * 0.0722;
+  return { "--primary": `${hue} ${saturation * 100}% ${lightness * 100}%`, "--primary-foreground": luminance > 0.179 ? "0 0% 0%" : "0 0% 100%" } as React.CSSProperties;
+}
+
 const TENANT_BOOKING_STEPS: { id: Step; label: string }[] = [
   { id: "event-select", label: "Service" },
   { id: "datetime",     label: "Date & Time" },
@@ -181,6 +194,10 @@ function TenantBookingSteps({ currentStep }: { currentStep: Step }) {
 export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: string }) {
   const { tenantSlug: paramSlug } = useParams<{ tenantSlug: string }>();
   const tenantSlug = overrideSlug || paramSlug;
+  return <TenantBookingContent key={tenantSlug} tenantSlug={tenantSlug} embedded={!!overrideSlug} />;
+}
+
+function TenantBookingContent({ tenantSlug, embedded }: { tenantSlug?: string; embedded: boolean }) {
   const navigate = useNavigate();
   const hasHistory = (window.history.state?.idx ?? 0) > 0;
 
@@ -192,6 +209,7 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
   const [enquiryEnabled, setEnquiryEnabled] = useState(false);
   const [enquiryLabel, setEnquiryLabel] = useState("Make an Enquiry");
   const [brandColor, setBrandColor] = useState<string | null>(null);
+  const [bookingAppearance, setBookingAppearance] = useState<Pick<TenantSettings, "bookingPageTitle" | "bookingPageIntro" | "bookingConfirmationMessage" | "bookingShowBio">>({});
   const [cosplayFieldsEnabled, setCosplayFieldsEnabled] = useState(false);
   const [conventionFieldEnabled, setConventionFieldEnabled] = useState(false);
   const [bankTransfer, setBankTransfer] = useState<{
@@ -271,10 +289,11 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
         setBookingLimitReached(!!data.bookingLimitReached);
         setEnquiryEnabled(!!data.enquiryEnabled);
         setEnquiryLabel(data.enquiryLabel || "Make an Enquiry");
-        if (data.brandColor) setBrandColor(data.brandColor);
+        setBrandColor(data.brandColor || null);
+        setBookingAppearance({ bookingPageTitle: data.bookingPageTitle, bookingPageIntro: data.bookingPageIntro, bookingConfirmationMessage: data.bookingConfirmationMessage, bookingShowBio: data.bookingShowBio });
         setCosplayFieldsEnabled(!!data.cosplayFieldsEnabled);
         setConventionFieldEnabled(!!data.conventionFieldEnabled);
-        if (data.bankTransfer) setBankTransfer(data.bankTransfer);
+        setBankTransfer(data.bankTransfer || null);
       }
       setLoading(false);
     }).catch(() => {
@@ -563,7 +582,7 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
           <Camera className="w-12 h-12 text-muted-foreground/30 mx-auto" />
           <h1 className="font-display text-2xl text-foreground">Page not found</h1>
           <p className="text-sm font-body text-muted-foreground">This booking page doesn't exist or has been deactivated.</p>
-          {!overrideSlug && (
+          {!embedded && (
             <Button variant="outline" onClick={() => navigate("/")} className="font-body text-xs gap-2">
               <ArrowLeft className="w-3.5 h-3.5" /> Back to main
             </Button>
@@ -573,16 +592,10 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
     );
   }
 
-  // Convert hex brand color to hsl-ish CSS vars for shadcn primary token override
-  const brandStyle: React.CSSProperties = brandColor ? {
+  const brandStyle: React.CSSProperties = {
     paddingTop: "env(safe-area-inset-top)",
     paddingBottom: "env(safe-area-inset-bottom)",
-    // Override the --primary CSS variable so all primary-colored UI elements pick up the brand color
-    ["--primary" as string]: brandColor,
-    ["--primary-foreground" as string]: "#ffffff",
-  } : {
-    paddingTop: "env(safe-area-inset-top)",
-    paddingBottom: "env(safe-area-inset-bottom)",
+    ...tenantBookingBrandStyle(brandColor),
   };
 
   const confirmedPrice = submittedBooking?.paymentAmount ?? selectedPrice;
@@ -628,11 +641,11 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
           {step === "event-select" && (
             <div key="event-select" className="space-y-6 animate-in fade-in-0 slide-in-from-bottom-4 duration-200">
               <div>
-                <h1 className="font-display text-2xl text-foreground mb-1">Book a session</h1>
-                <p className="text-sm font-body text-muted-foreground">Choose a session type to get started.</p>
+                <h1 className="font-display text-2xl text-foreground mb-1">{bookingAppearance.bookingPageTitle || "Book a session"}</h1>
+                <p className="text-sm font-body text-muted-foreground whitespace-pre-wrap">{bookingAppearance.bookingPageIntro || "Choose a session type to get started."}</p>
               </div>
               {/* Photographer bio — shown if set */}
-              {tenant.bio && (
+              {tenant.bio && bookingAppearance.bookingShowBio !== false && (
                 <div className="glass-panel rounded-xl p-5">
                   <p className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-2">About {tenant.displayName}</p>
                   <RichTextDisplay html={tenant.bio} />
@@ -1118,6 +1131,7 @@ export default function TenantBookingPage({ overrideSlug }: { overrideSlug?: str
                     : `Your request has been sent to ${tenant.displayName}. The photographer will contact you when it is confirmed.`}
                 </p>
               </div>
+              {bookingAppearance.bookingConfirmationMessage && <p className="text-sm font-body text-muted-foreground whitespace-pre-wrap max-w-lg mx-auto">{bookingAppearance.bookingConfirmationMessage}</p>}
               <div className="glass-panel rounded-xl p-5 max-w-sm mx-auto text-left space-y-2">
                 <div className="flex justify-between text-sm font-body">
                   <span className="text-muted-foreground">Session</span>

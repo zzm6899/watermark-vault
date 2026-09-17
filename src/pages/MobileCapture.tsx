@@ -1,5 +1,7 @@
 import { configuredProofingMessage } from "@/lib/proofing-message-settings";
 import { uploadTimeRemaining } from "@/lib/upload-time";
+import { captureAlbum, ownsCapture, type FtpCaptureDestination } from "@/lib/capture-scope";
+import { getTenantSettings } from "@/lib/api";
 import { buildClientEmail } from "@/lib/client-email";
 import { buildProofingEmail, proofingEmailSubject } from "@/lib/proofing-email";
 import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
@@ -18,7 +20,7 @@ import type { CameraFile } from "@/plugins/camera-usb";
 import CameraFtp from "@/plugins/camera-ftp";
 import type { CameraFtpCandidate, CameraFtpFile, CameraFtpStatus } from "@/plugins/camera-ftp";
 import { Capacitor } from "@capacitor/core";
-import type { Booking, Album, Photo, CullStatus } from "@/lib/types";
+import type { Booking, Album, Photo, CullStatus, TenantSettings } from "@/lib/types";
 import {
   Camera, ArrowLeft,
   Wifi, WifiOff, Zap, Image as ImageIcon, RefreshCw,
@@ -80,13 +82,13 @@ function loadFtpSettings(): { username: string; password: string; port: number }
 function saveFtpSettings(settings: { username: string; password: string; port: number }) {
   localStorage.setItem(FTP_SETTINGS_KEY, JSON.stringify(settings));
 }
-function loadFtpDestinations(): Record<string, string> {
+function loadFtpDestinations(): Record<string, FtpCaptureDestination | string> {
   try {
     const parsed = JSON.parse(localStorage.getItem(FTP_DESTINATIONS_KEY) || "{}");
     return parsed && typeof parsed === "object" ? parsed : {};
   } catch { return {}; }
 }
-function saveFtpDestinations(destinations: Record<string, string>) {
+function saveFtpDestinations(destinations: Record<string, FtpCaptureDestination | string>) {
   try { localStorage.setItem(FTP_DESTINATIONS_KEY, JSON.stringify(destinations)); } catch { /* optional */ }
 }
 
@@ -507,6 +509,7 @@ function MobileCaptureInner() {
 
   // Tenant session — set when a tenant logs in via /login
   const [tenantSession] = useState(() => getMobileTenantSession());
+  const [tenantSettings, setTenantSettings] = useState<TenantSettings>({});
   const [authVerified, setAuthVerified] = useState(false);
 
   // Validate the server capability before exposing cached client data. Native
@@ -583,13 +586,13 @@ function MobileCaptureInner() {
     if (speedTesting) return;
     setSpeedTesting(true);
     try {
-      const result = await runUploadSpeedTest();
+      const result = await runUploadSpeedTest(undefined, tenantSession?.slug);
       setSpeedTestResult(result.bytesPerSecond);
       toast.success(`Upload connection: ${formatSpeed(result.bytesPerSecond)}`);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Upload speed test failed");
     } finally { setSpeedTesting(false); }
-  }, [speedTesting]);
+  }, [speedTesting, tenantSession?.slug]);
   const [networkOnline, setNetworkOnline] = useState(navigator.onLine);
   const [idbQueue, setIdbQueue] = useState<OfflineCaptureItem[]>([]);
   const [showIdbQueue, setShowIdbQueue] = useState(false);
@@ -863,12 +866,12 @@ function MobileCaptureInner() {
 
   // ── Load IndexedDB offline capture queue ───────────────────────────────────
   useEffect(() => {
-    getOfflineQueue().then(q => setIdbQueue(q)).catch(() => {});
-  }, [networkOnline]);
+    getOfflineQueue(tenantSession?.slug || null).then(q => setIdbQueue(q)).catch(() => {});
+  }, [networkOnline, tenantSession?.slug]);
 
   // ── Offline upload queue flush via usePwa hook ─────────────────────────────
   const uploadOfflineItem = useCallback(async (item: OfflineCaptureItem): Promise<boolean> => {
-    if (!item.albumId) return false;
+    if (!item.albumId || !ownsCapture(item, tenantSession?.slug || null)) return false;
     const file = new File([item.file], item.fileName, { type: item.mimeType });
     try {
       const album = albums.find(a => a.id === item.albumId);
@@ -909,7 +912,7 @@ function MobileCaptureInner() {
     }
   }, [albums, autoEditEnabled, autoEditStrength, saveAlbum, tenantSession?.slug]);
 
-  useOfflineUploadQueue(uploadOfflineItem);
+  useOfflineUploadQueue(uploadOfflineItem, tenantSession?.slug || null);
 
   const sendClientNotification = useCallback(async (type: "album-created" | "photos-uploaded", photoCount?: number) => {
     if (!notifyClient || !serverOnline || !selectedBooking?.clientEmail) return;
@@ -935,8 +938,9 @@ function MobileCaptureInner() {
   useEffect(() => {
     if (tenantSession) {
       // Tenant mode — load bookings and albums from the server API
-      fetchTenantMobileData(tenantSession.slug).then(data => {
+      Promise.all([fetchTenantMobileData(tenantSession.slug), getTenantSettings(tenantSession.slug)]).then(([data, settings]) => {
         if (data) {
+          setTenantSettings(settings);
           setBookings((data.bookings || []).filter((b: Booking) => b.status !== "cancelled"));
           setAlbums(data.albums || []);
         } else {
@@ -1105,12 +1109,12 @@ function MobileCaptureInner() {
       if (liveCapturePausedRef.current) break;
       const destinations = loadFtpDestinations();
       const firstPath = ftpImportQueueRef.current[0]?.[0];
-      const albumId = firstPath ? destinations[firstPath] : undefined;
+      const albumId = firstPath ? captureAlbum(destinations[firstPath], tenantSession?.slug || null) : undefined;
       // Never dump unassigned files into whichever booking is selected next.
       // They remain on the camera/FTP inbox until explicitly associated.
       if (!albumId) break;
       const queuedPaths = ftpImportQueueRef.current.splice(0).flat();
-      const paths = queuedPaths.filter(path => destinations[path] === albumId);
+      const paths = queuedPaths.filter(path => captureAlbum(destinations[path], tenantSession?.slug || null) === albumId);
       const remaining = queuedPaths.filter(path => !paths.includes(path));
       if (remaining.length > 0) ftpImportQueueRef.current.unshift(remaining);
       if (paths.length === 0) continue;
@@ -1124,7 +1128,7 @@ function MobileCaptureInner() {
         window.setTimeout(() => drainPendingQueuesRef.current?.(), 0);
       }
     }
-  }, []);
+  }, [tenantSession?.slug]);
 
   drainPendingQueuesRef.current = () => {
     if (importBusyRef.current || liveCapturePausedRef.current) return;
@@ -1181,7 +1185,7 @@ function MobileCaptureInner() {
       CameraFtp.status().then(setFtpStatus).catch(() => {});
     }, 2000);
     const setup = async () => {
-      const queueFtpFiles = (files: CameraFtpFile[]) => {
+      const queueFtpFiles = (files: CameraFtpFile[], newlyReceived = false) => {
         if (!files.length) return;
         const proofFiles = files.filter(file => {
           const name = file.name || filenameFromFtpPath(file.localPath || file.path || "");
@@ -1206,26 +1210,26 @@ function MobileCaptureInner() {
         const destinations = loadFtpDestinations();
         const activeAlbum = targetAlbumRef.current;
         const paths = proofFiles.map(f => f.localPath || f.path).filter((path): path is string => Boolean(path) && !queuedPaths.has(path));
-        if (activeAlbum) {
+        if (activeAlbum && newlyReceived) {
           // A re-scan after restarting FTP can return files that were already
           // received for a previous booking. Preserve that original binding;
           // only genuinely new paths may inherit the current booking.
           paths.forEach(path => {
-            if (!destinations[path]) destinations[path] = activeAlbum.id;
+            if (!destinations[path]) destinations[path] = { albumId: activeAlbum.id, tenantSlug: tenantSession?.slug || null };
           });
           saveFtpDestinations(destinations);
         }
-        const assignedPaths = paths.filter(path => Boolean(destinations[path]));
+        const assignedPaths = paths.filter(path => Boolean(captureAlbum(destinations[path], tenantSession?.slug || null)));
         const unassignedCount = paths.length - assignedPaths.length;
-        if (unassignedCount > 0 && !activeAlbum) {
-          setQuietCaptureStatus("Photos waiting", `${countLabel(unassignedCount, "photo")} need an explicit booking before upload.`, "warning");
+        if (unassignedCount > 0) {
+          setQuietCaptureStatus("Photos held locally", "Unassigned or other-account photos stay on this phone. Sign in to their original account, or import unassigned photos manually.", "warning");
         }
         if (assignedPaths.length === 0) return;
         ftpImportQueueRef.current.push(assignedPaths);
         setFtpQueueSize(ftpImportQueueRef.current.reduce((sum, batch) => sum + batch.length, 0));
         drainFtpImportQueue();
       };
-      listenerHandle = await CameraFtp.addListener("newFiles", async (event) => queueFtpFiles(event?.files || []));
+      listenerHandle = await CameraFtp.addListener("newFiles", async (event) => queueFtpFiles(event?.files || [], true));
       const pending = await CameraFtp.listFiles({ limit: 500 }).catch(() => ({ files: [] as CameraFtpFile[] }));
       queueFtpFiles(pending.files || []);
       statusHandle = await CameraFtp.addListener("statusChanged", (status) => {
@@ -1253,18 +1257,18 @@ function MobileCaptureInner() {
       try { listenerHandle?.remove?.(); } catch {}
       try { statusHandle?.remove?.(); } catch {}
     };
-  }, [isNative, ftpStatus?.running, drainFtpImportQueue, jpegOnly, queueCaptureSummary, setQuietCaptureStatus]);
+  }, [isNative, ftpStatus?.running, drainFtpImportQueue, jpegOnly, queueCaptureSummary, setQuietCaptureStatus, tenantSession?.slug]);
 
   const getOrCreateAlbum = useCallback((booking: Booking): Album => {
     const existing = albumsRef.current.find(a => a.bookingId === booking.id);
     if (existing) return existing;
-    const settings = getSettings();
+    const settings = tenantSession ? tenantSettings : getSettings();
     const newAlbum: Album = {
       id: crypto.randomUUID(), slug: `session-${booking.id}`,
       title: `${booking.type} — ${booking.clientName}`, description: `Session on ${booking.date}`,
       coverImage: "", date: booking.date, photoCount: 0,
-      freeDownloads: settings.defaultFreeDownloads, pricePerPhoto: settings.defaultPricePerPhoto,
-      priceFullAlbum: settings.defaultPriceFullAlbum, isPublic: false, enabled: false, photos: [],
+      freeDownloads: settings.defaultFreeDownloads ?? 5, pricePerPhoto: settings.defaultPricePerPhoto ?? 0,
+      priceFullAlbum: settings.defaultPriceFullAlbum ?? 0, isPublic: false, enabled: false, photos: [],
       clientName: booking.clientName, clientEmail: booking.clientEmail, bookingId: booking.id,
     };
     if (tenantSession) {
@@ -1280,7 +1284,7 @@ function MobileCaptureInner() {
     albumsRef.current = [...albumsRef.current, newAlbum];
     setAlbums(prev => prev.some(a => a.bookingId === booking.id) ? prev : [...prev, newAlbum]);
     return newAlbum;
-  }, [tenantSession]);
+  }, [tenantSession, tenantSettings]);
 
   const selectBooking = useCallback((booking: Booking) => {
     setSelectedBooking(booking);

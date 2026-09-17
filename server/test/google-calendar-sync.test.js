@@ -29,7 +29,7 @@ test("Calendar ownership follows events and deletion fails closed when cleanup f
   assert.match(indexSource, /gcalCalendarId/);
   assert.match(indexSource, /booking\.gcalCalendarId !== connection\.calendarId/);
   assert.match(indexSource, /CALENDAR_CLEANUP_FAILED/);
-  assert.match(indexSource, /persistBookingCalendarEventLink\(booking\.id, eventId, connection\.calendarId\)/);
+  assert.match(indexSource, /persistBookingCalendarEventLink\(booking\.id, eventId, connection\.calendarId, booking\.tenantSlug \|\| null\)/);
   assert.match(calendarSource, /saveGcalEventId\(booking\.id, eventId, calId\)/);
   assert.match(indexSource, /Google Calendar must be reconnected before this booking event can be removed/);
 });

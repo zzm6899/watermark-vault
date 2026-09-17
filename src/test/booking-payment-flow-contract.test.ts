@@ -23,7 +23,9 @@ describe("booking payment flow regressions", () => {
 
     expect(captureSource).toContain('const CAPTURE_TARGET_KEY = "cameraCaptureTarget:v1"');
     expect(captureSource).toContain("CameraFtp.listFiles({ limit: 500 })");
-    expect(captureSource).toContain("Photos waiting");
+    expect(captureSource).toContain("Photos held locally");
+    expect(captureSource).toContain("activeAlbum && newlyReceived");
+    expect(captureSource).toContain("captureAlbum(destinations[path], tenantSession?.slug || null)");
     expect(captureSource).toContain("Upload destination");
     expect(captureSource).toContain("New FTP and USB photos upload straight to this booking album for preview.");
     expect(pluginSource).toContain("fun listFiles(call: PluginCall)");

@@ -800,7 +800,7 @@ export default function AlbumDetail() {
     if (lightboxPhotoId === null) return;
     const handler = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
-      if (target?.closest("input, textarea, select, [contenteditable=true]") || e.ctrlKey || e.metaKey || e.altKey) return;
+      if (target instanceof Element && target.closest("input, textarea, select, [contenteditable=true]") || e.ctrlKey || e.metaKey || e.altKey) return;
       const lbPhotos = displayedPhotosRef.current;
       const currentIdx = lbPhotos.findIndex((p: any) => p.id === lightboxPhotoId);
       if (e.key === "Escape") { e.preventDefault(); setLightboxPhotoId(null); setLbZoom(1); setLbPan({ x: 0, y: 0 }); }

@@ -9775,7 +9775,7 @@ function SettingsView() {
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-      <h2 className="font-display text-2xl text-foreground mb-4">Settings</h2>
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-2"><h2 className="font-display text-2xl text-foreground">Settings</h2><p className="text-xs text-muted-foreground" aria-label="Application version">Version {__APP_VERSION__} <span className="mx-1">/</span> Build {__BUILD_REVISION__}</p></div>
       {/* Tab navigation */}
       <div className="flex items-center gap-1 flex-wrap mb-6 pb-2 border-b border-border/40">
         {(([

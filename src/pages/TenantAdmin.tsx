@@ -1,4 +1,5 @@
 import LinkedText from "@/components/LinkedText";
+import { Capacitor } from "@capacitor/core";
 import { buildClientEmail, buildGalleryStatusEmail } from "@/lib/client-email";
 import { buildProofingEmail, proofingEmailSubject } from "@/lib/proofing-email";
 import DownloadRequestInbox from "@/components/DownloadRequestInbox";
@@ -42,6 +43,7 @@ import {
   testTenantFtpConnection,
   submitEventSlotRequest, getTenantEventSlotRequest, ftpUploadAlbum, ftpMoveToStarred,
   generateTenantIcalToken, deleteTenantIcalToken,
+  NATIVE_API_ORIGIN,
 } from "@/lib/api";
 import ProgressiveImg from "@/components/ProgressiveImg";
 import RichTextEditor from "@/components/RichTextEditor";
@@ -63,6 +65,7 @@ type SortDir = "asc" | "desc";
 type BookingSortKey = "date" | "name" | "type" | "status" | "payment" | "booked";
 
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const tenantPublicOrigin = () => Capacitor.isNativePlatform() ? NATIVE_API_ORIGIN : window.location.origin;
 
 function generateId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
@@ -875,7 +878,7 @@ function TenantBookings({ slug }: { slug: string }) {
                           if (!ok) { toast.error("Failed to generate booking link"); return; }
                           setBookings(prev => prev.map(b => b.id === bk.id ? { ...b, modifyToken: token! } : b));
                         }
-                        navigator.clipboard.writeText(`${window.location.origin}/booking/modify/${token}`)
+                        navigator.clipboard.writeText(`${tenantPublicOrigin()}/booking/modify/${token}`)
                           .then(() => toast.success("Booking link copied to clipboard"))
                           .catch(() => toast.error("Failed to copy link"));
                       }}
@@ -3433,7 +3436,7 @@ function TenantInvoices({ slug, session }: { slug: string; session: { displayNam
                   <button onClick={() => handleMarkPaid(inv)} className="px-2 py-1 text-xs font-body rounded bg-green-500/10 text-green-400 hover:bg-green-500/20 transition-colors">Paid</button>
                 )}
                 <button onClick={() => setEditing({ ...inv })} className="p-1.5 rounded hover:bg-secondary text-muted-foreground/60 hover:text-foreground transition-colors"><Edit className="w-3.5 h-3.5" /></button>
-                <button onClick={() => { navigator.clipboard.writeText(`${window.location.origin}/invoice/${inv.shareToken}`).then(() => toast.success("Invoice link copied")).catch(() => {}); }} className="p-1.5 rounded hover:bg-secondary text-muted-foreground/60 hover:text-foreground transition-colors"><Copy className="w-3.5 h-3.5" /></button>
+                <button onClick={() => { navigator.clipboard.writeText(`${tenantPublicOrigin()}/invoice/${inv.shareToken}`).then(() => toast.success("Invoice link copied")).catch(() => {}); }} className="p-1.5 rounded hover:bg-secondary text-muted-foreground/60 hover:text-foreground transition-colors"><Copy className="w-3.5 h-3.5" /></button>
                 <button onClick={() => handleDelete(inv.id)} className="p-1.5 rounded hover:bg-red-500/10 text-muted-foreground/60 hover:text-red-400 transition-colors"><Trash2 className="w-3.5 h-3.5" /></button>
               </div>
             </div>
@@ -3696,7 +3699,7 @@ function TenantProfileView({ slug, session }: { slug: string; session: MobileTen
           </div>
           <div className="p-3 rounded-lg bg-secondary/50 border border-border/50">
             <p className="text-xs font-body text-muted-foreground">Booking page URL:</p>
-            <a href={`/book/${slug}`} target="_blank" rel="noopener noreferrer" className="text-sm font-body text-primary hover:underline">{window.location.origin}/book/{slug}</a>
+            <a href={`${tenantPublicOrigin()}/book/${encodeURIComponent(slug)}`} target="_blank" rel="noopener noreferrer" className="text-sm font-body text-primary hover:underline">{tenantPublicOrigin()}/book/{slug}</a>
             {customDomain && (
               <div className="mt-2 pt-2 border-t border-border/30">
                 <p className="text-xs font-body text-muted-foreground">Custom domain:</p>
@@ -3779,6 +3782,7 @@ function TenantWatermarkPreview({ settings }: { settings: TenantSettings }) {
 }
 
 function TenantSettingsView({ slug }: { slug: string }) {
+  const publicOrigin = tenantPublicOrigin();
   const navigate = useNavigate();
   const [settings, setSettings] = useState<TenantSettings>({});
   const [loading, setLoading] = useState(true);
@@ -3828,6 +3832,8 @@ function TenantSettingsView({ slug }: { slug: string }) {
     const { ok, error } = await saveTenantSettings(slug, settings);
     setSaving(false);
     if (!ok) { toast.error(error || "Failed to save"); return; }
+    setSettings(await getTenantSettings(slug));
+    if (activeSection === "integrations") setGcalStatus(await getTenantGoogleCalendarStatus(slug));
     toast.success("Settings saved");
   };
 
@@ -3878,7 +3884,8 @@ function TenantSettingsView({ slug }: { slug: string }) {
   const handleGcalConnect = async () => {
     // First save the credentials if they've been changed (new value entered)
     if (settings.googleApiCredentials) {
-      await saveTenantSettings(slug, settings);
+      const result = await saveTenantSettings(slug, settings);
+      if (!result.ok) { toast.error(result.error || "Could not save Google credentials"); return; }
     }
     const url = await startTenantGoogleCalendarAuth(slug);
     if (url) {
@@ -3890,7 +3897,7 @@ function TenantSettingsView({ slug }: { slug: string }) {
 
   const handleGcalDisconnect = async () => {
     if (!confirm("Disconnect Google Calendar?")) return;
-    await disconnectTenantGoogleCalendar(slug);
+    if (!await disconnectTenantGoogleCalendar(slug)) { toast.error("Could not disconnect Google Calendar"); return; }
     setGcalStatus(s => s ? { ...s, connected: false, email: null } : s);
     setGcalCalendars([]);
     toast.success("Google Calendar disconnected");
@@ -3898,8 +3905,9 @@ function TenantSettingsView({ slug }: { slug: string }) {
 
   const handleGcalSaveSettings = async () => {
     setGcalSaving(true);
-    await saveTenantCalendarSettings(slug, { calendarId: gcalCalendarId });
+    const result = await saveTenantCalendarSettings(slug, { calendarId: gcalCalendarId });
     setGcalSaving(false);
+    if (!result.ok) { toast.error("Could not save calendar settings"); return; }
     toast.success("Calendar settings saved");
   };
 
@@ -3999,6 +4007,30 @@ function TenantSettingsView({ slug }: { slug: string }) {
             <h3 className="font-display text-base text-foreground flex items-center gap-2">
               <Calendar className="w-4 h-4 text-primary" /> Booking Settings
             </h3>
+            <p className="text-xs text-muted-foreground">Customise your client booking page. Service descriptions, pricing and questions are managed in Events.</p>
+            <div>
+              <label htmlFor="tenant-booking-title" className="text-xs font-body text-muted-foreground mb-1.5 block">Page heading</label>
+              <Input id="tenant-booking-title" maxLength={120} value={settings.bookingPageTitle || ""} onChange={e => set({ bookingPageTitle: e.target.value })} placeholder="Book a session" />
+            </div>
+            <div>
+              <label htmlFor="tenant-booking-intro" className="text-xs font-body text-muted-foreground mb-1.5 block">Welcome message</label>
+              <Textarea id="tenant-booking-intro" maxLength={1000} value={settings.bookingPageIntro || ""} onChange={e => set({ bookingPageIntro: e.target.value })} placeholder="Choose a session type to get started." />
+            </div>
+            <div>
+              <label htmlFor="tenant-booking-confirmation" className="text-xs font-body text-muted-foreground mb-1.5 block">Message after submission</label>
+              <Textarea id="tenant-booking-confirmation" maxLength={1000} value={settings.bookingConfirmationMessage || ""} onChange={e => set({ bookingConfirmationMessage: e.target.value })} placeholder="What clients should bring, arrival instructions or next steps" />
+              <p className="text-xs text-muted-foreground mt-1">Shown alongside the booking status, including requests awaiting payment or approval.</p>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <label htmlFor="tenant-booking-bio" className="text-xs font-body text-muted-foreground">Show profile bio on booking page</label>
+              <Switch id="tenant-booking-bio" checked={settings.bookingShowBio !== false} onCheckedChange={v => set({ bookingShowBio: v })} />
+            </div>
+            <div className="flex items-center gap-3">
+              <label htmlFor="tenant-brand-color" className="text-xs font-body text-muted-foreground">Booking accent colour</label>
+              <input id="tenant-brand-color" type="color" value={/^#[\da-f]{6}$/i.test(settings.brandColor || "") ? settings.brandColor : "#6366f1"} onChange={e => set({ brandColor: e.target.value })} className="h-9 w-12 rounded border border-border bg-background" />
+              <Button type="button" variant="ghost" size="sm" onClick={() => set({ brandColor: "" })}>Reset</Button>
+            </div>
+            <a href={`${publicOrigin}/book/${encodeURIComponent(slug)}`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 text-xs text-primary underline">Preview saved booking page <ExternalLink className="size-3" /></a>
             <div>
               <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Booking Timer (minutes)</label>
               <Input type="number" value={settings.bookingTimerMinutes ?? 15} onChange={e => set({ bookingTimerMinutes: Number(e.target.value) })} className="bg-background border-border text-foreground font-body w-32" />
@@ -4104,7 +4136,18 @@ function TenantSettingsView({ slug }: { slug: string }) {
                   <button onClick={() => set({ stripeWebhookSecret: "" })} className="text-[10px] font-body text-destructive hover:text-destructive/80 px-2 shrink-0">Clear</button>
                 )}
               </div>
-              <p className="text-[10px] font-body text-muted-foreground mt-1">Webhook URL: <code className="bg-secondary px-1 rounded text-[10px]">/api/tenant/{slug}/stripe/webhook</code></p>
+              <p className="text-xs font-body text-muted-foreground mt-1 break-all">Webhook URL: <code className="bg-secondary px-1 rounded">{publicOrigin}/api/tenant/{encodeURIComponent(slug)}/stripe/webhook</code></p>
+              <details className="mt-3 text-xs text-muted-foreground">
+                <summary className="cursor-pointer text-foreground">Stripe setup steps</summary>
+                <ol className="list-decimal pl-5 mt-2 space-y-2">
+                  <li>In your own Stripe account, copy a matching publishable key and secret key. Start with test mode and paste them above.</li>
+                  <li>Create a webhook endpoint using the full URL above and subscribe to <code>checkout.session.completed</code>.</li>
+                  <li>Copy that endpoint’s signing secret (<code>whsec_…</code>) into Webhook Secret, enable Stripe and save payment settings.</li>
+                  <li>Complete a test booking from your booking page. Confirm the payment appears on your booking and Stripe shows successful webhook delivery.</li>
+                  <li>When ready, replace both keys with live keys and create the live webhook. Its signing secret is different from the test secret.</li>
+                </ol>
+                <a href="https://docs.stripe.com/webhooks" target="_blank" rel="noreferrer" className="mt-2 inline-block underline text-primary">Stripe webhook documentation</a>
+              </details>
             </div>
             <div><label className="text-xs font-body text-muted-foreground mb-1 block">Currency</label>
               <Input value={settings.stripeCurrency || ""} onChange={e => set({ stripeCurrency: e.target.value.toLowerCase() })} placeholder="aud" maxLength={3} className="bg-background border-border text-foreground font-body text-xs font-mono w-24" /></div>
@@ -4150,6 +4193,15 @@ function TenantSettingsView({ slug }: { slug: string }) {
                 )}
               </div>
               <p className="text-[10px] font-body text-muted-foreground mt-1">Your booking notifications will be sent to this webhook.</p>
+              <details className="text-xs text-muted-foreground mt-3">
+                <summary className="cursor-pointer text-foreground">Discord setup steps</summary>
+                <ol className="list-decimal pl-5 mt-2 space-y-2">
+                  <li>In your Discord server, open Server Settings → Integrations → Webhooks and create a webhook for your chosen channel.</li>
+                  <li>Copy its webhook URL here, choose the notifications below, and save notification settings.</li>
+                  <li>Create a test booking on your booking page and verify it appears in that channel.</li>
+                </ol>
+                <a href="https://support.discord.com/hc/en-us/articles/228383668-Intro-to-Webhooks" target="_blank" rel="noreferrer" className="mt-2 inline-block underline text-primary">Discord webhook documentation</a>
+              </details>
             </div>
             <div className="flex flex-wrap gap-4">
               {([{ key: "discordNotifyBookings", label: "Bookings" }, { key: "discordNotifyDownloads", label: "Downloads" }, { key: "discordNotifyProofing", label: "Proofing" }] as { key: keyof TenantSettings; label: string }[]).map(({ key, label }) => (
@@ -4164,6 +4216,14 @@ function TenantSettingsView({ slug }: { slug: string }) {
           {/* SMTP */}
           <div className="space-y-3 p-4 rounded-lg bg-secondary/40 border border-border/50">
             <span className="text-xs font-body tracking-wider uppercase text-muted-foreground">Email SMTP</span>
+            <details className="text-xs text-muted-foreground">
+              <summary className="cursor-pointer text-foreground">Email setup steps</summary>
+              <ol className="list-decimal pl-5 mt-2 space-y-2">
+                <li>Use the SMTP host, port and credentials supplied by your email provider, including an app password if required.</li>
+                <li>Use port 465 with the TLS switch enabled, or port 587 with it disabled for STARTTLS. Set a From address authorised by your provider.</li>
+                <li>Save notification settings, then send a gallery email to your own address. Check the inbox and spam folder before emailing clients.</li>
+              </ol>
+            </details>
             <p className="text-[10px] font-body text-muted-foreground -mt-1">Booking confirmation emails will be sent from your email server.</p>
             <div className="grid grid-cols-2 gap-3">
               <div><label className="text-xs font-body text-muted-foreground mb-1 block">SMTP Host</label><Input value={settings.smtpHost || ""} onChange={e => set({ smtpHost: e.target.value })} placeholder="smtp.gmail.com" className="bg-background border-border text-foreground font-body text-xs" /></div>
@@ -4347,6 +4407,16 @@ function TenantSettingsView({ slug }: { slug: string }) {
               <Calendar className="w-4 h-4 text-primary" />
               <span className="text-xs font-body tracking-wider uppercase text-muted-foreground">Google Calendar</span>
             </div>
+            <details className="text-xs text-muted-foreground">
+              <summary className="cursor-pointer text-foreground">Google Calendar setup steps</summary>
+              <ol className="list-decimal pl-5 mt-2 space-y-2">
+                <li>In Google Cloud, enable the Google Calendar API, configure the OAuth consent screen and create a Web application OAuth client.</li>
+                <li>Add the exact redirect URI below to that OAuth client. Download its credentials JSON and paste it here, then save credentials.</li>
+                <li>Connect Google Calendar using your own Google account, grant access, select your target calendar and save it.</li>
+                <li>Create a test booking and confirm it appears in your chosen calendar. If your Google app is in testing, add your account as a test user.</li>
+              </ol>
+              <a href="https://developers.google.com/identity/protocols/oauth2/web-server" target="_blank" rel="noreferrer" className="mt-2 inline-block underline text-primary">Google OAuth documentation</a>
+            </details>
 
             <div className="space-y-2">
               <div className="flex items-center justify-between">
@@ -4368,7 +4438,7 @@ function TenantSettingsView({ slug }: { slug: string }) {
                 Paste the JSON from your Google Cloud Console OAuth2 client (Web application type).
                 Set the redirect URI to:{" "}
                 <code className="bg-secondary px-1 rounded text-[10px] break-all">
-                  {window.location.origin}/api/tenant/{slug}/integrations/googlecalendar/callback
+                  {publicOrigin}/api/tenant/{encodeURIComponent(slug)}/integrations/googlecalendar/callback
                 </code>
               </p>
             </div>
@@ -4434,14 +4504,14 @@ function TenantSettingsView({ slug }: { slug: string }) {
               <div className="space-y-2">
                 <div className="flex items-center gap-2 p-2.5 bg-background rounded-lg border border-border overflow-hidden">
                   <code className="text-[10px] font-mono text-muted-foreground truncate flex-1">
-                    {`${window.location.origin}/api/ical/${settings.icalToken}`}
+                    {`${publicOrigin}/api/ical/${settings.icalToken}`}
                   </code>
                   <Button
                     variant="ghost"
                     size="icon"
                     className="h-6 w-6 shrink-0"
                     onClick={() => {
-                      navigator.clipboard.writeText(`${window.location.origin}/api/ical/${settings.icalToken}`);
+                      navigator.clipboard.writeText(`${publicOrigin}/api/ical/${settings.icalToken}`);
                       toast.success("Feed URL copied!");
                     }}
                   >
