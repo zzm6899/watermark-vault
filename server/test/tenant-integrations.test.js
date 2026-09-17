@@ -7,6 +7,22 @@ const stripe = require("stripe")("sk_test_local");
 const { registerTenantStripeRoutes, tenantStripeReady } = require("../stripe");
 const { buildTenantTransporter, getTenantFromAddress, sendBookingConfirmationEmail, sendBookingUpdateEmail } = require("../email");
 
+test("tenant booking capabilities cannot trigger an admin SMTP confirmation", async t => {
+  const app = express();
+  app.use(express.json());
+  require("../email").registerRoutes(app, { get: () => [{ id: "tenant-booking", tenantSlug: "a", modifyToken: "tenant-capability" }] }, {
+    requireAuth: (_req, res) => res.sendStatus(401),
+  });
+  const server = app.listen(0, "127.0.0.1");
+  await new Promise(resolve => server.once("listening", resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const response = await fetch(`http://127.0.0.1:${server.address().port}/api/email/booking-confirmation`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ bookingId: "tenant-booking", modifyToken: "tenant-capability" }),
+  });
+  assert.equal(response.status, 401);
+});
+
 test("tenant email credentials and missing transport never inherit the platform sender", async t => {
   const platform = { EMAIL_FROM: "platform@example.test", EMAIL_SERVER_HOST: "127.0.0.1", EMAIL_SERVER_USER: "platform", EMAIL_SERVER_PASSWORD: "platform-password" };
   const previous = Object.fromEntries(Object.keys(platform).map(key => [key, process.env[key]]));

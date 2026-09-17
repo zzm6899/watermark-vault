@@ -12493,7 +12493,7 @@ function GoogleCalendarSection() {
 
   const handleSyncAll = async () => {
     setSyncing(true);
-    const bookings = getBookings().filter(booking => booking.archived !== true);
+    const bookings = getBookings().filter(booking => !booking.tenantSlug && booking.archived !== true);
     const result = await syncAllBookingsToCalendar(bookings, selectedCalendar);
     setSyncing(false);
     if (result.ok) {

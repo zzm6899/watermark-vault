@@ -72,6 +72,11 @@ function saveCalSettings(s) {
 }
 
 // ── Persist the Google event ownership link ─────────────────
+function mainBookings() {
+  const raw = sharedReadDb?.().wv_bookings;
+  return (Array.isArray(raw) ? raw : (raw ? JSON.parse(raw) : [])).filter(booking => !booking.tenantSlug);
+}
+
 function saveGcalEventId(bookingId, gcalEventId, gcalCalendarId) {
   if (!bookingId || !gcalEventId) return;
   try {
@@ -79,7 +84,7 @@ function saveGcalEventId(bookingId, gcalEventId, gcalCalendarId) {
     const db = sharedReadDb();
     const raw = db.wv_bookings;
     const bookings = Array.isArray(raw) ? raw : (raw ? JSON.parse(raw) : []);
-    const idx = bookings.findIndex(b => b.id === bookingId);
+    const idx = bookings.findIndex(b => !b.tenantSlug && b.id === bookingId);
     if (idx >= 0 && (bookings[idx].gcalEventId !== gcalEventId || bookings[idx].gcalCalendarId !== gcalCalendarId)) {
       bookings[idx].gcalEventId = gcalEventId;
       bookings[idx].gcalCalendarId = gcalCalendarId;
@@ -243,7 +248,8 @@ function registerRoutes(app, options = {}) {
     const auth = getAuthenticatedClient();
     if (!auth) return res.status(401).json({ error: "Not connected" });
 
-    const { booking, calendarId } = req.body;
+    const { calendarId } = req.body;
+    const booking = mainBookings().find(item => item.id === req.body.booking?.id);
     if (!booking) return res.status(400).json({ error: "Missing booking" });
 
     const calId = calendarId || loadCalSettings().calendarId || "primary";
@@ -296,10 +302,12 @@ function registerRoutes(app, options = {}) {
   app.put("/api/integrations/googlecalendar/event/:eventId", requireAuth, async (req, res) => {
     const auth = getAuthenticatedClient();
     if (!auth) return res.status(401).json({ error: "Not connected" });
+    const booking = mainBookings().find(item => item.id === req.body.booking?.id && item.gcalEventId === req.params.eventId);
+    if (!booking) return res.status(404).json({ error: "Booking not found" });
     const calId = req.body.calendarId || loadCalSettings().calendarId || "primary";
     try {
       const { data } = await google.calendar({ version: "v3", auth }).events.update({
-        calendarId: calId, eventId: req.params.eventId, requestBody: buildEvent(req.body.booking),
+        calendarId: calId, eventId: req.params.eventId, requestBody: buildEvent(booking),
       });
       res.json({ ok: true, eventId: data.id });
     } catch (err) { res.status(500).json({ error: err.message }); }
@@ -330,8 +338,10 @@ function registerRoutes(app, options = {}) {
     const auth = getAuthenticatedClient();
     if (!auth) return res.status(401).json({ error: "Not connected" });
 
-    const { bookings, calendarId } = req.body;
-    if (!Array.isArray(bookings)) return res.status(400).json({ error: "Missing bookings" });
+    const { calendarId } = req.body;
+    if (!Array.isArray(req.body.bookings)) return res.status(400).json({ error: "Missing bookings" });
+    const requestedIds = new Set(req.body.bookings.map(booking => booking?.id));
+    const bookings = mainBookings().filter(booking => requestedIds.has(booking.id));
 
     const calId = calendarId || loadCalSettings().calendarId || "primary";
     const cal   = google.calendar({ version: "v3", auth });

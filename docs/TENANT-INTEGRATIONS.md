@@ -2,6 +2,8 @@
 
 Use `/tenant-admin/YOUR-SLUG` and that tenant's Settings. Replace `https://your-domain.com` below with the public HTTPS application origin. Repeat setup independently for each tenant; platform credentials do not configure tenant payments, email, Discord, or Google Calendar.
 
+Google, Stripe, and SMTP credentials configured in the TrueNAS app environment belong only to the main admin. Tenant bookings must not use them, including admin email automation and bulk calendar sync. A tenant with missing credentials must configure its own integration; there is no admin credential fallback.
+
 ## Stripe
 
 1. Open the intended tenant's Stripe account in test mode. Copy its publishable (`pk_test_…`) and secret (`sk_test_…`) API keys into the tenant's Stripe settings, enable Stripe, and select the currency (AUD for Australian dollars).

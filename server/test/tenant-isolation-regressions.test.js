@@ -6,6 +6,39 @@ const path = require('node:path');
 const source = fs.readFileSync(require.resolve('../index.js'), 'utf8');
 const dbGet = (db, key, fallback) => typeof db[key] === 'string' ? JSON.parse(db[key]) : db[key] || fallback;
 
+test('admin SMTP automations exclude tenant bookings from the shared booking store', () => {
+  const bookings = [{ id: 'main' }, { id: 'a', tenantSlug: 'a' }, { id: 'b', tenantSlug: 'b' }];
+  let raw = bookings;
+  const code = source.slice(source.indexOf('function readAutomationBookings()'), source.indexOf('function buildAutomationPreview('));
+  const read = vm.runInNewContext(code + ';readAutomationBookings', { readDb: () => ({ wv_bookings: raw }) });
+  assert.deepEqual(Array.from(read(), booking => booking.id), ['main']);
+  raw = JSON.stringify(bookings);
+  assert.deepEqual(Array.from(read(), booking => booking.id), ['main']);
+});
+
+test('admin Google credentials cannot sync or persist tenant booking events', async () => {
+  const calendarSource = fs.readFileSync(require.resolve('../google-calendar.js'), 'utf8');
+  const db = { wv_bookings: [{ id: 'main' }, { id: 'tenant', tenantSlug: 'a' }] };
+  const code = calendarSource.slice(calendarSource.indexOf('function mainBookings()'), calendarSource.indexOf('// ── Event builder'));
+  const context = { sharedReadDb: () => db, sharedWriteDb: () => { throw new Error('Tenant record must not change'); }, console };
+  vm.createContext(context);
+  vm.runInContext(code, context);
+  assert.deepEqual(Array.from(context.mainBookings(), booking => booking.id), ['main']);
+  context.saveGcalEventId('tenant', 'admin-event', 'admin-calendar');
+  assert.equal(db.wv_bookings[1].gcalEventId, undefined);
+  let handler;
+  const start = calendarSource.indexOf('  app.post("/api/integrations/googlecalendar/event"');
+  const end = calendarSource.indexOf('// ── PUSH: Update existing event', start);
+  vm.runInNewContext(calendarSource.slice(start, end), {
+    app: { post: (_path, _auth, fn) => { handler = fn; } }, requireAuth: {},
+    getAuthenticatedClient: () => ({}), mainBookings: context.mainBookings,
+    google: { calendar: () => { throw new Error('Tenant must not contact admin Google'); } },
+  });
+  const res = { status(code) { this.statusCode = code; return this; }, json(body) { this.body = body; return this; } };
+  await handler({ body: { booking: { id: 'tenant' } } }, res);
+  assert.equal(res.statusCode, 400);
+});
+
 test('tenant watermarks never inherit another studio or admin watermark', () => {
   const db = { wv_settings: { watermarkText: 'ADMIN', watermarkImage: 'private-admin-image', watermarkOpacity: 90 }, t_a_wv_tenant_settings: { watermarkText: 'Studio A' }, t_b_wv_tenant_settings: { watermarkText: 'Studio B', watermarkOpacity: 0 } };
   const code = source.slice(source.indexOf('function getWatermarkSettings('), source.indexOf('async function buildWatermarkOverlay'));

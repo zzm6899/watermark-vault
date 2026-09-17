@@ -10284,9 +10284,10 @@ function normalizeAutomationRule(rule = {}) {
 function readAutomationBookings() {
   const db = readDb();
   const bookingsRaw = db["wv_bookings"];
-  return bookingsRaw
+  const bookings = bookingsRaw
     ? (typeof bookingsRaw === "string" ? JSON.parse(bookingsRaw) : bookingsRaw)
     : [];
+  return bookings.filter(booking => !booking.tenantSlug);
 }
 
 function buildAutomationPreview(rule, now = Date.now()) {

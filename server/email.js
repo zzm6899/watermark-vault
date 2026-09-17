@@ -471,7 +471,7 @@ function registerRoutes(app, store, options = {}) {
   // Called by frontend after bank transfer or by Stripe webhook after card payment
   app.post("/api/email/booking-confirmation", bookingConfirmationLimiter, async (req, res) => {
     const bookings = store?.get("wv_bookings") || [];
-    const booking = bookings.find(item => item.id === req.body?.bookingId && timingSafeTextEqual(item.modifyToken, req.body?.modifyToken));
+    const booking = bookings.find(item => !item.tenantSlug && item.id === req.body?.bookingId && timingSafeTextEqual(item.modifyToken, req.body?.modifyToken));
     if (!booking) return res.status(401).json({ ok: false, error: "A valid booking capability is required" });
     const configuredBaseUrl = String(process.env.APP_BASE_URL || "").trim().replace(/\/$/, "");
     const appHost = String(process.env.APP_HOSTS || "book.zacmclients.photos").split(",")[0].trim();
