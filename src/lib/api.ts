@@ -662,6 +662,7 @@ export async function uploadPhotosToServer(
   autoEdit = false,
   autoEditStrength: "subtle" | "balanced" | "strong" = "balanced",
   autoEditProfile?: string,
+  onFileUploaded?: (file: File, result: UploadedPhotoResult) => void,
 ): Promise<UploadedPhotoResult[]> {
   if (!(await checkServer())) return [];
   // Proofs should reach the client first. Keep RAW/large source files queued
@@ -691,7 +692,9 @@ export async function uploadPhotosToServer(
   // Keep requests bounded by both file count and payload size. This preserves
   // JPEG throughput while avoiding large multipart bodies that consume memory
   // and make a retry repeat several already-transferred files.
-  const maxBatchFiles = 5;
+  // Recovery callers need an exact File acknowledgement, even for duplicate
+  // filenames. Single-file requests preserve that identity with concurrent workers.
+  const maxBatchFiles = onFileUploaded ? 1 : 5;
   const maxBatchBytes = 24 * 1024 * 1024;
   const batches: File[][] = [];
   let currentBatch: File[] = [];
@@ -756,13 +759,17 @@ export async function uploadPhotosToServer(
   };
 
   // Worker that keeps consuming batches until they're all dispatched
+  let stopped = false;
   const runWorker = async () => {
-    while (batchIndex < batches.length) {
+    while (!stopped && batchIndex < batches.length) {
       const idx = batchIndex++;
       const batch = batches[idx];
       const batchBytes = batch.reduce((sum, f) => sum + f.size, 0);
-      const uploaded = await uploadBatchWithRetry(batch);
+      let uploaded: UploadedPhotoResult[];
+      try { uploaded = await uploadBatchWithRetry(batch); }
+      catch (error) { stopped = true; throw error; }
       results.push(...uploaded);
+      if (onFileUploaded && uploaded[0]) onFileUploaded(batch[0], uploaded[0]);
       done += batch.length;
       doneBytes += batchBytes;
       const elapsedSec = (Date.now() - startTime) / 1000;
@@ -776,7 +783,9 @@ export async function uploadPhotosToServer(
     { length: Math.min(concurrency, batches.length) },
     () => runWorker(),
   );
-  await Promise.all(workers);
+  const outcomes = await Promise.allSettled(workers);
+  const failed = outcomes.find(outcome => outcome.status === "rejected");
+  if (failed?.status === "rejected") throw failed.reason;
 
   return results;
 }

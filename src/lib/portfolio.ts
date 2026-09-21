@@ -102,6 +102,7 @@ export type PortfolioSite = {
   footerTitle: string;
   enquiryEventTypes: string[];
   webhookUrl?: string;
+  webhookUrlSet?: boolean;
   updatedAt?: string;
 };
 

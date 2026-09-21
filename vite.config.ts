@@ -27,9 +27,7 @@ export default defineConfig(({ mode }) => ({
     dedupe: ["react", "react-dom"],
   },
   build: {
-    // Admin is now split at feature boundaries (payments, portfolio, imports,
-    // ZIP operations). Keep the remaining workspace shell under a deliberate
-    // 600 kB ceiling while those routes continue to be extracted incrementally.
+    // Keep feature workspaces lazy-loaded instead of raising the chunk warning threshold.
     chunkSizeWarningLimit: 500,
     rollupOptions: {
       output: {

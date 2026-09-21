@@ -63,7 +63,7 @@ describe("public document API contracts", () => {
   });
 
   it("keeps licence plans one-time and disables unbound payment checkout", () => {
-    const source = readFileSync(join(process.cwd(), "src/pages/Admin.tsx"), "utf8");
+    const source = readFileSync(join(process.cwd(), "src/pages/admin/PlatformView.tsx"), "utf8");
     const tenantSource = readFileSync(join(process.cwd(), "src/pages/TenantAdmin.tsx"), "utf8");
     const apiSource = readFileSync(join(process.cwd(), "src/lib/api.ts"), "utf8");
     expect(source).toContain('type: "one-time"');

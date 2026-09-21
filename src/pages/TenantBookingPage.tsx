@@ -1,4 +1,6 @@
 import "@/styles/booking.css";
+import { nextBookingDate } from "@/lib/booking-utils";
+import { useBookingDraft } from "@/hooks/use-booking-draft";
 import { bookingQuote, sessionPrice } from "@/lib/booking-pricing";
 import { BookingExtras, BookingPriceBreakdown } from "@/components/BookingExtras";
 import { useState, useEffect, useMemo, useRef } from "react";
@@ -220,7 +222,6 @@ function TenantBookingContent({ tenantSlug, embedded }: { tenantSlug?: string; e
   const [step, setStep] = useState<Step>("event-select");
   const [selectedEvent, setSelectedEvent] = useState<EventType | null>(null);
   const [extraQuantities, setExtraQuantities] = useState<Record<string, number>>({});
-  useEffect(() => { setExtraQuantities({}); }, [selectedEvent?.id]);
   const [selectedDuration, setSelectedDuration] = useState<number | null>(null);
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
   const [selectedTime, setSelectedTime] = useState<string | null>(null);
@@ -233,6 +234,10 @@ function TenantBookingContent({ tenantSlug, embedded }: { tenantSlug?: string; e
     const now = new Date();
     return new Date(now.getFullYear(), now.getMonth());
   });
+
+  useEffect(() => {
+    if (selectedDate) setCurrentMonth(new Date(selectedDate.getFullYear(), selectedDate.getMonth()));
+  }, [selectedDate]);
 
   // Contact form
   const [name, setName] = useState("");
@@ -250,6 +255,21 @@ function TenantBookingContent({ tenantSlug, embedded }: { tenantSlug?: string; e
   const [paymentPath, setPaymentPath] = useState<TenantPaymentPath | null>(null);
   const [processingCheckout, setProcessingCheckout] = useState(false);
   const [checkoutError, setCheckoutError] = useState<string | null>(null);
+  const clearDraft = useBookingDraft({
+    scope: `tenant:${tenantSlug}`, ready: !loading && !notFound, completed: !!submittedBooking, events: eventTypes,
+    draft: selectedEvent ? { eventId: selectedEvent.id, duration: selectedDuration, date: selectedDate ? toDateStr(selectedDate) : null, name, email, phone, answers: customAnswers, extras: extraQuantities, notes, cosplayCharacter, cosplayCostume, conventionName } : null,
+    onRestore: (draft, event) => {
+      setSelectedEvent(event); setSelectedDuration(draft.duration); setExtraQuantities(draft.extras);
+      setName(draft.name); setEmail(draft.email); setPhone(draft.phone); setCustomAnswers(draft.answers);
+      setNotes(draft.notes || ""); setCosplayCharacter(draft.cosplayCharacter || ""); setCosplayCostume(draft.cosplayCostume || ""); setConventionName(draft.conventionName || "");
+      const date = nextBookingDate(event, availabilityTimezone);
+      setSelectedDate(date);
+      if (date) setCurrentMonth(new Date(date.getFullYear(), date.getMonth()));
+      setSelectedTime(null); setStep("datetime");
+      toast.info("Booking details restored. Choose a time again; current prices apply.");
+    },
+  });
+
 
   // Enquiry form
   const [enquiryEventId, setEnquiryEventId] = useState("");
@@ -387,19 +407,10 @@ function TenantBookingContent({ tenantSlug, embedded }: { tenantSlug?: string; e
 
   const handleNextAvailableMonth = () => {
     if (!selectedEvent) return;
-    let searchYear = year;
-    let searchMonth = month + 1;
-    for (let i = 0; i < 24; i++) {
-      if (searchMonth > 11) { searchMonth = 0; searchYear++; }
-      const daysInSearch = new Date(searchYear, searchMonth + 1, 0).getDate();
-      for (let d = 1; d <= daysInSearch; d++) {
-        const date = new Date(searchYear, searchMonth, d);
-        if (!isPastBookingDate(toDateStr(date), availabilityTimezone) && isDayAvailable(selectedEvent, date)) {
-          setCurrentMonth(new Date(searchYear, searchMonth));
-          return;
-        }
-      }
-      searchMonth++;
+    const date = nextBookingDate(selectedEvent, availabilityTimezone, new Date(year, month + 1));
+    if (date) {
+      setSelectedDate(date); setCurrentMonth(new Date(date.getFullYear(), date.getMonth()));
+      setSelectedTime(null);
     }
   };
 
@@ -440,8 +451,9 @@ function TenantBookingContent({ tenantSlug, embedded }: { tenantSlug?: string; e
 
   const handleSelectEvent = (et: EventType) => {
     setSelectedEvent(et);
+    setExtraQuantities({});
     setSelectedDuration(et.durations[0] ?? 60);
-    setSelectedDate(null);
+    setSelectedDate(nextBookingDate(et, availabilityTimezone));
     setSelectedTime(null);
     setCustomAnswers({});
     setSubmittedBooking(null);
@@ -558,7 +570,7 @@ function TenantBookingContent({ tenantSlug, embedded }: { tenantSlug?: string; e
       toast.error(result.error || "Booking failed");
       return;
     }
-    if (result.booking) setSubmittedBooking(result.booking);
+    if (result.booking) { clearDraft(); setSubmittedBooking(result.booking); }
     setPaymentPath(selectedPaymentPath);
     setStep("confirmed");
     scrollTop();

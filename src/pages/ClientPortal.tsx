@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Camera, Mail, ArrowRight, Star, Sparkles, Clock, Image, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -8,24 +8,43 @@ export default function ClientPortal() {
   const [email, setEmail] = useState("");
   const [loading, setLoading] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  const [retryAt, setRetryAt] = useState(0);
+  const [now, setNow] = useState(Date.now);
+  const [error, setError] = useState("");
+  const secondsLeft = Math.max(0, Math.ceil((retryAt - now) / 1000));
+  useEffect(() => {
+    if (!retryAt) return;
+    const timer = window.setInterval(() => {
+      const time = Date.now(); setNow(time);
+      if (time >= retryAt) window.clearInterval(timer);
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [retryAt]);
 
   const handleRequest = async () => {
-    if (loading) return;
+    if (loading || Date.now() < retryAt) return;
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) { toast.error("Please enter a valid email address"); return; }
     setLoading(true);
+    setError("");
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 20000);
     try {
       const res = await fetch("/api/client-portal/request", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: email.trim().toLowerCase() }),
+        signal: controller.signal,
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Request failed");
       setSubmitted(true);
+      setNow(Date.now());
+      setRetryAt(Date.now() + 60_000);
     } catch (err: any) {
-      toast.error(err.message || "Something went wrong. Please try again.");
+      setError(err.name === "AbortError" ? "The request timed out. Please try again." : err.message || "Something went wrong. Please try again.");
     } finally {
       setLoading(false);
+      window.clearTimeout(timeout);
     }
   };
 
@@ -51,7 +70,7 @@ export default function ClientPortal() {
                 </p>
               </div>
 
-              <div className="glass-panel rounded-xl p-6 space-y-4">
+              <form onSubmit={event => { event.preventDefault(); void handleRequest(); }} className="glass-panel rounded-xl p-6 space-y-4">
                 <div>
                   <label htmlFor="gallery-email" className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">
                     Your Email
@@ -63,22 +82,23 @@ export default function ClientPortal() {
                     type="email"
                     value={email}
                     onChange={e => setEmail(e.target.value)}
-                    onKeyDown={e => e.key === "Enter" && handleRequest()}
+                    disabled={loading}
+                    required
                     placeholder="you@example.com"
                     className="bg-secondary border-border text-foreground font-body"
                     autoFocus
                   />
                 </div>
                 <Button
-                  onClick={handleRequest}
-                  disabled={loading || !email}
+                  type="submit"
+                  disabled={loading || !email || secondsLeft > 0}
                   className="w-full bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2"
                 >
                   <Mail className="w-4 h-4" />
-                  {loading ? "Sending…" : "Send My Gallery Links"}
+                  {loading ? "Sending…" : secondsLeft > 0 ? `Try again in ${secondsLeft}s` : "Send My Gallery Links"}
                   {!loading && <ArrowRight className="w-3.5 h-3.5" />}
                 </Button>
-              </div>
+              </form>
 
               {/* What to expect */}
               <div className="mt-6 space-y-3">
@@ -111,7 +131,11 @@ export default function ClientPortal() {
               <p className="text-xs font-body text-muted-foreground/60 mb-6">
                 The email comes from your photographer. Check your spam folder if you don't see it.
               </p>
+              <Button variant="outline" disabled={loading || secondsLeft > 0} onClick={() => void handleRequest()} className="mb-4 w-full">
+                {loading ? "Sending…" : secondsLeft > 0 ? `Resend in ${secondsLeft}s` : "Resend gallery links"}
+              </Button>
               <button
+                disabled={loading}
                 onClick={() => { setSubmitted(false); setEmail(""); }}
                 className="text-xs font-body text-muted-foreground hover:text-foreground underline"
               >
@@ -119,6 +143,7 @@ export default function ClientPortal() {
               </button>
             </div>
           )}
+          {error && <p role="alert" className="mt-4 text-sm text-destructive">{error}</p>}
         </div>
       </div>
     </div>

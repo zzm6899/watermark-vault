@@ -1,4 +1,4 @@
-import type { Booking, QuestionField } from "@/lib/types";
+import type { Booking, EventType, QuestionField } from "@/lib/types";
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_RE = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
@@ -51,6 +51,26 @@ export function isPastBookingDate(date: string, timeZone: string, now = new Date
 
 export function filterFutureBookingSlots(slots: string[], date: string, timeZone: string, now = new Date()): string[] {
   return [...new Set(slots)].filter(time => TIME_RE.test(time) && !isPastBookingSlot(date, time, timeZone, now));
+}
+
+/** Start calendars at the next scheduled date; live slot requests still decide bookability. */
+export function nextBookingDate(event: EventType, timeZone: string, from?: Date, now = new Date()): Date | null {
+  const today = zonedMinuteKey(now, timeZone).slice(0, 10);
+  const start = from && toBookingDateString(from) > today ? toBookingDateString(from) : today;
+  const [year, month, day] = start.split("-").map(Number);
+  const date = new Date(year, month - 1, day);
+  const end = new Date(year + 2, month - 1, day);
+  const availability = event.availability;
+  if (!availability) return null;
+  // Match the existing calendar's two-year navigation horizon.
+  for (; date < end; date.setDate(date.getDate() + 1)) {
+    const key = toBookingDateString(date);
+    if (availability.blockedDates?.includes(key)) continue;
+    const specific = (availability.specificDates || []).filter(slot => slot.date === key);
+    const windows = specific.length ? specific : (availability.recurring || []).filter(slot => slot.day === date.getDay());
+    if (windows.some(slot => slot.startTime < slot.endTime && !isPastBookingSlot(key, slot.endTime, timeZone, now))) return new Date(date);
+  }
+  return null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -1,4 +1,6 @@
 import "@/styles/booking.css";
+import { nextBookingDate } from "@/lib/booking-utils";
+import { useBookingDraft } from "@/hooks/use-booking-draft";
 import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { usePageTitle } from "@/hooks/use-page-title";
@@ -279,6 +281,7 @@ export default function Booking() {
     const controller = new AbortController();
     fetchPublicBookingConfig(controller.signal).then(config => {
       if (config.profile) setProfile(previous => ({ ...previous, ...config.profile }));
+      if (config.profile?.timezone) setAvailabilityTimezone(config.profile.timezone);
       if (config.settings) setSettings(previous => ({ ...previous, ...config.settings }));
       if (Array.isArray(config.eventTypes)) setEventTypes(config.eventTypes.filter(event => event.active));
       setConfigError(false);
@@ -322,6 +325,10 @@ export default function Booking() {
     const now = new Date();
     return new Date(now.getFullYear(), now.getMonth());
   });
+  useEffect(() => {
+    if (selectedDate) setCurrentMonth(new Date(selectedDate.getFullYear(), selectedDate.getMonth()));
+  }, [selectedDate]);
+
   const [answers, setAnswers] = useState<Record<string, string>>(restoredBooking?.answers || {});
   const [clientName, setClientName] = useState(restoredBooking?.clientName || "");
   const [clientEmail, setClientEmail] = useState(restoredBooking?.clientEmail || "");
@@ -340,6 +347,20 @@ export default function Booking() {
   const [lastBookingPaymentStatus, setLastBookingPaymentStatus] = useState<PublicBookingPaymentStatus | null>(null);
   const [, setBookingVersion] = useState(0);
   const [cancellingBooking, setCancellingBooking] = useState(false);
+  const clearDraft = useBookingDraft({
+    scope: "main", ready: !configLoading && !configError, completed: !!lastBookingId, events: eventTypes,
+    draft: selectedEvent ? { eventId: selectedEvent.id, duration: selectedDuration, date: selectedDate ? toDateStr(selectedDate) : null, name: clientName, email: clientEmail, phone: clientPhone, answers, extras: extraQuantities } : null,
+    onRestore: (draft, event) => {
+      setSelectedEvent(event); setSelectedDuration(draft.duration); setExtraQuantities(draft.extras);
+      setClientName(draft.name); setClientEmail(draft.email); setClientPhone(draft.phone); setAnswers(draft.answers);
+      const date = nextBookingDate(event, profile.timezone);
+      setSelectedDate(date);
+      if (date) setCurrentMonth(new Date(date.getFullYear(), date.getMonth()));
+      setSelectedTime(null); setTimerExpiresAt(null); setStep("datetime");
+      toast.info("Booking details restored. Choose a time again; current prices apply.");
+    },
+  });
+
 
   useEffect(() => {
     if (!selectedEvent) return;
@@ -494,7 +515,7 @@ export default function Booking() {
   const handleSelectEvent = (ev: EventType) => {
     setSelectedEvent(ev);
     setExtraQuantities({});
-    setSelectedDate(null);
+    setSelectedDate(nextBookingDate(ev, availabilityTimezone || profile.timezone));
     setSelectedTime(null);
     setAnswers({});
     setClientName("");
@@ -649,7 +670,7 @@ export default function Booking() {
       bookingAttemptIdRef.current = null;
       clearBookingAttemptId();
     }
-    if (result.booking) cacheBookingLocally(result.booking);
+    if (result.booking) { clearDraft(); cacheBookingLocally(result.booking); }
     return result;
   };
 
@@ -789,23 +810,14 @@ export default function Booking() {
     clearBookingAttemptId();
   };
 
-  const handleNextAvailableMonth = useCallback(() => {
+  const handleNextAvailableMonth = () => {
     if (!selectedEvent) return;
-    let searchYear = year;
-    let searchMonth = month + 1;
-    for (let i = 0; i < 24; i++) {
-      if (searchMonth > 11) { searchMonth = 0; searchYear++; }
-      const daysInSearch = new Date(searchYear, searchMonth + 1, 0).getDate();
-      for (let d = 1; d <= daysInSearch; d++) {
-        const date = new Date(searchYear, searchMonth, d);
-        if (!isPastBookingDate(toDateStr(date), availabilityTimezone || profile.timezone) && isDayAvailable(selectedEvent, date)) {
-          setCurrentMonth(new Date(searchYear, searchMonth));
-          return;
-        }
-      }
-      searchMonth++;
+    const date = nextBookingDate(selectedEvent, availabilityTimezone || profile.timezone, new Date(year, month + 1));
+    if (date) {
+      setSelectedDate(date); setCurrentMonth(new Date(date.getFullYear(), date.getMonth()));
+      setSelectedTime(null); setTimerExpiresAt(null);
     }
-  }, [selectedEvent, year, month, availabilityTimezone, profile.timezone]);
+  };
 
   // Open the enquiry form, optionally pre-filling event and/or date
   const handleOpenEnquiry = (prefillEventId?: string, prefillDate?: string) => {

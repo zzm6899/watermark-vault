@@ -37,7 +37,7 @@ export interface PixiesetImportPanelProps {
   contacts: Contact[];
   invoices: Invoice[];
   onReplaceContacts: (contacts: Contact[]) => void;
-  onReplaceInvoices: (invoices: Invoice[]) => void;
+  onReplaceInvoices: (invoices: Invoice[]) => Promise<void>;
 }
 
 function invoiceTotal(invoice: Invoice) {
@@ -148,7 +148,7 @@ export default function PixiesetImportPanel({
     try {
       const result = runImport(rawJson, contacts, invoices);
       onReplaceContacts(result.contacts);
-      onReplaceInvoices(result.invoices);
+      await onReplaceInvoices(result.invoices);
       const importedAt = result.importedAt || new Date().toISOString();
       const sourceContactCount = result.contacts.filter(isPixiesetContact).length;
       const sourceInvoiceCount = result.invoices.filter(isPixiesetInvoice).length;

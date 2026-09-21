@@ -34,6 +34,7 @@ describe("capability token generation", () => {
   it("keeps capability-bearing call sites off timestamp and Math.random generators", () => {
     for (const relativePath of [
       "src/pages/Admin.tsx",
+      "src/pages/admin/InvoicesView.tsx",
       "src/pages/TenantAdmin.tsx",
       "src/pages/Booking.tsx",
       "src/pages/AlbumDetail.tsx",

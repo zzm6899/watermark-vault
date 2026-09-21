@@ -1568,7 +1568,7 @@ app.post("/api/setup", authLimiter, async (req, res) => {
   res.status(201).json({ ok: true });
 });
 
-const STORE_OMITTED_SECRET_KEYS = new Set([DB_KEYS.ADMIN, "wv_gcal_tokens", "wv_google_sheets_tokens", "wv_oauth_tokens"]);
+const STORE_OMITTED_SECRET_KEYS = new Set([DB_KEYS.ADMIN, "wv_client_portal_failures", "wv_gcal_tokens", "wv_google_sheets_tokens", "wv_oauth_tokens"]);
 const GLOBAL_STORE_SECRET_FIELDS = ["discordWebhookUrl", "smtpPassword", "stripeSecretKey", "stripeWebhookSecret", "googleApiCredentials", "ftpPassword"];
 function parseStoreObject(value) {
   if (value && typeof value === "object" && !Array.isArray(value)) return value;
@@ -1591,15 +1591,18 @@ function withMaskedFields(value, fields) {
   return typeof value === "string" ? JSON.stringify(masked) : masked;
 }
 function safeStoreResponseValue(key, value) {
-  if (STORE_OMITTED_SECRET_KEYS.has(key)) return undefined;
+  if (STORE_OMITTED_SECRET_KEYS.has(key) || /(^|_)wv_(?:gcal_tokens|google_sheets_tokens|oauth_tokens)$/.test(key)) return undefined;
   const lean = stripBakedFields(key, value);
+  if ([DB_KEYS.PORTFOLIO_SETTINGS, DB_KEYS.PORTFOLIO_DRAFT, DB_KEYS.PORTFOLIO_PUBLISHED].includes(key)) return withMaskedFields(lean, ["webhookUrl"]);
   if (key === "wv_ftp_settings") return withMaskedFields(lean, GLOBAL_FTP_SECRET_FIELDS);
   if (key === DB_KEYS.SETTINGS) return withMaskedFields(lean, GLOBAL_STORE_SECRET_FIELDS);
   if (key.startsWith("t_") && key.endsWith("_wv_tenant_settings")) return withMaskedFields(lean, TENANT_SECRET_FIELDS);
   return lean;
 }
 function mergePreservingStoreSecrets(key, existingValue, incomingValue) {
-  const fields = key === "wv_ftp_settings"
+  const fields = key === DB_KEYS.PORTFOLIO_SETTINGS
+    ? ["webhookUrl"]
+    : key === "wv_ftp_settings"
     ? GLOBAL_FTP_SECRET_FIELDS
     : key === DB_KEYS.SETTINGS
       ? GLOBAL_STORE_SECRET_FIELDS
@@ -1651,6 +1654,7 @@ app.get("/api/store/:key", requireAuth, (req, res) => {
 app.put("/api/store/:key", requireAuth, authenticatedLargeJson, async (req, res) => {
   const db = readDb();
   const key = req.params.key;
+  if (key === "wv_client_portal_failures") return res.status(403).json({ error: "Delivery failures are server-managed" });
   if (key === DB_KEYS.BOOKINGS) {
     return res.status(409).json({ error: "Bookings must be changed through the atomic booking endpoints" });
   }
@@ -1746,7 +1750,7 @@ app.put("/api/store/:key", requireAuth, authenticatedLargeJson, async (req, res)
   res.json({ ok: true });
 });
 app.delete("/api/store/:key", requireAuth, (req, res) => {
-  if ([DB_KEYS.ADMIN, DB_KEYS.SETUP].includes(req.params.key)) {
+  if ([DB_KEYS.ADMIN, DB_KEYS.SETUP, "wv_client_portal_failures"].includes(req.params.key)) {
     return res.status(403).json({ error: "Authentication bootstrap keys cannot be deleted through the generic store" });
   }
   const db = readDb();
@@ -3523,7 +3527,7 @@ const DEFAULT_PORTFOLIO = {
 };
 
 function publicPortfolioContent(value) {
-  const { webhookUrl: _privateWebhook, ...publicValue } = value || {};
+  const { webhookUrl: _privateWebhook, webhookUrlSet: _privateWebhookSet, ...publicValue } = value || {};
   const merged = { ...DEFAULT_PORTFOLIO, ...publicValue };
   const requiresGalleryMigration = (Number(publicValue.gallerySeedVersion) || 0) < DEFAULT_PORTFOLIO.gallerySeedVersion;
   if (requiresGalleryMigration) {
@@ -3596,7 +3600,7 @@ app.get("/api/admin/portfolio", requireAuth, (_req, res) => {
   const published = dbGet(db, DB_KEYS.PORTFOLIO_PUBLISHED, DEFAULT_PORTFOLIO);
   const draft = dbGet(db, DB_KEYS.PORTFOLIO_DRAFT, published);
   const privateSettings = dbGet(db, DB_KEYS.PORTFOLIO_SETTINGS, {});
-  res.json({ draft: { ...publicPortfolioContent(draft), webhookUrl: privateSettings.webhookUrl || "" }, publishedAt: published?.updatedAt });
+  res.json({ draft: { ...publicPortfolioContent(draft), webhookUrlSet: !!privateSettings.webhookUrl }, publishedAt: published?.updatedAt });
 });
 
 app.put("/api/admin/portfolio/draft", requireAuth, (req, res) => {
@@ -3608,7 +3612,7 @@ app.put("/api/admin/portfolio/draft", requireAuth, (req, res) => {
     return res.status(400).json({ error: "Webhook must be a Discord webhook URL" });
   }
   db[DB_KEYS.PORTFOLIO_DRAFT] = { ...publicPortfolioContent(draft), updatedAt: new Date().toISOString() };
-  db[DB_KEYS.PORTFOLIO_SETTINGS] = { webhookUrl };
+  if (Object.prototype.hasOwnProperty.call(draft, "webhookUrl")) db[DB_KEYS.PORTFOLIO_SETTINGS] = { webhookUrl };
   writeDb(db);
   res.json({ ok: true });
 });
@@ -3646,13 +3650,13 @@ app.get("/portfolio-media/:filename", (req, res) => {
 });
 
 app.post("/api/admin/portfolio/webhook/test", requireAuth, async (req, res) => {
-  const webhookUrl = String(req.body?.webhookUrl || "").trim();
+  const webhookUrl = String(req.body?.webhookUrl || dbGet(readDb(), DB_KEYS.PORTFOLIO_SETTINGS, {}).webhookUrl || "").trim();
   if (!/^https:\/\/(?:canary\.|ptb\.)?(?:discord(?:app)?\.com)\/api\/webhooks\//i.test(webhookUrl)) return res.status(400).json({ error: "Enter a valid Discord webhook URL" });
   try {
     await sendDiscordEmbed(webhookUrl, { embeds: [{ title: "Portfolio enquiry webhook connected", description: "New website enquiries will appear here.", color: 0xd0a94a, timestamp: new Date().toISOString() }] });
     res.json({ ok: true });
   } catch (error) {
-    res.status(502).json({ error: error?.message || "Webhook test failed" });
+    res.status(502).json({ error: "Webhook test failed. Check the configured URL and try again." });
   }
 });
 
@@ -5714,8 +5718,8 @@ app.get("/api/super-admin/webhooks", async (req, res) => {
 
   function maskWebhookUrl(url) {
     if (!url) return null;
-    // Mask the token part of Discord webhook URLs: /webhooks/{id}/{token} → /webhooks/{id}/***
-    return url.replace(/(\/api\/webhooks\/[^/]+\/)([^/?]+)/, "$1***");
+    // Never echo stored URLs, including malformed legacy values or query strings.
+    return "Configured";
   }
 
   const db = readDb();
@@ -6406,7 +6410,11 @@ app.post("/api/admin/invoices", superLimiter, requireAuth, authenticatedLargeJso
   return withCheckoutResourceLock("invoice-store:main", () => {
     const db = readDb();
     const invoices = getStoredArray(db, DB_KEYS.INVOICES);
-    if (invoices.some(invoice => String(invoice.id) === String(input.id))) {
+    const existing = invoices.find(invoice => String(invoice.id) === String(input.id));
+    if (existing) {
+      // A lost response may repeat the same create. Never create another invoice
+      // or overwrite payment state; return the canonical record for this draft.
+      if (input.shareToken && existing.shareToken === input.shareToken) return res.json({ ok: true, invoice: existing });
       return res.status(409).json({ ok: false, code: "INVOICE_EXISTS", error: "Invoice already exists" });
     }
     const invoice = {
@@ -9762,37 +9770,87 @@ function galleryRecoveryLink(trustedBaseUrl, album, tenantSlug, email) {
   return `${new URL(`/gallery/${encodeURIComponent(album.slug || album.id)}`, trustedBaseUrl)}#recovery=${encodeURIComponent(token)}`;
 }
 
+function clientPortalGroups(db, tenants, email, albumId) {
+  const tenantAlbums = Object.fromEntries(tenants.map(tenant => [tenant.slug, dbGet(db, `t_${tenant.slug}_wv_albums`, [])]));
+  const timezones = Object.fromEntries([["", galleryTimezone(db, null)], ...tenants.map(tenant => [tenant.slug, galleryTimezone(db, tenant.slug)])]);
+  return selectClientPortalAlbumGroups({
+    email, mainAlbums: dbGet(db, DB_KEYS.ALBUMS, []), tenantAlbums,
+    bookings: dbGet(db, DB_KEYS.BOOKINGS, []), activeTenantSlugs: tenants.map(tenant => tenant.slug), timezones,
+  }).map(group => ({ ...group, albums: group.albums.filter(album => {
+    if (albumId && ![album.id, album.slug].includes(String(albumId))) return false;
+    const resolved = findAlbumBySlugOrId(db, album.slug || album.id);
+    return !!resolved && resolved.tenantSlug === group.tenantSlug && resolved.album.id === album.id;
+  }) })).filter(group => group.albums.length);
+}
+
+function recordClientPortalDelivery(email, group, errorCode) {
+  const db = readDb();
+  const albumIds = group.albums.map(album => album.id).sort();
+  const id = crypto.createHash("sha256").update(JSON.stringify([email, group.tenantSlug || null, albumIds])).digest("hex");
+  const failures = dbGet(db, "wv_client_portal_failures", []);
+  const previous = failures.find(item => item.id === id);
+  const next = failures.filter(item => item.id !== id);
+  if (errorCode) next.push({ id, email, tenantSlug: group.tenantSlug || null, albumIds, errorCode, attempts: (previous?.attempts || 0) + 1, lastAttemptAt: new Date().toISOString() });
+  // ponytail: retain the latest 200 failures; use paginated history if volume exceeds this inbox.
+  db.wv_client_portal_failures = JSON.stringify(next.slice(-200));
+  writeDb(db);
+}
+
 async function sendClientPortalAlbumGroups({ email, groups, db, tenants, trustedBaseUrl }) {
   const tenantBySlug = new Map(tenants.map(tenant => [tenant.slug, tenant]));
   const profile = dbGet(db, DB_KEYS.PROFILE, {});
+  let failed = 0;
+  let sent = 0;
   for (const group of groups) {
     const tenant = group.tenantSlug ? tenantBySlug.get(group.tenantSlug) : null;
-    const tenantSettings = group.tenantSlug ? dbGet(db, `t_${group.tenantSlug}_wv_tenant_settings`, {}) : null;
-    const transport = group.tenantSlug ? buildTenantTransporter(tenantSettings) : getTransporter();
-    const from = group.tenantSlug ? getTenantFromAddress(tenantSettings) : getFromAddress();
-    if (!transport || !from || !group.albums.length || (group.tenantSlug && !tenant)) continue;
-    const senderName = String(tenant?.displayName || profile?.businessName || profile?.name || "Your photographer")
-      .replace(/[\r\n]+/g, " ").slice(0, 120);
-    const message = buildClientPortalEmail({
-      albums: group.albums.map(album => ({
-        title: album.title || "Photo gallery",
-        url: album.purchaseRecovery
-          ? galleryRecoveryLink(trustedBaseUrl, album, group.tenantSlug, email)
-          : clientPortalGalleryLink(trustedBaseUrl, album),
-      })),
-      brandName: tenantSettings?.businessName || tenantSettings?.brandName || senderName,
-    });
+    if (!group.albums.length || (group.tenantSlug && !tenant)) continue;
+    let errorCode = "DELIVERY_FAILED";
     try {
-      await transport.sendMail({
-        from,
-        to: email,
-        ...message,
+      const tenantSettings = group.tenantSlug ? dbGet(db, `t_${group.tenantSlug}_wv_tenant_settings`, {}) : null;
+      const transport = group.tenantSlug ? buildTenantTransporter(tenantSettings) : getTransporter();
+      const from = group.tenantSlug ? getTenantFromAddress(tenantSettings) : getFromAddress();
+      if (!transport || !from) { errorCode = "EMAIL_NOT_CONFIGURED"; throw new Error(errorCode); }
+      const senderName = String(tenant?.displayName || profile?.businessName || profile?.name || "Your photographer").replace(/[\r\n]+/g, " ").slice(0, 120);
+      const message = buildClientPortalEmail({
+        albums: group.albums.map(album => ({ title: album.title || "Photo gallery", url: album.purchaseRecovery
+          ? galleryRecoveryLink(trustedBaseUrl, album, group.tenantSlug, email) : clientPortalGalleryLink(trustedBaseUrl, album) })),
+        brandName: tenantSettings?.businessName || tenantSettings?.brandName || senderName,
       });
+      await transport.sendMail({ from, to: email, ...message });
     } catch {
-      // The public response is deliberately independent of match and SMTP state.
+      recordClientPortalDelivery(email, group, errorCode);
+      failed++;
+      continue;
     }
+    recordClientPortalDelivery(email, group, null);
+    sent++;
   }
+  return { sent, failed };
 }
+
+app.get("/api/admin/client-portal/failures", superLimiter, requireAuth, (_req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ failures: dbGet(readDb(), "wv_client_portal_failures", []).slice().reverse() });
+});
+
+app.post("/api/admin/client-portal/failures/:id/retry", superLimiter, requireAuth, (req, res) => {
+  return withCheckoutResourceLock(`portal-retry:${req.params.id}`, async () => {
+    const db = readDb();
+    const failure = dbGet(db, "wv_client_portal_failures", []).find(item => item.id === req.params.id);
+    if (!failure) return res.status(404).json({ error: "This failure has already been resolved or is no longer available" });
+    const tenants = readTenants().filter(tenant => tenantIsLicensed(tenant));
+    // Recheck ownership, purchases, expiry and tenant licensing. Never reuse old capability links.
+    const groups = clientPortalGroups(db, tenants, failure.email).filter(group => (group.tenantSlug || null) === failure.tenantSlug)
+      .map(group => ({ ...group, albums: group.albums.filter(album => failure.albumIds.includes(album.id)) })).filter(group => group.albums.length);
+    if (!groups.length) return res.status(409).json({ error: "No galleries are currently available to this recipient. Check gallery access before retrying." });
+    const result = await sendClientPortalAlbumGroups({ email: failure.email, groups, db, tenants, trustedBaseUrl: safeCheckoutReturnUrl(req, null, "/") });
+    if (result.failed) return res.status(502).json({ error: "Delivery failed. Check the photographer's email settings, then retry." });
+    const latest = readDb();
+    latest.wv_client_portal_failures = JSON.stringify(dbGet(latest, "wv_client_portal_failures", []).filter(item => item.id !== failure.id));
+    writeDb(latest);
+    return res.json({ ok: true });
+  }).catch(() => res.status(500).json({ error: "Could not retry delivery" }));
+});
 
 app.post("/api/client-portal/request", clientPortalIpLimiter, clientPortalEmailLimiter, (req, res) => {
   const email = normalizeClientPortalEmail(req.body?.email);
@@ -9803,26 +9861,7 @@ app.post("/api/client-portal/request", clientPortalIpLimiter, clientPortalEmailL
     try {
       const db = readDb();
       const tenants = readTenants().filter(tenant => tenantIsLicensed(tenant));
-      const tenantAlbums = Object.fromEntries(tenants.map(tenant => [tenant.slug, dbGet(db, `t_${tenant.slug}_wv_albums`, [])]));
-      const timezones = Object.fromEntries([
-        ["", galleryTimezone(db, null)],
-        ...tenants.map(tenant => [tenant.slug, galleryTimezone(db, tenant.slug)]),
-      ]);
-      const groups = selectClientPortalAlbumGroups({
-        email,
-        mainAlbums: dbGet(db, DB_KEYS.ALBUMS, []),
-        tenantAlbums,
-        bookings: dbGet(db, DB_KEYS.BOOKINGS, []),
-        activeTenantSlugs: tenants.map(tenant => tenant.slug),
-        timezones,
-      }).map(group => ({
-        ...group,
-        albums: group.albums.filter(album => {
-          if (req.body?.albumId && ![album.id, album.slug].includes(String(req.body.albumId))) return false;
-          const resolved = findAlbumBySlugOrId(db, album.slug || album.id);
-          return !!resolved && resolved.tenantSlug === group.tenantSlug && resolved.album.id === album.id;
-        }),
-      })).filter(group => group.albums.length);
+      const groups = clientPortalGroups(db, tenants, email, req.body?.albumId);
       void sendClientPortalAlbumGroups({ email, groups, db, tenants, trustedBaseUrl }).catch(() => {});
     } catch {
       // Deliberately silent: this endpoint must never reveal DB or delivery state.

@@ -371,7 +371,8 @@ const defaultSettings: AppSettings = {
 };
 
 export function getSettings(): AppSettings {
-  const stored = get(KEYS.SETTINGS, defaultSettings);
+  const stored = maskCachedSettings(get(KEYS.SETTINGS, defaultSettings));
+  try { localStorage.setItem(KEYS.SETTINGS, JSON.stringify(stored)); } catch { /* Storage is optional. */ }
   // Merge with defaults to handle new fields
   return {
     ...defaultSettings,
@@ -381,8 +382,18 @@ export function getSettings(): AppSettings {
   };
 }
 
+function maskCachedSettings(settings: AppSettings): AppSettings {
+  const safe = { ...settings } as AppSettings & Record<string, unknown>;
+  for (const field of ["discordWebhookUrl", "smtpPassword", "stripeSecretKey", "stripeWebhookSecret", "googleApiCredentials", "ftpPassword"]) {
+    if (safe[field]) safe[`${field}Set`] = true;
+    delete safe[field];
+  }
+  return safe;
+}
+
 export function setSettings(s: AppSettings) {
-  set(KEYS.SETTINGS, s);
+  persistToServer(KEYS.SETTINGS, s);
+  try { localStorage.setItem(KEYS.SETTINGS, JSON.stringify(maskCachedSettings(s))); } catch { /* Storage is optional. */ }
 }
 
 function sha256Fallback(input: string): string {
@@ -517,41 +528,38 @@ export function cacheInvoicesLocally(invoices: Invoice[]) {
   try { localStorage.setItem("wv_invoices", JSON.stringify(invoices)); } catch { /* cache is best effort */ }
 }
 
-export function setInvoices(invoices: Invoice[]) {
+export async function setInvoices(invoices: Invoice[]) {
   const previous = getInvoices();
-  localStorage.setItem("wv_invoices", JSON.stringify(invoices));
   const previousById = new Map(previous.map(invoice => [invoice.id, invoice]));
   const nextIds = new Set(invoices.map(invoice => invoice.id));
   for (const invoice of invoices) {
-    const operation = previousById.has(invoice.id) ? updateAdminInvoice(invoice) : createAdminInvoice(invoice);
-    operation.catch(error => console.error("Invoice sync failed:", error));
+    if (JSON.stringify(previousById.get(invoice.id)) === JSON.stringify(invoice)) continue;
+    await (previousById.has(invoice.id) ? updateInvoice(invoice) : addInvoice(invoice));
   }
   for (const invoice of previous) {
-    if (!nextIds.has(invoice.id)) deleteAdminInvoice(invoice.id).catch(error => console.error("Invoice delete sync failed:", error));
+    if (!nextIds.has(invoice.id)) await deleteInvoice(invoice.id);
   }
+  return getInvoices();
 }
 
-export function addInvoice(invoice: Invoice) {
-  const list = getInvoices();
-  list.push(invoice);
-  localStorage.setItem("wv_invoices", JSON.stringify(list));
-  createAdminInvoice(invoice).then(result => {
-    if (!result.ok || !result.invoice) return;
-    localStorage.setItem("wv_invoices", JSON.stringify(getInvoices().map(item => item.id === invoice.id ? result.invoice : item)));
-  }).catch(error => console.error("Invoice create failed:", error));
+export async function addInvoice(invoice: Invoice) {
+  const result = await createAdminInvoice(invoice);
+  if (!result.ok || !result.invoice) throw new Error(result.error || "Unable to create invoice");
+  cacheInvoicesLocally([...getInvoices().filter(item => item.id !== invoice.id), result.invoice]);
+  return result.invoice;
 }
 
-export function updateInvoice(invoice: Invoice) {
-  localStorage.setItem("wv_invoices", JSON.stringify(getInvoices().map(i => (i.id === invoice.id ? invoice : i))));
-  updateAdminInvoice(invoice).then(result => {
-    if (!result.ok || !result.invoice) return;
-    localStorage.setItem("wv_invoices", JSON.stringify(getInvoices().map(item => item.id === invoice.id ? result.invoice : item)));
-  }).catch(error => console.error("Invoice update failed:", error));
+export async function updateInvoice(invoice: Invoice) {
+  const result = await updateAdminInvoice(invoice);
+  if (!result.ok || !result.invoice) throw new Error(result.error || "Unable to update invoice");
+  cacheInvoicesLocally(getInvoices().map(item => item.id === invoice.id ? result.invoice! : item));
+  return result.invoice;
 }
 
-export function deleteInvoice(id: string) {
-  localStorage.setItem("wv_invoices", JSON.stringify(getInvoices().filter(i => i.id !== id)));
-  deleteAdminInvoice(id).catch(error => console.error("Invoice delete failed:", error));
+export async function deleteInvoice(id: string) {
+  const result = await deleteAdminInvoice(id);
+  if (!result.ok) throw new Error(result.error || "Unable to delete invoice");
+  cacheInvoicesLocally(getInvoices().filter(i => i.id !== id));
 }
 
 export function getNextInvoiceNumber(): string {
