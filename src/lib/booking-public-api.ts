@@ -13,7 +13,7 @@ export interface PublicBookingConfig {
 
 export interface PublicAvailability {
   ok?: boolean;
-  date?: string;
+  date?: string | null;
   eventTypeId?: string;
   timezone?: string;
   slots?: string[];
@@ -40,12 +40,14 @@ export async function fetchPublicBookingConfig(signal?: AbortSignal): Promise<Pu
 export async function fetchPublicAvailability(options: {
   eventTypeId: string;
   date: string;
+  next?: boolean;
   duration?: number;
   tenantSlug?: string;
   signal?: AbortSignal;
 }): Promise<PublicAvailability> {
   const query = new URLSearchParams({ eventTypeId: options.eventTypeId, date: options.date });
   if (Number.isFinite(options.duration) && (options.duration ?? 0) > 0) query.set("duration", String(options.duration));
+  if (options.next) query.set("next", "true");
   const prefix = options.tenantSlug ? `/api/tenant/${encodeURIComponent(options.tenantSlug)}` : "/api";
   const response = await fetch(`${prefix}/availability?${query.toString()}`, {
     signal: options.signal,

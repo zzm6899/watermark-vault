@@ -225,6 +225,7 @@ function TenantBookingContent({ tenantSlug, embedded }: { tenantSlug?: string; e
   const [selectedDuration, setSelectedDuration] = useState<number | null>(null);
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
   const [selectedTime, setSelectedTime] = useState<string | null>(null);
+  const findNextDate = useRef(true);
   const [availableSlots, setAvailableSlots] = useState<string[] | null>(null);
   const [availabilityLoading, setAvailabilityLoading] = useState(false);
   const [availabilityError, setAvailabilityError] = useState<string | null>(null);
@@ -382,9 +383,16 @@ function TenantBookingContent({ tenantSlug, embedded }: { tenantSlug?: string; e
     setAvailableSlots(null);
     setAvailabilityLoading(true);
     setAvailabilityError(null);
-    fetchPublicAvailability({ tenantSlug, eventTypeId: selectedEvent.id, date, duration: selectedDuration || undefined, signal: controller.signal }).then(payload => {
+    fetchPublicAvailability({ tenantSlug, eventTypeId: selectedEvent.id, date, duration: selectedDuration || undefined, next: findNextDate.current, signal: controller.signal }).then(payload => {
+      if (controller.signal.aborted) return;
       const slots = readAvailableSlots(payload);
       if (slots === null) throw new Error("Availability could not be read");
+      findNextDate.current = false;
+      if (payload.date && payload.date !== date) {
+        const [y, m, d] = payload.date.split("-").map(Number);
+        setSelectedDate(new Date(y, m - 1, d));
+        setSelectedTime(null);
+      }
       setAvailableSlots(slots);
       if (payload.timezone) setAvailabilityTimezone(payload.timezone);
     }).catch(error => {
@@ -407,6 +415,7 @@ function TenantBookingContent({ tenantSlug, embedded }: { tenantSlug?: string; e
 
   const handleNextAvailableMonth = () => {
     if (!selectedEvent) return;
+    findNextDate.current = true;
     const date = nextBookingDate(selectedEvent, availabilityTimezone, new Date(year, month + 1));
     if (date) {
       setSelectedDate(date); setCurrentMonth(new Date(date.getFullYear(), date.getMonth()));
@@ -453,6 +462,7 @@ function TenantBookingContent({ tenantSlug, embedded }: { tenantSlug?: string; e
     setSelectedEvent(et);
     setExtraQuantities({});
     setSelectedDuration(et.durations[0] ?? 60);
+    findNextDate.current = true;
     setSelectedDate(nextBookingDate(et, availabilityTimezone));
     setSelectedTime(null);
     setCustomAnswers({});
@@ -809,7 +819,7 @@ function TenantBookingContent({ tenantSlug, embedded }: { tenantSlug?: string; e
                                 key={d}
                                 type="button"
                                 aria-pressed={selectedDuration === d}
-                                onClick={() => { setSelectedDuration(d); setSelectedTime(null); }}
+                                onClick={() => { findNextDate.current = true; setSelectedDuration(d); setSelectedTime(null); }}
                                 className={`min-w-16 rounded-lg border px-3 py-2 text-xs font-body flex flex-col items-center transition-all ${selectedDuration === d ? "border-primary bg-primary text-primary-foreground shadow-sm" : "border-border text-muted-foreground hover:text-foreground hover:border-primary/40 hover:bg-secondary"}`}
                               >
                                 <span>{formatDuration(d)}</span>
@@ -883,7 +893,7 @@ function TenantBookingContent({ tenantSlug, embedded }: { tenantSlug?: string; e
                             aria-label={`${date.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" })}${isAvailable ? ", available" : ", unavailable"}`}
                             aria-pressed={isSelected}
                             disabled={!isAvailable}
-                            onClick={() => { setSelectedDate(date); setSelectedTime(null); }}
+                            onClick={() => { findNextDate.current = false; setSelectedDate(date); setSelectedTime(null); }}
                             className={`aspect-square rounded-lg text-sm font-body transition-all relative ${
                               isSelected ? "bg-primary text-primary-foreground ring-2 ring-primary ring-offset-2 ring-offset-background"
                                 : isAvailable ? "text-foreground font-medium hover:bg-amber-500/10 hover:text-amber-500"

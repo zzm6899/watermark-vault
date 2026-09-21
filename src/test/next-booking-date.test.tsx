@@ -43,3 +43,22 @@ it("selecting a service selects its next date and shows that calendar month with
   fireEvent.click(screen.getByRole("button", { name: "Next available →" }));
   expect(screen.getByRole("button", { name: /Friday, October 9, 2026, available/ })).toHaveAttribute("aria-pressed", "true");
 });
+
+it("moves to the server's next bookable month and leaves manually selected dates alone", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-09-22T01:00:00Z"));
+  vi.stubGlobal("scrollTo", vi.fn());
+  const laterEvent = { ...event, availability: { ...event.availability, specificDates: [...event.availability.specificDates, { date: "2026-11-01", startTime: "15:00", endTime: "18:00" }] } };
+  vi.mocked(getTenantPublicData).mockResolvedValue({ tenant: { slug: "studio", displayName: "Studio", timezone: "Australia/Sydney" }, eventTypes: [laterEvent] } as NonNullable<Awaited<ReturnType<typeof getTenantPublicData>>>);
+  vi.mocked(getTenantStripeStatus).mockResolvedValue({ configured: false });
+  vi.mocked(fetchPublicAvailability).mockImplementation(async options => ({ date: options.next ? "2026-11-01" : options.date, slots: options.next || options.date === "2026-11-01" ? ["15:00"] : [], timezone: "Australia/Sydney" }));
+  render(<MemoryRouter><TenantBookingPage overrideSlug="studio" /></MemoryRouter>);
+  fireEvent.click(await screen.findByRole("button", { name: "Book" }));
+  expect(await screen.findByRole("button", { name: /Sunday, November 1, 2026, available/ })).toHaveAttribute("aria-pressed", "true");
+  expect(await screen.findByText("3:00 PM")).toBeVisible();
+  expect(fetchPublicAvailability).toHaveBeenCalledWith(expect.objectContaining({ next: true, date: "2026-10-09", duration: 30 }));
+  fireEvent.click(screen.getByRole("button", { name: "Previous month" }));
+  fireEvent.click(screen.getByRole("button", { name: /Friday, October 9, 2026, available/ }));
+  expect(screen.getByRole("button", { name: /Friday, October 9, 2026, available/ })).toHaveAttribute("aria-pressed", "true");
+  expect(fetchPublicAvailability).toHaveBeenLastCalledWith(expect.objectContaining({ next: false, date: "2026-10-09" }));
+});

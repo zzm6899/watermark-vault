@@ -7571,6 +7571,27 @@ const bookingCalendarSyncTimer = setInterval(() => {
 }, 30_000);
 bookingCalendarSyncTimer.unref?.();
 
+// Reuse the booking validator so default dates obey the same conflicts as checkout.
+async function findPublicAvailability(options, next = false, getBusy = getCachedGoogleBusyBookings) {
+  const { date, timezone, tenantSlug } = options;
+  const cursor = new Date(`${date}T00:00:00Z`);
+  const end = new Date(cursor);
+  end.setUTCFullYear(end.getUTCFullYear() + 2);
+  do {
+    const candidate = cursor.toISOString().slice(0, 10);
+    const input = { ...options, date: candidate };
+    // Fully booked and unscheduled days need no external calendar request.
+    if (generateAvailableSlots(input).length) {
+      const busy = await getBusy(tenantSlug, candidate, timezone);
+      const slots = generateAvailableSlots({ ...input, bookings: [...options.bookings, ...busy] });
+      if (slots.length) return { date: candidate, slots };
+    }
+    if (!next) return { date, slots: [] };
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  } while (cursor < end);
+  return { date: null, slots: [] };
+}
+
 app.get("/api/availability", bookingLookupLimiter, async (req, res) => {
   const db = readDb();
   const eventTypes = getStoredArray(db, DB_KEYS.EVENT_TYPES).filter(eventType => eventType?.active !== false);
@@ -7579,23 +7600,18 @@ app.get("/api/availability", bookingLookupLimiter, async (req, res) => {
   if (!eventType || !parseDate(date)) return res.status(400).json({ ok: false, error: "A valid date and eventTypeId are required" });
   const profile = dbGet(db, DB_KEYS.PROFILE, {});
   const timezone = profile?.timezone || process.env.TZ || "Australia/Sydney";
-  let googleBusy;
-  try { googleBusy = await getCachedGoogleBusyBookings(null, date, timezone); }
-  catch (err) {
-    console.error("Google Calendar availability check failed:", err.message);
+  let availability;
+  try {
+    availability = await findPublicAvailability({
+      eventType, date, duration: req.query.duration, eventTypes,
+      bookings: getStoredArray(db, DB_KEYS.BOOKINGS), tenantSlug: null, timezone,
+    }, req.query.next === "true");
+  } catch (err) {
+    console.error("Calendar availability check failed:", err.message);
     return res.status(503).json({ ok: false, error: "Calendar availability is temporarily unavailable" });
   }
-  const slots = generateAvailableSlots({
-    eventType,
-    date,
-    duration: req.query.duration,
-    eventTypes,
-    bookings: [...getStoredArray(db, DB_KEYS.BOOKINGS), ...googleBusy],
-    tenantSlug: null,
-    timezone,
-  });
   res.setHeader("Cache-Control", "no-store");
-  res.json({ ok: true, date, eventTypeId: eventType.id, timezone, slots });
+  res.json({ ok: true, ...availability, eventTypeId: eventType.id, timezone });
 });
 
 app.get("/api/tenant/:slug/availability", tenantPublicLimiter, async (req, res) => {
@@ -7607,23 +7623,18 @@ app.get("/api/tenant/:slug/availability", tenantPublicLimiter, async (req, res) 
   const date = String(req.query.date || "");
   if (!eventType || !parseDate(date)) return res.status(400).json({ ok: false, error: "A valid date and eventTypeId are required" });
   const timezone = tenant.timezone || "Australia/Sydney";
-  let googleBusy;
-  try { googleBusy = await getCachedGoogleBusyBookings(tenant.slug, date, timezone); }
-  catch (err) {
-    console.error(`Tenant ${tenant.slug} Google Calendar availability check failed:`, err.message);
+  let availability;
+  try {
+    availability = await findPublicAvailability({
+      eventType, date, duration: req.query.duration, eventTypes,
+      bookings: getStoredArray(db, DB_KEYS.BOOKINGS), tenantSlug: tenant.slug, timezone,
+    }, req.query.next === "true");
+  } catch (err) {
+    console.error("Calendar availability check failed:", err.message);
     return res.status(503).json({ ok: false, error: "Calendar availability is temporarily unavailable" });
   }
-  const slots = generateAvailableSlots({
-    eventType,
-    date,
-    duration: req.query.duration,
-    eventTypes,
-    bookings: [...getStoredArray(db, DB_KEYS.BOOKINGS), ...googleBusy],
-    tenantSlug: tenant.slug,
-    timezone,
-  });
   res.setHeader("Cache-Control", "no-store");
-  res.json({ ok: true, date, eventTypeId: eventType.id, timezone, slots });
+  res.json({ ok: true, ...availability, eventTypeId: eventType.id, timezone });
 });
 
 app.get("/api/booking/:token", bookingLookupLimiter, (req, res) => {

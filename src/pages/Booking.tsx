@@ -338,6 +338,7 @@ export default function Booking() {
   });
   const [use24h, setUse24h] = useState(false);
   const [timerExpiresAt, setTimerExpiresAt] = useState<number | null>(null);
+  const findNextDate = useRef(true);
   const [availableSlots, setAvailableSlots] = useState<string[] | null>(null);
   const [availabilityLoading, setAvailabilityLoading] = useState(false);
   const [availabilityError, setAvailabilityError] = useState<string | null>(null);
@@ -476,9 +477,16 @@ export default function Booking() {
     setAvailableSlots(null);
     setAvailabilityLoading(true);
     setAvailabilityError(null);
-    fetchPublicAvailability({ eventTypeId: selectedEvent.id, date, duration: selectedDuration || undefined, signal: controller.signal }).then(payload => {
+    fetchPublicAvailability({ eventTypeId: selectedEvent.id, date, duration: selectedDuration || undefined, next: findNextDate.current, signal: controller.signal }).then(payload => {
+      if (controller.signal.aborted) return;
       const slots = readAvailableSlots(payload);
       if (slots === null) throw new Error("Availability could not be read");
+      findNextDate.current = false;
+      if (payload.date && payload.date !== date) {
+        const [y, m, d] = payload.date.split("-").map(Number);
+        setSelectedDate(new Date(y, m - 1, d));
+        setSelectedTime(null);
+      }
       setAvailableSlots(slots);
       if (payload.timezone) setAvailabilityTimezone(payload.timezone);
     }).catch(error => {
@@ -515,6 +523,7 @@ export default function Booking() {
   const handleSelectEvent = (ev: EventType) => {
     setSelectedEvent(ev);
     setExtraQuantities({});
+    findNextDate.current = true;
     setSelectedDate(nextBookingDate(ev, availabilityTimezone || profile.timezone));
     setSelectedTime(null);
     setAnswers({});
@@ -812,6 +821,7 @@ export default function Booking() {
 
   const handleNextAvailableMonth = () => {
     if (!selectedEvent) return;
+    findNextDate.current = true;
     const date = nextBookingDate(selectedEvent, availabilityTimezone || profile.timezone, new Date(year, month + 1));
     if (date) {
       setSelectedDate(date); setCurrentMonth(new Date(date.getFullYear(), date.getMonth()));
@@ -1066,7 +1076,7 @@ export default function Booking() {
                             {selectedEvent.durations.map((d) => {
                               const dPrice = getPriceForDuration(selectedEvent, d);
                               return (
-                                <button key={d} type="button" aria-pressed={selectedDuration === d} onClick={() => { setSelectedDuration(d); setSelectedTime(null); setTimerExpiresAt(null); }}
+                                <button key={d} type="button" aria-pressed={selectedDuration === d} onClick={() => { findNextDate.current = true; setSelectedDuration(d); setSelectedTime(null); setTimerExpiresAt(null); }}
                                   className={`min-w-16 rounded-lg border px-3 py-2 text-xs font-body transition-all flex flex-col items-center ${
                                     selectedDuration === d ? "border-primary bg-primary text-primary-foreground shadow-sm" : "border-border text-muted-foreground hover:text-foreground hover:border-primary/40 hover:bg-secondary"
                                   }`}
@@ -1131,7 +1141,7 @@ export default function Booking() {
                             const isAvailable = !isPast && isDayAvailable(selectedEvent, date);
                             const isToday = toDateStr(date) === toDateStr(new Date());
                             return (
-                              <button key={day} type="button" aria-label={`${date.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" })}${isAvailable ? ", available" : ", unavailable"}`} aria-pressed={isSelected} disabled={!isAvailable} onClick={() => { setSelectedDate(date); setSelectedTime(null); setTimerExpiresAt(null); setShowWaitlist(false); setWaitlistDone(false); setWaitlistError(null); setWaitlistName(""); setWaitlistEmail(""); setWaitlistNote(""); }}
+                              <button key={day} type="button" aria-label={`${date.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" })}${isAvailable ? ", available" : ", unavailable"}`} aria-pressed={isSelected} disabled={!isAvailable} onClick={() => { findNextDate.current = false; setSelectedDate(date); setSelectedTime(null); setTimerExpiresAt(null); setShowWaitlist(false); setWaitlistDone(false); setWaitlistError(null); setWaitlistName(""); setWaitlistEmail(""); setWaitlistNote(""); }}
                                 className={`aspect-square rounded-lg text-sm font-body transition-all relative ${
                                   isSelected ? "bg-primary text-primary-foreground font-medium ring-2 ring-primary ring-offset-2 ring-offset-background"
                                     : isAvailable ? "text-foreground font-medium hover:bg-amber-500/10 hover:text-amber-500"
