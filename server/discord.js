@@ -36,22 +36,38 @@ const statusEmoji = (s) => ({ confirmed: "✅", cancelled: "❌", completed: "�
 const statusColor = (s) => ({ confirmed: 0x22c55e, cancelled: 0xef4444, completed: 0xf59e0b, pending: 0x6b7280, rescheduled: 0x3b82f6 }[s] || 0x7c3aed);
 
 function bookingBaseFields(booking) {
+  let slot = booking.time || "—";
+  if (/^([01]\d|2[0-3]):[0-5]\d$/.test(booking.time) && Number.isInteger(booking.duration) && booking.duration > 0) {
+    const [hour, minute] = booking.time.split(":").map(Number);
+    const end = hour * 60 + minute + booking.duration;
+    slot += ` – ${String(Math.floor(end / 60) % 24).padStart(2, "0")}:${String(end % 60).padStart(2, "0")}${end >= 1440 ? ` (+${Math.floor(end / 1440)} day)` : ""}`;
+  }
   const fields = [
     { name: "👤 Client", value: booking.clientName || "Unknown", inline: true },
     { name: "📅 Session Date", value: booking.date || "—", inline: true },
-    { name: "⏰ Time", value: booking.time || "—", inline: true },
+    { name: "⏰ Booking Slot", value: slot, inline: true },
     { name: "📷 Type", value: booking.type || "—", inline: true },
     { name: "⏱ Duration", value: booking.duration ? `${booking.duration} min` : "—", inline: true },
     { name: "📊 Status", value: booking.status ? `${statusEmoji(booking.status)} ${booking.status}` : "pending", inline: true },
   ];
-  if (booking.paymentAmount) fields.push({ name: "💵 Price", value: `$${booking.paymentAmount}`, inline: true });
-  if (booking.depositRequired && booking.depositAmount) fields.push({ name: "🏦 Deposit", value: `$${booking.depositAmount}`, inline: true });
+  if (Number.isFinite(booking.sessionPrice)) fields.push({ name: "📷 Session Price", value: `$${booking.sessionPrice.toFixed(2)}`, inline: true });
+  const extras = Array.isArray(booking.lineItems) ? booking.lineItems.filter(item => item && item.quantity > 0) : [];
+  fields.push({ name: "🛍 Additional Add-ons", value: extras.length ? extras.map(item => `${item.quantity} × ${item.name} — $${Number(item.unitPrice).toFixed(2)} each / $${Number(item.total).toFixed(2)} total`).join("\n") : "None", inline: false });
+  if (Number.isFinite(booking.paymentAmount)) fields.push({ name: "💵 Booking Total", value: `$${booking.paymentAmount.toFixed(2)}`, inline: true });
+  if (booking.depositRequired && Number.isFinite(booking.depositAmount)) fields.push({ name: "🏦 Deposit", value: `$${booking.depositAmount.toFixed(2)}`, inline: true });
   fields.push({ name: "💳 Payment", value: paymentLabel(booking.paymentStatus), inline: true });
+  if (booking.paymentReference) fields.push({ name: "🔖 Payment Reference", value: booking.paymentReference, inline: true });
+  if (booking.phone) fields.push({ name: "📞 Phone", value: booking.phone, inline: true });
   if (booking.clientEmail) fields.push({ name: "📧 Email", value: booking.clientEmail, inline: true });
   if (booking.instagramHandle) fields.push({ name: "📸 Instagram", value: `@${booking.instagramHandle.replace("@", "")}`, inline: true });
   if (booking.location) fields.push({ name: "📍 Location", value: booking.location, inline: true });
   if (booking.notes) fields.push({ name: "📝 Notes", value: booking.notes.slice(0, 300), inline: false });
-  return fields;
+  // Keep even large add-on orders within Discord's field and embed limits.
+  return fields.map(field => {
+    const value = String(field.value);
+    const limit = field.name === "🛍 Additional Add-ons" ? 1024 : 250;
+    return { ...field, value: value.length > limit ? `${value.slice(0, limit - 1)}…` : value || "—" };
+  });
 }
 
 function adminButton(label, url) {
@@ -91,13 +107,7 @@ async function notifyPayment(webhookUrl, booking, paymentStatus) {
     embeds: [{
       title: `💰 ${paymentLabel(paymentStatus)}`,
       color,
-      fields: [
-        { name: "👤 Client", value: booking.clientName || "Unknown", inline: true },
-        { name: "📅 Session", value: booking.date || "—", inline: true },
-        { name: "💵 Amount", value: booking.paymentAmount ? `$${booking.paymentAmount}` : "—", inline: true },
-        { name: "📷 Type", value: booking.type || "—", inline: true },
-        { name: "📧 Email", value: booking.clientEmail || "—", inline: true },
-      ],
+      fields: bookingBaseFields({ ...booking, paymentStatus }),
       footer: { text: `Booking ID: ${booking.id} · PhotoFlow` },
       timestamp: new Date().toISOString(),
     }],
@@ -108,13 +118,9 @@ async function notifyPayment(webhookUrl, booking, paymentStatus) {
 async function notifyBookingUpdate(webhookUrl, booking, oldStatus, newStatus) {
   if (!webhookUrl || oldStatus === newStatus) return;
   const fields = [
-    { name: "👤 Client", value: booking.clientName || "Unknown", inline: true },
-    { name: "📅 Session", value: `${booking.date || "—"} at ${booking.time || "—"}`, inline: true },
-    { name: "📷 Type", value: booking.type || "—", inline: true },
+    ...bookingBaseFields({ ...booking, status: newStatus }),
     { name: "🔄 Status Change", value: `${statusEmoji(oldStatus)} ${oldStatus} → ${statusEmoji(newStatus)} ${newStatus}`, inline: false },
   ];
-  if (booking.paymentAmount) fields.push({ name: "💵 Price", value: `$${booking.paymentAmount}`, inline: true });
-  fields.push({ name: "💳 Payment", value: paymentLabel(booking.paymentStatus), inline: true });
 
   const components = [];
   const adminUrl = APP_URL ? `${APP_URL}/admin/bookings` : null;
