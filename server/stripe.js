@@ -1172,6 +1172,15 @@ function registerRoutes(app, { readDb, writeDb, readLicenseKeys, writeLicenseKey
         }
 
         const application = applyBookingStripePayment(current, metadata, session);
+        if (application.booking.stripePaymentIntentId) {
+          try {
+            const paymentIntent = await s.paymentIntents.retrieve(application.booking.stripePaymentIntentId, { expand: ["latest_charge.balance_transaction"] });
+            const balanceTransaction = paymentIntent.latest_charge?.balance_transaction;
+            if (balanceTransaction && typeof balanceTransaction === "object") application.booking.stripeFeeAmount = balanceTransaction.fee / 100;
+          } catch (error) {
+            console.warn(`Stripe fee lookup failed during booking reconciliation ${bookingId}:`, error.message);
+          }
+        }
         bookings[index] = application.booking;
         if (application.needsReview) {
           db["wv_bookings"] = JSON.stringify(bookings);
@@ -1709,6 +1718,15 @@ function registerRoutes(app, { readDb, writeDb, readLicenseKeys, writeLicenseKey
             }
             const paymentApplication = applyBookingStripePayment(bookings[idx], metadata, session);
             bookings[idx] = paymentApplication.booking;
+            if (bookings[idx].stripePaymentIntentId) {
+              try {
+                const paymentIntent = await s.paymentIntents.retrieve(bookings[idx].stripePaymentIntentId, { expand: ["latest_charge.balance_transaction"] });
+                const balanceTransaction = paymentIntent.latest_charge?.balance_transaction;
+                if (balanceTransaction && typeof balanceTransaction === "object") bookings[idx].stripeFeeAmount = balanceTransaction.fee / 100;
+              } catch (feeErr) {
+                console.warn(`Stripe fee lookup failed for booking ${metadata.bookingId}:`, feeErr.message);
+              }
+            }
             if (paymentApplication.needsReview) {
               db["wv_bookings"] = JSON.stringify(bookings);
               recordStripePaymentReview(db, {

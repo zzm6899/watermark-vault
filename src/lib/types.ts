@@ -151,6 +151,8 @@ export interface Booking {
   paymentMethod?: "stripe" | "bank" | "cash";
   /** Stripe payment intent and hosted receipt, stored only after a confirmed payment. */
   stripePaymentIntentId?: string;
+  /** Stripe processing fee in platform currency, looked up from the settled charge. */
+  stripeFeeAmount?: number;
   stripeReceiptUrl?: string;
   /** Created only after Stripe successfully creates a hosted checkout page. */
   stripeCheckoutSessionId?: string;

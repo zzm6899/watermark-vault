@@ -92,6 +92,7 @@ export default function FinanceView() {
     requestedAt?: string; // for bank-transfer deletion key
     bookingId?: string;
     reference?: string;
+    fee?: number;
   };
 
   const [galleryPayments, setGalleryPayments] = React.useState<PaymentRecord[]>([]);
@@ -148,6 +149,7 @@ export default function FinanceView() {
         ? "cash"
         : ((booking.paymentMethod || booking.depositMethod) === "bank" ? "bank-transfer" : "stripe"),
       amount,
+      fee: booking.paymentMethod === "stripe" || (!booking.paymentMethod && booking.paymentStatus !== "cash" && booking.depositMethod !== "bank") ? booking.stripeFeeAmount : undefined,
       status: "completed",
       description: booking.status === "cancelled" ? "Cancelled — retained payment" : booking.paymentStatus === "deposit-paid" ? "Booking deposit" : "Booking paid in full",
       bookingId: booking.id,
@@ -165,6 +167,8 @@ export default function FinanceView() {
   const totalRevenue = payments.filter(p => p.status === "completed").reduce((s, p) => s + p.amount, 0);
   const pendingRevenue = payments.filter(p => p.status === "pending").reduce((s, p) => s + p.amount, 0);
   const stripeTotal = payments.filter(p => p.method === "stripe" && p.status === "completed").reduce((s, p) => s + p.amount, 0);
+  const stripeFees = payments.filter(p => p.method === "stripe" && p.status === "completed").reduce((s, p) => s + (p.fee || 0), 0);
+  const netProfit = totalRevenue - financeExpenses.reduce((sum, expense) => sum + expense.amount, 0) - stripeFees;
   const bankTotal = payments.filter(p => p.method === "bank-transfer" && p.status === "completed").reduce((s, p) => s + p.amount, 0);
 
   // Invoice stats — reuse the module-level calcInvTotal helper
@@ -199,7 +203,7 @@ export default function FinanceView() {
         <summary className="cursor-pointer font-semibold">Payment activity, invoices & analytics</summary>
         <p className="text-sm text-muted-foreground my-4">Historical activity below can include gallery values estimated from current prices. Use the event report above for recorded amounts. Invoice totals are separate.</p>
         <div className="space-y-6">
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-6 gap-4">
         <div className="glass-panel rounded-xl p-5">
           <p className="text-xs font-body text-muted-foreground tracking-wider uppercase mb-1">Total Revenue</p>
           <p className="font-display text-2xl text-green-400">${totalRevenue.toFixed(2)}</p>
@@ -219,6 +223,16 @@ export default function FinanceView() {
           <p className="text-xs font-body text-muted-foreground tracking-wider uppercase mb-1">Bank Transfer</p>
           <p className="font-display text-2xl text-blue-400">${bankTotal.toFixed(2)}</p>
           <p className="text-[10px] font-body text-muted-foreground mt-1">{payments.filter(p => p.method === "bank-transfer" && p.status === "completed").length} transfers</p>
+        </div>
+        <div className="glass-panel rounded-xl p-5">
+          <p className="text-xs font-body text-muted-foreground tracking-wider uppercase mb-1">Stripe Fees</p>
+          <p className="font-display text-2xl text-destructive">-${stripeFees.toFixed(2)}</p>
+          <p className="text-[10px] font-body text-muted-foreground mt-1">{payments.filter(p => p.method === "stripe" && p.status === "completed" && p.fee !== undefined).length} fees recorded</p>
+        </div>
+        <div className="glass-panel rounded-xl p-5">
+          <p className="text-xs font-body text-muted-foreground tracking-wider uppercase mb-1">Net Profit</p>
+          <p className={`font-display text-2xl ${netProfit >= 0 ? "text-green-400" : "text-red-400"}`}>${netProfit.toFixed(2)}</p>
+          <p className="text-[10px] font-body text-muted-foreground mt-1">After expenses and recorded fees</p>
         </div>
         <button onClick={() => navigate("/admin/bookings?payment=unpaid")} className="glass-panel rounded-xl p-5 text-left hover:border-primary/40 border border-transparent transition-colors">
           <p className="text-xs font-body text-muted-foreground tracking-wider uppercase mb-1">Booking deposits due</p>

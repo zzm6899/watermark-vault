@@ -3530,7 +3530,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                             </span>
                           )}
                           {bk.instagramHandle && <span className="text-xs font-body text-primary">@{bk.instagramHandle.replace("@", "")}</span>}
-                          {albums.some(a => a.bookingId === bk.id || (a.clientName && a.clientName === bk.clientName)) && (
+                          {albums.some(a => a.bookingId === bk.id || (!a.bookingId && !bk.albumId && bk.date === a.date && a.clientName?.trim().toLowerCase() === bk.clientName?.trim().toLowerCase())) && (
                             <span className="text-[10px] font-body px-2 py-0.5 rounded-full border border-green-500/30 bg-green-500/10 text-green-400">📷 Gallery sent</span>
                           )}
                         </div>
