@@ -8,7 +8,7 @@ test("booking notifications include slots and saved add-on pricing within embed 
     payloads.push(JSON.parse(options.body));
     return { ok: true };
   });
-  const url = "https://discord.com/api/webhooks/test/test";
+  const url = "https://discord.com/api/webhooks/12345/test";
   const booking = {
     id: "bk-test", clientName: "Test Client", date: "2030-01-10", time: "23:45", duration: 30,
     status: "pending", paymentStatus: "unpaid", sessionPrice: 100, paymentAmount: 170.5,

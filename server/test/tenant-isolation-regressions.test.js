@@ -9,7 +9,7 @@ const dbGet = (db, key, fallback) => typeof db[key] === 'string' ? JSON.parse(db
 test('admin SMTP automations exclude tenant bookings from the shared booking store', () => {
   const bookings = [{ id: 'main' }, { id: 'a', tenantSlug: 'a' }, { id: 'b', tenantSlug: 'b' }];
   let raw = bookings;
-  const code = source.slice(source.indexOf('function readAutomationBookings()'), source.indexOf('function buildAutomationPreview('));
+  const code = source.slice(source.indexOf('function readAutomationBookings('), source.indexOf('function buildAutomationPreview('));
   const read = vm.runInNewContext(code + ';readAutomationBookings', { readDb: () => ({ wv_bookings: raw }) });
   assert.deepEqual(Array.from(read(), booking => booking.id), ['main']);
   raw = JSON.stringify(bookings);
