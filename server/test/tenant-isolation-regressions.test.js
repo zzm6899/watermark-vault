@@ -125,6 +125,7 @@ test('automatic editing preserves concurrent tenant writes and records derived f
   const edit = vm.runInNewContext(source.slice(start, end) + ';autoEditAlbumUploads', {
     readDb: () => structuredClone(db), writeDb: value => { db = structuredClone(value); }, dbGet,
     _parseAlbumsFromDb: raw => typeof raw === 'string' ? JSON.parse(raw) : raw || [], ALBUMS_KEY: 'wv_albums',
+    tenantStorageLimitForSlug: () => null,
     fs: { existsSync: () => true }, computeAdobeAutoParams: async () => ({}),
     applyEditParams: async () => { await gate; }, path, UPLOADS_DIR: '/uploads', console,
   });
