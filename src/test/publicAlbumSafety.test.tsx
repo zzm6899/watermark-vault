@@ -82,11 +82,11 @@ describe("public album safety", () => {
     expect(source).toContain("setPendingDownloadIntent(intent)");
   });
 
-  it("opens admin galleries with the token-aware URL builder", () => {
+  it("opens public galleries with token-aware links and keeps the dashboard gallery in admin", () => {
     const source = readFileSync(join(process.cwd(), "src/pages/Admin.tsx"), "utf8");
     const tenantSource = readFileSync(join(process.cwd(), "src/pages/TenantAdmin.tsx"), "utf8");
     expect(source).not.toMatch(/window\.open\(`\/gallery\//);
-    expect(source).toContain("window.open(publicGalleryUrl(activeCaptureAlbum)");
+    expect(source).toContain('navigate(`/admin/albums?album=${encodeURIComponent(activeCaptureAlbum.id)}`)');
     expect(source).toContain("window.open(publicGalleryUrl(album)");
     expect(source).toContain("window.open(publicGalleryUrl(matchingAlbum)");
     expect(tenantSource).toContain("href={publicGalleryUrl(alb)}");
