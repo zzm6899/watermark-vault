@@ -46,6 +46,7 @@ import { bookingNeedsOutstandingPayment, hasExpiredBookingPaymentHold } from "@/
 import { calcInvTotal, emptyItem, emptyParty, formatInvMoney, invoiceCurrency } from "@/lib/admin-invoice-utils";
 import {
   getAlbumCaptureStats,
+  getAlbumDeliveryStage,
   getBookingAlbum,
   getReadinessWarnings,
   getSessionStatus,
@@ -70,7 +71,7 @@ import {
 } from "@/lib/api";
 import type {
   CacheBreakdown, EmailAutomationPreview, ManualEditParams, PaymentReviewResolutionStatus,
-  PresetEditParams, XmpPreset, PhotoEditRequest,
+  PresetEditParams, XmpPreset, PhotoEditRequest, UploadedPhotoResult,
 } from "@/lib/api";
 import RichTextEditor, { RichTextDisplay } from "@/components/RichTextEditor";
 import { richTextToPlainText } from "@/lib/rich-text";
@@ -136,10 +137,10 @@ const TAB_ROUTE_MAP: Record<string, Tab> = {
 
 const ADMIN_TAB_LABELS: Record<Tab, string> = {
   dashboard: "Dashboard",
-  "shoot-day": "Shoot Day",
+  "shoot-day": "Session Day",
   bookings: "Bookings",
-  payments: "Payment Operations",
-  automations: "Automations",
+  payments: "Payments",
+  automations: "Automatic Emails",
   events: "Events",
   albums: "Albums",
   photos: "Photos",
@@ -151,7 +152,7 @@ const ADMIN_TAB_LABELS: Record<Tab, string> = {
   profile: "Profile",
   settings: "Settings",
   storage: "Storage",
-  apk: "APK",
+  apk: "Mobile App",
   platform: "Platform",
 };
 
@@ -723,7 +724,7 @@ export default function Admin() {
 
   const tabs = [
     { id: "dashboard" as Tab, group: "Sessions", label: "Dashboard", icon: LayoutDashboard },
-    { id: "shoot-day" as Tab, group: "Sessions", label: "Shoot Day", icon: RadioTower },
+    { id: "shoot-day" as Tab, group: "Sessions", label: "Session Day", icon: RadioTower },
     { id: "bookings" as Tab, group: "Sessions", label: "Bookings", icon: Calendar },
     { id: "events" as Tab, group: "Sessions", label: "Events", icon: Clock },
     { id: "enquiries" as Tab, group: "Sessions", label: "Enquiries", icon: MessageSquare },
@@ -733,12 +734,12 @@ export default function Admin() {
     { id: "payments" as Tab, group: "Business", label: "Payments", icon: CreditCard },
     { id: "finance" as Tab, group: "Business", label: "Finance", icon: DollarSign },
     { id: "invoices" as Tab, group: "Business", label: "Invoices", icon: Receipt },
-    { id: "automations" as Tab, group: "Business", label: "Automations", icon: Bell },
+    { id: "automations" as Tab, group: "Business", label: "Automatic Emails", icon: Bell },
     { id: "website" as Tab, group: "Studio", label: "Website", icon: Globe },
     { id: "profile" as Tab, group: "Studio", label: "Profile", icon: Camera },
     { id: "settings" as Tab, group: "Studio", label: "Settings", icon: Settings },
     { id: "storage" as Tab, group: "Studio", label: "Storage", icon: HardDrive },
-    { id: "apk" as Tab, group: "Studio", label: "APK", icon: Smartphone },
+    { id: "apk" as Tab, group: "Studio", label: "Mobile App", icon: Smartphone },
     ...(superAdminFlag ? [{ id: "platform" as Tab, group: "Studio", label: "Platform", icon: Globe }] : []),
   ];
   return (
@@ -802,8 +803,8 @@ export default function Admin() {
             <span className="font-display text-sm text-foreground capitalize">{tabs.find(t => t.id === activeTab)?.label ?? "Admin"}</span>
           </div>
           <div className="flex items-center gap-2">
-            <button aria-label="Capture photos" onClick={() => navigate("/capture")} className="flex items-center gap-1.5 text-xs font-body text-primary px-2.5 py-1.5 rounded-lg bg-primary/10 active:bg-primary/20">
-              <Upload className="w-3.5 h-3.5" /><span className="hidden xs:inline">Capture</span>
+            <button aria-label="Upload photos" onClick={() => navigate("/capture")} className="flex items-center gap-1.5 text-xs font-body text-primary px-2.5 py-1.5 rounded-lg bg-primary/10 active:bg-primary/20">
+              <Upload className="w-3.5 h-3.5" /><span className="hidden xs:inline">Upload</span>
             </button>
             <button onClick={handleLogout} aria-label="Log out" className="flex items-center gap-1.5 text-xs font-body text-muted-foreground px-2.5 py-1.5 rounded-lg hover:bg-secondary">
               <LogOut className="w-3.5 h-3.5" />
@@ -1031,7 +1032,7 @@ function ShootDayCommandCenterView() {
   const setBookingStatus = (booking: Booking, status: Booking["status"]) => {
     const statusHistory = [
       ...(booking.statusHistory || []),
-      { status, changedAt: new Date().toISOString(), note: "Updated from Shoot Day" },
+      { status, changedAt: new Date().toISOString(), note: "Updated from Session Day" },
     ];
     updateBooking({ ...booking, status, statusHistory });
     setRefreshTick((tick) => tick + 1);
@@ -1173,7 +1174,7 @@ function ShootDayCommandCenterView() {
     const linkedAlbum = album || createShootDayAlbum(booking, eventType) || getBookingAlbum(booking, getAlbums());
     const statusHistory = [
       ...(booking.statusHistory || []),
-      { status: "completed" as const, changedAt: new Date().toISOString(), note: "Wrapped from Shoot Day" },
+      { status: "completed" as const, changedAt: new Date().toISOString(), note: "Wrapped from Session Day" },
     ];
     updateBooking({ ...booking, status: "completed", albumId: linkedAlbum?.id || booking.albumId, statusHistory });
     if (linkedAlbum) {
@@ -1290,7 +1291,7 @@ function ShootDayCommandCenterView() {
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Shoot Day Run Sheet ${escapeRunSheetHtml(selectedDate)}</title>
+  <title>Session Day Run Sheet ${escapeRunSheetHtml(selectedDate)}</title>
   <style>
     * { box-sizing: border-box; }
     body { margin: 32px; color: #111827; font-family: Arial, sans-serif; }
@@ -1313,7 +1314,7 @@ function ShootDayCommandCenterView() {
 <body>
   <header>
     <div>
-      <h1>Shoot Day Run Sheet</h1>
+      <h1>Session Day Run Sheet</h1>
       <div class="meta">${escapeRunSheetHtml(selectedDate)} · ${rows.length} session${rows.length !== 1 ? "s" : ""}</div>
     </div>
     <div class="meta">Generated ${escapeRunSheetHtml(new Date().toLocaleString())}</div>
@@ -1362,7 +1363,7 @@ function ShootDayCommandCenterView() {
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-5">
         <div>
-          <h2 className="font-display text-lg sm:text-2xl text-foreground">Shoot Day</h2>
+          <h2 className="font-display text-lg sm:text-2xl text-foreground">Session Day</h2>
           <p className="text-xs font-body text-muted-foreground mt-1">Run sheet, capture state, client readiness, and gallery handoff for the selected day.</p>
         </div>
         <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-2">
@@ -1680,13 +1681,7 @@ function DashboardView() {
 
   let totalRevenue = 0;
   let unpaidIncome = 0;
-  let totalSessionMins = 0;
-  let totalBookingCount = 0;
   for (const booking of bookings) {
-    if (booking.archived !== true) {
-      if (booking.status !== "cancelled") totalBookingCount += 1;
-      totalSessionMins += booking.duration || 0;
-    }
     if (booking.paymentStatus === "paid" || booking.paymentStatus === "cash") {
       totalRevenue += booking.paymentAmount || 0;
     } else if (booking.paymentStatus === "deposit-paid") {
@@ -1713,27 +1708,20 @@ function DashboardView() {
     return { id: alb.id, title: alb.title, totalPhotos: albumPhotoTotal(alb), totalDownloaded, sessions: history.length, lastDownload: history.length > 0 ? history[history.length - 1].downloadedAt : null };
   }).filter(a => a.totalPhotos > 0);
 
-  const totalSessionHours = Math.floor(totalSessionMins / 60);
-  const totalSessionRemMins = totalSessionMins % 60;
-  const totalSessionLabel = totalSessionHours > 0
-    ? (totalSessionRemMins > 0 ? `${totalSessionHours}h ${totalSessionRemMins}m` : `${totalSessionHours}h`)
-    : `${totalSessionMins}m`;
-
-  const todayDateStr = new Date().toISOString().split("T")[0];
+  const todayDateStr = localDateString();
   const upcomingBookings = bookings
-    .filter(b => b.status !== "cancelled" && b.date >= todayDateStr)
+    .filter(b => b.archived !== true && b.status !== "cancelled" && b.date >= todayDateStr)
     .sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
   const recentPastBookings = bookings
-    .filter(b => b.date < todayDateStr)
+    .filter(b => b.archived !== true && b.status !== "cancelled" && b.date < todayDateStr)
     .sort((a, b) => b.date.localeCompare(a.date) || b.time.localeCompare(a.time))
     .slice(0, 5); // last 5 past sessions
 
   const stats = [
-    { label: "Total Bookings", value: totalBookingCount, icon: Calendar, color: "text-primary", action: "Open", onClick: () => navigate("/admin/bookings") },
-    { label: "Revenue", value: `$${totalRevenue.toLocaleString()}`, icon: DollarSign, color: "text-green-400", action: "Finance", onClick: () => navigate("/admin/finance") },
-    { label: "Deposit / payment due", value: `$${unpaidIncome.toLocaleString()}`, icon: DollarSign, color: "text-destructive", action: "Bookings", onClick: () => navigate("/admin/bookings?payment=unpaid") },
-    { label: "Pending Requests", value: allPendingRequests.length, icon: Download, color: "text-yellow-400", action: "Review", onClick: () => navigate("/admin/albums") },
-    { label: "Total Shoot Time", value: totalSessionLabel, icon: Clock, color: "text-blue-400", action: "Schedule", onClick: () => navigate("/admin/shoot-day") },
+    { label: "Collected", value: `$${totalRevenue.toLocaleString()}`, icon: DollarSign, color: "text-green-400", action: "Finance", onClick: () => navigate("/admin/finance") },
+    { label: "Payments due", value: `$${unpaidIncome.toLocaleString()}`, icon: DollarSign, color: "text-amber-300", action: "Bookings", onClick: () => navigate("/admin/bookings?focus=payment") },
+    { label: "Upcoming sessions", value: upcomingBookings.length, icon: Calendar, color: "text-primary", action: "Schedule", onClick: () => navigate("/admin/shoot-day") },
+    { label: "Download requests", value: allPendingRequests.length, icon: Download, color: "text-blue-300", action: "Review", onClick: () => navigate("/admin/albums") },
   ];
 
   // Invoice stats for dashboard
@@ -1755,112 +1743,23 @@ function DashboardView() {
     { label: "Overdue",              value: invOverdue.length,               sub: invOverdue.length > 0 ? "requires attention" : "all on time",         icon: TrendingDown, color: invOverdue.length > 0 ? "text-red-400" : "text-muted-foreground", onClick: () => navigate("/admin/invoices") },
   ] : [];
   const nextBooking = upcomingBookings[0];
-  const operationsSummary = [
-    {
-      label: "Next session",
-      value: nextBooking ? `${nextBooking.date} · ${nextBooking.time}` : "Nothing scheduled",
-      detail: nextBooking?.clientName || "Open the calendar to plan the next shoot",
-      tone: nextBooking ? "text-primary" : "text-muted-foreground",
-      onClick: () => navigate("/admin/shoot-day"),
-    },
-    {
-      label: "Download approvals",
-      value: `${allPendingRequests.length} waiting`,
-      detail: allPendingRequests.length ? "Client requests need a decision" : "No client requests waiting",
-      tone: allPendingRequests.length ? "text-amber-300" : "text-emerald-400",
-      onClick: () => navigate("/admin/albums"),
-    },
-    {
-      label: "Overdue invoices",
-      value: `${invOverdue.length} overdue`,
-      detail: invOverdue.length ? "Follow up outstanding invoices" : "All issued invoices are on time",
-      tone: invOverdue.length ? "text-red-400" : "text-emerald-400",
-      onClick: () => navigate("/admin/invoices"),
-    },
+  const deliveryQueue = bookings
+    .filter(booking => booking.archived !== true && ["confirmed", "completed"].includes(booking.status) && booking.date < todayDateStr)
+    .map(booking => {
+      const album = getBookingAlbum(booking, albums);
+      return { booking, album, stage: album ? getAlbumDeliveryStage(album) : "to-edit" };
+    })
+    .filter(item => item.stage !== "delivered" && item.stage !== "archived")
+    .sort((a, b) => a.booking.date.localeCompare(b.booking.date) || a.booking.time.localeCompare(b.booking.time));
+  const deliveryGroups = [
+    { id: "to-edit", label: "To edit", items: deliveryQueue.filter(item => item.stage === "to-edit"), tone: "text-amber-300" },
+    { id: "proofing", label: "With client", items: deliveryQueue.filter(item => item.stage === "proofing"), tone: "text-blue-300" },
+    { id: "editing", label: "Editing", items: deliveryQueue.filter(item => item.stage === "editing"), tone: "text-primary" },
   ];
 
-  let capturedToday = 0;
-  let bestOfCount = 0;
-  let reviewCount = 0;
-  let rejectCount = 0;
-  let clientReadyCount = 0;
-  let latestCaptureTime: number | null = null;
-  let activeCaptureAlbum: typeof albums[number] | undefined;
-  let activeCaptureAlbumTime = 0;
-  for (const album of albums) {
-    let albumLatest = 0;
-    const proofingStage = album.proofingStage || "not-started";
-    const closedAlbum = proofingStage === "finals-delivered" || album.status === "delivered";
-    for (const photo of album.photos || []) {
-      const photoTime = new Date(photo.uploadedAt || photo.takenAt || 0).getTime();
-      if (Number.isFinite(photoTime)) {
-        if (!latestCaptureTime || photoTime > latestCaptureTime) latestCaptureTime = photoTime;
-        if (photoTime > albumLatest) albumLatest = photoTime;
-      }
-      if ((photo.uploadedAt || photo.takenAt || "").startsWith(todayDateStr)) capturedToday += 1;
-      if (photo.starred || photo.cull?.status === "pick") bestOfCount += 1;
-      if (photo.cull?.status === "reject") rejectCount += 1;
-      if (photo.starred || !photo.cull?.status || photo.cull?.status === "pick" || photo.cull?.status === "review" || photo.cull?.status === "unscored") {
-        clientReadyCount += 1;
-      }
-      if (!closedAlbum && !photo.starred && photo.cull?.status !== "pick" && photo.cull?.status !== "reject" && (photo.cull?.status === "review" || photo.cull?.status === "unscored")) {
-        reviewCount += 1;
-      }
-    }
-    if ((album.photos?.length || 0) > 0 && albumLatest >= activeCaptureAlbumTime) {
-      activeCaptureAlbum = album;
-      activeCaptureAlbumTime = albumLatest;
-    }
-  }
-  const captureSummaryTiles = [
-    { label: "Today", value: capturedToday, sub: "Captured today", tone: "text-primary", onClick: () => navigate("/capture") },
-    { label: "Client ready", value: clientReadyCount, sub: "Visible by default", tone: "text-cyan-300", onClick: () => navigate("/admin/albums") },
-    { label: "Best of", value: bestOfCount, sub: "Picks / starred", tone: "text-green-400", onClick: () => navigate("/capture") },
-    { label: "Needs review", value: reviewCount, sub: "Active cull queue", tone: "text-yellow-400", onClick: () => navigate("/capture") },
-    { label: "Hidden rejects", value: rejectCount, sub: "Recoverable only", tone: "text-red-400", onClick: () => navigate("/capture") },
-  ];
-  const captureFeatureTiles = [
-    {
-      label: "Live capture",
-      detail: "Phone FTP intake, camera queue, Best of review, and proofing send-off.",
-      icon: Wifi,
-      action: "Open",
-      onClick: () => navigate("/capture"),
-      tone: "text-cyan-300",
-    },
-    {
-      label: "Shoot day",
-      detail: "Run sheet, readiness warnings, album links, status updates, and CSV export.",
-      icon: RadioTower,
-      action: "Manage",
-      onClick: () => navigate("/admin/shoot-day"),
-      tone: "text-primary",
-    },
-    {
-      label: "Automations",
-      detail: "Default reminder rules for upcoming shoots, overdue payments, and follow-ups.",
-      icon: Bell,
-      action: "Rules",
-      onClick: () => navigate("/admin/automations"),
-      tone: "text-amber-300",
-    },
-    {
-      label: "Cleanup",
-      detail: "Find stale upload records, unsupported files, cache state, and backups.",
-      icon: HardDrive,
-      action: "Storage",
-      onClick: () => navigate("/admin/storage"),
-      tone: "text-emerald-300",
-    },
-    {
-      label: "Android APK",
-      detail: "Download the latest phone capture app, copy the install link, and verify build details.",
-      icon: Smartphone,
-      action: "APK",
-      onClick: () => navigate("/admin/apk"),
-      tone: "text-violet-300",
-    },
-  ];
+  const activeCaptureAlbum = albums
+    .filter(album => albumPhotoTotal(album) > 0)
+    .sort((a, b) => (b.updatedAt || b.date).localeCompare(a.updatedAt || a.date))[0];
 
   // ── Booking Calendar ────────────────────────────────────────
   const [calView, setCalView] = useState<"month" | "week">("month");
@@ -1871,12 +1770,12 @@ function DashboardView() {
   for (const et of eventTypes) etColorMap[et.id] = et.color || "#7c3aed";
 
   const todayBookings = bookings
-    .filter(b => b.status !== "cancelled" && b.date === todayDateStr)
+    .filter(b => b.archived !== true && b.status !== "cancelled" && b.date === todayDateStr)
     .sort((a, b) => a.time.localeCompare(b.time));
 
   const bookingsByDate: Record<string, typeof bookings> = {};
   for (const b of bookings) {
-    if (b.status === "cancelled") continue;
+    if (b.archived === true || b.status === "cancelled") continue;
     if (!bookingsByDate[b.date]) bookingsByDate[b.date] = [];
     bookingsByDate[b.date].push(b);
   }
@@ -1966,24 +1865,23 @@ function DashboardView() {
       <div className="admin-page-header">
         <div>
           <h2 className="font-display text-3xl sm:text-4xl leading-none text-foreground">Dashboard</h2>
-          <p className="mt-2 text-sm font-body text-muted-foreground">{new Date().toLocaleDateString("en-AU", { weekday: "long", day: "numeric", month: "long" })} · bookings, money and delivery health.</p>
+          <p className="mt-2 text-sm font-body text-muted-foreground">{new Date().toLocaleDateString("en-AU", { weekday: "long", day: "numeric", month: "long" })} · Your bookings and client deliveries at a glance.</p>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2">
           <Button variant="outline" onClick={() => navigate("/admin/bookings")} className="gap-2 font-body text-sm h-10 px-3"><CalendarPlus className="w-4 h-4" /><span className="hidden sm:inline">New booking</span></Button>
           <Button variant="outline" onClick={() => navigate("/admin/albums")} className="gap-2 font-body text-sm h-10 px-3"><ImagePlus className="w-4 h-4" /><span className="hidden sm:inline">New album</span></Button>
-          <Button onClick={() => window.location.href = "/capture"} className="gap-2 font-body text-sm h-10 px-4 shadow-lg shadow-primary/10"><Upload className="w-4 h-4" /><span className="hidden sm:inline">Capture</span></Button>
+          <Button onClick={() => window.location.href = "/capture"} className="gap-2 font-body text-sm h-10 px-4 shadow-lg shadow-primary/10"><Upload className="w-4 h-4" /><span className="hidden sm:inline">Upload Photos</span></Button>
         </div>
       </div>
 
       {/* ── Stats grid ── */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mb-3">
-        {stats.map((stat) => {
-          const card = (
+      <div className="grid grid-cols-2 xl:grid-cols-4 gap-3 mb-6">
+        {stats.map(stat => (
             <button
               key={stat.label}
               type="button"
               onClick={stat.onClick}
-              className="glass-panel metric-card group rounded-xl p-4 sm:p-5 text-left transition-all hover:border-primary/35 hover:bg-white/[0.065] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+              className="glass-panel metric-card group rounded-lg p-4 sm:p-5 text-left transition-colors hover:border-primary/35 hover:bg-white/[0.04] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
             >
               <div className="mb-3 flex items-start justify-between gap-3">
                 <span className="flex size-9 items-center justify-center rounded-lg bg-white/[0.055] ring-1 ring-white/10">
@@ -1992,128 +1890,56 @@ function DashboardView() {
                 <span className="text-[10px] font-body tracking-wider uppercase text-primary opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">{stat.action}</span>
               </div>
               <p className="font-sans text-2xl sm:text-3xl font-semibold text-foreground">{stat.value}</p>
-              <p className="text-[10px] font-body text-muted-foreground tracking-wider uppercase mt-1 leading-tight">{stat.label}</p>
+              <p className="text-xs font-body text-muted-foreground mt-1 leading-tight">{stat.label}</p>
             </button>
-          );
-          if (stat.label !== "Total Shoot Time") return card;
-          return (
-            <TooltipProvider key={stat.label}>
-              <Tooltip>
-                <TooltipTrigger asChild>{card}</TooltipTrigger>
-                <TooltipContent><p className="text-xs font-body">Total combined duration of all confirmed and completed bookings</p></TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
-          );
-        })}
-      </div>
-
-      <div className="mb-4 grid grid-cols-1 gap-2 md:grid-cols-3">
-        {operationsSummary.map(item => (
-          <button key={item.label} type="button" onClick={item.onClick} className="group flex min-h-[76px] items-center justify-between gap-4 rounded-lg border border-border/70 bg-card/45 px-4 py-3 text-left transition-colors hover:border-primary/35 hover:bg-card/75 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/45">
-            <div className="min-w-0">
-              <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">{item.label}</p>
-              <p className={`mt-1 truncate text-sm font-body font-medium ${item.tone}`}>{item.value}</p>
-              <p className="mt-0.5 truncate text-[11px] font-body text-muted-foreground/70">{item.detail}</p>
-            </div>
-            <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-primary" />
-          </button>
         ))}
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-[1.25fr_0.75fr] gap-3 mb-6">
-        <div className="glass-panel rounded-xl p-5 sm:p-6 overflow-hidden">
-          <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
-            <div className="min-w-0">
-              <div className="flex items-center gap-2 mb-2">
-                <span className="w-8 h-8 rounded-lg bg-primary/10 text-primary flex items-center justify-center">
-                  <Wifi className="w-4 h-4" />
-                </span>
-                <div>
-                  <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground">Studio operations</p>
-                  <h3 className="font-display text-2xl leading-none text-foreground">Capture and delivery</h3>
-                </div>
-              </div>
-              <p className="text-xs font-body text-muted-foreground max-w-2xl">
-                Move from live intake to review and client delivery. Rejects remain recoverable and stay hidden from the client gallery.
-              </p>
-              {latestCaptureTime && (
-                <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground/70 mt-2">
-                  Latest capture {new Date(latestCaptureTime).toLocaleString("en-AU", { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" })}
-                </p>
-              )}
-            </div>
-            <Button onClick={() => window.location.href = "/capture"} className="gap-2 font-body shrink-0">
-              <Upload className="w-4 h-4" /> Open Capture
-            </Button>
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-2 mt-4">
-            {captureFeatureTiles.map(tile => (
-              <button
-                key={tile.label}
-                type="button"
-                onClick={tile.onClick}
-                className="group rounded-lg bg-white/[0.045] border border-white/10 p-3 text-left transition-all hover:border-primary/35 hover:bg-primary/[0.06]"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-white/[0.055] ring-1 ring-white/10">
-                    <tile.icon className={`w-4 h-4 ${tile.tone}`} />
-                  </span>
-                  <span className="text-[10px] font-body tracking-wider uppercase text-primary opacity-0 transition-opacity group-hover:opacity-100">{tile.action}</span>
-                </div>
-                <p className="mt-3 text-sm font-body font-medium text-foreground">{tile.label}</p>
-                <p className="mt-1 text-[11px] font-body leading-relaxed text-muted-foreground">{tile.detail}</p>
-              </button>
-            ))}
-          </div>
-          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 mt-3">
-            {captureSummaryTiles.map(item => (
-              <button
-                key={item.label}
-                type="button"
-                onClick={item.onClick}
-                className="group rounded-lg bg-white/[0.045] border border-white/10 p-3 text-left transition-all hover:border-primary/35 hover:bg-primary/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/45"
-              >
-                <p className={`font-sans text-xl font-semibold ${item.tone}`}>{item.value}</p>
-                <div className="mt-0.5 flex items-center justify-between gap-2">
-                  <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground">{item.label}</p>
-                  <ExternalLink className="w-3 h-3 text-primary opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
-                </div>
-                <p className="mt-1 text-[10px] font-body text-muted-foreground/60 leading-tight">{item.sub}</p>
-              </button>
-            ))}
-          </div>
+      <div className="glass-panel mb-6 rounded-xl p-4 sm:p-5">
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <div><h3 className="font-display text-xl text-foreground">Gallery delivery</h3><p className="text-xs font-body text-muted-foreground">Sessions waiting for editing or client review.</p></div>
+          <Button variant="outline" size="sm" onClick={() => navigate("/admin/albums")} className="shrink-0">All galleries</Button>
         </div>
-        <div className="glass-panel rounded-xl p-5 sm:p-6">
-          <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-2">Latest Album</p>
-          {activeCaptureAlbum ? (
-            <>
-              <h3 className="font-display text-base text-foreground truncate">{activeCaptureAlbum.title}</h3>
-              <p className="text-xs font-body text-muted-foreground truncate mt-1">{activeCaptureAlbum.clientName || activeCaptureAlbum.clientEmail || "No client assigned"}</p>
-              <div className="flex items-center gap-2 mt-4">
-                <Button size="sm" variant="outline" onClick={async () => {
-                  if (await ensurePublicShareReady(activeCaptureAlbum, "open this gallery")) {
-                    window.open(publicGalleryUrl(activeCaptureAlbum), "_blank", "noopener,noreferrer");
-                  }
-                }} className="gap-2 text-xs font-body">
-                  <Eye className="w-3.5 h-3.5" /> Client View
-                </Button>
-                <Button size="sm" variant="outline" onClick={() => window.location.href = "/capture"} className="gap-2 text-xs font-body">
-                  <Camera className="w-3.5 h-3.5" /> Add Photos
-                </Button>
-              </div>
-            </>
-          ) : (
-            <div className="py-4 text-center">
-              <Image className="w-8 h-8 text-muted-foreground/25 mx-auto mb-2" />
-              <p className="text-xs font-body text-muted-foreground">No captured albums yet</p>
-            </div>
-          )}
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+          {deliveryGroups.map(group => (
+            <section key={group.id} className="rounded-lg border border-border/70 bg-card/35 p-3">
+              <div className="mb-2 flex items-center justify-between"><h4 className={`text-xs font-body font-semibold uppercase tracking-wider ${group.tone}`}>{group.label}</h4><span className="text-xs text-muted-foreground">{group.items.length}</span></div>
+              {group.items.length ? <div className="space-y-1.5">{group.items.slice(0, 3).map(item => <button key={item.booking.id} type="button" onClick={() => item.album ? navigate(`/admin/albums?album=${encodeURIComponent(item.album.id)}`) : navigate(`/admin/bookings?search=${encodeURIComponent(bookingPaymentReference(item.booking))}`)} className="flex w-full items-center justify-between gap-2 rounded px-2 py-2 text-left hover:bg-secondary/60"><span className="min-w-0"><span className="block truncate text-xs text-foreground">{item.booking.clientName}</span><span className="block text-[10px] text-muted-foreground">{item.booking.date}{item.album ? ` · ${item.album.title}` : " · No gallery linked"}</span></span><ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /></button>)}{group.items.length > 3 && <p className="px-2 pt-1 text-[10px] text-muted-foreground">+{group.items.length - 3} more</p>}</div> : <p className="py-3 text-xs text-muted-foreground">Nothing waiting here.</p>}
+            </section>
+          ))}
         </div>
+      </div>
+
+      <div className="glass-panel mb-6 overflow-hidden rounded-xl">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between p-4 sm:p-5">
+          <div>
+            <h3 className="font-display text-xl text-foreground">Photo workflow</h3>
+            <p className="mt-1 text-xs font-body text-muted-foreground">Upload a session and keep its gallery moving towards delivery.</p>
+          </div>
+          <Button onClick={() => window.location.href = "/capture"} className="gap-2 font-body self-start sm:self-auto">
+            <Upload className="w-4 h-4" /> Upload photos
+          </Button>
+        </div>
+        {activeCaptureAlbum ? (
+          <button type="button" onClick={() => navigate(`/admin/albums?album=${encodeURIComponent(activeCaptureAlbum.id)}`)} className="group flex w-full items-center gap-4 border-t border-border/70 bg-card/30 p-4 text-left transition-colors hover:bg-card/60 sm:px-5">
+            <div className="h-16 w-20 shrink-0 overflow-hidden rounded-md bg-secondary sm:h-20 sm:w-28">
+              {activeCaptureAlbum.coverImage && <img src={activeCaptureAlbum.coverImage} alt="" loading="lazy" className="h-full w-full object-cover" />}
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Recently updated gallery</p>
+              <h4 className="mt-1 truncate font-display text-lg text-foreground">{activeCaptureAlbum.title}</h4>
+              <p className="mt-0.5 truncate text-xs font-body text-muted-foreground">{activeCaptureAlbum.clientName || activeCaptureAlbum.clientEmail || "No client assigned"} · {albumPhotoTotal(activeCaptureAlbum)} photos</p>
+            </div>
+            <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-primary" />
+          </button>
+        ) : (
+          <div className="border-t border-border/70 px-5 py-4 text-sm font-body text-muted-foreground">No galleries with photos yet.</div>
+        )}
       </div>
 
       {/* ── Invoice stats row (only when invoices exist) ── */}
       {invoiceStats.length > 0 && (
-        <div className="grid grid-cols-3 gap-3 mb-6">
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3 mb-6">
           {invoiceStats.map((stat) => (
             <button
               key={stat.label}
@@ -2771,7 +2597,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
   const [archivingBookingIds, setArchivingBookingIds] = useState<Set<string>>(new Set());
   const [resolvingPaymentReviewId, setResolvingPaymentReviewId] = useState<string | null>(null);
   const [showCancelled, setShowCancelled] = useState(false);
-  const [bookingFocus, setBookingFocus] = useState<"all" | "pending" | "today" | "next7" | "payment" | "review">("all");
+  const [bookingFocus, setBookingFocus] = useState<"all" | "pending" | "today" | "next7" | "payment" | "review">(() => new URLSearchParams(location.search).get("focus") === "payment" ? "payment" : "all");
   const resetBookingFilters = () => {
     setBookingSearch("");
     setStatusFilter("all");
@@ -2947,11 +2773,11 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
       if (!result.ok || !result.booking) { toast.error(result.error || "Stripe has not confirmed this payment"); return; }
       setBookingsState(previous => previous.map(booking => booking.id === result.booking!.id ? result.booking! : booking));
       cacheBookingLocally(result.booking);
-      if (result.booking.paymentNeedsReview) toast.warning("Stripe found the payment, but it needs manual review in Payment Operations");
+      if (result.booking.paymentNeedsReview) toast.warning("Stripe found the payment, but it needs review in Payments");
       else toast.success(`Stripe payment verified as ${paymentStatusLabel(result.booking.paymentStatus || "paid")}`);
       return;
     }
-    toast.error("This payment state is server-managed. Use Payment Operations to verify card or bank payments.");
+    toast.error("Review this card or bank payment from Payments.");
   };
 
   const handleExportCsv = () => {
@@ -3476,6 +3302,9 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
             </div>
           ) : sortedBookings.map((bk) => {
             const isExpanded = expandedId === bk.id;
+            const linkedAlbum = getBookingAlbum(bk, albums);
+            const linkedAlbumStage = getAlbumDeliveryStage(linkedAlbum);
+            const deliveryStage = linkedAlbumStage ? ({ "to-edit": "To edit", proofing: "Waiting on client", editing: "Editing", delivered: "Gallery delivered", archived: "Gallery archived" } as const)[linkedAlbumStage] : null;
             const et = eventTypes.find(e => e.id === bk.eventTypeId);
             const remaining = Math.max(0, (bk.paymentAmount || 0) - (bk.depositAmount || 0));
             const showBalance = remaining > 0 && !["paid", "cash"].includes(bk.paymentStatus || "unpaid");
@@ -3530,9 +3359,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                             </span>
                           )}
                           {bk.instagramHandle && <span className="text-xs font-body text-primary">@{bk.instagramHandle.replace("@", "")}</span>}
-                          {albums.some(a => a.bookingId === bk.id || (!a.bookingId && !bk.albumId && bk.date === a.date && a.clientName?.trim().toLowerCase() === bk.clientName?.trim().toLowerCase())) && (
-                            <span className="text-[10px] font-body px-2 py-0.5 rounded-full border border-green-500/30 bg-green-500/10 text-green-400">📷 Gallery sent</span>
-                          )}
+                          {deliveryStage && <span className={`text-[10px] font-body px-2 py-0.5 rounded-full border ${deliveryStage === "Gallery delivered" ? "border-green-500/30 bg-green-500/10 text-green-400" : deliveryStage === "Gallery archived" ? "border-border bg-secondary text-muted-foreground" : "border-primary/30 bg-primary/10 text-primary"}`}>📷 {deliveryStage}</span>}
                         </div>
                         <p className={`text-xs font-body text-muted-foreground${bk.status === "cancelled" ? " line-through" : ""}`}>{bk.type} · {bk.date} {formatBookingTimeRange(bk.time, bk.duration) || "Time TBC"} · {formatDuration(bk.duration)}</p>
                         {!!bk.lineItems?.length && <p className="mt-1 text-xs text-primary break-words">Extras: {bk.lineItems.map(item => `${item.name} × ${item.quantity}`).join(" · ")}</p>}
@@ -4807,7 +4634,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
       const result = await sendEmail(album.clientEmail, `Your photos are ready — ${album.clientName || "Gallery"}`, html, message);
       if (result.ok) toast.success(`Email sent to ${album.clientEmail}`);
       else toast.error(`Failed: ${result.error || "Unknown error"}`);
-    } catch { toast.error("Email send failed — check SMTP settings"); }
+    } catch { toast.error("Email could not be sent. Check your email settings."); }
   };
 
   return (
@@ -5523,30 +5350,48 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
   };
 
   const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
+    const input = e.currentTarget;
+    const files = input.files;
     if (!files || files.length === 0) return;
     const fileArr = Array.from(files).filter(isSupportedUploadFile);
     if (fileArr.length === 0) {
       toast.error("No supported image files found");
-      if (e.target) e.target.value = "";
+      input.value = "";
       return;
     }
     if (fileArr.length < files.length) {
       toast.info(`Skipped ${files.length - fileArr.length} unsupported file${files.length - fileArr.length === 1 ? "" : "s"}`);
     }
     setUploadStats({ total: fileArr.length, done: 0, errors: 0, savedBytes: 0 });
+    try {
     const basePhotos = await loadEditorPhotosForAppend();
     if (!basePhotos) {
       setUploadStats(null);
-      if (e.target) e.target.value = "";
       return;
     }
 
     if (isServerMode()) {
       // Upload to server — files saved to TrueNAS disk
-      const results = await uploadPhotosToServer(fileArr, (done, total, bytesPerSecond) => {
-        setUploadStats(prev => prev ? { ...prev, done, total, speed: bytesPerSecond } : null);
-      }, undefined, 3, title || undefined, album?.id);
+      const uploadOrder = [...fileArr].sort((a, b) => {
+        const aJpeg = /\.(?:jpe?g)$/i.test(a.name) ? 0 : 1;
+        const bJpeg = /\.(?:jpe?g)$/i.test(b.name) ? 0 : 1;
+        return aJpeg - bJpeg;
+      });
+      const uploadedByFile = new Map<File, UploadedPhotoResult>();
+      let uploadError: unknown;
+      try {
+        await uploadPhotosToServer(fileArr, (done, total, bytesPerSecond) => {
+          setUploadStats(prev => prev ? { ...prev, done, total, speed: bytesPerSecond } : null);
+        }, undefined, 3, title || undefined, album?.id, false, "balanced", undefined, (file, result) => uploadedByFile.set(file, result));
+      } catch (error) {
+        // Keep acknowledged photos: other concurrent uploads may have completed
+        // before one expired or invalid request stopped the remaining workers.
+        uploadError = error;
+      }
+      const results = uploadOrder.flatMap(file => {
+        const result = uploadedByFile.get(file);
+        return result ? [result] : [];
+      });
       // Add all photos immediately — use server-side thumbnails (no heavy client-side canvas work)
       const newPhotos: Photo[] = results.filter(r => isSupportedPhotoSource(r.url)).map(r => ({
         id: r.id, src: r.url, thumbnail: r.url + "?size=thumb&wm=0",
@@ -5592,7 +5437,10 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
       setUploadStats(prev => prev ? { ...prev, done: fileArr.length, errors: fileArr.length - results.length, savedBytes: 0 } : null);
       if (results.length > 0) {
         if (!album) {
-          toast.success(`${results.length} photo${results.length === 1 ? "" : "s"} uploaded. Save the album to publish the gallery.`);
+          const summary = results.length === fileArr.length
+            ? `${results.length} photo${results.length === 1 ? "" : "s"} uploaded.`
+            : `${results.length} of ${fileArr.length} photos uploaded; ${fileArr.length - results.length} failed.`;
+          toast[results.length === fileArr.length ? "success" : "warning"](`${summary} Save the album to publish the gallery.`);
         } else if (!galleryConfirmed) {
           toast.warning(
             `${results.length}${results.length < fileArr.length ? ` of ${fileArr.length}` : ""} photo${results.length === 1 ? "" : "s"} uploaded safely, but the gallery update was not confirmed. ${galleryConfirmationError || "Use Save changes to retry publishing."}`
@@ -5600,11 +5448,12 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
         } else if (results.length === fileArr.length) {
           toast.success(`${results.length} photo${results.length === 1 ? "" : "s"} uploaded and gallery updated`);
         } else {
-          toast.warning(`${results.length} of ${fileArr.length} photos uploaded and gallery updated. ${fileArr.length - results.length} failed.`);
+          const reason = uploadError instanceof Error ? ` ${uploadError.message}` : "";
+          toast.warning(`${results.length} of ${fileArr.length} photos uploaded and gallery updated. ${fileArr.length - results.length} failed.${reason}`);
         }
         window.dispatchEvent(new CustomEvent("storage-synced"));
       } else {
-        toast.error("Upload failed — no photos were saved");
+        toast.error(uploadError instanceof Error ? uploadError.message : "Upload failed — no photos were saved");
       }
     } else {
       // Fallback: compress to base64 for localStorage
@@ -5622,7 +5471,12 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
         }
       }
     }
-    if (e.target) e.target.value = "";
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Upload failed. Please try again.");
+    } finally {
+      setSavingAlbum(false);
+      input.value = "";
+    }
   };
 
   const handleBookingLink = (bkId: string) => {
@@ -5682,14 +5536,14 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
     const result = await autoCullAlbum(album.id);
     setAutoCulling(false);
     if (!result.ok || !result.album) {
-      toast.error(result.error || "Culling could not be completed");
+      toast.error(result.error || "Photo review could not be completed");
       return;
     }
     const analysedPhotos = result.album.photos || [];
     setPhotos(analysedPhotos);
     setLiveAlbum(result.album);
     onUpdate?.(result.album);
-    toast.success(`Cull complete: ${result.counts?.pick || 0} best picks, ${result.counts?.review || 0} to review, ${result.counts?.reject || 0} held back`);
+    toast.success(`Photo review complete: ${result.counts?.pick || 0} selected, ${result.counts?.review || 0} to review, ${result.counts?.reject || 0} held back`);
   };
 
   const sortPhotos = (mode: "name" | "file-number" | "uploaded" | "captured") => {
@@ -8712,7 +8566,7 @@ function SettingsView() {
           { id: "watermark", label: "Watermark" },
           { id: "general", label: "General" },
           { id: "email", label: "Email Templates" },
-          { id: "automations", label: "Automations" },
+          { id: "automations", label: "Automatic Emails" },
           { id: "payments", label: "Payments" },
           { id: "notifications", label: "Notifications" },
           { id: "integrations", label: "Integrations" },
@@ -9462,7 +9316,7 @@ function AutomationsView() {
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-4">
       <div>
-        <h2 className="font-display text-2xl text-foreground">Automations</h2>
+        <h2 className="font-display text-2xl text-foreground">Automatic Emails</h2>
         <p className="text-xs font-body text-muted-foreground mt-1">
           Default rules and reminder emails for bookings, payments, and gallery delivery.
         </p>
@@ -9520,10 +9374,10 @@ function EmailAutomationsManager() {
       const existing = new Set(prev.map(rule => rule.id));
       const missing = STARTER_EMAIL_AUTOMATIONS.filter(rule => !existing.has(rule.id));
       if (missing.length === 0) {
-        toast.info("Starter automations are already present");
+        toast.info("Starter email settings are already present");
         return prev;
       }
-      toast.success(`Added ${missing.length} starter automation${missing.length !== 1 ? "s" : ""}`);
+      toast.success(`Added ${missing.length} starter email setting${missing.length !== 1 ? "s" : ""}`);
       return [...prev, ...missing.map(rule => ({ ...rule }))];
     });
   };
@@ -9542,7 +9396,7 @@ function EmailAutomationsManager() {
     const preview = await previewEmailAutomation(rule);
     setPreviewingId(null);
     if (!preview) {
-      toast.error("Failed to preview automation");
+      toast.error("Could not preview this email");
       return;
     }
     setPreviews(prev => ({ ...prev, [rule.id]: preview }));
@@ -9556,19 +9410,19 @@ function EmailAutomationsManager() {
       const previews = await Promise.all(enabledRules.map(rule => previewEmailAutomation(rule)));
       if (previews.some(preview => !preview)) { setSaving(false); toast.error("Could not check recipients. Please try again before enabling emails."); return; }
       const dueCount = previews.reduce((sum, preview) => sum + (preview?.summary?.due || 0), 0);
-      if (dueCount > 0 && !confirm(`${dueCount} automation email${dueCount !== 1 ? "s are" : " is"} due now and may send within the next scheduler run. Save enabled rules anyway?`)) {
+      if (dueCount > 0 && !confirm(`${dueCount} email${dueCount !== 1 ? "s are" : " is"} ready to send. Save these settings anyway?`)) {
         setSaving(false); return;
       }
     }
     const saved = await saveEmailAutomations(rules);
     setSaving(false);
     if (!saved) {
-      toast.error("Failed to save automations");
+      toast.error("Could not save automatic emails");
       return;
     }
     setRules(saved);
     setSavedSnapshot(JSON.stringify(saved));
-    toast.success("Email automations saved");
+    toast.success("Automatic emails saved");
   };
 
   const dirty = !loading && savedSnapshot !== JSON.stringify(rules);
@@ -9579,7 +9433,7 @@ function EmailAutomationsManager() {
     <div className="glass-panel rounded-xl p-6 space-y-4">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
-          <h3 className="font-display text-base text-foreground">Email automations</h3>
+          <h3 className="font-display text-base text-foreground">Automatic emails</h3>
           <p className="text-[10px] font-body text-muted-foreground/60 mt-1">
             Personal reminders, preparation notes and follow-ups. Each rule sends once per matching booking.
           </p>
@@ -9620,7 +9474,7 @@ function EmailAutomationsManager() {
         <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 flex items-start gap-2">
           <AlertCircle className="w-4 h-4 text-amber-500 mt-0.5 shrink-0" />
           <p className="text-xs font-body text-muted-foreground">
-            Automations run on the Node server. Start the server backend to load and save rules.
+            Automatic emails need the website server to be running. Start the server to load and save these settings.
           </p>
         </div>
       )}
@@ -9636,23 +9490,23 @@ function EmailAutomationsManager() {
           )}
           <div>
             <p className="text-xs font-body text-foreground">
-              {emailStatus.configured ? "SMTP is configured" : "SMTP is not configured"}
+              {emailStatus.configured ? "Email sending is connected" : "Email sending is not connected"}
             </p>
             <p className="text-[10px] font-body text-muted-foreground/60 mt-0.5">
               {emailStatus.configured
-                ? `Sending from ${emailStatus.from || emailStatus.user || "configured sender"} via ${emailStatus.host || "SMTP"}.`
-                : "Rules can be saved, but automated emails will not send until SMTP settings are configured on the server."}
+                ? `Sending from ${emailStatus.from || emailStatus.user || "your email address"}.`
+                : "You can save these settings, but automatic emails will not send until email details are added in Settings."}
             </p>
           </div>
         </div>
       )}
 
       {loading ? (
-        <p className="text-xs font-body text-muted-foreground/60 py-4">Loading automations...</p>
+        <p className="text-xs font-body text-muted-foreground/60 py-4">Loading email settings…</p>
       ) : rules.length === 0 ? (
         <div className="rounded-lg border border-dashed border-border/60 p-6 text-center">
           <Mail className="w-6 h-6 text-muted-foreground/40 mx-auto mb-2" />
-          <p className="text-sm font-body text-foreground">No automation rules yet</p>
+          <p className="text-sm font-body text-foreground">No automatic emails are set up yet</p>
           <p className="text-xs font-body text-muted-foreground/60 mt-1">Create one to schedule reminders around bookings, events, and overdue payments.</p>
           <div className="flex items-center justify-center gap-2 mt-4">
             <Button size="sm" variant="outline" onClick={addStarterRules} className="gap-1.5 font-body text-xs">
@@ -10294,7 +10148,7 @@ function StorageView() {
     ftpAbortRef.current = false;
     const settings = await getGlobalFtpSettings();
     if (!settings.ftpEnabled || !settings.ftpHost) {
-      toast.error("FTP is not enabled. Configure FTP in Settings → FTP Upload first.");
+      toast.error("Camera folder upload is not enabled. Set it up in Settings first.");
       return;
     }
     // Fetch fresh album stubs from the server so that albums whose photos have

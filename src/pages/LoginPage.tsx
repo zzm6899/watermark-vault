@@ -39,7 +39,7 @@ export default function LoginPage({ onLogin }: { onLogin?: () => void } = {}) {
   const handleLogin = async () => {
     if (loading) return;
     if (!identifier.trim()) {
-      toast.error("Please enter your username or account ID");
+      toast.error("Enter your username, email or account ID");
       return;
     }
     setLoading(true);
@@ -99,12 +99,12 @@ export default function LoginPage({ onLogin }: { onLogin?: () => void } = {}) {
             {isNative ? <RadioTower className="h-7 w-7" /> : <Camera className="h-7 w-7" />}
           </div>
           <p className="text-[10px] font-body font-semibold uppercase tracking-[0.28em] text-primary/80">{isNative ? "Zuploader Capture" : "Zac M Photos · Studio"}</p>
-          <h1 className="mt-2 text-4xl font-display font-semibold tracking-wide text-foreground">{isNative ? "Camera intake" : "Welcome back"}</h1>
-          <p className="mx-auto mt-2 max-w-sm text-sm font-body leading-6 text-muted-foreground">{isNative ? "Receive, cull and publish your Nikon photos." : "Your bookings, galleries and studio finances, all in one place."}</p>
+          <h1 className="mt-2 text-4xl font-display font-semibold tracking-wide text-foreground">{isNative ? "Photo upload" : "Welcome back"}</h1>
+          <p className="mx-auto mt-2 max-w-sm text-sm font-body leading-6 text-muted-foreground">{isNative ? "Send photos from your camera, review them, and share galleries with clients." : "Your bookings, galleries and studio finances, all in one place."}</p>
           {isNative && <div className="mx-auto mt-5 grid max-w-xs grid-cols-3 gap-2">
-            <div className="capture-mini-metric"><Wifi className="mx-auto mb-1 h-4 w-4 text-primary" /><small>FTP</small></div>
-            <div className="capture-mini-metric"><ImageIcon className="mx-auto mb-1 h-4 w-4 text-primary" /><small>Cull</small></div>
-            <div className="capture-mini-metric"><Camera className="mx-auto mb-1 h-4 w-4 text-primary" /><small>Client</small></div>
+            <div className="capture-mini-metric"><Wifi className="mx-auto mb-1 h-4 w-4 text-primary" /><small>Upload</small></div>
+            <div className="capture-mini-metric"><ImageIcon className="mx-auto mb-1 h-4 w-4 text-primary" /><small>Review</small></div>
+            <div className="capture-mini-metric"><Camera className="mx-auto mb-1 h-4 w-4 text-primary" /><small>Share</small></div>
           </div>}
         </div>
         <div className="glass-panel rounded-2xl p-6 shadow-2xl shadow-black/30 sm:p-7">
@@ -112,19 +112,18 @@ export default function LoginPage({ onLogin }: { onLogin?: () => void } = {}) {
             <h2 className="font-display text-lg font-semibold text-foreground">Sign in to your account</h2>
             <p className="mt-1 text-xs font-body text-muted-foreground">Enter your studio username and password to continue.</p>
           </div>
-          <div className="space-y-4">
+          <form onSubmit={(event) => { event.preventDefault(); void handleLogin(); }} className="space-y-4">
           <div>
-            <label htmlFor="login-identifier" className="text-xs font-body tracking-wide text-muted-foreground mb-1.5 block">Username or Account ID</label>
+            <label htmlFor="login-identifier" className="text-xs font-body tracking-wide text-muted-foreground mb-1.5 block">Username, email or account ID</label>
             <Input
               id="login-identifier"
               value={identifier}
               onChange={(e) => setIdentifier(e.target.value)}
-              placeholder="studio username"
+              placeholder="Username, email or account ID"
               autoComplete="username"
               autoCapitalize="none"
               autoCorrect="off"
               className="soft-input h-12 rounded-xl text-foreground placeholder:text-muted-foreground/60 font-body focus-visible:ring-primary"
-              onKeyDown={(e) => e.key === "Enter" && handleLogin()}
             />
           </div>
           <div>
@@ -137,13 +136,12 @@ export default function LoginPage({ onLogin }: { onLogin?: () => void } = {}) {
               placeholder="••••••"
               autoComplete="current-password"
               className="soft-input h-12 rounded-xl text-foreground placeholder:text-muted-foreground/60 font-body focus-visible:ring-primary"
-              onKeyDown={(e) => e.key === "Enter" && handleLogin()}
             />
           </div>
-          <Button onClick={handleLogin} disabled={loading} className="h-12 w-full rounded-xl bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs font-semibold tracking-wider uppercase gap-2 shadow-lg shadow-primary/10">
+          <Button type="submit" disabled={loading} className="h-12 w-full rounded-xl bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs font-semibold tracking-wider uppercase gap-2 shadow-lg shadow-primary/10">
             <LogIn className="w-4 h-4" /> {loading ? "Signing in..." : "Sign In to Studio"}
           </Button>
-          </div>
+          </form>
         </div>
         <p className="mt-5 text-center text-[10px] font-body tracking-wide text-muted-foreground/55">SECURE STUDIO ACCESS</p>
       </div>

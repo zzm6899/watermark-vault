@@ -266,10 +266,21 @@ test("booking fulfilment is idempotent by resource payment stage, not only webho
   assert.equal(first.booking.stripeFulfilments.full.stripeSessionId, "cs_first");
   const replay = applyBookingStripePayment(first.booking, metadata, { id: "cs_first", amount_total: 10000 }, Date.parse("2026-08-08T00:01:00Z"));
   assert.equal(replay.alreadyFulfilled, true);
+  assert.equal(replay.booking.stripePayments.length, 1);
   const secondCharge = applyBookingStripePayment(first.booking, metadata, { id: "cs_second", amount_total: 10000 }, Date.parse("2026-08-08T00:02:00Z"));
   assert.equal(secondCharge.needsReview, true);
   assert.equal(secondCharge.booking.paymentReviewStatus, "paid-unallocated");
   assert.equal(secondCharge.booking.stripeFulfilments.full.stripeSessionId, "cs_first");
+});
+
+test("booking Stripe payments retain each charge separately", () => {
+  const booking = { id: "split-payment", status: "confirmed", paymentStatus: "unpaid", paymentAmount: 150, depositAmount: 50 };
+  const deposit = applyBookingStripePayment(booking, { type: "booking-deposit", paymentKind: "deposit" }, { id: "cs_deposit", payment_intent: "pi_deposit", amount_total: 5000 }, Date.parse("2026-08-08T00:00:00Z")).booking;
+  const paid = applyBookingStripePayment(deposit, { type: "booking-payment", paymentKind: "balance" }, { id: "cs_balance", payment_intent: "pi_balance", amount_total: 10000 }, Date.parse("2026-08-09T00:00:00Z")).booking;
+  assert.deepEqual(paid.stripePayments.map(({ sessionId, paymentIntentId, kind, amount }) => ({ sessionId, paymentIntentId, kind, amount })), [
+    { sessionId: "cs_deposit", paymentIntentId: "pi_deposit", kind: "deposit", amount: 50 },
+    { sessionId: "cs_balance", paymentIntentId: "pi_balance", kind: "balance", amount: 100 },
+  ]);
 });
 
 test("tenant booking webhook snapshot rejects changed ownership, stage, or amount", () => {

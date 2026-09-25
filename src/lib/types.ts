@@ -153,6 +153,8 @@ export interface Booking {
   stripePaymentIntentId?: string;
   /** Stripe processing fee in platform currency, looked up from the settled charge. */
   stripeFeeAmount?: number;
+  /** Admin-only Stripe charge history; keep fees attached to their own deposit/balance payment. */
+  stripePayments?: Array<{ sessionId: string; paymentIntentId?: string; kind: string; amount: number; paidAt: string; fee?: number }>;
   stripeReceiptUrl?: string;
   /** Created only after Stripe successfully creates a hosted checkout page. */
   stripeCheckoutSessionId?: string;

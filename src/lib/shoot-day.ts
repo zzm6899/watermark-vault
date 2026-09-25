@@ -37,6 +37,16 @@ export function getBookingAlbum(booking: Booking, albums: Album[]): Album | null
   return albums.find((album) => album.bookingId === booking.id || album.id === booking.albumId) || null;
 }
 
+export function getAlbumDeliveryStage(album: Album | null): "to-edit" | "proofing" | "editing" | "delivered" | "archived" | null {
+  if (!album) return null;
+  const stage = album.proofingStage || "not-started";
+  if (stage === "finals-delivered" || album.status === "delivered") return "delivered";
+  if (album.status === "archived") return "archived";
+  if (stage === "proofing" || (album.status === "proofing" && !["selections-submitted", "editing"].includes(stage))) return "proofing";
+  if (["selections-submitted", "editing"].includes(stage)) return "editing";
+  return "to-edit";
+}
+
 export function getSessionStatus(booking: Booking, album: Album | null, now = new Date()): ShootDaySessionStatus {
   const today = localDateString(now);
   const hasPhotos = !!album && ((album.photos?.length || 0) > 0 || (album.photoCount || 0) > 0);

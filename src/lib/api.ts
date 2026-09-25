@@ -715,7 +715,7 @@ export async function uploadPhotosToServer(
     batches.push(currentBatch);
   }
 
-  const results: UploadedPhotoResult[] = [];
+  const resultsByBatch: UploadedPhotoResult[][] = new Array(batches.length);
   let done = 0;
   let doneBytes = 0;
   let batchIndex = 0;
@@ -768,7 +768,7 @@ export async function uploadPhotosToServer(
       let uploaded: UploadedPhotoResult[];
       try { uploaded = await uploadBatchWithRetry(batch); }
       catch (error) { stopped = true; throw error; }
-      results.push(...uploaded);
+      resultsByBatch[idx] = uploaded;
       if (onFileUploaded && uploaded[0]) onFileUploaded(batch[0], uploaded[0]);
       done += batch.length;
       doneBytes += batchBytes;
@@ -787,7 +787,7 @@ export async function uploadPhotosToServer(
   const failed = outcomes.find(outcome => outcome.status === "rejected");
   if (failed?.status === "rejected") throw failed.reason;
 
-  return results;
+  return resultsByBatch.flat();
 }
 
 /** Delete a photo file from the server */

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   getAlbumCaptureStats,
+  getAlbumDeliveryStage,
   getBookingAlbum,
   getReadinessWarnings,
   getSessionStatus,
@@ -57,6 +58,13 @@ describe("shoot-day selectors", () => {
   it("finds linked albums by bookingId or albumId", () => {
     expect(getBookingAlbum(booking(), [album()])?.id).toBe("album-1");
     expect(getBookingAlbum(booking({ id: "other", albumId: "album-1" }), [album({ bookingId: "different" })])?.id).toBe("album-1");
+  });
+
+  it("uses the explicit proofing stage before the broader album status and excludes archived galleries", () => {
+    expect(getAlbumDeliveryStage(album({ status: "proofing", proofingStage: "not-started" }))).toBe("proofing");
+    expect(getAlbumDeliveryStage(album({ status: "proofing", proofingStage: "editing" }))).toBe("editing");
+    expect(getAlbumDeliveryStage(album({ status: "delivered" }))).toBe("delivered");
+    expect(getAlbumDeliveryStage(album({ status: "archived" }))).toBe("archived");
   });
 
   it("summarizes capture status counts", () => {

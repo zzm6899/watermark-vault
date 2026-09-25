@@ -1,4 +1,4 @@
-import { retainedBookingPayment } from "@/lib/booking-utils";
+import { retainedBookingPayment, unrecordedBookingPayment } from "@/lib/booking-utils";
 import { EventRevenueReport } from "@/components/EventRevenueReport";
 import React from "react";
 import { useNavigate } from "react-router-dom";
@@ -137,24 +137,41 @@ export default function FinanceView() {
     .map(booking => ({ booking, due: booking.depositRequired && booking.depositAmount ? booking.depositAmount : (booking.paymentAmount || 0) }));
   for (const booking of bookingPayments) {
     if (!retainedBookingPayment(booking)) continue;
-    const amount = retainedBookingPayment(booking);
-    if (amount <= 0) continue;
-    payments.push({
-      id: `booking-${booking.id}-${booking.depositPaidAt || booking.paidAt || booking.createdAt}`,
-      date: booking.depositPaidAt || booking.paidAt || booking.createdAt,
-      clientName: booking.clientName || "Unknown",
-      albumTitle: booking.type || "Booking",
-      albumId: "",
-      method: booking.paymentStatus === "cash"
-        ? "cash"
-        : ((booking.paymentMethod || booking.depositMethod) === "bank" ? "bank-transfer" : "stripe"),
-      amount,
-      fee: booking.paymentMethod === "stripe" || (!booking.paymentMethod && booking.paymentStatus !== "cash" && booking.depositMethod !== "bank") ? booking.stripeFeeAmount : undefined,
-      status: "completed",
-      description: booking.status === "cancelled" ? "Cancelled — retained payment" : booking.paymentStatus === "deposit-paid" ? "Booking deposit" : "Booking paid in full",
-      bookingId: booking.id,
-      reference: bookingPaymentReference(booking),
-    });
+    const method: "cash" | "bank-transfer" | "stripe" = booking.paymentStatus === "cash" ? "cash" : ((booking.paymentMethod || booking.depositMethod) === "bank" ? "bank-transfer" : "stripe");
+    const recordedPayments = booking.stripePayments || [];
+    const entries: { sessionId: string; kind: string; amount: number; paidAt: string; fee?: number; method: PaymentRecord["method"] }[] = recordedPayments.length ? recordedPayments.map(payment => ({ ...payment, method: "stripe" })) : [{
+      sessionId: booking.depositPaidAt || booking.paidAt || booking.createdAt,
+      kind: booking.paymentStatus === "deposit-paid" ? "deposit" : "full",
+      amount: retainedBookingPayment(booking),
+      paidAt: booking.depositPaidAt || booking.paidAt || booking.createdAt,
+      fee: booking.stripeFeeAmount,
+      method,
+    }];
+    if (recordedPayments.length) {
+      const remainder = unrecordedBookingPayment(booking, recordedPayments);
+      if (remainder > 0) {
+        const kind = ["paid", "cash"].includes(booking.paymentStatus || "") && !recordedPayments.some(payment => payment.kind === "balance" || payment.kind === "full") ? "balance" : "deposit";
+        const manualMethod = booking.paymentStatus === "cash" ? "cash" : kind === "deposit" ? booking.depositMethod : booking.paymentMethod;
+        entries.push({ sessionId: kind === "deposit" ? booking.depositPaidAt || booking.createdAt : booking.paidAt || booking.createdAt, kind, amount: remainder, paidAt: kind === "deposit" ? booking.depositPaidAt || booking.createdAt : booking.paidAt || booking.createdAt, method: manualMethod === "cash" ? "cash" : "bank-transfer" });
+      }
+    }
+    for (const payment of entries) {
+      if (payment.amount <= 0) continue;
+      payments.push({
+        id: `booking-${booking.id}-${payment.sessionId}`,
+        date: payment.paidAt,
+        clientName: booking.clientName || "Unknown",
+        albumTitle: booking.type || "Booking",
+        albumId: "",
+        method: payment.method,
+        amount: payment.amount,
+        fee: payment.fee,
+        status: "completed",
+        description: booking.status === "cancelled" ? "Cancelled — retained payment" : payment.kind === "deposit" ? "Booking deposit" : payment.kind === "balance" ? "Booking balance" : "Booking paid in full",
+        bookingId: booking.id,
+        reference: bookingPaymentReference(booking),
+      });
+    }
   }
 
   payments.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
@@ -234,7 +251,7 @@ export default function FinanceView() {
           <p className={`font-display text-2xl ${netProfit >= 0 ? "text-green-400" : "text-red-400"}`}>${netProfit.toFixed(2)}</p>
           <p className="text-[10px] font-body text-muted-foreground mt-1">After expenses and recorded fees</p>
         </div>
-        <button onClick={() => navigate("/admin/bookings?payment=unpaid")} className="glass-panel rounded-xl p-5 text-left hover:border-primary/40 border border-transparent transition-colors">
+        <button onClick={() => navigate("/admin/bookings?focus=payment")} className="glass-panel rounded-xl p-5 text-left hover:border-primary/40 border border-transparent transition-colors">
           <p className="text-xs font-body text-muted-foreground tracking-wider uppercase mb-1">Booking deposits due</p>
           <p className="font-display text-2xl text-yellow-400">${bookingOutstanding.reduce((sum, item) => sum + item.due, 0).toFixed(2)}</p>
           <p className="text-[10px] font-body text-muted-foreground mt-1">{bookingOutstanding.length} booking{bookingOutstanding.length === 1 ? "" : "s"} · open bookings</p>
@@ -634,7 +651,7 @@ export default function FinanceView() {
                       )}
                       <span className={`text-[10px] font-body px-2 py-0.5 rounded-full ${methodColor(p.method)}`}>{methodLabel(p.method)}</span>
                       <span className={`text-[10px] font-body px-2 py-0.5 rounded-full capitalize ${statusColor(p.status)}`}>{p.status}</span>
-                      <p className="text-sm font-display text-foreground w-16 text-right">{p.amountUnknown ? "Not recorded" : `$${p.amount.toFixed(2)}`}</p>
+                      <div className="w-20 text-right"><p className="text-sm font-display text-foreground">{p.amountUnknown ? "Not recorded" : `$${p.amount.toFixed(2)}`}</p>{p.fee !== undefined && <p className="text-[10px] font-body text-muted-foreground">Fee ${p.fee.toFixed(2)}</p>}</div>
                       {p.bookingId && bookingPayments.find(booking => booking.id === p.bookingId)?.status === "cancelled" && <button disabled={refundBusy !== null} onClick={() => void recordFullRefund(p.bookingId!)} className="text-xs text-primary hover:underline">{refundBusy === p.bookingId ? "Saving…" : "Record full refund"}</button>}
                       {p.bookingId ? (
                         <button onClick={() => navigate(`/admin/bookings?search=${encodeURIComponent(p.reference || p.clientName)}`)} className="text-[10px] font-body text-primary hover:underline">Booking</button>

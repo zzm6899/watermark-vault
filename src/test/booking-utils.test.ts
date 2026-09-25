@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   retainedBookingPayment,
+  unrecordedBookingPayment,
   buildBookingCalendarUrl,
   bookingNeedsOutstandingPayment,
   contactQuestionRole,
@@ -115,6 +116,11 @@ describe("booking confirmation amounts", () => {
     expect(bookingNeedsOutstandingPayment({ status: "pending", paymentStatus: "unpaid", paymentAmount: 30, depositAmount: 15, holdExpiresAt: "2026-08-25T00:00:00.000Z" }, now)).toBe(false);
     expect(bookingNeedsOutstandingPayment({ status: "confirmed", paymentStatus: "deposit-paid", paymentAmount: 30, depositAmount: 30 }, now)).toBe(false);
     expect(bookingNeedsOutstandingPayment({ status: "confirmed", paymentStatus: "deposit-paid", paymentAmount: 50, depositAmount: 20 }, now)).toBe(true);
+  });
+
+  it("preserves cent-level remainders in mixed booking payments", () => {
+    expect(unrecordedBookingPayment({ paymentStatus: "paid", paymentAmount: 100.01 }, [{ amount: 100 }])).toBe(0.01);
+    expect(unrecordedBookingPayment({ paymentStatus: "paid", paymentAmount: 100 }, [{ amount: 100.01 }])).toBe(0);
   });
 });
 

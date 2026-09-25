@@ -710,6 +710,10 @@ function applyBookingStripePayment(booking, metadata, session, nowMs = Date.now(
       ...fulfilments,
       [paymentKind]: { stripeSessionId: session.id, fulfilledAt: paidAt },
     },
+    stripePayments: [
+      ...(Array.isArray(booking.stripePayments) ? booking.stripePayments.filter(payment => payment.sessionId !== session.id) : []),
+      { sessionId: session.id, paymentIntentId: stripePaymentIntentId, kind: paymentKind, amount: Number(session.amount_total || 0) / 100, paidAt },
+    ],
   };
   delete updated.holdExpiresAt;
   if (metadata.type === "booking-deposit" || metadata.type === "tenant-booking-deposit" || metadata.paymentKind === "deposit") {
@@ -1172,11 +1176,16 @@ function registerRoutes(app, { readDb, writeDb, readLicenseKeys, writeLicenseKey
         }
 
         const application = applyBookingStripePayment(current, metadata, session);
-        if (application.booking.stripePaymentIntentId) {
+        if (!application.needsReview && application.booking.stripePaymentIntentId) {
           try {
             const paymentIntent = await s.paymentIntents.retrieve(application.booking.stripePaymentIntentId, { expand: ["latest_charge.balance_transaction"] });
-            const balanceTransaction = paymentIntent.latest_charge?.balance_transaction;
-            if (balanceTransaction && typeof balanceTransaction === "object") application.booking.stripeFeeAmount = balanceTransaction.fee / 100;
+            const latestCharge = paymentIntent.latest_charge;
+            const balanceTransaction = latestCharge?.balance_transaction;
+            if (latestCharge && typeof latestCharge === "object" && latestCharge.receipt_url) application.booking.stripeReceiptUrl = latestCharge.receipt_url;
+            if (balanceTransaction && typeof balanceTransaction === "object") {
+              application.booking.stripePayments = application.booking.stripePayments.map(payment => payment.sessionId === session.id ? { ...payment, fee: balanceTransaction.fee / 100 } : payment);
+              application.booking.stripeFeeAmount = balanceTransaction.fee / 100;
+            }
           } catch (error) {
             console.warn(`Stripe fee lookup failed during booking reconciliation ${bookingId}:`, error.message);
           }
@@ -1189,17 +1198,6 @@ function registerRoutes(app, { readDb, writeDb, readLicenseKeys, writeLicenseKey
           return { status: 200, body: { ok: true, booking: bookings[index], paymentNeedsReview: true, reconciled: false } };
         }
         markStripeResourceFulfilled(db, fulfilmentKey, session, { resourceType: "booking", resourceId: bookingId, paymentKind });
-        try {
-          const paymentIntentId = bookings[index].stripePaymentIntentId;
-          if (paymentIntentId) {
-            const paymentIntent = await s.paymentIntents.retrieve(paymentIntentId, { expand: ["latest_charge"] });
-            const latestCharge = paymentIntent.latest_charge;
-            const receiptUrl = typeof latestCharge === "object" ? latestCharge?.receipt_url : null;
-            if (receiptUrl) bookings[index].stripeReceiptUrl = receiptUrl;
-          }
-        } catch (error) {
-          console.warn(`Stripe receipt lookup failed during booking reconciliation ${bookingId}:`, error.message);
-        }
         db["wv_bookings"] = JSON.stringify(bookings);
         writeDb(db);
         return { status: 200, body: { ok: true, booking: bookings[index], reconciled: true }, notifyBooking: bookings[index], paymentKind };
@@ -1718,11 +1716,16 @@ function registerRoutes(app, { readDb, writeDb, readLicenseKeys, writeLicenseKey
             }
             const paymentApplication = applyBookingStripePayment(bookings[idx], metadata, session);
             bookings[idx] = paymentApplication.booking;
-            if (bookings[idx].stripePaymentIntentId) {
+            if (!paymentApplication.needsReview && bookings[idx].stripePaymentIntentId) {
               try {
                 const paymentIntent = await s.paymentIntents.retrieve(bookings[idx].stripePaymentIntentId, { expand: ["latest_charge.balance_transaction"] });
-                const balanceTransaction = paymentIntent.latest_charge?.balance_transaction;
-                if (balanceTransaction && typeof balanceTransaction === "object") bookings[idx].stripeFeeAmount = balanceTransaction.fee / 100;
+                const latestCharge = paymentIntent.latest_charge;
+                const balanceTransaction = latestCharge?.balance_transaction;
+                if (latestCharge && typeof latestCharge === "object" && latestCharge.receipt_url) bookings[idx].stripeReceiptUrl = latestCharge.receipt_url;
+                if (balanceTransaction && typeof balanceTransaction === "object") {
+                  bookings[idx].stripePayments = bookings[idx].stripePayments.map(payment => payment.sessionId === session.id ? { ...payment, fee: balanceTransaction.fee / 100 } : payment);
+                  bookings[idx].stripeFeeAmount = balanceTransaction.fee / 100;
+                }
               } catch (feeErr) {
                 console.warn(`Stripe fee lookup failed for booking ${metadata.bookingId}:`, feeErr.message);
               }
@@ -1744,20 +1747,6 @@ function registerRoutes(app, { readDb, writeDb, readLicenseKeys, writeLicenseKey
               return res.json({ received: true, paymentNeedsReview: true });
             }
             markStripeResourceFulfilled(db, fulfilmentKey, session, { resourceType: "booking", resourceId: metadata.bookingId, paymentKind: metadata.paymentKind || "full" });
-            // Stripe creates the hosted receipt after payment completion. It is
-            // optional (for example, for an unusual payment method), so a
-            // receipt lookup failure must never prevent fulfilment.
-            try {
-              const paymentIntentId = bookings[idx].stripePaymentIntentId;
-              if (paymentIntentId) {
-                const paymentIntent = await s.paymentIntents.retrieve(paymentIntentId, { expand: ["latest_charge"] });
-                const latestCharge = paymentIntent.latest_charge;
-                const receiptUrl = typeof latestCharge === "object" ? latestCharge?.receipt_url : null;
-                if (receiptUrl) bookings[idx].stripeReceiptUrl = receiptUrl;
-              }
-            } catch (receiptErr) {
-              console.warn(`Stripe receipt lookup failed for booking ${metadata.bookingId}:`, receiptErr.message);
-            }
             db["wv_bookings"] = JSON.stringify(bookings);
             saveDb(db);
             const emailProfile = parseStored(db["wv_profile"], {});
@@ -2365,6 +2354,19 @@ function registerTenantStripeRoutes(app, { readDb, writeDb, readTenants, require
             }
             const paymentApplication = applyBookingStripePayment(bookings[idx], metadata, session);
             bookings[idx] = paymentApplication.booking;
+            try {
+              const paymentIntentId = bookings[idx].stripePaymentIntentId;
+              if (!paymentApplication.needsReview && paymentIntentId) {
+                const paymentIntent = await resolved.client.paymentIntents.retrieve(paymentIntentId, { expand: ["latest_charge.balance_transaction"] });
+                const balanceTransaction = paymentIntent.latest_charge?.balance_transaction;
+                if (balanceTransaction && typeof balanceTransaction === "object") {
+                  bookings[idx].stripePayments = bookings[idx].stripePayments.map(payment => payment.sessionId === session.id ? { ...payment, fee: balanceTransaction.fee / 100 } : payment);
+                  bookings[idx].stripeFeeAmount = balanceTransaction.fee / 100;
+                }
+              }
+            } catch (feeErr) {
+              console.warn(`Stripe fee lookup failed for tenant booking ${metadata.bookingId}:`, feeErr.message);
+            }
             if (paymentApplication.needsReview) {
               dbData["wv_bookings"] = JSON.stringify(bookings);
               recordStripePaymentReview(dbData, {

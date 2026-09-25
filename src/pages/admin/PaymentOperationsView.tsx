@@ -46,13 +46,18 @@ export default function PaymentOperationsView() {
 
   const refresh = useCallback(async () => {
     setLoading(true);
-    await syncFromServer();
-    const freshAlbums = await fetchAlbumStubs();
-    if (freshAlbums) setAlbums(freshAlbums);
-    setBookings(getBookings().filter(booking => !booking.tenantSlug && booking.archived !== true));
-    setHealth(await getAdminPaymentHealth());
-    setIntegrity(await getDataIntegrityReport());
-    setLoading(false);
+    try {
+      await syncFromServer();
+      const freshAlbums = await fetchAlbumStubs();
+      if (freshAlbums) setAlbums(freshAlbums);
+      setBookings(getBookings().filter(booking => !booking.tenantSlug && booking.archived !== true));
+      setHealth(await getAdminPaymentHealth());
+      setIntegrity(await getDataIntegrityReport());
+    } catch {
+      toast.error("Could not refresh payment details. Try again.");
+    } finally {
+      setLoading(false);
+    }
   }, []);
   useEffect(() => { void refresh(); }, [refresh]);
 
@@ -83,7 +88,7 @@ export default function PaymentOperationsView() {
       return;
     }
     setBookings(current => current.map(item => item.id === booking.id ? result.booking! : item));
-    if (result.booking.paymentNeedsReview) toast.warning("Stripe found a payment that needs manual reconciliation");
+    if (result.booking.paymentNeedsReview) toast.warning("Stripe found a payment that needs review");
     else toast.success(result.booking.paymentStatus === "deposit-paid" ? "Stripe deposit verified" : "Stripe payment verified");
     setHealth(await getAdminPaymentHealth());
   });
@@ -125,22 +130,28 @@ export default function PaymentOperationsView() {
   };
   const runRepair = async () => {
     if (!integrity?.total) return;
-    if (!window.confirm(`Repair ${integrity.total} booking, payment, or invoice data issue${integrity.total === 1 ? "" : "s"}? An audit entry will be recorded.`)) return;
+    if (!window.confirm(`Fix ${integrity.total} booking, payment, or invoice record${integrity.total === 1 ? "" : "s"}? This change will be recorded in history.`)) return;
     setLoading(true);
-    const result = await repairDataIntegrity();
-    if (!result?.ok) { toast.error("Data repair could not be completed"); setLoading(false); return; }
-    toast.success(`${result.total} data issue${result.total === 1 ? "" : "s"} repaired`);
-    await refresh();
+    try {
+      const result = await repairDataIntegrity();
+      if (!result?.ok) { toast.error("Data repair could not be completed"); return; }
+      toast.success(`${result.total} data issue${result.total === 1 ? "" : "s"} repaired`);
+      await refresh();
+    } catch {
+      toast.error("Data repair could not be completed");
+    } finally {
+      setLoading(false);
+    }
   };
 
   return <div className="space-y-6 max-w-6xl mx-auto">
     <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
-      <div><p className="text-xs uppercase tracking-[.22em] text-primary">Money desk</p><h1 className="font-display text-3xl text-foreground">Payment Operations</h1><p className="text-sm text-muted-foreground mt-1">One queue for card verification, PayID checks, expired holds and balances.</p></div>
+      <div><p className="text-xs uppercase tracking-[.22em] text-primary">Business</p><h1 className="font-display text-3xl text-foreground">Payments</h1><p className="text-sm text-muted-foreground mt-1">Review card payments, confirm bank transfers and follow up unpaid balances.</p></div>
       <Button variant="outline" onClick={() => void refresh()} disabled={loading} className="gap-2"><RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />Refresh</Button>
     </div>
-    {health && (!health.stripe.ready || health.stripe.unsafeUnsignedWebhooks || health.counts.reviews > 0) && <div role="alert" className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-100 flex gap-3"><AlertTriangle className="w-5 h-5 shrink-0" /><div><strong>Payment attention required.</strong> {!health.stripe.ready ? "Card payments are not fully configured. " : ""}{health.stripe.unsafeUnsignedWebhooks ? "Unsigned webhooks are enabled and should be disabled. " : ""}{health.counts.reviews ? `${health.counts.reviews} payment${health.counts.reviews === 1 ? " needs" : "s need"} manual reconciliation.` : ""}</div></div>}
-    {health?.stripe.ready && !health.stripe.unsafeUnsignedWebhooks && health.counts.reviews === 0 && <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/10 p-3 text-sm text-emerald-200 flex items-center gap-2"><CheckCircle2 className="w-4 h-4" />Stripe secret and webhook verification are configured.</div>}
-    {integrity && integrity.total > 0 && <div className="rounded-xl border border-cyan-500/25 bg-cyan-500/10 p-4 text-sm text-cyan-100 flex flex-col sm:flex-row sm:items-center gap-3"><AlertTriangle className="w-5 h-5 shrink-0" /><div className="flex-1"><strong>{integrity.total} legacy data issue{integrity.total === 1 ? "" : "s"} found.</strong><span className="block text-xs text-cyan-100/70 mt-1">Short references: {integrity.issues.bookingReferences} · timestamps: {integrity.issues.paymentTimestamps} · paid awaiting confirmation: {integrity.issues.paidPendingBookings} · expired holds: {integrity.issues.expiredHolds} · invoice numbers: {integrity.issues.invoiceNumbers}</span></div><Button size="sm" onClick={() => void runRepair()} disabled={loading}>Repair safely</Button></div>}
+    {health && (!health.stripe.ready || health.stripe.unsafeUnsignedWebhooks || health.counts.reviews > 0) && <div role="alert" className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-100 flex gap-3"><AlertTriangle className="w-5 h-5 shrink-0" /><div><strong>Payment attention required.</strong> {!health.stripe.ready ? "Card payments are not fully configured. " : ""}{health.stripe.unsafeUnsignedWebhooks ? "Payment notifications need a security update. " : ""}{health.counts.reviews ? `${health.counts.reviews} payment${health.counts.reviews === 1 ? " needs" : "s need"} review.` : ""}</div></div>}
+    {health?.stripe.ready && !health.stripe.unsafeUnsignedWebhooks && health.counts.reviews === 0 && <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/10 p-3 text-sm text-emerald-200 flex items-center gap-2"><CheckCircle2 className="w-4 h-4" />Card payments are connected and working.</div>}
+    {integrity && integrity.total > 0 && <div className="rounded-xl border border-cyan-500/25 bg-cyan-500/10 p-4 text-sm text-cyan-100 flex flex-col sm:flex-row sm:items-center gap-3"><AlertTriangle className="w-5 h-5 shrink-0" /><div className="flex-1"><strong>{integrity.total} older record{integrity.total === 1 ? "" : "s"} need an update.</strong><span className="block text-xs text-cyan-100/70 mt-1">Booking references: {integrity.issues.bookingReferences} · payment dates: {integrity.issues.paymentTimestamps} · payments awaiting confirmation: {integrity.issues.paidPendingBookings} · expired bookings: {integrity.issues.expiredHolds} · invoice numbers: {integrity.issues.invoiceNumbers}</span></div><Button size="sm" onClick={() => void runRepair()} disabled={loading}>Fix records</Button></div>}
     <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">{Object.entries(queueMeta).map(([key, meta]) => { const Icon = meta.icon; return <button key={key} onClick={() => setQueue(key as Queue)} className={`text-left rounded-xl border p-4 transition ${meta.tone} ${queue === key ? "ring-2 ring-primary/50" : "hover:border-primary/30"}`}><Icon className="w-4 h-4 mb-3" /><span className="block text-2xl font-display">{counts[key] || 0}</span><span className="text-xs">{meta.label}</span></button>; })}</div>
     <DownloadRequestInbox albums={albums} onUpdated={updated => setAlbums(current => current.map(album => album.id === updated.id ? updated : album))} />
     <div className="flex flex-col gap-3 sm:flex-row"><div className="relative flex-1"><Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" /><Input value={search} onChange={event => setSearch(event.target.value)} placeholder="Search client, email, reference or shoot…" className="pl-9" /></div><Button variant="outline" disabled={bulkReminding} onClick={() => void remindVisible()}>{bulkReminding ? "Sending reminders…" : "Remind visible clients"}</Button></div>

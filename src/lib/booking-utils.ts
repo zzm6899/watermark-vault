@@ -255,3 +255,7 @@ export function retainedBookingPayment(booking: { paymentStatus?: string; paymen
   const amount = booking.paymentStatus === "deposit-paid" ? booking.depositAmount : ["paid", "cash"].includes(booking.paymentStatus || "") ? booking.paymentAmount : 0;
   return typeof amount === "number" && Number.isFinite(amount) ? Math.max(0, Math.round(amount * 100) / 100) : 0;
 }
+
+export function unrecordedBookingPayment(booking: Parameters<typeof retainedBookingPayment>[0], payments: { amount: number }[]): number {
+  return Math.max(0, Math.round((retainedBookingPayment(booking) - payments.reduce((sum, payment) => sum + payment.amount, 0)) * 100) / 100);
+}
