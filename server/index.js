@@ -8,6 +8,7 @@ const path = require("path");
 const fs = require("fs");
 const os = require("os");
 const { createSqliteStore } = require("./sqlite-store");
+const { tenantStorageLimitBytes, tenantStorageUsage } = require("./tenant-storage");
 const sharp = require("sharp");
 const archiver = require("archiver");
 const rateLimit = require("express-rate-limit");
@@ -2673,7 +2674,43 @@ function detectUploadSequenceGaps(files) {
   return gaps;
 }
 
-app.post("/api/upload", uploadLimiter, requireAdminOrScopedTenant, upload.array("photos", 100), async (req, res) => {
+// ponytail: reservations cover one server process; use shared reservations if uploads span multiple replicas.
+const tenantUploadReservations = new Map();
+function tenantStorageLimitForSlug(slug) {
+  const tenant = readTenants().find(item => item.slug === slug);
+  const key = tenant && readLicenseKeys().find(item => item.key === tenant.licenseKey);
+  return tenantStorageLimitBytes(key);
+}
+
+function checkTenantUploadLimit(req, res, next) {
+  const slug = String(req.query.tenant || "");
+  if (!slug) return next();
+  const discard = () => { for (const file of req.files || []) try { fs.unlinkSync(file.path); } catch {} };
+  if (!SLUG_RE.test(slug)) { discard(); return res.status(400).json({ error: "Invalid tenant" }); }
+  const limitBytes = tenantStorageLimitForSlug(slug);
+  if (limitBytes === null) return next();
+  const incomingBytes = (req.files || []).reduce((sum, file) => sum + file.size, 0);
+  const usedBytes = tenantStorageUsage(readDb(), slug, UPLOADS_DIR).totalBytes;
+  const reservedBytes = tenantUploadReservations.get(slug) || 0;
+  if (usedBytes + reservedBytes + incomingBytes > limitBytes) {
+    discard();
+    return res.status(413).json({ error: "Storage limit reached. Delete photos or ask your platform administrator for more space.", usedBytes, limitBytes });
+  }
+  tenantUploadReservations.set(slug, reservedBytes + incomingBytes);
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    const remaining = (tenantUploadReservations.get(slug) || 0) - incomingBytes;
+    if (remaining > 0) tenantUploadReservations.set(slug, remaining);
+    else tenantUploadReservations.delete(slug);
+  };
+  res.once("finish", release);
+  res.once("close", release);
+  next();
+}
+
+app.post("/api/upload", uploadLimiter, requireAdminOrScopedTenant, upload.array("photos", 100), checkTenantUploadLimit, async (req, res) => {
   const ignoredUploadFiles = Array.isArray(req.ignoredUploadFiles) ? req.ignoredUploadFiles : [];
   if ((req.files || []).length === 0) {
     return res.status(400).json({
@@ -4669,6 +4706,10 @@ async function autoEditAlbumUploads({ albumId, tenantSlug, uploadedFiles, streng
   if (idx < 0) return;
   const album = albums[idx];
   const edits = new Map();
+  const limitBytes = tenantSlug ? tenantStorageLimitForSlug(tenantSlug) : null;
+  let reservedEdits = 0;
+  let committed = false;
+  try {
   for (const file of uploadedFiles) {
     const photo = (album.photos || []).find(p => p.id === file.id);
     if (!photo || !file.localPath || !fs.existsSync(file.localPath)) continue;
@@ -4681,6 +4722,17 @@ async function autoEditAlbumUploads({ albumId, tenantSlug, uploadedFiles, streng
       const editedName = `${path.basename(file.localPath, path.extname(file.localPath))}-auto.jpg`;
       const editedPath = path.join(UPLOADS_DIR, editedName);
       await applyEditParams(file.localPath, params, editedPath);
+      if (tenantSlug && limitBytes !== null) {
+        const editedBytes = fs.statSync(editedPath).size;
+        const usedBytes = tenantStorageUsage(readDb(), tenantSlug, UPLOADS_DIR).totalBytes;
+        const pendingBytes = tenantUploadReservations.get(tenantSlug) || 0;
+        if (usedBytes + pendingBytes + editedBytes > limitBytes) {
+          fs.unlinkSync(editedPath);
+          continue;
+        }
+        tenantUploadReservations.set(tenantSlug, pendingBytes + editedBytes);
+        reservedEdits += editedBytes;
+      }
       const editedUrl = `/uploads/${editedName}`;
       edits.set(photo.id, { source: photo.src, editedUrl, editedName, params });
     } catch (err) {
@@ -4694,9 +4746,11 @@ async function autoEditAlbumUploads({ albumId, tenantSlug, uploadedFiles, streng
     if (currentIndex < 0) return;
     const current = currentAlbums[currentIndex];
     const owners = dbGet(latestDb, "wv_upload_owners", {});
+    const applied = new Set();
     const currentPhotos = (current.photos || []).map(photo => {
       const edit = edits.get(photo.id);
       if (!edit || photo.src !== edit.source) return photo;
+      applied.add(photo.id);
       owners[edit.editedName] = tenantSlug ? { tenantSlug, uploadedAt: new Date().toISOString() } : { admin: true, uploadedAt: new Date().toISOString() };
       return { ...photo, beforeSrc: photo.beforeSrc || photo.src, editedSrc: edit.editedUrl, src: edit.editedUrl,
         editRecipe: { engine: "photoflow-auto-v1", params: edit.params, processedAt: new Date().toISOString() } };
@@ -4705,6 +4759,16 @@ async function autoEditAlbumUploads({ albumId, tenantSlug, uploadedFiles, streng
     latestDb["wv_upload_owners"] = owners;
     latestDb[storeKey] = JSON.stringify(currentAlbums);
     writeDb(latestDb);
+    committed = true;
+    for (const [photoId, edit] of edits) if (!applied.has(photoId)) try { fs.unlinkSync(path.join(UPLOADS_DIR, edit.editedName)); } catch {}
+  }
+  } finally {
+    if (tenantSlug && reservedEdits) {
+      const remaining = (tenantUploadReservations.get(tenantSlug) || 0) - reservedEdits;
+      if (remaining > 0) tenantUploadReservations.set(tenantSlug, remaining);
+      else tenantUploadReservations.delete(tenantSlug);
+    }
+    if (!committed) for (const edit of edits.values()) try { fs.unlinkSync(path.join(UPLOADS_DIR, edit.editedName)); } catch {}
   }
 }
 
@@ -8262,6 +8326,7 @@ app.get("/api/super-admin/info", requireAuth, (_req, res) => {
 app.get("/api/super/stats", superLimiter, requireAuth, (_req, res) => {
   const db = readDb();
   const tenants = readTenants();
+  const keysByValue = new Map(readLicenseKeys().map(key => [key.key, key]));
   const mainRaw = db["wv_bookings"];
   const allBookings = mainRaw ? (typeof mainRaw === "string" ? JSON.parse(mainRaw) : (Array.isArray(mainRaw) ? mainRaw : [])) : [];
   const operationalBookings = allBookings.filter(b => b?.archived !== true);
@@ -8271,12 +8336,16 @@ app.get("/api/super/stats", superLimiter, requireAuth, (_req, res) => {
     const archivedBookings = allBookings.filter(b => b.tenantSlug === t.slug && b.archived === true).length;
     const tenantEtRaw = db[`t_${t.slug}_wv_event_types`];
     const tenantEventTypes = tenantEtRaw ? (typeof tenantEtRaw === "string" ? JSON.parse(tenantEtRaw) : tenantEtRaw) : null;
+    const storage = tenantStorageUsage(db, t.slug, UPLOADS_DIR);
     return {
-      ...t,
+      ...safeTenantPrivateDto(t),
       bookingCount: tenantBookings.length,
       pendingBookings: tenantBookings.filter(b => b.status === "pending").length,
       archivedBookings,
       hasCustomEventTypes: !!tenantEventTypes,
+      storageUsedBytes: storage.totalBytes,
+      storageFileCount: storage.fileCount,
+      storageLimitBytes: tenantStorageLimitBytes(keysByValue.get(t.licenseKey)),
     };
   });
   res.json({
@@ -9129,7 +9198,7 @@ app.get("/api/tenant/:slug/license-info", tenantLimiter, requireTenant, (req, re
   const currentEventTypes = currentRaw ? (typeof currentRaw === "string" ? JSON.parse(currentRaw) : (Array.isArray(currentRaw) ? currentRaw : [])) : [];
   const eventCount = typeof db[counterKey] === "number" ? db[counterKey] : currentEventTypes.length;
   // Base response — may be enriched by license key and/or tenant-level overrides
-  let licKeyInfo = { key: null, issuedTo: null, isTrial: false, maxEvents: null, maxBookings: null, extraEventPrice: null, expiresAt: null, usedAt: null };
+  let licKeyInfo = { key: null, issuedTo: null, isTrial: false, maxEvents: null, maxBookings: null, storageLimitBytes: null, extraEventPrice: null, expiresAt: null, usedAt: null };
   if (tenant.licenseKey) {
     const keys = readLicenseKeys();
     const licKey = keys.find(k => k.key === tenant.licenseKey);
@@ -9141,6 +9210,7 @@ app.get("/api/tenant/:slug/license-info", tenantLimiter, requireTenant, (req, re
         isTrial: licKey.isTrial || false,
         maxEvents: limits.maxEvents,
         maxBookings: limits.maxBookings,
+        storageLimitBytes: limits.storageLimitBytes,
         extraEventPrice: limits.extraEventPrice,
         expiresAt: licKey.expiresAt,
         usedAt: licKey.usedAt,
@@ -9159,6 +9229,7 @@ app.get("/api/tenant/:slug/license-info", tenantLimiter, requireTenant, (req, re
     isTrial: licKeyInfo.isTrial,
     maxEvents: licKeyInfo.maxEvents,
     maxBookings: licKeyInfo.maxBookings,
+    storageLimitBytes: licKeyInfo.storageLimitBytes,
     extraEventPrice: effectiveExtraEventPrice,
     extraEventSlots,
     eventCount,
@@ -9550,6 +9621,7 @@ function getLicKeyLimits(licKey) {
   return {
     maxEvents: licKey.maxEvents ?? licKey.trialMaxEvents ?? null,
     maxBookings: licKey.maxBookings ?? licKey.trialMaxBookings ?? null,
+    storageLimitBytes: tenantStorageLimitBytes(licKey),
     extraEventPrice: licKey.extraEventPrice ?? null,
   };
 }
@@ -9570,12 +9642,15 @@ app.get("/api/license-keys", licenseKeyLimiter, requireAuth, (_req, res) => {
 
 // Generate a new key
 app.post("/api/license-keys/generate", licenseKeyLimiter, requireAuth, (req, res) => {
-  const { issuedTo, expiresAt, notes, isTrial, maxEvents, maxBookings, extraEventPrice } = req.body || {};
+  const { issuedTo, expiresAt, notes, isTrial, maxEvents, maxBookings, storageLimitGb, extraEventPrice } = req.body || {};
   if (!issuedTo || typeof issuedTo !== "string" || !issuedTo.trim()) {
     return res.status(400).json({ error: "issuedTo is required" });
   }
   if (expiresAt && isNaN(Date.parse(expiresAt))) {
     return res.status(400).json({ error: "Invalid expiresAt date" });
+  }
+  if (storageLimitGb !== undefined && (typeof storageLimitGb !== "number" || !Number.isFinite(storageLimitGb) || Math.floor(storageLimitGb * 1024 ** 3) < 1 || !Number.isSafeInteger(Math.floor(storageLimitGb * 1024 ** 3)))) {
+    return res.status(400).json({ error: "Storage limit must be a positive number of GB" });
   }
   const keys = readLicenseKeys();
   const newKey = {
@@ -9588,11 +9663,27 @@ app.post("/api/license-keys/generate", licenseKeyLimiter, requireAuth, (req, res
     ...(isTrial ? { isTrial: true } : {}),
     ...(typeof maxEvents === "number" && maxEvents > 0 ? { maxEvents } : {}),
     ...(typeof maxBookings === "number" && maxBookings > 0 ? { maxBookings } : {}),
+    ...(storageLimitGb !== undefined ? { storageLimitGb } : {}),
     ...(typeof extraEventPrice === "number" && extraEventPrice > 0 ? { extraEventPrice } : {}),
   };
   keys.push(newKey);
   writeLicenseKeys(keys);
   res.json(newKey);
+});
+
+app.patch("/api/license-keys/:key", licenseKeyLimiter, requireAuth, (req, res) => {
+  const requestedLimit = req.body?.storageLimitGb;
+  if (requestedLimit !== null && (typeof requestedLimit !== "number" || !Number.isFinite(requestedLimit) || Math.floor(requestedLimit * 1024 ** 3) < 1 || !Number.isSafeInteger(Math.floor(requestedLimit * 1024 ** 3)))) {
+    return res.status(400).json({ error: "Storage limit must be a positive number of GB, or null for unlimited" });
+  }
+  const keys = readLicenseKeys();
+  const index = keys.findIndex(item => String(item.key || "").toUpperCase() === String(req.params.key || "").toUpperCase());
+  if (index < 0) return res.status(404).json({ error: "Key not found" });
+  keys[index] = { ...keys[index] };
+  if (requestedLimit === null) delete keys[index].storageLimitGb;
+  else keys[index].storageLimitGb = requestedLimit;
+  writeLicenseKeys(keys);
+  res.json({ ok: true, key: keys[index] });
 });
 
 // Validate a key (returns valid: true/false without marking it used)
@@ -10230,44 +10321,8 @@ app.get("/api/public-album/:albumSlug/purchase", galleryAccessLimiter, (req, res
 app.get("/api/tenant/:slug/storage-stats", tenantLimiter, requireTenant, (req, res) => {
   const { slug } = req.params;
   const db = readDb();
-  const albumsRaw = db[`t_${slug}_wv_albums`];
-  const albums = albumsRaw ? (typeof albumsRaw === "string" ? JSON.parse(albumsRaw) : albumsRaw) : [];
-  const libRaw = db[`t_${slug}_wv_photo_library`];
-  const library = libRaw ? (typeof libRaw === "string" ? JSON.parse(libRaw) : libRaw) : [];
-
-  const knownFiles = new Set();
-  const addSrc = (src) => {
-    if (src && src.startsWith("/uploads/")) {
-      const fn = src.split("/").pop()?.split("?")[0];
-      if (fn && !fn.startsWith("_cache")) knownFiles.add(fn);
-    }
-  };
-
-  if (Array.isArray(library)) library.forEach(p => { addSrc(p.src); addSrc(p.thumbnail); });
-  if (Array.isArray(albums)) albums.forEach(a => {
-    addSrc(a.coverImage);
-    (a.photos || []).forEach(p => { addSrc(p.src); addSrc(p.thumbnail); });
-  });
-  const uploadOwners = dbGet(db, "wv_upload_owners", {});
-  for (const [filename, owner] of Object.entries(uploadOwners)) {
-    if (owner?.tenantSlug === slug) knownFiles.add(path.basename(filename));
-  }
-
-  let totalBytes = 0;
-  let fileCount = 0;
-  const allFileNames = [];
-  for (const fn of knownFiles) {
-    try {
-      const stat = fs.statSync(path.join(UPLOADS_DIR, fn));
-      if (!stat.isFile()) continue;
-      totalBytes += stat.size;
-      fileCount++;
-      allFileNames.push(fn);
-    } catch {}
-  }
-
-  allFileNames.sort();
-  res.json({ ok: true, totalBytes, fileCount, albumCount: Array.isArray(albums) ? albums.length : 0, allFileNames });
+  res.setHeader("Cache-Control", "private, no-store");
+  res.json({ ok: true, ...tenantStorageUsage(db, slug, UPLOADS_DIR), limitBytes: tenantStorageLimitForSlug(slug) });
 });
 
 // ── Serve React app ───────────────────────────────────

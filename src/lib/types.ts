@@ -657,6 +657,8 @@ export interface LicenseKey {
   maxEvents?: number;
   /** Max total bookings for this key (applies to all key types). Supersedes trialMaxBookings. */
   maxBookings?: number;
+  /** Photo storage allowance in GiB. Omitted means unlimited. */
+  storageLimitGb?: number;
   /** Price (in the platform currency) to purchase one additional event type slot. */
   extraEventPrice?: number;
   /** @deprecated Use maxEvents instead */

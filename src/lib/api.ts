@@ -1929,7 +1929,7 @@ export async function generateLicenseKey(
   issuedTo: string,
   expiresAt?: string,
   notes?: string,
-  options?: { isTrial?: boolean; maxEvents?: number; maxBookings?: number; extraEventPrice?: number },
+  options?: { isTrial?: boolean; maxEvents?: number; maxBookings?: number; storageLimitGb?: number; extraEventPrice?: number },
 ): Promise<{ key?: import("./types").LicenseKey; error?: string }> {
   try {
     const res = await fetch("/api/license-keys/generate", {
@@ -1943,6 +1943,18 @@ export async function generateLicenseKey(
   } catch {
     return { error: "Network error" };
   }
+}
+
+export async function updateLicenseKeyStorageLimit(key: string, storageLimitGb: number | null): Promise<{ key?: import("./types").LicenseKey; error?: string }> {
+  try {
+    const res = await fetch(`/api/license-keys/${encodeURIComponent(key)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
+      body: JSON.stringify({ storageLimitGb }),
+    });
+    const data = await res.json();
+    return res.ok ? { key: data.key } : { error: data.error || "Could not update storage limit" };
+  } catch { return { error: "Network error" }; }
 }
 
 /** Validate a license key during setup. Returns true if the key is valid and unused. */
@@ -2172,7 +2184,7 @@ export async function setTenantEventTypes(slug: string, eventTypes: import("./ty
 export async function getSuperStats(): Promise<{
   tenantCount: number; totalBookings: number; mainBookings: number;
   archivedBookings?: number; retainedBookings?: number;
-  tenants: (import("./types").Tenant & { bookingCount: number; pendingBookings: number; archivedBookings?: number })[];
+  tenants: (import("./types").Tenant & { bookingCount: number; pendingBookings: number; archivedBookings?: number; storageUsedBytes: number; storageFileCount: number; storageLimitBytes: number | null })[];
 } | null> {
   try {
     const res = await fetch("/api/super/stats", { headers: adminAuthHeaders() });
@@ -2967,6 +2979,7 @@ export async function getTenantLicenseInfo(slug: string): Promise<{
   isTrial?: boolean;
   maxEvents?: number | null;
   maxBookings?: number | null;
+  storageLimitBytes?: number | null;
   extraEventPrice?: number | null;
   extraEventSlots?: number;
   eventCount?: number;
@@ -3172,6 +3185,7 @@ export async function ensurePublicAlbumAvailable(album: import("./types").Album,
 export async function getTenantStorageStats(slug: string): Promise<{
   ok: boolean;
   totalBytes: number;
+  limitBytes: number | null;
   fileCount: number;
   albumCount: number;
   allFileNames?: string[];

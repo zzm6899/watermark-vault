@@ -42,7 +42,7 @@ import {
 } from "@/lib/storage";
 import { compressImage, formatBytes, formatSpeed, getLocalStorageUsage, generateThumbnail } from "@/lib/image-utils";
 import { bookingPaymentReference } from "@/lib/booking-reference";
-import { bookingNeedsOutstandingPayment, hasExpiredBookingPaymentHold } from "@/lib/booking-utils";
+import { bookingNeedsOutstandingPayment, getRecordedBookingBalance, hasExpiredBookingPaymentHold } from "@/lib/booking-utils";
 import { calcInvTotal, emptyItem, emptyParty, formatInvMoney, invoiceCurrency } from "@/lib/admin-invoice-utils";
 import {
   getAlbumCaptureStats,
@@ -1686,9 +1686,8 @@ function DashboardView() {
       totalRevenue += booking.paymentAmount || 0;
     } else if (booking.paymentStatus === "deposit-paid") {
       totalRevenue += booking.depositAmount || 0;
-    } else if (booking.archived !== true && (!booking.paymentStatus || booking.paymentStatus === "unpaid")) {
-      unpaidIncome += booking.depositRequired && booking.depositAmount ? booking.depositAmount : (booking.paymentAmount || 0);
     }
+    if (booking.archived !== true && booking.status !== "cancelled" && bookingNeedsOutstandingPayment(booking)) unpaidIncome += getRecordedBookingBalance(booking)?.remaining || 0;
   }
 
   // Collect all pending download requests across albums
@@ -1718,10 +1717,10 @@ function DashboardView() {
     .slice(0, 5); // last 5 past sessions
 
   const stats = [
-    { label: "Collected", value: `$${totalRevenue.toLocaleString()}`, icon: DollarSign, color: "text-green-400", action: "Finance", onClick: () => navigate("/admin/finance") },
-    { label: "Payments due", value: `$${unpaidIncome.toLocaleString()}`, icon: DollarSign, color: "text-amber-300", action: "Bookings", onClick: () => navigate("/admin/bookings?focus=payment") },
-    { label: "Upcoming sessions", value: upcomingBookings.length, icon: Calendar, color: "text-primary", action: "Schedule", onClick: () => navigate("/admin/shoot-day") },
-    { label: "Download requests", value: allPendingRequests.length, icon: Download, color: "text-blue-300", action: "Review", onClick: () => navigate("/admin/albums") },
+    { label: "Booking payments received", value: `$${totalRevenue.toLocaleString()}`, onClick: () => navigate("/admin/finance") },
+    { label: "Unpaid booking balance", value: `$${unpaidIncome.toLocaleString()}`, onClick: () => navigate("/admin/bookings?focus=payment") },
+    { label: "Upcoming sessions", value: upcomingBookings.length, onClick: () => navigate("/admin/shoot-day") },
+    { label: "Download requests", value: allPendingRequests.length, onClick: () => navigate("/admin/albums") },
   ];
 
   // Invoice stats for dashboard
@@ -1874,24 +1873,13 @@ function DashboardView() {
         </div>
       </div>
 
-      {/* ── Stats grid ── */}
-      <div className="grid grid-cols-2 xl:grid-cols-4 gap-3 mb-6">
-        {stats.map(stat => (
-            <button
-              key={stat.label}
-              type="button"
-              onClick={stat.onClick}
-              className="glass-panel metric-card group rounded-lg p-4 sm:p-5 text-left transition-colors hover:border-primary/35 hover:bg-white/[0.04] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
-            >
-              <div className="mb-3 flex items-start justify-between gap-3">
-                <span className="flex size-9 items-center justify-center rounded-lg bg-white/[0.055] ring-1 ring-white/10">
-                  <stat.icon className={`w-4 h-4 ${stat.color}`} />
-                </span>
-                <span className="text-[10px] font-body tracking-wider uppercase text-primary opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">{stat.action}</span>
-              </div>
-              <p className="font-sans text-2xl sm:text-3xl font-semibold text-foreground">{stat.value}</p>
-              <p className="text-xs font-body text-muted-foreground mt-1 leading-tight">{stat.label}</p>
-            </button>
+      <div className="glass-panel mb-6 grid grid-cols-2 overflow-hidden rounded-xl xl:grid-cols-4">
+        {stats.map((stat, index) => (
+          <button key={stat.label} type="button" onClick={stat.onClick}
+            className={`min-w-0 px-4 py-4 text-left transition-colors hover:bg-white/[0.04] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary ${index % 2 === 0 ? "border-r border-border/70" : ""} ${index < 2 ? "border-b border-border/70 xl:border-b-0" : ""} ${index > 0 ? "xl:border-l xl:border-border/70" : ""} xl:border-r-0`}>
+            <p className="font-display text-2xl sm:text-3xl text-foreground">{stat.value}</p>
+            <p className="mt-1 text-xs font-body text-muted-foreground">{stat.label}</p>
+          </button>
         ))}
       </div>
 
@@ -1900,11 +1888,11 @@ function DashboardView() {
           <div><h3 className="font-display text-xl text-foreground">Gallery delivery</h3><p className="text-xs font-body text-muted-foreground">Sessions waiting for editing or client review.</p></div>
           <Button variant="outline" size="sm" onClick={() => navigate("/admin/albums")} className="shrink-0">All galleries</Button>
         </div>
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+        <div className="grid grid-cols-1 divide-y divide-border/70 border-t border-border/70 md:grid-cols-3 md:divide-x md:divide-y-0">
           {deliveryGroups.map(group => (
-            <section key={group.id} className="rounded-lg border border-border/70 bg-card/35 p-3">
-              <div className="mb-2 flex items-center justify-between"><h4 className={`text-xs font-body font-semibold uppercase tracking-wider ${group.tone}`}>{group.label}</h4><span className="text-xs text-muted-foreground">{group.items.length}</span></div>
-              {group.items.length ? <div className="space-y-1.5">{group.items.slice(0, 3).map(item => <button key={item.booking.id} type="button" onClick={() => item.album ? navigate(`/admin/albums?album=${encodeURIComponent(item.album.id)}`) : navigate(`/admin/bookings?search=${encodeURIComponent(bookingPaymentReference(item.booking))}`)} className="flex w-full items-center justify-between gap-2 rounded px-2 py-2 text-left hover:bg-secondary/60"><span className="min-w-0"><span className="block truncate text-xs text-foreground">{item.booking.clientName}</span><span className="block text-[10px] text-muted-foreground">{item.booking.date}{item.album ? ` · ${item.album.title}` : " · No gallery linked"}</span></span><ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /></button>)}{group.items.length > 3 && <p className="px-2 pt-1 text-[10px] text-muted-foreground">+{group.items.length - 3} more</p>}</div> : <p className="py-3 text-xs text-muted-foreground">Nothing waiting here.</p>}
+            <section key={group.id} className="min-w-0 py-3 md:px-4 md:first:pl-0 md:last:pr-0">
+              <div className="mb-2 flex items-center justify-between"><h4 className="text-sm font-body font-medium text-foreground">{group.label}</h4><span className="text-xs text-muted-foreground">{group.items.length}</span></div>
+              {group.items.length ? <div className="space-y-1">{group.items.slice(0, 3).map(item => <button key={item.booking.id} type="button" onClick={() => item.album ? navigate(`/admin/albums?album=${encodeURIComponent(item.album.id)}`) : navigate(`/admin/bookings?search=${encodeURIComponent(bookingPaymentReference(item.booking))}`)} className="flex w-full items-center justify-between gap-2 rounded px-2 py-2 text-left hover:bg-secondary/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"><span className="min-w-0"><span className="block truncate text-xs text-foreground">{item.booking.clientName}</span><span className="block truncate text-[11px] text-muted-foreground">{item.booking.date}{item.album ? ` · ${item.album.title}` : " · No gallery linked"}</span></span><ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /></button>)}{group.items.length > 3 && <p className="px-2 pt-1 text-xs text-muted-foreground">+{group.items.length - 3} more</p>}</div> : <p className="py-3 text-xs text-muted-foreground">Nothing waiting here.</p>}
             </section>
           ))}
         </div>
@@ -1937,26 +1925,26 @@ function DashboardView() {
         )}
       </div>
 
-      {/* ── Invoice stats row (only when invoices exist) ── */}
       {invoiceStats.length > 0 && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3 mb-6">
+        <section className="glass-panel mb-6 rounded-xl p-4 sm:p-5">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <h3 className="font-display text-xl text-foreground">Invoices</h3>
+            <Button variant="outline" size="sm" onClick={() => navigate("/admin/invoices")}>All invoices</Button>
+          </div>
+          <div className="grid grid-cols-1 gap-x-6 sm:grid-cols-2 xl:grid-cols-3">
           {invoiceStats.map((stat) => (
             <button
               key={stat.label}
               type="button"
               onClick={stat.onClick}
-              className="glass-panel group rounded-xl p-3 sm:p-5 text-left transition-all hover:border-primary/35 hover:bg-white/[0.065] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/45"
+              className="border-t border-border/70 py-3 text-left transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
             >
-              <div className="mb-2 flex items-start justify-between gap-2">
-                <stat.icon className={`w-4 h-4 ${stat.color}`} />
-                <ExternalLink className="w-3 h-3 text-primary opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
-              </div>
               <p className="font-display text-xl sm:text-2xl text-foreground">{stat.value}</p>
-              <p className="text-[10px] font-body text-muted-foreground tracking-wider uppercase mt-0.5 leading-tight">{stat.label}</p>
-              {stat.sub && <p className="text-[10px] font-body text-muted-foreground/60 mt-0.5 truncate">{stat.sub}</p>}
+              <p className="text-xs font-body text-muted-foreground mt-0.5 leading-tight">{stat.label}{stat.sub ? ` · ${stat.sub}` : ""}</p>
             </button>
           ))}
-        </div>
+          </div>
+        </section>
       )}
 
       {/* ── Booking Calendar + Today's Schedule ── */}

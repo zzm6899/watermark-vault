@@ -4766,7 +4766,7 @@ function TenantStorage({ slug }: { slug: string }) {
   const [loading, setLoading] = useState(true);
   const [cacheStats, setCacheStats] = useState<{ count: number; sizeBytes: number } | null>(null);
   const [statsLoading, setStatsLoading] = useState(false);
-  const [storageStats, setStorageStats] = useState<{ totalBytes: number; fileCount: number; albumCount: number } | null>(null);
+  const [storageStats, setStorageStats] = useState<{ totalBytes: number; limitBytes: number | null; fileCount: number; albumCount: number } | null>(null);
   const [storageStatsLoading, setStorageStatsLoading] = useState(false);
   const [ftpEnabled, setFtpEnabled] = useState<boolean | null>(null);
   const [ftpSyncJob, setFtpSyncJob] = useState<{
@@ -4801,7 +4801,7 @@ function TenantStorage({ slug }: { slug: string }) {
   const loadStorageStats = useCallback(() => {
     setStorageStatsLoading(true);
     getTenantStorageStats(slug)
-      .then(d => { if (d?.ok) setStorageStats({ totalBytes: d.totalBytes, fileCount: d.fileCount, albumCount: d.albumCount }); })
+      .then(d => { if (d?.ok) setStorageStats({ totalBytes: d.totalBytes, limitBytes: d.limitBytes, fileCount: d.fileCount, albumCount: d.albumCount }); })
       .catch(() => {})
       .finally(() => setStorageStatsLoading(false));
   }, [slug]);
@@ -4896,18 +4896,24 @@ function TenantStorage({ slug }: { slug: string }) {
   const totalPhotos = albums.reduce((s, a) => s + (a.photos?.length || 0), 0);
   const totalStarred = albums.reduce((s, a) => s + (a.photos?.filter(p => p.starred)?.length || 0), 0);
 
-  function fmtBytes(b: number) {
-    if (b < 1024) return `${b} B`;
-    if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
-    return `${(b / (1024 * 1024)).toFixed(1)} MB`;
-  }
-
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-      <h2 className="font-display text-2xl text-foreground mb-6">Storage</h2>
-      <div className="space-y-4 max-w-lg">
-        {/* Stats grid */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+      <h2 className="font-display text-2xl text-foreground mb-2">Storage</h2>
+      <p className="mb-6 text-sm font-body text-muted-foreground">Photo files in your account. Preview cache is shown separately below.</p>
+      <div className="space-y-4 max-w-3xl">
+        <div className="glass-panel rounded-xl p-5 sm:p-6">
+          <div className="flex flex-wrap items-end justify-between gap-3">
+            <div>
+              <p className="text-sm font-body text-muted-foreground">Storage used</p>
+              <p className="mt-1 font-display text-3xl text-foreground">{storageStatsLoading ? "Loading…" : storageStats ? formatBytes(storageStats.totalBytes) : "Unavailable"}</p>
+            </div>
+            {storageStats && <p className="text-sm font-body text-muted-foreground">{storageStats.limitBytes === null ? "Unlimited plan" : `of ${formatBytes(storageStats.limitBytes)}`}</p>}
+          </div>
+          {storageStats?.limitBytes != null && <div className="mt-4 h-2 overflow-hidden rounded-full bg-secondary" role="progressbar" aria-label="Photo storage used" aria-valuemin={0} aria-valuemax={storageStats.limitBytes} aria-valuenow={Math.min(storageStats.totalBytes, storageStats.limitBytes)}><div className={`h-full ${storageStats.totalBytes >= storageStats.limitBytes ? "bg-amber-400" : "bg-primary"}`} style={{ width: `${Math.min(100, storageStats.totalBytes / storageStats.limitBytes * 100)}%` }} /></div>}
+          {storageStats && <p className="mt-3 text-xs font-body text-muted-foreground">{storageStats.fileCount} files across {storageStats.albumCount} galleries{storageStats.limitBytes !== null ? ` · ${formatBytes(Math.max(0, storageStats.limitBytes - storageStats.totalBytes))} available` : ""}</p>}
+          {storageStats && storageStats.limitBytes !== null && storageStats.totalBytes >= storageStats.limitBytes && <p className="mt-2 text-sm font-body text-amber-300">Storage is full. Delete unused photos or ask your platform administrator for more space.</p>}
+        </div>
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
           <div className="glass-panel rounded-xl p-4">
             <p className="text-xs font-body tracking-wider uppercase text-muted-foreground">Albums</p>
             <p className="font-display text-2xl text-foreground mt-1">{albums.length}</p>
@@ -4919,12 +4925,6 @@ function TenantStorage({ slug }: { slug: string }) {
           <div className="glass-panel rounded-xl p-4">
             <p className="text-xs font-body tracking-wider uppercase text-muted-foreground">Starred</p>
             <p className="font-display text-2xl text-foreground mt-1">{totalStarred}</p>
-          </div>
-          <div className="glass-panel rounded-xl p-4">
-            <p className="text-xs font-body tracking-wider uppercase text-muted-foreground">Storage Used</p>
-            <p className="font-display text-lg text-foreground mt-1">
-              {storageStatsLoading ? <span className="text-base animate-pulse">…</span> : storageStats ? fmtBytes(storageStats.totalBytes) : "—"}
-            </p>
           </div>
         </div>
 
@@ -4946,7 +4946,7 @@ function TenantStorage({ slug }: { slug: string }) {
               </div>
               <div className="p-3 rounded-lg bg-secondary/60">
                 <p className="text-xs font-body text-muted-foreground">Cache size</p>
-                <p className="font-display text-lg text-foreground">{fmtBytes(cacheStats.sizeBytes)}</p>
+                <p className="font-display text-lg text-foreground">{formatBytes(cacheStats.sizeBytes)}</p>
                 <p className="text-[10px] font-body text-muted-foreground/60">on-disk</p>
               </div>
             </div>
@@ -5103,6 +5103,7 @@ function TenantLicense({ slug }: { slug: string }) {
     isTrial?: boolean;
     maxEvents?: number | null;
     maxBookings?: number | null;
+    storageLimitBytes?: number | null;
     extraEventPrice?: number | null;
     extraEventSlots?: number;
     eventCount?: number;
@@ -5179,7 +5180,7 @@ function TenantLicense({ slug }: { slug: string }) {
               )}
             </div>
 
-            {(licInfo.maxEvents != null || licInfo.maxBookings != null) && (
+            {(licInfo.maxEvents != null || licInfo.maxBookings != null || licInfo.storageLimitBytes != null) && (
               <div className="space-y-3 p-3 rounded-lg bg-secondary/50 border border-border/40">
                 <p className="text-xs font-body text-muted-foreground font-medium">Plan Limits</p>
                 <div className="grid grid-cols-2 gap-3">
@@ -5208,6 +5209,7 @@ function TenantLicense({ slug }: { slug: string }) {
                       )}
                     </div>
                   )}
+                  {licInfo.storageLimitBytes != null && <div className="col-span-2 flex justify-between text-xs font-body"><span className="text-muted-foreground">Photo storage</span><span className="text-foreground">{formatBytes(licInfo.storageLimitBytes)}</span></div>}
                 </div>
               </div>
             )}

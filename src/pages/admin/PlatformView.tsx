@@ -9,8 +9,9 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
 import { hashPassword } from "@/lib/storage";
+import { formatBytes } from "@/lib/image-utils";
 import {
-  getLicenseKeys, generateLicenseKey, revokeLicenseKey, createTenant, updateTenant, deleteTenant,
+  getLicenseKeys, generateLicenseKey, updateLicenseKeyStorageLimit, revokeLicenseKey, createTenant, updateTenant, deleteTenant,
   getSuperStats, getAllBookings, getLicensePlans, createLicensePlan, deleteLicensePlan,
   getLicensePurchases, getTenantSettings, saveTenantSettings, getSuperAdminWebhooks,
   getEventSlotRequests, confirmEventSlotRequest, rejectEventSlotRequest,
@@ -123,7 +124,11 @@ function LicenseKeysPanel() {
   const [newIsTrial, setNewIsTrial] = useState(false);
   const [newMaxEvents, setNewMaxEvents] = useState("");
   const [newMaxBookings, setNewMaxBookings] = useState("");
+  const [newStorageLimitGb, setNewStorageLimitGb] = useState("");
   const [newExtraEventPrice, setNewExtraEventPrice] = useState("");
+  const [editingStorageKey, setEditingStorageKey] = useState<string | null>(null);
+  const [storageLimitInput, setStorageLimitInput] = useState("");
+  const [savingStorageKey, setSavingStorageKey] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [expanded, setExpanded] = useState(true);
 
@@ -148,12 +153,14 @@ function LicenseKeysPanel() {
     const parsePositiveFloat = (s: string) => { const n = parseFloat(s); return Number.isFinite(n) && n > 0 ? n : undefined; };
     const maxEvents = newMaxEvents.trim() ? parsePositiveInt(newMaxEvents) : undefined;
     const maxBookings = newMaxBookings.trim() ? parsePositiveInt(newMaxBookings) : undefined;
+    const storageLimitGb = newStorageLimitGb.trim() ? Number(newStorageLimitGb) : undefined;
+    if (newStorageLimitGb.trim() && (storageLimitGb === undefined || !Number.isFinite(storageLimitGb) || storageLimitGb <= 0)) { toast.error("Enter a positive storage limit in GB"); setGenerating(false); return; }
     const extraEventPrice = newExtraEventPrice.trim() ? parsePositiveFloat(newExtraEventPrice) : undefined;
     const { key, error } = await generateLicenseKey(
       newIssuedTo.trim(),
       newExpiresAt || undefined,
       newNotes || undefined,
-      { isTrial: newIsTrial || undefined, maxEvents, maxBookings, extraEventPrice },
+      { isTrial: newIsTrial || undefined, maxEvents, maxBookings, storageLimitGb, extraEventPrice },
     );
     setGenerating(false);
     if (error || !key) {
@@ -162,7 +169,7 @@ function LicenseKeysPanel() {
     }
     toast.success(`Key generated: ${key.key}`);
     setNewIssuedTo(""); setNewExpiresAt(""); setNewNotes("");
-    setNewIsTrial(false); setNewMaxEvents(""); setNewMaxBookings(""); setNewExtraEventPrice("");
+    setNewIsTrial(false); setNewMaxEvents(""); setNewMaxBookings(""); setNewStorageLimitGb(""); setNewExtraEventPrice("");
     setKeys((prev) => [...prev, key]);
   };
 
@@ -175,6 +182,19 @@ function LicenseKeysPanel() {
     }
     toast.success("Key revoked");
     setKeys((prev) => prev.filter((x) => x.key !== k.key));
+  };
+
+  const saveStorageLimit = async (k: LicenseKey) => {
+    const value = storageLimitInput.trim();
+    const storageLimitGb = value ? Number(value) : null;
+    if (storageLimitGb !== null && (!Number.isFinite(storageLimitGb) || storageLimitGb <= 0)) { toast.error("Enter a positive storage limit in GB"); return; }
+    setSavingStorageKey(true);
+    const result = await updateLicenseKeyStorageLimit(k.key, storageLimitGb);
+    setSavingStorageKey(false);
+    if (!result.key) { toast.error(result.error || "Could not update storage limit"); return; }
+    setKeys(current => current.map(item => item.key === k.key ? result.key! : item));
+    setEditingStorageKey(null);
+    toast.success("Storage limit updated");
   };
 
   const copyKey = (key: string) => {
@@ -268,8 +288,8 @@ function LicenseKeysPanel() {
 
             {/* Plan limits (available for any key type) */}
             <div className="space-y-2 p-3 rounded-lg bg-secondary/50 border border-border/50">
-              <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground">Usage Limits (optional)</p>
-              <div className="grid grid-cols-2 gap-3">
+              <p className="text-xs font-body text-muted-foreground">Usage limits (optional)</p>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
                   <label className="text-xs font-body text-muted-foreground mb-1 block">Max Event Types</label>
                   <Input
@@ -292,6 +312,11 @@ function LicenseKeysPanel() {
                     onChange={(e) => setNewMaxBookings(e.target.value)}
                     className="bg-background border-border text-foreground font-body text-sm"
                   />
+                  <p className="text-[10px] font-body text-muted-foreground mt-0.5">Leave blank for unlimited</p>
+                </div>
+                <div>
+                  <label className="text-xs font-body text-muted-foreground mb-1 block">Photo storage (GB)</label>
+                  <Input type="number" min="0.01" step="0.01" placeholder="Unlimited" value={newStorageLimitGb} onChange={e => setNewStorageLimitGb(e.target.value)} className="bg-background border-border text-foreground font-body text-sm" />
                   <p className="text-[10px] font-body text-muted-foreground mt-0.5">Leave blank for unlimited</p>
                 </div>
               </div>
@@ -352,6 +377,7 @@ function LicenseKeysPanel() {
                         {effectiveMaxBookings(k)} bookings
                       </span>
                     )}
+                    {k.storageLimitGb != null && <span className="text-[10px] font-body bg-secondary text-muted-foreground px-1.5 py-0.5 rounded-full">{k.storageLimitGb} GB storage</span>}
                     {k.extraEventPrice != null && (
                       <span className="text-[10px] font-body bg-blue-500/10 text-blue-400 px-1.5 py-0.5 rounded-full">
                         +${k.extraEventPrice}/slot
@@ -377,7 +403,19 @@ function LicenseKeysPanel() {
                       </button>
                     </div>
                   )}
+                  {editingStorageKey === k.key && (
+                    <div className="mt-3 flex flex-wrap items-end gap-2">
+                      <label className="text-xs font-body text-muted-foreground">Storage limit (GB)
+                        <Input type="number" min="0.01" step="0.01" value={storageLimitInput} onChange={event => setStorageLimitInput(event.target.value)} placeholder="Unlimited" className="mt-1 w-36 bg-background" />
+                      </label>
+                      <Button size="sm" onClick={() => void saveStorageLimit(k)} disabled={savingStorageKey}>{savingStorageKey ? "Saving…" : "Save limit"}</Button>
+                      <Button size="sm" variant="ghost" onClick={() => setEditingStorageKey(null)}>Cancel</Button>
+                      <p className="w-full text-[11px] text-muted-foreground">Leave blank for unlimited. Existing photos remain if you lower a limit.</p>
+                    </div>
+                  )}
                 </div>
+                <div className="flex shrink-0 gap-1">
+                <Button size="sm" variant="outline" onClick={() => { setEditingStorageKey(editingStorageKey === k.key ? null : k.key); setStorageLimitInput(k.storageLimitGb != null ? String(k.storageLimitGb) : ""); }}>Storage</Button>
                 <Button
                   variant="ghost"
                   size="sm"
@@ -386,6 +424,7 @@ function LicenseKeysPanel() {
                 >
                   <Trash2 className="w-3 h-3" /> Revoke
                 </Button>
+                </div>
               </div>
             ))}
           </div>
@@ -721,7 +760,7 @@ function TenantSettingsPanel({ tenant, onClose }: { tenant: Tenant; onClose: () 
 export default function PlatformView() {
   const [stats, setStats] = useState<{
     tenantCount: number; totalBookings: number; mainBookings: number;
-    tenants: (Tenant & { bookingCount: number; pendingBookings: number })[];
+    tenants: (Tenant & { bookingCount: number; pendingBookings: number; storageUsedBytes: number; storageFileCount: number; storageLimitBytes: number | null })[];
   } | null>(null);
   const [allBookings, setAllBookings] = useState<Booking[]>([]);
   const [plans, setPlans] = useState<LicensePlan[]>([]);
@@ -983,6 +1022,7 @@ export default function PlatformView() {
                       <p className="text-[10px] font-mono text-muted-foreground truncate">/{t.slug}</p>
                     </div>
                     <span className="text-[10px] sm:text-xs font-body text-muted-foreground shrink-0">{t.bookingCount} bkgs</span>
+                    <span className="text-[10px] sm:text-xs font-body text-muted-foreground shrink-0">{formatBytes(t.storageUsedBytes)}</span>
                   </div>
                 ))}
                 {stats.tenants.length > 5 && (
@@ -1046,6 +1086,8 @@ export default function PlatformView() {
                             {!t.active && <span className="text-[10px] font-body bg-muted text-muted-foreground px-1.5 py-0.5 rounded-full">Inactive</span>}
                           </div>
                           <p className="text-xs font-body text-muted-foreground truncate">{t.email}</p>
+                          <p className="mt-1 text-xs font-body text-muted-foreground">{formatBytes(t.storageUsedBytes)} used{t.storageLimitBytes === null ? " · unlimited storage" : ` of ${formatBytes(t.storageLimitBytes)}`}{t.storageFileCount ? ` · ${t.storageFileCount} files` : ""}</p>
+                          {t.storageLimitBytes !== null && <div className="mt-2 h-1.5 max-w-xs overflow-hidden rounded-full bg-background" role="progressbar" aria-label={`${t.displayName} storage used`} aria-valuemin={0} aria-valuemax={t.storageLimitBytes} aria-valuenow={Math.min(t.storageUsedBytes, t.storageLimitBytes)}><div className={`h-full ${t.storageUsedBytes >= t.storageLimitBytes ? "bg-amber-400" : "bg-primary"}`} style={{ width: `${Math.min(100, t.storageUsedBytes / t.storageLimitBytes * 100)}%` }} /></div>}
                           {t.customDomain && (
                             <p className="text-[10px] font-mono text-blue-400 mt-0.5">🌐 {t.customDomain}</p>
                           )}

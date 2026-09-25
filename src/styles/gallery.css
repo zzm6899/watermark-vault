@@ -13,10 +13,11 @@
   --ring: 37 30% 74%;
   font-family: Barlow, Arial, sans-serif;
 }
-.client-gallery .gallery-content { padding-top: 112px; }
+.client-gallery .gallery-content { padding-top: 88px; }
 .client-gallery .gallery-content > .container { max-width: 1600px; padding-inline: clamp(20px, 4vw, 64px); }
-.client-gallery .gallery-heading h1 { font-family: Georgia, 'Times New Roman', serif; font-size: clamp(32px, 4.2vw, 64px); font-weight: 400; line-height: 1.12; letter-spacing: -.035em; }
-.gallery-photo-count { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; margin-top: 12px; color: hsl(var(--muted-foreground)); font-size: 12px; }
+.client-gallery .gallery-heading h1 { font-family: 'Barlow Condensed', Barlow, Arial, sans-serif; font-size: clamp(34px, 3.2vw, 50px); font-weight: 600; line-height: 1.05; letter-spacing: -.015em; }
+.gallery-photo-count { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; color: hsl(var(--muted-foreground)); font-size: 13px; }
+.gallery-proofing { max-width: 900px; }
 .gallery-actions { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding-top: 4px; }
 .gallery-recovery-link button { margin-top: 4px; text-decoration: underline; text-decoration-color: hsl(var(--border)); text-underline-offset: 5px; }
 .client-gallery button, .gallery-dialog button { border-radius: 4px; }
@@ -42,17 +43,16 @@
 @media (min-width: 768px) { .client-gallery header button.md\:hidden { display: none; } }
 .gallery-dialog { background: hsl(var(--card)); color: hsl(var(--foreground)); border: 1px solid hsl(var(--border)); border-radius: 8px; max-height: calc(100dvh - 32px); overflow-y: auto; width: calc(100% - 32px); grid-template-columns: minmax(0, 1fr); box-shadow: 0 24px 80px #0008; }
 .gallery-dialog > * { min-width: 0; }
-.gallery-dialog h2 { font-family: Georgia, 'Times New Roman', serif; font-size: 26px; font-weight: 400; letter-spacing: -.02em; padding-right: 20px; }
+.gallery-dialog h2 { font-family: 'Barlow Condensed', Barlow, Arial, sans-serif; font-size: 26px; font-weight: 600; letter-spacing: -.01em; padding-right: 20px; }
 .gallery-dialog > div:first-child { text-align: left; }
 .gallery-dialog button:not([role="radio"]) { min-height: 44px; height: auto; white-space: normal; }
 .gallery-dialog > button:last-child { width: 44px; height: 44px; top: 4px; right: 4px; }
 .gallery-dialog input { font-size: 16px; min-height: 44px; }
 @media (max-width: 639px) {
-  .client-gallery .gallery-content { padding-top: 88px; }
+  .client-gallery .gallery-content { padding-top: 76px; }
   .client-gallery .gallery-content > .container { padding-inline: 16px; }
   .gallery-actions { align-items: stretch; flex-direction: column; gap: 12px; }
   .gallery-actions > button { width: 100%; }
-  .gallery-photo-count { margin-top: 8px; }
   .gallery-toolbar { gap: 8px; }
   .gallery-toolbar button { min-height: 44px; }
   .gallery-toolbar > span { flex-basis: 100%; order: 3; margin-left: 0; text-align: left; font-size: 12px; }

@@ -42,6 +42,7 @@ export default function PaymentOperationsView() {
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(false);
   const [bulkReminding, setBulkReminding] = useState(false);
+  const [requestsOpen, setRequestsOpen] = useState(false);
   const [acting, setActing] = useState<Set<string>>(new Set());
 
   const refresh = useCallback(async () => {
@@ -63,6 +64,8 @@ export default function PaymentOperationsView() {
 
   const actionable = useMemo(() => bookings.filter(booking => booking.status !== "cancelled" && (!["paid", "cash"].includes(booking.paymentStatus || "") || booking.paymentNeedsReview)), [bookings]);
   const counts = useMemo(() => Object.fromEntries(Object.keys(queueMeta).map(key => [key, actionable.filter(booking => queueFor(booking) === key).length])), [actionable]);
+  const pendingDownloadRequests = albums.reduce((count, album) => count + (album.downloadRequests || []).filter(request => request.status === "pending").length, 0);
+  useEffect(() => { if (pendingDownloadRequests > 0) setRequestsOpen(true); }, [pendingDownloadRequests]);
   const visible = useMemo(() => actionable.filter(booking => {
     if (queue !== "all" && queueFor(booking) !== queue) return false;
     const haystack = `${booking.clientName} ${booking.clientEmail} ${booking.type} ${bookingPaymentReference(booking)}`.toLowerCase();
@@ -144,16 +147,22 @@ export default function PaymentOperationsView() {
     }
   };
 
-  return <div className="space-y-6 max-w-6xl mx-auto">
+  return <div className="w-full max-w-[1600px] space-y-5">
     <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
-      <div><p className="text-xs uppercase tracking-[.22em] text-primary">Business</p><h1 className="font-display text-3xl text-foreground">Payments</h1><p className="text-sm text-muted-foreground mt-1">Review card payments, confirm bank transfers and follow up unpaid balances.</p></div>
+      <div><h1 className="font-display text-3xl text-foreground">Payments</h1><p className="text-sm text-muted-foreground mt-1">Verify payments and follow up unpaid bookings.</p></div>
       <Button variant="outline" onClick={() => void refresh()} disabled={loading} className="gap-2"><RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />Refresh</Button>
     </div>
     {health && (!health.stripe.ready || health.stripe.unsafeUnsignedWebhooks || health.counts.reviews > 0) && <div role="alert" className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-100 flex gap-3"><AlertTriangle className="w-5 h-5 shrink-0" /><div><strong>Payment attention required.</strong> {!health.stripe.ready ? "Card payments are not fully configured. " : ""}{health.stripe.unsafeUnsignedWebhooks ? "Payment notifications need a security update. " : ""}{health.counts.reviews ? `${health.counts.reviews} payment${health.counts.reviews === 1 ? " needs" : "s need"} review.` : ""}</div></div>}
-    {health?.stripe.ready && !health.stripe.unsafeUnsignedWebhooks && health.counts.reviews === 0 && <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/10 p-3 text-sm text-emerald-200 flex items-center gap-2"><CheckCircle2 className="w-4 h-4" />Card payments are connected and working.</div>}
+    {health?.stripe.ready && !health.stripe.unsafeUnsignedWebhooks && health.counts.reviews === 0 && <p className="flex items-center gap-2 text-xs text-muted-foreground"><CheckCircle2 className="h-4 w-4 text-emerald-400" />Card payments connected</p>}
     {integrity && integrity.total > 0 && <div className="rounded-xl border border-cyan-500/25 bg-cyan-500/10 p-4 text-sm text-cyan-100 flex flex-col sm:flex-row sm:items-center gap-3"><AlertTriangle className="w-5 h-5 shrink-0" /><div className="flex-1"><strong>{integrity.total} older record{integrity.total === 1 ? "" : "s"} need an update.</strong><span className="block text-xs text-cyan-100/70 mt-1">Booking references: {integrity.issues.bookingReferences} · payment dates: {integrity.issues.paymentTimestamps} · payments awaiting confirmation: {integrity.issues.paidPendingBookings} · expired bookings: {integrity.issues.expiredHolds} · invoice numbers: {integrity.issues.invoiceNumbers}</span></div><Button size="sm" onClick={() => void runRepair()} disabled={loading}>Fix records</Button></div>}
-    <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">{Object.entries(queueMeta).map(([key, meta]) => { const Icon = meta.icon; return <button key={key} onClick={() => setQueue(key as Queue)} className={`text-left rounded-xl border p-4 transition ${meta.tone} ${queue === key ? "ring-2 ring-primary/50" : "hover:border-primary/30"}`}><Icon className="w-4 h-4 mb-3" /><span className="block text-2xl font-display">{counts[key] || 0}</span><span className="text-xs">{meta.label}</span></button>; })}</div>
-    <DownloadRequestInbox albums={albums} onUpdated={updated => setAlbums(current => current.map(album => album.id === updated.id ? updated : album))} />
+    <div className="flex flex-wrap gap-1 border-b border-border" role="group" aria-label="Payment queues">
+      <button type="button" aria-pressed={queue === "all"} onClick={() => setQueue("all")} className={`min-h-11 px-3 text-sm font-body ${queue === "all" ? "border-b-2 border-primary text-foreground" : "text-muted-foreground hover:text-foreground"}`}>All <span className="ml-1 text-xs">{actionable.length}</span></button>
+      {Object.entries(queueMeta).map(([key, meta]) => <button key={key} type="button" aria-pressed={queue === key} onClick={() => setQueue(key as Queue)} className={`min-h-11 px-3 text-sm font-body ${queue === key ? "border-b-2 border-primary text-foreground" : "text-muted-foreground hover:text-foreground"}`}>{meta.label} <span className="ml-1 text-xs">{counts[key] || 0}</span></button>)}
+    </div>
+    <details open={requestsOpen} onToggle={event => setRequestsOpen(event.currentTarget.open)} className="rounded-xl border border-border bg-card/40">
+      <summary className="flex min-h-12 cursor-pointer items-center justify-between px-4 py-3 text-sm font-body text-foreground">Download requests <span className="text-xs text-muted-foreground">{pendingDownloadRequests} waiting</span></summary>
+      <div className="px-4 pb-4"><DownloadRequestInbox albums={albums} onUpdated={updated => setAlbums(current => current.map(album => album.id === updated.id ? updated : album))} /></div>
+    </details>
     <div className="flex flex-col gap-3 sm:flex-row"><div className="relative flex-1"><Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" /><Input value={search} onChange={event => setSearch(event.target.value)} placeholder="Search client, email, reference or shoot…" className="pl-9" /></div><Button variant="outline" disabled={bulkReminding} onClick={() => void remindVisible()}>{bulkReminding ? "Sending reminders…" : "Remind visible clients"}</Button></div>
     <div className="space-y-3">{visible.map(booking => { const kind = queueFor(booking); const meta = queueMeta[kind]; const Icon = meta.icon; const busy = acting.has(booking.id); const balance = getRecordedBookingBalance(booking); return <article key={booking.id} className="w-full rounded-xl border border-border bg-card/60 p-4 transition hover:border-primary/40"><button type="button" onClick={() => navigate(`/admin/bookings?search=${encodeURIComponent(bookingPaymentReference(booking))}`)} className="flex w-full flex-col gap-3 text-left sm:flex-row sm:items-center"><span className={`rounded-lg border p-2 ${meta.tone}`}><Icon className="w-4 h-4" /></span><span className="min-w-0 flex-1"><span className="font-medium text-foreground block truncate">{booking.clientName} · {booking.type}</span><span className="text-xs text-muted-foreground">{booking.date} at {booking.time} · {bookingPaymentReference(booking)}</span></span><span className={`text-xs border rounded-full px-2.5 py-1 ${meta.tone}`}>{meta.label}</span></button>
       <div className="mt-3 rounded-lg bg-background/60 p-3">

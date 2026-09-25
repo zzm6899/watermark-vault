@@ -1843,6 +1843,10 @@ export default function AlbumDetail() {
       </p>
     </div>
   ) : null;
+  const sessionDate = /^Session on (\d{4})-(\d{2})-(\d{2})$/.exec(album.description?.trim() || "");
+  const galleryDescription = sessionDate
+    ? new Date(Number(sessionDate[1]), Number(sessionDate[2]) - 1, Number(sessionDate[3])).toLocaleDateString("en-AU", { day: "numeric", month: "long", year: "numeric" })
+    : album.description;
 
   return (
     <div className="client-gallery min-h-screen bg-background">
@@ -1850,24 +1854,19 @@ export default function AlbumDetail() {
 
       <section className={`gallery-content ${isProofing ? "pb-12" : "pb-44"}`}>
         <div className="container mx-auto px-4">
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="mb-8"
-          >
+          <div className="mb-7">
             <div className="gallery-heading space-y-5">
               <div>
-                <p className="mb-3 text-[10px] font-body uppercase tracking-[0.22em] text-primary">Client gallery</p>
-                <div className="flex items-start gap-3 mb-3">
-                  <h1 className="min-w-0 font-display text-3xl sm:text-4xl md:text-6xl text-foreground leading-[0.98] break-words">{album.title}</h1>
+                <div className="flex flex-wrap items-end justify-between gap-3 mb-2">
+                  <h1 className="min-w-0 text-foreground break-words">{album.title}</h1>
                   {visiblePhotos.length > 0 && (
                     <span className="gallery-photo-count">
                       <Images className="w-3 h-3" />
-                      {visiblePhotos.length}
+                      {visiblePhotos.length} photos
                     </span>
                   )}
                 </div>
-                {album.description && <p className="max-w-2xl text-sm sm:text-base font-body leading-6 text-muted-foreground whitespace-pre-line">{album.description}</p>}
+                {galleryDescription && <p className="max-w-2xl text-sm font-body leading-6 text-muted-foreground whitespace-pre-line">{galleryDescription}</p>}
               </div>
 
               {/* ── Proofing Stage Banner ───────────────────────────── */}
@@ -1890,16 +1889,12 @@ export default function AlbumDetail() {
 
               {/* Active proofing banner (only when window is open) */}
               {effectiveProofingEnabled && album.proofingEnabled && proofingStage === "proofing" && !isProofingWindowExpired && (
-                <div className="rounded-2xl p-5 sm:p-6 border border-yellow-400/25 bg-gradient-to-br from-yellow-500/10 via-background to-background shadow-[0_18px_45px_-32px_rgba(250,204,21,0.7)]">
-                  <div className="flex items-start gap-4">
-                    <div className="w-10 h-10 shrink-0 rounded-full bg-yellow-400 text-yellow-950 flex items-center justify-center shadow-lg shadow-yellow-400/20">
-                      <Star className="w-5 h-5 fill-current" />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-1.5">
-                        <p className="text-lg font-display text-foreground">{normalSelectionMode === "off" ? "Review your preferences" : normalSelectionMode === "optional" ? "Select your photos (optional)" : "Select your photos"}</p>
+                <div className="gallery-proofing border-l-2 border-primary bg-card/55 px-4 py-4 sm:px-5">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 mb-1">
+                        <h2 className="font-display text-xl text-foreground">{normalSelectionMode === "off" ? "Review your preferences" : normalSelectionMode === "optional" ? "Choose your photos (optional)" : "Choose your photos"}</h2>
                         {album.proofingRounds && album.proofingRounds.length > 0 && (
-                          <span className="text-[10px] font-body px-1.5 py-0.5 rounded-full bg-yellow-500/20 text-yellow-400">
+                          <span className="text-xs font-body text-muted-foreground">
                             Round {album.proofingRounds.length}
                           </span>
                         )}
@@ -1926,11 +1921,10 @@ export default function AlbumDetail() {
                           </p>
                         );
                       })()}
-                      <p className="text-xs font-body text-yellow-300 mt-2">
+                      <p className="text-xs font-body text-primary mt-2">
                         {normalSelectionMode === "off" || photographerChooses ? "Photographer will choose your photos" : starredIds.size === 0 ? "No photos selected" : `${starredIds.size} photo${starredIds.size !== 1 ? "s" : ""} selected`}
                       </p>
                     </div>
-                  </div>
                 </div>
               )}
               {effectiveProofingEnabled && album.proofingEnabled && proofingStage === "selections-submitted" && (
@@ -1971,7 +1965,7 @@ export default function AlbumDetail() {
                 </div>
               )}
 
-              {isPurchasingLocked && (
+              {isPurchasingLocked && !isProofing && (
                 <div className="glass-panel rounded-xl p-5 border border-yellow-500/30 bg-yellow-500/5">
                   <div className="flex items-start gap-3">
                     <Lock className="w-5 h-5 text-yellow-400 mt-0.5 shrink-0" />
@@ -2001,7 +1995,7 @@ export default function AlbumDetail() {
               {_galleryExpiryBanner}
               {_expiryBanner}
 
-              <div className="gallery-actions">
+              {!isProofing && <div className="gallery-actions">
                 <div className="text-sm text-muted-foreground">
                   {canDownload ? <p><span>Unlocked</span> · Your full gallery is ready.</p> : isDownloadLockedForProofing ? <p>Downloads will be available when your final images are delivered.</p> : isExpired || isPurchasingLocked ? <p>Browse your gallery. Downloads are currently unavailable.</p> : <p>{hasPendingTransfer ? "Your bank transfer is awaiting confirmation." : paidPhotoIdSet.size > 0 ? `${clientDeliverablePhotos.filter(photo => paidPhotoIdSet.has(photo.id)).length} purchased photos ready to download.` : freeRemaining > 0 ? `${freeRemaining} complimentary downloads remaining.` : "Select the photographs you’d like to keep."}</p>}
                   {(ownRequests.length > 0 || paidPhotoIdSet.size > 0 || sessionFullAlbum) && <Button variant="ghost" className="px-0 text-muted-foreground underline underline-offset-4" onClick={() => setShowGalleryOptions(true)}>View purchase status</Button>}
@@ -2012,9 +2006,9 @@ export default function AlbumDetail() {
                   : priceFullAlbum === 0 ? <Button onClick={() => openSelectionReview(true)} className="gap-2"><Download className="size-4" />Download Free</Button>
                   : <Button variant="outline" onClick={() => setShowGalleryOptions(true)} className="gap-2"><Download className="size-4" />Download & pricing</Button>
                 )}
-              </div>
+              </div>}
             </div>
-          </motion.div>
+          </div>
 
           {/* ── Filter / Sort toolbar ──────────────────────────────── */}
           {visiblePhotos.length > 0 && (
