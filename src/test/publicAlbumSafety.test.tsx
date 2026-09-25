@@ -89,7 +89,8 @@ describe("public album safety", () => {
     expect(source).toContain('navigate(`/admin/albums?album=${encodeURIComponent(activeCaptureAlbum.id)}`)');
     expect(source).toContain("window.open(publicGalleryUrl(album)");
     expect(source).toContain("window.open(publicGalleryUrl(matchingAlbum)");
-    expect(tenantSource).toContain("href={publicGalleryUrl(alb)}");
+    expect(tenantSource).toContain("href={tenantGalleryUrl(alb)}");
+    expect(tenantSource).toContain("publicGalleryUrl({ ...album, slug: album.id })");
   });
 
   it("keeps private-link tokens portable in the address bar", () => {
