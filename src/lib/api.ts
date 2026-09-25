@@ -524,6 +524,7 @@ export type UploadedPhotoResult = {
   proofId?: string;
   size: number;
   ftpUploaded?: boolean;
+  albumPersisted?: boolean;
   /** Actual image width extracted from server-side metadata (pixels). */
   width?: number;
   /** Actual image height extracted from server-side metadata (pixels). */
@@ -742,8 +743,8 @@ export async function uploadPhotosToServer(
           }
           throw new Error(message);
         }
-        const data = await readJson<{ files?: UploadedPhotoResult[] }>(res, {});
-        return Array.isArray(data.files) ? data.files : [];
+        const data = await readJson<{ files?: UploadedPhotoResult[]; albumPersisted?: boolean }>(res, {});
+        return Array.isArray(data.files) ? data.files.map(file => ({ ...file, ...(albumId ? { albumPersisted: data.albumPersisted === true } : {}) })) : [];
       } catch (err) {
         if (err instanceof PhotoUploadError) throw err;
         lastError = err;
@@ -1334,6 +1335,33 @@ export async function previewEmailAutomation(rule: import("./types").EmailAutoma
   }
 }
 
+export async function getTenantEmailAutomations(slug: string): Promise<import("./types").EmailAutomationRule[]> {
+  try {
+    const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/email-automations`);
+    const data = await readJson<{ rules?: import("./types").EmailAutomationRule[] }>(res, {});
+    return res.ok && Array.isArray(data.rules) ? data.rules : [];
+  } catch { return []; }
+}
+
+export async function saveTenantEmailAutomations(slug: string, rules: import("./types").EmailAutomationRule[]): Promise<import("./types").EmailAutomationRule[] | null> {
+  try {
+    const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/email-automations`, {
+      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rules }),
+    });
+    const data = await readJson<{ rules?: import("./types").EmailAutomationRule[] }>(res, {});
+    return res.ok && Array.isArray(data.rules) ? data.rules : null;
+  } catch { return null; }
+}
+
+export async function previewTenantEmailAutomation(slug: string, rule: import("./types").EmailAutomationRule): Promise<EmailAutomationPreview | null> {
+  try {
+    const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/email-automations/preview`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rule }),
+    });
+    return res.ok ? await readJson<EmailAutomationPreview | null>(res, null) : null;
+  } catch { return null; }
+}
+
 // ── Google Calendar ─────────────────────────────────────
 
 export async function getGoogleCalendarStatus(): Promise<{ configured: boolean; connected: boolean; email: string | null }> {
@@ -1765,6 +1793,15 @@ export async function notifyTenantDiscord(slug: string, payload: Record<string, 
 }
 
 /** Fetch all tenant webhook configurations (super admin only). */
+export async function testTenantDiscord(slug: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/discord/test`, { method: "POST" });
+    const data = await readJson<{ ok?: boolean; error?: string }>(res, {});
+    return { ok: res.ok && data.ok === true, error: data.error };
+  } catch { return { ok: false, error: "Could not reach the server" }; }
+}
+
+/** Fetch all tenant webhook configurations (super admin only). */
 export async function getSuperAdminWebhooks(): Promise<{
   ok: boolean;
   webhooks?: {
@@ -2074,6 +2111,7 @@ export type PublicTenant = Pick<
 
 export type PrivateTenantProfile = PublicTenant & {
   email: string;
+  requestedDomain?: string;
   createdAt?: string;
   licenseKeySet?: boolean;
   extraEventSlotRequestEnabled?: boolean;
@@ -2455,6 +2493,17 @@ export async function verifyTenantSession(slug: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/** Update the signed-in tenant's own allowlisted profile fields. */
+export async function requestTenantDomain(slug: string, domain: string): Promise<{ ok: boolean; tenant?: PrivateTenantProfile; error?: string }> {
+  try {
+    const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/domain-request`, {
+      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ domain }),
+    });
+    const data = await readJson<{ ok?: boolean; tenant?: PrivateTenantProfile; error?: string }>(res, {});
+    return { ok: res.ok && data.ok === true, tenant: data.tenant, error: data.error };
+  } catch { return { ok: false, error: "Could not reach the server" }; }
 }
 
 /** Update the signed-in tenant's own allowlisted profile fields. */
@@ -2913,6 +2962,7 @@ export async function getTenantSetupInfo(token: string): Promise<{
   isTrial?: boolean;
   trialMaxEvents?: number;
   trialMaxBookings?: number;
+  storageLimitGb?: number;
   expiresAt?: string;
   error?: string;
 }> {

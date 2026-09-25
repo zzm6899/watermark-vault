@@ -710,6 +710,7 @@ export interface Tenant {
   active: boolean;
   createdAt: string;     // ISO timestamp
   customDomain?: string; // optional custom domain, e.g. "book.myphotobusiness.com"
+  requestedDomain?: string;
   /** When true, event slot requests are enabled for this tenant regardless of license key. */
   extraEventSlotRequestEnabled?: boolean;
   /** Per-tenant price for an extra event slot. Overrides license key price when extraEventSlotRequestEnabled is true. */

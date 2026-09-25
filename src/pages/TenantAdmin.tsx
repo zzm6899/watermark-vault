@@ -14,13 +14,15 @@ import {
   Save, X, ChevronDown, ChevronUp, Globe, Upload, Search, Copy,
   DollarSign, MessageSquare, HardDrive, User, RefreshCw, Webhook, Star,
   ExternalLink, Mail, Send, Unlock, CreditCard, CheckCircle2, Download,
-  XSquare, CheckSquare, Bell, Wifi, Link2, LayoutGrid, Grid, CalendarDays, RefreshCcw,
+  XSquare, CheckSquare, Bell, Wifi, Link2, LayoutGrid, Grid, CalendarDays, RefreshCcw, MoreHorizontal,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Slider } from "@/components/ui/slider";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import TenantAutomations from "@/pages/tenant/TenantAutomations";
 import WatermarkedImage from "@/components/WatermarkedImage";
 import { toast } from "sonner";
 import { getMobileTenantSession, setMobileTenantSession, hashPassword } from "@/lib/storage";
@@ -40,7 +42,7 @@ import {
   getTenantGoogleCalendarStatus, startTenantGoogleCalendarAuth, verifyTenantSession,
   disconnectTenantGoogleCalendar, getTenantGoogleCalendars,
   saveTenantCalendarSettings, getTenantStorageStats, upsertTenantBookingAdmin,
-  testTenantFtpConnection,
+  testTenantFtpConnection, testTenantDiscord, requestTenantDomain,
   submitEventSlotRequest, getTenantEventSlotRequest, ftpUploadAlbum, ftpMoveToStarred,
   generateTenantIcalToken, deleteTenantIcalToken,
   NATIVE_API_ORIGIN,
@@ -53,13 +55,10 @@ import type {
 } from "@/lib/types";
 import sampleLandscape from "@/assets/sample-landscape.jpg";
 import samplePortrait from "@/assets/sample-portrait.jpg";
-import sampleWedding from "@/assets/sample-wedding.jpg";
-import sampleEvent from "@/assets/sample-event.jpg";
-import sampleFood from "@/assets/sample-food.jpg";
 
 const SlotIntervalField = React.lazy(() => import("@/pages/admin/SlotIntervalField"));
 
-type Tab = "dashboard" | "bookings" | "events" | "albums" | "photos" | "finance" | "invoices" | "contacts" | "enquiries" | "profile" | "settings" | "storage" | "license";
+type Tab = "dashboard" | "bookings" | "events" | "albums" | "photos" | "finance" | "invoices" | "contacts" | "enquiries" | "automations" | "profile" | "settings" | "storage" | "license";
 type AlbumSortKey = "date" | "name" | "photos" | "client";
 type SortDir = "asc" | "desc";
 type BookingSortKey = "date" | "name" | "type" | "status" | "payment" | "booked";
@@ -96,6 +95,7 @@ const TENANT_TAB_LABELS: Record<Tab, string> = {
   invoices: "Invoices",
   contacts: "Contacts",
   enquiries: "Enquiries",
+  automations: "Automatic Emails",
   profile: "Profile",
   settings: "Settings",
   storage: "Storage",
@@ -106,9 +106,10 @@ const TENANT_TAB_LABELS: Record<Tab, string> = {
 export default function TenantAdmin() {
   const { slug } = useParams<{ slug: string }>();
   const navigate = useNavigate();
-  const [activeTab, setActiveTab] = useState<Tab>("dashboard");
+  const [activeTab, setActiveTab] = useState<Tab>(() => new URLSearchParams(window.location.search).has("gcal") ? "settings" : "dashboard");
   const [badgeCounts, setBadgeCounts] = useState<Record<string, number>>({});
   const [sessionVerified, setSessionVerified] = useState(false);
+  const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false);
 
   // Auth check
   const session = getMobileTenantSession();
@@ -170,39 +171,40 @@ export default function TenantAdmin() {
     navigate("/login", { replace: true });
   };
 
-  const tabs: { id: Tab; label: string; icon: React.ElementType }[] = [
-    { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
-    { id: "bookings", label: "Bookings", icon: Calendar },
-    { id: "events", label: "Events", icon: Clock },
-    { id: "albums", label: "Albums", icon: Image },
-    { id: "photos", label: "Photos", icon: Camera },
-    { id: "finance", label: "Finance", icon: DollarSign },
-    { id: "invoices", label: "Invoices", icon: Receipt },
-    { id: "contacts", label: "Contacts", icon: Users },
-    { id: "enquiries", label: "Enquiries", icon: MessageSquare },
-    { id: "profile", label: "Profile", icon: User },
-    { id: "settings", label: "Settings", icon: Settings },
-    { id: "storage", label: "Storage", icon: HardDrive },
-    { id: "license", label: "License", icon: Key },
+  const tabs: { id: Tab; group: string; label: string; icon: React.ElementType }[] = [
+    { id: "dashboard", group: "Sessions", label: "Dashboard", icon: LayoutDashboard },
+    { id: "bookings", group: "Sessions", label: "Bookings", icon: Calendar },
+    { id: "events", group: "Sessions", label: "Events", icon: Clock },
+    { id: "enquiries", group: "Sessions", label: "Enquiries", icon: MessageSquare },
+    { id: "contacts", group: "Sessions", label: "Contacts", icon: Users },
+    { id: "albums", group: "Delivery", label: "Albums", icon: Image },
+    { id: "photos", group: "Delivery", label: "Photos", icon: Camera },
+    { id: "finance", group: "Business", label: "Finance", icon: DollarSign },
+    { id: "invoices", group: "Business", label: "Invoices", icon: Receipt },
+    { id: "automations", group: "Business", label: "Automatic Emails", icon: Bell },
+    { id: "profile", group: "Studio", label: "Profile", icon: User },
+    { id: "settings", group: "Studio", label: "Settings", icon: Settings },
+    { id: "storage", group: "Studio", label: "Storage", icon: HardDrive },
+    { id: "license", group: "Studio", label: "License", icon: Key },
   ];
 
   return (
-    <div className="min-h-screen bg-background overflow-x-hidden">
+    <div className="min-h-screen app-shell overflow-x-hidden">
       <div className="flex w-full">
         {/* Desktop sidebar */}
-        <aside className="w-56 fixed left-0 top-0 bottom-0 border-r border-border bg-card/50 p-4 hidden lg:flex flex-col" style={{ paddingTop: "calc(env(safe-area-inset-top, 0px) + 1rem)" }}>
-          <div className="flex items-center gap-2.5 px-3 mb-2 pt-2">
-            <Camera className="w-5 h-5 text-primary" />
-            <span className="font-display text-base text-foreground truncate">{session.displayName}</span>
+        <aside className="w-60 fixed left-0 top-0 bottom-0 border-r border-white/10 admin-sidebar p-4 hidden lg:flex flex-col" style={{ paddingTop: "calc(env(safe-area-inset-top, 0px) + 1rem)" }}>
+          <div className="flex items-center gap-3 px-2 mb-7 pt-2">
+            <span className="flex size-9 items-center justify-center rounded-xl bg-primary/15 text-primary ring-1 ring-primary/25"><Camera className="w-4 h-4" /></span>
+            <div className="min-w-0"><span className="block font-display text-lg leading-none text-foreground truncate">{session.displayName}</span><span className="mt-1 block text-[10px] font-body tracking-[0.18em] uppercase text-muted-foreground truncate">Studio / Workspace</span></div>
           </div>
-          <p className="text-[10px] font-mono text-muted-foreground/60 px-3 mb-5">/{slug}</p>
-          <p className="text-[10px] font-body tracking-[0.3em] uppercase text-muted-foreground mb-4 px-3">Admin Panel</p>
-          <nav className="space-y-1 flex-1">
-            {tabs.map((tab) => {
+          <nav aria-label="Studio navigation" className="flex flex-col gap-1 flex-1 min-h-0 overflow-y-auto pr-1">
+            {tabs.map((tab, index) => {
               const pendingBadge = badgeCounts[tab.id] || 0;
               return (
-                <button key={tab.id} onClick={() => setActiveTab(tab.id)}
-                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-body transition-all ${activeTab === tab.id ? "bg-primary/10 text-primary" : "text-muted-foreground hover:text-foreground hover:bg-secondary"}`}
+                <React.Fragment key={tab.id}>
+                {(!index || tabs[index - 1].group !== tab.group) && <p className="admin-nav-group">{tab.group}</p>}
+                <button aria-current={activeTab === tab.id ? "page" : undefined} onClick={() => setActiveTab(tab.id)}
+                  className={`admin-nav-item w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-body transition-all ${activeTab === tab.id ? "admin-nav-item-active text-primary" : "text-muted-foreground hover:text-foreground hover:bg-white/[0.055]"}`}
                 >
                   <tab.icon className="w-4 h-4" />
                   <span className="flex-1 text-left">{tab.label}</span>
@@ -212,6 +214,7 @@ export default function TenantAdmin() {
                     </span>
                   )}
                 </button>
+                </React.Fragment>
               );
             })}
           </nav>
@@ -246,8 +249,8 @@ export default function TenantAdmin() {
 
         {/* Mobile bottom tab bar */}
         <div className="lg:hidden fixed bottom-0 left-0 right-0 z-30 bg-card/95 backdrop-blur-sm border-t border-border" style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}>
-          <div className="flex overflow-x-auto scrollbar-hide">
-            {tabs.map((tab) => {
+          <div className="grid grid-cols-5">
+            {tabs.filter(tab => ["dashboard", "bookings", "albums", "finance"].includes(tab.id)).map((tab) => {
               const isActive = activeTab === tab.id;
               const pendingBadge = badgeCounts[tab.id] || 0;
               return (
@@ -265,12 +268,19 @@ export default function TenantAdmin() {
                 </button>
               );
             })}
+            <button type="button" onClick={() => setMobileNavigationOpen(true)} aria-label="More studio pages" aria-expanded={mobileNavigationOpen} className={`flex min-h-[52px] flex-col items-center justify-center gap-0.5 ${["dashboard", "bookings", "albums", "finance"].includes(activeTab) ? "text-muted-foreground" : "text-primary"}`}><MoreHorizontal className="size-5" /><span className="text-[10px]">More</span></button>
           </div>
         </div>
+        <Dialog open={mobileNavigationOpen} onOpenChange={setMobileNavigationOpen}>
+          <DialogContent className="studio-navigation-dialog max-h-[85dvh] overflow-y-auto">
+            <DialogHeader><DialogTitle>Studio navigation</DialogTitle><DialogDescription>Bookings, delivery and business settings.</DialogDescription></DialogHeader>
+            {Array.from(new Set(tabs.map(tab => tab.group))).map(group => <section key={group}><h3 className="admin-nav-group">{group}</h3><div className="grid grid-cols-2 gap-2">{tabs.filter(tab => tab.group === group).map(tab => <button key={tab.id} type="button" aria-current={activeTab === tab.id ? "page" : undefined} className={`flex min-h-12 items-center gap-2 rounded border border-border px-3 text-sm ${activeTab === tab.id ? "bg-primary/10 text-primary" : "text-foreground"}`} onClick={() => { setActiveTab(tab.id); setMobileNavigationOpen(false); }}><tab.icon className="size-4" />{tab.label}</button>)}</div></section>)}
+          </DialogContent>
+        </Dialog>
 
         {/* Main content */}
-        <main className="flex-1 min-w-0 overflow-x-hidden lg:ml-56 p-4 sm:p-6 lg:p-8 lg:pt-8" style={{ paddingTop: "calc(env(safe-area-inset-top, 0px) + 3.5rem)", paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 4rem)" }}>
-          {activeTab === "dashboard" && <TenantDashboard slug={slug!} session={session} />}
+        <main className="flex-1 min-w-0 overflow-x-hidden lg:ml-60 p-4 sm:p-6 lg:p-8 lg:pt-8" style={{ paddingTop: "calc(env(safe-area-inset-top, 0px) + 3.5rem)", paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 4rem)" }}>
+          {activeTab === "dashboard" && <TenantDashboard slug={slug!} session={session} onOpenBookings={() => setActiveTab("bookings")} onOpenAlbums={() => setActiveTab("albums")} />}
           {activeTab === "bookings" && <TenantBookings slug={slug!} />}
           {activeTab === "events" && <TenantEvents slug={slug!} />}
           {activeTab === "albums" && <TenantAlbums slug={slug!} />}
@@ -279,6 +289,7 @@ export default function TenantAdmin() {
           {activeTab === "invoices" && <TenantInvoices slug={slug!} session={session} />}
           {activeTab === "contacts" && <TenantContacts slug={slug!} />}
           {activeTab === "enquiries" && <TenantEnquiries slug={slug!} />}
+          {activeTab === "automations" && <TenantAutomations slug={slug!} />}
           {activeTab === "profile" && <TenantProfileView slug={slug!} session={session} />}
           {activeTab === "settings" && <TenantSettingsView slug={slug!} />}
           {activeTab === "storage" && <TenantStorage slug={slug!} />}
@@ -290,7 +301,7 @@ export default function TenantAdmin() {
 }
 
 // ─── Dashboard ───────────────────────────────────────────────────────────────
-function TenantDashboard({ slug, session }: { slug: string; session: { displayName: string; email: string } }) {
+function TenantDashboard({ slug, session, onOpenBookings, onOpenAlbums }: { slug: string; session: { displayName: string; email: string }; onOpenBookings: () => void; onOpenAlbums: () => void }) {
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [albums, setAlbums] = useState<Album[]>([]);
   const [loading, setLoading] = useState(true);
@@ -308,8 +319,10 @@ function TenantDashboard({ slug, session }: { slug: string; session: { displayNa
 
   if (loading) return <div className="py-16 text-center text-muted-foreground font-body text-sm animate-pulse">Loading…</div>;
 
-  const today = new Date().toISOString().slice(0, 10);
-  const upcoming = bookings.filter(b => b.status !== "cancelled" && b.date >= today).sort((a, b) => a.date.localeCompare(b.date));
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const toDateStr = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const todayStr = toDateStr(new Date());
+  const upcoming = bookings.filter(b => b.status !== "cancelled" && b.date >= todayStr).sort((a, b) => `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`));
   const pending = bookings.filter(b => b.status === "pending");
   const totalPhotos = albums.reduce((s, a) => s + (a.photos?.length || 0), 0);
   const paidIncome = bookings.filter(b => b.paymentStatus === "paid").reduce((s, b) => s + (b.paymentAmount || 0), 0);
@@ -320,13 +333,10 @@ function TenantDashboard({ slug, session }: { slug: string; session: { displayNa
     { label: "Pending Approval", value: pending.length, icon: Calendar, color: "text-yellow-400" },
     { label: "Albums", value: albums.length, icon: Image, color: "text-purple-400" },
     { label: "Photos", value: totalPhotos, icon: Camera, color: "text-green-400" },
-    { label: "Paid Income", value: `$${paidIncome}`, icon: DollarSign, color: "text-green-400" },
+    { label: "Paid in full", value: new Intl.NumberFormat("en-AU", { style: "currency", currency: "AUD" }).format(paidIncome), icon: DollarSign, color: "text-green-400" },
   ];
 
   // Calendar helpers
-  const pad = (n: number) => String(n).padStart(2, "0");
-  const toDateStr = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-  const todayStr = toDateStr(new Date());
 
   const bookingsByDate: Record<string, Booking[]> = {};
   for (const b of bookings) {
@@ -404,9 +414,9 @@ function TenantDashboard({ slug, session }: { slug: string; session: { displayNa
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-      <div className="mb-6">
-        <h2 className="font-display text-2xl text-foreground">Welcome back, {session.displayName}</h2>
-        <p className="text-sm font-body text-muted-foreground mt-1">Your photographer dashboard</p>
+      <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
+        <div><h2 className="font-display text-2xl text-foreground">Dashboard</h2><p className="text-sm font-body text-muted-foreground mt-1">{session.displayName} · {new Date().toLocaleDateString("en-AU", { weekday: "long", day: "numeric", month: "long" })}</p></div>
+        <div className="flex gap-2"><Button size="sm" variant="outline" onClick={onOpenBookings}>Bookings</Button><Button size="sm" variant="outline" onClick={onOpenAlbums}>Albums</Button></div>
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-8">
@@ -417,6 +427,11 @@ function TenantDashboard({ slug, session }: { slug: string; session: { displayNa
             <p className="text-xs font-body text-muted-foreground">{s.label}</p>
           </div>
         ))}
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-2 mb-6">
+        <button type="button" onClick={onOpenBookings} className="rounded-xl border border-border bg-card p-4 text-left hover:border-primary/50 transition-colors"><p className="text-xs uppercase tracking-wider text-muted-foreground">Next session</p><p className="mt-2 text-sm font-medium text-foreground">{upcoming[0] ? `${upcoming[0].clientName} · ${upcoming[0].date} at ${upcoming[0].time}` : "No upcoming sessions"}</p><p className="mt-1 text-xs text-muted-foreground">{upcoming[0]?.type || "Open bookings to plan your next session"}</p></button>
+        <button type="button" onClick={pending.length ? onOpenBookings : onOpenAlbums} className="rounded-xl border border-border bg-card p-4 text-left hover:border-primary/50 transition-colors"><p className="text-xs uppercase tracking-wider text-muted-foreground">Needs attention</p><p className="mt-2 text-sm font-medium text-foreground">{pending.length ? `${pending.length} booking${pending.length === 1 ? "" : "s"} awaiting approval` : "No bookings awaiting approval"}</p><p className="mt-1 text-xs text-muted-foreground">{pending.length ? "Open bookings to review them" : `${albums.length} albums in your workspace`}</p></button>
       </div>
 
       {/* Calendar */}
@@ -1789,33 +1804,18 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
       if (e.target) e.target.value = "";
       return;
     }
-    const newPhotos: Photo[] = results.filter(r => isSupportedPhotoSource(r.url)).map(r => ({
-      id: r.id, src: r.url, thumbnail: r.url + "?size=thumb&wm=0",
-      title: r.originalName.replace(/\.[^.]+$/, "").replace(/^_+/, ""),
-      width: r.width ?? 800, height: r.height ?? 600,
-      uploadedAt: new Date().toISOString(),
-      ...(r.takenAt ? { takenAt: r.takenAt } : {}),
-      originalName: r.originalName,
-      ...(r.originalFileNumber ? { originalFileNumber: r.originalFileNumber } : {}),
-      ...(r.proofId ? { proofId: r.proofId } : {}),
-      fileSize: r.size,
-      ...(r.ftpUploaded ? { ftpUploaded: true } : {}),
-    }));
-    const updatedPhotos = [...(liveAlbum.photos || []), ...newPhotos];
-    const updatedAlbum = {
-      ...liveAlbum,
-      photos: updatedPhotos,
-      photoCount: updatedPhotos.length,
-      coverImage: liveAlbum.coverImage || newPhotos[0]?.src || "",
-    };
-    const saved = await updateLiveAlbum(updatedAlbum);
+    const freshAlbum = (await fetchTenantMobileData(slug))?.albums.find(a => a.id === liveAlbum.id);
     setUploading(false);
     setUploadSpeed(null);
-    if (!saved) {
+    if (!freshAlbum) {
+      toast.error("Photos uploaded, but the album could not refresh. Reload this page.");
       if (e.target) e.target.value = "";
       return;
     }
-    if (results.length === fileArr.length) {
+    setLiveAlbum(freshAlbum);
+    if (results.some(result => result.albumPersisted === false)) {
+      toast.error("Some photos uploaded but could not be added to this album. Check the photo library.");
+    } else if (results.length === fileArr.length) {
       toast.success(`${results.length} photos uploaded`);
     } else {
       toast.warning(`${results.length} of ${fileArr.length} photos uploaded. ${fileArr.length - results.length} failed.`);
@@ -2819,20 +2819,9 @@ function TenantPhotos({ slug }: { slug: string }) {
       }));
       if (newPhotos.length > 0) {
         if (selectedAlbum) {
-          const alb = albums.find(a => a.id === selectedAlbum.id);
-          if (alb) {
-            const updatedPhotos = [...(alb.photos || []), ...newPhotos];
-            const updatedAlb = { ...alb, photos: updatedPhotos, photoCount: updatedPhotos.length };
-            if (!updatedAlb.coverImage) updatedAlb.coverImage = newPhotos[0].src;
-            const { ok, error } = await saveTenantAlbum(slug, updatedAlb);
-            if (!ok) {
-              setUploadStats(prev => prev ? { ...prev, errors: fileArr.length - results.length + newPhotos.length } : null);
-              toast.error(error || "Upload finished, but the album update failed. Refresh before uploading again.");
-              if (e.target) e.target.value = "";
-              return;
-            }
-            setAlbums(prev => prev.map(a => a.id === alb.id ? updatedAlb : a));
-          }
+          const freshAlbum = (await fetchTenantMobileData(slug))?.albums.find(a => a.id === selectedAlbum.id);
+          if (freshAlbum) setAlbums(prev => prev.map(a => a.id === freshAlbum.id ? freshAlbum : a));
+          else toast.error("Photos uploaded, but the album could not refresh. Reload this page.");
         } else {
           const updated = [...libraryPhotos, ...newPhotos];
           setLibraryPhotos(updated);
@@ -2841,7 +2830,9 @@ function TenantPhotos({ slug }: { slug: string }) {
       }
       setUploadStats(prev => prev ? { ...prev, done: fileArr.length, errors: fileArr.length - results.length } : null);
       const target = selectedAlbum ? `"${selectedAlbum.title}"` : "library";
-      if (results.length === fileArr.length) {
+      if (results.some(result => result.albumPersisted === false)) {
+        toast.error("Some photos uploaded but could not be added to this album. Check the photo library.");
+      } else if (results.length === fileArr.length) {
         toast.success(`${results.length} photos uploaded to ${target}`);
       } else if (results.length > 0) {
         toast.warning(`${results.length} of ${fileArr.length} photos uploaded to ${target}. ${fileArr.length - results.length} failed.`);
@@ -3669,6 +3660,9 @@ function TenantProfileView({ slug, session }: { slug: string; session: MobileTen
   const [email, setEmail] = useState(session.email);
   const [bio, setBio] = useState("");
   const [customDomain, setCustomDomain] = useState<string | undefined>(undefined);
+  const [requestedDomain, setRequestedDomain] = useState("");
+  const [domainInput, setDomainInput] = useState("");
+  const [savingDomain, setSavingDomain] = useState(false);
   const [savingProfile, setSavingProfile] = useState(false);
 
   // Password change
@@ -3678,11 +3672,20 @@ function TenantProfileView({ slug, session }: { slug: string; session: MobileTen
   const [savingPassword, setSavingPassword] = useState(false);
 
   useEffect(() => {
-    fetch(`/api/tenant/${encodeURIComponent(slug)}/public`)
-      .then(r => r.json())
-      .then(d => { if (d.tenant) { setBio(d.tenant.bio || ""); setCustomDomain(d.tenant.customDomain); } })
+    fetchTenantMobileData(slug)
+      .then(d => { if (d?.tenant) { setBio(d.tenant.bio || ""); setCustomDomain(d.tenant.customDomain); setRequestedDomain(d.tenant.requestedDomain || ""); setDomainInput(d.tenant.requestedDomain || ""); } })
       .catch(() => {});
   }, [slug]);
+
+  const handleDomainRequest = async () => {
+    setSavingDomain(true);
+    const result = await requestTenantDomain(slug, domainInput.trim());
+    setSavingDomain(false);
+    if (!result.ok) { toast.error(result.error || "Could not save domain request"); return; }
+    setRequestedDomain(result.tenant?.requestedDomain || "");
+    setDomainInput(result.tenant?.requestedDomain || "");
+    toast.success(result.tenant?.requestedDomain ? "Domain request saved" : "Domain request removed");
+  };
 
   const handleSave = async () => {
     if (!displayName.trim()) { toast.error("Display name is required"); return; }
@@ -3746,12 +3749,18 @@ function TenantProfileView({ slug, session }: { slug: string; session: MobileTen
                 <a href={`https://${customDomain}`} target="_blank" rel="noopener noreferrer" className="text-sm font-body text-blue-400 hover:underline font-mono">
                   {customDomain}
                 </a>
-                <p className="text-[10px] font-body text-muted-foreground mt-1">
-                  Point your domain's DNS A/CNAME record to this server and configure your reverse proxy to forward requests here.
-                  See the <code className="bg-secondary px-1 rounded">Caddyfile</code> in the project for an example.
-                </p>
               </div>
             )}
+          </div>
+          <div className="p-4 rounded-lg border border-border bg-card space-y-3">
+            <h3 className="text-sm font-medium text-foreground">Custom domain</h3>
+            <p className="text-xs text-muted-foreground">Use a domain such as photos.yourstudio.com for your booking page. Your current booking link works while the request is reviewed.</p>
+            <label htmlFor="tenant-domain" className="block text-xs text-muted-foreground">Domain name</label>
+            <Input id="tenant-domain" value={domainInput} onChange={event => setDomainInput(event.target.value)} placeholder="photos.yourstudio.com" className="bg-background" />
+            {requestedDomain && !customDomain && <p className="text-xs text-amber-400">Request pending: {requestedDomain}</p>}
+            {requestedDomain && customDomain && requestedDomain !== customDomain && <p className="text-xs text-amber-400">Change requested: {requestedDomain}</p>}
+            <p className="text-xs text-muted-foreground">Create a DNS CNAME for your subdomain pointing to <code>book.zacmclients.photos</code>. The platform administrator will enable the domain after DNS and HTTPS are ready.</p>
+            <Button type="button" variant="outline" onClick={handleDomainRequest} disabled={savingDomain || domainInput.trim() === requestedDomain}>{savingDomain ? "Saving…" : !domainInput.trim() ? "Remove request" : requestedDomain ? "Update request" : "Request domain"}</Button>
           </div>
           <Button onClick={handleSave} disabled={savingProfile} className="bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2 w-full">
             <Save className="w-4 h-4" /> {savingProfile ? "Saving…" : "Save Profile"}
@@ -3787,9 +3796,6 @@ function TenantProfileView({ slug, session }: { slug: string; session: MobileTen
 const TENANT_SAMPLE_IMAGES = [
   { src: sampleLandscape, label: "Landscape" },
   { src: samplePortrait, label: "Portrait" },
-  { src: sampleWedding, label: "Wedding" },
-  { src: sampleEvent, label: "Event" },
-  { src: sampleFood, label: "Food" },
 ];
 function TenantWatermarkPreview({ settings }: { settings: TenantSettings }) {
   const [selectedSample, setSelectedSample] = useState(0);
@@ -3827,13 +3833,14 @@ function TenantSettingsView({ slug }: { slug: string }) {
   const [settings, setSettings] = useState<TenantSettings>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [activeSection, setActiveSection] = useState<"general" | "payments" | "notifications" | "watermark" | "integrations" | "email">("general");
+  const [activeSection, setActiveSection] = useState<"general" | "payments" | "notifications" | "watermark" | "integrations" | "email" | "automations">("watermark");
   const [wmUploading, setWmUploading] = useState(false);
 
   // Google Calendar state
-  const [gcalStatus, setGcalStatus] = useState<{ configured: boolean; connected: boolean; email: string | null; calendarId: string } | null>(null);
+  const [gcalStatus, setGcalStatus] = useState<{ configured: boolean; connected: boolean; email: string | null; calendarId: string; autoSync: boolean } | null>(null);
   const [gcalCalendars, setGcalCalendars] = useState<{ id: string; summary: string; primary?: boolean }[]>([]);
   const [gcalCalendarId, setGcalCalendarId] = useState("primary");
+  const [gcalAutoSync, setGcalAutoSync] = useState(false);
   const [gcalSaving, setGcalSaving] = useState(false);
 
   useEffect(() => {
@@ -3846,6 +3853,7 @@ function TenantSettingsView({ slug }: { slug: string }) {
     getTenantGoogleCalendarStatus(slug).then(s => {
       setGcalStatus(s);
       setGcalCalendarId(s.calendarId || "primary");
+      setGcalAutoSync(s.autoSync);
       if (s.connected) getTenantGoogleCalendars(slug).then(setGcalCalendars);
     });
   }, [activeSection, slug]);
@@ -3945,20 +3953,22 @@ function TenantSettingsView({ slug }: { slug: string }) {
 
   const handleGcalSaveSettings = async () => {
     setGcalSaving(true);
-    const result = await saveTenantCalendarSettings(slug, { calendarId: gcalCalendarId });
+    const result = await saveTenantCalendarSettings(slug, { calendarId: gcalCalendarId, autoSync: gcalAutoSync });
     setGcalSaving(false);
     if (!result.ok) { toast.error("Could not save calendar settings"); return; }
+    setGcalStatus(await getTenantGoogleCalendarStatus(slug));
     toast.success("Calendar settings saved");
   };
 
   if (loading) return <div className="py-16 text-center text-muted-foreground font-body text-sm animate-pulse">Loading…</div>;
 
   const sectionTabs = [
+    { id: "watermark" as const, label: "Watermark" },
     { id: "general" as const, label: "General" },
+    { id: "email" as const, label: "Email Templates" },
+    { id: "automations" as const, label: "Automatic Emails" },
     { id: "payments" as const, label: "Payments" },
     { id: "notifications" as const, label: "Notifications" },
-    { id: "email" as const, label: "Email Templates" },
-    { id: "watermark" as const, label: "Watermark" },
     { id: "integrations" as const, label: "Integrations" },
   ];
 
@@ -3973,12 +3983,13 @@ function TenantSettingsView({ slug }: { slug: string }) {
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-      <h2 className="font-display text-2xl text-foreground mb-6">Settings</h2>
+      <h2 className="font-display text-2xl text-foreground mb-4">Settings</h2>
+      <section aria-label="Application version" className="mb-6 rounded-xl border border-primary/30 bg-secondary p-4"><h3 className="font-medium text-foreground">Application version</h3><p className="mt-1 text-sm text-foreground">Version <strong>{__APP_VERSION__}</strong><span className="mx-2">·</span> Build <code className="break-all">{__BUILD_REVISION__.slice(0, 7)}</code></p><p className="mt-2 text-xs text-muted-foreground">Refresh this page after an update to load the latest build.</p></section>
 
-      <div className="flex gap-1 mb-6 bg-secondary rounded-xl p-1 max-w-full overflow-x-auto scrollbar-hide">
+      <div className="flex items-center gap-1 flex-wrap mb-6 pb-2 border-b border-border/40">
         {sectionTabs.map(t => (
           <button key={t.id} onClick={() => setActiveSection(t.id)}
-            className={`px-4 py-2 rounded-lg text-xs font-body tracking-wider uppercase whitespace-nowrap flex-shrink-0 transition-all ${activeSection === t.id ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+            className={`text-xs font-body px-3 py-1.5 rounded-full transition-all whitespace-nowrap ${activeSection === t.id ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground hover:bg-secondary"}`}
           >{t.label}</button>
         ))}
       </div>
@@ -4233,6 +4244,8 @@ function TenantSettingsView({ slug }: { slug: string }) {
                 )}
               </div>
               <p className="text-[10px] font-body text-muted-foreground mt-1">Your booking notifications will be sent to this webhook.</p>
+              <Button type="button" variant="outline" size="sm" className="mt-2" disabled={!settings.discordWebhookUrlSet || !!settings.discordWebhookUrl} onClick={async () => { const result = await testTenantDiscord(slug); if (result.ok) toast.success("Test sent to Discord"); else toast.error(result.error || "Discord test failed"); }}>Send test</Button>
+              {settings.discordWebhookUrl && <p className="text-[10px] text-muted-foreground mt-1">Save notification settings before sending a test.</p>}
               <details className="text-xs text-muted-foreground mt-3">
                 <summary className="cursor-pointer text-foreground">Discord setup steps</summary>
                 <ol className="list-decimal pl-5 mt-2 space-y-2">
@@ -4439,8 +4452,11 @@ function TenantSettingsView({ slug }: { slug: string }) {
         </div>
       )}
 
+      {activeSection === "automations" && <TenantAutomations slug={slug} />}
+
       {activeSection === "integrations" && (
         <div className="space-y-5 max-w-lg">
+          <div className="flex items-center justify-between gap-3 rounded-lg border border-border bg-card p-4"><div><p className="text-sm text-foreground">Discord webhook</p><p className="text-xs text-muted-foreground">{settings.discordWebhookUrlSet ? "Connected for booking and gallery notices" : "Add a webhook for booking and gallery notices"}</p></div><Button type="button" size="sm" variant="outline" onClick={() => setActiveSection("notifications")}>Configure</Button></div>
           {/* Google Calendar */}
           <div className="space-y-4 p-4 rounded-lg bg-secondary/40 border border-border/50">
             <div className="flex items-center gap-2">
@@ -4507,6 +4523,7 @@ function TenantSettingsView({ slug }: { slug: string }) {
                   </Button>
                 </div>
 
+                <label className="flex items-center gap-2 text-sm text-foreground"><Switch checked={gcalAutoSync} onCheckedChange={setGcalAutoSync} />Automatically add confirmed or paid bookings</label>
                 {gcalCalendars.length > 0 && (
                   <div>
                     <label className="text-xs font-body text-muted-foreground mb-1.5 block">Target Calendar</label>
@@ -4515,16 +4532,14 @@ function TenantSettingsView({ slug }: { slug: string }) {
                       onChange={e => setGcalCalendarId(e.target.value)}
                       className="w-full bg-background border border-border text-foreground font-body text-sm rounded-md px-3 py-2"
                     >
+                      <option value="primary">Primary calendar</option>
                       {gcalCalendars.map(c => (
                         <option key={c.id} value={c.id}>{c.summary}{c.primary ? " (Primary)" : ""}</option>
                       ))}
                     </select>
-                    <Button onClick={handleGcalSaveSettings} disabled={gcalSaving} variant="outline" size="sm" className="mt-2 font-body text-xs gap-1.5 border-border">
-                      <Save className="w-3.5 h-3.5" /> {gcalSaving ? "Saving…" : "Save Calendar"}
-                    </Button>
                   </div>
                 )}
-                <p className="text-[10px] font-body text-muted-foreground/60">New bookings will automatically sync to your Google Calendar when created.</p>
+                <Button onClick={handleGcalSaveSettings} disabled={gcalSaving} variant="outline" size="sm" className="font-body text-xs gap-1.5 border-border"><Save className="w-3.5 h-3.5" /> {gcalSaving ? "Saving…" : "Save Calendar Settings"}</Button>
               </div>
             ) : !gcalStatus.configured && (
               <p className="text-xs font-body text-muted-foreground/70 pt-1">Save your Google API credentials above to connect.</p>

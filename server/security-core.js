@@ -457,6 +457,7 @@ function safeTenantPrivateDto(tenant) {
   return {
     ...publicDto,
     email: String(tenant.email || ""),
+    requestedDomain: tenant.requestedDomain ? String(tenant.requestedDomain) : undefined,
     createdAt: tenant.createdAt || undefined,
     licenseKeySet: !!tenant.licenseKey,
     extraEventSlotRequestEnabled: tenant.extraEventSlotRequestEnabled === true,

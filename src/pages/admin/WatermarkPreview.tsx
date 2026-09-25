@@ -4,9 +4,6 @@ import { drawServerAlignedWatermark } from "@/lib/watermark-render";
 import type { AppSettings } from "@/lib/types";
 import sampleLandscape from "@/assets/sample-landscape.jpg";
 import samplePortrait from "@/assets/sample-portrait.jpg";
-import sampleWedding from "@/assets/sample-wedding.jpg";
-import sampleEvent from "@/assets/sample-event.jpg";
-import sampleFood from "@/assets/sample-food.jpg";
 
 type WatermarkBakeSettings = Pick<AppSettings, "watermarkText" | "watermarkImage" | "watermarkPosition" | "watermarkOpacity" | "watermarkSize">;
 
@@ -51,9 +48,6 @@ async function renderWatermarkPreviewAsset(src: string, settings: WatermarkBakeS
 const SAMPLE_IMAGES = [
   { src: sampleLandscape, label: "Landscape" },
   { src: samplePortrait, label: "Portrait" },
-  { src: sampleWedding, label: "Wedding" },
-  { src: sampleEvent, label: "Event" },
-  { src: sampleFood, label: "Food" },
 ];
 
 function WatermarkPreviewWithSamples({ settings, dirty }: { settings: AppSettings; dirty: boolean }) {
@@ -99,7 +93,7 @@ function WatermarkPreviewWithSamples({ settings, dirty }: { settings: AppSetting
       <div className="flex items-start justify-between gap-3">
         <div>
           <p className="text-xs font-body tracking-wider uppercase text-muted-foreground">Live preview</p>
-          <p className="text-[10px] font-body text-muted-foreground mt-1">Switch photos to check contrast and placement.</p>
+          <p className="text-[10px] font-body text-muted-foreground mt-1">Check placement on a black landscape or portrait image.</p>
         </div>
         <span className={`text-[10px] font-body rounded-full px-2 py-1 ${dirty ? "bg-amber-500/10 text-amber-300" : "bg-green-500/10 text-green-400"}`}>
           {dirty ? "Unsaved" : "Saved"}

@@ -30,7 +30,7 @@ export default function TenantSetup() {
   const [errorMsg, setErrorMsg] = useState("");
 
   // License key info from server
-  const [keyInfo, setKeyInfo] = useState<Pick<LicenseKey, "key" | "issuedTo" | "isTrial" | "trialMaxEvents" | "trialMaxBookings" | "expiresAt"> | null>(null);
+  const [keyInfo, setKeyInfo] = useState<Pick<LicenseKey, "key" | "issuedTo" | "isTrial" | "trialMaxEvents" | "trialMaxBookings" | "storageLimitGb" | "expiresAt"> | null>(null);
 
   // Form fields
   const [displayName, setDisplayName] = useState("");
@@ -38,6 +38,7 @@ export default function TenantSetup() {
   const [slugEdited, setSlugEdited] = useState(false);
   const [email, setEmail] = useState("");
   const [bio, setBio] = useState("");
+  const [timezone, setTimezone] = useState(() => Intl.DateTimeFormat().resolvedOptions().timeZone || "Australia/Sydney");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -66,6 +67,7 @@ export default function TenantSetup() {
         isTrial: info.isTrial,
         trialMaxEvents: info.trialMaxEvents,
         trialMaxBookings: info.trialMaxBookings,
+        storageLimitGb: info.storageLimitGb,
         expiresAt: info.expiresAt,
       });
       setStep("form");
@@ -111,6 +113,7 @@ export default function TenantSetup() {
       displayName: displayName.trim(),
       email: email.trim(),
       bio: bio.trim() || undefined,
+      timezone,
       passwordHash,
     });
     setSubmitting(false);
@@ -164,7 +167,7 @@ export default function TenantSetup() {
             initial={{ opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0 }}
-            className="glass-panel rounded-2xl p-8 max-w-lg w-full space-y-6"
+            className="rounded-xl border border-border bg-card p-6 sm:p-8 max-w-lg w-full space-y-6"
           >
             {/* Header */}
             <div className="flex items-center gap-3">
@@ -172,8 +175,8 @@ export default function TenantSetup() {
                 <Camera className="w-5 h-5 text-primary" />
               </div>
               <div>
-                <h1 className="font-display text-xl text-foreground">Welcome to PhotoFlow</h1>
-                <p className="font-body text-xs text-muted-foreground">Set up your photographer account</p>
+                <h1 className="font-display text-xl text-foreground">Set up your studio</h1>
+                <p className="font-body text-xs text-muted-foreground">Your booking page and workspace will be ready in a moment.</p>
               </div>
             </div>
 
@@ -182,10 +185,10 @@ export default function TenantSetup() {
               <Key className="w-4 h-4 text-primary mt-0.5 shrink-0" />
               <div className="min-w-0">
                 <p className="text-xs font-body text-foreground">
-                  License key: <span className="font-mono tracking-widest">{keyInfo.key}</span>
+                  Account invitation for {keyInfo.issuedTo || "your studio"}
                 </p>
                 <p className="text-[11px] font-body text-muted-foreground mt-0.5">
-                  Issued to: {keyInfo.issuedTo}
+                  {keyInfo.storageLimitGb != null && <span>{keyInfo.storageLimitGb} GB storage · </span>}
                   {keyInfo.isTrial && (
                     <span className="ml-2 bg-amber-500/10 text-amber-500 px-1.5 py-0.5 rounded-full text-[10px]">
                       Free Trial · {keyInfo.trialMaxEvents ?? 1} event{(keyInfo.trialMaxEvents ?? 1) !== 1 ? "s" : ""} · {keyInfo.trialMaxBookings ?? 10} bookings
@@ -203,8 +206,9 @@ export default function TenantSetup() {
             {/* Form */}
             <div className="space-y-4">
               <div>
-                <label className="text-xs font-body text-muted-foreground mb-1 block">Display Name *</label>
+                <label htmlFor="setup-name" className="text-xs font-body text-muted-foreground mb-1 block">Studio name *</label>
                 <Input
+                  id="setup-name"
                   value={displayName}
                   onChange={(e) => setDisplayName(e.target.value)}
                   placeholder="e.g. Jane Smith Photography"
@@ -217,12 +221,13 @@ export default function TenantSetup() {
               </div>
 
               <div>
-                <label className="text-xs font-body text-muted-foreground mb-1 block">
-                  Your URL Slug *
+                <label htmlFor="setup-slug" className="text-xs font-body text-muted-foreground mb-1 block">
+                  Booking page address *
                 </label>
                 <div className="flex items-center gap-2">
                   <span className="text-xs font-body text-muted-foreground shrink-0">/book/</span>
                   <Input
+                    id="setup-slug"
                     value={slug}
                     onChange={(e) => {
                       setSlug(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""));
@@ -239,8 +244,9 @@ export default function TenantSetup() {
               </div>
 
               <div>
-                <label className="text-xs font-body text-muted-foreground mb-1 block">Email *</label>
+                <label htmlFor="setup-email" className="text-xs font-body text-muted-foreground mb-1 block">Email *</label>
                 <Input
+                  id="setup-email"
                   type="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
@@ -250,10 +256,18 @@ export default function TenantSetup() {
               </div>
 
               <div>
-                <label className="text-xs font-body text-muted-foreground mb-1 block">
+                <label htmlFor="setup-timezone" className="text-xs font-body text-muted-foreground mb-1 block">Time zone</label>
+                <Input id="setup-timezone" list="setup-timezones" value={timezone} onChange={event => setTimezone(event.target.value)} className="bg-background border-border text-foreground font-body text-sm" />
+                <datalist id="setup-timezones"><option value="Australia/Sydney" /><option value="Australia/Brisbane" /><option value="Australia/Adelaide" /><option value="Australia/Perth" /><option value="Pacific/Auckland" /><option value="Europe/London" /><option value="America/New_York" /></datalist>
+                <p className="text-[10px] font-body text-muted-foreground mt-0.5">Used for session times and reminders.</p>
+              </div>
+
+              <div>
+                <label htmlFor="setup-bio" className="text-xs font-body text-muted-foreground mb-1 block">
                   Bio <span className="text-muted-foreground/60">(optional)</span>
                 </label>
                 <Textarea
+                  id="setup-bio"
                   value={bio}
                   onChange={(e) => setBio(e.target.value)}
                   placeholder="A short description shown on your booking page…"
@@ -265,8 +279,9 @@ export default function TenantSetup() {
               <div className="border-t border-border/50 pt-4 space-y-3">
                 <p className="text-xs font-body text-muted-foreground font-medium">Set your login password</p>
                 <div>
-                  <label className="text-xs font-body text-muted-foreground mb-1 block">Password *</label>
+                  <label htmlFor="setup-password" className="text-xs font-body text-muted-foreground mb-1 block">Password *</label>
                   <Input
+                    id="setup-password"
                     type="password"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
@@ -275,8 +290,9 @@ export default function TenantSetup() {
                   />
                 </div>
                 <div>
-                  <label className="text-xs font-body text-muted-foreground mb-1 block">Confirm Password *</label>
+                  <label htmlFor="setup-password-confirm" className="text-xs font-body text-muted-foreground mb-1 block">Confirm password *</label>
                   <Input
+                    id="setup-password-confirm"
                     type="password"
                     value={confirmPassword}
                     onChange={(e) => setConfirmPassword(e.target.value)}
@@ -286,7 +302,7 @@ export default function TenantSetup() {
                   />
                 </div>
                 <p className="text-[10px] font-body text-muted-foreground">
-                  You'll use your Account ID (<span className="text-primary font-mono">{slug || "your-slug"}</span>) and this password to log in.
+                  Use <span className="text-primary font-mono">{slug || "your address"}</span> and this password to sign in.
                 </p>
               </div>
             </div>
@@ -302,7 +318,7 @@ export default function TenantSetup() {
                 </>
               ) : (
                 <>
-                  <Globe className="w-4 h-4" /> Complete Setup <ArrowRight className="w-4 h-4" />
+                  <Globe className="w-4 h-4" /> Create studio <ArrowRight className="w-4 h-4" />
                 </>
               )}
             </Button>

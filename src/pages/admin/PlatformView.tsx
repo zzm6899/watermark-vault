@@ -906,9 +906,9 @@ export default function PlatformView() {
     finally { setSettingPassword(false); }
   };
 
-  const handleSaveCustomDomain = async (slug: string) => {
+  const handleSaveCustomDomain = async (slug: string, value = customDomainInput) => {
     setSavingDomain(true);
-    const domain = customDomainInput.trim().toLowerCase().replace(/^https?:\/\//, "");
+    const domain = value.trim().toLowerCase().replace(/^https?:\/\//, "");
     const { ok, error } = await updateTenant(slug, { customDomain: domain || undefined });
     setSavingDomain(false);
     if (!ok) { toast.error(error || "Failed to save custom domain"); return; }
@@ -1091,6 +1091,7 @@ export default function PlatformView() {
                           {t.customDomain && (
                             <p className="text-[10px] font-mono text-blue-400 mt-0.5">🌐 {t.customDomain}</p>
                           )}
+                          {t.requestedDomain && <p className="text-[10px] font-body text-amber-400 mt-0.5">Domain requested: {t.requestedDomain}</p>}
                           {t.extraEventSlotRequestEnabled && (
                             <p className="text-[10px] font-body text-amber-400 mt-0.5">🎟 Slots enabled{t.extraEventPrice != null ? ` — $${t.extraEventPrice}/slot` : ""}</p>
                           )}
@@ -1130,7 +1131,7 @@ export default function PlatformView() {
                           onClick={() => {
                             const opening = editingDomainSlug !== t.slug;
                             setEditingDomainSlug(opening ? t.slug : null);
-                            setCustomDomainInput(opening ? (t.customDomain || "") : "");
+                            setCustomDomainInput(opening ? (t.requestedDomain || t.customDomain || "") : "");
                             setResettingSlug(null);
                             setSelectedTenantForSettings(null);
                             setEditingSlotSlug(null);
@@ -1201,7 +1202,7 @@ export default function PlatformView() {
                         <p className="text-xs font-body text-blue-400 font-medium">Custom domain for /{t.slug}</p>
                         <p className="text-[11px] font-body text-muted-foreground">
                           Enter the hostname your tenant will use (e.g. <code className="bg-secondary px-1 rounded">book.myphotobusiness.com</code>).
-                          Point that domain's DNS to this server, then configure your reverse proxy (Caddy or nginx) to forward it here.
+                          Check its DNS and HTTPS routing before saving. For a subdomain, the tenant can create a CNAME to <code className="bg-secondary px-1 rounded">book.zacmclients.photos</code>. Caddy must also route that hostname to this app.
                         </p>
                         <div className="flex gap-2 items-end">
                           <div className="flex-1">
@@ -1226,7 +1227,7 @@ export default function PlatformView() {
                           <p className="text-[11px] font-body text-muted-foreground">
                             Current: <code className="bg-secondary px-1 rounded text-blue-400">{t.customDomain}</code>
                             {" — "}
-                            <button onClick={() => { setCustomDomainInput(""); handleSaveCustomDomain(t.slug); }} className="text-destructive hover:underline">Remove</button>
+                            <button onClick={() => { setCustomDomainInput(""); handleSaveCustomDomain(t.slug, ""); }} className="text-destructive hover:underline">Remove</button>
                           </p>
                         )}
                       </div>

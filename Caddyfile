@@ -51,14 +51,14 @@ www.zacmorganphotography.com {
 # above — same container address, same port.
 #
 # Steps:
-#   1. In the Watermark Vault admin UI go to:
-#          Platform → Tenants → [tenant row] → 🌐 Domain
-#      and enter the hostname (e.g. book.janesphotography.com).
-#   2. Ask the tenant to add a DNS A record pointing that hostname to this
-#      server's public IP.
-#   3. Add a block here (copy the pattern below) and reload Caddy:
+#   1. The tenant requests a hostname in Profile. Ask them to create a CNAME
+#      for that subdomain pointing to book.zacmclients.photos (or an A record
+#      pointing to the same public server).
+#   2. Add a block here (copy the pattern below) and reload Caddy:
 #          sudo systemctl reload caddy
-#      Caddy will automatically obtain a TLS certificate for the new domain.
+#      Caddy will obtain a TLS certificate after DNS resolves to this server.
+#   3. In Platform → Tenants → [tenant row] → Domain, save the requested
+#      hostname once HTTPS is ready. This activates the tenant booking page.
 
 # book.janesphotography.com {
 #     reverse_proxy 172.20.20.251:5066

@@ -7,7 +7,7 @@ const AVATAR_URL = "https://cdn.discordapp.com/embed/avatars/0.png";
 const APP_URL = process.env.APP_URL || "";
 
 async function sendDiscordEmbed(webhookUrl, payload) {
-  if (!webhookUrl || !/^https:\/\/(ptb\.|canary\.)?discord\.com\/api\/webhooks\//.test(webhookUrl)) return;
+  if (!webhookUrl || !/^https:\/\/(ptb\.|canary\.)?discord\.com\/api\/webhooks\/[0-9]+\/[A-Za-z0-9_-]+$/.test(webhookUrl)) return false;
   try {
     const res = await fetch(webhookUrl, {
       method: "POST",
@@ -17,9 +17,12 @@ async function sendDiscordEmbed(webhookUrl, payload) {
     if (!res.ok) {
       const text = await res.text();
       console.error("Discord webhook failed:", res.status, text);
+      return false;
     }
+    return true;
   } catch (err) {
     console.error("Discord webhook error:", err.message);
+    return false;
   }
 }
 

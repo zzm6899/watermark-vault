@@ -5683,7 +5683,7 @@ app.post("/api/discord/test", requireAuth, async (req, res) => {
     return res.status(400).json({ ok: false, error: "webhookUrl required" });
   }
   try {
-    await sendDiscordEmbed(webhookUrl, {
+    const sent = await sendDiscordEmbed(webhookUrl, {
       embeds: [{
         title: "✅ PhotoFlow — Connection Test",
         color: 0x7c3aed,
@@ -5696,6 +5696,7 @@ app.post("/api/discord/test", requireAuth, async (req, res) => {
         timestamp: new Date().toISOString(),
       }],
     });
+    if (!sent) return res.status(400).json({ ok: false, error: "Discord did not accept this webhook URL" });
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message || "Failed to send test message" });
@@ -5703,12 +5704,13 @@ app.post("/api/discord/test", requireAuth, async (req, res) => {
 });
 
 /** Generic Discord notification endpoint — used by frontend for custom events. */
-app.post("/api/discord/notify", requireAuth, async (req, res) => {
+app.post("/api/discord/notify", tenantLimiter, requireAdminOrScopedTenant, async (req, res) => {
   const db = readDb();
 
   // Support tenant-scoped notifications: if tenantSlug is provided, use that tenant's
   // Discord webhook settings instead of the global admin settings.
   const tenantSlug = req.body?.tenantSlug;
+  if (req.authContext.type === "tenant" && tenantSlug !== req.authContext.slug) return res.status(403).json({ error: "Tenant mismatch" });
   let parsed;
   if (tenantSlug) {
     const tenantSettingsRaw = db[`t_${tenantSlug}_wv_tenant_settings`];
@@ -6235,6 +6237,16 @@ const tenantBookingLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHead
 // ── Per-tenant Google Calendar integration ────────────────────────────────
 // Allows each tenant to configure their own Google OAuth2 credentials and
 // connect their own Google Calendar account independently.
+function tenantGoogleRedirectUri(credentials, slug) {
+  const callbackPath = `/api/tenant/${encodeURIComponent(slug)}/integrations/googlecalendar/callback`;
+  return credentials?.web?.redirect_uris?.find(value => {
+    try {
+      const uri = new URL(value);
+      return uri.pathname === callbackPath && (uri.protocol === "https:" || (uri.protocol === "http:" && uri.hostname === "localhost"));
+    } catch { return false; }
+  }) || null;
+}
+
 (function registerTenantGoogleCalendarRoutes() {
   const { google } = require("googleapis");
 
@@ -6249,9 +6261,10 @@ const tenantBookingLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHead
 
   function getTenantOAuth2Client(slug) {
     const creds = getTenantGcalCredentials(slug);
-    if (!creds?.web) return null;
-    const { client_id, client_secret, redirect_uris } = creds.web;
-    const redirectUri = (redirect_uris || []).find(u => u.includes("googlecalendar")) || redirect_uris?.[0];
+    const redirectUri = tenantGoogleRedirectUri(creds, slug);
+    if (!redirectUri) return null;
+    const { client_id, client_secret } = creds.web;
+    if (!client_id || !client_secret) return null;
     return new google.auth.OAuth2(client_id, client_secret, redirectUri);
   }
 
@@ -6305,7 +6318,7 @@ const tenantBookingLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHead
     const settings = loadTenantCalSettings(slug);
     const creds    = getTenantGcalCredentials(slug);
     res.json({
-      configured: !!creds?.web,
+      configured: !!getTenantOAuth2Client(slug),
       connected:  !!tokens?.access_token,
       email:      tokens?.email || null,
       autoSync:   settings.autoSync  ?? false,
@@ -6370,7 +6383,10 @@ const tenantBookingLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHead
 
   // Save calendar settings (autoSync, calendarId)
   app.post("/api/tenant/:slug/integrations/googlecalendar/settings", tenantLimiter, requireTenant, (req, res) => {
-    saveTenantCalSettings(req.params.slug, req.body);
+    const { autoSync, calendarId } = req.body || {};
+    if (autoSync !== undefined && typeof autoSync !== "boolean") return res.status(400).json({ error: "Invalid automatic sync setting" });
+    if (calendarId !== undefined && (typeof calendarId !== "string" || !calendarId.trim() || calendarId.length > 256)) return res.status(400).json({ error: "Invalid calendar" });
+    saveTenantCalSettings(req.params.slug, { ...(autoSync !== undefined ? { autoSync } : {}), ...(calendarId !== undefined ? { calendarId: calendarId.trim() } : {}) });
     res.json({ ok: true });
   });
 
@@ -6907,6 +6923,27 @@ app.post("/api/tenants", tenantLimiter, requireAuth, (req, res) => {
   res.json(safeTenantPrivateDto(tenant));
 });
 
+function validateTenantDomain(value, tenants, slug) {
+  const domain = String(value || "").trim().toLowerCase().replace(/^https?:\/\//, "");
+  if (!/^(?!-)[a-z0-9-]{1,63}(?<!-)(\.[a-z0-9-]{1,63}(?<!-))+$/.test(domain) || domain.length > 253) return { error: "Enter a hostname such as photos.example.com" };
+  const reserved = new Set([...publicSiteHosts(), ...String(process.env.APP_HOSTS || "book.zacmclients.photos").split(",").map(host => host.trim().toLowerCase())]);
+  if (reserved.has(domain)) return { error: "That hostname is reserved for the platform" };
+  if (tenants.some(tenant => tenant.slug !== slug && [tenant.customDomain, tenant.requestedDomain].some(host => String(host || "").toLowerCase() === domain))) return { error: "That hostname is already in use" };
+  return { domain };
+}
+
+app.put("/api/tenant/:slug/domain-request", tenantLimiter, requireTenant, (req, res) => {
+  const tenants = readTenants();
+  const index = tenants.findIndex(tenant => tenant.slug === req.params.slug);
+  if (index < 0) return res.status(404).json({ error: "Tenant not found" });
+  const requested = String(req.body?.domain || "").trim();
+  const result = requested ? validateTenantDomain(requested, tenants, req.params.slug) : { domain: undefined };
+  if (result.error) return res.status(400).json({ error: result.error });
+  tenants[index].requestedDomain = result.domain;
+  writeTenants(tenants);
+  res.json({ ok: true, tenant: safeTenantPrivateDto(tenants[index]) });
+});
+
 // Update tenant
 app.put("/api/tenants/:slug", tenantLimiter, requireAuth, async (req, res) => {
   let tenants = readTenants();
@@ -6928,21 +6965,10 @@ app.put("/api/tenants/:slug", tenantLimiter, requireAuth, async (req, res) => {
       // Allow explicit removal
       updates.customDomain = undefined;
     } else {
-      // Strip accidental protocol prefix, normalise to lowercase
-      const normalizedDomain = String(updates.customDomain).replace(/^https?:\/\//i, "").toLowerCase().trim();
-      // Basic DNS hostname validation: labels separated by dots, no consecutive dots, no leading/trailing dots
-      const DOMAIN_RE = /^(?!-)[a-z0-9-]{1,63}(?<!-)(\.[a-z0-9-]{1,63}(?<!-))+$/;
-      if (!DOMAIN_RE.test(normalizedDomain)) {
-        return res.status(400).json({ error: "Invalid custom domain format" });
-      }
-      // Ensure the domain is not already claimed by another tenant
-      const conflict = tenants.find(
-        t => t.slug !== req.params.slug && t.customDomain && t.customDomain.toLowerCase() === normalizedDomain
-      );
-      if (conflict) {
-        return res.status(409).json({ error: "Custom domain is already in use by another tenant" });
-      }
-      updates.customDomain = normalizedDomain;
+      const result = validateTenantDomain(updates.customDomain, tenants, req.params.slug);
+      if (result.error) return res.status(400).json({ error: result.error });
+      updates.customDomain = result.domain;
+      if (result.domain === tenants[idx].requestedDomain) updates.requestedDomain = undefined;
     }
   }
   let updatedLicenseKeys = null;
@@ -7335,10 +7361,10 @@ async function getGoogleBusyBookings(tenantSlug, dateValue, timeZone) {
     const tokens = dbGet(db, `t_${tenantSlug}_wv_gcal_tokens`, null);
     let credentials;
     try { credentials = settings.googleApiCredentials ? JSON.parse(settings.googleApiCredentials) : null; } catch { credentials = null; }
-    if (!credentials?.web || !tokens?.access_token) return [];
+    if (!credentials?.web || !tokens?.access_token || !tenantGoogleRedirectUri(credentials, tenantSlug)) return [];
     const { google } = require("googleapis");
-    const { client_id, client_secret, redirect_uris } = credentials.web;
-    client = new google.auth.OAuth2(client_id, client_secret, (redirect_uris || []).find(uri => uri.includes("googlecalendar")) || redirect_uris?.[0]);
+    const { client_id, client_secret } = credentials.web;
+    client = new google.auth.OAuth2(client_id, client_secret, tenantGoogleRedirectUri(credentials, tenantSlug));
     client.setCredentials(tokens);
     client.on("tokens", fresh => {
       const latestDb = readDb();
@@ -7396,10 +7422,10 @@ function getBookingGoogleCalendarConnection(tenantSlug) {
   if (typeof credentials === "string") {
     try { credentials = JSON.parse(credentials); } catch { credentials = null; }
   }
-  if (!credentials?.web || !tokens?.access_token) return null;
+  if (!credentials?.web || !tokens?.access_token || !tenantGoogleRedirectUri(credentials, tenantSlug)) return null;
   const { google } = require("googleapis");
-  const { client_id, client_secret, redirect_uris } = credentials.web;
-  const client = new google.auth.OAuth2(client_id, client_secret, (redirect_uris || []).find(uri => uri.includes("googlecalendar")) || redirect_uris?.[0]);
+  const { client_id, client_secret } = credentials.web;
+  const client = new google.auth.OAuth2(client_id, client_secret, tenantGoogleRedirectUri(credentials, tenantSlug));
   client.setCredentials(tokens);
   client.on("tokens", fresh => {
     const latestDb = readDb();
@@ -7410,6 +7436,7 @@ function getBookingGoogleCalendarConnection(tenantSlug) {
   return {
     client,
     calendarId: dbGet(db, `t_${tenantSlug}_wv_gcal_settings`, {})?.calendarId || settings.googleCalendarId || "primary",
+    autoSync: dbGet(db, `t_${tenantSlug}_wv_gcal_settings`, {})?.autoSync === true,
     timezone: tenant?.timezone || "Australia/Sydney",
   };
 }
@@ -7457,6 +7484,7 @@ async function syncBookingCalendarMutation(booking, action) {
     }
     return "not-configured";
   }
+  if (booking.tenantSlug && ["create", "reschedule"].includes(action) && !connection.autoSync && !booking.gcalEventId) return "disabled";
   const { google } = require("googleapis");
   const calendar = google.calendar({ version: "v3", auth: connection.client });
   const findLinkedEventIds = async calendarId => {
@@ -9274,6 +9302,17 @@ app.get("/api/tenant/:slug/settings", tenantLimiter, requireTenant, (req, res) =
   res.json(maskTenantSettings(settings));
 });
 
+app.post("/api/tenant/:slug/discord/test", tenantLimiter, requireTenant, async (req, res) => {
+  const raw = readDb()[`t_${req.params.slug}_wv_tenant_settings`];
+  const settings = raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : {};
+  if (!settings.discordWebhookUrl) return res.status(400).json({ error: "Save a Discord webhook URL first" });
+  const sent = await sendDiscordEmbed(settings.discordWebhookUrl, {
+    embeds: [{ title: "Connection test", description: "Your booking notifications are ready.", timestamp: new Date().toISOString() }],
+  });
+  if (!sent) return res.status(400).json({ error: "Discord did not accept this webhook URL" });
+  res.json({ ok: true });
+});
+
 // Send email via the tenant's own SMTP settings only. Never relay arbitrary
 // tenant content through the platform owner's sender identity.
 const tenantEmailSendLimiter = rateLimit({ windowMs: 15 * 60_000, max: 20, standardHeaders: true, legacyHeaders: false, message: { error: "Too many email requests" } });
@@ -9332,6 +9371,12 @@ app.put("/api/tenant/:slug/settings", tenantLimiter, requireTenant, (req, res) =
     }
   }
   if (incoming.bookingShowBio !== undefined && typeof incoming.bookingShowBio !== "boolean") return res.status(400).json({ error: "bookingShowBio must be a boolean" });
+  if (incoming.discordWebhookUrl && (typeof incoming.discordWebhookUrl !== "string" || !/^https:\/\/(ptb\.|canary\.)?discord\.com\/api\/webhooks\/[0-9]+\/[A-Za-z0-9_-]+$/.test(incoming.discordWebhookUrl))) return res.status(400).json({ error: "Enter a valid Discord webhook URL" });
+  if (incoming.googleApiCredentials) {
+    let credentials;
+    try { credentials = JSON.parse(incoming.googleApiCredentials); } catch { return res.status(400).json({ error: "Google credentials must be valid JSON" }); }
+    if (!credentials?.web?.client_id || !credentials?.web?.client_secret || !tenantGoogleRedirectUri(credentials, slug)) return res.status(400).json({ error: "Google credentials need a Web client and this studio's exact callback URL" });
+  }
 
 
   // Strip server-computed *Set indicators so they cannot override real data
@@ -9757,6 +9802,7 @@ app.get("/api/tenant-setup/:token", tenantSetupLimiter, (req, res) => {
     isTrial: found.isTrial || false,
     trialMaxEvents: found.trialMaxEvents,
     trialMaxBookings: found.trialMaxBookings,
+    storageLimitGb: found.storageLimitGb,
     expiresAt: found.expiresAt,
   });
 });
@@ -9780,6 +9826,10 @@ app.post("/api/tenant-setup/:token/complete", tenantSetupLimiter, async (req, re
     return res.status(400).json({ error: "A password is required" });
   }
   if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email).trim())) return res.status(400).json({ error: "A valid email is required" });
+  if (timezone) {
+    try { new Intl.DateTimeFormat("en", { timeZone: timezone }); }
+    catch { return res.status(400).json({ error: "Choose a valid time zone" }); }
+  }
 
   // Verify the setup token
   let keys = readLicenseKeys();
@@ -10373,31 +10423,34 @@ const AUTOMATION_INTERVAL_MS = DEFAULT_AUTOMATION_INTERVAL_MS;
 const AUTOMATION_GRACE_MS = Number(process.env.EMAIL_AUTOMATION_GRACE_HOURS || 168) * 60 * 60 * 1000;
 const AUTOMATION_MAX_SENDS_PER_RUN = Math.max(1, Number(process.env.EMAIL_AUTOMATION_MAX_SENDS_PER_RUN || 25));
 
-function getAutomationOptions() {
+function getAutomationOptions(tenantSlug = null) {
+  const tenant = tenantSlug ? readTenants().find(item => item.slug === tenantSlug) : null;
+  const scope = tenantSlug || "main";
   return {
-    timezone: dbGet(readDb(), DB_KEYS.PROFILE, {}).timezone || "Australia/Sydney",
+    timezone: tenant?.timezone || dbGet(readDb(), DB_KEYS.PROFILE, {}).timezone || "Australia/Sydney",
     intervalMs: AUTOMATION_INTERVAL_MS,
     graceMs: Number.isFinite(AUTOMATION_GRACE_MS) && AUTOMATION_GRACE_MS > 0
       ? AUTOMATION_GRACE_MS
       : DEFAULT_AUTOMATION_GRACE_MS,
-    sentSet: _automationSentSet,
+    sentSet: { has: key => _automationSentSet.has(`${scope}:${key}`) },
     makeId: ruuid,
   };
 }
 
-function readAutomationRules() {
+function readAutomationRules(tenantSlug = null) {
   const db = readDb();
-  if (!Object.prototype.hasOwnProperty.call(db, "wv_email_automations")) {
+  const key = tenantSlug ? `t_${tenantSlug}_wv_email_automations` : "wv_email_automations";
+  if (!Object.prototype.hasOwnProperty.call(db, key)) {
     return getStarterAutomationRules();
   }
-  const raw = db["wv_email_automations"];
+  const raw = db[key];
   if (!raw) return [];
-  try { return typeof raw === "string" ? JSON.parse(raw) : raw; } catch { return []; }
+  try { const rules = typeof raw === "string" ? JSON.parse(raw) : raw; return Array.isArray(rules) ? rules : []; } catch { return []; }
 }
 
-function writeAutomationRules(rules) {
+function writeAutomationRules(rules, tenantSlug = null) {
   const db = readDb();
-  db["wv_email_automations"] = rules;
+  db[tenantSlug ? `t_${tenantSlug}_wv_email_automations` : "wv_email_automations"] = rules;
   writeDb(db);
 }
 
@@ -10405,17 +10458,17 @@ function normalizeAutomationRule(rule = {}) {
   return normalizeAutomationRuleCore(rule, ruuid);
 }
 
-function readAutomationBookings() {
+function readAutomationBookings(tenantSlug = null) {
   const db = readDb();
   const bookingsRaw = db["wv_bookings"];
   const bookings = bookingsRaw
     ? (typeof bookingsRaw === "string" ? JSON.parse(bookingsRaw) : bookingsRaw)
     : [];
-  return bookings.filter(booking => !booking.tenantSlug);
+  return bookings.filter(booking => (booking.tenantSlug || null) === tenantSlug);
 }
 
-function buildAutomationPreview(rule, now = Date.now()) {
-  return buildAutomationPreviewCore(rule, readAutomationBookings(), now, getAutomationOptions());
+function buildAutomationPreview(rule, now = Date.now(), tenantSlug = null) {
+  return buildAutomationPreviewCore(rule, readAutomationBookings(tenantSlug), now, getAutomationOptions(tenantSlug));
 }
 
 // GET automation rules
@@ -10440,6 +10493,26 @@ app.put("/api/email-automations", requireAuth, (req, res) => {
   res.json({ ok: true, rules: sanitised });
 });
 
+app.get("/api/tenant/:slug/email-automations", tenantLimiter, requireTenant, (req, res) => {
+  res.json({ rules: readAutomationRules(req.params.slug) });
+});
+
+app.post("/api/tenant/:slug/email-automations/preview", tenantLimiter, requireTenant, (req, res) => {
+  const rule = req.body?.rule;
+  if (!rule || typeof rule !== "object" || Array.isArray(rule)) return res.status(400).json({ error: "rule is required" });
+  res.json({ ok: true, ...buildAutomationPreview(rule, Date.now(), req.params.slug) });
+});
+
+app.put("/api/tenant/:slug/email-automations", tenantLimiter, requireTenant, (req, res) => {
+  const rules = req.body?.rules;
+  if (!Array.isArray(rules) || rules.length > 50 || rules.some(rule => !rule || typeof rule !== "object" || Array.isArray(rule))) {
+    return res.status(400).json({ error: "Provide up to 50 valid rules" });
+  }
+  const sanitised = rules.map(normalizeAutomationRule);
+  writeAutomationRules(sanitised, req.params.slug);
+  res.json({ ok: true, rules: sanitised });
+});
+
 // ── Automation Scheduler ───────────────────────────────────────────────────
 // Runs every 5 minutes and fires reminder emails for bookings that match
 // enabled automation rules. Each rule specifies a trigger + delay; once due,
@@ -10452,83 +10525,60 @@ app.put("/api/email-automations", requireAuth, (req, res) => {
 const _automationSentSet = new Set();
 
 async function runEmailAutomations() {
-  const rules = readAutomationRules().filter(r => r.enabled);
-  if (rules.length === 0) return;
-
-  const t = getTransporter();
-  if (!t) return; // SMTP not configured — skip silently
-
-  const bookings = readAutomationBookings();
-  const automationProfile = dbGet(readDb(), DB_KEYS.PROFILE, {});
-  const automationBrandName = automationProfile.businessName || automationProfile.brandName || automationProfile.name || "PhotoFlow";
-
   const now = Date.now();
-  let anyChange = false;
   let sentThisRun = 0;
-
-  for (const rule of rules) {
+  const tenants = readTenants();
+  const scopes = [null, ...tenants.filter(tenantIsLicensed).map(tenant => tenant.slug)];
+  for (const tenantSlug of scopes) {
     if (sentThisRun >= AUTOMATION_MAX_SENDS_PER_RUN) break;
-    for (const booking of bookings) {
+    const rules = readAutomationRules(tenantSlug).filter(rule => rule.enabled);
+    if (!rules.length) continue;
+    const db = readDb();
+    const rawSettings = tenantSlug ? db[`t_${tenantSlug}_wv_tenant_settings`] : null;
+    const tenantSettings = rawSettings ? (typeof rawSettings === "string" ? JSON.parse(rawSettings) : rawSettings) : {};
+    const transport = tenantSlug ? buildTenantTransporter(tenantSettings) : getTransporter();
+    if (!transport) continue;
+    const from = tenantSlug ? getTenantFromAddress(tenantSettings) : getFromAddress();
+    const bookings = readAutomationBookings(tenantSlug);
+    const profile = tenantSlug ? tenants.find(tenant => tenant.slug === tenantSlug) : dbGet(db, DB_KEYS.PROFILE, {});
+    const brandName = tenantSettings.businessName || profile?.businessName || profile?.brandName || profile?.displayName || profile?.name || "PhotoFlow";
+    const options = getAutomationOptions(tenantSlug);
+    for (const rule of rules) {
       if (sentThisRun >= AUTOMATION_MAX_SENDS_PER_RUN) break;
-      // Skip cancelled bookings and bookings without email
-      if (!booking.clientEmail || booking.status === "cancelled") continue;
-      // Respect unsubscribe flag
-      if (booking.emailsDisabled) continue;
-
-      const dedupeKey = `${rule.id}:${booking.id}`;
-      if (_automationSentSet.has(dedupeKey)) continue;
-      // Also check persistent emailLog for type "auto-<ruleId>" so restart-safe
-      const alreadySent = (booking.emailLog || []).some(e => e.type === `auto-${rule.id}`);
-      if (alreadySent) { _automationSentSet.add(dedupeKey); continue; }
-
-      if (getAutomationDecision(rule, booking, now, getAutomationOptions()).status !== "due") continue;
-
-      // Build the email — configured bodies remain plain text and are escaped by
-      // the shared renderer before being placed in the professional shell.
-      const isPaymentReminder = rule.reminderType === "payment";
-      const clientName = booking.clientName || "there";
-      const eventTitle = booking.type || "Booking";
-      const subject = renderAutomationSubject(rule, booking);
-      const body = require("./email-automation-core").renderAutomationBody(rule, booking);
-      const message = buildAutomationEmail({ subject, body, booking, brandName: automationBrandName });
-
-      try {
-        const info = await t.sendMail({ from: getFromAddress(), to: booking.clientEmail, ...message });
-        console.log(`📧 [Automation ${rule.id}] Sent to ${booking.clientEmail}: ${info.messageId}`);
-        sentThisRun++;
-
-        // Persist log entry to booking
-        const trackingId = ruuid();
-        _automationSentSet.add(dedupeKey);
-
-        // Write log entry back to DB
-        const freshDb = readDb();
-        const freshBookings = freshDb["wv_bookings"]
-          ? (typeof freshDb["wv_bookings"] === "string" ? JSON.parse(freshDb["wv_bookings"]) : freshDb["wv_bookings"])
-          : [];
-        const idx = freshBookings.findIndex(b => b.id === booking.id);
-        if (idx !== -1) {
-          if (!freshBookings[idx].emailLog) freshBookings[idx].emailLog = [];
-          freshBookings[idx].emailLog.push({
-            id: trackingId,
-            type: `auto-${rule.id}`,
-            sentAt: new Date().toISOString(),
-            subject,
-            to: booking.clientEmail,
-            automationRule: rule.id,
-          });
-          freshDb["wv_bookings"] = freshBookings;
-          writeDb(freshDb);
-          anyChange = true;
+      for (const booking of bookings) {
+        if (sentThisRun >= AUTOMATION_MAX_SENDS_PER_RUN) break;
+        if (!booking.clientEmail || booking.status === "cancelled" || booking.emailsDisabled) continue;
+        const dedupeKey = `${tenantSlug || "main"}:${rule.id}:${booking.id}`;
+        if (_automationSentSet.has(dedupeKey)) continue;
+        if ((booking.emailLog || []).some(entry => entry.type === `auto-${rule.id}`)) {
+          _automationSentSet.add(dedupeKey);
+          continue;
         }
-      } catch (err) {
-        console.error(`📧 [Automation ${rule.id}] Error sending to ${booking.clientEmail}:`, err.message);
+        if (getAutomationDecision(rule, booking, now, options).status !== "due") continue;
+        const subject = renderAutomationSubject(rule, booking);
+        const body = require("./email-automation-core").renderAutomationBody(rule, booking);
+        const message = buildAutomationEmail({ subject, body, booking, brandName });
+        try {
+          const info = await transport.sendMail({ from, to: booking.clientEmail, ...message });
+          sentThisRun++;
+          _automationSentSet.add(dedupeKey);
+          const freshDb = readDb();
+          const freshBookings = freshDb["wv_bookings"]
+            ? (typeof freshDb["wv_bookings"] === "string" ? JSON.parse(freshDb["wv_bookings"]) : freshDb["wv_bookings"])
+            : [];
+          const index = freshBookings.findIndex(item => item.id === booking.id && (item.tenantSlug || null) === tenantSlug);
+          if (index >= 0) {
+            if (!freshBookings[index].emailLog) freshBookings[index].emailLog = [];
+            freshBookings[index].emailLog.push({ id: ruuid(), type: `auto-${rule.id}`, sentAt: new Date().toISOString(), subject, to: booking.clientEmail, automationRule: rule.id });
+            freshDb["wv_bookings"] = freshBookings;
+            writeDb(freshDb);
+          }
+          console.log(`[Automation ${tenantSlug || "main"}:${rule.id}] Sent to ${booking.clientEmail}: ${info.messageId}`);
+        } catch (error) {
+          console.error(`[Automation ${tenantSlug || "main"}:${rule.id}] Error sending to ${booking.clientEmail}:`, error.message);
+        }
       }
     }
-  }
-
-  if (anyChange) {
-    console.log(`📧 Email automation run complete`);
   }
 }
 
