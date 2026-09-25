@@ -1674,6 +1674,8 @@ function ShootDayCommandCenterView() {
 function DashboardView() {
   const navigate = useNavigate();
   const [, refreshDownloadRequests] = useState(0);
+  const [, refreshDelivery] = useState(0);
+  const [savingStatusId, setSavingStatusId] = useState<string | null>(null);
   const bookings = getBookings();
   const albums = getAlbums();
   const settings = getSettings();
@@ -1755,6 +1757,37 @@ function DashboardView() {
     { id: "proofing", label: "With client", items: deliveryQueue.filter(item => item.stage === "proofing"), tone: "text-blue-300" },
     { id: "editing", label: "Editing", items: deliveryQueue.filter(item => item.stage === "editing"), tone: "text-primary" },
   ];
+
+  const changeDeliveryStatus = async (album: Album, booking: Booking, value: string) => {
+    if (savingStatusId) return;
+    const updated = { ...album };
+    if (album.proofingEnabled) {
+      updated.proofingStage = value as Album["proofingStage"];
+      updated.status = value === "finals-delivered" ? "delivered" : value === "proofing" ? "proofing" : "editing";
+    } else {
+      updated.status = value as Album["status"];
+    }
+    setSavingStatusId(album.id);
+    try {
+      if (isServerMode()) {
+        const result = await saveAlbumStatusToServer(album.id, updated.status || "editing", album.proofingEnabled ? updated.proofingStage : undefined);
+        if (!result.ok) {
+          toast.error(result.error || "Gallery status was not saved");
+          return;
+        }
+        cacheAlbumLocally({ ...updated, updatedAt: result.album?.updatedAt || updated.updatedAt });
+      } else {
+        updateAlbum(updated);
+      }
+      if (updated.status === "delivered" && booking.status !== "completed") {
+        await updateBooking({ ...booking, status: "completed", statusHistory: [...(booking.statusHistory || []), { status: "completed", changedAt: new Date().toISOString() }] });
+      }
+      refreshDelivery(version => version + 1);
+      toast.success("Gallery status updated");
+    } finally {
+      setSavingStatusId(null);
+    }
+  };
 
   const activeCaptureAlbum = albums
     .filter(album => albumPhotoTotal(album) > 0)
@@ -1892,7 +1925,10 @@ function DashboardView() {
           {deliveryGroups.map(group => (
             <section key={group.id} className="min-w-0 py-3 md:px-4 md:first:pl-0 md:last:pr-0">
               <div className="mb-2 flex items-center justify-between"><h4 className="text-sm font-body font-medium text-foreground">{group.label}</h4><span className="text-xs text-muted-foreground">{group.items.length}</span></div>
-              {group.items.length ? <div className="space-y-1">{group.items.slice(0, 3).map(item => <button key={item.booking.id} type="button" onClick={() => item.album ? navigate(`/admin/albums?album=${encodeURIComponent(item.album.id)}`) : navigate(`/admin/bookings?search=${encodeURIComponent(bookingPaymentReference(item.booking))}`)} className="flex w-full items-center justify-between gap-2 rounded px-2 py-2 text-left hover:bg-secondary/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"><span className="min-w-0"><span className="block truncate text-xs text-foreground">{item.booking.clientName}</span><span className="block truncate text-[11px] text-muted-foreground">{item.booking.date}{item.album ? ` · ${item.album.title}` : " · No gallery linked"}</span></span><ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /></button>)}{group.items.length > 3 && <p className="px-2 pt-1 text-xs text-muted-foreground">+{group.items.length - 3} more</p>}</div> : <p className="py-3 text-xs text-muted-foreground">Nothing waiting here.</p>}
+              {group.items.length ? <div className="space-y-2">{group.items.slice(0, 3).map(item => <div key={item.booking.id} className="rounded border border-border/60 px-2 py-1.5">
+                <button type="button" onClick={() => item.album ? navigate(`/admin/albums?album=${encodeURIComponent(item.album.id)}`) : navigate(`/admin/bookings?search=${encodeURIComponent(bookingPaymentReference(item.booking))}`)} className="flex w-full items-center justify-between gap-2 rounded py-1 text-left hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"><span className="min-w-0"><span className="block truncate text-xs text-foreground">{item.booking.clientName}</span><span className="block truncate text-[11px] text-muted-foreground">{item.booking.date}{item.album ? ` · ${item.album.title}` : " · No gallery linked"}</span></span><ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /></button>
+                {item.album ? <div className="mt-1 flex items-center justify-between gap-2 border-t border-border/50 pt-1.5"><span className="text-[11px] text-muted-foreground">Status</span><React.Suspense fallback={null}><AlbumStatusControl proofing={!!item.album.proofingEnabled} value={item.album.proofingEnabled ? (item.album.proofingStage && item.album.proofingStage !== "not-started" ? item.album.proofingStage : "proofing") : (item.album.status || "editing")} disabled={savingStatusId === item.album.id} onChange={value => void changeDeliveryStatus(item.album!, item.booking, value)} /></React.Suspense></div> : <p className="py-1 text-[11px] text-muted-foreground">Create a gallery to set its status.</p>}
+              </div>)}{group.items.length > 3 && <p className="px-2 pt-1 text-xs text-muted-foreground">+{group.items.length - 3} more</p>}</div> : <p className="py-3 text-xs text-muted-foreground">Nothing waiting here.</p>}
             </section>
           ))}
         </div>

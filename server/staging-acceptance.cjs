@@ -173,4 +173,9 @@ async function main() {
   console.log('Results: ' + path.join(dataDir, 'results.json'));
   if (process.argv.includes('--serve')) { console.log('Staging preview: ' + base + '/gallery/staging-proof'); await new Promise(() => {}); }
 }
-main().catch(error => { console.error(error); process.exitCode = 1; }).finally(() => { child?.kill(); stripeConnection?.close(); smtp.close(); });
+main().catch(error => {
+  console.error(error);
+  const serverLog = path.join(dataDir, 'server.log');
+  if (fs.existsSync(serverLog)) console.error(fs.readFileSync(serverLog, 'utf8'));
+  process.exitCode = 1;
+}).finally(() => { child?.kill(); stripeConnection?.close(); smtp.close(); });

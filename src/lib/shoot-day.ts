@@ -44,6 +44,7 @@ export function getAlbumDeliveryStage(album: Album | null): "to-edit" | "proofin
   if (album.status === "archived") return "archived";
   if (stage === "proofing" || (album.status === "proofing" && !["selections-submitted", "editing"].includes(stage))) return "proofing";
   if (["selections-submitted", "editing"].includes(stage)) return "editing";
+  if (album.status === "editing") return "editing";
   return "to-edit";
 }
 
