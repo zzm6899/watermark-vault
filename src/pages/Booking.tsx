@@ -53,6 +53,7 @@ import {
   submitPublicEnquiry,
 } from "@/lib/booking-public-api";
 import { RichTextDisplay } from "@/components/RichTextEditor";
+import { EventDescriptionImages } from "@/components/EventDescriptionOptions";
 import { richTextToPlainText } from "@/lib/rich-text";
 import { generateCapabilityToken } from "@/lib/capability-token";
 import { bookingPaymentReference } from "@/lib/booking-reference";
@@ -964,10 +965,11 @@ export default function Booking() {
                                   </span>
                                 )}
                               </div>
+                              {!!ev.descriptionImages?.length && <div className="mt-3"><EventDescriptionImages event={ev} /></div>}
                               {ev.description && (
                                 <div>
                                   <div className={isExpanded ? "" : "line-clamp-4"}>
-                                    <RichTextDisplay html={ev.description} className="text-sm font-body text-muted-foreground" />
+                                    <RichTextDisplay html={ev.description} font={ev.descriptionFont} className="text-sm text-muted-foreground" />
                                   </div>
                                   <button
                                     type="button"
@@ -1059,8 +1061,9 @@ export default function Booking() {
                           </div>
                         </div>
                         <h2 className="font-display text-2xl leading-tight text-foreground">{selectedEvent.title}</h2>
+                        <EventDescriptionImages event={selectedEvent} />
                         {selectedEvent.description && (
-                          <details className="text-sm text-muted-foreground"><summary className="cursor-pointer font-medium text-foreground">About this session</summary><RichTextDisplay html={selectedEvent.description} className="mt-3 text-sm" /></details>
+                          <details className="text-sm text-muted-foreground"><summary className="cursor-pointer font-medium text-foreground">About this session</summary><RichTextDisplay html={selectedEvent.description} font={selectedEvent.descriptionFont} className="mt-3 text-sm" /></details>
                         )}
                         
                         {selectedEvent.requiresConfirmation && (

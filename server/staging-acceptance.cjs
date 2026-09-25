@@ -41,7 +41,7 @@ const smtp = net.createServer(socket => {
 });
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(fn, attempts = 100) {
-  for (let i = 0; i < attempts; i++) { const value = await fn(); if (value) return value; await pause(100); }
+  for (let i = 0; i < attempts; i++) { if (child?.exitCode != null) throw new Error(`Staging server exited with code ${child.exitCode}`); const value = await fn(); if (value) return value; await pause(100); }
   throw new Error('Timed out waiting for staging result');
 }
 function client() {

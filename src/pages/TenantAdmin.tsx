@@ -27,7 +27,7 @@ import WatermarkedImage from "@/components/WatermarkedImage";
 import { toast } from "sonner";
 import { getMobileTenantSession, setMobileTenantSession, hashPassword } from "@/lib/storage";
 import type { MobileTenantSession } from "@/lib/storage";
-import { generateThumbnail, compressImage, formatBytes, formatSpeed } from "@/lib/image-utils";
+import { formatBytes, formatSpeed } from "@/lib/image-utils";
 import { generateCapabilityToken } from "@/lib/capability-token";
 import { albumIdFromPhotoSourceKey, albumPhotoSourceKey } from "@/lib/album-photo-source";
 import {
@@ -36,19 +36,21 @@ import {
   getTenantLicenseInfo, deleteTenantAlbum,
   getTenantStoreKey, saveTenantStoreKey, updateTenantProfile, tenantLogout,
   clearTenantImageCache, tenantPhotoSrc, saveTenantAlbum,
-  uploadPhotosToServer, isSupportedUploadFile, isSupportedPhotoSource, isServerMode, notifyTenantDiscord,
+  uploadPhotosToServer, isSupportedUploadFile, isSupportedPhotoSource, isServerMode, recheckServer, notifyTenantDiscord,
   getSuperAdminWebhooks, sendTenantEmail, publicGalleryUrl, fetchPublicAlbum,
   bulkDeleteFiles, deletePhotoFromServer,
   getTenantGoogleCalendarStatus, startTenantGoogleCalendarAuth, verifyTenantSession,
   disconnectTenantGoogleCalendar, getTenantGoogleCalendars,
   saveTenantCalendarSettings, getTenantStorageStats, upsertTenantBookingAdmin,
   testTenantFtpConnection, testTenantDiscord, requestTenantDomain,
+  deleteEventDescriptionImage,
   submitEventSlotRequest, getTenantEventSlotRequest, ftpUploadAlbum, ftpMoveToStarred,
   generateTenantIcalToken, deleteTenantIcalToken,
   NATIVE_API_ORIGIN,
 } from "@/lib/api";
 import ProgressiveImg from "@/components/ProgressiveImg";
 import RichTextEditor from "@/components/RichTextEditor";
+import EventDescriptionOptions from "@/components/EventDescriptionOptions";
 import type {
   Booking, Album, Photo, AlbumDisplaySize, EventType, Invoice, InvoiceItem, InvoiceParty,
   Contact, TenantSettings, AvailabilitySlot, QuestionField, WatermarkPosition, SpecificDateSlot, EventSlotRequest, EmailTemplate,
@@ -65,6 +67,7 @@ type BookingSortKey = "date" | "name" | "type" | "status" | "payment" | "booked"
 
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const tenantPublicOrigin = () => Capacitor.isNativePlatform() ? NATIVE_API_ORIGIN : window.location.origin;
+const tenantGalleryUrl = (album: Album) => publicGalleryUrl({ ...album, slug: album.id });
 
 function generateId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
@@ -121,13 +124,15 @@ export default function TenantAdmin() {
       navigate("/login", { replace: true });
       return () => { cancelled = true; };
     }
-    verifyTenantSession(slug).then(ok => {
+    verifyTenantSession(slug).then(async ok => {
       if (cancelled) return;
       if (!ok) {
         setMobileTenantSession(null);
         navigate("/login", { replace: true });
         return;
       }
+      await recheckServer();
+      if (cancelled) return;
       setSessionVerified(true);
     });
     return () => { cancelled = true; };
@@ -367,13 +372,13 @@ function TenantDashboard({ slug, session, onOpenBookings, onOpenAlbums }: { slug
 
   const prevPeriod = () => {
     const d = new Date(calDate);
-    if (calView === "month") d.setMonth(d.getMonth() - 1);
+    if (calView === "month") { d.setDate(1); d.setMonth(d.getMonth() - 1); }
     else d.setDate(d.getDate() - 7);
     setCalDate(d);
   };
   const nextPeriod = () => {
     const d = new Date(calDate);
-    if (calView === "month") d.setMonth(d.getMonth() + 1);
+    if (calView === "month") { d.setDate(1); d.setMonth(d.getMonth() + 1); }
     else d.setDate(d.getDate() + 7);
     setCalDate(d);
   };
@@ -976,8 +981,10 @@ function TenantEvents({ slug }: { slug: string }) {
   };
 
   const handleSave = async (et: EventType) => {
+    const removedImages = (editing?.descriptionImages || []).filter(url => !(et.descriptionImages || []).includes(url));
     const updated = editing ? eventTypes.map(e => e.id === et.id ? et : e) : [...eventTypes, et];
     if (await save(updated)) {
+      await Promise.allSettled(removedImages.map(url => deleteEventDescriptionImage(url, slug)));
       setEts(updated);
       setEditing(null);
       setShowNew(false);
@@ -992,8 +999,10 @@ function TenantEvents({ slug }: { slug: string }) {
 
   const handleDelete = async (id: string) => {
     if (!confirm("Delete this event type?")) return;
+    const images = eventTypes.find(event => event.id === id)?.descriptionImages || [];
     const updated = eventTypes.filter(e => e.id !== id);
     if (await save(updated)) {
+      await Promise.allSettled(images.map(url => deleteEventDescriptionImage(url, slug)));
       setEts(updated);
       toast.success("Event type deleted");
     }
@@ -1048,6 +1057,7 @@ function TenantEvents({ slug }: { slug: string }) {
 
       {(showNew || editing) && (
         <TenantEventEditor
+          slug={slug}
           eventType={editing}
           onSave={handleSave}
           onCancel={() => { setEditing(null); setShowNew(false); }}
@@ -1094,10 +1104,13 @@ function TenantEvents({ slug }: { slug: string }) {
 }
 
 // ─── Event Type Editor (full-featured) ───────────────────────────────────────
-function TenantEventEditor({ eventType, onSave, onCancel }: { eventType: EventType | null; onSave: (et: EventType) => void; onCancel: () => void }) {
+function TenantEventEditor({ slug, eventType, onSave, onCancel }: { slug: string; eventType: EventType | null; onSave: (et: EventType) => void; onCancel: () => void }) {
   const isNew = !eventType;
   const [title, setTitle] = useState(eventType?.title || "");
   const [description, setDescription] = useState(eventType?.description || "");
+  const [descriptionFont, setDescriptionFont] = useState<NonNullable<EventType["descriptionFont"]>>(eventType?.descriptionFont || "sans");
+  const [descriptionImages, setDescriptionImages] = useState(eventType?.descriptionImages || []);
+  const [descriptionUploading, setDescriptionUploading] = useState(false);
   const [location, setLocation] = useState(eventType?.location || "");
   const [durations, setDurations] = useState<number[]>(eventType?.durations || [60]);
   const [price, setPrice] = useState(eventType?.price || 0);
@@ -1151,6 +1164,8 @@ function TenantEventEditor({ eventType, onSave, onCancel }: { eventType: EventTy
       id: eventType?.id || generateId("et"),
       title: title.trim(),
       description: description.trim(),
+      descriptionFont,
+      descriptionImages,
       durations,
       color: "primary",
       price,
@@ -1201,7 +1216,8 @@ function TenantEventEditor({ eventType, onSave, onCancel }: { eventType: EventTy
       </div>
       <div>
         <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Description</label>
-        <Textarea value={description} onChange={e => setDescription(e.target.value)} rows={3} className="bg-secondary border-border text-foreground font-body resize-none" />
+        <RichTextEditor value={description} onChange={setDescription} font={descriptionFont} minHeight="80px" />
+        <div className="mt-3"><EventDescriptionOptions font={descriptionFont} images={descriptionImages} tenantSlug={slug} uploading={descriptionUploading} onFontChange={setDescriptionFont} onImagesChange={setDescriptionImages} onUploadingChange={setDescriptionUploading} /></div>
       </div>
       <div>
         <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Location</label>
@@ -1399,7 +1415,7 @@ function TenantEventEditor({ eventType, onSave, onCancel }: { eventType: EventTy
 
       <div className="flex gap-3 pt-2 border-t border-border/50">
         <Button variant="outline" onClick={onCancel} className="font-body text-xs border-border text-foreground">Cancel</Button>
-        <Button onClick={handleSave} className="bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2">
+        <Button onClick={handleSave} disabled={descriptionUploading} className="bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2">
           <Save className="w-4 h-4" /> {isNew ? "Create" : "Save"}
         </Button>
       </div>
@@ -1449,7 +1465,7 @@ function TenantAlbums({ slug }: { slug: string }) {
   };
 
   const copyLink = (album: Album) => {
-    const url = publicGalleryUrl(album);
+    const url = tenantGalleryUrl(album);
     navigator.clipboard.writeText(url).then(() => toast.success("Gallery link copied!")).catch(() => {
       const ta = document.createElement("textarea");
       ta.value = url;
@@ -1463,7 +1479,13 @@ function TenantAlbums({ slug }: { slug: string }) {
 
   const handleSendNotification = async (alb: Album) => {
     if (!alb.clientEmail) { toast.error("No client email on this album"); return; }
-    const link = publicGalleryUrl(alb);
+    if (alb.enabled === false) { toast.error("Enable this gallery before emailing the client"); return; }
+    const published = await fetchPublicAlbum(alb.id, { token: alb.clientToken, pin: alb.accessCode });
+    if (!published?.album || published.tenantSlug !== slug || published.album.id !== alb.id) {
+      toast.error("This gallery is not available to clients yet. Check its settings before emailing.");
+      return;
+    }
+    const link = tenantGalleryUrl(alb);
     const message = `Hi ${alb.clientName || "there"}, your photos are ready. You can view them here: ${link}`;
     const html = buildClientEmail({ title: alb.title, body: message.replace(link, ""), action: { label: "View your gallery", url: link } });
     const result = await sendTenantEmail(slug, alb.clientEmail, `Your photos are ready — ${alb.clientName || "Gallery"}`, html, message);
@@ -1606,7 +1628,7 @@ function TenantAlbums({ slug }: { slug: string }) {
                       <Button aria-label={`Email client for ${alb.title}`} variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary" title="Email client" onClick={() => handleSendNotification(alb)}>
                         <Send className="w-3.5 h-3.5" />
                       </Button>
-                      <a href={publicGalleryUrl(alb)} target="_blank" rel="noopener noreferrer">
+                      <a href={tenantGalleryUrl(alb)} target="_blank" rel="noopener noreferrer">
                         <Button aria-label={`View gallery ${alb.title}`} variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary" title="View gallery">
                           <ExternalLink className="w-3.5 h-3.5" />
                         </Button>
@@ -1706,7 +1728,7 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
   const uploadRef = useRef<HTMLInputElement>(null);
 
   const copyLink = (targetAlbum: Album) => {
-    const url = publicGalleryUrl(targetAlbum);
+    const url = tenantGalleryUrl(targetAlbum);
     navigator.clipboard.writeText(url)
       .then(() => toast.success("Gallery link copied!"))
       .catch(() => toast.error("Could not copy the gallery link"));
@@ -2046,15 +2068,15 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
           const clientToken = liveAlbum.clientToken || generateCapabilityToken("ct");
           const newRound = { roundNumber: rounds.length + 1, sentAt: new Date().toISOString(), selectedPhotoIds: [], adminNote: note || undefined };
           const updated = { ...liveAlbum, proofingEnabled: true, proofingStage: "proofing" as const, proofingRounds: [...rounds, newRound], clientToken, proofingExpiresAt, proofingExpiryHours: expiryHours };
-          await updateLiveAlbum(updated);
-          const published = await fetchPublicAlbum(updated.slug || updated.id, { token: clientToken });
-          if (!published?.album) {
+          if (!await updateLiveAlbum(updated)) return;
+          const published = await fetchPublicAlbum(updated.id, { token: clientToken, pin: updated.accessCode });
+          if (!published?.album || published.tenantSlug !== slug || published.album.id !== updated.id) {
             toast.error("Proofing was saved, but the public gallery is not available yet. Try again before emailing the client.");
             return;
           }
           let inviteSent = false;
           if (email) {
-            const galleryUrl = publicGalleryUrl({ ...liveAlbum, clientToken });
+            const galleryUrl = tenantGalleryUrl({ ...liveAlbum, clientToken });
             const expiryDateStr = new Date(proofingExpiresAt).toLocaleString("en-AU", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
             const emailResult = await sendTenantEmail(slug, email, proofingEmailSubject(liveAlbum.title), buildProofingEmailHtml(galleryUrl, expiryDateStr, note || undefined));
             inviteSent = emailResult.ok;
@@ -2065,7 +2087,7 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
 
         const resendProofingEmail = async () => {
           if (!email) return;
-          const galleryUrl = publicGalleryUrl(liveAlbum);
+          const galleryUrl = tenantGalleryUrl(liveAlbum);
           const expiryDateStr = liveAlbum.proofingExpiresAt
             ? new Date(liveAlbum.proofingExpiresAt as string).toLocaleString("en-AU", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })
             : "";
@@ -2080,13 +2102,13 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
           const selectedSet = new Set(latest.selectedPhotoIds);
           const updatedPhotos = (liveAlbum.photos || []).map(p => ({ ...p, hidden: photographerChooses ? p.hidden : !selectedSet.has(p.id) }));
           const updated = { ...liveAlbum, photos: updatedPhotos, proofingStage: "editing" as const, allUnlocked: free ? true : liveAlbum.allUnlocked };
-          await updateLiveAlbum(updated);
+          if (!await updateLiveAlbum(updated)) return;
           toast.success(photographerChooses ? "Moving to editing. Choose the final photos; no photos were automatically hidden." : `${latest.selectedPhotoIds.length} photos kept — ${free ? "album unlocked" : "moving to editing"}`);
         };
 
         const sendEditingEmail = async () => {
           if (!email) { toast.error("No client email on file"); return; }
-          const galleryUrl = publicGalleryUrl(liveAlbum);
+          const galleryUrl = tenantGalleryUrl(liveAlbum);
           const html = buildGalleryStatusEmail(liveAlbum, galleryUrl, "editing");
           const result = await sendTenantEmail(slug, email, `Editing your photos — ${liveAlbum.title}`, html);
           if (result.ok) toast.success("Editing notification sent");
@@ -2095,10 +2117,10 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
 
         const deliverFinals = async (free: boolean) => {
           const updated = { ...liveAlbum, proofingStage: "finals-delivered" as const, allUnlocked: free ? true : liveAlbum.allUnlocked };
-          await updateLiveAlbum(updated);
+          if (!await updateLiveAlbum(updated)) return;
           let notificationSent = false;
           if (email) {
-            const galleryUrl = publicGalleryUrl(liveAlbum);
+            const galleryUrl = tenantGalleryUrl(liveAlbum);
             const html = buildGalleryStatusEmail(liveAlbum, galleryUrl, "delivered", free);
             const result = await sendTenantEmail(slug, email, `Your finished photos — ${liveAlbum.title}`, html);
             notificationSent = result.ok;
@@ -2110,7 +2132,7 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
         const resetProofing = async () => {
           if (!confirm("Reset proofing? This will un-hide all photos and clear the proofing stage.")) return;
           const updatedPhotos = (liveAlbum.photos || []).map(p => ({ ...p, hidden: false }));
-          await updateLiveAlbum({ ...liveAlbum, photos: updatedPhotos, proofingStage: "not-started" as const, proofingRounds: [], proofingExpiresAt: undefined, purchasingDisabled: false, allUnlocked: false });
+          if (!await updateLiveAlbum({ ...liveAlbum, photos: updatedPhotos, proofingStage: "not-started" as const, proofingRounds: [], proofingExpiresAt: undefined, purchasingDisabled: false, allUnlocked: false })) return;
           toast.success("Proofing reset");
         };
 
@@ -2541,9 +2563,13 @@ function TenantPhotos({ slug }: { slug: string }) {
       return true;
     });
     if (dedupLib.length < libraryPhotos.length) {
-      totalRemoved += libraryPhotos.length - dedupLib.length;
-      setLibraryPhotos(dedupLib);
-      await saveLibrary(dedupLib);
+      const saved = await saveLibrary(dedupLib);
+      if (saved.ok) {
+        totalRemoved += libraryPhotos.length - dedupLib.length;
+        setLibraryPhotos(dedupLib);
+      } else {
+        toast.error(saved.error || "Could not clear duplicates from the library");
+      }
     }
 
     if (updatedAlbums.some((a, i) => a !== albums[i])) setAlbums(updatedAlbums);
@@ -2798,8 +2824,12 @@ function TenantPhotos({ slug }: { slug: string }) {
     if (fileArr.length < files.length) {
       toast.info(`Skipped ${files.length - fileArr.length} unsupported file${files.length - fileArr.length === 1 ? "" : "s"}`);
     }
+    if (!await recheckServer()) {
+      toast.error("Connection required to upload photos. Try again when the server is available.");
+      if (e.target) e.target.value = "";
+      return;
+    }
     setUploadStats({ total: fileArr.length, done: 0, errors: 0, savedBytes: 0 });
-    let localTargetAlbum = selectedAlbum ? { ...selectedAlbum, photos: [...(selectedAlbum.photos || [])] } : null;
 
     if (isServerMode()) {
       const results = await uploadPhotosToServer(fileArr, (done, total, bytesPerSecond) => {
@@ -2821,11 +2851,20 @@ function TenantPhotos({ slug }: { slug: string }) {
         if (selectedAlbum) {
           const freshAlbum = (await fetchTenantMobileData(slug))?.albums.find(a => a.id === selectedAlbum.id);
           if (freshAlbum) setAlbums(prev => prev.map(a => a.id === freshAlbum.id ? freshAlbum : a));
-          else toast.error("Photos uploaded, but the album could not refresh. Reload this page.");
+          else {
+            toast.error("Photos uploaded, but the album could not refresh. Reload this page.");
+            if (e.target) e.target.value = "";
+            return;
+          }
         } else {
           const updated = [...libraryPhotos, ...newPhotos];
+          const saved = await saveLibrary(updated);
+          if (!saved.ok) {
+            toast.error(saved.error || "Photos uploaded, but the library could not save. Contact support before uploading again.");
+            if (e.target) e.target.value = "";
+            return;
+          }
           setLibraryPhotos(updated);
-          await saveLibrary(updated);
         }
       }
       setUploadStats(prev => prev ? { ...prev, done: fileArr.length, errors: fileArr.length - results.length } : null);
@@ -2838,38 +2877,6 @@ function TenantPhotos({ slug }: { slug: string }) {
         toast.warning(`${results.length} of ${fileArr.length} photos uploaded to ${target}. ${fileArr.length - results.length} failed.`);
       } else {
         toast.error("Upload failed — no photos were saved");
-      }
-    } else {
-      for (const file of fileArr) {
-        try {
-          const result = await compressImage(file);
-          const thumb = await generateThumbnail(result.src).catch(() => undefined);
-          const photo: Photo = {
-            id: generateId("ph"), src: result.src, thumbnail: thumb,
-            title: file.name.replace(/\.[^.]+$/, "").replace(/^_+/, ""), width: result.width, height: result.height,
-            uploadedAt: new Date().toISOString(),
-          };
-          if (localTargetAlbum) {
-            localTargetAlbum = {
-              ...localTargetAlbum,
-              photos: [...(localTargetAlbum.photos || []), photo],
-              photoCount: (localTargetAlbum.photos || []).length + 1,
-            };
-            if (!localTargetAlbum.coverImage) localTargetAlbum.coverImage = photo.src;
-            await saveTenantAlbum(slug, localTargetAlbum);
-            setAlbums(prev => prev.map(a => a.id === localTargetAlbum!.id ? localTargetAlbum! : a));
-          } else {
-            setLibraryPhotos(prev => {
-              const u = [...prev, photo];
-              saveLibrary(u);
-              return u;
-            });
-          }
-          setUploadStats(prev => prev ? { ...prev, done: prev.done + 1, savedBytes: prev.savedBytes + (result.originalSize - result.compressedSize) } : null);
-        } catch {
-          setUploadStats(prev => prev ? { ...prev, done: prev.done + 1, errors: prev.errors + 1 } : null);
-          toast.error(`Failed to process: ${file.name}`);
-        }
       }
     }
     if (e.target) e.target.value = "";
@@ -3717,6 +3724,8 @@ function TenantProfileView({ slug, session }: { slug: string; session: MobileTen
       if (!ok) { toast.error(error || "Failed to update password"); return; }
       toast.success("Password updated");
       setCurrentPassword(""); setNewPassword(""); setConfirmNewPassword("");
+    } catch {
+      toast.error("Could not verify your current password. Try again.");
     } finally {
       setSavingPassword(false);
     }

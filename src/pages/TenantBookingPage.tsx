@@ -25,6 +25,7 @@ import {
 } from "@/lib/api";
 import type { Booking, EventType, QuestionField, TenantSettings } from "@/lib/types";
 import { RichTextDisplay } from "@/components/RichTextEditor";
+import { EventDescriptionImages } from "@/components/EventDescriptionOptions";
 import BookingAvatar from "@/components/BookingAvatar";
 import BookingReferenceUploads from "@/components/BookingReferenceUploads";
 import {
@@ -718,10 +719,11 @@ function TenantBookingContent({ tenantSlug, embedded }: { tenantSlug?: string; e
                                 <span className="booking-session-price">from ${minPrice.toFixed(2)}</span>
                               )}
                             </div>
+                        {!!et.descriptionImages?.length && <div className="mt-3"><EventDescriptionImages event={et} /></div>}
                         {et.description && (
                           <div className="mt-2">
                             <div className={isExpanded ? "" : "line-clamp-4"}>
-                              <RichTextDisplay html={et.description} className="text-sm font-body text-muted-foreground" />
+                              <RichTextDisplay html={et.description} font={et.descriptionFont} className="text-sm text-muted-foreground" />
                             </div>
                             <button
                               type="button"
@@ -802,9 +804,10 @@ function TenantBookingContent({ tenantSlug, embedded }: { tenantSlug?: string; e
                       </div>
                     </div>
                     <h2 className="font-display text-2xl leading-tight text-foreground">{selectedEvent.title}</h2>
+                    <EventDescriptionImages event={selectedEvent} />
                     {selectedEvent.description && (
                       <div className="min-w-0 rounded-xl border border-border/50 bg-secondary/25 p-4">
-                        <RichTextDisplay html={selectedEvent.description} className="text-sm" />
+                        <RichTextDisplay html={selectedEvent.description} font={selectedEvent.descriptionFont} className="text-sm" />
                       </div>
                     )}
                     {/* Duration picker */}

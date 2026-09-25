@@ -52,6 +52,26 @@ export function adminAuthHeaders(): Record<string, string> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+export async function uploadEventDescriptionImage(file: File, tenantSlug?: string): Promise<string> {
+  const form = new FormData();
+  form.append("image", file);
+  const query = tenantSlug ? `?tenant=${encodeURIComponent(tenantSlug)}` : "";
+  const response = await fetch(`/api/event-description/media${query}`, { method: "POST", headers: adminAuthHeaders(), body: form });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok || !result.url) throw new Error(result.error || "Image upload failed");
+  return result.url;
+}
+
+export async function deleteEventDescriptionImage(url: string, tenantSlug?: string): Promise<void> {
+  const scope = tenantSlug || "main";
+  if (!/^\/event-media\/[a-z0-9-]+\/event-[a-f0-9]{24}\.(?:jpe?g|png|webp)$/.test(url) || !url.startsWith(`/event-media/${scope}/`)) {
+    throw new Error("Invalid event image URL");
+  }
+  const query = tenantSlug ? `?tenant=${encodeURIComponent(tenantSlug)}` : "";
+  const response = await fetch(`${url}${query}`, { method: "DELETE", headers: adminAuthHeaders() });
+  if (!response.ok) throw new Error("Could not remove image");
+}
+
 export class PhotoUploadError extends Error {
   constructor(
     message: string,
@@ -3195,12 +3215,12 @@ const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
  * If the album is full local data, republish once and retry; if it is only a
  * stub, block sharing so we never overwrite server photos with empty metadata.
  */
-export async function ensurePublicAlbumAvailable(album: import("./types").Album, retries = 3): Promise<PublicAlbumAvailability> {
-  const target = album.slug || album.id;
-  if (!target) return { ok: false, error: "Album needs a slug before it can be shared." };
+export async function ensurePublicAlbumAvailable(album: import("./types").Album, retries = 3, tenantSlug?: string): Promise<PublicAlbumAvailability> {
+  const target = album.id || album.slug;
+  if (!target) return { ok: false, error: "Album needs an ID before it can be shared." };
 
   const current = await fetchPublicAlbum(target, { token: album.clientToken });
-  if (current?.album) return { ok: true, album: current.album };
+  if (current?.album?.id === album.id && (!tenantSlug || current.tenantSlug === tenantSlug)) return { ok: true, album: current.album };
 
   if (album._photosStripped) {
     return {
@@ -3222,7 +3242,7 @@ export async function ensurePublicAlbumAvailable(album: import("./types").Album,
   for (let attempt = 0; attempt < retries; attempt++) {
     await wait(600 * (attempt + 1));
     const published = await fetchPublicAlbum(target, { token: album.clientToken });
-    if (published?.album) return { ok: true, album: published.album };
+    if (published?.album?.id === album.id && (!tenantSlug || published.tenantSlug === tenantSlug)) return { ok: true, album: published.album };
   }
 
   return {

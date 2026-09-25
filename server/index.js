@@ -1478,7 +1478,7 @@ function sanitizePublicSettings(settings, setupComplete) {
 
 function sanitizePublicEventType(eventType) {
   const allowed = [
-    "id", "title", "description", "durations", "color", "price", "active", "requiresConfirmation",
+    "id", "title", "description", "descriptionImages", "descriptionFont", "durations", "color", "price", "active", "requiresConfirmation",
     "questions", "availability", "location", "depositEnabled", "depositAmount", "depositType", "depositMethods",
     "extras", "prices", "maxAttendees", "bufferMinutes", "slotIntervalMinutes", "isPackage", "packageEventIds", "durationPrices",
   ];
@@ -1659,10 +1659,13 @@ app.put("/api/store/:key", requireAuth, authenticatedLargeJson, async (req, res)
   if (key === DB_KEYS.BOOKINGS) {
     return res.status(409).json({ error: "Bookings must be changed through the atomic booking endpoints" });
   }
+  let records;
   if (/(^|_)wv_(albums|event_types)$/.test(key)) {
-    let records;
     try { records = typeof req.body.value === "string" ? JSON.parse(req.body.value) : req.body.value; } catch { return res.status(400).json({ error: "Invalid proofing configuration" }); }
     if (!Array.isArray(records) || records.some(record => !require("./gallery-workflow").validProofingPolicy(record))) return res.status(400).json({ error: "Invalid proofing configuration" });
+  }
+  if (key === DB_KEYS.EVENT_TYPES && records.some(record => !eventDescriptionImagesBelongToScope(db, record.descriptionImages, "main"))) {
+    return res.status(400).json({ error: "Event images must be uploaded to this studio" });
   }
   let value = stripBakedFields(key, req.body.value);
   value = mergePreservingStoreSecrets(key, db[key], value);
@@ -2685,11 +2688,12 @@ function tenantStorageLimitForSlug(slug) {
 function checkTenantUploadLimit(req, res, next) {
   const slug = String(req.query.tenant || "");
   if (!slug) return next();
-  const discard = () => { for (const file of req.files || []) try { fs.unlinkSync(file.path); } catch {} };
+  const files = [...(req.files || []), ...(req.file ? [req.file] : [])];
+  const discard = () => { for (const file of files) try { fs.unlinkSync(file.path); } catch {} };
   if (!SLUG_RE.test(slug)) { discard(); return res.status(400).json({ error: "Invalid tenant" }); }
   const limitBytes = tenantStorageLimitForSlug(slug);
   if (limitBytes === null) return next();
-  const incomingBytes = (req.files || []).reduce((sum, file) => sum + file.size, 0);
+  const incomingBytes = files.reduce((sum, file) => sum + file.size, 0);
   const usedBytes = tenantStorageUsage(readDb(), slug, UPLOADS_DIR).totalBytes;
   const reservedBytes = tenantUploadReservations.get(slug) || 0;
   if (usedBytes + reservedBytes + incomingBytes > limitBytes) {
@@ -2878,6 +2882,90 @@ app.post("/api/upload", uploadLimiter, requireAdminOrScopedTenant, upload.array(
     }
   });
 });
+
+const eventDescriptionUpload = multer({
+  storage: multer.diskStorage({
+    destination: UPLOADS_DIR,
+    filename: (_req, file, cb) => cb(null, `event-${crypto.randomBytes(12).toString("hex")}${path.extname(file.originalname).toLowerCase()}`),
+  }),
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => cb(null,
+    /\.(?:jpe?g|png|webp)$/i.test(file.originalname)
+      && ["image/jpeg", "image/png", "image/webp", "application/octet-stream"].includes(file.mimetype)),
+});
+
+app.post("/api/event-description/media", uploadLimiter, requireAdminOrScopedTenant, (req, res, next) => {
+  eventDescriptionUpload.single("image")(req, res, error => {
+    if (error) return res.status(error.code === "LIMIT_FILE_SIZE" ? 413 : 400).json({ error: "Choose a JPEG, PNG or WebP image up to 10 MB" });
+    next();
+  });
+}, checkTenantUploadLimit, async (req, res) => {
+  const file = req.file;
+  if (!file) return res.status(400).json({ error: "Choose a JPEG, PNG or WebP image up to 10 MB" });
+  try {
+    const format = (await sharp(file.path).metadata()).format;
+    const expected = path.extname(file.filename).toLowerCase();
+    if (format !== { ".jpg": "jpeg", ".jpeg": "jpeg", ".png": "png", ".webp": "webp" }[expected]) {
+      fs.unlinkSync(file.path);
+      return res.status(400).json({ error: "Image content does not match its file type" });
+    }
+    const scope = req.query.tenant ? String(req.query.tenant) : "main";
+    const db = readDb();
+    const owners = dbGet(db, "wv_upload_owners", {});
+    owners[file.filename] = scope === "main" ? { admin: true, uploadedAt: new Date().toISOString() } : { tenantSlug: scope, uploadedAt: new Date().toISOString() };
+    db.wv_upload_owners = owners;
+    writeDb(db);
+    res.json({ ok: true, url: `/event-media/${scope}/${file.filename}` });
+  } catch (error) {
+    try { fs.unlinkSync(file.path); } catch {}
+    res.status(500).json({ error: "Could not save this image" });
+  }
+});
+
+app.get("/event-media/:scope/:filename", (req, res) => {
+  const { scope, filename } = req.params;
+  if ((scope !== "main" && !SLUG_RE.test(scope)) || !/^event-[a-f0-9]{24}\.(?:jpe?g|png|webp)$/.test(filename)) return res.status(404).end();
+  const owner = dbGet(readDb(), "wv_upload_owners", {})[filename];
+  if (scope === "main" ? owner?.admin !== true : owner?.tenantSlug !== scope || !licensedTenantBySlug(scope)) return res.status(404).end();
+  const target = path.join(UPLOADS_DIR, filename);
+  if (!fs.existsSync(target)) return res.status(404).end();
+  res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+  res.sendFile(target);
+});
+
+app.delete("/event-media/:scope/:filename", uploadLimiter, requireAdminOrScopedTenant, (req, res) => {
+  const { scope, filename } = req.params;
+  if ((scope !== "main" && !SLUG_RE.test(scope)) || !/^event-[a-f0-9]{24}\.(?:jpe?g|png|webp)$/.test(filename)) return res.status(404).json({ error: "Image not found" });
+  if (req.authContext?.type === "tenant" && req.authContext.slug !== scope) return res.status(403).json({ error: "This image belongs to another studio" });
+  const db = readDb();
+  const owners = dbGet(db, "wv_upload_owners", {});
+  if (scope === "main" ? owners[filename]?.admin !== true : owners[filename]?.tenantSlug !== scope) return res.status(404).json({ error: "Image not found" });
+  const url = `/event-media/${scope}/${filename}`;
+  const events = getStoredArray(db, scope === "main" ? DB_KEYS.EVENT_TYPES : `t_${scope}_wv_event_types`);
+  if (events.some(event => event.descriptionImages?.includes(url))) return res.status(409).json({ error: "Remove this image from its event before deleting it" });
+  try {
+    fs.unlinkSync(path.join(UPLOADS_DIR, filename));
+  } catch (error) {
+    if (error.code !== "ENOENT") return res.status(500).json({ error: "Could not delete this image" });
+  }
+  delete owners[filename];
+  db.wv_upload_owners = owners;
+  writeDb(db);
+  res.json({ ok: true });
+});
+
+function eventDescriptionImagesBelongToScope(db, images, scope) {
+  if (images === undefined) return true;
+  if (!Array.isArray(images) || images.length > 3) return false;
+  const owners = dbGet(db, "wv_upload_owners", {});
+  return images.every(url => {
+    if (typeof url !== "string") return false;
+    const match = url.match(/^\/event-media\/([a-z0-9-]+)\/(event-[a-f0-9]{24}\.(?:jpe?g|png|webp))$/);
+    if (!match || match[1] !== scope) return false;
+    const owner = owners[match[2]];
+    return scope === "main" ? owner?.admin === true : owner?.tenantSlug === scope;
+  });
+}
 
 // ── Lightroom Classic integration ─────────────────────
 // These routes are intentionally admin-authenticated. Lightroom Classic runs on
@@ -5704,6 +5792,7 @@ app.post("/api/discord/test", requireAuth, async (req, res) => {
 });
 
 /** Generic Discord notification endpoint — used by frontend for custom events. */
+const tenantLimiter = rateLimit({ windowMs: 60_000, max: 60, standardHeaders: true, legacyHeaders: false, message: { error: "Too many requests" } });
 app.post("/api/discord/notify", tenantLimiter, requireAdminOrScopedTenant, async (req, res) => {
   const db = readDb();
 
@@ -6212,7 +6301,9 @@ async function sendBookingUpdateReceipt(booking, updateType, previousBooking) {
       : "",
     previousDate: previousBooking?.date,
     previousTime: previousBooking?.time,
-    brandName: settings?.businessName || settings?.brandName || tenant?.displayName || profile.businessName || profile.brandName || profile.name || "PhotoFlow",
+    brandName: booking.tenantSlug
+      ? settings?.businessName || settings?.brandName || tenant?.displayName || "PhotoFlow"
+      : profile.businessName || profile.brandName || profile.name || "PhotoFlow",
   });
 }
 
@@ -6230,7 +6321,6 @@ registerStripeRoutes(app, { readDb, writeDb: writePaymentDb, readLicenseKeys, wr
 registerTenantStripeRoutes(app, { readDb, writeDb: writePaymentDb, readTenants, readLicenseKeys, getLicKeyLimits, readEventSlotRequests, writeEventSlotRequests, requireTenant, getGallerySession: getGallerySessionForAlbum, sendTenantBookingReceipt, onBookingPaid: queueInitialBookingCalendarSync, isTenantLicensed: tenantIsLicensed });
 registerGoogleSheetsRoutes(app, { requireAuth });
 
-const tenantLimiter = rateLimit({ windowMs: 60_000, max: 60, standardHeaders: true, legacyHeaders: false, message: { error: "Too many requests" } });
 const tenantPublicLimiter = rateLimit({ windowMs: 60_000, max: 120, standardHeaders: true, legacyHeaders: false, message: { error: "Too many requests" } });
 const tenantBookingLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHeaders: true, legacyHeaders: false, message: { error: "Too many requests" } });
 
@@ -7156,8 +7246,16 @@ app.put("/api/tenant/:slug/store/:key", tenantLimiter, requireTenant, (req, res)
   }
   const db = readDb();
 
+  if (req.params.key === "wv_photo_library") {
+    let photos;
+    try { photos = typeof req.body.value === "string" ? JSON.parse(req.body.value) : req.body.value; } catch { return res.status(400).json({ error: "Invalid photo library" }); }
+    if (!Array.isArray(photos) || [...collectUploadFileNames(photos)].some(filename => !uploadMatchesAlbumScope(db, filename, slug))) {
+      return res.status(409).json({ error: "Photo library contains uploads that do not belong to this studio" });
+    }
+  }
+
+  let records;
   if (["wv_albums", "wv_event_types"].includes(req.params.key)) {
-    let records;
     try { records = typeof req.body.value === "string" ? JSON.parse(req.body.value) : req.body.value; } catch { return res.status(400).json({ error: "Invalid proofing configuration" }); }
     if (!Array.isArray(records) || records.some(record => !require("./gallery-workflow").validProofingPolicy(record))) return res.status(400).json({ error: "Invalid proofing configuration" });
   }
@@ -7166,7 +7264,10 @@ app.put("/api/tenant/:slug/store/:key", tenantLimiter, requireTenant, (req, res)
   if (req.params.key === "wv_event_types") {
     const licensed = licensedTenantBySlug(slug);
     if (!licensed) return res.status(403).json({ error: "Tenant account or licence is inactive" });
-    const newEventTypes = Array.isArray(req.body.value) ? req.body.value : [];
+    const newEventTypes = records;
+    if (newEventTypes.some(record => !eventDescriptionImagesBelongToScope(db, record.descriptionImages, slug))) {
+      return res.status(400).json({ error: "Event images must be uploaded to this studio" });
+    }
     const currentEventTypes = getStoredArray(db, `t_${slug}_wv_event_types`);
     const identity = validateEventTypeIdentityChange(currentEventTypes, newEventTypes);
     if (!identity.ok) return res.status(400).json({ error: identity.error });
@@ -10427,7 +10528,7 @@ function getAutomationOptions(tenantSlug = null) {
   const tenant = tenantSlug ? readTenants().find(item => item.slug === tenantSlug) : null;
   const scope = tenantSlug || "main";
   return {
-    timezone: tenant?.timezone || dbGet(readDb(), DB_KEYS.PROFILE, {}).timezone || "Australia/Sydney",
+    timezone: tenantSlug ? tenant?.timezone || "Australia/Sydney" : dbGet(readDb(), DB_KEYS.PROFILE, {}).timezone || "Australia/Sydney",
     intervalMs: AUTOMATION_INTERVAL_MS,
     graceMs: Number.isFinite(AUTOMATION_GRACE_MS) && AUTOMATION_GRACE_MS > 0
       ? AUTOMATION_GRACE_MS
@@ -10663,7 +10764,7 @@ app.get("/api/ical/:token", (req, res) => {
   const settings = db["wv_settings"] ? (typeof db["wv_settings"] === "string" ? JSON.parse(db["wv_settings"]) : db["wv_settings"]) : {};
   const profile = db["wv_profile"] ? (typeof db["wv_profile"] === "string" ? JSON.parse(db["wv_profile"]) : db["wv_profile"]) : {};
   if (settings.icalToken && settings.icalToken === token) {
-    const bookings = db["wv_bookings"] ? (typeof db["wv_bookings"] === "string" ? JSON.parse(db["wv_bookings"]) : db["wv_bookings"]) : [];
+    const bookings = (db["wv_bookings"] ? (typeof db["wv_bookings"] === "string" ? JSON.parse(db["wv_bookings"]) : db["wv_bookings"]) : []).filter(booking => !booking.tenantSlug);
     const cal = buildIcalFeed(bookings, `${profile.name || "PhotoFlow"} — Bookings`);
     res.setHeader("Content-Type", "text/calendar; charset=utf-8");
     res.setHeader("Content-Disposition", 'attachment; filename="bookings.ics"');

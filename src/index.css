@@ -84,6 +84,16 @@
     font-family: 'Barlow', sans-serif;
   }
 
+  [data-rich-text][data-description-font="serif"],
+  [data-rich-text][data-description-font="serif"] :is(h2, h3, li) {
+    font-family: Georgia, 'Times New Roman', serif;
+  }
+
+  [data-rich-text][data-description-font="display"],
+  [data-rich-text][data-description-font="display"] :is(h2, h3, li) {
+    font-family: 'Barlow Condensed', 'Arial Narrow', sans-serif;
+  }
+
   .text-gradient-gold {
     @apply bg-clip-text text-transparent;
     background-image: linear-gradient(135deg, hsl(var(--gold-light)), hsl(var(--gold)), hsl(var(--gold-dark)));

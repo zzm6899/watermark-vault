@@ -60,6 +60,8 @@ export interface EventType {
   id: string;
   title: string;
   description: string;
+  descriptionFont?: "sans" | "serif" | "display";
+  descriptionImages?: string[];
   durations: number[];
   color: string;
   price: number;

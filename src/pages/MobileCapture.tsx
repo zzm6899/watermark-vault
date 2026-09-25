@@ -2032,14 +2032,14 @@ function MobileCaptureInner() {
       targetAlbumRef.current = updatedAlbum;
       setAlbums(prev => prev.map(a => a.id === updatedAlbum.id ? updatedAlbum : a));
       if (selectedBooking?.clientEmail && serverOnline) {
-        const published = await ensurePublicAlbumAvailable(updatedAlbum);
+        const published = await ensurePublicAlbumAvailable(updatedAlbum, 3, tenantSession?.slug);
         if (!published.ok) {
           toast.error(published.error || "Gallery is not published yet; proofing was saved but no invite was sent.");
           return;
         }
-        const galleryUrl = publicGalleryUrl(updatedAlbum);
+        const galleryUrl = publicGalleryUrl(tenantSession ? { ...updatedAlbum, slug: updatedAlbum.id } : updatedAlbum);
         if (!galleryUrl) {
-          toast.error("Album needs a slug before it can be shared.");
+          toast.error("Gallery link could not be created.");
           return;
         }
         const subject = proofingEmailSubject(targetAlbum.title);

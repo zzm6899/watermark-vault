@@ -39,6 +39,57 @@ test('admin Google credentials cannot sync or persist tenant booking events', as
   assert.equal(res.statusCode, 400);
 });
 
+test('admin iCal feed excludes bookings from every tenant', () => {
+  const start = source.indexOf('app.get("/api/ical/:token"');
+  const end = source.indexOf('// Generate / rotate ical token', start);
+  let handler;
+  const db = { wv_settings: { icalToken: 'admin-token' }, wv_profile: { name: 'Main' }, wv_bookings: [
+    { id: 'main' }, { id: 'studio-a', tenantSlug: 'a' }, { id: 'studio-b', tenantSlug: 'b' },
+  ] };
+  vm.runInNewContext(source.slice(start, end), {
+    app: { get: (_route, fn) => { handler = fn; } }, readDb: () => db,
+    buildIcalFeed: bookings => bookings.map(booking => booking.id).join(','),
+  });
+  let sent;
+  handler({ params: { token: 'admin-token' } }, { setHeader() {}, send(value) { sent = value; } });
+  assert.equal(sent, 'main');
+});
+
+test('event description media only accepts images owned by its studio', () => {
+  const start = source.indexOf('function eventDescriptionImagesBelongToScope(');
+  const end = source.indexOf('// ── Lightroom Classic integration', start);
+  const check = vm.runInNewContext(source.slice(start, end) + ';eventDescriptionImagesBelongToScope', { dbGet });
+  const a = '/event-media/a/event-0123456789abcdef01234567.jpg';
+  const b = '/event-media/b/event-0123456789abcdef01234568.jpg';
+  const db = { wv_upload_owners: {
+    'event-0123456789abcdef01234567.jpg': { tenantSlug: 'a' },
+    'event-0123456789abcdef01234568.jpg': { tenantSlug: 'b' },
+  } };
+  assert.equal(check(db, [a], 'a'), true);
+  assert.equal(check(db, [b], 'a'), false);
+  assert.equal(check(db, [a, a, a, a], 'a'), false);
+  assert.equal(check(db, ['/event-media/main/event-0123456789abcdef01234567.jpg'], 'a'), false);
+});
+
+test('a tenant event image upload respects the same storage limit as gallery uploads', () => {
+  const start = source.indexOf('function checkTenantUploadLimit(');
+  const end = source.indexOf('app.post("/api/upload"', start);
+  let discarded = false;
+  const check = vm.runInNewContext(source.slice(start, end) + ';checkTenantUploadLimit', {
+    SLUG_RE: /^[a-z0-9-]+$/,
+    fs: { unlinkSync() { discarded = true; } },
+    tenantStorageLimitForSlug: () => 100,
+    tenantStorageUsage: () => ({ totalBytes: 90 }),
+    readDb: () => ({}), UPLOADS_DIR: '/uploads', tenantUploadReservations: new Map(),
+  });
+  let status;
+  check({ query: { tenant: 'a' }, file: { path: '/uploads/event.jpg', size: 20 } }, {
+    status(code) { status = code; return this; }, json() {},
+  }, () => { throw new Error('Upload must be rejected'); });
+  assert.equal(status, 413);
+  assert.equal(discarded, true);
+});
+
 test('tenant watermarks never inherit another studio or admin watermark', () => {
   const db = { wv_settings: { watermarkText: 'ADMIN', watermarkImage: 'private-admin-image', watermarkOpacity: 90 }, t_a_wv_tenant_settings: { watermarkText: 'Studio A' }, t_b_wv_tenant_settings: { watermarkText: 'Studio B', watermarkOpacity: 0 } };
   const code = source.slice(source.indexOf('function getWatermarkSettings('), source.indexOf('async function buildWatermarkOverlay'));

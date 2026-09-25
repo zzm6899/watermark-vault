@@ -66,6 +66,7 @@ import {
   deleteTag, deliverAlbum, updateBookingTasks, toggleBookingTask, aiEnhancePhoto, listXmpPresets,
   uploadXmpPresets, deleteXmpPreset, ensurePublicAlbumAvailable, saveAlbumToServer,
   saveAlbumStatusToServer, autoCullAlbum, adminLogout, adminAuthHeaders, setBookingArchiveState,
+  deleteEventDescriptionImage,
   resolveBookingPaymentReview, confirmAdminBankPayment, completeAdminBookingBalance,
   reconcileAdminStripePayment,
 } from "@/lib/api";
@@ -74,6 +75,7 @@ import type {
   PresetEditParams, XmpPreset, PhotoEditRequest, UploadedPhotoResult,
 } from "@/lib/api";
 import RichTextEditor, { RichTextDisplay } from "@/components/RichTextEditor";
+import EventDescriptionOptions from "@/components/EventDescriptionOptions";
 import { richTextToPlainText } from "@/lib/rich-text";
 import LoginPage from "@/pages/LoginPage";
 import type {
@@ -3947,9 +3949,13 @@ function EventTypesView() {
     refresh();
   };
 
-  const handleDelete = (id: string) => {
+  const handleDelete = async (id: string) => {
     if (!confirm("Delete this event type?")) return;
+    const images = eventTypes.find(event => event.id === id)?.descriptionImages || [];
     deleteEventType(id);
+    if (images.length && (await saveStoreKeyToServer("wv_event_types", getEventTypes())).ok) {
+      await Promise.allSettled(images.map(url => deleteEventDescriptionImage(url)));
+    }
     refresh();
     toast.success("Event type deleted");
   };
@@ -3981,9 +3987,13 @@ function EventTypesView() {
         <EventTypeEditor
           key={editing?.id || "new-event"}
           eventType={editing}
-          onSave={(et) => {
+          onSave={async (et) => {
+            const removedImages = (editing?.descriptionImages || []).filter(url => !(et.descriptionImages || []).includes(url));
             if (editing) { updateEventType(et); }
             else { addEventType(et); }
+            if (removedImages.length && (await saveStoreKeyToServer("wv_event_types", getEventTypes())).ok) {
+              await Promise.allSettled(removedImages.map(url => deleteEventDescriptionImage(url)));
+            }
             refresh();
             setEditing(null);
             setShowNew(false);
@@ -4048,6 +4058,9 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
   const isNew = !eventType;
   const [title, setTitle] = useState(eventType?.title || "");
   const [description, setDescription] = useState(eventType?.description || "");
+  const [descriptionFont, setDescriptionFont] = useState<NonNullable<EventType["descriptionFont"]>>(eventType?.descriptionFont || "sans");
+  const [descriptionImages, setDescriptionImages] = useState(eventType?.descriptionImages || []);
+  const [descriptionUploading, setDescriptionUploading] = useState(false);
   const [location, setLocation] = useState(eventType?.location || "");
   const [durations, setDurations] = useState<number[]>(eventType?.durations || [30]);
   const [proofingMessages, setProofingMessages] = useState(eventType?.proofingMessages || {});
@@ -4109,6 +4122,8 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
       id: eventType?.id || generateId("et"),
       title: title.trim(),
       description: description.trim(),
+      descriptionFont,
+      descriptionImages,
       durations,
       proofingMessages,
       proofingPhotoSelection,
@@ -4197,7 +4212,8 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
       </section>
       <div>
         <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Description</label>
-        <RichTextEditor value={description} onChange={setDescription} minHeight="80px" />
+        <RichTextEditor value={description} onChange={setDescription} font={descriptionFont} minHeight="80px" />
+        <div className="mt-3"><EventDescriptionOptions font={descriptionFont} images={descriptionImages} uploading={descriptionUploading} onFontChange={setDescriptionFont} onImagesChange={setDescriptionImages} onUploadingChange={setDescriptionUploading} /></div>
       </div>
       <div>
         <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Location</label>
@@ -4414,7 +4430,7 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
 
       <div className="flex gap-3 pt-2 border-t border-border/50">
         <Button variant="outline" onClick={onCancel} className="font-body text-xs border-border text-foreground">Cancel</Button>
-        <Button onClick={handleSave} className="bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs tracking-wider uppercase gap-2">
+        <Button onClick={handleSave} disabled={descriptionUploading} className="bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs tracking-wider uppercase gap-2">
           <Save className="w-4 h-4" /> {isNew ? "Create" : "Save"}
         </Button>
       </div>

@@ -6,6 +6,7 @@ import { normalizePlainRichText, sanitizeRichText } from "@/lib/rich-text";
 interface RichTextEditorProps {
   value: string;
   onChange: (val: string) => void;
+  font?: "sans" | "serif" | "display";
   placeholder?: string;
   className?: string;
   minHeight?: string;
@@ -46,6 +47,7 @@ const displayClassName = `min-w-0 max-w-full overflow-hidden break-words [overfl
 export default function RichTextEditor({
   value,
   onChange,
+  font = "sans",
   placeholder = "Write something…",
   className = "",
   minHeight = "80px",
@@ -160,6 +162,8 @@ export default function RichTextEditor({
       {/* Editable area */}
       <div
         ref={syncRef}
+        data-rich-text
+        data-description-font={font}
         contentEditable
         suppressContentEditableWarning
         onInput={handleInput}
@@ -188,16 +192,18 @@ export default function RichTextEditor({
 export function RichTextDisplay({
   html,
   className = "",
+  font = "sans",
 }: {
   html: string;
   className?: string;
+  font?: "sans" | "serif" | "display";
 }) {
   if (!html) return null;
   // Plain legacy values may still contain entities such as `&nbsp;`.
   const isPlain = !/<[a-z][\s\S]*>/i.test(html);
   if (isPlain) {
     return (
-      <p data-rich-text className={`text-sm font-body text-muted-foreground leading-relaxed whitespace-pre-line ${displayClassName} ${className}`}>
+      <p data-rich-text data-description-font={font} className={`text-sm font-body text-muted-foreground leading-relaxed whitespace-pre-line ${displayClassName} ${className}`}>
         <PlainRichText text={html} />
       </p>
     );
@@ -205,6 +211,7 @@ export function RichTextDisplay({
   return (
     <div
       data-rich-text
+      data-description-font={font}
       className={`text-sm font-body text-muted-foreground leading-relaxed ${displayClassName} ${className}`}
       dangerouslySetInnerHTML={{ __html: sanitizeRichText(html) }}
     />
