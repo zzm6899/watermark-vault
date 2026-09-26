@@ -780,6 +780,7 @@ export default function PlatformView() {
   const [resettingSlug, setResettingSlug] = useState<string | null>(null);
   const [newTempPassword, setNewTempPassword] = useState("");
   const [settingPassword, setSettingPassword] = useState(false);
+  const [lastSetTenantPassword, setLastSetTenantPassword] = useState<{ slug: string; password: string } | null>(null);
 
   // Tenant custom domain editing
   const [editingDomainSlug, setEditingDomainSlug] = useState<string | null>(null);
@@ -899,7 +900,8 @@ export default function PlatformView() {
       const hashHex = await hashPassword(newTempPassword.trim());
       const { ok, error } = await updateTenant(slug, { passwordHash: hashHex });
       if (!ok) { toast.error(error || "Failed to update password"); return; }
-      toast.success(`Password updated for /${slug}`);
+      setLastSetTenantPassword({ slug, password: newTempPassword.trim() });
+      toast.success(`Password updated for /${slug}; the new password is shown below`);
       setResettingSlug(null);
       setNewTempPassword("");
     } catch { toast.error("Failed to update password"); }
@@ -1118,6 +1120,7 @@ export default function PlatformView() {
                           onClick={() => {
                             setResettingSlug(resettingSlug === t.slug ? null : t.slug);
                             setNewTempPassword("");
+                            setLastSetTenantPassword(null);
                             setSelectedTenantForSettings(null);
                             setEditingDomainSlug(null);
                             setEditingSlotSlug(null);
@@ -1190,6 +1193,16 @@ export default function PlatformView() {
                             Cancel
                           </Button>
                         </div>
+                      </div>
+                    )}
+                    {lastSetTenantPassword?.slug === t.slug && (
+                      <div className="mt-1 flex flex-wrap items-center gap-3 rounded-lg border border-green-500/20 bg-green-500/5 p-3">
+                        <span className="text-xs font-body text-green-400">New password</span>
+                        <code className="select-all font-mono text-sm text-foreground">{lastSetTenantPassword.password}</code>
+                        <Button size="sm" variant="outline" onClick={() => navigator.clipboard.writeText(lastSetTenantPassword.password).then(() => toast.success("Password copied")).catch(() => toast.error("Copy failed"))} className="h-7 gap-1 text-xs">
+                          <Copy className="h-3 w-3" /> Copy
+                        </Button>
+                        <button onClick={() => setLastSetTenantPassword(null)} className="ml-auto text-xs text-muted-foreground hover:text-foreground">Dismiss</button>
                       </div>
                     )}
                     {selectedTenantForSettings?.slug === t.slug && (
