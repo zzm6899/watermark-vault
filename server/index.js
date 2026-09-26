@@ -8495,6 +8495,26 @@ app.get("/api/super/all-bookings", superLimiter, requireAuth, (_req, res) => {
   res.json(bookings);
 });
 
+app.post("/api/super/tenants/:slug/access", superLimiter, requireAuth, (req, res) => {
+  const username = String(req.authContext?.username || "");
+  const configuredSuperAdmin = String(process.env.SUPER_ADMIN_USERNAME || "").trim();
+  if (!username || (configuredSuperAdmin && username.toLowerCase() !== configuredSuperAdmin.toLowerCase())) {
+    return res.status(403).json({ error: "Super admin access required" });
+  }
+  const slug = String(req.params.slug || "");
+  if (!SLUG_RE.test(slug)) return res.status(400).json({ error: "Invalid tenant" });
+  const tenant = licensedTenantBySlug(slug)?.tenant;
+  if (!tenant) return res.status(404).json({ error: "Active tenant not found" });
+
+  const db = readDb();
+  const audit = getStoredArray(db, "wv_super_admin_tenant_access_audit");
+  audit.push({ id: crypto.randomUUID(), actor: username, tenantSlug: slug, openedAt: new Date().toISOString() });
+  db.wv_super_admin_tenant_access_audit = JSON.stringify(audit.slice(-500));
+  writeDb(db);
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ ok: true, tenant: safeTenantPrivateDto(tenant) });
+});
+
 app.get("/api/admin/payments/health", superLimiter, requireAuth, (_req, res) => {
   const db = readDb();
   const bookings = getStoredArray(db, DB_KEYS.BOOKINGS).filter(booking => !booking?.tenantSlug && booking?.archived !== true);

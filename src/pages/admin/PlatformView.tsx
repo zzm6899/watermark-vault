@@ -908,6 +908,10 @@ export default function PlatformView() {
     finally { setSettingPassword(false); }
   };
 
+  const handleOpenTenant = (slug: string) => {
+    window.open(`/tenant-admin/${encodeURIComponent(slug)}?support=1`, "_blank", "noopener,noreferrer");
+  };
+
   const handleSaveCustomDomain = async (slug: string, value = customDomainInput) => {
     setSavingDomain(true);
     const domain = value.trim().toLowerCase().replace(/^https?:\/\//, "");
@@ -1116,6 +1120,13 @@ export default function PlatformView() {
                         </button>
                       </div>
                       <div className="flex flex-wrap gap-1.5">
+                        <button
+                          onClick={() => handleOpenTenant(t.slug)}
+                          className="text-xs font-body px-2 py-1 rounded-md border border-primary/30 text-primary hover:bg-primary/10 transition-colors"
+                          title={`Open ${t.displayName} as superadmin`}
+                        >
+                          <span className="inline-flex items-center gap-1"><Globe className="w-3 h-3" /> Open tenant</span>
+                        </button>
                         <button
                           onClick={() => {
                             setResettingSlug(resettingSlug === t.slug ? null : t.slug);

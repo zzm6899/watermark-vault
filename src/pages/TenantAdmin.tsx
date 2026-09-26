@@ -31,7 +31,7 @@ import { formatBytes, formatSpeed } from "@/lib/image-utils";
 import { generateCapabilityToken } from "@/lib/capability-token";
 import { albumIdFromPhotoSourceKey, albumPhotoSourceKey } from "@/lib/album-photo-source";
 import {
-  fetchTenantMobileData, getTenantSettings, saveTenantSettings,
+  fetchTenantMobileData, getTenantSettings, saveTenantSettings, getAdminSession, openSuperAdminTenantAccess,
   deleteTenantBooking, updateTenantBookingFull,
   getTenantLicenseInfo, deleteTenantAlbum,
   getTenantStoreKey, saveTenantStoreKey, updateTenantProfile, tenantLogout,
@@ -112,15 +112,38 @@ export default function TenantAdmin() {
   const [activeTab, setActiveTab] = useState<Tab>(() => new URLSearchParams(window.location.search).has("gcal") ? "settings" : "dashboard");
   const [badgeCounts, setBadgeCounts] = useState<Record<string, number>>({});
   const [sessionVerified, setSessionVerified] = useState(false);
+  const [supportSession, setSupportSession] = useState<MobileTenantSession | null>(null);
   const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false);
 
   // Auth check
-  const session = getMobileTenantSession();
-  const sessionSlug = session?.slug;
+  const tenantSession = getMobileTenantSession();
+  const supportAccess = supportSession?.slug === slug;
+  const session = supportAccess ? supportSession : tenantSession;
   useEffect(() => {
     let cancelled = false;
     setSessionVerified(false);
-    if (!sessionSlug || sessionSlug !== slug || !slug) {
+    setSupportSession(null);
+    if (!slug) {
+      navigate("/login", { replace: true });
+      return () => { cancelled = true; };
+    }
+    if (new URLSearchParams(window.location.search).get("support") === "1") {
+      getAdminSession().then(async admin => {
+        if (cancelled) return;
+        if (!admin?.isSuperAdmin) { navigate("/login", { replace: true }); return; }
+        const result = await openSuperAdminTenantAccess(slug);
+        if (cancelled) return;
+        if (!result.ok || !result.tenant) {
+          toast.error(result.error || "Could not open tenant workspace");
+          navigate("/admin/platform", { replace: true });
+          return;
+        }
+        setSupportSession({ ...result.tenant, loggedAt: new Date().toISOString() });
+        setSessionVerified(true);
+      });
+      return () => { cancelled = true; };
+    }
+    if (!tenantSession || tenantSession.slug !== slug) {
       navigate("/login", { replace: true });
       return () => { cancelled = true; };
     }
@@ -136,7 +159,7 @@ export default function TenantAdmin() {
       setSessionVerified(true);
     });
     return () => { cancelled = true; };
-  }, [sessionSlug, slug, navigate]);
+  }, [tenantSession?.slug, slug, navigate]);
 
   // Load badge counts for bottom nav indicators
   useEffect(() => {
@@ -171,6 +194,11 @@ export default function TenantAdmin() {
   }
 
   const handleLogout = () => {
+    if (supportAccess) {
+      setSupportSession(null);
+      navigate("/admin/platform", { replace: true });
+      return;
+    }
     void tenantLogout(slug!);
     setMobileTenantSession(null);
     navigate("/login", { replace: true });
@@ -285,6 +313,10 @@ export default function TenantAdmin() {
 
         {/* Main content */}
         <main className="flex-1 min-w-0 overflow-x-hidden lg:ml-60 p-4 sm:p-6 lg:p-8 lg:pt-8" style={{ paddingTop: "calc(env(safe-area-inset-top, 0px) + 3.5rem)", paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 4rem)" }}>
+          {supportAccess && <div className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3">
+            <div><p className="text-sm font-medium text-amber-300">Superadmin support access</p><p className="text-xs text-muted-foreground">You are working in {session.displayName}’s tenant workspace.</p></div>
+            <Button size="sm" variant="outline" onClick={() => navigate("/admin/platform", { replace: true })} className="gap-2"><Globe className="size-3.5" /> Back to Platform</Button>
+          </div>}
           {activeTab === "dashboard" && <TenantDashboard slug={slug!} session={session} onOpenBookings={() => setActiveTab("bookings")} onOpenAlbums={() => setActiveTab("albums")} />}
           {activeTab === "bookings" && <TenantBookings slug={slug!} />}
           {activeTab === "events" && <TenantEvents slug={slug!} />}
@@ -295,7 +327,7 @@ export default function TenantAdmin() {
           {activeTab === "contacts" && <TenantContacts slug={slug!} />}
           {activeTab === "enquiries" && <TenantEnquiries slug={slug!} />}
           {activeTab === "automations" && <TenantAutomations slug={slug!} />}
-          {activeTab === "profile" && <TenantProfileView slug={slug!} session={session} />}
+          {activeTab === "profile" && <TenantProfileView slug={slug!} session={session} supportAccess={supportAccess} />}
           {activeTab === "settings" && <TenantSettingsView slug={slug!} />}
           {activeTab === "storage" && <TenantStorage slug={slug!} />}
           {activeTab === "license" && <TenantLicense slug={slug!} />}
@@ -3662,7 +3694,7 @@ function TenantContacts({ slug }: { slug: string }) {
 }
 
 // ─── Profile ─────────────────────────────────────────────────────────────────
-function TenantProfileView({ slug, session }: { slug: string; session: MobileTenantSession }) {
+function TenantProfileView({ slug, session, supportAccess = false }: { slug: string; session: MobileTenantSession; supportAccess?: boolean }) {
   const [displayName, setDisplayName] = useState(session.displayName);
   const [email, setEmail] = useState(session.email);
   const [bio, setBio] = useState("");
@@ -3702,7 +3734,7 @@ function TenantProfileView({ slug, session }: { slug: string; session: MobileTen
     const { ok, error } = await updateTenantProfile(slug, { displayName: nextDisplayName, email: nextEmail, bio: bio.trim() || undefined });
     setSavingProfile(false);
     if (!ok) { toast.error(error || "Failed to save profile"); return; }
-    setMobileTenantSession({ ...session, displayName: nextDisplayName, email: nextEmail });
+    if (!supportAccess) setMobileTenantSession({ ...session, displayName: nextDisplayName, email: nextEmail });
     toast.success("Profile updated");
   };
 
@@ -3777,7 +3809,7 @@ function TenantProfileView({ slug, session }: { slug: string; session: MobileTen
         </div>
 
         {/* Password change */}
-        <div className="space-y-4 pt-4 border-t border-border/30">
+        {!supportAccess && <div className="space-y-4 pt-4 border-t border-border/30">
           <h3 className="font-display text-base text-foreground">Change Password</h3>
           <div>
             <label className="text-xs font-body text-muted-foreground mb-1 block">Current Password</label>
@@ -3794,7 +3826,7 @@ function TenantProfileView({ slug, session }: { slug: string; session: MobileTen
           <Button onClick={handleChangePassword} disabled={savingPassword} className="bg-primary text-primary-foreground font-body text-xs tracking-wider uppercase gap-2 w-full">
             <Save className="w-4 h-4" /> {savingPassword ? "Updating…" : "Update Password"}
           </Button>
-        </div>
+        </div>}
       </div>
     </motion.div>
   );

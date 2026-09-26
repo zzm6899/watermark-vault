@@ -2260,6 +2260,20 @@ export async function getAllBookings(): Promise<import("./types").Booking[]> {
   } catch { return []; }
 }
 
+export async function openSuperAdminTenantAccess(slug: string): Promise<{
+  ok: boolean;
+  tenant?: { slug: string; displayName: string; email: string; timezone?: string };
+  error?: string;
+}> {
+  try {
+    const res = await fetch(`/api/super/tenants/${encodeURIComponent(slug)}/access`, {
+      method: "POST", headers: adminAuthHeaders(), cache: "no-store",
+    });
+    const json = await res.json().catch(() => ({}));
+    return { ok: res.ok && json.ok === true, tenant: json.tenant, error: json.error };
+  } catch { return { ok: false, error: "Network error" }; }
+}
+
 // ── Tenant Mobile Auth ─────────────────────────────────────────
 
 /** Verify super-admin credentials server-side (supports bcrypt and legacy SHA-256 hashes). */
