@@ -1,3 +1,5 @@
+import ClientInstalments from "@/components/ClientInstalments";
+import ConventionDetails from "@/components/ConventionDetails";
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { BookingPriceBreakdown } from "@/components/BookingExtras";
 import { useParams, useNavigate } from "react-router-dom";
@@ -631,7 +633,7 @@ export default function BookingModify() {
                     {isDepositPaid && (
                       <>
                         <div className="flex items-center justify-between p-3 rounded-lg bg-teal-500/10 border border-teal-500/20">
-                          <div className="flex items-center gap-2"><CheckCircle2 className="w-4 h-4 text-teal-400" /><span className="text-sm font-body text-teal-400 font-medium">Deposit Paid</span></div>
+                          <div className="flex items-center gap-2"><CheckCircle2 className="w-4 h-4 text-teal-400" /><span className="text-sm font-body text-teal-400 font-medium">{booking.instalmentPlanActive ? "Payments received" : "Deposit Paid"}</span></div>
                           <span className="text-sm font-body text-teal-400 font-medium">${depositAmt}</span>
                         </div>
                         {remainingAmt > 0 && (
@@ -660,7 +662,7 @@ export default function BookingModify() {
                         <p className="mt-1.5 text-xs font-body text-muted-foreground">This booking can no longer accept payment. Contact the photographer or make a new booking.</p>
                       </div>
                     )}
-                    {!isPaidInFull && !isDepositPaid && !isBankPending && !paymentIsProcessing && !paymentStatusLoading && !paymentStatusError && paymentState !== "hold-expired" && paymentState !== "not-payable" && (
+                    {!booking.instalmentPlanActive && !isPaidInFull && !isDepositPaid && !isBankPending && !paymentIsProcessing && !paymentStatusLoading && !paymentStatusError && paymentState !== "hold-expired" && paymentState !== "not-payable" && (
                       <div className="flex items-center justify-between p-3 rounded-lg bg-destructive/10 border border-destructive/20">
                         <div className="flex items-center gap-2"><AlertCircle className="w-4 h-4 text-destructive" /><span className="text-sm font-body text-destructive font-medium">Payment Required</span></div>
                         <span className="text-sm font-body text-destructive font-medium">${depositEnabled ? depositAmt : totalAmt}</span>
@@ -687,15 +689,15 @@ export default function BookingModify() {
                   </div>
                 )}
 
-                <BookingReferenceUploads booking={booking} onChange={updated => { setBooking(updated); cacheBookingLocally(updated); }} />
+                <ConventionDetails value={booking.conventionDetails} /><ClientInstalments token={booking.modifyToken || bookingId || ""} onUpdate={payment => setBooking(current => current ? { ...current, ...payment } : current)} /><BookingReferenceUploads booking={booking} onChange={updated => { setBooking(updated); cacheBookingLocally(updated); }} />
 
                 {/* Pay now buttons */}
-                {!isFree && !isPaidInFull && booking.status !== "cancelled" && paymentState !== "hold-expired" && paymentState !== "not-payable" && (
+                {!booking.instalmentPlanActive && !isFree && !isPaidInFull && booking.status !== "cancelled" && paymentState !== "hold-expired" && paymentState !== "not-payable" && (
                   <div className="mt-4 space-y-2.5">
                     {paymentStatusLoading && (
                       <p className="rounded-lg border border-border bg-secondary/30 p-3 text-center text-xs font-body text-muted-foreground" role="status">Checking authoritative payment status…</p>
                     )}
-                    {isDepositPaid && remainingAmt > 0 && !paymentStatusLoading && !paymentStatusError && (
+                    {!booking.instalmentPlanActive && isDepositPaid && remainingAmt > 0 && !paymentStatusLoading && !paymentStatusError && (
                       <>
                         <p className="text-xs font-body text-muted-foreground">Pay your remaining balance:</p>
                         {stripeAvailable && canRetryCard && <Button onClick={() => handleStripePayment(remainingAmt)} disabled={processingPayment} className="w-full gap-2 bg-primary text-primary-foreground font-body text-sm h-11"><CreditCard className="w-4 h-4" />{processingPayment ? "Checking…" : `Pay Remaining $${remainingAmt} with Card`}</Button>}

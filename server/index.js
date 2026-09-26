@@ -1,4 +1,5 @@
 const express = require("express");
+const { validConventionDetails, snapshotConventionDetails } = require("./convention-details");
 const { applyAlbumPhotoRemovals, markAlbumDelivered, mergeAlbumPhotos, normalizeEmail, recoverablePurchase, preserveGalleryServerState, proofingSubmission, repairDeliveredAlbumWorkflows, updateManualAlbumStatus } = require("./gallery-workflow");
 const { upgradePortfolioPresentation, publicPortfolioFocus } = require("./portfolio-presentation.mjs");
 const multer = require("multer");
@@ -675,7 +676,11 @@ async function _flushDbToDisk() {
 function writeDb(data, { durable = false } = {}) {
   // Client receipts must not acknowledge a mutation until SQLite commits it.
   if (durable) {
-    sqliteStore.write(data);
+    try { sqliteStore.write(data); } catch (error) {
+      // A failed commit must not become a successful replay from mutated cache.
+      _dbCache = null;
+      throw error;
+    }
     if (_writeDebounceTimer) clearTimeout(_writeDebounceTimer);
     _writeDebounceTimer = null;
     _dbCache = data;
@@ -1478,7 +1483,7 @@ function sanitizePublicSettings(settings, setupComplete) {
 
 function sanitizePublicEventType(eventType) {
   const allowed = [
-    "id", "title", "description", "descriptionImages", "descriptionFont", "durations", "color", "price", "active", "requiresConfirmation",
+    "conventionDetails", "id", "title", "description", "descriptionImages", "descriptionFont", "durations", "color", "price", "active", "requiresConfirmation",
     "questions", "availability", "location", "depositEnabled", "depositAmount", "depositType", "depositMethods",
     "extras", "prices", "maxAttendees", "bufferMinutes", "slotIntervalMinutes", "isPackage", "packageEventIds", "durationPrices",
   ];
@@ -1667,8 +1672,10 @@ app.put("/api/store/:key", requireAuth, authenticatedLargeJson, async (req, res)
   if (key === DB_KEYS.EVENT_TYPES && records.some(record => !eventDescriptionImagesBelongToScope(db, record.descriptionImages, "main"))) {
     return res.status(400).json({ error: "Event images must be uploaded to this studio" });
   }
+  if (key === DB_KEYS.EVENT_TYPES && records.some(record => !validConventionDetails(record.conventionDetails))) return res.status(400).json({ error: "Invalid meeting point or delivery settings" });
   let value = stripBakedFields(key, req.body.value);
   value = mergePreservingStoreSecrets(key, db[key], value);
+  if (/(^|_)wv_enquiries$/.test(key)) { value = preserveAcceptedEnquiries(db, key, value); if (!value) return res.status(400).json({ error: "Enquiries must be accepted through booking creation" }); }
   if (key === "wv_albums" || (key.startsWith("t_") && key.endsWith("_wv_albums"))) {
     const wasString = typeof value === "string";
     let incoming;
@@ -1745,7 +1752,7 @@ app.put("/api/store/:key", requireAuth, authenticatedLargeJson, async (req, res)
     value = JSON.stringify(updatedAdminCreds);
   }
   db[key] = value;
-  writeDb(db);
+  try { writeDb(db, { durable: true }); } catch { return res.status(503).json({ error: "Save could not be committed; retry" }); }
   for (const booking of calendarCreates) queueInitialBookingCalendarSync(booking);
   if (updatedAdminCreds) {
     const token = signSession({ purpose: "admin", sub: String(updatedAdminCreds.username), cv: credentialVersion(updatedAdminCreds.passwordHash) }, SESSION_SECRET, { ttlSeconds: ADMIN_SESSION_TTL_SECONDS });
@@ -2221,14 +2228,14 @@ app.put("/api/albums/:albumId", requireAuth, authenticatedLargeJson, (req, res) 
       merged.photoCount = merged.photos.length;
       albums[existingIdx] = applyAlbumPhotoRemovals(preserveGalleryServerState(existing, merged), removedPhotoIds);
       db[ALBUMS_KEY] = JSON.stringify(albums);
-      writeDb(db);
+      writeDb(db, { durable: true });
       return res.json({ ok: true, merged: true, albumId: existing.id });
     }
   }
   if (idx >= 0) albums[idx] = candidate;
   else albums.push(candidate);
   db[ALBUMS_KEY] = JSON.stringify(albums);
-  writeDb(db);
+  writeDb(db, { durable: true });
   res.json({ ok: true });
 });
 
@@ -2714,7 +2721,30 @@ function checkTenantUploadLimit(req, res, next) {
   next();
 }
 
-app.post("/api/upload", uploadLimiter, requireAdminOrScopedTenant, upload.array("photos", 100), checkTenantUploadLimit, async (req, res) => {
+function captureUploadReplay(req, res, next) {
+  const id = req.get("X-Capture-Id");
+  if (!id) return next();
+  if (id.length > 300 || !/^[\w:-]+$/.test(id) || !req.query.albumId) return res.status(400).json({ error: "Invalid capture retry identity" });
+  const key = sha256(JSON.stringify([req.query.tenant || null, req.query.albumId, id]));
+  req.captureReceiptKey = key;
+  return withCheckoutResourceLock(`capture:${key}`, () => new Promise(resolve => {
+    req.captureRelease = resolve;
+    res.once("finish", resolve);
+    res.once("close", () => { if (!req.captureProcessing) { req.captureAborted = true; resolve(); } });
+    const db = readDb();
+    const albums = dbGet(db, req.query.tenant ? `t_${req.query.tenant}_wv_albums` : DB_KEYS.ALBUMS, []);
+    if (!albums.some(album => album.id === req.query.albumId)) return res.status(404).json({ error: "Capture album no longer exists" });
+    const receipt = dbGet(db, "wv_capture_receipts", {})[key];
+    const album = albums.find(item => item.id === req.query.albumId);
+    if (receipt && receipt.files?.every(file => album.photos?.some(photo => photo.id === file.id))) return res.json(receipt);
+    next();
+  })).catch(next);
+}
+
+app.post("/api/upload", uploadLimiter, requireAdminOrScopedTenant, captureUploadReplay, upload.array("photos", 100), checkTenantUploadLimit, async (req, res) => {
+  if (req.captureAborted) return;
+  req.captureProcessing = true;
+  try {
   const ignoredUploadFiles = Array.isArray(req.ignoredUploadFiles) ? req.ignoredUploadFiles : [];
   if ((req.files || []).length === 0) {
     return res.status(400).json({
@@ -2847,10 +2877,15 @@ app.post("/api/upload", uploadLimiter, requireAdminOrScopedTenant, upload.array(
     }
   }
 
-  // Persist ownership even when an upload is not immediately attached to an album.
-  writeDb(db);
-
-  res.json({ files, albumPersisted, albumPersistError, ignoredFileCount: ignoredUploadFiles.length, rejectedInvalidCount, sequenceGaps: detectUploadSequenceGaps(files) });
+  const response = { files, albumPersisted, albumPersistError, ignoredFileCount: ignoredUploadFiles.length, rejectedInvalidCount, sequenceGaps: detectUploadSequenceGaps(files) };
+  if (req.captureReceiptKey && albumPersisted) {
+    const receipts = dbGet(db, "wv_capture_receipts", {});
+    receipts[req.captureReceiptKey] = response;
+    db.wv_capture_receipts = receipts;
+  }
+  // Commit the album, ownership and retry receipt before acknowledging capture.
+  writeDb(db, { durable: !!req.captureReceiptKey });
+  res.json(response);
 
   if (req.query.autoEdit === "1" && albumId && files.length > 0) {
     setImmediate(() => autoEditAlbumUploads({ albumId, tenantSlug: tenantSlug || null, uploadedFiles, strength: req.query.autoEditStrength, profile: req.query.autoEditProfile }));
@@ -2881,6 +2916,8 @@ app.post("/api/upload", uploadLimiter, requireAdminOrScopedTenant, upload.array(
       }
     }
   });
+  } catch (error) { if (!res.headersSent && !res.destroyed) res.status(500).json({ error: "Upload was not confirmed; retry with the same capture identity" }); }
+  finally { req.captureRelease?.(); }
 });
 
 const eventDescriptionUpload = multer({
@@ -6207,6 +6244,7 @@ function sendMainBookingReceipt(booking, options = {}) {
     date: booking.date,
     time: booking.time,
     duration: booking.duration,
+    conventionDetails: booking.conventionDetails,
     location: booking.location || "",
     price: booking.paymentAmount || 0, lineItems: booking.lineItems, sessionPrice: booking.sessionPrice,
     depositAmount: booking.depositAmount || 0,
@@ -6244,6 +6282,7 @@ async function sendTenantBookingReceipt(booking, eventKey, options = {}) {
     date: booking.date,
     time: booking.time,
     duration: booking.duration,
+    conventionDetails: booking.conventionDetails,
     location: booking.location || "",
     price: booking.paymentAmount || 0, lineItems: booking.lineItems, sessionPrice: booking.sessionPrice,
     depositAmount: booking.depositAmount || 0,
@@ -6293,6 +6332,7 @@ async function sendBookingUpdateReceipt(booking, updateType, previousBooking) {
     date: booking.date,
     time: booking.time,
     duration: booking.duration,
+    conventionDetails: booking.conventionDetails,
     location: booking.location || "",
     bookingId: booking.id,
     paymentReference: booking.paymentReference,
@@ -7265,6 +7305,7 @@ app.put("/api/tenant/:slug/store/:key", tenantLimiter, requireTenant, (req, res)
     const licensed = licensedTenantBySlug(slug);
     if (!licensed) return res.status(403).json({ error: "Tenant account or licence is inactive" });
     const newEventTypes = records;
+    if (newEventTypes.some(record => !validConventionDetails(record.conventionDetails))) return res.status(400).json({ error: "Invalid meeting point or delivery settings" });
     if (newEventTypes.some(record => !eventDescriptionImagesBelongToScope(db, record.descriptionImages, slug))) {
       return res.status(400).json({ error: "Event images must be uploaded to this studio" });
     }
@@ -7307,8 +7348,12 @@ app.put("/api/tenant/:slug/store/:key", tenantLimiter, requireTenant, (req, res)
     const byId = new Map(existing.map(album => [album.id, album]));
     const ids = new Set(incoming.map(album => album.id));
     db[fullKey] = JSON.stringify([...existing.filter(album => !ids.has(album.id)), ...incoming.map(album => preserveGalleryServerState(byId.get(album.id), album))]);
+  } else if (req.params.key === "wv_enquiries") {
+    const enquiries = preserveAcceptedEnquiries(db, fullKey, req.body.value);
+    if (!enquiries) return res.status(400).json({ error: "Enquiries must be accepted through booking creation" });
+    db[fullKey] = enquiries;
   } else db[fullKey] = req.body.value;
-  writeDb(db);
+  writeDb(db, { durable: true });
   res.json({ ok: true });
 });
 
@@ -7368,7 +7413,7 @@ function publicBookingDto(booking) {
     "id", "paymentReference", "clientName", "clientEmail", "phone", "date", "time", "eventTypeId", "type",
     "duration", "status", "notes", "answers", "answerLabels", "createdAt", "paymentStatus", "paymentAmount", "sessionPrice", "lineItems",
     "instagramHandle", "modifyToken", "depositRequired", "depositAmount", "depositMethod", "depositPaidAt", "paidAt",
-    "requiresConfirmation", "tenantSlug", "statusHistory",
+    "requiresConfirmation", "tenantSlug", "statusHistory", "instalmentPlanActive", "conventionDetails",
   ];
   const dto = Object.fromEntries(allowed.filter(key => booking?.[key] !== undefined).map(key => [key, booking[key]]));
   dto.referenceImages = (Array.isArray(booking?.referenceImages) ? booking.referenceImages : []).map(image => {
@@ -8005,6 +8050,7 @@ app.patch("/api/booking/:token", bookingLookupLimiter, async (req, res) => {
       date: req.body?.date,
       time: req.body?.time,
       duration: booking.duration,
+    conventionDetails: booking.conventionDetails,
     }, bookingValidationContext(initialDb, booking.tenantSlug || null, eventTypes, tenant?.timezone || dbGet(initialDb, DB_KEYS.PROFILE, {})?.timezone, booking.id, googleBusy));
     if (!validation.ok) return res.status(validation.status).json({ ok: false, error: validation.error });
   }
@@ -8208,6 +8254,7 @@ app.post("/api/booking", publicBookingLimiter, async (req, res) => {
     paymentReference: `PF-${id.slice(-8).toUpperCase()}`,
     clientName: clientName.trim().slice(0, 160), clientEmail: clientEmail.trim().slice(0, 254),
     phone: typeof phone === "string" ? phone.trim().slice(0, 40) : "",
+    conventionDetails: snapshotConventionDetails(eventType, normalized.date),
     date: normalized.date, time: normalized.time, eventTypeId: eventType.id, type: eventType.title || "Session", duration: normalized.duration,
     status: normalized.requiresConfirmation || totalPrice > 0 ? "pending" : "confirmed",
     requiresConfirmation: normalized.requiresConfirmation,
@@ -8323,6 +8370,7 @@ app.post("/api/tenant/:slug/booking", tenantBookingLimiter, async (req, res) => 
     clientEmail: clientEmail.trim().toLowerCase().slice(0, 254),
     phone: typeof phone === "string" ? phone.trim().slice(0, 40) : "",
     date: normalized.date,
+    conventionDetails: snapshotConventionDetails(eventType, normalized.date),
     time: normalized.time,
     eventTypeId: eventType.id,
     type: eventType.title,
@@ -8598,7 +8646,7 @@ app.post("/api/admin/bookings", superLimiter, requireAuth, async (req, res) => {
       return res.status(409).json({ ok: false, code: "BOOKING_EXISTS", error: "Booking already exists" });
     }
     const createdAt = String(input?.createdAt || new Date().toISOString());
-    const booking = { id: bookingId, ...changes, createdAt, tenantSlug: undefined };
+    const booking = { id: bookingId, ...changes, createdAt, tenantSlug: undefined, modifyToken: `mod-${crypto.randomBytes(32).toString("base64url")}`, conventionDetails: snapshotConventionDetails(getStoredArray(db, DB_KEYS.EVENT_TYPES).find(event => event.id === changes.eventTypeId), changes.date) };
     if (["paid", "cash"].includes(String(booking.paymentStatus || ""))) {
       booking.paidAt = createdAt;
       if (booking.paymentStatus === "cash") booking.paymentMethod = "cash";
@@ -8756,6 +8804,7 @@ app.patch("/api/admin/bookings/:id/bank-payment", superLimiter, requireAuth, asy
       const index = bookings.findIndex(booking => !booking?.tenantSlug && booking.id === bookingId);
       if (index < 0) return res.status(404).json({ ok: false, code: "BOOKING_NOT_FOUND", error: "Booking not found" });
       const current = bookings[index];
+    if (current.instalmentPlanActive) return res.status(409).json({ error: "Record payments against the active instalment schedule" });
       const methods = [current.paymentMethod, current.depositMethod, current.paymentPath].filter(Boolean).map(value => String(value).toLowerCase());
       if (current.paymentStatus !== "pending-confirmation" || !methods.length || methods.some(method => method !== "bank")) {
         return res.status(409).json({ ok: false, code: "BANK_PAYMENT_NOT_PENDING", error: "This booking is not awaiting bank-transfer verification" });
@@ -8827,6 +8876,7 @@ app.patch("/api/admin/bookings/:id/complete-balance", superLimiter, requireAuth,
     const index = bookings.findIndex(booking => !booking?.tenantSlug && booking.id === bookingId);
     if (index < 0) return res.status(404).json({ ok: false, code: "BOOKING_NOT_FOUND", error: "Booking not found" });
     const current = bookings[index];
+    if (current.instalmentPlanActive) return res.status(409).json({ error: "Record payments against the active instalment schedule" });
     if (current.paymentStatus === "paid" && current.balancePaidAt && current.lastPaymentKind === "balance") {
       return res.json({ ok: true, booking: current, reused: true });
     }
@@ -9163,14 +9213,14 @@ app.put("/api/tenant/:slug/albums/:albumId", tenantLimiter, requireTenant, authe
       merged.photoCount = merged.photos.length;
       albums[existingIdx] = applyAlbumPhotoRemovals(preserveGalleryServerState(existing, merged), removedPhotoIds);
       db[key] = JSON.stringify(albums);
-      writeDb(db);
+      writeDb(db, { durable: true });
       return res.json({ ok: true, merged: true, albumId: existing.id });
     }
   }
   if (idx >= 0) albums[idx] = candidate;
   else albums.push(candidate);
   db[key] = JSON.stringify(albums);
-  writeDb(db);
+  writeDb(db, { durable: true });
   res.json({ ok: true });
 });
 
@@ -9242,6 +9292,7 @@ app.put("/api/tenant/:slug/bookings/:bookingId", tenantLimiter, requireTenant, a
       clientEmail,
       phone: String(updates.phone || "").trim().slice(0, 40),
       date: validation.normalized.date,
+      conventionDetails: snapshotConventionDetails(validation.eventType, validation.normalized.date),
       time: validation.normalized.time,
       duration: validation.normalized.duration,
       eventTypeId: validation.eventType.id,
@@ -9265,7 +9316,9 @@ app.put("/api/tenant/:slug/bookings/:bookingId", tenantLimiter, requireTenant, a
     return res.json({ ok: true, booking: publicBookingDto(booking) });
   } else {
     const existing = allBookings[idx];
+    if (dbGet(db, "wv_instalments", []).some(row => row.bookingId === existing.id && row.tenantSlug === slug && row.status !== "waived") && ["paymentAmount", "paymentStatus", "depositAmount", "depositRequired", "paymentMethod", "depositMethod", "paidAt"].some(key => updates[key] !== undefined && updates[key] !== existing[key])) return res.status(409).json({ error: "Update payments through the instalment schedule" });
     const {
+      instalmentPlanActive: _planActive, instalmentBasePaid: _planBase, instalmentPayments: _planPayments, instalmentBaseMethod: _planMethod,
       modifyToken: _modifyToken,
       stripeSessionId: _stripeSessionId,
       stripeCheckoutSessionId: _stripeCheckoutSessionId,
@@ -9522,7 +9575,7 @@ app.put("/api/tenant/:slug/settings", tenantLimiter, requireTenant, (req, res) =
   }
 
   db[`t_${slug}_wv_tenant_settings`] = JSON.stringify(updated);
-  writeDb(db);
+  writeDb(db, { durable: true });
   res.json({ ok: true, settings: maskTenantSettings(updated) });
 });
 
@@ -9540,7 +9593,7 @@ function readLicensePlans() {
 function writeLicensePlans(plans) {
   const db = readDb();
   db["wv_license_plans"] = JSON.stringify(plans);
-  writeDb(db);
+  writeDb(db, { durable: true });
 }
 
 // List active plans (public — used on purchase/pricing page)
@@ -10046,7 +10099,7 @@ function galleryRecoveryLink(trustedBaseUrl, album, tenantSlug, email) {
 function clientPortalGroups(db, tenants, email, albumId) {
   const tenantAlbums = Object.fromEntries(tenants.map(tenant => [tenant.slug, dbGet(db, `t_${tenant.slug}_wv_albums`, [])]));
   const timezones = Object.fromEntries([["", galleryTimezone(db, null)], ...tenants.map(tenant => [tenant.slug, galleryTimezone(db, tenant.slug)])]);
-  return selectClientPortalAlbumGroups({
+  const groups = selectClientPortalAlbumGroups({
     email, mainAlbums: dbGet(db, DB_KEYS.ALBUMS, []), tenantAlbums,
     bookings: dbGet(db, DB_KEYS.BOOKINGS, []), activeTenantSlugs: tenants.map(tenant => tenant.slug), timezones,
   }).map(group => ({ ...group, albums: group.albums.filter(album => {
@@ -10054,6 +10107,13 @@ function clientPortalGroups(db, tenants, email, albumId) {
     const resolved = findAlbumBySlugOrId(db, album.slug || album.id);
     return !!resolved && resolved.tenantSlug === group.tenantSlug && resolved.album.id === album.id;
   }) })).filter(group => group.albums.length);
+  if (!albumId) for (const booking of dbGet(db, DB_KEYS.BOOKINGS, [])) {
+    if (booking.archived || booking.status === "cancelled" || String(booking.clientEmail || "").trim().toLowerCase() !== email.trim().toLowerCase() || !booking.modifyToken || booking.modifyToken.length < 16 || (booking.tenantSlug && !tenants.some(tenant => tenant.slug === booking.tenantSlug))) continue;
+    let group = groups.find(item => (item.tenantSlug || null) === (booking.tenantSlug || null));
+    if (!group) { group = { tenantSlug: booking.tenantSlug || null, albums: [] }; groups.push(group); }
+    (group.bookings ||= []).push(booking);
+  }
+  return groups;
 }
 
 function recordClientPortalDelivery(email, group, errorCode) {
@@ -10076,7 +10136,7 @@ async function sendClientPortalAlbumGroups({ email, groups, db, tenants, trusted
   let sent = 0;
   for (const group of groups) {
     const tenant = group.tenantSlug ? tenantBySlug.get(group.tenantSlug) : null;
-    if (!group.albums.length || (group.tenantSlug && !tenant)) continue;
+    if ((!group.albums.length && !group.bookings?.length) || (group.tenantSlug && !tenant)) continue;
     let errorCode = "DELIVERY_FAILED";
     try {
       const tenantSettings = group.tenantSlug ? dbGet(db, `t_${group.tenantSlug}_wv_tenant_settings`, {}) : null;
@@ -10085,6 +10145,7 @@ async function sendClientPortalAlbumGroups({ email, groups, db, tenants, trusted
       if (!transport || !from) { errorCode = "EMAIL_NOT_CONFIGURED"; throw new Error(errorCode); }
       const senderName = String(tenant?.displayName || profile?.businessName || profile?.name || "Your photographer").replace(/[\r\n]+/g, " ").slice(0, 120);
       const message = buildClientPortalEmail({
+        bookings: (group.bookings || []).map(booking => ({ title: `${booking.type || "Session"} — ${booking.date}`, conventionDetails: booking.conventionDetails, url: `${trustedBaseUrl.replace(/\/$/, "")}/booking/modify/${encodeURIComponent(booking.modifyToken)}` })),
         albums: group.albums.map(album => ({ title: album.title || "Photo gallery", url: album.purchaseRecovery
           ? galleryRecoveryLink(trustedBaseUrl, album, group.tenantSlug, email) : clientPortalGalleryLink(trustedBaseUrl, album) })),
         brandName: tenantSettings?.businessName || tenantSettings?.brandName || senderName,
@@ -10114,7 +10175,7 @@ app.post("/api/admin/client-portal/failures/:id/retry", superLimiter, requireAut
     const tenants = readTenants().filter(tenant => tenantIsLicensed(tenant));
     // Recheck ownership, purchases, expiry and tenant licensing. Never reuse old capability links.
     const groups = clientPortalGroups(db, tenants, failure.email).filter(group => (group.tenantSlug || null) === failure.tenantSlug)
-      .map(group => ({ ...group, albums: group.albums.filter(album => failure.albumIds.includes(album.id)) })).filter(group => group.albums.length);
+      .map(group => ({ ...group, albums: group.albums.filter(album => failure.albumIds.includes(album.id)) })).filter(group => group.albums.length || group.bookings?.length);
     if (!groups.length) return res.status(409).json({ error: "No galleries are currently available to this recipient. Check gallery access before retrying." });
     const result = await sendClientPortalAlbumGroups({ email: failure.email, groups, db, tenants, trustedBaseUrl: safeCheckoutReturnUrl(req, null, "/") });
     if (result.failed) return res.status(502).json({ error: "Delivery failed. Check the photographer's email settings, then retry." });
@@ -10856,16 +10917,67 @@ app.delete("/api/tenant/:slug/ical/token", tenantLimiter, requireTenant, (req, r
 // ── Expenses ──────────────────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════════════
 
-app.get("/api/expenses", requireAuth, (req, res) => {
-  const db = readDb();
-  const expenses = db["wv_expenses"] ? (typeof db["wv_expenses"] === "string" ? JSON.parse(db["wv_expenses"]) : db["wv_expenses"]) : [];
-  res.json(expenses);
+function preserveAcceptedEnquiries(db, key, value) {
+  let rows; try { rows = typeof value === "string" ? JSON.parse(value) : value; } catch { return null; }
+  if (!Array.isArray(rows) || rows.some(row => !row || typeof row.id !== "string")) return null;
+  const existing = new Map(dbGet(db, key, []).map(row => [row.id, row]));
+  if (rows.some(row => (row.bookingId || row.status === "accepted") && !existing.has(row.id))) return null;
+  return rows.map(row => { const saved = existing.get(row.id); return saved?.bookingId ? { ...row, status: "accepted", bookingId: saved.bookingId, respondedAt: saved.respondedAt } : { ...row, bookingId: undefined, status: row.status === "accepted" ? saved?.status || "pending" : row.status }; });
+}
+function studioScope(req) { return req.authContext?.type === "tenant" ? req.authContext.slug : String(req.query.tenant || "") || null; }
+function ownsStudioRecord(record, req) { return (record.tenantSlug || null) === studioScope(req); }
+function studioBooking(db, id, req) { return dbGet(db, DB_KEYS.BOOKINGS, []).find(booking => booking.id === id && ownsStudioRecord(booking, req)); }
+
+app.post("/api/enquiries/:id/accept", requireAdminOrScopedTenant, async (req, res) => {
+  const slug = studioScope(req), key = slug ? `t_${slug}_wv_enquiries` : "wv_enquiries";
+  return withCheckoutResourceLock(`enquiry:${slug || "main"}:${req.params.id}`, async () => {
+    const db = readDb(), enquiries = dbGet(db, key, []), index = enquiries.findIndex(item => item.id === req.params.id);
+    if (index < 0) return res.status(404).json({ error: "Enquiry not found" });
+    const enquiry = enquiries[index], bookings = dbGet(db, DB_KEYS.BOOKINGS, []);
+    if (enquiry.bookingId) {
+      const booking = studioBooking(db, enquiry.bookingId, req);
+      return booking ? res.json({ enquiry, booking, replayed: true }) : res.status(409).json({ error: "The linked booking is missing; restore it before retrying" });
+    }
+    if (!["pending", "accepted"].includes(enquiry.status)) return res.status(409).json({ error: "Enquiry is no longer pending" });
+    if (slug) { const licensed = licensedTenantBySlug(slug); const limits = licensed && getLicKeyLimits(licensed.license); if (!limits || limits.maxBookings !== null && bookings.filter(item => item.tenantSlug === slug && bookingCountsTowardTenantLimit(item)).length >= limits.maxBookings) return res.status(403).json({ error: "Studio booking limit reached" }); }
+    const events = dbGet(db, slug ? `t_${slug}_wv_event_types` : DB_KEYS.EVENT_TYPES, []);
+    const event = events.find(item => item.id === enquiry.eventTypeId);
+    const now = new Date().toISOString();
+    const booking = { id: crypto.randomUUID(), tenantSlug: slug || undefined, clientName: enquiry.name, clientEmail: enquiry.email, phone: enquiry.phone || "", eventTypeId: event?.id || "", type: event?.title || enquiry.eventTypeTitle || "Custom enquiry", date: enquiry.preferredDate || now.slice(0, 10), time: enquiry.preferredStartTime || "09:00", duration: event?.durations?.[0] || 60, status: "pending", paymentStatus: "unpaid", paymentAmount: Number(event?.price) || 0, notes: enquiry.message || "", answers: {}, answerLabels: {}, createdAt: now, modifyToken: `mod-${crypto.randomBytes(32).toString("base64url")}` };
+    if (bookingConflicts(booking, bookings, events, { tenantSlug: slug })) return res.status(409).json({ error: "This time conflicts with an existing booking. Update the enquiry's requested time first." });
+    booking.conventionDetails = snapshotConventionDetails(event, booking.date);
+    bookings.push(booking); enquiries[index] = { ...enquiry, status: "accepted", bookingId: booking.id, respondedAt: now };
+    db[DB_KEYS.BOOKINGS] = bookings; db[key] = enquiries; writeDb(db, { durable: true });
+    if (slug) void sendTenantBookingReceipt(booking, "enquiry-accepted").catch(error => console.error("Enquiry receipt failed:", error.message));
+    return res.status(201).json({ enquiry: enquiries[index], booking });
+  }).catch(error => { console.error("Enquiry acceptance failed:", error.message); if (!res.headersSent) res.status(500).json({ error: "Could not commit booking and enquiry; retry safely" }); });
 });
 
-app.post("/api/expenses", requireAuth, (req, res) => {
+function validBusinessLinks(value, db, req) {
+  if (value.bookingId && !studioBooking(db, value.bookingId, req)) return false;
+  if (value.albumId && !dbGet(db, studioScope(req) ? `t_${studioScope(req)}_wv_albums` : DB_KEYS.ALBUMS, []).some(album => album.id === value.albumId)) return false;
+  return true;
+}
+function validExpense(value, db, req) {
+  return typeof value.description === "string" && value.description.trim().length > 0 && value.description.length <= 2000 && Number.isFinite(Number(value.amount)) && Number(value.amount) >= 0 && /^\d{4}-\d{2}-\d{2}$/.test(value.date || "") && Number.isFinite(Date.parse(value.date)) && validBusinessLinks(value, db, req);
+}
+function validQuote(value, db, req) {
+  return Array.isArray(value.items) && value.items.length > 0 && value.items.length <= 500 && value.items.every(item => item && typeof item.description === "string" && Number.isFinite(item.quantity) && item.quantity > 0 && Number.isFinite(item.unitPrice) && item.unitPrice >= 0)
+    && value.to && typeof value.to.name === "string" && value.to.name.trim().length > 0
+    && (!value.currency || /^[A-Z]{3}$/i.test(value.currency)) && validBusinessLinks(value, db, req);
+}
+
+app.get("/api/expenses", requireAdminOrScopedTenant, (req, res) => {
+  const db = readDb();
+  const expenses = db["wv_expenses"] ? (typeof db["wv_expenses"] === "string" ? JSON.parse(db["wv_expenses"]) : db["wv_expenses"]) : [];
+  res.json(expenses.filter(record => ownsStudioRecord(record, req)));
+});
+
+app.post("/api/expenses", requireAdminOrScopedTenant, (req, res) => {
   const db = readDb();
   const expenses = db["wv_expenses"] ? (typeof db["wv_expenses"] === "string" ? JSON.parse(db["wv_expenses"]) : db["wv_expenses"]) : [];
   const expense = {
+    tenantSlug: studioScope(req),
     id: crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString("hex"),
     description: req.body.description || "",
     amount: Number(req.body.amount) || 0,
@@ -10877,29 +10989,31 @@ app.post("/api/expenses", requireAuth, (req, res) => {
     notes: req.body.notes || "",
     createdAt: new Date().toISOString(),
   };
+  if (!validExpense(expense, db, req)) return res.status(400).json({ error: "Provide a valid description, amount, date and studio booking" });
   expenses.push(expense);
   db["wv_expenses"] = expenses;
-  writeDb(db);
+  writeDb(db, { durable: true });
   res.json(expense);
 });
 
-app.put("/api/expenses/:id", requireAuth, (req, res) => {
+app.put("/api/expenses/:id", requireAdminOrScopedTenant, (req, res) => {
   const db = readDb();
   const expenses = db["wv_expenses"] ? (typeof db["wv_expenses"] === "string" ? JSON.parse(db["wv_expenses"]) : db["wv_expenses"]) : [];
-  const idx = expenses.findIndex(e => e.id === req.params.id);
+  const idx = expenses.findIndex(e => e.id === req.params.id && ownsStudioRecord(e, req));
   if (idx === -1) return res.status(404).json({ error: "Not found" });
-  expenses[idx] = { ...expenses[idx], ...req.body, id: expenses[idx].id };
+  if (!validExpense({ ...expenses[idx], ...req.body }, db, req)) return res.status(400).json({ error: "Invalid expense" });
+  expenses[idx] = { ...expenses[idx], ...req.body, id: expenses[idx].id, tenantSlug: expenses[idx].tenantSlug };
   db["wv_expenses"] = expenses;
-  writeDb(db);
+  writeDb(db, { durable: true });
   res.json(expenses[idx]);
 });
 
-app.delete("/api/expenses/:id", requireAuth, (req, res) => {
+app.delete("/api/expenses/:id", requireAdminOrScopedTenant, (req, res) => {
   const db = readDb();
   const expenses = db["wv_expenses"] ? (typeof db["wv_expenses"] === "string" ? JSON.parse(db["wv_expenses"]) : db["wv_expenses"]) : [];
-  const filtered = expenses.filter(e => e.id !== req.params.id);
+  const filtered = expenses.filter(e => e.id !== req.params.id || !ownsStudioRecord(e, req));
   db["wv_expenses"] = filtered;
-  writeDb(db);
+  writeDb(db, { durable: true });
   res.json({ ok: true });
 });
 
@@ -10914,17 +11028,19 @@ function nextQuoteNumber(db) {
   return `QUO-${String(next).padStart(4, "0")}`;
 }
 
-app.get("/api/quotes", requireAuth, (req, res) => {
+app.get("/api/quotes", requireAdminOrScopedTenant, (req, res) => {
   const db = readDb();
   const quotes = db["wv_quotes"] ? (typeof db["wv_quotes"] === "string" ? JSON.parse(db["wv_quotes"]) : db["wv_quotes"]) : [];
-  res.json(quotes);
+  res.json(quotes.filter(record => ownsStudioRecord(record, req)));
 });
 
-app.post("/api/quotes", requireAuth, (req, res) => {
+app.post("/api/quotes", requireAdminOrScopedTenant, (req, res) => {
   const db = readDb();
   const quotes = db["wv_quotes"] ? (typeof db["wv_quotes"] === "string" ? JSON.parse(db["wv_quotes"]) : db["wv_quotes"]) : [];
-  const settings = db["wv_settings"] ? (typeof db["wv_settings"] === "string" ? JSON.parse(db["wv_settings"]) : db["wv_settings"]) : {};
+  const settings = dbGet(db, studioScope(req) ? `t_${studioScope(req)}_wv_tenant_settings` : "wv_settings", {});
   const quote = {
+    tenantSlug: studioScope(req),
+    currency: String(req.body.currency || settings.stripeCurrency || "AUD").toUpperCase(),
     id: crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString("hex"),
     number: nextQuoteNumber(db),
     status: "draft",
@@ -10939,33 +11055,43 @@ app.post("/api/quotes", requireAuth, (req, res) => {
     tax: req.body.tax ?? null,
     discount: req.body.discount ?? null,
   };
+  if (!validQuote(quote, db, req)) return res.status(400).json({ error: "Provide a client and valid quote line items" });
   quotes.push(quote);
   db["wv_quotes"] = quotes;
-  writeDb(db);
+  writeDb(db, { durable: true });
   res.json(quote);
 });
 
-app.put("/api/quotes/:id", requireAuth, (req, res) => {
+app.put("/api/quotes/:id", requireAdminOrScopedTenant, (req, res) => {
   const db = readDb();
   const quotes = db["wv_quotes"] ? (typeof db["wv_quotes"] === "string" ? JSON.parse(db["wv_quotes"]) : db["wv_quotes"]) : [];
-  const idx = quotes.findIndex(q => q.id === req.params.id);
+  const idx = quotes.findIndex(q => q.id === req.params.id && ownsStudioRecord(q, req));
   if (idx === -1) return res.status(404).json({ error: "Not found" });
-  quotes[idx] = { ...quotes[idx], ...req.body, id: quotes[idx].id, number: quotes[idx].number, shareToken: quotes[idx].shareToken };
+  if (quotes[idx].convertedInvoiceId || !["draft", "sent"].includes(quotes[idx].status)) return res.status(409).json({ error: "An actioned quote cannot be edited" });
+  if (req.body.status && !["draft", "sent"].includes(req.body.status) || !validQuote({ ...quotes[idx], ...req.body }, db, req)) return res.status(400).json({ error: "Invalid quote" });
+  quotes[idx] = { ...quotes[idx], ...req.body, id: quotes[idx].id, number: quotes[idx].number, shareToken: quotes[idx].shareToken, tenantSlug: quotes[idx].tenantSlug, convertedInvoiceId: quotes[idx].convertedInvoiceId };
   db["wv_quotes"] = quotes;
-  writeDb(db);
+  writeDb(db, { durable: true });
   res.json(quotes[idx]);
 });
 
 // Convert accepted quote to invoice
-app.post("/api/quotes/:id/convert", requireAuth, (req, res) => {
+app.post("/api/quotes/:id/convert", requireAdminOrScopedTenant, (req, res) => {
   const db = readDb();
   const quotes = db["wv_quotes"] ? (typeof db["wv_quotes"] === "string" ? JSON.parse(db["wv_quotes"]) : db["wv_quotes"]) : [];
-  const idx = quotes.findIndex(q => q.id === req.params.id);
+  const idx = quotes.findIndex(q => q.id === req.params.id && ownsStudioRecord(q, req));
   if (idx === -1) return res.status(404).json({ error: "Not found" });
   const quote = quotes[idx];
   // Build invoice from quote
-  const invoices = db["wv_invoices"] ? (typeof db["wv_invoices"] === "string" ? JSON.parse(db["wv_invoices"]) : db["wv_invoices"]) : [];
+  const invoiceKey = studioScope(req) ? `t_${studioScope(req)}_wv_invoices` : "wv_invoices";
+  const invoices = dbGet(db, invoiceKey, []);
+  if (quote.convertedInvoiceId) {
+    const invoice = invoices.find(item => item.id === quote.convertedInvoiceId);
+    return invoice ? res.json({ invoice, quote }) : res.status(409).json({ error: "The converted invoice is missing; restore it before retrying" });
+  }
+  if (!["sent", "accepted"].includes(quote.status)) return res.status(409).json({ error: "Only a sent or accepted quote can be converted" });
   const invoice = {
+    tenantSlug: studioScope(req),
     id: crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString("hex"),
     number: allocateInvoiceNumber(invoices),
     status: "draft",
@@ -10980,21 +11106,22 @@ app.post("/api/quotes/:id/convert", requireAuth, (req, res) => {
     bookingId: quote.bookingId || null,
     tax: quote.tax,
     discount: quote.discount,
+    currency: quote.currency || "AUD",
   };
   invoices.push(invoice);
   quotes[idx].status = "converted";
   quotes[idx].convertedInvoiceId = invoice.id;
-  db["wv_invoices"] = invoices;
+  db[invoiceKey] = invoices;
   db["wv_quotes"] = quotes;
-  writeDb(db);
+  writeDb(db, { durable: true });
   res.json({ invoice, quote: quotes[idx] });
 });
 
-app.delete("/api/quotes/:id", requireAuth, (req, res) => {
+app.delete("/api/quotes/:id", requireAdminOrScopedTenant, (req, res) => {
   const db = readDb();
   const quotes = db["wv_quotes"] ? (typeof db["wv_quotes"] === "string" ? JSON.parse(db["wv_quotes"]) : db["wv_quotes"]) : [];
-  db["wv_quotes"] = quotes.filter(q => q.id !== req.params.id);
-  writeDb(db);
+  db["wv_quotes"] = quotes.filter(q => q.id !== req.params.id || !ownsStudioRecord(q, req));
+  writeDb(db, { durable: true });
   res.json({ ok: true });
 });
 
@@ -11030,7 +11157,7 @@ app.get("/api/quotes/share/:token", quoteShareLimiter, (req, res) => {
   const db = readDb();
   const quotes = db["wv_quotes"] ? (typeof db["wv_quotes"] === "string" ? JSON.parse(db["wv_quotes"]) : db["wv_quotes"]) : [];
   const quote = quotes.find(q => timingSafeTextEqual(q.shareToken, req.params.token));
-  if (!quote) return res.status(404).json({ error: "Not found" });
+  if (!quote || quote.tenantSlug && !licensedTenantBySlug(quote.tenantSlug)) return res.status(404).json({ error: "Not found" });
   if (!["sent", "accepted", "declined"].includes(quote.status)) return res.status(404).json({ error: "Not found" });
   if (albumAccessWindow({ expiresAt: quote.expiryDate }).galleryExpired) return res.status(410).json({ error: "This quote has expired" });
   res.setHeader("Cache-Control", "private, no-store");
@@ -11043,6 +11170,7 @@ app.post("/api/quotes/share/:token/respond", quoteShareLimiter, (req, res) => {
   const quotes = db["wv_quotes"] ? (typeof db["wv_quotes"] === "string" ? JSON.parse(db["wv_quotes"]) : db["wv_quotes"]) : [];
   const idx = quotes.findIndex(q => timingSafeTextEqual(q.shareToken, req.params.token));
   if (idx === -1) return res.status(404).json({ error: "Not found" });
+  if (quotes[idx].tenantSlug && !licensedTenantBySlug(quotes[idx].tenantSlug)) return res.status(404).json({ error: "Not found" });
   if (quotes[idx].status !== "sent") return res.status(409).json({ error: "This quote has already been actioned or is unavailable" });
   if (albumAccessWindow({ expiresAt: quotes[idx].expiryDate }).galleryExpired) return res.status(410).json({ error: "This quote has expired" });
   const { action } = req.body; // "accept" or "decline"
@@ -11413,8 +11541,10 @@ app.delete("/api/albums/:albumId/photos/:photoId/comments/:commentId", requireAu
 const contractUpload = multer({ dest: UPLOADS_DIR, limits: { fileSize: 20 * 1024 * 1024 } });
 const contractPublicLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 60, standardHeaders: true, legacyHeaders: false });
 
-app.post("/api/contracts", requireAuth, contractUpload.single("pdf"), (req, res) => {
+app.post("/api/contracts", requireAdminOrScopedTenant, contractUpload.single("pdf"), (req, res) => {
   const db = readDb();
+  if (!studioBooking(db, req.body.bookingId, req)) { if (req.file) try { fs.unlinkSync(req.file.path); } catch {} return res.status(404).json({ error: "Booking not found in this studio" }); }
+  if (!req.file) return res.status(400).json({ error: "A PDF contract is required" });
   const contracts = db["wv_contracts"] ? (typeof db["wv_contracts"] === "string" ? JSON.parse(db["wv_contracts"]) : db["wv_contracts"]) : [];
   let pdfPath = null;
   if (req.file) {
@@ -11428,9 +11558,10 @@ app.post("/api/contracts", requireAuth, contractUpload.single("pdf"), (req, res)
     pdfPath = `contract_${req.file.filename}.pdf`;
   }
   const contract = {
+    tenantSlug: studioScope(req),
     id: crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString("hex"),
     bookingId: req.body.bookingId || null,
-    title: req.body.title || "Photography Services Agreement",
+    title: String(req.body.title || "Photography Services Agreement").slice(0, 300),
     pdfPath,
     token: crypto.randomBytes(24).toString("hex"),
     status: "pending",
@@ -11439,15 +11570,15 @@ app.post("/api/contracts", requireAuth, contractUpload.single("pdf"), (req, res)
   };
   contracts.push(contract);
   db["wv_contracts"] = contracts;
-  writeDb(db);
+  writeDb(db, { durable: true });
   res.json(contract);
 });
 
-app.get("/api/contracts", requireAuth, (req, res) => {
+app.get("/api/contracts", requireAdminOrScopedTenant, (req, res) => {
   const db = readDb();
   const contracts = db["wv_contracts"] ? (typeof db["wv_contracts"] === "string" ? JSON.parse(db["wv_contracts"]) : db["wv_contracts"]) : [];
   const { bookingId } = req.query;
-  res.json(bookingId ? contracts.filter(c => c.bookingId === bookingId) : contracts);
+  res.json(contracts.filter(c => ownsStudioRecord(c, req) && (!bookingId || c.bookingId === bookingId)));
 });
 
 // Public contract view + sign (via token)
@@ -11468,7 +11599,7 @@ app.get("/api/contracts/sign/:token", contractPublicLimiter, (req, res) => {
   const db = readDb();
   const contracts = db["wv_contracts"] ? (typeof db["wv_contracts"] === "string" ? JSON.parse(db["wv_contracts"]) : db["wv_contracts"]) : [];
   const contract = contracts.find(c => timingSafeTextEqual(c.token, req.params.token));
-  if (!contract) return res.status(404).json({ error: "Contract not found" });
+  if (!contract || (contract.tenantSlug && !licensedTenantBySlug(contract.tenantSlug))) return res.status(404).json({ error: "Contract not found" });
   // Return contract info without PDF binary (client fetches PDF separately)
   res.json({
     id: contract.id,
@@ -11484,6 +11615,7 @@ app.post("/api/contracts/sign/:token", rateLimit({ windowMs: 15 * 60 * 1000, max
   const contracts = db["wv_contracts"] ? (typeof db["wv_contracts"] === "string" ? JSON.parse(db["wv_contracts"]) : db["wv_contracts"]) : [];
   const idx = contracts.findIndex(c => timingSafeTextEqual(c.token, req.params.token));
   if (idx === -1) return res.status(404).json({ error: "Contract not found" });
+  if (contracts[idx].tenantSlug && !licensedTenantBySlug(contracts[idx].tenantSlug)) return res.status(404).json({ error: "Contract not found" });
   if (contracts[idx].status === "signed") return res.status(409).json({ error: "Already signed" });
   const { signedName } = req.body;
   if (!signedName || !signedName.trim()) return res.status(400).json({ error: "signedName is required" });
@@ -11494,26 +11626,27 @@ app.post("/api/contracts/sign/:token", rateLimit({ windowMs: 15 * 60 * 1000, max
   // Also mark booking contractId
   if (contracts[idx].bookingId) {
     const bookings = db["wv_bookings"] ? (typeof db["wv_bookings"] === "string" ? JSON.parse(db["wv_bookings"]) : db["wv_bookings"]) : [];
-    const bIdx = bookings.findIndex(b => b.id === contracts[idx].bookingId);
+    const bIdx = bookings.findIndex(b => b.id === contracts[idx].bookingId && (b.tenantSlug || null) === (contracts[idx].tenantSlug || null));
     if (bIdx !== -1) {
       bookings[bIdx].contractId = contracts[idx].id;
       db["wv_bookings"] = bookings;
     }
   }
   db["wv_contracts"] = contracts;
-  writeDb(db);
+  writeDb(db, { durable: true });
   res.json({ ok: true, signedAt: contracts[idx].signedAt });
 });
 
-app.delete("/api/contracts/:id", requireAuth, (req, res) => {
+app.delete("/api/contracts/:id", requireAdminOrScopedTenant, (req, res) => {
   const db = readDb();
   const contracts = db["wv_contracts"] ? (typeof db["wv_contracts"] === "string" ? JSON.parse(db["wv_contracts"]) : db["wv_contracts"]) : [];
-  const contract = contracts.find(c => c.id === req.params.id);
+  const contract = contracts.find(c => c.id === req.params.id && ownsStudioRecord(c, req));
+  if (contract?.status === "signed") return res.status(409).json({ error: "Signed contracts must be retained" });
   if (contract?.pdfPath) {
     try { fs.unlinkSync(path.join(UPLOADS_DIR, contract.pdfPath)); } catch {}
   }
-  db["wv_contracts"] = contracts.filter(c => c.id !== req.params.id);
-  writeDb(db);
+  db["wv_contracts"] = contracts.filter(c => c.id !== req.params.id || !ownsStudioRecord(c, req));
+  writeDb(db, { durable: true });
   res.json({ ok: true });
 });
 
@@ -11521,74 +11654,51 @@ app.delete("/api/contracts/:id", requireAuth, (req, res) => {
 // ── Payment Instalments ───────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════════════
 
-app.get("/api/bookings/:id/instalments", requireAuth, (req, res) => {
-  const db = readDb();
-  const instalments = db["wv_instalments"] ? (typeof db["wv_instalments"] === "string" ? JSON.parse(db["wv_instalments"]) : db["wv_instalments"]) : [];
-  res.json(instalments.filter(i => i.bookingId === req.params.id));
+
+app.put("/api/bookings/:id/convention", requireAdminOrScopedTenant, (req, res) => withCheckoutResourceLock(bookingCheckoutResourceLockKey(studioScope(req) ? `tenant:${studioScope(req)}` : "main", req.params.id), () => {
+  const db = readDb(), booking = studioBooking(db, req.params.id, req);
+  if (!booking) return res.status(404).json({ error: "Booking not found" });
+  if (!validConventionDetails(req.body)) return res.status(400).json({ error: "Provide valid meeting details, map URL and delivery date" });
+  booking.conventionDetails = { meetingPoint: req.body.meetingPoint || "", mapUrl: req.body.mapUrl || "", arrivalInstructions: req.body.arrivalInstructions || "", ...(req.body.deliveryDate ? { deliveryDate: req.body.deliveryDate } : {}) };
+  db[DB_KEYS.BOOKINGS] = dbGet(db, DB_KEYS.BOOKINGS, []).map(item => item.id === booking.id && ownsStudioRecord(item, req) ? booking : item);
+  writeDb(db, { durable: true }); res.json({ ok: true, conventionDetails: booking.conventionDetails });
+}).catch(() => { if (!res.headersSent) res.status(500).json({ error: "Booking details were not saved; retry" }); }));
+
+async function sendStudioBookingMessage(req, booking, subject, text) {
+  if (!booking.clientEmail || booking.emailsDisabled) throw new Error("Client email is missing or disabled");
+  const db = readDb(), slug = booking.tenantSlug;
+  const settings = slug ? dbGet(db, `t_${slug}_wv_tenant_settings`, {}) : null;
+  const transport = slug ? buildTenantTransporter(settings) : getTransporter();
+  if (!transport) throw new Error("Configure this studio's email connection first");
+  const message = prepareCustomEmail({ subject, text, brandName: settings?.businessName || settings?.brandName || dbGet(db, DB_KEYS.PROFILE, {}).businessName || "Your photographer" });
+  await transport.sendMail({ from: slug ? getTenantFromAddress(settings) : getFromAddress(), to: booking.clientEmail, ...message, subject });
+}
+app.post("/api/contracts/:id/send", requireAdminOrScopedTenant, async (req, res) => {
+  const db = readDb(), contract = dbGet(db, "wv_contracts", []).find(item => item.id === req.params.id && ownsStudioRecord(item, req));
+  const booking = contract && studioBooking(db, contract.bookingId, req);
+  if (!booking || contract.status !== "pending") return res.status(404).json({ error: "Pending contract not found" });
+  try {
+    const url = safeCheckoutReturnUrl(req, null, `/contract/${encodeURIComponent(contract.token)}`);
+    await sendStudioBookingMessage(req, booking, `Contract — ${booking.type || "Photography"}`, `Hi ${booking.clientName},\nPlease review and sign your agreement: ${url}`);
+    const latest = readDb(), rows = dbGet(latest, "wv_contracts", []);
+    const saved = rows.find(item => item.id === contract.id && ownsStudioRecord(item, req));
+    if (saved) saved.sentAt = new Date().toISOString();
+    latest.wv_contracts = rows; writeDb(latest, { durable: true }); res.json({ ok: true });
+  } catch (error) { res.status(502).json({ error: error.message }); }
+});
+app.post("/api/bookings/:id/instalments/send", requireAdminOrScopedTenant, async (req, res) => {
+  const db = readDb(), booking = studioBooking(db, req.params.id, req);
+  if (!booking) return res.status(404).json({ error: "Booking not found" });
+  const rows = dbGet(db, "wv_instalments", []).filter(item => item.bookingId === booking.id && ownsStudioRecord(item, req) && item.status !== "waived");
+  if (!rows.length) return res.status(409).json({ error: "Create a payment schedule first" });
+  try {
+    const url = safeCheckoutReturnUrl(req, null, `/booking/modify/${encodeURIComponent(booking.modifyToken)}`);
+    await sendStudioBookingMessage(req, booking, `Payment schedule — ${booking.type || "Photography"}`, `Hi ${booking.clientName},\n${rows.map(row => `${row.dueDate}: ${row.currency.toUpperCase()} ${row.amount.toFixed(2)} — ${row.status}`).join("\n")}\nView your schedule and pay: ${url}`);
+    res.json({ ok: true });
+  } catch (error) { res.status(502).json({ error: error.message }); }
 });
 
-app.post("/api/bookings/:id/instalments", requireAuth, (req, res) => {
-  const db = readDb();
-  const instalments = db["wv_instalments"] ? (typeof db["wv_instalments"] === "string" ? JSON.parse(db["wv_instalments"]) : db["wv_instalments"]) : [];
-  const instalment = {
-    id: crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString("hex"),
-    bookingId: req.params.id,
-    invoiceId: req.body.invoiceId || null,
-    dueDate: req.body.dueDate || new Date().toISOString().slice(0, 10),
-    amount: Number(req.body.amount) || 0,
-    status: "pending",
-    note: req.body.note || null,
-  };
-  instalments.push(instalment);
-  db["wv_instalments"] = instalments;
-  writeDb(db);
-  res.json(instalment);
-});
-
-app.put("/api/instalments/:id", requireAuth, (req, res) => {
-  const db = readDb();
-  const instalments = dbGet(db, "wv_instalments", []);
-  const idx = instalments.findIndex(i => i.id === req.params.id);
-  if (idx === -1) return res.status(404).json({ error: "Not found" });
-
-  // Explicit field allowlist — prevents req.body from overwriting id, bookingId, or other protected fields
-  const VALID_STATUSES = ["pending", "paid", "overdue", "waived"];
-  const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-  const update = {};
-
-  if (req.body.amount !== undefined) {
-    const amt = Number(req.body.amount);
-    if (!isFinite(amt) || amt < 0) return res.status(400).json({ error: "Invalid amount" });
-    update.amount = amt;
-  }
-  if (req.body.dueDate !== undefined) {
-    if (!DATE_RE.test(req.body.dueDate) || isNaN(new Date(req.body.dueDate).getTime())) {
-      return res.status(400).json({ error: "Invalid dueDate — expected YYYY-MM-DD" });
-    }
-    update.dueDate = req.body.dueDate;
-  }
-  if (req.body.status !== undefined) {
-    if (!VALID_STATUSES.includes(req.body.status)) {
-      return res.status(400).json({ error: `Invalid status — must be one of: ${VALID_STATUSES.join(", ")}` });
-    }
-    update.status = req.body.status;
-  }
-  if (req.body.note !== undefined) {
-    const note = String(req.body.note || "").slice(0, 1000);
-    update.note = note || null;
-  }
-  if (req.body.invoiceId !== undefined) {
-    update.invoiceId = req.body.invoiceId ? String(req.body.invoiceId) : null;
-  }
-
-  instalments[idx] = { ...instalments[idx], ...update, id: instalments[idx].id };
-  if (update.status === "paid" && !instalments[idx].paidAt) {
-    instalments[idx].paidAt = new Date().toISOString();
-  }
-  db["wv_instalments"] = instalments;
-  writeDb(db);
-  res.json(instalments[idx]);
-});
+require("./instalments").registerInstalments(app, { readDb, writeDb, requireAdminOrScopedTenant, studioScope, withCheckoutResourceLock, bookingCheckoutResourceLockKey, licensedTenantBySlug, safeCheckoutReturnUrl });
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ── Auto-Overdue Invoice Detection (cron every 6 hours) ───────────────────────
@@ -11783,7 +11893,7 @@ app.post("/api/booking/cancel-notify", requireAuth, async (req, res) => {
 
   const transporter = getTransporter();
   if (!transporter) return res.status(503).json({ ok: false, notified: 0, error: "SMTP not configured" });
-  const bookingUrl = safeCheckoutReturnUrl(req, null, "/booking");
+  const bookingUrl = safeCheckoutReturnUrl(req, null, "/");
   const profile = dbGet(db, DB_KEYS.PROFILE, {});
   const brandName = profile.businessName || profile.brandName || profile.name || "PhotoFlow";
   let notified = 0;

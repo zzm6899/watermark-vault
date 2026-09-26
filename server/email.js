@@ -1,3 +1,4 @@
+const { conventionRows } = require("./convention-details");
 const nodemailer = require("nodemailer");
 const { randomUUID } = require("crypto");
 const rateLimit = require("express-rate-limit");
@@ -254,11 +255,11 @@ function prepareCustomEmail({ subject, html, text, brandName = DEFAULT_EMAIL_BRA
 }
 
 // ── Email HTML builder ────────────────────────────────────────
-function buildBookingEmailHtml({ clientName, eventTitle, date, time, duration, location,
+function buildBookingEmailHtml({ clientName, eventTitle, date, time, duration, location, conventionDetails,
   price, depositAmount, paymentMethod, remainingAmount, isFree, modifyUrl, bookingId, lineItems, sessionPrice,
   paymentReference, calendarUrl, trackingPixelUrl, unsubscribeUrl, status, paymentKind, brandName }) {
   const reference = bookingEmailReference(bookingId, paymentReference);
-  const rows = bookingSummaryRows({ eventTitle, date, time, duration, location, price, depositAmount, paymentMethod, remainingAmount, isFree, paymentKind, lineItems, sessionPrice });
+  const rows = bookingSummaryRows({ eventTitle, date, time, duration, location, conventionDetails, price, depositAmount, paymentMethod, remainingAmount, isFree, paymentKind, lineItems, sessionPrice });
   const isConfirmed = status === "confirmed";
   const bankNote = paymentMethod === "bank"
     ? buildCallout("Bank transfer pending", `Use booking reference ${reference} as the payment description. Your booking will be confirmed once payment is received.`, "warning")
@@ -284,7 +285,7 @@ function buildBookingEmailHtml({ clientName, eventTitle, date, time, duration, l
   });
 }
 
-function bookingSummaryRows({ eventTitle, date, time, duration, location, price, depositAmount, paymentMethod, remainingAmount, isFree, paymentKind, lineItems, sessionPrice }) {
+function bookingSummaryRows({ eventTitle, date, time, duration, location, conventionDetails, price, depositAmount, paymentMethod, remainingAmount, isFree, paymentKind, lineItems, sessionPrice }) {
   const money = value => `$${Number(value) || 0}`;
   const rows = [
     { label: "Session", value: eventTitle || "Booking", emphasis: true },
@@ -292,6 +293,7 @@ function bookingSummaryRows({ eventTitle, date, time, duration, location, price,
     { label: "Time", value: formatTime12(time), emphasis: true },
     { label: "Duration", value: formatDuration(duration) },
     location ? { label: "Location", value: location } : null,
+    ...conventionRows(conventionDetails),
   ];
   if (Array.isArray(lineItems) && lineItems.length) {
     if (Number.isFinite(sessionPrice)) rows.push({ label: "Session price", value: money(sessionPrice) });
@@ -356,7 +358,7 @@ function appendEmailLog(store, bookingId, logEntry) {
 
 // ── Main send function ─────────────────────────────────────────
 async function sendBookingConfirmationEmail({
-  to, clientName, eventTitle, date, time, duration, location = "",
+  to, clientName, eventTitle, date, time, duration, location = "", conventionDetails,
   price = 0, depositAmount = 0, paymentMethod = "none", lineItems = [], sessionPrice,
   paymentKind = null,
   modifyToken, bookingId, paymentReference = "", appBaseUrl, store, status = "pending", paymentStatus = "unpaid",
@@ -387,7 +389,7 @@ async function sendBookingConfirmationEmail({
     : null;
 
   const messageParams = {
-    clientName, eventTitle, date, time, duration, location,
+    clientName, eventTitle, date, time, duration, location, conventionDetails,
     price, depositAmount, paymentMethod, remainingAmount, lineItems, sessionPrice,
     isFree, modifyUrl, bookingId, paymentReference, calendarUrl, trackingPixelUrl, unsubscribeUrl, status, paymentKind, brandName,
   };
@@ -483,6 +485,7 @@ function registerRoutes(app, store, options = {}) {
       date: booking.date,
       time: booking.time,
       duration: booking.duration,
+      conventionDetails: booking.conventionDetails,
       location: booking.location || "",
       price: booking.paymentAmount || 0,
       depositAmount: booking.depositAmount || 0,
@@ -612,6 +615,7 @@ function registerRoutes(app, store, options = {}) {
     const trackingId = randomUUID();
     const trackingPixelUrl = appBaseUrl ? `${appBaseUrl}/api/email/open/${trackingId}` : null;
     const reminderParams = {
+      conventionDetails: booking.conventionDetails,
       clientName: booking.clientName,
       eventTitle: booking.type || "Booking",
       date: booking.date,
@@ -681,7 +685,7 @@ function registerRoutes(app, store, options = {}) {
     const appBaseUrl = req.body.appBaseUrl || `${req.protocol}://${req.get("host")}`;
     const modifyUrl = modifyToken && appBaseUrl ? `${appBaseUrl}/booking/modify/${modifyToken}` : null;
     const acceptedBooking = (store?.get("wv_bookings") || []).find(booking => booking.id === bookingId);
-    const params = { clientName, eventTitle, preferredDate, preferredStartTime, preferredEndTime, bookingId, paymentReference: acceptedBooking?.paymentReference, modifyUrl, brandName: storeBrandName(store) };
+    const params = { clientName, eventTitle, preferredDate, preferredStartTime, preferredEndTime, bookingId, conventionDetails: acceptedBooking?.conventionDetails, paymentReference: acceptedBooking?.paymentReference, modifyUrl, brandName: storeBrandName(store) };
     const html = buildEnquiryAcceptedHtml(params);
     const text = buildEnquiryEmailText("accepted", params);
     try {
@@ -715,7 +719,7 @@ function registerRoutes(app, store, options = {}) {
 }
 
 // ── Reminder Email HTML ───────────────────────────────────
-function buildReminderEmailHtml({ clientName, eventTitle, date, time, duration,
+function buildReminderEmailHtml({ clientName, eventTitle, date, time, duration, conventionDetails,
   isPaymentReminder, paymentStatus, totalPrice, depositPaid, remaining,
   bookingId, paymentReference, modifyUrl, calendarUrl, trackingPixelUrl, brandName }) {
   const reference = bookingEmailReference(bookingId, paymentReference);
@@ -725,6 +729,7 @@ function buildReminderEmailHtml({ clientName, eventTitle, date, time, duration,
     { label: "Date", value: formatDateNice(date) },
     { label: "Time", value: formatTime12(time), emphasis: true },
     { label: "Duration", value: formatDuration(duration) },
+    ...conventionRows(conventionDetails),
     isPaymentReminder ? { label: "Total", value: formatMoney(totalPrice) } : null,
     isPaymentReminder && Number(depositPaid) > 0 ? { label: "Deposit received", value: formatMoney(depositPaid), tone: "success" } : null,
     isPaymentReminder ? { label: "Amount due", value: formatMoney(due), tone: "warning", emphasis: true } : null,
@@ -760,6 +765,7 @@ function buildReminderEmailText(params) {
     { label: "Date", value: formatDateNice(params.date) },
     { label: "Time", value: formatTime12(params.time) },
     { label: "Duration", value: formatDuration(params.duration) },
+    ...conventionRows(params.conventionDetails),
     params.isPaymentReminder ? { label: "Total", value: formatMoney(params.totalPrice) } : null,
     params.isPaymentReminder && Number(params.depositPaid) > 0 ? { label: "Deposit received", value: formatMoney(params.depositPaid) } : null,
     params.isPaymentReminder ? { label: "Amount due", value: formatMoney(due) } : null,
@@ -780,8 +786,8 @@ function buildReminderEmailText(params) {
 
 // ── Enquiry Email HTML builders ───────────────────────────────
 
-function buildEnquiryReceivedHtml({ clientName, eventTitle, preferredDate, preferredStartTime, preferredEndTime, message, brandName }) {
-  const rows = enquirySummaryRows({ eventTitle, preferredDate, preferredStartTime, preferredEndTime });
+function buildEnquiryReceivedHtml({ conventionDetails, clientName, eventTitle, preferredDate, preferredStartTime, preferredEndTime, message, brandName }) {
+  const rows = enquirySummaryRows({ eventTitle, preferredDate, preferredStartTime, preferredEndTime, conventionDetails });
   return buildEmailDocument({
     title: "Enquiry received",
     preheader: "We’ve received your photography enquiry.",
@@ -792,8 +798,8 @@ function buildEnquiryReceivedHtml({ clientName, eventTitle, preferredDate, prefe
   });
 }
 
-function buildEnquiryAcceptedHtml({ clientName, eventTitle, preferredDate, preferredStartTime, preferredEndTime, bookingId, paymentReference, modifyUrl, brandName }) {
-  const rows = enquirySummaryRows({ eventTitle, preferredDate, preferredStartTime, preferredEndTime });
+function buildEnquiryAcceptedHtml({ conventionDetails, clientName, eventTitle, preferredDate, preferredStartTime, preferredEndTime, bookingId, paymentReference, modifyUrl, brandName }) {
+  const rows = enquirySummaryRows({ eventTitle, preferredDate, preferredStartTime, preferredEndTime, conventionDetails });
   return buildEmailDocument({
     title: "Enquiry accepted",
     preheader: "Your enquiry has been accepted.",
@@ -817,9 +823,10 @@ function buildEnquiryDeclinedHtml({ clientName, adminNote, brandName }) {
   });
 }
 
-function enquirySummaryRows({ eventTitle, preferredDate, preferredStartTime, preferredEndTime }) {
+function enquirySummaryRows({ eventTitle, preferredDate, preferredStartTime, preferredEndTime, conventionDetails }) {
   return [
     eventTitle ? { label: "Session", value: eventTitle, emphasis: true } : null,
+    ...conventionRows(conventionDetails),
     preferredDate ? { label: "Preferred date", value: formatDateNice(preferredDate) } : null,
     preferredStartTime || preferredEndTime
       ? { label: "Preferred time", value: [preferredStartTime, preferredEndTime].filter(Boolean).map(formatTime12).join(" – ") }
@@ -1018,11 +1025,13 @@ function buildGalleryDeliveryEmail({ clientName, albumTitle, galleryUrl, accessC
   };
 }
 
-function buildClientPortalEmail({ albums = [], brandName = DEFAULT_EMAIL_BRAND }) {
+function buildClientPortalEmail({ albums = [], bookings = [], brandName = DEFAULT_EMAIL_BRAND }) {
   const safeAlbums = albums.map(album => ({ title: String(album?.title || "Photo gallery"), url: safeHttpUrl(album?.url) })).filter(album => album.url);
   const linksHtml = safeAlbums.length
     ? `<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="width:100%;border-collapse:separate;border-spacing:0;background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;">${safeAlbums.map((album, index) => `<tr><td style="padding:14px 16px;${index ? "border-top:1px solid #e2e8f0;" : ""}"><a href="${escapeHtml(album.url)}" style="color:#242930;font-family:Arial,sans-serif;font-size:14px;font-weight:700;line-height:1.5;text-decoration:none;">${escapeHtml(album.title)} →</a></td></tr>`).join("")}</table>`
     : buildCallout("No active galleries", "There are currently no active galleries available from this photographer.");
+  const safeBookings = bookings.filter(booking => safeHttpUrl(booking.url));
+  const bookingHtml = safeBookings.map(booking => buildSummaryCard([{ label: "Session", value: booking.title }, ...conventionRows(booking.conventionDetails)]) + `<p><a href="${escapeHtml(booking.url)}">View booking and payment schedule</a></p>`).join("");
   const subject = cleanEmailSubject(`Your galleries from ${brandName}`);
   return {
     subject,
@@ -1030,14 +1039,15 @@ function buildClientPortalEmail({ albums = [], brandName = DEFAULT_EMAIL_BRAND }
       title: "Your client galleries",
       preheader: `${safeAlbums.length} secure ${safeAlbums.length === 1 ? "gallery is" : "galleries are"} available.`,
       intro: "Use the secure links below to return to your available galleries. These links are intended only for you.",
-      bodyHtml: linksHtml,
+      bodyHtml: linksHtml + bookingHtml,
       brandName,
       footerNote: "If you did not request these links, you can safely ignore this email.",
     }),
     text: buildEmailText({
       title: "Your client galleries",
       intro: "Use the secure links below to return to your available galleries. These links are intended only for you.",
-      actions: safeAlbums.map(album => ({ label: album.title, url: album.url })),
+      sections: safeBookings.flatMap(booking => [booking.title, ...conventionRows(booking.conventionDetails).map(row => `${row.label}: ${row.value}`)]),
+      actions: [...safeAlbums, ...safeBookings].map(album => ({ label: album.title, url: album.url })),
       footerNote: "If you did not request these links, you can safely ignore this email.",
     }),
   };
@@ -1101,6 +1111,7 @@ function buildAutomationEmail({ subject, body, booking = {}, brandName = DEFAULT
     booking.type ? { label: "Session", value: booking.type, emphasis: true } : null,
     booking.date ? { label: "Date", value: formatDateNice(booking.date) } : null,
     booking.time ? { label: "Time", value: formatTime12(booking.time) } : null,
+    ...conventionRows(booking.conventionDetails),
   ].filter(Boolean);
   return {
     subject: safeSubject,

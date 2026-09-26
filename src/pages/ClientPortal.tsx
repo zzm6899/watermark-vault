@@ -53,7 +53,7 @@ export default function ClientPortal() {
       {/* Header */}
       <header className="border-b border-border/40 px-6 py-4 flex items-center gap-3">
         <Camera className="w-5 h-5 text-primary" />
-        <span className="font-display text-sm text-foreground">Your Gallery</span>
+        <span className="font-display text-sm text-foreground">Your sessions & photos</span>
       </header>
 
       <div className="flex-1 flex items-center justify-center p-6">
@@ -64,9 +64,9 @@ export default function ClientPortal() {
                 <div className="w-14 h-14 rounded-full bg-primary/10 flex items-center justify-center mx-auto mb-4">
                   <Image className="w-7 h-7 text-primary" />
                 </div>
-                <h1 className="font-display text-2xl text-foreground mb-2">Access Your Photos</h1>
+                <h1 className="font-display text-2xl text-foreground mb-2">Access Your Sessions & Photos</h1>
                 <p className="text-sm font-body text-muted-foreground">
-                  Enter the email you used at checkout or when booking. We’ll email secure links to your galleries and restore the photos you’ve already purchased.
+                  Enter the email you used at checkout or when booking. We’ll email secure booking and gallery links, including meeting details, delivery targets and payment schedules, and restore your purchased photos.
                 </p>
               </div>
 

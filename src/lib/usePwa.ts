@@ -157,11 +157,14 @@ export interface OfflineCaptureItem {
   queuedAt: string;
   status: "queued" | "uploading" | "done" | "error";
   errorMessage?: string;
+  lastModified?: number;
+  editProfile?: string;
 }
 
 export async function queueOfflineCapture(item: Omit<OfflineCaptureItem, "id" | "queuedAt" | "status">): Promise<string> {
   const db = await openIdb();
-  const id = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2);
+  const content = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", await item.file.arrayBuffer())), byte => byte.toString(16).padStart(2, "0")).join("");
+  const id = `${item.tenantSlug || "main"}:${item.albumId}:${content}`;
   const record: OfflineCaptureItem = {
     ...item,
     id,
@@ -171,7 +174,7 @@ export async function queueOfflineCapture(item: Omit<OfflineCaptureItem, "id" | 
   return new Promise((resolve, reject) => {
     const tx = db.transaction(IDB_STORE, "readwrite");
     tx.objectStore(IDB_STORE).put(record);
-    tx.oncomplete = () => resolve(id);
+    tx.oncomplete = () => { db.close(); window.dispatchEvent(new Event("capture-queue-changed")); resolve(id); };
     tx.onerror = () => reject(tx.error);
   });
 }
@@ -181,7 +184,7 @@ export async function getOfflineQueue(tenantSlug: string | null = null): Promise
   return new Promise((resolve, reject) => {
     const tx = db.transaction(IDB_STORE, "readonly");
     const req = tx.objectStore(IDB_STORE).getAll();
-    req.onsuccess = () => resolve((req.result || []).filter((item: OfflineCaptureItem) => ownsCapture(item, tenantSlug)));
+    req.onsuccess = () => { db.close(); resolve((req.result || []).filter((item: OfflineCaptureItem) => ownsCapture(item, tenantSlug))); };
     req.onerror = () => reject(req.error);
   });
 }
@@ -197,7 +200,7 @@ export async function updateOfflineItem(id: string, updates: Partial<OfflineCapt
       if (!item) { resolve(); return; }
       store.put({ ...item, ...updates });
     };
-    tx.oncomplete = () => resolve();
+    tx.oncomplete = () => { db.close(); window.dispatchEvent(new Event("capture-queue-changed")); resolve(); };
     tx.onerror = () => reject(tx.error);
   });
 }
@@ -207,7 +210,7 @@ export async function removeOfflineItem(id: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(IDB_STORE, "readwrite");
     tx.objectStore(IDB_STORE).delete(id);
-    tx.oncomplete = () => resolve();
+    tx.oncomplete = () => { db.close(); window.dispatchEvent(new Event("capture-queue-changed")); resolve(); };
     tx.onerror = () => reject(tx.error);
   });
 }
@@ -229,7 +232,7 @@ export function useOfflineUploadQueue(
     flushingRef.current = true;
     try {
       const queue = await getOfflineQueue(tenantSlug);
-      const pending = queue.filter((i) => i.status === "queued" || i.status === "error");
+      const pending = queue.filter((i) => i.status !== "done");
       for (const item of pending) {
         await updateOfflineItem(item.id, { status: "uploading" });
         try {
@@ -260,10 +263,12 @@ export function useOfflineUploadQueue(
 
     // Auto-flush on mount if online
     if (navigator.onLine) flush();
+    const retry = window.setInterval(() => { if (navigator.onLine) void flush(); }, 30_000);
 
     return () => {
       window.removeEventListener("online", handleOnline);
       navigator.serviceWorker?.removeEventListener("message", handleMessage);
+      window.clearInterval(retry);
     };
   }, [flush]);
 

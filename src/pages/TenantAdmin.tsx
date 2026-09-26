@@ -1,3 +1,8 @@
+import { retainedBookingPayment } from "@/lib/booking-utils";
+import ConventionDetails, { ConventionDetailsFields } from "@/components/ConventionDetails";
+import { ExpensesPanel, QuotesPanel } from "@/pages/admin/FinanceView";
+import { acceptEnquiry } from "@/lib/api";
+import BookingBusiness from "@/components/admin/BookingBusiness";
 import LinkedText from "@/components/LinkedText";
 import { Capacitor } from "@capacitor/core";
 import { buildClientEmail, buildGalleryStatusEmail } from "@/lib/client-email";
@@ -877,6 +882,7 @@ function TenantBookings({ slug }: { slug: string }) {
                     {bk.albumId && <div><span className="text-muted-foreground">Album: </span><a href={`/gallery/${bk.albumId}`} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">{bk.albumId}</a></div>}
                   </div>
 
+                  <ConventionDetails value={bk.conventionDetails} /><BookingBusiness booking={bk} tenantSlug={slug} onChange={load} />
                   {/* Custom question answers */}
                   {bk.answers && Object.keys(bk.answers).length > 0 && (
                     <div className="space-y-1.5">
@@ -1141,6 +1147,7 @@ function TenantEventEditor({ slug, eventType, onSave, onCancel }: { slug: string
   const [title, setTitle] = useState(eventType?.title || "");
   const [description, setDescription] = useState(eventType?.description || "");
   const [descriptionFont, setDescriptionFont] = useState<NonNullable<EventType["descriptionFont"]>>(eventType?.descriptionFont || "sans");
+  const [conventionDetails, setConventionDetails] = useState(eventType?.conventionDetails || {});
   const [descriptionImages, setDescriptionImages] = useState(eventType?.descriptionImages || []);
   const [descriptionUploading, setDescriptionUploading] = useState(false);
   const [location, setLocation] = useState(eventType?.location || "");
@@ -1197,6 +1204,7 @@ function TenantEventEditor({ slug, eventType, onSave, onCancel }: { slug: string
       title: title.trim(),
       description: description.trim(),
       descriptionFont,
+      conventionDetails,
       descriptionImages,
       durations,
       color: "primary",
@@ -1250,6 +1258,7 @@ function TenantEventEditor({ slug, eventType, onSave, onCancel }: { slug: string
         <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Description</label>
         <RichTextEditor value={description} onChange={setDescription} font={descriptionFont} minHeight="80px" />
         <div className="mt-3"><EventDescriptionOptions font={descriptionFont} images={descriptionImages} tenantSlug={slug} uploading={descriptionUploading} onFontChange={setDescriptionFont} onImagesChange={setDescriptionImages} onUploadingChange={setDescriptionUploading} /></div>
+        <ConventionDetailsFields value={conventionDetails} onChange={setConventionDetails} />
       </div>
       <div>
         <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Location</label>
@@ -3236,12 +3245,12 @@ function TenantFinance({ slug }: { slug: string }) {
 
   if (loading) return <div className="py-16 text-center text-muted-foreground font-body text-sm animate-pulse">Loading…</div>;
 
-  const paid = bookings.filter(b => b.paymentStatus === "paid" || b.paymentStatus === "cash");
-  const deposit = bookings.filter(b => b.paymentStatus === "deposit-paid");
-  const unpaid = bookings.filter(b => !b.paymentStatus || b.paymentStatus === "unpaid");
+  const paid = bookings.filter(b => retainedBookingPayment(b) > 0 && (b.paymentStatus === "paid" || b.paymentStatus === "cash"));
+  const deposit = bookings.filter(b => retainedBookingPayment(b) > 0 && b.paymentStatus === "deposit-paid");
+  const unpaid = bookings.filter(b => b.status !== "cancelled" && !["paid", "cash"].includes(b.paymentStatus || "") && (b.paymentAmount || 0) > retainedBookingPayment(b));
 
-  const totalPaid = paid.reduce((s, b) => s + (b.paymentAmount || 0), 0);
-  const totalDeposit = deposit.reduce((s, b) => s + (b.depositAmount || b.paymentAmount || 0), 0);
+  const totalPaid = paid.reduce((s, b) => s + retainedBookingPayment(b), 0);
+  const totalDeposit = deposit.reduce((s, b) => s + retainedBookingPayment(b), 0);
 
   const curr = (n: number) => `$${n.toFixed(2)}`;
 
@@ -3274,7 +3283,7 @@ function TenantFinance({ slug }: { slug: string }) {
         ) : (
           <div className="space-y-2 max-h-[500px] overflow-y-auto">
             {[...bookings]
-              .filter(b => b.paymentStatus === "paid" || b.paymentStatus === "cash" || b.paymentStatus === "deposit-paid")
+              .filter(b => retainedBookingPayment(b) > 0)
               .sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""))
               .map(bk => (
                 <div key={bk.id} className="flex items-center gap-3 p-3 rounded-lg bg-secondary/40 border border-border/40">
@@ -3283,7 +3292,7 @@ function TenantFinance({ slug }: { slug: string }) {
                     <p className="text-xs font-body text-muted-foreground">{bk.date} · {bk.type}</p>
                   </div>
                   <div className="text-right shrink-0">
-                    <p className="text-sm font-body text-foreground">{curr(bk.paymentAmount || 0)}</p>
+                    <p className="text-sm font-body text-foreground">{curr(retainedBookingPayment(bk))}</p>
                     <span className={`text-[10px] font-body px-1.5 py-0.5 rounded-full ${
                       bk.paymentStatus === "paid" || bk.paymentStatus === "cash" ? "bg-green-500/10 text-green-400" : "bg-yellow-500/10 text-yellow-400"
                     }`}>{bk.paymentStatus}</span>
@@ -3293,7 +3302,8 @@ function TenantFinance({ slug }: { slug: string }) {
           </div>
         )}
       </div>
-    </motion.div>
+    <div className="space-y-6 mt-6"><QuotesPanel tenantSlug={slug} /><ExpensesPanel tenantSlug={slug} /></div>
+</motion.div>
   );
 }
 
@@ -3301,7 +3311,7 @@ function TenantFinance({ slug }: { slug: string }) {
 function TenantEnquiries({ slug }: { slug: string }) {
   const [enquiries, setEnquiries] = useState<Array<{
     id: string; name: string; email: string; phone?: string;
-    eventTypeTitle?: string; preferredDate?: string; message: string;
+    eventTypeTitle?: string; preferredDate?: string; bookingId?: string; message: string;
     status: "pending" | "accepted" | "declined"; createdAt: string;
   }>>([]);
   const [loading, setLoading] = useState(true);
@@ -3309,7 +3319,7 @@ function TenantEnquiries({ slug }: { slug: string }) {
   const load = useCallback(async () => {
     const data = await getTenantStoreKey<Array<{
       id: string; name: string; email: string; phone?: string;
-      eventTypeTitle?: string; preferredDate?: string; message: string;
+      eventTypeTitle?: string; preferredDate?: string; bookingId?: string; message: string;
       status: "pending" | "accepted" | "declined"; createdAt: string;
     }>>(slug, "wv_enquiries");
     setEnquiries(
@@ -3321,16 +3331,21 @@ function TenantEnquiries({ slug }: { slug: string }) {
   useEffect(() => { load(); }, [load]);
 
   const updateStatus = async (id: string, status: "accepted" | "declined") => {
+    try {
+    if (status === "accepted") { await acceptEnquiry(id, slug); await load(); toast.success("Enquiry accepted and booking created"); return; }
     const updated = enquiries.map(e => e.id === id ? { ...e, status } : e);
-    await saveTenantStoreKey(slug, "wv_enquiries", updated);
+    const saved = await saveTenantStoreKey(slug, "wv_enquiries", updated);
+    if (!saved.ok) { toast.error(saved.error || "Enquiry was not saved; retry"); return; }
     setEnquiries(updated.slice().sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || "")));
-    toast.success(status === "accepted" ? "Enquiry accepted" : "Enquiry declined");
+    toast.success("Enquiry declined");
+    } catch (error) { toast.error(error instanceof Error ? error.message : "Could not update enquiry"); }
   };
 
   const handleDelete = async (id: string) => {
     if (!confirm("Delete this enquiry?")) return;
     const updated = enquiries.filter(e => e.id !== id);
-    await saveTenantStoreKey(slug, "wv_enquiries", updated);
+    const saved = await saveTenantStoreKey(slug, "wv_enquiries", updated);
+    if (!saved.ok) { toast.error(saved.error || "Enquiry was not saved; retry"); return; }
     setEnquiries(updated);
     toast.success("Enquiry deleted");
   };
@@ -3378,7 +3393,7 @@ function TenantEnquiries({ slug }: { slug: string }) {
                 </button>
               </div>
               <p className="text-sm font-body text-foreground bg-secondary/50 rounded-lg p-3">{enq.message}</p>
-              {enq.status === "pending" && (
+              {(enq.status === "pending" || enq.status === "accepted" && !enq.bookingId) && (
                 <div className="flex gap-2">
                   <Button size="sm" onClick={() => updateStatus(enq.id, "accepted")}
                     className="bg-green-600 hover:bg-green-700 text-white font-body text-xs gap-1">
@@ -4699,8 +4714,10 @@ function TenantEmailTemplatesManager({ slug }: { slug: string }) {
   }, [slug]);
 
   const persistTemplates = async (updated: EmailTemplate[]) => {
+    const saved = await saveTenantStoreKey(slug, "wv_email_templates", updated);
+    if (!saved.ok) { toast.error(saved.error || "Template was not saved; retry"); return false; }
     setTemplates(updated);
-    await saveTenantStoreKey(slug, "wv_email_templates", updated);
+    return true;
   };
 
   const handleSave = async () => {
@@ -4714,7 +4731,7 @@ function TenantEmailTemplatesManager({ slug }: { slug: string }) {
       const t: EmailTemplate = { id: generateId("tpl"), name: newName, subject: newSubject, body: newBody, createdAt: new Date().toISOString() };
       updated = [...templates, t];
     }
-    await persistTemplates(updated);
+    if (!await persistTemplates(updated)) return;
     setShowForm(false);
     setEditingId(null);
     setNewName(""); setNewSubject(""); setNewBody("");
@@ -4723,7 +4740,7 @@ function TenantEmailTemplatesManager({ slug }: { slug: string }) {
 
   const handleDelete = async (id: string) => {
     if (!confirm("Delete this template?")) return;
-    await persistTemplates(templates.filter(t => t.id !== id));
+    if (!await persistTemplates(templates.filter(t => t.id !== id))) return;
     toast.success("Template deleted");
   };
 

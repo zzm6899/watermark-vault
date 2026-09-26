@@ -1,4 +1,7 @@
+import BookingBusiness from "@/components/admin/BookingBusiness";
+import ConventionDetails, { ConventionDetailsFields } from "@/components/ConventionDetails";
 import { generateId } from "@/lib/utils";
+import PendingSaves from "@/components/admin/PendingSaves";
 import LinkedText from "@/components/LinkedText";
 import ProofingMessageEditor from "@/components/ProofingMessageEditor";
 import { configuredProofingMessage } from "@/lib/proofing-message-settings";
@@ -860,6 +863,7 @@ export default function Admin() {
           id="admin-main"
         >
           {/* lg: use default, overridden by inline paddingBottom for desktop */}
+          <PendingSaves />
           <style>{`@media (min-width: 1024px) { #admin-main { padding-bottom: 2rem; } }`}</style>
           {/* Session timeout warning — shown when < 5 minutes remain */}
           {sessionTimeLeft !== null && sessionTimeLeft > 0 && (
@@ -1568,7 +1572,7 @@ function ShootDayCommandCenterView() {
 
         <div className="glass-panel rounded-xl p-4 sm:p-5 h-fit">
           <label htmlFor="shoot-day-focus" className="block text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-2">Current Focus</label>
-          <select id="shoot-day-focus" value={sessions.some(session => session.booking.id === focusedBookingId) ? focusedBookingId : ""} onChange={event => setFocusedBookingId(event.target.value)} className="w-full rounded-md border border-border bg-background p-2 text-sm mb-3">
+          <ConventionDetails value={activeSession?.booking.conventionDetails} /><select id="shoot-day-focus" value={sessions.some(session => session.booking.id === focusedBookingId) ? focusedBookingId : ""} onChange={event => setFocusedBookingId(event.target.value)} className="w-full rounded-md border border-border bg-background p-2 text-sm mb-3">
             <option value="">Automatic — next session</option>
             {sessions.map(session => <option key={session.booking.id} value={session.booking.id}>{session.booking.time} · {session.booking.clientName || "Unnamed client"}</option>)}
           </select>
@@ -3465,6 +3469,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                 </div>
                 {isExpanded && (
                   <div className="px-4 pb-4 border-t border-border/50 pt-3 space-y-3">
+                    <ConventionDetails value={bk.conventionDetails} /><BookingBusiness booking={bk} tenantSlug={bk.tenantSlug} onChange={async () => { await syncFromServer({ awaitLazy: true }); setBookingsState(getBookings()); }} />
                     <BookingPriceBreakdown base={bk.sessionPrice} items={bk.lineItems} total={bk.paymentAmount || 0} showMissingDescriptions title="Purchased extras & booking total" />
                     {!!bk.referenceImages?.length && (
                       <section className="rounded-lg border border-border/60 bg-secondary/20 p-3">
@@ -3942,17 +3947,17 @@ function EventTypesView() {
 
   const refresh = () => setEts(getEventTypes());
 
-  const toggleActive = (id: string) => {
+  const toggleActive = async (id: string) => {
     const et = eventTypes.find((e) => e.id === id);
     if (!et) return;
-    updateEventType({ ...et, active: !et.active });
+    if (!(await updateEventType({ ...et, active: !et.active }))) return;
     refresh();
   };
 
   const handleDelete = async (id: string) => {
     if (!confirm("Delete this event type?")) return;
     const images = eventTypes.find(event => event.id === id)?.descriptionImages || [];
-    deleteEventType(id);
+    if (!(await deleteEventType(id))) return;
     if (images.length && (await saveStoreKeyToServer("wv_event_types", getEventTypes())).ok) {
       await Promise.allSettled(images.map(url => deleteEventDescriptionImage(url)));
     }
@@ -3960,7 +3965,7 @@ function EventTypesView() {
     toast.success("Event type deleted");
   };
 
-  const handleDuplicate = (et: EventType) => {
+  const handleDuplicate = async (et: EventType) => {
     const copy: EventType = {
       ...structuredClone(et),
       id: generateId("et"),
@@ -3969,7 +3974,7 @@ function EventTypesView() {
       // Give each duplicated question a fresh ID so they're independent of the original
       questions: structuredClone(et.questions).map(q => ({ ...q, id: generateId("q") })),
     };
-    addEventType(copy);
+    if (!(await addEventType(copy))) return;
     refresh();
     toast.success("Event type duplicated");
   };
@@ -3989,8 +3994,7 @@ function EventTypesView() {
           eventType={editing}
           onSave={async (et) => {
             const removedImages = (editing?.descriptionImages || []).filter(url => !(et.descriptionImages || []).includes(url));
-            if (editing) { updateEventType(et); }
-            else { addEventType(et); }
+            if (!(await (editing ? updateEventType(et) : addEventType(et)))) return;
             if (removedImages.length && (await saveStoreKeyToServer("wv_event_types", getEventTypes())).ok) {
               await Promise.allSettled(removedImages.map(url => deleteEventDescriptionImage(url)));
             }
@@ -4059,6 +4063,7 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
   const [title, setTitle] = useState(eventType?.title || "");
   const [description, setDescription] = useState(eventType?.description || "");
   const [descriptionFont, setDescriptionFont] = useState<NonNullable<EventType["descriptionFont"]>>(eventType?.descriptionFont || "sans");
+  const [conventionDetails, setConventionDetails] = useState(eventType?.conventionDetails || {});
   const [descriptionImages, setDescriptionImages] = useState(eventType?.descriptionImages || []);
   const [descriptionUploading, setDescriptionUploading] = useState(false);
   const [location, setLocation] = useState(eventType?.location || "");
@@ -4123,6 +4128,7 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
       title: title.trim(),
       description: description.trim(),
       descriptionFont,
+      conventionDetails,
       descriptionImages,
       durations,
       proofingMessages,
@@ -4214,6 +4220,7 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
         <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Description</label>
         <RichTextEditor value={description} onChange={setDescription} font={descriptionFont} minHeight="80px" />
         <div className="mt-3"><EventDescriptionOptions font={descriptionFont} images={descriptionImages} uploading={descriptionUploading} onFontChange={setDescriptionFont} onImagesChange={setDescriptionImages} onUploadingChange={setDescriptionUploading} /></div>
+        <ConventionDetailsFields value={conventionDetails} onChange={setConventionDetails} />
       </div>
       <div>
         <label className="text-xs font-body tracking-wider uppercase text-muted-foreground mb-1.5 block">Location</label>
@@ -8505,7 +8512,7 @@ function SettingsView() {
         : {}),
     } as AppSettings & { watermarkVersion: number; watermarkUpdatedAt: string };
 
-    setSettings(nextSettings as AppSettings);
+    if (!(await setSettings(nextSettings as AppSettings))) return;
     setSettingsState(nextSettings as AppSettings);
     savedWatermarkRef.current = {
       text: nextSettings.watermarkText,

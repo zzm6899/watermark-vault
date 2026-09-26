@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>Capture reload check</title>
+<body><h1>Capture reload check</h1><p>Run with Vite at /scripts/capture-reload-check.html. Uses synthetic files in a dedicated test studio.</p>
+<button id="seed">Queue synthetic photo</button> <button id="reload">Reload and verify</button> <button id="clear">Remove test photo</button>
+<pre id="result" role="status"></pre>
+<script type="module">
+import { queueOfflineCapture, getOfflineQueue, updateOfflineItem, removeOfflineItem } from '/src/lib/usePwa.ts';
+const studio = 'reload-test-only';
+const result = document.querySelector('#result');
+async function check() {
+  const rows = await getOfflineQueue(studio);
+  if (!rows.length) { result.textContent = 'Ready: queue a synthetic photo, then reload.'; return; }
+  const row = rows[0];
+  if (rows.length !== 1 || await row.file.text() !== 'synthetic original bytes' || row.fileName !== 'test.jpg' || row.editProfile !== 'test-profile' || row.status !== 'uploading' || (await getOfflineQueue('different-test-studio')).some(item => item.id === row.id)) throw new Error('Reload or studio isolation failed');
+  result.textContent = 'PASS: original bytes, filename, album, edit profile and interrupted upload survived reload; another studio cannot see them.';
+}
+document.querySelector('#seed').onclick = async () => {
+  result.textContent = 'Writing original into IndexedDB…';
+  try {
+    const value = { file: new File(['synthetic original bytes'], 'test.jpg', { type: 'image/jpeg' }), fileName: 'test.jpg', mimeType: 'image/jpeg', albumId: 'test-album', tenantSlug: studio, editProfile: 'test-profile' };
+    const id = await queueOfflineCapture(value);
+    if (await queueOfflineCapture(value) !== id) throw new Error('Duplicate capture identity changed');
+    await updateOfflineItem(id, { status: 'uploading' });
+    result.textContent = 'Queued twice without duplication. Reload to verify recovery from interrupted upload.';
+  } catch (error) { result.textContent = 'FAIL: ' + error.message; }
+};
+document.querySelector('#reload').onclick = () => location.reload();
+document.querySelector('#clear').onclick = async () => { for (const row of await getOfflineQueue(studio)) await removeOfflineItem(row.id); await check(); };
+check().catch(error => { result.textContent = 'FAIL: ' + error.message; });
+</script></body></html>

@@ -110,9 +110,10 @@ export default function FinanceView() {
   for (const alb of albumsState) {
     // Bank transfer requests
     for (const req of alb.downloadRequests || []) {
-      if (req.method === "bank-transfer") {
+      if (req.method === "bank-transfer" && req.status !== "cancelled") {
         const photoCount = req.photoIds?.length || 0;
-        const amount = typeof req.amount === "number" ? req.amount : photoCount * (alb.pricePerPhoto || 0);
+        const amountKnown = typeof req.amount === "number" && Number.isFinite(req.amount) && req.amount >= 0;
+        const amount = amountKnown ? req.amount : 0;
         payments.push({
           id: `bank-${alb.id}-${req.requestedAt}`,
           date: req.approvedAt || req.requestedAt,
@@ -123,6 +124,7 @@ export default function FinanceView() {
           photoIds: req.photoIds || [],
           method: "bank-transfer",
           amount,
+          amountUnknown: !amountKnown,
           status: (req.status === "completed" || req.status === "approved") ? "completed" : "pending",
           description: `${photoCount} photo${photoCount !== 1 ? "s" : ""} — bank transfer`,
           requestedAt: req.requestedAt,
@@ -137,9 +139,10 @@ export default function FinanceView() {
     .map(booking => ({ booking, due: booking.depositRequired && booking.depositAmount ? booking.depositAmount : (booking.paymentAmount || 0) }));
   for (const booking of bookingPayments) {
     if (!retainedBookingPayment(booking)) continue;
-    const method: "cash" | "bank-transfer" | "stripe" = booking.paymentStatus === "cash" ? "cash" : ((booking.paymentMethod || booking.depositMethod) === "bank" ? "bank-transfer" : "stripe");
-    const recordedPayments = booking.stripePayments || [];
-    const entries: { sessionId: string; kind: string; amount: number; paidAt: string; fee?: number; method: PaymentRecord["method"] }[] = recordedPayments.length ? recordedPayments.map(payment => ({ ...payment, method: "stripe" })) : [{
+    const method: "cash" | "bank-transfer" | "stripe" = booking.paymentStatus === "cash" || booking.paymentMethod === "cash" ? "cash" : ((booking.paymentMethod || booking.depositMethod) === "bank" ? "bank-transfer" : "stripe");
+    const manualInstalments = (booking.instalmentPayments || []).filter(payment => payment.method !== "stripe").map(payment => ({ ...payment, sessionId: payment.id, kind: "instalment", method: payment.method === "cash" ? "cash" as const : "bank-transfer" as const }));
+    const recordedPayments = [...(booking.stripePayments || []).map(payment => ({ ...payment, method: "stripe" as const })), ...manualInstalments];
+    const entries: { sessionId: string; kind: string; amount: number; paidAt: string; fee?: number; method: PaymentRecord["method"] }[] = recordedPayments.length ? recordedPayments : [{
       sessionId: booking.depositPaidAt || booking.paidAt || booking.createdAt,
       kind: booking.paymentStatus === "deposit-paid" ? "deposit" : "full",
       amount: retainedBookingPayment(booking),
@@ -150,9 +153,9 @@ export default function FinanceView() {
     if (recordedPayments.length) {
       const remainder = unrecordedBookingPayment(booking, recordedPayments);
       if (remainder > 0) {
-        const kind = ["paid", "cash"].includes(booking.paymentStatus || "") && !recordedPayments.some(payment => payment.kind === "balance" || payment.kind === "full") ? "balance" : "deposit";
-        const manualMethod = booking.paymentStatus === "cash" ? "cash" : kind === "deposit" ? booking.depositMethod : booking.paymentMethod;
-        entries.push({ sessionId: kind === "deposit" ? booking.depositPaidAt || booking.createdAt : booking.paidAt || booking.createdAt, kind, amount: remainder, paidAt: kind === "deposit" ? booking.depositPaidAt || booking.createdAt : booking.paidAt || booking.createdAt, method: manualMethod === "cash" ? "cash" : "bank-transfer" });
+        const kind = booking.instalmentBasePaid !== undefined ? "deposit" : ["paid", "cash"].includes(booking.paymentStatus || "") && !recordedPayments.some(payment => payment.kind === "balance" || payment.kind === "full") ? "balance" : "deposit";
+        const manualMethod = booking.instalmentBaseMethod || (booking.paymentStatus === "cash" ? "cash" : kind === "deposit" ? booking.depositMethod : booking.paymentMethod);
+        entries.push({ sessionId: kind === "deposit" ? booking.depositPaidAt || booking.createdAt : booking.paidAt || booking.createdAt, kind, amount: remainder, paidAt: kind === "deposit" ? booking.depositPaidAt || booking.createdAt : booking.paidAt || booking.createdAt, method: manualMethod === "cash" ? "cash" : manualMethod === "stripe" ? "stripe" : "bank-transfer" });
       }
     }
     for (const payment of entries) {
@@ -167,7 +170,7 @@ export default function FinanceView() {
         amount: payment.amount,
         fee: payment.fee,
         status: "completed",
-        description: booking.status === "cancelled" ? "Cancelled — retained payment" : payment.kind === "deposit" ? "Booking deposit" : payment.kind === "balance" ? "Booking balance" : "Booking paid in full",
+        description: booking.status === "cancelled" ? "Cancelled — retained payment" : payment.kind === "instalment" ? "Booking instalment" : payment.kind === "deposit" ? "Booking deposit" : payment.kind === "balance" ? "Booking balance" : "Booking paid in full",
         bookingId: booking.id,
         reference: bookingPaymentReference(booking),
       });
@@ -214,7 +217,7 @@ export default function FinanceView() {
 
       <EventRevenueReport revision={refundRevision} />
       {galleryError && <p role="alert" className="text-destructive">{galleryError}</p>}
-      {galleryPayments.some(payment => payment.amountUnknown) && <p className="text-sm text-muted-foreground">Purchases without a verified AUD amount are listed but excluded from revenue totals.</p>}
+      {payments.some(payment => payment.amountUnknown) && <p className="text-sm text-muted-foreground">Purchases without a verified AUD amount are listed but excluded from revenue totals.</p>}
 
       <details open className="rounded-xl border border-border p-5">
         <summary className="cursor-pointer font-semibold">Payment activity, invoices & analytics</summary>
@@ -880,16 +883,16 @@ export default function FinanceView() {
 
 // ─── Expenses Panel ───────────────────────────────────────────────────────────
 
-function ExpensesPanel() {
+export function ExpensesPanel({ tenantSlug }: { tenantSlug?: string } = {}) {
   const [expenses, setExpenses] = React.useState<Expense[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [showForm, setShowForm] = React.useState(false);
   const [editingId, setEditingId] = React.useState<string | null>(null);
   const [form, setForm] = React.useState({ description: "", amount: "", category: "other", date: new Date().toISOString().slice(0, 10), notes: "" });
 
-  React.useEffect(() => { getExpenses().then(e => { setExpenses(e); setLoading(false); }); }, []);
+  React.useEffect(() => { getExpenses(tenantSlug).then(e => { setExpenses(e); setLoading(false); }); }, [tenantSlug]);
 
-  const reload = () => getExpenses().then(setExpenses);
+  const reload = () => getExpenses(tenantSlug).then(setExpenses);
   const categories = ["equipment", "travel", "software", "marketing", "venue", "props", "printing", "other"];
   const totalExpenses = expenses.reduce((s, e) => s + (e.amount || 0), 0);
   const byCategory = categories.map(c => ({ category: c, total: expenses.filter(e => e.category === c).reduce((s, e) => s + e.amount, 0) })).filter(c => c.total > 0).sort((a, b) => b.total - a.total);
@@ -897,9 +900,9 @@ function ExpensesPanel() {
   const handleSave = async () => {
     if (!form.description || !form.amount) return;
     if (editingId) {
-      await updateExpense(editingId, { description: form.description, amount: parseFloat(form.amount), category: form.category as Expense["category"], date: form.date, notes: form.notes });
+      if (!await updateExpense(editingId, { description: form.description, amount: parseFloat(form.amount), category: form.category as Expense["category"], date: form.date, notes: form.notes }, tenantSlug)) { toast.error("Expense was not saved. Please retry."); return; }
     } else {
-      await createExpense({ description: form.description, amount: parseFloat(form.amount), category: form.category as Expense["category"], date: form.date, notes: form.notes });
+      if (!await createExpense({ description: form.description, amount: parseFloat(form.amount), category: form.category as Expense["category"], date: form.date, notes: form.notes }, tenantSlug)) { toast.error("Expense was not saved. Please retry."); return; }
     }
     setShowForm(false); setEditingId(null); setForm({ description: "", amount: "", category: "other", date: new Date().toISOString().slice(0, 10), notes: "" });
     reload();
@@ -907,7 +910,7 @@ function ExpensesPanel() {
 
   const handleDelete = async (id: string) => {
     if (!confirm("Delete this expense?")) return;
-    await deleteExpense(id); reload();
+    if (!await deleteExpense(id, tenantSlug)) { toast.error("Expense was not deleted"); return; } reload();
   };
 
   const startEdit = (e: Expense) => { setForm({ description: e.description, amount: String(e.amount), category: e.category, date: e.date, notes: e.notes || "" }); setEditingId(e.id); setShowForm(true); };
@@ -989,14 +992,16 @@ function ExpensesPanel() {
 
 // ─── Quotes Panel ─────────────────────────────────────────────────────────────
 
-function QuotesPanel() {
+export function QuotesPanel({ tenantSlug }: { tenantSlug?: string } = {}) {
+  const convertingRef = React.useRef(false);
+  const [converting, setConverting] = React.useState(false);
   const [quotes, setQuotes] = React.useState<Quote[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [showForm, setShowForm] = React.useState(false);
   const [form, setForm] = React.useState({ clientName: "", clientEmail: "", description: "", amount: "", expiryDate: new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10), notes: "" });
 
-  React.useEffect(() => { getQuotes().then(q => { setQuotes(q); setLoading(false); }); }, []);
-  const reload = () => getQuotes().then(setQuotes);
+  React.useEffect(() => { getQuotes(tenantSlug).then(q => { setQuotes(q); setLoading(false); }); }, [tenantSlug]);
+  const reload = () => getQuotes(tenantSlug).then(setQuotes);
 
   const statusColor = (s: string) => {
     if (s === "accepted") return "text-green-400 bg-green-500/10";
@@ -1009,12 +1014,12 @@ function QuotesPanel() {
 
   const handleSave = async () => {
     if (!form.clientName || !form.amount) return;
-    await createQuote({
+    const saved = await createQuote({
       to: { name: form.clientName, email: form.clientEmail, address: "" },
       items: [{ id: crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36), description: form.description || "Photography Services", quantity: 1, unitPrice: parseFloat(form.amount) || 0 }],
       notes: form.notes,
       expiryDate: form.expiryDate,
-    } as any);
+    } as any, tenantSlug);
     setShowForm(false);
     setForm({ clientName: "", clientEmail: "", description: "", amount: "", expiryDate: new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10), notes: "" });
     reload();
@@ -1023,17 +1028,21 @@ function QuotesPanel() {
 
   const handleDelete = async (id: string) => {
     if (!confirm("Delete this quote?")) return;
-    await deleteQuote(id); reload();
+    if (!await deleteQuote(id, tenantSlug)) { toast.error("Quote was not deleted"); return; } reload();
   };
 
   const handleConvert = async (id: string) => {
-    const result = await convertQuoteToInvoice(id);
-    if (result) { toast.success(`Converted to invoice ${result.invoice.number}`); reload(); }
-    else toast.error("Failed to convert quote");
+    if (convertingRef.current) return;
+    convertingRef.current = true; setConverting(true);
+    try {
+      const result = await convertQuoteToInvoice(id, undefined, tenantSlug);
+      if (result) { toast.success(`Converted to invoice ${result.invoice.number}`); reload(); }
+      else toast.error("Failed to convert quote");
+    } finally { convertingRef.current = false; setConverting(false); }
   };
 
   const handleMarkSent = async (q: Quote) => {
-    await updateQuote(q.id, { status: "sent", sentAt: new Date().toISOString() });
+    if (!await updateQuote(q.id, { status: "sent", sentAt: new Date().toISOString() }, tenantSlug)) { toast.error("Quote was not updated"); return; }
     reload(); toast.success("Quote marked as sent");
   };
 
@@ -1094,10 +1103,10 @@ function QuotesPanel() {
                   <p className="text-sm font-body text-foreground truncate">{q.number} · {q.to?.name}</p>
                   <p className="text-[10px] font-body text-muted-foreground">Expires {q.expiryDate} · ${total.toFixed(2)}</p>
                 </div>
-                <span className={`text-[10px] font-body px-2 py-0.5 rounded-full capitalize ${statusColor(q.status)}`}>{q.status}</span>
+                <a href={`/quote/${encodeURIComponent(q.shareToken)}`} target="_blank" rel="noreferrer" className="text-xs underline">Open quote</a><span className={`text-[10px] font-body px-2 py-0.5 rounded-full capitalize ${statusColor(q.status)}`}>{q.status}</span>
                 {q.status === "draft" && <button onClick={() => handleMarkSent(q)} className="text-[10px] font-body px-2 py-0.5 rounded bg-secondary hover:bg-secondary/80 text-muted-foreground">Mark Sent</button>}
                 {(q.status === "accepted" || q.status === "sent") && (
-                  <button onClick={() => handleConvert(q.id)} className="text-[10px] font-body px-2 py-0.5 rounded bg-primary/10 text-primary hover:bg-primary/20">→ Invoice</button>
+                  <button disabled={converting} onClick={() => handleConvert(q.id)} className="text-[10px] font-body px-2 py-0.5 rounded bg-primary/10 text-primary hover:bg-primary/20">{converting ? "Converting…" : "→ Invoice"}</button>
                 )}
                 <button onClick={() => handleDelete(q.id)} className="text-muted-foreground hover:text-destructive transition-colors"><Trash2 className="w-3.5 h-3.5" /></button>
               </div>

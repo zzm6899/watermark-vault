@@ -2,6 +2,9 @@ import type {
   EventType, Booking, Album, Photo, ProfileSettings,
   AppSettings, BankTransferSettings, WaitlistEntry, EmailTemplate, Invoice, Contact, Enquiry, PixiesetImportAudit,
 } from "./types";
+import { toast } from "sonner";
+import { retryPendingWrites } from "./api";
+import { hasPendingWrite, readPendingWrites } from "./pending-writes";
 import { createAdminBooking, deleteAdminBooking, patchAdminBooking, persistToServer, persistAlbumToServer, deleteAlbumFromServer, createAdminInvoice, updateAdminInvoice, deleteAdminInvoice } from "./api";
 
 const KEYS = {
@@ -18,6 +21,8 @@ const KEYS = {
 // ── Helpers ─────────────────────────────────────────
 function get<T>(key: string, fallback: T): T {
   try {
+    const pending = readPendingWrites().find(row => row.key === key);
+    if (pending) return pending.value as T;
     const raw = localStorage.getItem(key);
     return raw ? JSON.parse(raw) : fallback;
   } catch {
@@ -130,8 +135,19 @@ export function getProfile(): ProfileSettings {
   return get(KEYS.PROFILE, defaultProfile);
 }
 
-export function setProfile(p: ProfileSettings) {
-  set(KEYS.PROFILE, p);
+async function confirmStoreSave(key: string, value: unknown): Promise<boolean> {
+  try {
+    persistToServer(key, value);
+    await retryPendingWrites();
+    if (hasPendingWrite(key)) throw new Error("Changes are not saved to the server yet. Retry when connected. Re-enter any changed credentials after reloading.");
+    return true;
+  } catch (error) { toast.error(error instanceof Error ? error.message : "Save failed"); return false; }
+}
+
+export async function setProfile(p: ProfileSettings) {
+  const saved = await confirmStoreSave(KEYS.PROFILE, p);
+  if (saved) localStorage.setItem(KEYS.PROFILE, JSON.stringify(p));
+  return saved;
 }
 
 // ── Event Types ─────────────────────────────────────
@@ -139,22 +155,24 @@ export function getEventTypes(): EventType[] {
   return get<EventType[]>(KEYS.EVENT_TYPES, []);
 }
 
-export function setEventTypes(ets: EventType[]) {
-  set(KEYS.EVENT_TYPES, ets);
+export async function setEventTypes(ets: EventType[]) {
+  const saved = await confirmStoreSave(KEYS.EVENT_TYPES, ets);
+  if (saved) localStorage.setItem(KEYS.EVENT_TYPES, JSON.stringify(ets));
+  return saved;
 }
 
 export function addEventType(et: EventType) {
   const list = getEventTypes();
   list.push(et);
-  setEventTypes(list);
+  return setEventTypes(list);
 }
 
 export function updateEventType(et: EventType) {
-  setEventTypes(getEventTypes().map((e) => (e.id === et.id ? et : e)));
+  return setEventTypes(getEventTypes().map((e) => (e.id === et.id ? et : e)));
 }
 
 export function deleteEventType(id: string) {
-  setEventTypes(getEventTypes().filter((e) => e.id !== id));
+  return setEventTypes(getEventTypes().filter((e) => e.id !== id));
 }
 
 // ── Bookings ────────────────────────────────────────
@@ -391,9 +409,10 @@ function maskCachedSettings(settings: AppSettings): AppSettings {
   return safe;
 }
 
-export function setSettings(s: AppSettings) {
-  persistToServer(KEYS.SETTINGS, s);
-  try { localStorage.setItem(KEYS.SETTINGS, JSON.stringify(maskCachedSettings(s))); } catch { /* Storage is optional. */ }
+export async function setSettings(s: AppSettings) {
+  const saved = await confirmStoreSave(KEYS.SETTINGS, s);
+  if (saved) try { localStorage.setItem(KEYS.SETTINGS, JSON.stringify(maskCachedSettings(s))); } catch { /* Storage is optional. */ }
+  return saved;
 }
 
 function sha256Fallback(input: string): string {

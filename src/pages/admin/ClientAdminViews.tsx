@@ -1,3 +1,5 @@
+import { acceptEnquiry } from "@/lib/api";
+import { cacheBookingLocally } from "@/lib/storage";
 import React, { useState } from "react";
 import DOMPurify from "dompurify";
 import { motion } from "framer-motion";
@@ -8,14 +10,13 @@ import ClientActivityTimeline from "@/pages/admin/ClientActivityTimeline";
 import RichTextEditor from "@/components/RichTextEditor";
 import { toast } from "sonner";
 import {
-  addBooking, addContact, deleteContact, deleteEnquiry, getAlbums, getBookings,
+  addContact, deleteContact, deleteEnquiry, getAlbums, getBookings,
   getContacts, getEnquiries, getEventTypes, getInvoices, getProfile, setProfile,
   updateContact, updateEnquiry,
 } from "@/lib/storage";
 import { ensurePublicAlbumAvailable, fetchAlbumStubs, sendEnquiryAcceptedEmail, sendEnquiryDeclinedEmail } from "@/lib/api";
-import { generateCapabilityToken } from "@/lib/capability-token";
 import { calcInvTotal, formatInvMoney, invoiceCurrency } from "@/lib/admin-invoice-utils";
-import type { Album, Booking, Contact, Enquiry, EnquiryStatus, Invoice, ProfileSettings } from "@/lib/types";
+import type { Album, Contact, Enquiry, EnquiryStatus, Invoice, ProfileSettings } from "@/lib/types";
 
 function generateId(prefix: string) {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
@@ -45,50 +46,34 @@ function EnquiriesView() {
   const [filter, setFilter] = React.useState<EnquiryStatus | "all">("pending");
   const [decliningId, setDecliningId] = React.useState<string | null>(null);
   const [adminNoteInput, setAdminNoteInput] = React.useState("");
+  const [acceptingId, setAcceptingId] = React.useState<string | null>(null);
+  const acceptingRef = React.useRef(false);
 
   const reload = () =>
     setEnquiriesState(
       getEnquiries().slice().sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
     );
 
-  const handleAccept = (enq: Enquiry) => {
-    const now = new Date().toISOString();
-    const modifyToken = generateCapabilityToken("mod");
-    const matchedEvent = enq.eventTypeId ? eventTypes.find(e => e.id === enq.eventTypeId) : null;
-    const booking: Booking = {
-      id: `bk-${Date.now()}`,
-      clientName: enq.name,
-      clientEmail: enq.email,
-      date: enq.preferredDate || now.slice(0, 10),
-      time: enq.preferredStartTime || "09:00",
-      eventTypeId: enq.eventTypeId || "",
-      type: enq.eventTypeTitle || matchedEvent?.title || "Custom Enquiry",
-      duration: 60,
-      status: "pending",
-      notes: `Enquiry: ${enq.message}`,
-      answers: {},
-      answerLabels: {},
-      createdAt: now,
-      paymentStatus: "unpaid",
-      paymentAmount: matchedEvent?.price || 0,
-      instagramHandle: "",
-      modifyToken,
-    };
-    addBooking(booking);
-    const updated: Enquiry = { ...enq, status: "accepted", respondedAt: now, bookingId: booking.id };
-    updateEnquiry(updated);
+  const handleAccept = async (enq: Enquiry) => {
+    if (acceptingRef.current) return;
+    acceptingRef.current = true;
+    setAcceptingId(enq.id);
+    try {
+    const result = await acceptEnquiry(enq.id);
+    cacheBookingLocally(result.booking);
+    localStorage.setItem("wv_enquiries", JSON.stringify(getEnquiries().map(item => item.id === result.enquiry.id ? result.enquiry : item)));
     reload();
-    toast.success(`Enquiry accepted — booking created for ${enq.name}. Check the Bookings tab.`);
-    sendEnquiryAcceptedEmail({
-      to: enq.email,
-      clientName: enq.name,
-      eventTitle: enq.eventTypeTitle || matchedEvent?.title,
-      preferredDate: enq.preferredDate,
-      preferredStartTime: enq.preferredStartTime,
-      preferredEndTime: enq.preferredEndTime,
-      bookingId: booking.id,
-      modifyToken,
-    }).catch(() => {});
+    toast.success(`Booking created for ${enq.name}`);
+    if (!result.replayed) {
+      const sent = await sendEnquiryAcceptedEmail({ to: enq.email, clientName: enq.name, eventTitle: result.booking.type, preferredDate: result.booking.date, preferredStartTime: result.booking.time, bookingId: result.booking.id, modifyToken: result.booking.modifyToken });
+      if (!sent.ok) toast.warning("Booking created, but email was not sent. Retry using Booking Reminder.");
+    }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not accept enquiry");
+    } finally {
+      acceptingRef.current = false;
+      setAcceptingId(null);
+    }
   };
 
   const handleDecline = (enq: Enquiry) => {
@@ -241,11 +226,12 @@ function EnquiriesView() {
                   </div>
                 ) : (
                   <div className="flex gap-2 flex-wrap items-center">
-                    {enq.status === "pending" && (
+                    {(enq.status === "pending" || enq.status === "accepted" && !enq.bookingId) && (
                       <>
                         <Button
                           size="sm"
                           onClick={() => handleAccept(enq)}
+                          disabled={acceptingId !== null}
                           className="font-body text-xs gap-1.5 bg-green-600/90 hover:bg-green-600 text-white"
                         >
                           <CheckCircle2 className="w-3.5 h-3.5" /> Accept & Create Booking
@@ -292,9 +278,9 @@ function ProfileView() {
     reader.readAsDataURL(file);
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!profile.name.trim()) { toast.error("Name is required"); return; }
-    setProfile(profile);
+    if (!(await setProfile(profile))) return;
     toast.success("Profile saved!");
   };
 

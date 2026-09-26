@@ -6,6 +6,7 @@ import { BrowserRouter, Routes, Route, useParams } from "react-router-dom";
 import { useState, useCallback, useEffect, lazy, Suspense } from "react";
 import type { ComponentType } from "react";
 import { Capacitor } from "@capacitor/core";
+import { hasPendingWrite } from "./lib/pending-writes";
 import { isSetupComplete, isLoggedIn, logout } from "./lib/storage";
 import { ADMIN_API_TOKEN_KEY, syncFromServer, getTenantByDomain, NATIVE_API_ORIGIN, verifyAdminSession } from "./lib/api";
 import { CustomDomainContext } from "./lib/custom-domain-context";
@@ -180,7 +181,7 @@ async function syncPublicConfig(): Promise<void> {
     ["wv_event_types", payload.eventTypes ?? payload.event_types],
   ];
   for (const [key, value] of safeEntries) {
-    if (value !== undefined && value !== null) localStorage.setItem(key, JSON.stringify(value));
+    if (value !== undefined && value !== null && !hasPendingWrite(key)) localStorage.setItem(key, JSON.stringify(value));
   }
   window.dispatchEvent(new CustomEvent("storage-synced"));
 }

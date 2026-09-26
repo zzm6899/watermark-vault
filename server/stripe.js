@@ -1,3 +1,4 @@
+const { applyInstalmentPayment } = require("./instalments");
 const stripe = require("stripe");
 const { normalizeEmail, stripePurchaseIdentity } = require("./gallery-workflow");
 const rateLimit = require("express-rate-limit");
@@ -221,6 +222,7 @@ function bookingPaymentDetails(booking) {
 }
 
 function bookingStripeCheckoutStage(booking) {
+  if (booking?.instalmentPlanActive) return { ok: false, code: "INSTALMENT_PLAN_ACTIVE", error: "Use the booking's instalment schedule to pay" };
   const status = String(booking?.paymentStatus || "").toLowerCase();
   if (status === "unpaid") return { ok: true };
   if (status === "deposit-paid") {
@@ -742,6 +744,7 @@ async function expireBookingCheckout(booking, tenantSettings = null) {
 }
 
 const SAFE_PAYMENT_BOOKING_FIELDS = [
+  "instalmentPlanActive", "conventionDetails",
   "id", "paymentReference", "clientName", "clientEmail", "phone", "date", "time", "eventTypeId", "type",
   "duration", "status", "notes", "answers", "answerLabels", "createdAt", "paymentStatus", "paymentAmount",
   "instagramHandle", "modifyToken", "depositRequired", "depositAmount", "depositMethod", "depositPaidAt", "paidAt",
@@ -891,6 +894,7 @@ async function revokeBookingCheckoutForBank(client, sessionId) {
 }
 
 function validateManualBankTransition(db, booking, nowMs) {
+  if (booking?.instalmentPlanActive) return paymentRouteError(409, "INSTALMENT_PLAN_ACTIVE", "Use the booking's instalment schedule to pay");
   const settings = parseStored(db?.wv_settings, {});
   if (bookingPaymentIsTerminal(booking)) return paymentRouteError(409, "BOOKING_NOT_PAYABLE", "Booking is no longer payable");
   if (["paid", "deposit-paid", "cash"].includes(booking?.paymentStatus)) {
@@ -1209,6 +1213,7 @@ function registerRoutes(app, { readDb, writeDb, readLicenseKeys, writeLicenseKey
         sendBookingConfirmationEmail({
           to: booking.clientEmail, clientName: booking.clientName, eventTitle: booking.type,
           date: booking.date, time: booking.time, duration: booking.duration,
+    conventionDetails: booking.conventionDetails,
           location: booking.location || "", price: booking.paymentAmount || 0, lineItems: booking.lineItems, sessionPrice: booking.sessionPrice,
           depositAmount: booking.depositAmount || 0, paymentMethod: "stripe",
           paymentStatus: booking.paymentStatus, paymentKind: result.paymentKind,
@@ -1265,6 +1270,7 @@ function registerRoutes(app, { readDb, writeDb, readLicenseKeys, writeLicenseKey
             date: booking.date,
             time: booking.time,
             duration: booking.duration,
+            conventionDetails: booking.conventionDetails,
             location: booking.location || "",
             price: booking.paymentAmount || 0, lineItems: booking.lineItems, sessionPrice: booking.sessionPrice,
             depositAmount: booking.depositAmount || 0,
@@ -1676,6 +1682,12 @@ function registerRoutes(app, { readDb, writeDb, readLicenseKeys, writeLicenseKey
           const db = readDb();
           if (isStripeEventProcessed(db, "main", event.id)) return res.json({ received: true, duplicate: true });
           const saveDb = writeDb;
+          if (metadata.type === "instalment") {
+            const result = applyInstalmentPayment(db, session, null);
+            markStripeEventProcessed(db, "main", event); writeDb(db);
+            if (result.booking && !result.duplicate) onBookingPaid?.(result.booking);
+            return res.json({ received: true, ...result, booking: undefined });
+          }
         
         if ((metadata.type === "booking-payment" || metadata.type === "booking-deposit") && metadata.bookingId) {
           const raw = db["wv_bookings"];
@@ -1757,6 +1769,7 @@ function registerRoutes(app, { readDb, writeDb, readLicenseKeys, writeLicenseKey
               date: bookings[idx].date,
               time: bookings[idx].time,
               duration: bookings[idx].duration,
+              conventionDetails: bookings[idx].conventionDetails,
               location: bookings[idx].location || "",
               price: bookings[idx].paymentAmount || 0,
               depositAmount: bookings[idx].depositAmount || 0,
@@ -2313,6 +2326,12 @@ function registerTenantStripeRoutes(app, { readDb, writeDb, readTenants, require
         await withCheckoutResourceLock(webhookResourceLockKey(`tenant:${slug}`, metadata), async () => {
           const dbData = readDb();
           if (isStripeEventProcessed(dbData, `tenant:${slug}`, event.id)) return res.json({ received: true, duplicate: true });
+          if (metadata.type === "instalment") {
+            const result = applyInstalmentPayment(dbData, session, slug);
+            markStripeEventProcessed(dbData, `tenant:${slug}`, event); writeDb(dbData);
+            if (result.booking && !result.duplicate) onBookingPaid?.(result.booking);
+            return res.json({ received: true, ...result, booking: undefined });
+          }
 
         if ((metadata.type === "tenant-booking-payment" || metadata.type === "tenant-booking-deposit") && metadata.bookingId) {
           const bookingsRaw = dbData["wv_bookings"];

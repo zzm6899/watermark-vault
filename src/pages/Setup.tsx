@@ -140,16 +140,16 @@ export default function Setup({ onComplete }: { onComplete: () => void }) {
     }
   };
 
-  const handleProfileNext = () => {
+  const handleProfileNext = async () => {
     if (!name.trim()) {
       toast.error("Name is required");
       return;
     }
-    setProfile({ name: name.trim(), bio: bio.trim(), avatar, timezone });
+    if (!(await setProfile({ name: name.trim(), bio: bio.trim(), avatar, timezone }))) return;
     setStep("event-type");
   };
 
-  const handleEventTypeNext = () => {
+  const handleEventTypeNext = async () => {
     if (!etTitle.trim()) {
       toast.error("Event type title is required");
       return;
@@ -178,7 +178,7 @@ export default function Setup({ onComplete }: { onComplete: () => void }) {
         blockedDates: [],
       },
     };
-    addEventType(et);
+    if (!(await addEventType(et))) return;
     setStep("payments");
   };
 
@@ -187,7 +187,7 @@ export default function Setup({ onComplete }: { onComplete: () => void }) {
       ...getSettings(),
       bankTransfer: { ...bankSettings, enabled: bankEnabled },
     };
-    setSettings(settings);
+    if (!(await setSettings(settings))) return;
     completeSetup();
     login();
     setStep("done");

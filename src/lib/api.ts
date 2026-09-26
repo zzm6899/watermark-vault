@@ -5,6 +5,7 @@
  */
 
 import { Capacitor } from "@capacitor/core";
+import { readPendingWrites, storePendingWrites, hasPendingWrite, type PendingWrite } from "./pending-writes";
 
 let serverAvailable: boolean | null = null;
 
@@ -165,6 +166,7 @@ const SESSION_KEY = "wv_session";
 /** Write a batch of key/value pairs from the server response into localStorage. */
 function _applyStoreData(data: Record<string, unknown>): void {
   for (const [key, value] of Object.entries(data)) {
+    if (hasPendingWrite(key) || key === "wv_albums" && readPendingWrites().some(row => row.key.startsWith("album:"))) continue;
     // Never restore session from server — auth must always be re-done per browser
     if (key === SESSION_KEY) continue;
     // Web admins authenticate with an HttpOnly cookie. Never copy the stored
@@ -294,6 +296,7 @@ async function _fetchStoreKeys(keys: string[]): Promise<boolean> {
  *   shortly after the UI first renders.
  */
 export async function syncFromServer(options: { awaitLazy?: boolean } = {}): Promise<boolean> {
+  if (_writeQueue.length) await _flushQueue();
   if (!(await checkServer())) return false;
   // Phase 1 — critical keys only (fast)
   const criticalKeys = Capacitor.isNativePlatform()
@@ -313,8 +316,9 @@ export async function syncFromServer(options: { awaitLazy?: boolean } = {}): Pro
 }
 
 // Queue for writes that arrive before server availability is confirmed
-const _writeQueue: Array<{ key: string; value: unknown }> = [];
+const _writeQueue: PendingWrite[] = readPendingWrites();
 let _flushScheduled = false;
+let _storeFlushPromise: Promise<void> | null = null;
 
 function _scheduleStoreFlush(delayMs = 0) {
   if (_flushScheduled) return;
@@ -327,113 +331,54 @@ function _scheduleStoreFlush(delayMs = 0) {
   }, delayMs);
 }
 
-async function _flushQueue() {
+function _flushQueue(): Promise<void> {
+  return _storeFlushPromise ||= flushQueuedWrites().finally(() => { _storeFlushPromise = null; });
+}
+async function flushQueuedWrites() {
   if (!(await recheckServer())) {
     _flushScheduled = false;
     if (_writeQueue.length > 0) _scheduleStoreFlush(5000);
     return;
   }
   while (_writeQueue.length > 0) {
-    const item = _writeQueue.shift()!;
+    const item = _writeQueue[0];
+    if (item.requiresCredentials) break;
     try {
-      const res = await fetch(`/api/store/${encodeURIComponent(item.key)}`, {
+      const isAlbum = item.key.startsWith("album:");
+      const res = await fetch(isAlbum ? `/api/albums/${encodeURIComponent(item.key.slice(6))}` : `/api/store/${encodeURIComponent(item.key)}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
-        body: JSON.stringify({ value: item.value }),
+        body: JSON.stringify(isAlbum ? item.value : { value: item.value }),
       });
       if (!res.ok) {
-        _writeQueue.unshift(item);
+        item.error = res.status === 401 || res.status === 403 ? "Sign in to save pending changes" : `Save rejected (${res.status}). Review your changes and retry.`;
+        storePendingWrites(_writeQueue);
         break;
       }
+      if (_writeQueue[0] === item) _writeQueue.shift();
+      storePendingWrites(_writeQueue);
     } catch {
-      _writeQueue.unshift(item);
       break;
     }
   }
   _flushScheduled = false;
-  if (_writeQueue.length > 0) _scheduleStoreFlush(5000);
-}
-
-// Separate queue for album writes (use the per-album PUT endpoint)
-const _albumWriteQueue: Array<{ albumId: string; album: import("./types").Album }> = [];
-let _albumFlushScheduled = false;
-
-function _scheduleAlbumFlush(delayMs = 0) {
-  if (_albumFlushScheduled) return;
-  _albumFlushScheduled = true;
-  globalThis.setTimeout(() => {
-    _flushAlbumQueue().catch(() => {
-      _albumFlushScheduled = false;
-      if (_albumWriteQueue.length > 0) _scheduleAlbumFlush(5000);
-    });
-  }, delayMs);
-}
-
-async function _flushAlbumQueue() {
-  if (!(await recheckServer())) {
-    _albumFlushScheduled = false;
-    if (_albumWriteQueue.length > 0) _scheduleAlbumFlush(5000);
-    return;
-  }
-  while (_albumWriteQueue.length > 0) {
-    const item = _albumWriteQueue.shift()!;
-    try {
-      const res = await fetch(`/api/albums/${encodeURIComponent(item.albumId)}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
-        body: JSON.stringify(item.album),
-        keepalive: true,
-      });
-      if (!res.ok) {
-        _albumWriteQueue.unshift(item);
-        break;
-      }
-    } catch {
-      _albumWriteQueue.unshift(item);
-      break;
-    }
-  }
-  _albumFlushScheduled = false;
-  if (_albumWriteQueue.length > 0) _scheduleAlbumFlush(5000);
+  if (_writeQueue.length > 0 && !_writeQueue[0].error) _scheduleStoreFlush(5000);
 }
 
 /** Fire-and-forget persist a key to the server.
  *  If the server check hasn't completed yet, queues the write and flushes once it has. */
 export function persistToServer(key: string, value: unknown): void {
-  if (serverAvailable === true) {
-    // Fast path — server known available.
-    // keepalive: true ensures the request survives a page unload / navigation
-    // so that data written just before a reload is not silently dropped.
-    fetch(`/api/store/${encodeURIComponent(key)}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
-      body: JSON.stringify({ value }),
-      keepalive: true,
-    }).then((res) => {
-      if (!res.ok) {
-        const existing = _writeQueue.findIndex(w => w.key === key);
-        if (existing >= 0) _writeQueue[existing].value = value;
-        else _writeQueue.push({ key, value });
-        _scheduleStoreFlush(5000);
-      }
-    }).catch(() => {
-      const existing = _writeQueue.findIndex(w => w.key === key);
-      if (existing >= 0) _writeQueue[existing].value = value;
-      else _writeQueue.push({ key, value });
-      _scheduleStoreFlush(5000);
-    });
-    return;
-  }
-
-  // Server availability is unknown or was previously false. Queue the latest
-  // value and keep retrying so a transient health-check failure does not leave
-  // data local-only forever.
-  // Deduplicate: if same key is already queued, replace it
-  const existing = _writeQueue.findIndex(w => w.key === key);
-  if (existing >= 0) _writeQueue[existing].value = value;
-  else _writeQueue.push({ key, value });
-
+  if (key === "wv_session" || key === "wv_admin") return;
+  const item = { key, value };
+  const index = _writeQueue.findIndex(write => write.key === key);
+  if (index >= 0) _writeQueue[index] = item;
+  else _writeQueue.push(item);
+  storePendingWrites(_writeQueue);
   _scheduleStoreFlush();
+}
+
+export async function retryPendingWrites(): Promise<void> {
+  await _flushQueue();
 }
 
 /** Fire-and-forget persist a single album to the server via the per-album endpoint.
@@ -442,37 +387,17 @@ export function persistToServer(key: string, value: unknown): void {
  *  keepalive: true ensures the request is not cancelled on page unload.
  *  If the server check has not yet completed, queues the write and flushes once it has. */
 export function persistAlbumToServer(albumId: string, album: import("./types").Album): void {
-  // Always serialize writes for the same album. Rapid photo deletions otherwise
-  // race one another and an older additive save can restore a later deletion.
-  const existing = _albumWriteQueue.findIndex(w => w.albumId === albumId);
-  if (existing >= 0) _albumWriteQueue[existing].album = album;
-  else _albumWriteQueue.push({ albumId, album });
-
-  _scheduleAlbumFlush(serverAvailable === true ? 0 : 5000);
+  persistToServer(`album:${albumId}`, album);
 }
 
 /** Persist one album and report whether the server accepted it. */
 export async function saveAlbumToServer(albumId: string, album: import("./types").Album): Promise<{ ok: boolean; error?: string }> {
-  const online = await checkServer();
-  if (!online) return { ok: false, error: "Server is offline. Changes are saved locally and will retry when sync reconnects." };
-
   try {
-    const res = await fetch(`/api/albums/${encodeURIComponent(albumId)}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
-      body: JSON.stringify(album),
-    });
-    if (!res.ok) {
-      const body = await readJson<{ error?: string } | null>(res, null);
-      return { ok: false, error: body?.error || `Server rejected the save (${res.status})` };
-    }
-    return { ok: true };
-  } catch (err) {
-    return {
-      ok: false,
-      error: err instanceof Error ? err.message : "Could not reach the server. Changes are saved locally and will retry.",
-    };
-  }
+    persistAlbumToServer(albumId, album);
+    await retryPendingWrites();
+    const pending = readPendingWrites().find(row => row.key === `album:${albumId}`);
+    return pending ? { ok: false, error: pending.error || "Saved on this device; server confirmation is pending. Reconnect to retry." } : { ok: true };
+  } catch (error) { return { ok: false, error: error instanceof Error ? error.message : "Could not save gallery" }; }
 }
 
 /** Persist only the manually selected album/proofing status and wait for acknowledgement. */
@@ -684,6 +609,7 @@ export async function uploadPhotosToServer(
   autoEditStrength: "subtle" | "balanced" | "strong" = "balanced",
   autoEditProfile?: string,
   onFileUploaded?: (file: File, result: UploadedPhotoResult) => void,
+  captureId?: string,
 ): Promise<UploadedPhotoResult[]> {
   if (!(await checkServer())) return [];
   // Proofs should reach the client first. Keep RAW/large source files queued
@@ -748,7 +674,7 @@ export async function uploadPhotosToServer(
       const form = new FormData();
       batch.forEach((f) => form.append("photos", f));
       try {
-        const res = await fetch(uploadUrl, { method: "POST", headers: adminAuthHeaders(), body: form });
+        const res = await fetch(uploadUrl, { method: "POST", headers: { ...adminAuthHeaders(), ...(captureId ? { "X-Capture-Id": captureId } : {}) }, body: form });
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
           const authenticationFailure = res.status === 401 || res.status === 403;
@@ -3353,36 +3279,38 @@ export async function deleteIcalToken(): Promise<boolean> {
   } catch { return false; }
 }
 
+export function studioApiUrl(url: string, tenantSlug?: string) { return tenantSlug ? `${url}${url.includes("?") ? "&" : "?"}tenant=${encodeURIComponent(tenantSlug)}` : url; }
+
 // ─── Expenses ─────────────────────────────────────────────────────────────────
 
-export async function getExpenses(): Promise<import("./types").Expense[]> {
+export async function getExpenses(tenantSlug?: string): Promise<import("./types").Expense[]> {
   try {
-    const res = await fetch("/api/expenses", { headers: adminAuthHeaders() });
+    const res = await fetch(studioApiUrl("/api/expenses", tenantSlug), { headers: adminAuthHeaders() });
     if (!res.ok) return [];
     const data = await res.json();
     return Array.isArray(data) ? data : [];
   } catch { return []; }
 }
 
-export async function createExpense(data: Partial<import("./types").Expense>): Promise<import("./types").Expense | null> {
+export async function createExpense(data: Partial<import("./types").Expense>, tenantSlug?: string): Promise<import("./types").Expense | null> {
   try {
-    const res = await fetch("/api/expenses", { method: "POST", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify(data) });
+    const res = await fetch(studioApiUrl("/api/expenses", tenantSlug), { method: "POST", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify(data) });
     if (!res.ok) return null;
     return res.json();
   } catch { return null; }
 }
 
-export async function updateExpense(id: string, data: Partial<import("./types").Expense>): Promise<import("./types").Expense | null> {
+export async function updateExpense(id: string, data: Partial<import("./types").Expense>, tenantSlug?: string): Promise<import("./types").Expense | null> {
   try {
-    const res = await fetch(`/api/expenses/${encodeURIComponent(id)}`, { method: "PUT", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify(data) });
+    const res = await fetch(studioApiUrl(`/api/expenses/${encodeURIComponent(id)}`, tenantSlug), { method: "PUT", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify(data) });
     if (!res.ok) return null;
     return res.json();
   } catch { return null; }
 }
 
-export async function deleteExpense(id: string): Promise<boolean> {
+export async function deleteExpense(id: string, tenantSlug?: string): Promise<boolean> {
   try {
-    const res = await fetch(`/api/expenses/${encodeURIComponent(id)}`, { method: "DELETE", headers: adminAuthHeaders() });
+    const res = await fetch(studioApiUrl(`/api/expenses/${encodeURIComponent(id)}`, tenantSlug), { method: "DELETE", headers: adminAuthHeaders() });
     return res.ok;
   } catch { return false; }
 }
@@ -3392,41 +3320,41 @@ export async function deleteExpense(id: string): Promise<boolean> {
 export type PublicQuote = Omit<import("./types").Quote, "shareToken" | "bookingId" | "convertedInvoiceId">;
 export type PublicQuoteResponse = Partial<PublicQuote> & Pick<PublicQuote, "status">;
 
-export async function getQuotes(): Promise<import("./types").Quote[]> {
+export async function getQuotes(tenantSlug?: string): Promise<import("./types").Quote[]> {
   try {
-    const res = await fetch("/api/quotes", { headers: adminAuthHeaders() });
+    const res = await fetch(studioApiUrl("/api/quotes", tenantSlug), { headers: adminAuthHeaders() });
     if (!res.ok) return [];
     return res.json();
   } catch { return []; }
 }
 
-export async function createQuote(data: Partial<import("./types").Quote>): Promise<import("./types").Quote | null> {
+export async function createQuote(data: Partial<import("./types").Quote>, tenantSlug?: string): Promise<import("./types").Quote | null> {
   try {
-    const res = await fetch("/api/quotes", { method: "POST", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify(data) });
+    const res = await fetch(studioApiUrl("/api/quotes", tenantSlug), { method: "POST", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify(data) });
     if (!res.ok) return null;
     return res.json();
   } catch { return null; }
 }
 
-export async function updateQuote(id: string, data: Partial<import("./types").Quote>): Promise<import("./types").Quote | null> {
+export async function updateQuote(id: string, data: Partial<import("./types").Quote>, tenantSlug?: string): Promise<import("./types").Quote | null> {
   try {
-    const res = await fetch(`/api/quotes/${encodeURIComponent(id)}`, { method: "PUT", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify(data) });
+    const res = await fetch(studioApiUrl(`/api/quotes/${encodeURIComponent(id)}`, tenantSlug), { method: "PUT", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify(data) });
     if (!res.ok) return null;
     return res.json();
   } catch { return null; }
 }
 
-export async function convertQuoteToInvoice(id: string, dueDate?: string): Promise<{ invoice: import("./types").Invoice; quote: import("./types").Quote } | null> {
+export async function convertQuoteToInvoice(id: string, dueDate?: string, tenantSlug?: string): Promise<{ invoice: import("./types").Invoice; quote: import("./types").Quote } | null> {
   try {
-    const res = await fetch(`/api/quotes/${encodeURIComponent(id)}/convert`, { method: "POST", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify({ dueDate }) });
+    const res = await fetch(studioApiUrl(`/api/quotes/${encodeURIComponent(id)}/convert`, tenantSlug), { method: "POST", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify({ dueDate }) });
     if (!res.ok) return null;
     return res.json();
   } catch { return null; }
 }
 
-export async function deleteQuote(id: string): Promise<boolean> {
+export async function deleteQuote(id: string, tenantSlug?: string): Promise<boolean> {
   try {
-    const res = await fetch(`/api/quotes/${encodeURIComponent(id)}`, { method: "DELETE", headers: adminAuthHeaders() });
+    const res = await fetch(studioApiUrl(`/api/quotes/${encodeURIComponent(id)}`, tenantSlug), { method: "DELETE", headers: adminAuthHeaders() });
     return res.ok;
   } catch { return false; }
 }
@@ -3643,18 +3571,18 @@ export async function deletePhotoComment(albumId: string, photoId: string, comme
 
 // ─── Contracts ────────────────────────────────────────────────────────────────
 
-export async function getContracts(bookingId?: string): Promise<import("./types").BookingContract[]> {
+export async function getContracts(bookingId?: string, tenantSlug?: string): Promise<import("./types").BookingContract[]> {
   try {
     const url = bookingId ? `/api/contracts?bookingId=${encodeURIComponent(bookingId)}` : "/api/contracts";
-    const res = await fetch(url, { headers: adminAuthHeaders() });
+    const res = await fetch(studioApiUrl(url, tenantSlug), { headers: adminAuthHeaders() });
     if (!res.ok) return [];
     return res.json();
   } catch { return []; }
 }
 
-export async function createContract(formData: FormData): Promise<import("./types").BookingContract | null> {
+export async function createContract(formData: FormData, tenantSlug?: string): Promise<import("./types").BookingContract | null> {
   try {
-    const res = await fetch("/api/contracts", { method: "POST", body: formData, headers: adminAuthHeaders() });
+    const res = await fetch(studioApiUrl("/api/contracts", tenantSlug), { method: "POST", body: formData, headers: adminAuthHeaders() });
     if (!res.ok) return null;
     return res.json();
   } catch { return null; }
@@ -3680,34 +3608,34 @@ export async function signContract(token: string, signedName: string): Promise<{
   } catch { return null; }
 }
 
-export async function deleteContract(id: string): Promise<boolean> {
+export async function deleteContract(id: string, tenantSlug?: string): Promise<boolean> {
   try {
-    const res = await fetch(`/api/contracts/${encodeURIComponent(id)}`, { method: "DELETE", headers: adminAuthHeaders() });
+    const res = await fetch(studioApiUrl(`/api/contracts/${encodeURIComponent(id)}`, tenantSlug), { method: "DELETE", headers: adminAuthHeaders() });
     return res.ok;
   } catch { return false; }
 }
 
 // ─── Payment Instalments ──────────────────────────────────────────────────────
 
-export async function getInstalments(bookingId: string): Promise<import("./types").PaymentInstalment[]> {
+export async function getInstalments(bookingId: string, tenantSlug?: string): Promise<import("./types").PaymentInstalment[]> {
   try {
-    const res = await fetch(`/api/bookings/${encodeURIComponent(bookingId)}/instalments`, { headers: adminAuthHeaders() });
+    const res = await fetch(studioApiUrl(`/api/bookings/${encodeURIComponent(bookingId)}/instalments`, tenantSlug), { headers: adminAuthHeaders() });
     if (!res.ok) return [];
     return res.json();
   } catch { return []; }
 }
 
-export async function createInstalment(bookingId: string, data: Partial<import("./types").PaymentInstalment>): Promise<import("./types").PaymentInstalment | null> {
+export async function createInstalment(bookingId: string, data: Partial<import("./types").PaymentInstalment>, tenantSlug?: string): Promise<import("./types").PaymentInstalment | null> {
   try {
-    const res = await fetch(`/api/bookings/${encodeURIComponent(bookingId)}/instalments`, { method: "POST", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify(data) });
+    const res = await fetch(studioApiUrl(`/api/bookings/${encodeURIComponent(bookingId)}/instalments`, tenantSlug), { method: "POST", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify(data) });
     if (!res.ok) return null;
     return res.json();
   } catch { return null; }
 }
 
-export async function updateInstalment(id: string, data: Partial<import("./types").PaymentInstalment>): Promise<import("./types").PaymentInstalment | null> {
+export async function updateInstalment(id: string, data: Partial<import("./types").PaymentInstalment>, tenantSlug?: string): Promise<import("./types").PaymentInstalment | null> {
   try {
-    const res = await fetch(`/api/instalments/${encodeURIComponent(id)}`, { method: "PUT", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify(data) });
+    const res = await fetch(studioApiUrl(`/api/instalments/${encodeURIComponent(id)}`, tenantSlug), { method: "PUT", headers: { "Content-Type": "application/json", ...adminAuthHeaders() }, body: JSON.stringify(data) });
     if (!res.ok) return null;
     return res.json();
   } catch { return null; }
@@ -3774,4 +3702,11 @@ export async function deleteTenantIcalToken(slug: string): Promise<boolean> {
     const res = await fetch(`/api/tenant/${encodeURIComponent(slug)}/ical/token`, { method: "DELETE" });
     return res.ok;
   } catch { return false; }
+}
+
+export async function acceptEnquiry(id: string, tenantSlug?: string): Promise<{ enquiry: import("./types").Enquiry; booking: import("./types").Booking; replayed?: boolean }> {
+  const response = await fetch(studioApiUrl(`/api/enquiries/${encodeURIComponent(id)}/accept`, tenantSlug), { method: "POST", headers: adminAuthHeaders() });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || "Could not accept enquiry");
+  return result;
 }

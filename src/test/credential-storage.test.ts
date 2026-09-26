@@ -1,11 +1,11 @@
 import { expect, it, vi } from "vitest";
 import { getSettings, setSettings } from "@/lib/storage";
 import { persistToServer } from "@/lib/api";
-vi.mock("@/lib/api", () => ({ persistToServer: vi.fn() }));
-it("sends secrets to the server without caching them and cleans legacy cached credentials", () => {
+vi.mock("@/lib/api", () => ({ persistToServer: vi.fn(), retryPendingWrites: vi.fn().mockResolvedValue(undefined) }));
+it("sends secrets to the server without caching them and cleans legacy cached credentials", async () => {
   localStorage.clear();
   const settings = { ...getSettings(), discordWebhookUrl: "PRIVATE_WEBHOOK" };
-  setSettings(settings);
+  expect(await setSettings(settings)).toBe(true);
   expect(persistToServer).toHaveBeenCalledWith("wv_settings", settings);
   expect(localStorage.getItem("wv_settings")).not.toContain("PRIVATE_WEBHOOK");
   localStorage.setItem("wv_settings", JSON.stringify(settings));

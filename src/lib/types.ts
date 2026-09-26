@@ -52,7 +52,16 @@ export interface BookingLineItem {
   total: number;
 }
 
+export interface ConventionDetails {
+  meetingPoint?: string;
+  mapUrl?: string;
+  arrivalInstructions?: string;
+  deliveryDays?: number;
+  deliveryDate?: string;
+}
+
 export interface EventType {
+  conventionDetails?: ConventionDetails;
   proofingPhotoSelection?: "off" | "optional" | "required";
   proofingInstructions?: string;
   proofingMessages?: Record<string, string>;
@@ -118,6 +127,11 @@ export interface BookingPaymentReviewEntry {
 }
 
 export interface Booking {
+  conventionDetails?: ConventionDetails;
+  instalmentPlanActive?: boolean;
+  instalmentBasePaid?: number;
+  instalmentBaseMethod?: "stripe" | "bank" | "cash";
+  instalmentPayments?: Array<{ id: string; sessionId?: string; amount: number; method: "stripe" | "bank" | "cash"; paidAt: string }>;
   sessionPrice?: number;
   lineItems?: BookingLineItem[];
   id: string;
@@ -983,6 +997,8 @@ export interface Quote {
 export type InstalmentStatus = "pending" | "paid" | "overdue" | "waived";
 
 export interface PaymentInstalment {
+  currency?: string;
+  method?: "bank" | "cash" | "stripe";
   id: string;
   bookingId: string;            // or invoiceId — whichever this is tied to
   invoiceId?: string;
