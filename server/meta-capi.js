@@ -78,4 +78,32 @@ async function sendScheduleEvent(booking, configuredAccessToken = process.env.ME
   return true;
 }
 
-module.exports = { captureMetaCapiContext, sendScheduleEvent };
+async function sendTestPurchaseEvent(accessToken, testEventCode) {
+  const pixelId = String(process.env.META_PIXEL_ID || DEFAULT_PIXEL_ID).trim();
+  if (!pixelId || !String(accessToken || "").trim() || !String(testEventCode || "").trim()) return false;
+  const url = new URL(`https://graph.facebook.com/${GRAPH_API_VERSION}/${encodeURIComponent(pixelId)}/events`);
+  url.searchParams.set("access_token", String(accessToken).trim());
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      data: [{
+        event_name: "Purchase",
+        event_time: Math.floor(Date.now() / 1000),
+        event_id: `test-purchase-${crypto.randomUUID()}`,
+        action_source: "website",
+        event_source_url: String(process.env.APP_BASE_URL || "https://book.zacmclients.photos"),
+        user_data: { em: [hash("test@example.com")], client_user_agent: "PhotoFlow Meta CAPI test" },
+        custom_data: { currency: "AUD", value: 1 },
+      }],
+      test_event_code: String(testEventCode).trim(),
+    }),
+    signal: AbortSignal.timeout(5000),
+  });
+  if (!response.ok) throw new Error(`Meta Conversions API returned HTTP ${response.status}`);
+  const result = await response.json();
+  if (result.events_received !== 1) throw new Error("Meta did not accept the test Purchase event");
+  return true;
+}
+
+module.exports = { captureMetaCapiContext, sendScheduleEvent, sendTestPurchaseEvent };

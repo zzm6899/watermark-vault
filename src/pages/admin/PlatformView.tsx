@@ -14,7 +14,7 @@ import {
   getLicenseKeys, generateLicenseKey, updateLicenseKeyStorageLimit, revokeLicenseKey, createTenant, updateTenant, deleteTenant,
   getSuperStats, getAllBookings, getLicensePlans, createLicensePlan, deleteLicensePlan,
   getLicensePurchases, getTenantSettings, saveTenantSettings, getSuperAdminWebhooks,
-  getSuperAdminMetaSettings, saveSuperAdminMetaAccessToken,
+  getSuperAdminMetaSettings, saveSuperAdminMetaAccessToken, sendSuperAdminMetaTestPurchase,
   getEventSlotRequests, confirmEventSlotRequest, rejectEventSlotRequest,
 } from "@/lib/api";
 import type {
@@ -762,8 +762,10 @@ function MetaAdsPanel() {
     pixelId?: string; accessTokenSet?: boolean; tokenSource?: "admin" | "environment" | "none";
   } | null>(null);
   const [token, setToken] = useState("");
+  const [testEventCode, setTestEventCode] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [sendingTestPurchase, setSendingTestPurchase] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -782,6 +784,14 @@ function MetaAdsPanel() {
     setToken("");
     toast.success(value ? "Meta access token saved" : "Admin token cleared");
     await load();
+  };
+
+  const sendTestPurchase = async () => {
+    setSendingTestPurchase(true);
+    const result = await sendSuperAdminMetaTestPurchase(testEventCode.trim());
+    setSendingTestPurchase(false);
+    if (!result.ok) { toast.error(result.error || "Could not send test Purchase"); return; }
+    toast.success("Test Purchase sent: A$1.00 AUD. Check Meta Events Manager → Test Events.");
   };
 
   return (
@@ -823,6 +833,22 @@ function MetaAdsPanel() {
             </div>
           </div>
           <p className="text-[11px] font-body text-muted-foreground">A token saved here overrides the deployment environment token. Clearing it returns to the environment value, if one is set.</p>
+          <div className="border-t border-border/60 pt-4 space-y-2">
+            <h4 className="text-sm font-body font-medium text-foreground">Send a test Purchase</h4>
+            <p className="text-xs font-body text-muted-foreground">Sends a synthetic A$1.00 AUD Purchase with test data to Meta Test Events.</p>
+            <div className="flex flex-wrap gap-2">
+              <Input
+                value={testEventCode}
+                onChange={event => setTestEventCode(event.target.value)}
+                placeholder="Meta Test Event Code"
+                aria-label="Meta Test Event Code"
+                className="bg-background border-border text-foreground font-body text-xs font-mono flex-1 min-w-48"
+              />
+              <Button size="sm" disabled={!settings?.accessTokenSet || !testEventCode.trim() || sendingTestPurchase} onClick={sendTestPurchase} className="font-body text-xs">
+                {sendingTestPurchase ? "Sending…" : "Send test Purchase"}
+              </Button>
+            </div>
+          </div>
         </>
       )}
     </div>

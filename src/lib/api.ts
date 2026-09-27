@@ -1797,6 +1797,20 @@ export async function saveSuperAdminMetaAccessToken(accessToken: string): Promis
   } catch { return { ok: false, error: "Network error" }; }
 }
 
+export async function sendSuperAdminMetaTestPurchase(testEventCode: string): Promise<{
+  ok: boolean; event?: string; value?: number; currency?: string; error?: string;
+}> {
+  try {
+    const res = await fetch("/api/super-admin/meta-test-purchase", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
+      body: JSON.stringify({ testEventCode }),
+    });
+    const data = await res.json();
+    return res.ok ? data : { ok: false, error: data.error || "Failed to send Meta test event" };
+  } catch { return { ok: false, error: "Network error" }; }
+}
+
 // ── Invoices ───────────────────────────────────────────────────
 
 export async function fetchAdminInvoices(): Promise<{ ok: boolean; invoices: import("./types").Invoice[]; error?: string }> {

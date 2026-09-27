@@ -8,7 +8,7 @@ const compression = require("compression");
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
-const { captureMetaCapiContext, sendScheduleEvent } = require("./meta-capi");
+const { captureMetaCapiContext, sendScheduleEvent, sendTestPurchaseEvent } = require("./meta-capi");
 const { createSqliteStore } = require("./sqlite-store");
 const { tenantStorageLimitBytes, tenantStorageUsage } = require("./tenant-storage");
 const sharp = require("sharp");
@@ -6014,6 +6014,30 @@ app.put("/api/super-admin/meta-settings", async (req, res) => {
   writeDb(db);
   res.setHeader("Cache-Control", "no-store");
   res.json({ ok: true, accessTokenSet: !!(token || process.env.META_CAPI_ACCESS_TOKEN), tokenSource: token ? "admin" : process.env.META_CAPI_ACCESS_TOKEN ? "environment" : "none" });
+});
+
+app.post("/api/super-admin/meta-test-purchase", async (req, res) => {
+  const configuredSuperAdmin = String(process.env.SUPER_ADMIN_USERNAME || "").trim();
+  if (!configuredSuperAdmin) return res.status(403).json({ ok: false, error: "Super admin not configured" });
+  const username = await authenticatedAdminUsername(req);
+  if (!username) return res.status(401).json({ ok: false, error: "Authentication required" });
+  if (username.toLowerCase() !== configuredSuperAdmin.toLowerCase()) return res.status(403).json({ ok: false, error: "Forbidden" });
+
+  const testEventCode = typeof req.body?.testEventCode === "string" ? req.body.testEventCode.trim() : "";
+  if (!/^[A-Za-z0-9_-]{1,100}$/.test(testEventCode)) {
+    return res.status(400).json({ ok: false, error: "Enter a valid Meta Test Event Code" });
+  }
+  if (!getMetaCapiAccessToken()) return res.status(400).json({ ok: false, error: "Save a Meta access token first" });
+  try {
+    if (!await sendTestPurchaseEvent(getMetaCapiAccessToken(), testEventCode)) {
+      return res.status(502).json({ ok: false, error: "Meta did not accept the test Purchase event" });
+    }
+    res.setHeader("Cache-Control", "no-store");
+    return res.json({ ok: true, event: "Purchase", value: 1, currency: "AUD" });
+  } catch (error) {
+    console.error("Meta test Purchase event failed:", error?.message || error);
+    return res.status(502).json({ ok: false, error: "Meta rejected the test Purchase event" });
+  }
 });
 
 // ── Proofing submission endpoint ──────────────────────
