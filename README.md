@@ -431,6 +431,8 @@ All configuration is done via environment variables in `docker-compose.yml`:
 | `SETUP_TOKEN` | One-time authorization token for remote setup | — |
 | `APP_BASE_URL` | Trusted public origin used in email and payment links | — |
 | `APP_HOSTS` | Comma-separated public host allowlist | — |
+| `META_PIXEL_ID` | Meta Pixel/dataset ID for confirmed booking events | `765594655944429` |
+| `META_CAPI_ACCESS_TOKEN` | Optional server-only Meta token fallback; can also be saved in Platform Admin → Meta Ads | — |
 | `ALLOWED_ORIGINS` | Additional exact browser origins allowed by CORS | — |
 | `NATIVE_APP_ORIGINS` | Exact Capacitor origins allowed to use cross-site session cookies | — |
 | `EMAIL_SERVER_HOST` | SMTP server hostname | — |
@@ -446,6 +448,8 @@ All configuration is done via environment variables in `docker-compose.yml`:
 | `VAPID_PUBLIC_KEY` | Web Push VAPID public key | — |
 | `VAPID_PRIVATE_KEY` | Web Push VAPID private key | — |
 | `VAPID_SUBJECT` | Web Push subject (mailto:) | — |
+
+PhotoFlow sends one `Schedule` event for each main-studio public booking once it is confirmed. Save the rotated access token in Platform Admin → Meta Ads; it stays server-side and overrides the optional `META_CAPI_ACCESS_TOKEN` environment value. The Pixel ID defaults to `765594655944429`.
 
 ---
 

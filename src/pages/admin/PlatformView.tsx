@@ -14,6 +14,7 @@ import {
   getLicenseKeys, generateLicenseKey, updateLicenseKeyStorageLimit, revokeLicenseKey, createTenant, updateTenant, deleteTenant,
   getSuperStats, getAllBookings, getLicensePlans, createLicensePlan, deleteLicensePlan,
   getLicensePurchases, getTenantSettings, saveTenantSettings, getSuperAdminWebhooks,
+  getSuperAdminMetaSettings, saveSuperAdminMetaAccessToken,
   getEventSlotRequests, confirmEventSlotRequest, rejectEventSlotRequest,
 } from "@/lib/api";
 import type {
@@ -756,6 +757,78 @@ function TenantSettingsPanel({ tenant, onClose }: { tenant: Tenant; onClose: () 
   );
 }
 
+function MetaAdsPanel() {
+  const [settings, setSettings] = useState<{
+    pixelId?: string; accessTokenSet?: boolean; tokenSource?: "admin" | "environment" | "none";
+  } | null>(null);
+  const [token, setToken] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const result = await getSuperAdminMetaSettings();
+    if (!result.ok) toast.error(result.error || "Could not load Meta settings");
+    else setSettings(result);
+    setLoading(false);
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const save = async (value: string) => {
+    setSaving(true);
+    const result = await saveSuperAdminMetaAccessToken(value);
+    setSaving(false);
+    if (!result.ok) { toast.error(result.error || "Could not save Meta token"); return; }
+    setToken("");
+    toast.success(value ? "Meta access token saved" : "Admin token cleared");
+    await load();
+  };
+
+  return (
+    <div className="glass-panel rounded-xl p-5 space-y-4 max-w-2xl">
+      <div>
+        <h3 className="font-display text-base text-foreground">Meta Ads Conversions API</h3>
+        <p className="text-xs font-body text-muted-foreground mt-1">Send a Schedule event when a booking is confirmed. The access token is stored on the server and never shown after saving.</p>
+      </div>
+      {loading ? <p className="text-xs text-muted-foreground animate-pulse">Loading Meta settings…</p> : (
+        <>
+          <div className="flex items-center justify-between rounded-lg bg-secondary/40 border border-border/50 px-3 py-2">
+            <span className="text-xs font-body text-muted-foreground">Pixel ID</span>
+            <span className="text-xs font-mono text-foreground">{settings?.pixelId || "Not configured"}</span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-body text-muted-foreground">Access token</span>
+            <span className={`text-xs font-body ${settings?.accessTokenSet ? "text-green-400" : "text-amber-400"}`}>
+              {settings?.tokenSource === "admin" ? "Configured in admin" : settings?.tokenSource === "environment" ? "Using deployment environment" : "Not configured"}
+            </span>
+          </div>
+          <div className="space-y-2">
+            <Input
+              type="password"
+              autoComplete="new-password"
+              value={token}
+              onChange={event => setToken(event.target.value)}
+              placeholder={settings?.accessTokenSet ? "Enter replacement access token" : "Paste rotated Meta access token"}
+              className="bg-background border-border text-foreground font-body text-xs font-mono"
+            />
+            <div className="flex flex-wrap gap-2">
+              <Button size="sm" disabled={!token.trim() || saving} onClick={() => save(token)} className="font-body text-xs">
+                {saving ? "Saving…" : "Save access token"}
+              </Button>
+              {settings?.tokenSource === "admin" && (
+                <Button size="sm" variant="outline" disabled={saving} onClick={() => save("")} className="font-body text-xs">
+                  Clear admin token
+                </Button>
+              )}
+            </div>
+          </div>
+          <p className="text-[11px] font-body text-muted-foreground">A token saved here overrides the deployment environment token. Clearing it returns to the environment value, if one is set.</p>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ─── Platform View (Super Admin Only) ────────────────
 export default function PlatformView() {
   const [stats, setStats] = useState<{
@@ -766,7 +839,7 @@ export default function PlatformView() {
   const [plans, setPlans] = useState<LicensePlan[]>([]);
   const [purchases, setPurchases] = useState<LicensePurchase[]>([]);
   const [loadingStats, setLoadingStats] = useState(true);
-  const [activeSection, setActiveSection] = useState<"overview" | "bookings" | "tenants" | "keys" | "event-slots" | "plans" | "purchases" | "webhooks">("overview");
+  const [activeSection, setActiveSection] = useState<"overview" | "bookings" | "tenants" | "keys" | "event-slots" | "plans" | "purchases" | "webhooks" | "meta">("overview");
   const [selectedTenantForSettings, setSelectedTenantForSettings] = useState<Tenant | null>(null);
 
   // Tenant create form
@@ -961,6 +1034,7 @@ export default function PlatformView() {
     { id: "purchases", label: "Purchases", shortLabel: "Sales" },
     { id: "bookings", label: "All Bookings", shortLabel: "Bookings" },
     { id: "webhooks", label: "Webhooks", shortLabel: "Hooks" },
+    { id: "meta", label: "Meta Ads", shortLabel: "Meta" },
   ] as const;
 
   return (
@@ -1515,6 +1589,8 @@ export default function PlatformView() {
           )}
         </div>
       )}
+
+      {activeSection === "meta" && <MetaAdsPanel />}
     </motion.div>
   );
 }

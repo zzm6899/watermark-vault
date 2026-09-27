@@ -15,6 +15,8 @@ services:
       - CANONICAL_PORTFOLIO_HOST=${CANONICAL_PORTFOLIO_HOST:-zacmorganphotography.com}
       - APP_HOSTS=${APP_HOSTS:-book.zacmclients.photos}
       - APP_BASE_URL=${APP_BASE_URL:-https://book.zacmclients.photos}
+      - META_PIXEL_ID=${META_PIXEL_ID:-765594655944429}
+      - META_CAPI_ACCESS_TOKEN=${META_CAPI_ACCESS_TOKEN:-}
       # Keep false when port 5066 is directly exposed. Set to the exact trusted
       # proxy hop count (commonly 1) only when every request passes that proxy.
       - TRUST_PROXY=${TRUST_PROXY:-false}

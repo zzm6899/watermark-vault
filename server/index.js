@@ -8,6 +8,7 @@ const compression = require("compression");
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
+const { captureMetaCapiContext, sendScheduleEvent } = require("./meta-capi");
 const { createSqliteStore } = require("./sqlite-store");
 const { tenantStorageLimitBytes, tenantStorageUsage } = require("./tenant-storage");
 const sharp = require("sharp");
@@ -701,6 +702,38 @@ function writeDb(data, { durable = false } = {}) {
   _writeDebounceTimer = setTimeout(_flushDbToDisk, 300);
 }
 
+const metaScheduleEventsInFlight = new Set();
+function getMetaCapiAccessToken(db = readDb()) {
+  const settings = dbGet(db, "wv_meta_settings", {});
+  return String(settings.accessToken || process.env.META_CAPI_ACCESS_TOKEN || "").trim();
+}
+
+function queueMetaScheduleEvent(booking) {
+  if (!booking?.id || booking.tenantSlug || booking.status !== "confirmed" || booking.metaScheduleSentAt || metaScheduleEventsInFlight.has(booking.id)) return;
+  metaScheduleEventsInFlight.add(booking.id);
+  setImmediate(async () => {
+    try {
+      const db = readDb();
+      const bookings = getStoredArray(db, DB_KEYS.BOOKINGS);
+      const current = bookings.find(item => !item?.tenantSlug && item.id === booking.id);
+      if (!current || current.status !== "confirmed" || current.metaScheduleSentAt || !current.metaCapiContext) return;
+      if (!await sendScheduleEvent(current, getMetaCapiAccessToken(db))) return;
+      const latestDb = readDb();
+      const latestBookings = getStoredArray(latestDb, DB_KEYS.BOOKINGS);
+      const index = latestBookings.findIndex(item => !item?.tenantSlug && item.id === booking.id);
+      if (index < 0 || latestBookings[index].status !== "confirmed" || latestBookings[index].metaScheduleSentAt) return;
+      latestBookings[index] = { ...latestBookings[index], metaScheduleSentAt: new Date().toISOString() };
+      delete latestBookings[index].metaCapiContext;
+      latestDb[DB_KEYS.BOOKINGS] = JSON.stringify(latestBookings);
+      writeDb(latestDb);
+    } catch (error) {
+      console.error(`Meta Schedule event failed for booking ${booking.id}:`, error?.message || error);
+    } finally {
+      metaScheduleEventsInFlight.delete(booking.id);
+    }
+  });
+}
+
 // Flush any pending write on clean shutdown so data is never lost.
 function _flushDbSync() {
   if (_writePending && _dbCache) {
@@ -750,7 +783,7 @@ app.use((req, res, next) => {
   if (isPortfolioSiteHost(req.hostname)) {
     res.setHeader("Content-Language", "en-AU");
     res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
-    res.setHeader("Content-Security-Policy", "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; form-action 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob:; connect-src 'self'; upgrade-insecure-requests");
+    res.setHeader("Content-Security-Policy", "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; form-action 'self'; script-src 'self' https://connect.facebook.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https://www.facebook.com; connect-src 'self' https://connect.facebook.net https://www.facebook.com; upgrade-insecure-requests");
   }
   next();
 });
@@ -1574,7 +1607,7 @@ app.post("/api/setup", authLimiter, async (req, res) => {
   res.status(201).json({ ok: true });
 });
 
-const STORE_OMITTED_SECRET_KEYS = new Set([DB_KEYS.ADMIN, "wv_client_portal_failures", "wv_gcal_tokens", "wv_google_sheets_tokens", "wv_oauth_tokens"]);
+const STORE_OMITTED_SECRET_KEYS = new Set([DB_KEYS.ADMIN, "wv_meta_settings", "wv_client_portal_failures", "wv_gcal_tokens", "wv_google_sheets_tokens", "wv_oauth_tokens"]);
 const GLOBAL_STORE_SECRET_FIELDS = ["discordWebhookUrl", "smtpPassword", "stripeSecretKey", "stripeWebhookSecret", "googleApiCredentials", "ftpPassword"];
 function parseStoreObject(value) {
   if (value && typeof value === "object" && !Array.isArray(value)) return value;
@@ -1660,6 +1693,7 @@ app.get("/api/store/:key", requireAuth, (req, res) => {
 app.put("/api/store/:key", requireAuth, authenticatedLargeJson, async (req, res) => {
   const db = readDb();
   const key = req.params.key;
+  if (key === "wv_meta_settings") return res.status(403).json({ error: "Meta settings must be changed through the super admin endpoint" });
   if (key === "wv_client_portal_failures") return res.status(403).json({ error: "Delivery failures are server-managed" });
   if (key === DB_KEYS.BOOKINGS) {
     return res.status(409).json({ error: "Bookings must be changed through the atomic booking endpoints" });
@@ -1761,7 +1795,7 @@ app.put("/api/store/:key", requireAuth, authenticatedLargeJson, async (req, res)
   res.json({ ok: true });
 });
 app.delete("/api/store/:key", requireAuth, (req, res) => {
-  if ([DB_KEYS.ADMIN, DB_KEYS.SETUP, "wv_client_portal_failures"].includes(req.params.key)) {
+  if ([DB_KEYS.ADMIN, DB_KEYS.SETUP, "wv_meta_settings", "wv_client_portal_failures"].includes(req.params.key)) {
     return res.status(403).json({ error: "Authentication bootstrap keys cannot be deleted through the generic store" });
   }
   const db = readDb();
@@ -5944,6 +5978,44 @@ app.get("/api/super-admin/webhooks", async (req, res) => {
   res.json({ ok: true, webhooks });
 });
 
+app.get("/api/super-admin/meta-settings", async (req, res) => {
+  const configuredSuperAdmin = String(process.env.SUPER_ADMIN_USERNAME || "").trim();
+  if (!configuredSuperAdmin) return res.status(403).json({ ok: false, error: "Super admin not configured" });
+  const username = await authenticatedAdminUsername(req);
+  if (!username) return res.status(401).json({ ok: false, error: "Authentication required" });
+  if (username.toLowerCase() !== configuredSuperAdmin.toLowerCase()) return res.status(403).json({ ok: false, error: "Forbidden" });
+  const settings = dbGet(readDb(), "wv_meta_settings", {});
+  const hasAdminToken = !!String(settings.accessToken || "").trim();
+  res.setHeader("Cache-Control", "no-store");
+  res.json({
+    ok: true,
+    pixelId: String(process.env.META_PIXEL_ID || "765594655944429").trim(),
+    accessTokenSet: hasAdminToken || !!String(process.env.META_CAPI_ACCESS_TOKEN || "").trim(),
+    tokenSource: hasAdminToken ? "admin" : String(process.env.META_CAPI_ACCESS_TOKEN || "").trim() ? "environment" : "none",
+  });
+});
+
+app.put("/api/super-admin/meta-settings", async (req, res) => {
+  const configuredSuperAdmin = String(process.env.SUPER_ADMIN_USERNAME || "").trim();
+  if (!configuredSuperAdmin) return res.status(403).json({ ok: false, error: "Super admin not configured" });
+  const username = await authenticatedAdminUsername(req);
+  if (!username) return res.status(401).json({ ok: false, error: "Authentication required" });
+  if (username.toLowerCase() !== configuredSuperAdmin.toLowerCase()) return res.status(403).json({ ok: false, error: "Forbidden" });
+
+  const token = typeof req.body?.accessToken === "string" ? req.body.accessToken.trim() : null;
+  if (token === null || token.length > 4096 || /\s/.test(token)) {
+    return res.status(400).json({ ok: false, error: "Enter a valid Meta access token" });
+  }
+  const db = readDb();
+  const settings = dbGet(db, "wv_meta_settings", {});
+  if (token) settings.accessToken = token;
+  else delete settings.accessToken;
+  db["wv_meta_settings"] = JSON.stringify(settings);
+  writeDb(db);
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ ok: true, accessTokenSet: !!(token || process.env.META_CAPI_ACCESS_TOKEN), tokenSource: token ? "admin" : process.env.META_CAPI_ACCESS_TOKEN ? "environment" : "none" });
+});
+
 // ── Proofing submission endpoint ──────────────────────
 function publicProofingReceipt(round) {
   return { submissionId: round.submissionId, submittedAt: round.submittedAt, selectedCount: round.selectedPhotoIds.length };
@@ -6357,7 +6429,7 @@ registerGoogleCalendarRoutes(app, {
 });
 registerEmailRoutes(app, store, { requireAuth });
 const writePaymentDb = data => writeDb(data, { durable: true });
-registerStripeRoutes(app, { readDb, writeDb: writePaymentDb, readLicenseKeys, writeLicenseKeys, requireAuth, getGallerySession: getGallerySessionForAlbum, onBookingPaid: queueInitialBookingCalendarSync });
+registerStripeRoutes(app, { readDb, writeDb: writePaymentDb, readLicenseKeys, writeLicenseKeys, requireAuth, getGallerySession: getGallerySessionForAlbum, onBookingPaid: booking => { queueInitialBookingCalendarSync(booking); queueMetaScheduleEvent(booking); } });
 registerTenantStripeRoutes(app, { readDb, writeDb: writePaymentDb, readTenants, readLicenseKeys, getLicKeyLimits, readEventSlotRequests, writeEventSlotRequests, requireTenant, getGallerySession: getGallerySessionForAlbum, sendTenantBookingReceipt, onBookingPaid: queueInitialBookingCalendarSync, isTenantLicensed: tenantIsLicensed });
 registerGoogleSheetsRoutes(app, { requireAuth });
 
@@ -8196,6 +8268,7 @@ app.post("/api/booking", publicBookingLimiter, async (req, res) => {
     return res.status(initialAttempt.status).json({ ok: false, code: initialAttempt.code, error: initialAttempt.error });
   }
   if (initialAttempt.action === "reuse") {
+    queueMetaScheduleEvent(initialAttempt.booking);
     return res.status(200).json({ ok: true, booking: publicBookingDto(initialAttempt.booking), reused: true });
   }
   const eventTypes = getStoredArray(db, DB_KEYS.EVENT_TYPES);
@@ -8238,6 +8311,7 @@ app.post("/api/booking", publicBookingLimiter, async (req, res) => {
     return res.status(commitAttempt.status).json({ ok: false, code: commitAttempt.code, error: commitAttempt.error });
   }
   if (commitAttempt.action === "reuse") {
+    queueMetaScheduleEvent(commitAttempt.booking);
     return res.status(200).json({ ok: true, booking: publicBookingDto(commitAttempt.booking), reused: true });
   }
   const commitEventTypes = getStoredArray(commitDb, DB_KEYS.EVENT_TYPES);
@@ -8259,6 +8333,7 @@ app.post("/api/booking", publicBookingLimiter, async (req, res) => {
     status: normalized.requiresConfirmation || totalPrice > 0 ? "pending" : "confirmed",
     requiresConfirmation: normalized.requiresConfirmation,
     notes: "", answers: safeAnswers, answerLabels, createdAt: new Date().toISOString(),
+    metaCapiContext: captureMetaCapiContext(req, !!getMetaCapiAccessToken(commitDb)) || undefined,
     paymentStatus: totalPrice === 0 ? "paid" : paymentMethod === "bank" ? "pending-confirmation" : "unpaid",
     sessionPrice: normalized.sessionPrice, lineItems: normalized.lineItems,
     paymentAmount: totalPrice, depositRequired, depositAmount: depositRequired ? normalized.depositAmount : 0,
@@ -8275,6 +8350,7 @@ app.post("/api/booking", publicBookingLimiter, async (req, res) => {
   bookings.push(booking);
   commitDb[DB_KEYS.BOOKINGS] = JSON.stringify(bookings);
   writeDb(commitDb);
+  queueMetaScheduleEvent(booking);
 
   try {
     const settingsRaw = commitDb[DB_KEYS.SETTINGS];
@@ -8704,6 +8780,7 @@ app.patch("/api/admin/bookings/:id", superLimiter, requireAuth, async (req, res)
     bookings[index] = booking;
     db[DB_KEYS.BOOKINGS] = JSON.stringify(bookings);
     writeDb(db);
+    queueMetaScheduleEvent(booking);
     const calendarAction = booking.status === "cancelled" || (!bookingReadyForCalendar(booking) && previous.gcalEventId)
       ? "cancel"
       : bookingReadyForCalendar(booking) ? (previous.gcalEventId ? "reschedule" : "create") : null;
@@ -8785,6 +8862,7 @@ app.patch("/api/admin/bookings/:id/payment-review", superLimiter, requireAuth, a
       bookings[matches[0].index] = resolution.booking;
       db[DB_KEYS.BOOKINGS] = JSON.stringify(bookings);
       writeDb(db);
+      queueMetaScheduleEvent(resolution.booking);
       return res.json({ ok: true, booking: resolution.booking });
     });
   } catch (error) {
@@ -8832,6 +8910,7 @@ app.patch("/api/admin/bookings/:id/bank-payment", superLimiter, requireAuth, asy
       bookings[index] = updated;
       db[DB_KEYS.BOOKINGS] = JSON.stringify(bookings);
       writeDb(db);
+      queueMetaScheduleEvent(updated);
       setImmediate(() => sendMainBookingReceipt(updated, { recordEmailLog: false }).catch(error => console.error(`Bank payment receipt failed for ${bookingId}:`, error?.message || error)));
       return res.json({ ok: true, booking: updated });
     });
