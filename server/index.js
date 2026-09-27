@@ -6035,8 +6035,9 @@ app.post("/api/super-admin/meta-test-purchase", async (req, res) => {
     res.setHeader("Cache-Control", "no-store");
     return res.json({ ok: true, event: "Purchase", value: 1, currency: "AUD" });
   } catch (error) {
-    console.error("Meta test Purchase event failed:", error?.message || error);
-    return res.status(502).json({ ok: false, error: "Meta rejected the test Purchase event" });
+    const message = String(error?.message || "Meta rejected the test Purchase event").slice(0, 700);
+    console.error("Meta test Purchase event failed:", message);
+    return res.status(502).json({ ok: false, error: message });
   }
 });
 

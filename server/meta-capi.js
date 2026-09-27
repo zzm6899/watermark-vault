@@ -100,8 +100,13 @@ async function sendTestPurchaseEvent(accessToken, testEventCode) {
     }),
     signal: AbortSignal.timeout(5000),
   });
-  if (!response.ok) throw new Error(`Meta Conversions API returned HTTP ${response.status}`);
-  const result = await response.json();
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const metaError = result?.error || {};
+    const message = String(metaError.message || "Request rejected").replaceAll(String(accessToken).trim(), "[redacted]").slice(0, 500);
+    const details = [metaError.type, metaError.code, metaError.error_subcode, metaError.fbtrace_id].filter(value => value != null).join("/");
+    throw new Error(`Meta Conversions API HTTP ${response.status}${details ? ` (${details})` : ""}: ${message}`);
+  }
   if (result.events_received !== 1) throw new Error("Meta did not accept the test Purchase event");
   return true;
 }
