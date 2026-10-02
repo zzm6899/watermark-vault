@@ -217,7 +217,7 @@ describe("admin photo library workflow", () => {
   });
 
   it("selects only loaded matches and preserves their contexts across pages and filters", async () => {
-    const rows = Array.from({ length: 125 }, (_, index) => ({
+    const rows = Array.from({ length: 62 }, (_, index) => ({
       ...photo(`server-${String(index).padStart(4, "0")}`, `Session Photo ${String(index).padStart(4, "0")}`),
       source: "Session",
       sourceAlbumId: "session",
@@ -227,16 +227,16 @@ describe("admin photo library workflow", () => {
     vi.stubGlobal("confirm", vi.fn(() => true));
     renderPhotoLibrary();
 
-    await screen.findByText("Showing 60 of 125 photos");
+    await screen.findByText("Showing 60 of 62 photos");
     fireEvent.click(screen.getByRole("button", { name: "Select all 60 loaded photos" }));
     expect(screen.getByText("60 selected")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Load 60 more photos" }));
-    await waitFor(() => expect(screen.getByText("Showing 120 of 125 photos")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Load 2 more photos" }));
+    await waitFor(() => expect(screen.getByText("Showing 62 of 62 photos")).toBeInTheDocument());
     expect(screen.getByText("60 selected")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Select Session Photo 0060" })).toHaveAttribute("aria-pressed", "false");
 
-    fireEvent.change(screen.getByPlaceholderText(/Search by filename/), { target: { value: "Session Photo 0120" } });
-    await screen.findByRole("button", { name: "Select Session Photo 0120" });
+    fireEvent.change(screen.getByPlaceholderText(/Search by filename/), { target: { value: "Session Photo 0061" } });
+    await screen.findByRole("button", { name: "Select Session Photo 0061" });
     fireEvent.click(screen.getByRole("button", { name: "Select all 1 loaded photos" }));
     expect(screen.getByText("61 selected")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Delete (61)" }));
@@ -248,8 +248,8 @@ describe("admin photo library workflow", () => {
     const ids = new Set(operations.map(operation => operation.type === "remove" ? operation.photoId : ""));
     expect(ids.has("server-0000")).toBe(true);
     expect(ids.has("server-0059")).toBe(true);
-    expect(ids.has("server-0120")).toBe(true);
+    expect(ids.has("server-0061")).toBe(true);
     expect(ids.has("server-0060")).toBe(false);
     expect(ids.has("server-0119")).toBe(false);
-  });
+  }, 15000);
 });

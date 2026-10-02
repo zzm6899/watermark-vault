@@ -45,8 +45,12 @@ describe("public portfolio presentation", () => {
     const { container } = open("/");
     expect(container.querySelectorAll(".portfolio-hero")).toHaveLength(1);
     fireEvent.click(screen.getByRole("button", { name: "Show slide 2" }));
-    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Live performance");
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Venues & hospitality");
+    expect(container.querySelector(".portfolio-hero-media img.active")).toHaveAttribute("src", "/portfolio/curated/navarra-ballroom.jpg");
     expect(container.querySelectorAll(".portfolio-hero-media img.active")).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "Show slide 3" }));
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Live performance");
+    expect(container.querySelector(".portfolio-hero-media img.active")).toHaveAttribute("src", "/portfolio/curated/music-teddyloid-smash-crowd.webp");
     expect(screen.getByRole("button", { name: "Play slideshow" })).toBeInTheDocument();
   });
 
