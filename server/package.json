@@ -9,7 +9,8 @@
     "start": "node index.js",
     "test": "node --test",
     "test:staging": "node staging-acceptance.cjs",
-    "staging": "node staging-acceptance.cjs --serve"
+    "staging": "node staging-acceptance.cjs --serve",
+    "photo-index:preflight": "node photo-index-preflight.js"
   },
   "dependencies": {
     "archiver": "^7.0.1",

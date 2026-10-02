@@ -2,6 +2,8 @@ import { FormEvent, Fragment, useCallback, useEffect, useMemo, useRef, useState 
 import { ArrowRight, Check, ChevronLeft, ChevronRight, Instagram, Linkedin, Mail, Menu, Pause, Play, X } from "lucide-react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { defaultPortfolioSite, fetchPublishedPortfolio, submitPortfolioEnquiry, type PortfolioEnquiry, type PortfolioGalleryImage, type PortfolioSite as PortfolioSiteData } from "@/lib/portfolio";
+import { normalizePortfolioCategory, portfolioCategoryLabel, portfolioCategoryMatches, resolvePortfolioCategory } from "@/lib/portfolio-category";
+import { portfolioCategoryOrder } from "@/lib/portfolio";
 import "./portfolio-site.css";
 import { publicPortfolioFocus } from "../../server/portfolio-presentation.mjs";
 
@@ -18,7 +20,7 @@ function SiteHeader({ site, preview }: { site: PortfolioSiteData; preview: boole
   const [open, setOpen] = useState(false);
   const location = useLocation();
   const currentPath = normalizeSitePath(preview ? location.pathname.replace("/portfolio-preview", "") || "/" : location.pathname);
-  const links = [["Home", "/"], ["Portfolio", "/portfolio"], ["Cosplay", "/cosplay"], ["Commercial", "/events"], ["Kind words", "/testimonials"], [site.bookingButtonLabel, "/enquire"]];
+  const links = [["Work", "/portfolio"], ["Corporate & events", "/events"], ["Live music", "/concerts"], ["About", "/about"], ["Kind words", "/testimonials"], [site.bookingButtonLabel, "/enquire"]];
   const menuRef = useRef<HTMLButtonElement>(null);
   useEffect(() => { setOpen(false); }, [location.pathname, location.search]);
   useEffect(() => {
@@ -27,7 +29,10 @@ function SiteHeader({ site, preview }: { site: PortfolioSiteData; preview: boole
     window.addEventListener("keydown", dismiss);
     return () => window.removeEventListener("keydown", dismiss);
   }, [open]);
-  const active = (path: string) => currentPath === path || (path === "/enquire" && currentPath === "/contact");
+  const active = (path: string) => currentPath === path
+    || (path === "/portfolio" && currentPath === "/cosplay")
+    || (path === "/concerts" && currentPath === "/concert")
+    || (path === "/enquire" && currentPath === "/contact");
   return <header className="portfolio-header">
     <nav aria-label="Main navigation">
       <Link className="portfolio-brand" to={routeFor(preview, "/")} aria-label={site.brandName}><img src={site.logo} alt="" /><span>{site.brandName.replace(/\s+Photography$/i, "")}<small>Photography</small></span></Link>
@@ -99,15 +104,33 @@ function HomePage({ site, preview, editorPreview }: { site: PortfolioSiteData; p
     return () => window.clearInterval(timer);
   }, [paused, hovered, focused, reduced, hidden, editorPreview, heroFrames.length]);
   const changeSlide = (direction: number) => { setPaused(true); setActive((index + direction + heroFrames.length) % heroFrames.length); };
+  const categoryHref = (category?: string) => {
+    const label = portfolioCategoryLabel(category);
+    if (label === "Live Music") return routeFor(preview, "/concerts");
+    return `${routeFor(preview, "/portfolio")}?category=${encodeURIComponent(label || "All")}`;
+  };
   return <>
     <section className="portfolio-hero" aria-label="Featured photography" aria-roledescription="carousel" onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)} onFocusCapture={() => setFocused(true)} onBlurCapture={event => { if (!event.currentTarget.contains(event.relatedTarget)) setFocused(false); }}>
       <div className="portfolio-hero-media" aria-hidden="true">{heroFrames.map((image, frame) => <img key={image} className={frame === index ? "active" : ""} src={image} alt="" {...{ fetchpriority: frame === 0 ? "high" : "auto" }} />)}</div>
-      <div className="portfolio-hero-copy" key={index}><p>{site.locationLabel}</p><h1>{caption?.title || site.brandName}</h1><p>{caption?.description || site.heroLabel}</p><div className="portfolio-hero-actions"><Link to={`${routeFor(preview, "/portfolio")}${caption?.category ? `?category=${encodeURIComponent(caption.category)}` : ""}`}>View portfolio <ArrowRight size={16} /></Link></div></div>
+      <div className="portfolio-hero-copy" key={index}>
+        <p className="portfolio-hero-kicker">{site.locationLabel}<span aria-hidden="true"> / </span>{site.heroLabel}</p>
+        <h1>{caption?.title || site.brandName}</h1>
+        <p className="portfolio-hero-description">{caption?.description || site.heroServicesLabel}</p>
+        <div className="portfolio-hero-actions">
+          <Link className="portfolio-hero-primary" to={routeFor(preview, "/enquire")}>{site.bookingButtonLabel}<ArrowRight size={17} /></Link>
+          <Link className="portfolio-hero-secondary" to={categoryHref(caption?.category)}>View this work<ArrowRight size={16} /></Link>
+        </div>
+        <p className="portfolio-hero-services">{site.heroServicesLabel}</p>
+      </div>
       {heroFrames.length > 1 && <div className="portfolio-carousel-controls"><span aria-live={paused ? "polite" : "off"}>{String(index + 1).padStart(2, "0")} / {String(heroFrames.length).padStart(2, "0")}</span><div className="portfolio-carousel-dots">{heroFrames.map((image, frame) => <button key={image} aria-label={`Show slide ${frame + 1}`} aria-pressed={index === frame} onClick={() => { setActive(frame); setPaused(true); }}><span /></button>)}</div><div><button onClick={() => changeSlide(-1)} aria-label="Previous slide" title="Previous slide"><ChevronLeft /></button><button onClick={() => setPaused(value => !value)} disabled={reduced || editorPreview} aria-label={paused || reduced || editorPreview ? "Play slideshow" : "Pause slideshow"} title={reduced ? "Automatic motion disabled" : paused ? "Play slideshow" : "Pause slideshow"}>{paused || reduced || editorPreview ? <Play size={16} /> : <Pause size={16} />}</button><button onClick={() => changeSlide(1)} aria-label="Next slide" title="Next slide"><ChevronRight /></button></div></div>}
     </section>
-    <section className="portfolio-home-intro" id="introduction" data-reveal><p className="portfolio-kicker">{site.introEyebrow}</p><h2>{site.introTitle}</h2><p>{site.introBody}</p><Link to={routeFor(preview, "/about")}>Behind the photographs <ArrowRight size={16} /></Link></section>
-    <section className="portfolio-home-selections" aria-label="Featured collections">{site.projects.slice(0, 3).map(project => <Link key={project.id} data-reveal to={`${routeFor(preview, "/portfolio")}?category=${encodeURIComponent(project.category)}`}><figure><img src={project.image} alt={project.title} loading="lazy" /></figure><div><h2>{project.title}</h2><ArrowRight size={18} /></div><p>{project.description}</p></Link>)}</section>
-    <section className="portfolio-testimonial" data-reveal><p className="portfolio-kicker">Kind words</p><blockquote>“{site.testimonial}”</blockquote><cite>{site.testimonialAuthor}</cite><Link to={routeFor(preview, "/testimonials")}>Read client stories</Link></section>
+    {site.portfolioClients.length > 0 && <section className="portfolio-trust-strip" aria-label={site.portfolioClientsLabel}><span>{site.portfolioClientsLabel}</span><div>{site.portfolioClients.map(client => <strong key={client}>{client}</strong>)}</div></section>}
+    <section className="portfolio-home-intro" id="introduction" data-reveal><div><p className="portfolio-kicker">{site.introEyebrow}</p><h2>{site.introTitle}</h2></div><div><p>{site.introBody}</p><Link to={routeFor(preview, "/events")}>Explore corporate &amp; event work <ArrowRight size={16} /></Link></div></section>
+    <section className="portfolio-home-selections" aria-label="Featured collections">
+      <div className="portfolio-home-selections-heading"><div><p className="portfolio-kicker">Selected work</p><h2>Corporate, events and live work</h2></div><Link to={routeFor(preview, "/portfolio")}>Browse the portfolio<ArrowRight size={16} /></Link></div>
+      <div className="portfolio-home-selections-grid">{site.projects.slice(0, 3).map(project => <Link key={project.id} data-reveal to={categoryHref(project.category)}><figure><img src={project.image} alt={project.title} loading="lazy" /></figure><div><h3>{project.title}</h3><ArrowRight size={18} /></div><p>{project.description}</p></Link>)}</div>
+    </section>
+    <section className="portfolio-testimonial" data-reveal><p className="portfolio-kicker">Kind words</p><blockquote>"{site.testimonial}"</blockquote><cite>{site.testimonialAuthor}</cite><Link to={routeFor(preview, "/testimonials")}>Read client stories</Link></section>
   </>;
 }
 
@@ -119,22 +142,73 @@ function PortfolioGallery({ images, initialFilter, showFilters = true }: { image
   const restoreFocusRef = useRef<HTMLElement | null>(null);
   const location = useLocation();
   const navigate = useNavigate();
-  const categories = useMemo(() => ["Selected", ...Array.from(new Set(images.map(image => image.category).filter(Boolean))), "All"], [images]);
+  const categoryLabels = useMemo(() => {
+    const labels = new Map<string, string>();
+    images.forEach(image => {
+      const label = portfolioCategoryLabel(image.category);
+      if (label) labels.set(normalizePortfolioCategory(label), label);
+    });
+    return Array.from(labels.values()).sort((left, right) => {
+      const leftIndex = portfolioCategoryOrder.indexOf(left);
+      const rightIndex = portfolioCategoryOrder.indexOf(right);
+      if (leftIndex < 0 && rightIndex < 0) return left.localeCompare(right);
+      if (leftIndex < 0) return 1;
+      if (rightIndex < 0) return -1;
+      return leftIndex - rightIndex;
+    });
+  }, [images]);
+  const categories = useMemo(() => ["Selected", ...categoryLabels, "All"], [categoryLabels]);
+  const queryCategory = new URLSearchParams(location.search).get("category");
+  const requestedFilter = queryCategory === null
+    ? initialFilter
+    : normalizePortfolioCategory(queryCategory) === "all"
+      ? "All"
+      : normalizePortfolioCategory(queryCategory) === "selected"
+        ? "Selected"
+        : resolvePortfolioCategory(queryCategory, categoryLabels);
+  const nextFilter = requestedFilter && categories.includes(requestedFilter)
+    ? requestedFilter
+    : showFilters ? "Selected" : "All";
   const selectedImages = useMemo(() => {
     const counts = new Map<string, number>();
     const originals = images.filter(image => !image.image.startsWith("/portfolio/gallery/"));
-    return (originals.length ? originals : images).filter(image => { const count = counts.get(image.category) || 0; counts.set(image.category, count + 1); return count < 2; });
+    return (originals.length ? originals : images).filter(image => {
+      const key = normalizePortfolioCategory(image.category);
+      const count = counts.get(key) || 0;
+      counts.set(key, count + 1);
+      return count < 2;
+    });
   }, [images]);
-  const visible = filter === "All" ? images : filter === "Selected" ? selectedImages : images.filter(image => image.category === filter);
+  const visible = filter === "All" ? images : filter === "Selected" ? selectedImages : images.filter(image => portfolioCategoryMatches(image.category, filter));
   const chooseFilter = (category: string) => {
-    setFilter(category);
+    const canonicalFilter = category === "All" || category === "Selected" ? category : portfolioCategoryLabel(category);
+    setFilter(canonicalFilter);
     setSelected(null);
     if (!showFilters) return;
     const params = new URLSearchParams(location.search);
-    if (category === "Selected") params.delete("category"); else params.set("category", category);
+    if (canonicalFilter === "Selected") params.delete("category"); else params.set("category", canonicalFilter);
     navigate({ pathname: location.pathname, search: params.toString() ? `?${params}` : "" }, { replace: true });
   };
-  useEffect(() => { setFilter(initialFilter && categories.includes(initialFilter) ? initialFilter : showFilters ? "Selected" : "All"); setSelected(null); }, [initialFilter, categories, showFilters]);
+  useEffect(() => {
+    setFilter(nextFilter);
+    setSelected(null);
+  }, [nextFilter, location.pathname, location.search]);
+  useEffect(() => {
+    if (!showFilters || queryCategory === null) return;
+    const normalized = normalizePortfolioCategory(queryCategory);
+    if (normalized === "all" || normalized === "selected") return;
+    const canonical = resolvePortfolioCategory(queryCategory, categoryLabels);
+    const params = new URLSearchParams(location.search);
+    if (canonical) {
+      if (queryCategory !== canonical) {
+        params.set("category", canonical);
+        navigate({ pathname: location.pathname, search: `?${params}` }, { replace: true });
+      }
+      return;
+    }
+    params.delete("category");
+    navigate({ pathname: location.pathname, search: params.toString() ? `?${params}` : "" }, { replace: true });
+  }, [categoryLabels, location.pathname, location.search, navigate, queryCategory, showFilters]);
   const move = useCallback((direction: number) => setSelected(current => current === null ? null : (current + direction + visible.length) % visible.length), [visible.length]);
   const isOpen = selected !== null;
   useEffect(() => {
@@ -164,7 +238,7 @@ function PortfolioGallery({ images, initialFilter, showFilters = true }: { image
     };
   }, [move, isOpen]);
   return <section className="portfolio-gallery-section">
-    <div className="portfolio-gallery-toolbar">{showFilters && <div role="group" aria-label="Filter portfolio">{categories.map(category => <button className={filter === category ? "active" : ""} key={category} onClick={() => chooseFilter(category)} aria-pressed={filter === category}>{category === "All" ? "All work" : category}</button>)}</div>}<p aria-live="polite">{visible.length} photographs</p></div>
+    <div className="portfolio-gallery-toolbar">{showFilters && <div role="group" aria-label="Filter portfolio">{categories.map(category => <button className={filter === category ? "active" : ""} key={category} onClick={() => chooseFilter(category)} aria-pressed={filter === category}>{category === "All" ? "All work" : category}</button>)}</div>}<p aria-live="polite">{visible.length} {visible.length === 1 ? "photograph" : "photographs"}</p></div>
     <div className="portfolio-gallery-grid">{visible.map((image, index) => {
       return <button className="portfolio-gallery-item" key={image.id} onClick={() => setSelected(index)} aria-label={`Open ${image.alt}`}>
         <img src={image.image} alt={image.alt} loading="lazy" decoding="async" />
@@ -182,13 +256,19 @@ function PortfolioGallery({ images, initialFilter, showFilters = true }: { image
 
 function WorkPage({ site, preview, category }: { site: PortfolioSiteData; preview: boolean; category?: string | null }) {
   const dedicatedCosplay = normalizeSitePath(useLocation().pathname).endsWith("/cosplay");
-  const categoryRoute = (projectCategory: string) => `${routeFor(preview, "/portfolio")}?category=${encodeURIComponent(projectCategory || "All")}`;
+  const availableCategories = site.galleryImages.map(image => image.category);
+  const requestedKey = normalizePortfolioCategory(category);
+  const routeFilter = requestedKey === "all" ? "All" : requestedKey === "selected" ? "Selected" : undefined;
+  const activeCategory = dedicatedCosplay
+    ? resolvePortfolioCategory("cosplay", availableCategories)
+    : routeFilter ? undefined : resolvePortfolioCategory(category, availableCategories);
+  const initialFilter = routeFilter || activeCategory;
+  const categoryRoute = (projectCategory: string) => {
+    const categoryLabel = portfolioCategoryLabel(projectCategory);
+    return `${routeFor(preview, "/portfolio")}?category=${encodeURIComponent(categoryLabel || "All")}`;
+  };
   const covers = (site.featuredGalleryIds || defaultPortfolioSite.featuredGalleryIds || []).map(id => site.galleryImages.find(image => image.id === id)).filter((image): image is PortfolioGalleryImage => !!image).slice(0, 3);
-  const requestedCategory = category?.trim().toLowerCase();
-  const activeCategory = requestedCategory && requestedCategory !== "all"
-    ? site.galleryImages.find(image => image.category.trim().toLowerCase() === requestedCategory)?.category
-    : undefined;
-  const activeProject = activeCategory ? site.projects.find(project => project.category.trim().toLowerCase() === activeCategory.toLowerCase()) : undefined;
+  const activeProject = activeCategory ? site.projects.find(project => portfolioCategoryMatches(project.category, activeCategory)) : undefined;
   const categoryDescriptions: Record<string, string> = {
     "food & hospitality": "Food, service and hospitality photographed with texture, colour and a sense of place.",
     "venues & details": "Architecture, atmosphere and the considered details that shape an event.",
@@ -196,7 +276,7 @@ function WorkPage({ site, preview, category }: { site: PortfolioSiteData; previe
   };
   const activeTitle = activeProject?.title || activeCategory;
   const activeDescription = activeProject?.description || (activeCategory ? categoryDescriptions[activeCategory.toLowerCase()] : undefined) || "A focused selection from the portfolio.";
-  const activeCount = activeCategory ? site.galleryImages.filter(image => image.category === activeCategory).length : 0;
+  const activeCount = activeCategory ? site.galleryImages.filter(image => portfolioCategoryMatches(image.category, activeCategory)).length : 0;
   return <>
     {!activeCategory && <section className="portfolio-page-intro portfolio-page-intro-work"><div><p className="portfolio-kicker">Zac Morgan Photography</p><h1>{site.portfolioTitle}</h1></div><p>{site.portfolioBody}</p></section>}
     {!activeCategory && covers.length > 0 && <section className="portfolio-cover" aria-label="Featured photographs">{covers.map((image, index) => <figure key={image.id}><Link to={categoryRoute(image.category)}><img src={image.image} alt={image.alt} {...{ fetchpriority: index === 0 ? "high" : "auto" }} /></Link><figcaption><span>{image.category}</span><span>{String(index + 1).padStart(2, "0")}</span></figcaption></figure>)}</section>}
@@ -204,24 +284,24 @@ function WorkPage({ site, preview, category }: { site: PortfolioSiteData; previe
       <div><p className="portfolio-kicker">Focused collection · {activeCount} photographs</p><h1>{activeTitle}</h1></div>
       <div><p>{activeDescription}</p><Link to={routeFor(preview, "/portfolio")}>View every category <ArrowRight /></Link></div>
     </section>}
-    <PortfolioGallery images={dedicatedCosplay ? site.galleryImages.filter(image => image.category === "Cosplay & Conventions") : site.galleryImages} initialFilter={requestedCategory === "all" ? "All" : activeCategory} showFilters={!dedicatedCosplay} />
+    <PortfolioGallery images={dedicatedCosplay ? site.galleryImages.filter(image => portfolioCategoryMatches(image.category, "Cosplay")) : site.galleryImages} initialFilter={initialFilter} showFilters={!dedicatedCosplay} />
     <section className="portfolio-inline-cta"><div><p className="portfolio-kicker">{site.portfolioCtaEyebrow}</p><h2>{site.portfolioCtaTitle}</h2></div><Link to={routeFor(preview, "/enquire")}>{site.portfolioCtaLabel} <ArrowRight /></Link></section>
   </>;
 }
 
 function CommercialPage({ site, preview }: { site: PortfolioSiteData; preview: boolean }) {
-  const project = site.projects.find(item => item.category === "Brand & Corporate");
-  const images = site.galleryImages.filter(image => ["Brand & Corporate", "Food & Hospitality", "Venues & Details", "Events"].includes(image.category));
+  const project = site.projects.find(item => portfolioCategoryMatches(item.category, "Brand & Corporate"));
+  const images = site.galleryImages.filter(image => ["Brand & Corporate", "Food & Hospitality", "Venues & Details", "Events"].some(category => portfolioCategoryMatches(image.category, category)));
   return <>
-    <section className="portfolio-concert-hero"><img src={project?.image || site.heroImage} alt="Commercial photography by Zac Morgan" /><div><p>{site.locationLabel}</p><h1>{project?.title || "Brands & events"}</h1></div></section>
-    <section className="portfolio-commercial-intro" data-reveal><h2>People. Places. A sense of occasion.</h2><div><p>{project?.description || site.portfolioBody}</p><Link to={routeFor(preview, "/enquire")}>Discuss your brief <ArrowRight size={18} /></Link></div></section>
+    <section className="portfolio-events-hero"><img src={project?.image || site.heroImage} alt={project?.title || "Corporate and event photography"} /><div><p className="portfolio-kicker">{site.locationLabel} / Corporate &amp; event photography</p><h1>{project?.title || "Corporate events, seen from the inside."}</h1><p>{project?.description || site.portfolioBody}</p><Link to={routeFor(preview, "/enquire")}>{site.bookingButtonLabel}<ArrowRight size={18} /></Link></div></section>
+    <section className="portfolio-commercial-intro" data-reveal><h2>People, place and the moments that bring an event together.</h2><div><p>{site.portfolioBody}</p><Link to={routeFor(preview, "/enquire")}>Discuss event coverage <ArrowRight size={18} /></Link></div></section>
     <div className="portfolio-client-line"><span>{site.portfolioClientsLabel}</span>{site.portfolioClients.map(client => <strong key={client}>{client}</strong>)}</div>
     <PortfolioGallery images={images} />
   </>;
 }
 
 function ConcertPage({ site, preview }: { site: PortfolioSiteData; preview: boolean }) {
-  const images = site.galleryImages.filter(image => image.category.trim().toLowerCase() === "live music");
+  const images = site.galleryImages.filter(image => portfolioCategoryMatches(image.category, "Live Music"));
   const hero = site.concertHeroImage || images[0]?.image || site.heroImage;
   return <>
     <section className="portfolio-concert-hero">
@@ -265,15 +345,34 @@ function EnquiryPage({ site }: { site: PortfolioSiteData }) {
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(false);
   const [error, setError] = useState("");
+  const [warning, setWarning] = useState("");
+  const sendingRef = useRef(false);
   const today = new Intl.DateTimeFormat("en-CA", { year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
-  const update = (key: keyof PortfolioEnquiry, value: string) => setForm(current => ({ ...current, [key]: value }));
+  const update = (key: keyof PortfolioEnquiry, value: string) => {
+    setError("");
+    setWarning("");
+    setForm(current => ({ ...current, [key]: value }));
+  };
   const submit = async (event: FormEvent) => {
-    event.preventDefault(); setSending(true); setError("");
-    try { await submitPortfolioEnquiry(form); setSent(true); setForm(emptyEnquiry); } catch (err) { setError(err instanceof Error ? err.message : "Could not send enquiry"); } finally { setSending(false); }
+    event.preventDefault();
+    if (sendingRef.current) return;
+    sendingRef.current = true;
+    setSending(true);
+    setError("");
+    setWarning("");
+    try {
+      const delivery = await submitPortfolioEnquiry(form);
+      setWarning(delivery.emailDelivered === false ? "Your enquiry is saved, but the studio notification email did not send. For a prompt follow-up, email Zac directly." : "");
+      setSent(true);
+      setForm(emptyEnquiry);
+    }
+    catch (err) { setError(err instanceof Error ? err.message : "Unable to send your enquiry. Check your connection and try again."); }
+    finally { sendingRef.current = false; setSending(false); }
   };
   return <>
-    <section className="portfolio-enquiry-page"><div className="portfolio-enquiry-intro"><p className="portfolio-kicker">Availability and pricing</p><h1>{site.bookingTitle}</h1><p>{site.bookingBody}</p><div><a href={`mailto:${site.contactEmail}`}>{site.contactEmail}</a><span>{site.locationLabel}</span></div>{site.enquiryImage && <img className="portfolio-enquiry-portrait" src={site.enquiryImage} alt="Event photographed by Zac Morgan" />}</div>
-      {sent ? <div className="portfolio-enquiry-success" role="status"><Check /><h2>Enquiry received.</h2><p>Thanks for getting in touch. Zac will reply with availability and next steps.</p><button onClick={() => setSent(false)}>Send another enquiry</button></div> : <form className="portfolio-enquiry-form" onSubmit={submit}>
+    <section className="portfolio-enquiry-page"><div className="portfolio-enquiry-intro"><p className="portfolio-kicker">Corporate and event photography / Sydney</p><h1>{site.bookingTitle}</h1><p>{site.bookingBody}</p><div><a href={`mailto:${site.contactEmail}`}>{site.contactEmail}</a><span>{site.locationLabel}</span></div>{site.enquiryImage && <img className="portfolio-enquiry-portrait" src={site.enquiryImage} alt="Event photographed by Zac Morgan" />}</div>
+      {sent ? <div className="portfolio-enquiry-success" role="status"><Check /><h2>Enquiry received.</h2><p>{warning ? "Your message has been saved." : "Thanks for getting in touch. Zac will reply with availability and next steps."}</p>{warning && <p className="portfolio-enquiry-warning" role="alert">{warning} <a href={`mailto:${site.contactEmail}`}>Email Zac</a>.</p>}<button type="button" onClick={() => { setSent(false); setWarning(""); }}>Send another enquiry</button></div> : <form className="portfolio-enquiry-form" onSubmit={submit} aria-busy={sending}>
+        <span className="portfolio-form-status" role="status" aria-live="polite">{sending ? "Sending your enquiry." : ""}</span>
         <label>Name<input required value={form.name} onChange={event => update("name", event.target.value)} autoComplete="name" /></label>
         <label>Email<input required type="email" value={form.email} onChange={event => update("email", event.target.value)} autoComplete="email" /></label>
         <label>Phone<input value={form.phone} onChange={event => update("phone", event.target.value)} autoComplete="tel" /></label>
@@ -283,7 +382,7 @@ function EnquiryPage({ site }: { site: PortfolioSiteData }) {
         <label className="portfolio-form-wide">How did you find me?<select value={form.referralSource} onChange={event => update("referralSource", event.target.value)}><option value="">Choose one</option><option>Recommended by a friend</option><option>Recent event or shoot</option><option>Instagram</option><option>Google</option><option>Bark / Oneflare / Airtasker</option><option>Other</option></select></label>
         <label className="portfolio-form-wide">Tell me about it<textarea required rows={6} value={form.message} onChange={event => update("message", event.target.value)} placeholder="Guest count, timings, priorities and anything useful to know." /></label>
         <label className="portfolio-honeypot" aria-hidden="true">Website<input tabIndex={-1} value={form.website} onChange={event => update("website", event.target.value)} autoComplete="off" /></label>
-        {error && <p className="portfolio-form-error" role="alert">{error}</p>}
+        {error && <p id="portfolio-enquiry-error" className="portfolio-form-error" role="alert">{error}</p>}
         <button className="portfolio-submit" disabled={sending}>{sending ? "Sending…" : "Send enquiry"}<ArrowRight /></button>
       </form>}
     </section>

@@ -186,6 +186,8 @@
 .portfolio-site :is(.portfolio-form-wide,.portfolio-form-error) { grid-column:1/-1; }
 .portfolio-site .portfolio-enquiry-form .portfolio-honeypot { position:absolute; left:-9999px; width:1px; height:1px; overflow:hidden; }
 .portfolio-site .portfolio-form-error { color:#a32525; }
+.portfolio-site .portfolio-enquiry-warning { color:#8b5600; }
+.portfolio-site .portfolio-enquiry-warning a { font-weight:700; text-decoration:underline; }
 .portfolio-site .portfolio-enquiry-success { padding:30px; background:var(--panel); }
 .portfolio-site .portfolio-enquiry-success h2 { margin:20px 0; }
 .portfolio-site .portfolio-enquiry-success button { margin-top:24px; text-decoration:underline; }

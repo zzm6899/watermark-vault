@@ -28,8 +28,11 @@ describe("admin photo workflow UI contracts", () => {
     expect(adminSource).toContain("focus-visible:opacity-100");
   });
 
-  it("selects or clears only the currently visible photo set", () => {
+  it("selects or clears only the currently loaded photo results", () => {
     expect(adminSource).toContain("const allVisiblePhotosSelected = visiblePhotoIds.length > 0 && visiblePhotoIds.every(id => selectedIds.has(id))");
-    expect(adminSource).toContain("visiblePhotoIds.forEach(id => allVisiblePhotosSelected ? next.delete(id) : next.add(id))");
+    expect(adminSource).toContain("for (const photo of displayPhotos)");
+    expect(adminSource).toContain("next.add(photo.id)");
+    expect(adminSource).toContain("next.delete(photo.id)");
+    expect(adminSource).toContain("Selection applies to currently loaded photos. Load another page to extend it.");
   });
 });

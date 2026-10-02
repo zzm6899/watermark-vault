@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 interface ProgressiveImgProps extends React.ImgHTMLAttributes<HTMLImageElement> {
   thumbSrc?: string;
@@ -12,22 +12,35 @@ function isLocalFileUri(src?: string): boolean {
 
 /** Shows thumbSrc only. Falls back to a placeholder if no thumbnail yet (avoids loading full-res).
  *  Also shows a placeholder for local file:// URIs that browsers cannot load. */
-export default function ProgressiveImg({ thumbSrc, fullSrc, className, ...props }: ProgressiveImgProps) {
-  // Only render the thumbnail — never load fullSrc in grids.
+export default function ProgressiveImg({ thumbSrc, fullSrc, className, onError, alt, ...props }: ProgressiveImgProps) {
+  // Only render the thumbnail - never load fullSrc in grids.
   // Skip file:// URIs (Android local paths) that are inaccessible from a web browser.
   const validThumb = thumbSrc && !isLocalFileUri(thumbSrc) ? thumbSrc : undefined;
+  const [failedThumb, setFailedThumb] = useState<string>();
 
-  if (validThumb) {
-    return <img {...props} src={validThumb} className={className} loading="lazy" decoding="async" />;
+  useEffect(() => setFailedThumb(undefined), [validThumb]);
+
+  if (validThumb && failedThumb !== validThumb) {
+    return <img {...props} alt={alt} src={validThumb} className={className} loading="lazy" decoding="async" onError={event => {
+      setFailedThumb(validThumb);
+      onError?.(event);
+    }} />;
   }
-  // No accessible thumbnail — show a lightweight placeholder instead of the full-res image
+  // Missing or unavailable thumbnail: keep the grid tile intact and do not fall back to full-res.
   return (
-    <div className={`flex items-center justify-center bg-secondary/50 text-muted-foreground/30 ${className || ""}`} style={{ aspectRatio: "1" }}>
-      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+    <div
+      role="img"
+      aria-label={alt ? `Preview unavailable: ${alt}` : "Preview unavailable"}
+      title={alt ? `Preview unavailable: ${alt}` : "Preview unavailable"}
+      className={`flex flex-col items-center justify-center gap-1 bg-secondary/50 text-muted-foreground/50 ${className || ""}`}
+      style={{ aspectRatio: "1" }}
+    >
+      <svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
         <rect width="18" height="18" x="3" y="3" rx="2" ry="2" />
         <circle cx="9" cy="9" r="2" />
         <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" />
       </svg>
+      {failedThumb && <span className="px-1 text-center text-[9px] leading-tight">Preview unavailable</span>}
     </div>
   );
 }

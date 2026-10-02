@@ -153,7 +153,6 @@ const CRITICAL_STORE_KEYS = [
 // the download cost.
 const LAZY_STORE_KEYS = [
   "wv_bookings",
-  "wv_photo_library",
   "wv_invoices",
   "wv_contacts",
   "wv_pixieset_import_audit",
@@ -3273,6 +3272,130 @@ export async function fetchAlbumStubs(): Promise<import("./types").Album[] | nul
     return await readJson<import("./types").Album[] | null>(res, null);
   } catch {
     return null;
+  }
+}
+
+export type AdminPhotoPageQuery = {
+  source?: "all" | "library" | "unassigned" | "album";
+  albumId?: string;
+  filterAlbumId?: string;
+  q?: string;
+  starred?: boolean;
+  dateFrom?: string;
+  dateTo?: string;
+  size?: "" | "small" | "medium" | "large";
+  sort?: "source" | "date-asc" | "date-desc" | "name-asc" | "name-desc" | "size-desc";
+  offset?: number;
+  limit?: number;
+  revision?: number;
+};
+
+export type AdminPhotoPage = {
+  photos: (import("./types").Photo & { source: string; sourceAlbumId?: string })[];
+  total: number;
+  offset: number;
+  limit: number;
+  revision: number;
+  hasMore: boolean;
+};
+
+export type AdminPhotoIdentity = { id: string; sourceType?: "library" | "album"; sourceAlbumId?: string };
+export type AdminPhotoMutation =
+  | { type: "star"; photoId: string; sourceType: "library" | "album"; albumId?: string; starred: boolean }
+  | { type: "patch-everywhere"; photoId: string; patch: Partial<import("./types").Photo> }
+  | { type: "append-library"; photo: import("./types").Photo }
+  | { type: "append-album"; albumId: string; photos: import("./types").Photo[] }
+  | { type: "remove"; photoId: string; sourceType: "library" | "album"; albumId?: string };
+export type AdminPhotoSummary = { all: number; library: number; unassigned: number; starred: number; albumMemberships: number; revision: number };
+
+/** Fetch one bounded page from the indexed main-admin photo library. */
+export async function fetchAdminPhotoPage(query: AdminPhotoPageQuery = {}, signal?: AbortSignal): Promise<AdminPhotoPage | null> {
+  if (!(await checkServer())) return null;
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) {
+    if (value !== undefined && value !== "") params.set(key, String(value));
+  }
+  try {
+    const res = await fetch(`/api/admin/photos?${params}`, { headers: adminAuthHeaders(), cache: "no-store", signal });
+    if (!res.ok) return null;
+    const data = await readJson<Partial<AdminPhotoPage> | null>(res, null);
+    if (!data || !Array.isArray(data.photos) || !Number.isInteger(data.total) || !Number.isInteger(data.offset) || !Number.isInteger(data.limit) || !Number.isInteger(data.revision) || typeof data.hasMore !== "boolean") return null;
+    return { ...data, photos: sanitizePersistedPhotos(data.photos) } as AdminPhotoPage;
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    return null;
+  }
+}
+
+/** Resolve only selected photo records; IDs may have been selected on earlier pages. */
+export async function fetchAdminPhotoRecords(items: AdminPhotoIdentity[], signal?: AbortSignal): Promise<import("./types").Photo[] | null> {
+  if (items.length > 500) return null;
+  if (!(await checkServer())) return null;
+  try {
+    const res = await fetch("/api/admin/photos/records", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
+      body: JSON.stringify({ items }),
+      signal,
+      cache: "no-store",
+    });
+    if (!res.ok) return null;
+    const data = await readJson<{ photos?: import("./types").Photo[] } | null>(res, null);
+    return Array.isArray(data?.photos) ? sanitizePersistedPhotos(data.photos) : null;
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    return null;
+  }
+}
+
+export async function fetchAdminPhotoSummary(): Promise<AdminPhotoSummary | null> {
+  if (!(await checkServer())) return null;
+  try {
+    const res = await fetch("/api/admin/photos/summary", { headers: adminAuthHeaders(), cache: "no-store" });
+    if (!res.ok) return null;
+    const data = await readJson<Partial<AdminPhotoSummary> | null>(res, null);
+    if (!data || !["all", "library", "unassigned", "starred", "albumMemberships", "revision"].every(key => Number.isInteger(data[key as keyof AdminPhotoSummary]))) return null;
+    return data as AdminPhotoSummary;
+  } catch { return null; }
+}
+
+/** Load legacy full snapshots only for explicit maintenance actions that still need them. */
+export async function fetchAdminPhotoSnapshots(): Promise<{ albums: import("./types").Album[]; library: import("./types").Photo[] } | null> {
+  if (!(await checkServer())) return null;
+  try {
+    const res = await fetch("/api/store?keys=wv_albums,wv_photo_library", { headers: adminAuthHeaders(), cache: "no-store" });
+    if (!res.ok) return null;
+    const data = await readJson<Record<string, unknown> | null>(res, null);
+    if (!data) return null;
+    const parse = <T>(value: unknown): T[] | null => {
+      try {
+        const parsed = typeof value === "string" ? JSON.parse(value) : value;
+        return Array.isArray(parsed) ? parsed as T[] : null;
+      } catch { return null; }
+    };
+    const albums = parse<import("./types").Album>(data.wv_albums);
+    const library = parse<import("./types").Photo>(data.wv_photo_library);
+    if (!albums || !library) return null;
+    return { albums, library: sanitizePersistedPhotos(library) };
+  } catch { return null; }
+}
+
+/** Apply ID-scoped mutations against the current server records. */
+export async function mutateAdminPhotos(operations: AdminPhotoMutation[]): Promise<{ ok: boolean; changed?: number; deletedFileCandidates?: string[]; error?: string }> {
+  if (!operations.length || operations.length > 500) return { ok: false, error: "Choose between 1 and 500 photo changes" };
+  if (!(await checkServer())) return { ok: false, error: "Server is unavailable" };
+  try {
+    const res = await fetch("/api/admin/photos/mutations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
+      body: JSON.stringify({ operations }),
+    });
+    const data = await readJson<{ ok?: boolean; changed?: number; deletedFileCandidates?: string[]; error?: string }>(res, {});
+    return res.ok && data.ok === true
+      ? { ok: true, changed: data.changed || 0, deletedFileCandidates: data.deletedFileCandidates || [] }
+      : { ok: false, error: data.error || "Photo changes could not be saved" };
+  } catch {
+    return { ok: false, error: "Could not reach the photo library" };
   }
 }
 

@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const Database = require("better-sqlite3");
+const { createPhotoIndex } = require("./photo-index");
 
 function parseLegacyDatabase(filePath) {
   const value = JSON.parse(fs.readFileSync(filePath, "utf8"));
@@ -29,6 +30,8 @@ function createSqliteStore({ dataDir, legacyFile = path.join(dataDir, "db.json")
   const remove = database.prepare("DELETE FROM app_store WHERE key = ?");
   const setMeta = database.prepare("INSERT INTO schema_meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value");
   const getMeta = database.prepare("SELECT value FROM schema_meta WHERE key = ?");
+  let photoIndex = null;
+  let photoIndexReady = false;
 
   function writeLegacyShadow(value) {
     if (!legacyFile) return;
@@ -59,15 +62,24 @@ function createSqliteStore({ dataDir, legacyFile = path.join(dataDir, "db.json")
 
   function write(input) {
     const normalized = JSON.parse(JSON.stringify(input || {}));
-    const existing = new Set(selectAll.all().map(row => row.key));
+    const currentRows = selectAll.all();
+    const currentByKey = new Map(currentRows.map(row => [row.key, row.value_json]));
+    const existing = new Set(currentByKey.keys());
+    const changedPhotoKeys = new Set();
     const now = new Date().toISOString();
     database.exec("BEGIN IMMEDIATE");
     try {
       for (const [key, value] of Object.entries(normalized)) {
-        upsert.run(key, JSON.stringify(value), now);
+        const valueJson = JSON.stringify(value);
+        if (currentByKey.get(key) !== valueJson && /^(?:wv_(?:albums|photo_library)|t_[a-z0-9-]+_wv_(?:albums|photo_library))$/.test(key)) changedPhotoKeys.add(key);
+        upsert.run(key, valueJson, now);
         existing.delete(key);
       }
-      for (const key of existing) remove.run(key);
+      for (const key of existing) {
+        remove.run(key);
+        if (/^(?:wv_(?:albums|photo_library)|t_[a-z0-9-]+_wv_(?:albums|photo_library))$/.test(key)) changedPhotoKeys.add(key);
+      }
+      if (photoIndexReady && changedPhotoKeys.size) photoIndex.syncChangedSources(normalized, changedPhotoKeys);
       setMeta.run("schema_version", "1");
       if (!getMeta.get("store_initialized_at")?.value) setMeta.run("store_initialized_at", now);
       database.exec("COMMIT");
@@ -80,11 +92,43 @@ function createSqliteStore({ dataDir, legacyFile = path.join(dataDir, "db.json")
     }
   }
 
+  function writePhotoData(input, keys) {
+    if (!input || typeof input !== "object" || Array.isArray(input) || !Array.isArray(keys) || keys.length === 0) {
+      throw new Error("Photo data write requires a store object and changed keys");
+    }
+    const allowedKeys = new Set(["wv_albums", "wv_photo_library"]);
+    const uniqueKeys = [...new Set(keys)];
+    if (uniqueKeys.some(key => !allowedKeys.has(key) || !Object.prototype.hasOwnProperty.call(input, key))) {
+      throw new Error("Photo data write can update only present main photo store keys");
+    }
+    const normalizedPhotos = new Map(uniqueKeys.map(key => [key, JSON.parse(JSON.stringify(input[key]))]));
+    const selectValue = database.prepare("SELECT value_json FROM app_store WHERE key = ?");
+    const now = new Date().toISOString();
+    const changedKeys = new Set();
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      for (const [key, value] of normalizedPhotos) {
+        const valueJson = JSON.stringify(value);
+        if (selectValue.get(key)?.value_json === valueJson) continue;
+        upsert.run(key, valueJson, now);
+        changedKeys.add(key);
+      }
+      if (photoIndexReady && changedKeys.size) photoIndex.syncChangedSources(input, changedKeys);
+      setMeta.run("schema_version", "1");
+      database.exec("COMMIT");
+      if (changedKeys.size) refreshLegacyShadow(read());
+      return [...changedKeys];
+    } catch (error) {
+      try { database.exec("ROLLBACK"); } catch {}
+      throw error;
+    }
+  }
+
   const rowCount = Number(database.prepare("SELECT COUNT(*) AS count FROM app_store").get().count || 0);
   const initialized = !!getMeta.get("store_initialized_at")?.value;
   let migratedLegacy = false;
   if (!initialized) {
-    if (rowCount === 0 && fs.existsSync(legacyFile)) {
+    if (rowCount === 0 && legacyFile && fs.existsSync(legacyFile)) {
       const legacy = parseLegacyDatabase(legacyFile);
       write(legacy);
       setMeta.run("legacy_imported_at", new Date().toISOString());
@@ -93,10 +137,49 @@ function createSqliteStore({ dataDir, legacyFile = path.join(dataDir, "db.json")
     setMeta.run("store_initialized_at", new Date().toISOString());
   } else refreshLegacyShadow(read());
 
+  // The sidecar index is a derived, rebuildable copy. Backfill it transactionally
+  // from the authoritative JSON rows and leave those legacy rows untouched. DDL
+  // is inside the same transaction so a failed backfill leaves no half-installed
+  // index schema behind.
+  let photoIndexMigration;
+  let photoIndexMigrationMs = 0;
+  const photoIndexMigrationStarted = process.hrtime.bigint();
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    photoIndex = createPhotoIndex(database);
+    photoIndexMigration = photoIndex.migrate(read());
+    database.exec("COMMIT");
+    photoIndexMigrationMs = Number(process.hrtime.bigint() - photoIndexMigrationStarted) / 1e6;
+    photoIndexReady = true;
+  } catch (error) {
+    try { database.exec("ROLLBACK"); } catch {}
+    database.close();
+    throw new Error(
+      "Photo library index migration failed and was rolled back; the original photo records remain authoritative and the server will not start with a partial index. Back up db.json and photoflow.sqlite, correct or restore the malformed photo metadata, then restart.",
+      { cause: error },
+    );
+  }
+
   function checkpoint() { database.exec("PRAGMA wal_checkpoint(TRUNCATE)"); }
   function close() { checkpoint(); database.close(); }
 
-  return { filePath, legacyFile, migratedLegacy, read, write, checkpoint, close };
+  return {
+    filePath,
+    legacyFile,
+    migratedLegacy,
+    photoIndexMigration,
+    photoIndexMigrationMs,
+    read,
+    write,
+    writePhotoData,
+    queryPhotoPage: options => photoIndex.query(options),
+    getPhotoRecords: options => photoIndex.getPhotosByIds(options),
+    photoIndexSummary: scope => photoIndex.summary(scope),
+    photoIndexStats: scope => photoIndex.stats(scope),
+    photoIndexVersion: photoIndex.version,
+    checkpoint,
+    close,
+  };
 }
 
 module.exports = { createSqliteStore, parseLegacyDatabase };

@@ -66,7 +66,7 @@ import {
   getBookingEmailLog, sendBookingReminder, sendCustomEmail, getWaitlistEntries, deleteWaitlistEntry,
   notifyWaitlistOnCancel, notifyDiscord, getCacheStats, warmCache, getAdminSession,
   getGlobalFtpSettings, saveGlobalFtpSettings, testFtpConnection, ftpUploadAlbum, ftpMoveToStarred,
-  fetchAlbumStubs, fetchAlbumPhotos, generateIcalToken, deleteIcalToken, getTags, createTag,
+  fetchAlbumStubs, fetchAlbumPhotos, fetchAdminPhotoPage, fetchAdminPhotoRecords, fetchAdminPhotoSnapshots, fetchAdminPhotoSummary, mutateAdminPhotos, generateIcalToken, deleteIcalToken, getTags, createTag,
   deleteTag, updateBookingTasks, toggleBookingTask, aiEnhancePhoto, listXmpPresets,
   uploadXmpPresets, deleteXmpPreset, ensurePublicAlbumAvailable, saveAlbumToServer,
   saveAlbumStatusToServer, autoCullAlbum, adminLogout, adminAuthHeaders, setBookingArchiveState,
@@ -100,6 +100,7 @@ import AlbumWorkflowProgress from "@/pages/admin/AlbumWorkflowProgress";
 import DashboardCommandCenter, { type DashboardDeliveryTask } from "@/pages/admin/DashboardCommandCenter";
 import EmptyAlbumConfirmation, { type EmptyAlbumOutcome } from "@/pages/admin/EmptyAlbumConfirmation";
 import DeliveryReadiness from "@/pages/admin/DeliveryReadiness";
+import AlbumPhotoFilterStrip from "@/components/admin/AlbumPhotoFilterStrip";
 import { Slider } from "@/components/ui/slider";
 
 const InvoicesView = React.lazy(() => import("@/pages/admin/InvoicesView"));
@@ -6754,9 +6755,11 @@ function uploadFileName(src?: string): string {
 
 function PhotosView() {
   const settings = getSettings();
-  const [libraryPhotos, setLibraryPhotosState] = useState<Photo[]>(getPhotoLibrary());
-  const [albums, setAlbumsState] = useState<Album[]>(getAlbums());
+  const [libraryPhotos, setLibraryPhotosState] = useState<Photo[]>(() => isServerMode() ? [] : getPhotoLibrary());
+  const [albums, setAlbumsState] = useState<Album[]>(() => isServerMode() ? [] : getAlbums());
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [selectedPhotoContexts, setSelectedPhotoContexts] = useState<Map<string, { sourceType: "library" | "album"; albumId?: string }>>(new Map());
+  const [photoSummary, setPhotoSummary] = useState<{ all: number; library: number; unassigned: number; starred: number; albumMemberships: number; revision: number } | null>(null);
   const [uploadStats, setUploadStats] = useState<{ total: number; done: number; errors: number; savedBytes: number; speed?: number } | null>(null);
   const [viewSource, setViewSource] = useState<"all" | "library" | "unassigned" | string>("all");
   const [starredOnly, setStarredOnly] = useState(false);
@@ -6764,7 +6767,16 @@ function PhotosView() {
   const [syncing, setSyncing] = useState(false);
   const [showAddToAlbum, setShowAddToAlbum] = useState(false);
   const [visibleCount, setVisibleCount] = useState(LIBRARY_INITIAL_BATCH);
-  const libSentinelRef = useRef<HTMLDivElement>(null);
+  const [photoSort, setPhotoSort] = useState<"source" | "date-desc" | "date-asc" | "name-asc" | "name-desc" | "size-desc">("source");
+  const [serverPhotos, setServerPhotos] = useState<(Photo & { source: string; sourceAlbumId?: string })[]>([]);
+  const [serverPhotoTotal, setServerPhotoTotal] = useState(0);
+  const [serverPhotoHasMore, setServerPhotoHasMore] = useState(false);
+  const [serverPhotoRevision, setServerPhotoRevision] = useState<number | null>(null);
+  const [serverPhotoLoading, setServerPhotoLoading] = useState(false);
+  const [serverPhotoLoadingMore, setServerPhotoLoadingMore] = useState(false);
+  const [serverPhotoError, setServerPhotoError] = useState(false);
+  const [serverPhotoQueryKey, setServerPhotoQueryKey] = useState("");
+  const [serverPhotoReload, setServerPhotoReload] = useState(0);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [filterDateFrom, setFilterDateFrom] = useState("");
   const [filterDateTo, setFilterDateTo] = useState("");
@@ -6795,6 +6807,88 @@ function PhotosView() {
   const setLbSliderOpen = setLbEditOpen;
   const [enhancingIds, setEnhancingIds] = useState<Set<string>>(new Set());
   const displayPhotosRef = useRef<(Photo & { source: string })[]>([]);
+  const serverPhotoMoreAbort = useRef<AbortController | null>(null);
+
+  const pageSource = albumIdFromPhotoSourceKey(viewSource);
+  const photoPageQuery = {
+    source: pageSource ? "album" as const : viewSource as "all" | "library" | "unassigned",
+    ...(pageSource ? { albumId: pageSource } : {}),
+    ...(filterAlbum ? { filterAlbumId: filterAlbum } : {}),
+    q: searchQuery.trim(),
+    starred: starredOnly,
+    dateFrom: filterDateFrom,
+    dateTo: filterDateTo,
+    size: filterSize,
+    sort: photoSort,
+  };
+  const photoPageQueryKey = JSON.stringify(photoPageQuery);
+
+  useEffect(() => {
+    if (!isServerMode()) return;
+    const controller = new AbortController();
+    serverPhotoMoreAbort.current?.abort();
+    serverPhotoMoreAbort.current = controller;
+    const requestQuery = JSON.parse(photoPageQueryKey);
+    setServerPhotoLoading(true);
+    setServerPhotoLoadingMore(false);
+    setServerPhotoError(false);
+    setServerPhotos([]);
+    setServerPhotoQueryKey("");
+    setServerPhotoRevision(null);
+    setServerPhotoTotal(0);
+    setServerPhotoHasMore(false);
+    void fetchAdminPhotoPage({ ...requestQuery, offset: 0, limit: LIBRARY_INITIAL_BATCH }, controller.signal)
+      .then(page => {
+        if (controller.signal.aborted) return;
+        if (!page) {
+          setServerPhotoError(true);
+          return;
+        }
+        setServerPhotos(page.photos);
+        setServerPhotoTotal(page.total);
+        setServerPhotoHasMore(page.hasMore);
+        setServerPhotoRevision(page.revision);
+        setServerPhotoQueryKey(photoPageQueryKey);
+      })
+      .catch(error => {
+        if (!controller.signal.aborted && error?.name !== "AbortError") setServerPhotoError(true);
+      })
+      .finally(() => { if (!controller.signal.aborted) setServerPhotoLoading(false); });
+    return () => {
+      controller.abort();
+      if (serverPhotoMoreAbort.current === controller) serverPhotoMoreAbort.current = null;
+    };
+  }, [photoPageQueryKey, serverPhotoReload]);
+
+  const handleLoadMoreServerPhotos = async () => {
+    if (!serverPhotoHasMore || serverPhotoLoadingMore || serverPhotoRevision == null || serverPhotoQueryKey !== photoPageQueryKey) return;
+    const controller = new AbortController();
+    serverPhotoMoreAbort.current?.abort();
+    serverPhotoMoreAbort.current = controller;
+    setServerPhotoLoadingMore(true);
+    try {
+      const page = await fetchAdminPhotoPage({
+        ...photoPageQuery,
+        offset: serverPhotos.length,
+        limit: LIBRARY_INITIAL_BATCH,
+        revision: serverPhotoRevision,
+      }, controller.signal);
+      if (controller.signal.aborted) return;
+      if (!page || page.revision !== serverPhotoRevision) {
+        // Restart from page zero so a concurrent photo write cannot shift the
+        // offset and create gaps or duplicates in the active result set.
+        setServerPhotoReload(value => value + 1);
+      } else {
+        setServerPhotos(previous => [...previous, ...page.photos]);
+        setServerPhotoHasMore(page.hasMore);
+      }
+    } catch (error) {
+      if (controller.signal.aborted || error?.name === "AbortError") return;
+      setServerPhotoError(true);
+    } finally {
+      if (!controller.signal.aborted) setServerPhotoLoadingMore(false);
+    }
+  };
 
   useEffect(() => { uploadOpenRef.current = uploadOpen; }, [uploadOpen]);
 
@@ -6831,26 +6925,15 @@ function PhotosView() {
     return () => window.removeEventListener("dragenter", handleDragEnter);
   }, []);
 
-  // Backfill missing thumbnails for library photos
-  useBackfillThumbnails(libraryPhotos, useCallback((photoId, thumb) => {
+  // The server renders missing thumbnail variants on demand; only local mode
+  // needs a browser-side metadata backfill.
+  useBackfillThumbnails(isServerMode() ? [] : libraryPhotos, useCallback((photoId, thumb) => {
     setLibraryPhotosState(prev => {
       const updated = prev.map(p => p.id === photoId ? { ...p, thumbnail: thumb } : p);
       setPhotoLibrary(updated);
       return updated;
     });
   }, []));
-
-  // Batch rendering: load more photos as user scrolls
-  useEffect(() => {
-    const sentinel = libSentinelRef.current;
-    if (!sentinel) return;
-    const observer = new IntersectionObserver(
-      (entries) => { if (entries[0].isIntersecting) setVisibleCount(c => c + LIBRARY_BATCH_SIZE); },
-      { rootMargin: "400px" }
-    );
-    observer.observe(sentinel);
-    return () => observer.disconnect();
-  }, []);
 
   useEffect(() => {
     const onDragEnter = (e: DragEvent) => {
@@ -6862,96 +6945,24 @@ function PhotosView() {
     return () => document.removeEventListener("dragenter", onDragEnter);
   }, []);
 
-  // On mount, fetch the authoritative album list and photo library from the server so
-  // that the "No Album" count (and all other counts) always reflect the latest server
-  // state rather than whatever happens to be in this device's localStorage.  Different
-  // devices can otherwise show different counts because localStorage is device-specific.
+  // Server browsing uses the indexed page endpoint and album metadata stubs. Full
+  // snapshots are loaded only by explicit maintenance actions or an album edit.
   useEffect(() => {
     if (!isServerMode()) return;
     let cancelled = false;
-
-    async function loadFromServer() {
-      // 1. Fetch the authoritative album list from server.
-      //    If the server is reachable, use its response as the single source of truth
-      //    (replacing the potentially stale localStorage snapshot).
-      //    If unreachable (null), fall through to the original localStorage stubs so
-      //    offline / no-server mode still works.
-      const serverStubs = await fetchAlbumStubs();
-      if (cancelled) return;
-      if (serverStubs) {
-        // Server returned the authoritative list — use it as state base.
-        setAlbumsState(serverStubs);
-
-        // 2. Expand photos for any stubs (albums with _photosStripped: true)
-        const stubs = serverStubs.filter(a => a._photosStripped);
-        if (stubs.length > 0) {
-          const results = await Promise.all(
-            stubs.map(async (a) => {
-              const fetched = await fetchAlbumPhotos(a.id);
-              return fetched ? { id: a.id, photos: fetched } : null;
-            })
-          );
-          if (cancelled) return;
-          const updates = new Map(
-            results
-              .filter((r): r is { id: string; photos: Photo[] } => r !== null)
-              .map(r => [r.id, r.photos])
-          );
-          if (updates.size > 0) {
-            setAlbumsState(prev => prev.map(a => {
-              const photos = updates.get(a.id);
-              return photos !== undefined ? { ...a, photos, _photosStripped: false } : a;
-            }));
-          }
-        }
-      } else {
-        // Server unavailable — fall back to expanding stubs already in localStorage.
-        const localStubs = albums.filter(a => a._photosStripped);
-        if (localStubs.length > 0) {
-          const results = await Promise.all(
-            localStubs.map(async (a) => {
-              const fetched = await fetchAlbumPhotos(a.id);
-              return fetched ? { id: a.id, photos: fetched } : null;
-            })
-          );
-          if (cancelled) return;
-          const updates = new Map(
-            results
-              .filter((r): r is { id: string; photos: Photo[] } => r !== null)
-              .map(r => [r.id, r.photos])
-          );
-          if (updates.size > 0) {
-            setAlbumsState(prev => prev.map(a => {
-              const photos = updates.get(a.id);
-              return photos !== undefined ? { ...a, photos, _photosStripped: false } : a;
-            }));
-          }
-        }
-      }
-
-      // 3. Fetch the photo library directly from server to get the cross-device authoritative list
-      try {
-        const res = await fetch("/api/store/wv_photo_library", { headers: adminAuthHeaders() });
-        if (!res.ok || cancelled) return;
-        const data = await res.json();
-        if (data?.value != null && !cancelled) {
-          const photos = typeof data.value === "string" ? JSON.parse(data.value) : data.value;
-          if (Array.isArray(photos)) setLibraryPhotosState(photos as Photo[]);
-        }
-      } catch (err) {
-        console.warn("PhotosView: failed to fetch photo library from server", err);
-      }
-    }
-
-    loadFromServer();
+    void fetchAlbumStubs().then(serverStubs => { if (!cancelled && serverStubs) setAlbumsState(serverStubs); });
+    void fetchAdminPhotoSummary().then(summary => { if (!cancelled && summary) setPhotoSummary(summary); });
     return () => { cancelled = true; };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [serverPhotoReload]);
 
   // When the background sync (triggered by tab-focus / visibility change) finishes,
   // it updates localStorage and dispatches "storage-synced".  Re-read the photo
   // library from localStorage so the "No Album" count stays in sync across devices.
   useEffect(() => {
-    const onSync = () => setLibraryPhotosState(getPhotoLibrary());
+    const onSync = () => {
+      if (isServerMode()) setServerPhotoReload(value => value + 1);
+      else setLibraryPhotosState(getPhotoLibrary());
+    };
     window.addEventListener("storage-synced", onSync);
     return () => window.removeEventListener("storage-synced", onSync);
   }, []);
@@ -6971,22 +6982,11 @@ function PhotosView() {
       const serverFileNames = new Set(stats.allFileNames);
       let repairedAlbums = 0;
 
-      // Fetch the authoritative album list from the server (with full photos, not stubs).
-      // Using the server copy avoids false-positive "orphan" detection when localStorage
-      // only contains stubs (photos: []) from the background poll — which would
-      // otherwise cause all album photo files to be deleted as "orphaned".
-      let serverAlbums: Album[] = [];
-      try {
-        const res = await fetch("/api/store/wv_albums", { headers: adminAuthHeaders() });
-        if (res.ok) {
-          const data = await res.json();
-          const raw = data?.value;
-          if (raw) {
-            const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
-            if (Array.isArray(parsed)) serverAlbums = parsed as Album[];
-          }
-        }
-      } catch {}
+      // Full records are fetched only after the user explicitly starts storage reconciliation.
+      const snapshots = await fetchAdminPhotoSnapshots();
+      if (!snapshots) throw new Error("Could not load complete photo metadata for storage reconciliation");
+      const serverAlbums = snapshots.albums;
+      const completeLibrary = snapshots.library;
 
       // Step 1: Check albums for broken photo references and repair them
       for (const alb of serverAlbums) {
@@ -7009,13 +7009,13 @@ function PhotosView() {
 
       // Step 1b: Check library photos for broken file references and remove them
       let removedLibraryCount = 0;
-      const brokenLibrarySet = new Set(libraryPhotos.filter(p => {
+      const brokenLibrarySet = new Set(completeLibrary.filter(p => {
         const filename = uploadFileName(p.src);
         return (p.src.startsWith("/uploads/") && !isSupportedPhotoSource(p.src)) || (filename && !serverFileNames.has(filename) && p.src.startsWith("/uploads/"));
       }));
-      let currentLibrary = libraryPhotos;
+      let currentLibrary = completeLibrary;
       if (brokenLibrarySet.size > 0) {
-        const repairedLibrary = libraryPhotos.filter(p => !brokenLibrarySet.has(p));
+        const repairedLibrary = completeLibrary.filter(p => !brokenLibrarySet.has(p));
         setPhotoLibrary(repairedLibrary);
         setLibraryPhotosState(repairedLibrary);
         currentLibrary = repairedLibrary;
@@ -7100,9 +7100,10 @@ function PhotosView() {
 
         if (looseFiles.length > 0) {
           const recoveredPhotos = looseFiles.map(photoFromFilename);
-          const updatedLibrary = [...getPhotoLibrary(), ...recoveredPhotos];
+          const updatedLibrary = [...currentLibrary, ...recoveredPhotos];
           setPhotoLibrary(updatedLibrary);
           setLibraryPhotosState(updatedLibrary);
+          currentLibrary = updatedLibrary;
         }
 
         if (albumGroups.length > 0) messages.push(`Recovered ${albumGroups.length} upload group(s) as disabled album drafts`);
@@ -7117,15 +7118,19 @@ function PhotosView() {
 
       // Refresh albums state and notify StorageView to refresh its stats
       setAlbumsState(getAlbums());
+      setServerPhotoReload(value => value + 1);
       window.dispatchEvent(new CustomEvent("storage-synced"));
     } catch { toast.error("Failed to sync from storage"); }
     setSyncing(false);
   };
 
-  const handleClearDuplicates = () => {
-    // Always use fresh data from storage to avoid acting on stale component state
-    const freshAlbums = getAlbums();
-    const freshLibrary = getPhotoLibrary();
+  const handleClearDuplicates = async () => {
+    // This maintenance action uses complete snapshots intentionally; ordinary
+    // browsing and page selection never load or write those snapshots.
+    const snapshots = isServerMode() ? await fetchAdminPhotoSnapshots() : { albums: getAlbums(), library: getPhotoLibrary() };
+    if (!snapshots) { toast.error("Could not load complete photo metadata"); return; }
+    const freshAlbums = snapshots.albums;
+    const freshLibrary = snapshots.library;
     let totalRemoved = 0;
 
     for (const alb of freshAlbums) {
@@ -7156,6 +7161,7 @@ function PhotosView() {
 
     // Refresh from storage after all writes
     setAlbumsState(getAlbums());
+    if (isServerMode()) setServerPhotoReload(value => value + 1);
 
     if (totalRemoved === 0) toast.info("No duplicates found");
     else toast.success(`Removed ${totalRemoved} duplicate photo${totalRemoved !== 1 ? "s" : ""}`);
@@ -7244,8 +7250,13 @@ function PhotosView() {
     });
   }
 
+  const indexedPhotosCurrent = isServerMode() && serverPhotoQueryKey === photoPageQueryKey;
+  if (isServerMode()) displayPhotos = indexedPhotosCurrent ? serverPhotos : [];
+
   // Keep ref in sync for keyboard navigation
   displayPhotosRef.current = displayPhotos;
+  const visiblePhotoCount = isServerMode() ? displayPhotos.length : Math.min(visibleCount, displayPhotos.length);
+  const totalDisplayPhotoCount = isServerMode() && indexedPhotosCurrent ? serverPhotoTotal : displayPhotos.length;
   const visiblePhotoIds = displayPhotos.map(photo => photo.id);
   const allVisiblePhotosSelected = visiblePhotoIds.length > 0 && visiblePhotoIds.every(id => selectedIds.has(id));
 
@@ -7254,8 +7265,8 @@ function PhotosView() {
   const selectedAlbum = selectedAlbumId ? albums.find(a => a.id === selectedAlbumId) || null : null;
 
   const loadAlbumForPhotoAppend = async (target: Album): Promise<Album | null> => {
-    const stored = getAlbums().find(a => a.id === target.id) || target;
-    const needsHydrate = !!stored._photosStripped || ((stored.photoCount || 0) > 0 && (!stored.photos || stored.photos.length === 0));
+    const stored = target._photosStripped ? target : getAlbums().find(a => a.id === target.id) || target;
+    const needsHydrate = isServerMode() && (!!target._photosStripped || !!stored._photosStripped || ((stored.photoCount || 0) > 0 && (!stored.photos || stored.photos.length === 0)));
     if (needsHydrate && isServerMode()) {
       const fetched = await fetchAlbumPhotos(stored.id);
       if (!fetched) {
@@ -7345,11 +7356,8 @@ function PhotosView() {
           updateAlbum(updated);
           setAlbumsState(getAlbums());
         } else {
-          setLibraryPhotosState(prev => {
-            const updated = [...prev, ...newPhotos];
-            setPhotoLibrary(updated);
-            return updated;
-          });
+          const result = await commitPhotoMutations(newPhotos.map(photo => ({ type: "append-library" as const, photo })));
+          if (!result.ok) toast.error(result.error || "Photos uploaded, but could not be added to the library. Use Sync Storage to recover them.");
         }
       }
       setUploadStats(prev => prev ? { ...prev, done: fileArr.length, errors: fileArr.length - results.length } : null);
@@ -7375,16 +7383,68 @@ function PhotosView() {
     if (e.target) e.target.value = "";
   };
 
-  const toggleSelect = (id: string) => {
-    setSelectedIds(prev => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
-      return next;
-    });
+  const contextForPhoto = (photo?: Photo & { source?: string; sourceAlbumId?: string }) => photo?.sourceAlbumId
+    ? { sourceType: "album" as const, albumId: photo.sourceAlbumId }
+    : { sourceType: "library" as const };
+  const photoIdentity = (id: string) => {
+    const context = selectedPhotoContexts.get(id) || contextForPhoto(allPhotos.find(photo => photo.id === id));
+    return { id, ...(context.sourceType === "album" ? { sourceAlbumId: context.albumId } : { sourceType: "library" as const }) };
+  };
+  const toggleSelect = (id: string, photo?: Photo & { source?: string; sourceAlbumId?: string }) => {
+    const next = new Set(selectedIds);
+    const contexts = new Map(selectedPhotoContexts);
+    if (next.has(id)) { next.delete(id); contexts.delete(id); }
+    else if (next.size < 500) { next.add(id); contexts.set(id, contextForPhoto(photo)); }
+    else { toast.error("Select up to 500 photos at a time"); return; }
+    setSelectedIds(next);
+    setSelectedPhotoContexts(contexts);
+  };
+  const setLoadedPhotoSelection = (select: boolean) => {
+    const next = new Set(selectedIds);
+    const contexts = new Map(selectedPhotoContexts);
+    for (const photo of displayPhotos) {
+      if (select && next.size < 500) {
+        next.add(photo.id);
+        contexts.set(photo.id, contextForPhoto(photo));
+      } else if (!select) {
+        next.delete(photo.id);
+        contexts.delete(photo.id);
+      }
+    }
+    if (select && selectedIds.size + displayPhotos.filter(photo => !selectedIds.has(photo.id)).length > 500) toast.info("Selection is capped at 500 photos. Load or select a smaller batch.");
+    setSelectedIds(next);
+    setSelectedPhotoContexts(contexts);
+  };
+  const clearPhotoSelection = () => {
+    setSelectedIds(new Set());
+    setSelectedPhotoContexts(new Map());
+  };
+
+  const commitPhotoMutations = async (operations: Parameters<typeof mutateAdminPhotos>[0]) => {
+    const result = await mutateAdminPhotos(operations);
+    if (!result.ok) return result;
+    setServerPhotoReload(value => value + 1);
+    await Promise.allSettled((result.deletedFileCandidates || []).map(src => deletePhotoFromServer(src)));
+    return result;
   };
 
   const handleToggleStar = async (photo: SourcedPhoto) => {
     const nowStarred = !photo.starred;
+    if (isServerMode()) {
+      const result = await commitPhotoMutations([{
+        type: "star",
+        photoId: photo.id,
+        sourceType: photo.sourceAlbumId ? "album" : "library",
+        ...(photo.sourceAlbumId ? { albumId: photo.sourceAlbumId } : {}),
+        starred: nowStarred,
+      }]);
+      if (!result.ok) { toast.error(result.error || "Could not update photo star"); return; }
+      if (photo.sourceAlbumId) {
+        const album = albums.find(candidate => candidate.id === photo.sourceAlbumId);
+        if (album) ftpMoveToStarred({ photoSrc: photo.src, albumTitle: album.title, albumSlug: album.slug, originalName: photo.originalName, starred: nowStarred }).catch(() => {});
+      }
+      return;
+    }
     if (photo.source === "Library") {
       const updated = libraryPhotos.map(p => p.id === photo.id ? { ...p, starred: nowStarred } : p);
       setPhotoLibrary(updated);
@@ -7404,7 +7464,13 @@ function PhotosView() {
 
   const sourceWithoutQuery = (src?: string) => (src || "").split("?")[0];
 
-  const patchPhotoEverywhere = (photoId: string, patch: Partial<Photo>, previousSrc?: string) => {
+  const patchPhotoEverywhere = async (photoId: string, patch: Partial<Photo>, previousSrc?: string) => {
+    if (isServerMode()) {
+      const normalizedPatch = Object.fromEntries(Object.entries(patch).map(([key, value]) => [key, value === undefined ? null : value]));
+      const result = await commitPhotoMutations([{ type: "patch-everywhere", photoId, patch: normalizedPatch }]);
+      if (!result.ok) throw new Error(result.error || "Could not update photo metadata");
+      return result;
+    }
     const updatedLib = libraryPhotos.map(p => p.id === photoId ? { ...p, ...patch } : p);
     setPhotoLibrary(updatedLib);
     setLibraryPhotosState(updatedLib);
@@ -7424,6 +7490,7 @@ function PhotosView() {
       anyAlbumPatched = true;
     }
     if (anyAlbumPatched) setAlbumsState(getAlbums());
+    return { ok: true, deletedFileCandidates: [] as string[] };
   };
 
   const sourceUsedByAnotherPhoto = (src: string, photoId: string) => {
@@ -7472,13 +7539,13 @@ function PhotosView() {
 
       const previousEditedSrc = photo.beforeSrc ? photo.src : "";
       const patch = { src: newSrc, beforeSrc: originalSrc, afterSrc: newSrc, thumbnail: newThumb };
-      patchPhotoEverywhere(photo.id, patch, photo.src);
+      await patchPhotoEverywhere(photo.id, patch, photo.src);
       setLightboxPhoto(prev => prev?.id === photo.id ? { ...prev, ...patch } : prev);
       URL.revokeObjectURL(blobUrl);
 
       // Re-editing replaces the previous derivative. Remove it only after every
       // record points at the new file and only when no other photo references it.
-      if (previousEditedSrc.startsWith("/uploads/")
+      if (!isServerMode() && previousEditedSrc.startsWith("/uploads/")
           && sourceWithoutQuery(previousEditedSrc) !== sourceWithoutQuery(originalSrc)
           && !sourceUsedByAnotherPhoto(previousEditedSrc, photo.id)) {
         deletePhotoFromServer(previousEditedSrc);
@@ -7492,7 +7559,7 @@ function PhotosView() {
     }
   };
 
-  const handleRestoreOriginal = (photo: Photo & { source: string }) => {
+  const handleRestoreOriginal = async (photo: Photo & { source: string }) => {
     if (!photo.beforeSrc) return;
     const editedSrc = photo.src;
     const originalBase = sourceWithoutQuery(photo.beforeSrc);
@@ -7503,11 +7570,12 @@ function PhotosView() {
       beforeSrc: undefined,
       afterSrc: undefined,
     };
-    patchPhotoEverywhere(photo.id, patch, editedSrc);
+    try { await patchPhotoEverywhere(photo.id, patch, editedSrc); }
+    catch (error) { toast.error(error instanceof Error ? error.message : "Could not restore original"); return; }
     setLightboxPhoto(prev => prev?.id === photo.id ? { ...prev, ...patch } : prev);
     setLbShowBefore(false);
     setLbEditOpen(false);
-    if (editedSrc.startsWith("/uploads/")
+    if (!isServerMode() && editedSrc.startsWith("/uploads/")
         && sourceWithoutQuery(editedSrc) !== originalBase
         && !sourceUsedByAnotherPhoto(editedSrc, photo.id)) {
       deletePhotoFromServer(editedSrc);
@@ -7516,6 +7584,18 @@ function PhotosView() {
   };
 
   const handleDeletePhoto = async (id: string, source: string, sourceAlbumId?: string) => {
+    if (isServerMode()) {
+      const result = await commitPhotoMutations([{
+        type: "remove",
+        photoId: id,
+        sourceType: sourceAlbumId ? "album" : "library",
+        ...(sourceAlbumId ? { albumId: sourceAlbumId } : {}),
+      }]);
+      if (!result.ok) { toast.error(result.error || "Could not remove photo"); return; }
+      const nextIds = new Set(selectedIds); nextIds.delete(id); setSelectedIds(nextIds);
+      const nextContexts = new Map(selectedPhotoContexts); nextContexts.delete(id); setSelectedPhotoContexts(nextContexts);
+      return;
+    }
     if (source === "Library") {
       const lp = libraryPhotos.find(p => p.id === id);
       const updated = libraryPhotos.filter(p => p.id !== id);
@@ -7566,6 +7646,24 @@ function PhotosView() {
   const handleMassDelete = async () => {
     if (selectedIds.size === 0) return;
     if (!confirm(`Delete ${selectedIds.size} selected photo(s)?`)) return;
+
+    if (isServerMode()) {
+      const operations = [...selectedIds].map(id => {
+        const context = selectedPhotoContexts.get(id) || { sourceType: "library" as const };
+        return {
+          type: "remove" as const,
+          photoId: id,
+          sourceType: context.sourceType,
+          ...(context.sourceType === "album" && context.albumId ? { albumId: context.albumId } : {}),
+        };
+      });
+      const result = await commitPhotoMutations(operations);
+      if (!result.ok) { toast.error(result.error || "Could not remove selected photos"); return; }
+      const count = selectedIds.size;
+      clearPhotoSelection();
+      toast.success(`Deleted ${count} selected photo${count === 1 ? "" : "s"}`);
+      return;
+    }
 
     // Separate by source
     const libToDelete = new Set<string>();
@@ -7632,48 +7730,67 @@ function PhotosView() {
     }
     if (albumUpdates.size > 0) setAlbumsState(getAlbums());
 
-    setSelectedIds(new Set());
+    clearPhotoSelection();
     toast.success(`Deleted ${selectedIds.size} photos`);
   };
 
-  const handleCreateAlbumFromSelection = () => {
+  const handleCreateAlbumFromSelection = async () => {
     if (selectedIds.size === 0) { toast.error("Select photos first"); return; }
-    const selectedPhotos = allPhotos.filter(p => selectedIds.has(p.id));
+    const selectedPhotos = isServerMode()
+      ? await fetchAdminPhotoRecords([...selectedIds].map(photoIdentity))
+      : allPhotos.filter(p => selectedIds.has(p.id));
+    if (!selectedPhotos || selectedPhotos.length !== selectedIds.size) { toast.error("Some selected photos are no longer available. Refresh the selection and try again."); return; }
+    const cleanPhotos = selectedPhotos.map(photo => {
+      const { source: _source, sourceAlbumId: _sourceAlbumId, ...cleanPhoto } = photo as Photo & { source?: string; sourceAlbumId?: string };
+      return cleanPhoto;
+    });
     const s = getSettings();
     const alb: Album = {
       id: generateId("alb"),
       slug: slugify(`album-${Date.now()}`),
       title: "New Album",
       description: "",
-      coverImage: selectedPhotos[0]?.src || "",
+      coverImage: cleanPhotos[0]?.src || "",
       date: new Date().toISOString().split("T")[0],
-      photoCount: selectedPhotos.length,
+      photoCount: cleanPhotos.length,
       freeDownloads: s.defaultFreeDownloads,
       pricePerPhoto: s.defaultPricePerPhoto,
       priceFullAlbum: s.defaultPriceFullAlbum,
       isPublic: true,
-      photos: selectedPhotos,
+      photos: cleanPhotos,
     };
     addAlbum(alb);
     setAlbumsState(getAlbums());
-    toast.success(`Album created with ${selectedPhotos.length} photos — go to Albums tab to edit`);
-    setSelectedIds(new Set());
+    toast.success(`Album created with ${cleanPhotos.length} photos - go to Albums tab to edit`);
+    clearPhotoSelection();
+    if (isServerMode()) setServerPhotoReload(value => value + 1);
   };
 
-  const handleAddToAlbum = (albumId: string) => {
-    const selectedPhotos = allPhotos.filter(p => selectedIds.has(p.id));
-    const album = albums.find(a => a.id === albumId);
+  const handleAddToAlbum = async (albumId: string) => {
+    const albumStub = albums.find(a => a.id === albumId);
+    if (!albumStub) return;
+    const album = await loadAlbumForPhotoAppend(albumStub);
     if (!album) return;
+    const selectedPhotos = isServerMode()
+      ? await fetchAdminPhotoRecords([...selectedIds].map(photoIdentity))
+      : allPhotos.filter(p => selectedIds.has(p.id));
+    if (!selectedPhotos || selectedPhotos.length !== selectedIds.size) { toast.error("Some selected photos are no longer available. Refresh the selection and try again."); return; }
+    const cleanPhotos = selectedPhotos.map(photo => {
+      const { source: _source, sourceAlbumId: _sourceAlbumId, ...cleanPhoto } = photo as Photo & { source?: string; sourceAlbumId?: string };
+      return cleanPhoto;
+    });
+    const existingIds = new Set(album.photos.map(p => p.id));
     const existingSrcs = new Set(album.photos.map(p => p.src));
-    const newPhotos = selectedPhotos.filter(p => !existingSrcs.has(p.src));
+    const newPhotos = cleanPhotos.filter(p => !existingIds.has(p.id) && !existingSrcs.has(p.src));
     if (newPhotos.length === 0) { toast.info("All selected photos are already in this album"); return; }
     const updated = { ...album, photos: [...album.photos, ...newPhotos], photoCount: album.photos.length + newPhotos.length };
     if (!updated.coverImage && newPhotos[0]) updated.coverImage = newPhotos[0].src;
     updateAlbum(updated);
     setAlbumsState(getAlbums());
     toast.success(`Added ${newPhotos.length} photo${newPhotos.length !== 1 ? "s" : ""} to "${album.title}"`);
-    setSelectedIds(new Set());
+    clearPhotoSelection();
     setShowAddToAlbum(false);
+    if (isServerMode()) setServerPhotoReload(value => value + 1);
   };
 
   // Unique sources for filter
@@ -8048,13 +8165,7 @@ function PhotosView() {
           <Button size="sm" variant="outline" onClick={handleSyncFromStorage} disabled={syncing} title={syncing ? "Syncing…" : "Sync Storage"} className="gap-1.5 font-body text-xs border-border text-foreground px-2 sm:px-3">
             <RefreshCw className={`w-4 h-4 shrink-0 ${syncing ? "animate-spin" : ""}`} /> <span className="hidden sm:inline">{syncing ? "Syncing…" : "Sync Storage"}</span>
           </Button>
-          <Button size="sm" variant={selectedIds.size > 0 ? "default" : "ghost"} aria-label={allVisiblePhotosSelected ? `Deselect all ${visiblePhotoIds.length} visible photos` : `Select all ${visiblePhotoIds.length} visible photos`} aria-pressed={allVisiblePhotosSelected} onClick={() => {
-            setSelectedIds(previous => {
-              const next = new Set(previous);
-              visiblePhotoIds.forEach(id => allVisiblePhotosSelected ? next.delete(id) : next.add(id));
-              return next;
-            });
-          }} className={`gap-1 font-body text-xs px-2 sm:px-3 ${selectedIds.size > 0 ? "bg-primary/20 text-primary border border-primary/30 hover:bg-primary/30" : "text-muted-foreground"}`}>
+          <Button size="sm" variant={selectedIds.size > 0 ? "default" : "ghost"} aria-label={allVisiblePhotosSelected ? `Deselect all ${visiblePhotoIds.length} loaded photos` : `Select all ${visiblePhotoIds.length} loaded photos`} aria-description="Selection applies to currently loaded photos. Load another page to extend it." title="Select or clear currently loaded photos only" aria-pressed={allVisiblePhotosSelected} onClick={() => setLoadedPhotoSelection(!allVisiblePhotosSelected)} className={`gap-1 font-body text-xs px-2 sm:px-3 ${selectedIds.size > 0 ? "bg-primary/20 text-primary border border-primary/30 hover:bg-primary/30" : "text-muted-foreground"}`}>
             <CheckSquare className="w-4 h-4 shrink-0" /> <span className="hidden xs:inline sm:inline">{allVisiblePhotosSelected ? "Deselect All" : "Select All"}</span>
           </Button>
         </div>
@@ -8077,14 +8188,14 @@ function PhotosView() {
             {showAddToAlbum && albums.length > 0 && (
               <div className="absolute top-full left-0 mt-1 z-50 glass-panel rounded-lg border border-border shadow-lg min-w-[200px]">
                 {albums.map(alb => (
-                  <button key={alb.id} onClick={() => handleAddToAlbum(alb.id)} className="w-full text-left px-4 py-2.5 text-sm font-body text-foreground hover:bg-secondary transition-colors first:rounded-t-lg last:rounded-b-lg">
-                    {alb.title} ({alb.photos.length} photos)
+                  <button key={alb.id} onClick={() => void handleAddToAlbum(alb.id)} className="w-full text-left px-4 py-2.5 text-sm font-body text-foreground hover:bg-secondary transition-colors first:rounded-t-lg last:rounded-b-lg">
+                    {alb.title} ({alb.photoCount ?? alb.photos.length} photos)
                   </button>
                 ))}
               </div>
             )}
           </div>
-          <button onClick={() => setSelectedIds(new Set())} className="ml-auto text-xs font-body text-muted-foreground hover:text-foreground flex items-center gap-1">
+          <button onClick={clearPhotoSelection} className="ml-auto text-xs font-body text-muted-foreground hover:text-foreground flex items-center gap-1">
             <X className="w-3.5 h-3.5" /> Clear
           </button>
         </div>
@@ -8111,45 +8222,36 @@ function PhotosView() {
         {/* Fixed pills: All / Library / No Album / Starred */}
         <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide w-full max-w-full cursor-grab active:cursor-grabbing select-none">
           <button onClick={() => setViewSource("all")} className={`text-xs font-body px-3 py-1.5 rounded-full whitespace-nowrap transition-all flex-shrink-0 ${viewSource === "all" ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground hover:text-foreground"}`}>
-            All ({allPhotos.length})
+            All ({isServerMode() ? photoSummary?.all ?? "…" : allPhotos.length})
           </button>
           <button onClick={() => setViewSource("library")} className={`text-xs font-body px-3 py-1.5 rounded-full whitespace-nowrap transition-all flex-shrink-0 ${viewSource === "library" ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground hover:text-foreground"}`}>
-            Library ({libraryPhotos.length})
+            Library ({isServerMode() ? photoSummary?.library ?? "…" : libraryPhotos.length})
           </button>
-          {unassignedPhotos.length > 0 && (
+          {(isServerMode() ? (photoSummary?.unassigned || 0) > 0 : unassignedPhotos.length > 0) && (
             <button onClick={() => setViewSource("unassigned")}
               className={`text-xs font-body px-3 py-1.5 rounded-full whitespace-nowrap transition-all flex-shrink-0 ${viewSource === "unassigned" ? "bg-orange-500 text-white" : "bg-secondary text-orange-400 hover:text-orange-300"}`}
               title="Library photos not attached to any album — safe to delete">
-              ⚠ No Album ({unassignedPhotos.length})
+              ⚠ No Album ({isServerMode() ? photoSummary?.unassigned : unassignedPhotos.length})
             </button>
           )}
-          {starredPhotos.length > 0 && (
+          {(isServerMode() ? (photoSummary?.starred || 0) > 0 : starredPhotos.length > 0) && (
             <button onClick={() => setStarredOnly(p => !p)} className={`text-xs font-body px-3 py-1.5 rounded-full whitespace-nowrap transition-all flex-shrink-0 ${starredOnly ? "bg-yellow-500 text-black" : "bg-secondary text-yellow-400 hover:text-yellow-300"}`}>
-              ⭐ Starred ({starredPhotos.length})
+              ⭐ Starred ({isServerMode() ? photoSummary?.starred : starredPhotos.length})
             </button>
           )}
         </div>
-        {/* Album pills row — scrollable, with search box */}
         {albums.length > 0 && (
-          <div className="flex items-center gap-2">
-            <div className="relative shrink-0">
-              <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-muted-foreground" />
-              <input
-                type="text"
-                placeholder="Search albums…"
-                value={albumFilterSearch}
-                onChange={e => setAlbumFilterSearch(e.target.value)}
-                className="h-7 pl-6 pr-2 rounded-full bg-secondary border border-border/50 text-[11px] font-body text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary w-28 sm:w-36"
-              />
-            </div>
-            <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide cursor-grab active:cursor-grabbing select-none min-w-0">
-              {albums.filter(a => !albumFilterSearch || a.title.toLowerCase().includes(albumFilterSearch.toLowerCase())).map(a => (
-                <button key={a.id} onClick={() => setViewSource(viewSource === albumPhotoSourceKey(a.id) ? "all" : albumPhotoSourceKey(a.id))} className={`text-xs font-body px-3 py-1.5 rounded-full whitespace-nowrap transition-all flex-shrink-0 ${viewSource === albumPhotoSourceKey(a.id) ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground hover:text-foreground"}`}>
-                  {a.title} ({albumPhotoTotal(a)})
-                </button>
-              ))}
-            </div>
-          </div>
+          <AlbumPhotoFilterStrip
+            albums={albums}
+            selectedAlbumId={selectedAlbumId || undefined}
+            search={albumFilterSearch}
+            onSearchChange={setAlbumFilterSearch}
+            onSelect={id => setViewSource(current => current === albumPhotoSourceKey(id) ? "all" : albumPhotoSourceKey(id))}
+            getPhotoCount={albumPhotoTotal}
+          />
+        )}
+        {isServerMode() && !photoSummary && (
+          <p className="text-xs text-muted-foreground" role="status" aria-live="polite">Loading photo counts…</p>
         )}
       </div>
 
@@ -8193,6 +8295,17 @@ function PhotosView() {
               <option value="small">Small ({`<`}5MB)</option>
               <option value="medium">Medium (5–15MB)</option>
               <option value="large">Large ({`>`}15MB)</option>
+            </select>
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] font-body text-muted-foreground tracking-wider uppercase">Sort</label>
+            <select value={photoSort} onChange={e => setPhotoSort(e.target.value as typeof photoSort)} className="h-8 rounded-md border border-border bg-secondary/50 text-xs font-body text-foreground px-2 focus:outline-none focus:ring-1 focus:ring-primary">
+              <option value="source">Album order</option>
+              <option value="date-desc">Newest first</option>
+              <option value="date-asc">Oldest first</option>
+              <option value="name-asc">Name A–Z</option>
+              <option value="name-desc">Name Z–A</option>
+              <option value="size-desc">Largest first</option>
             </select>
           </div>
           {(filterDateFrom || filterDateTo || filterAlbum || filterSize) && (
@@ -8264,7 +8377,14 @@ function PhotosView() {
         </div>
       )}
 
-      {displayPhotos.length === 0 ? (
+      {isServerMode() && (serverPhotoLoading || !indexedPhotosCurrent) && displayPhotos.length === 0 ? (
+        <p className="py-10 text-center text-sm text-muted-foreground" role="status" aria-live="polite">Loading photo page…</p>
+      ) : serverPhotoError && displayPhotos.length === 0 ? (
+        <div className="rounded-lg border border-destructive/30 p-8 text-center">
+          <p className="text-sm text-foreground">The photo page could not be loaded.</p>
+          <Button type="button" variant="outline" size="sm" className="mt-3" onClick={() => setServerPhotoReload(value => value + 1)}>Retry</Button>
+        </div>
+      ) : displayPhotos.length === 0 ? (
         <div className="glass-panel rounded-xl p-12 text-center">
           <Image className="w-10 h-10 text-muted-foreground/30 mx-auto mb-3" />
           {viewSource === "unassigned" ? (
@@ -8278,6 +8398,9 @@ function PhotosView() {
         </div>
       ) : (
         <>
+        <p className="mb-2 text-xs text-muted-foreground" role="status" aria-live="polite">
+          Showing {visiblePhotoCount} of {totalDisplayPhotoCount} photos
+        </p>
         <div className={`studio-photo-grid grid gap-1 sm:gap-1.5 ${
           photoGridSize === "small"
             ? "grid-cols-5 sm:grid-cols-6 md:grid-cols-8 lg:grid-cols-10 xl:grid-cols-12"
@@ -8285,10 +8408,10 @@ function PhotosView() {
             ? "grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6"
             : "grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-7 xl:grid-cols-9"
         }`}>
-          {displayPhotos.slice(0, visibleCount).map(p => (
+          {(isServerMode() ? displayPhotos : displayPhotos.slice(0, visiblePhotoCount)).map(p => (
             <div key={`${p.id}:${p.sourceAlbumId || p.source}`} className={`studio-photo-tile relative group aspect-square overflow-hidden bg-secondary border transition-all ${selectedIds.has(p.id) ? "border-primary ring-1 ring-primary/25" : "border-transparent hover:border-border"}`}>
               <ProgressiveImg thumbSrc={adminThumbSrc(p.thumbnail) ?? p.thumbnail} fullSrc={adminThumbSrc(p.src) ?? p.src} alt={p.title} className="w-full h-full object-cover" loading="lazy" />
-              <button type="button" onClick={() => toggleSelect(p.id)} aria-pressed={selectedIds.has(p.id)} aria-label={`${selectedIds.has(p.id) ? "Deselect" : "Select"} ${p.title}`} className="absolute inset-0 z-[1] rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary" />
+              <button type="button" onClick={() => toggleSelect(p.id, p)} aria-pressed={selectedIds.has(p.id)} aria-label={`${selectedIds.has(p.id) ? "Deselect" : "Select"} ${p.title}`} className="absolute inset-0 z-[1] rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary" />
               <button
                 type="button"
                 onClick={(e) => { e.stopPropagation(); handleToggleStar(p); }}
@@ -8337,9 +8460,21 @@ function PhotosView() {
             </div>
           ))}
         </div>
-        {visibleCount < displayPhotos.length && (
-          <div ref={libSentinelRef} className="flex justify-center py-6">
-            <div className="w-5 h-5 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+        {(isServerMode() ? serverPhotoHasMore && indexedPhotosCurrent : visiblePhotoCount < displayPhotos.length) && (
+          <div className="flex justify-center py-5">
+            <Button
+              type="button"
+              variant="outline"
+              disabled={serverPhotoLoadingMore}
+              onClick={() => isServerMode()
+                ? void handleLoadMoreServerPhotos()
+                : setVisibleCount(count => Math.min(count + LIBRARY_BATCH_SIZE, displayPhotos.length))}
+              className="min-h-10"
+            >
+              {serverPhotoLoadingMore
+                ? "Loading more photos…"
+                : `Load ${Math.min(LIBRARY_BATCH_SIZE, isServerMode() ? serverPhotoTotal - visiblePhotoCount : displayPhotos.length - visiblePhotoCount)} more photos`}
+            </Button>
           </div>
         )}
         </>
@@ -9921,8 +10056,9 @@ function safePreviewMode(mode: string | null | undefined): "missing" | "all" | "
 }
 
 function StorageView() {
-  const [albums, setAlbumsState] = useState(getAlbums());
-  const [libraryPhotos, setLibraryPhotosState] = useState(getPhotoLibrary());
+  const [albums, setAlbumsState] = useState<Album[]>(() => isServerMode() ? [] : getAlbums());
+  const [libraryPhotos, setLibraryPhotosState] = useState<Photo[]>(() => isServerMode() ? [] : getPhotoLibrary());
+  const [photoSummary, setPhotoSummary] = useState<{ all: number; library: number; unassigned: number; starred: number; albumMemberships: number; revision: number } | null>(null);
   const bookings = getBookings();
   const eventTypes = getEventTypes();
   const [previewJob, setPreviewJob] = useState<{ running: boolean; interrupted?: boolean; mode: "missing" | "all" | "save" | null; done: number; total: number; stage?: string }>(() => {
@@ -9935,11 +10071,11 @@ function StorageView() {
   const [warmJob, setWarmJob] = useState<{ running: boolean; done: number; total: number; generated: number; skipped: number; failed: number; stage: string } | null>(null);
 
   const refreshStorageState = useCallback(async () => {
-    const nextAlbums = getAlbums();
-    const nextLibrary = getPhotoLibrary();
-    setAlbumsState(nextAlbums);
-    setLibraryPhotosState(nextLibrary);
     if (isServerMode()) {
+      const [nextAlbums, nextSummary] = await Promise.all([fetchAlbumStubs(), fetchAdminPhotoSummary()]);
+      if (nextAlbums) setAlbumsState(nextAlbums);
+      if (nextSummary) setPhotoSummary(nextSummary);
+      setLibraryPhotosState([]);
       try {
         const s = await getServerStorageStats();
         setServerStats(s);
@@ -9948,6 +10084,9 @@ function StorageView() {
         const cs = await getCacheStats();
         setCacheStats(cs);
       } catch { /* non-critical: cache stats unavailable */ }
+    } else {
+      setAlbumsState(isServerMode() ? [] : getAlbums());
+      setLibraryPhotosState(isServerMode() ? [] : getPhotoLibrary());
     }
   }, []);
 
@@ -10237,19 +10376,10 @@ function StorageView() {
       if (!stats || !stats.allFileNames) { toast.info("No storage data"); setPurgeMissingState("idle"); return; }
       const serverFileNames = new Set(stats.allFileNames);
 
-      // Fetch authoritative album data from server
-      let serverAlbums: Album[] = [];
-      try {
-        const res = await fetch("/api/store/wv_albums", { headers: adminAuthHeaders() });
-        if (res.ok) {
-          const data = await res.json();
-          const raw = data?.value;
-          if (raw) {
-            const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
-            if (Array.isArray(parsed)) serverAlbums = parsed as Album[];
-          }
-        }
-      } catch {}
+      // The full snapshot is loaded only after the user starts this maintenance action.
+      const snapshots = await fetchAdminPhotoSnapshots();
+      if (!snapshots) throw new Error("Could not load complete photo metadata");
+      const serverAlbums = snapshots.albums;
 
       let removedAlbumPhotos = 0;
       // Remove album photos whose files don't exist on disk
@@ -10271,7 +10401,7 @@ function StorageView() {
       }
 
       // Remove library photos whose files don't exist on disk
-      const freshLibrary = getPhotoLibrary();
+      const freshLibrary = snapshots.library;
       const missingLibrarySet = new Set(freshLibrary.filter(p => {
         const filename = uploadFileName(p.src);
         return filename && !serverFileNames.has(filename) && p.src.startsWith("/uploads/");
@@ -10311,8 +10441,8 @@ function StorageView() {
   // Backfill thumbnails and track progress
   const allPhotos = [...libraryPhotos, ...albums.flatMap(a => a.photos)];
   const uniquePhotos = Array.from(new Map(allPhotos.map(p => [p.id, p])).values());
-  const totalPhotos = uniquePhotos.length;
-  const withThumbnails = uniquePhotos.filter(p => !!p.thumbnail).length;
+  const totalPhotos = isServerMode() ? photoSummary?.all ?? 0 : uniquePhotos.length;
+  const withThumbnails = isServerMode() ? 0 : uniquePhotos.filter(p => !!p.thumbnail).length;
   const thumbnailPct = totalPhotos > 0 ? Math.round((withThumbnails / totalPhotos) * 100) : 100;
 
   // Run backfill from storage view
@@ -10347,7 +10477,7 @@ function StorageView() {
 
   const { used: lsUsed, limit: lsLimit } = getLocalStorageUsage();
   const totalAlbumPhotos = albums.reduce((sum, a) => sum + albumPhotoTotal(a), 0);
-  const totalLibraryPhotos = libraryPhotos.length;
+  const totalLibraryPhotos = isServerMode() ? photoSummary?.library ?? 0 : libraryPhotos.length;
   const totalDownloads = albums.reduce((sum, a) => sum + (a.downloadHistory || []).reduce((s, h) => s + h.photoIds.length, 0), 0);
   const totalRequests = albums.reduce((sum, a) => sum + (a.downloadRequests || []).length, 0);
   const pendingRequests = albums.reduce((sum, a) => sum + (a.downloadRequests || []).filter(r => r.status === "pending").length, 0);

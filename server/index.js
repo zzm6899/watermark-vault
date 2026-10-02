@@ -10,6 +10,7 @@ const fs = require("fs");
 const os = require("os");
 const { captureMetaCapiContext, sendScheduleEvent, sendTestPurchaseEvent } = require("./meta-capi");
 const { createSqliteStore } = require("./sqlite-store");
+const { registerPhotoLibraryRoutes } = require("./photo-library-routes");
 const { tenantStorageLimitBytes, tenantStorageUsage } = require("./tenant-storage");
 const sharp = require("sharp");
 const archiver = require("archiver");
@@ -700,6 +701,15 @@ function writeDb(data, { durable = false } = {}) {
   _writePending = true;
   if (_writeDebounceTimer) clearTimeout(_writeDebounceTimer);
   _writeDebounceTimer = setTimeout(_flushDbToDisk, 300);
+}
+
+function writePhotoData(data, keys) {
+  const committedKeys = sqliteStore.writePhotoData(data, keys);
+  if (_dbCache !== null) {
+    for (const key of committedKeys) _dbCache[key] = data[key];
+    _dbCacheTime = Date.now();
+  }
+  return committedKeys;
 }
 
 const metaScheduleEventsInFlight = new Set();
@@ -1867,7 +1877,18 @@ app.get("/api/admin/clients/:contactId/activity", requireAuth, (req, res) => {
   res.json({ items: items.slice(Number(offset), Number(offset) + 40), total: items.length });
 });
 
-// GET /api/albums/stubs — all main albums without photos
+// Indexed pages and ID-scoped writes are additive. The generic whole-array
+// store API below remains available to old clients and full-snapshot tools.
+registerPhotoLibraryRoutes(app, {
+  requireAuth,
+  store: sqliteStore,
+  readDb,
+  writeDb,
+  writePhotoData,
+  stripPhotos: photos => _stripBakedFromPhotos(photos),
+});
+
+// GET /api/albums/stubs - all main albums without photos
 app.get("/api/albums/stubs", requireAuth, (req, res) => {
   const db = readDb();
   const albums = _parseAlbumsFromDb(db[ALBUMS_KEY]);
@@ -3687,7 +3708,7 @@ const PORTFOLIO_LEGACY_RIBBON_IMAGES = {
   testimonialsRibbonImages: ["/portfolio/gallery/wedding-celebration.jpg", "/portfolio/gallery/wedding-candid.jpg", "/portfolio/gallery/concert-performer.jpg"],
 };
 
-const PORTFOLIO_CATEGORY_ORDER = ["Weddings", "Live Music", "Cosplay & Conventions", "Sports", "Events", "Brand & Corporate", "Food & Hospitality", "Venues & Details", "Portraits"];
+const PORTFOLIO_CATEGORY_ORDER = ["Brand & Corporate", "Events", "Venues & Details", "Food & Hospitality", "Live Music", "Sports", "Cosplay & Conventions", "Portraits", "Weddings"];
 const PORTFOLIO_FEATURED_IMAGE_ORDER = ["music-teddyloid-smash-crowd", "music-teddyloid-smash-portrait", "music-teddyloid-smash-wide", "music-teddyloid-smash-stage", "food-lexus-slider-service", "food-mcdonalds-live-cooking", "food-mcdonalds-chef-service", "food-conca-oyster-service", "food-lexus-tasting-tray", "food-conca-pasta"];
 const PORTFOLIO_CATEGORY_LABELS = {
   "live music": "Live Music",
@@ -3724,31 +3745,31 @@ const DEFAULT_PORTFOLIO = {
   gallerySeedVersion: 8,
   brandName: "Zac Morgan Photography",
   logo: "/portfolio/logo.png",
-  heroImage: "/portfolio/live-action.jpg",
-  heroImages: ["/portfolio/live-action.jpg", "/portfolio/gallery/concert-performer.jpg", "/portfolio/gallery/brand-event.jpg"],
-  heroLabel: "Live in action",
-  heroServicesLabel: "Weddings · Events · Live music · Sport · Brands",
-  introEyebrow: "Hey, I'm Zac, an event / wedding photographer",
-  introTitle: "Let's get to know each other",
-  introBody: "What started as a hobby quickly became a passion for capturing the moments people want to remember. I photograph weddings, live music, parties and corporate events across Sydney.",
+  heroImage: "/portfolio/gallery/brand-event.jpg",
+  heroImages: ["/portfolio/gallery/brand-event.jpg", "/portfolio/curated/navarra-ballroom.jpg", "/portfolio/curated/music-teddyloid-smash-crowd.webp"],
+  heroLabel: "Corporate & event photography",
+  heroServicesLabel: "Corporate events · Venues · Hospitality · Live music",
+  introEyebrow: "Sydney corporate & event photographer",
+  introTitle: "Events, seen from the inside.",
+  introBody: "I photograph corporate events, brand gatherings, venue experiences and live performances across Sydney. The images keep the people, place and pace of the day in view.",
   aboutSecondaryBody: "I work quietly when the moment calls for it and step in with direction when it helps. The goal is a polished gallery that keeps the people, movement and atmosphere that made the day yours.",
-  portfolioTitle: "Stories that still feel alive.",
-  portfolioBody: "Weddings, performances, conventions, sport and brands photographed with energy and intent.",
-  testimonialsTitle: "The experience matters too.",
-  testimonialsIntro: "Feedback from weddings, celebrations, portrait sessions and business events across Sydney.",
+  portfolioTitle: "Corporate, event and live photography.",
+  portfolioBody: "A considered record of the people, atmosphere and details behind brand events, venues, hospitality and live productions.",
+  testimonialsTitle: "What clients say",
+  testimonialsIntro: "Feedback from the events and portrait sessions shown here.",
   portrait: "/portfolio/portrait.jpg",
   homeRibbonImages: ["/portfolio/imported/oatlandsestatesmallbusinessevent30-10-24109.jpg", "/portfolio/curated/brand-digipark-tunnel.jpg", "/portfolio/curated/food-lexus-live-service.jpg"],
-  storyEyebrow: "Ways of seeing",
-  storyTitle: "Every room has its own rhythm.",
+  storyEyebrow: "Event coverage",
+  storyTitle: "Every room moves differently.",
   philosophyEyebrow: "The work",
   philosophyTitle: "Photographs should feel like the night did.",
   philosophyBody: "Not over-directed. Not flattened into a trend. Just the people, atmosphere and small details that made the moment yours.",
   philosophyImage: "/portfolio/gallery/food-detail.jpg",
   portfolioClientsLabel: "Selected clients and venues",
   portfolioClients: ["Asahi Breweries", "Navarra Venues", "SMASH!", "Sportograf"],
-  portfolioCtaEyebrow: "Your story, photographed honestly",
-  portfolioCtaTitle: "Planning something?",
-  portfolioCtaLabel: "Check availability",
+  portfolioCtaEyebrow: "Have an event coming up?",
+  portfolioCtaTitle: "Tell me what you need the images to do.",
+  portfolioCtaLabel: "Plan event coverage",
   concertEyebrow: "Live music photography",
   concertTitle: "The room, at full volume.",
   concertBody: "Touring artists, festivals, venues and late-night sets photographed from inside the energy. Fast, atmospheric coverage built for press, social and the archive.",
@@ -3770,7 +3791,7 @@ const DEFAULT_PORTFOLIO = {
   testimonialsFeaturePoints: ["Straightforward planning", "Natural, true-to-life coverage", "Careful backup and timely delivery"],
   testimonialsImage: "/portfolio/gallery/portrait-editorial.jpg",
   testimonialsRibbonImages: ["/portfolio/curated/wedding-aa-exit.jpg", "/portfolio/curated/cosplay-smash-confetti.jpg", "/portfolio/curated/brand-digipark-tunnel.jpg"],
-  enquiryImage: "/portfolio/gallery/concert-crowd.jpg",
+  enquiryImage: "/portfolio/gallery/brand-event.jpg",
   enquirySteps: [
     { id: "details", title: "Send the details", body: "Share the date, venue and kind of coverage you have in mind." },
     { id: "fit", title: "Confirm the fit", body: "You'll receive availability, options and a clear recommendation." },
@@ -3779,13 +3800,13 @@ const DEFAULT_PORTFOLIO = {
   testimonial: "Zac is an extremely talented photographer. His photos captured the energy of the night perfectly and were delivered quickly.",
   testimonialAuthor: "Henry M",
   projects: [
-    { id: "weddings", title: "Engagements / Weddings", image: "/portfolio/curated/wedding-aa-exit.jpg", description: "Relaxed, honest coverage from the quiet moments to the dance floor.", category: "Weddings" },
-    { id: "bands", title: "Band Photos", image: "/portfolio/bands.jpg", description: "Live performance and artist imagery that keeps the atmosphere intact.", category: "Live Music" },
-    { id: "corporate", title: "Corporate Events", image: "/portfolio/corporate.jpg", description: "Polished event coverage for teams, brands and venues.", category: "Brand & Corporate" },
-    { id: "parties", title: "Parties", image: "/portfolio/parties.jpg", description: "Candid celebration photography with people at the centre.", category: "Events" },
+    { id: "corporate", title: "Corporate events", image: "/portfolio/gallery/brand-event.jpg", description: "Brand events and company gatherings, photographed with people and atmosphere in focus.", category: "Brand & Corporate" },
+    { id: "parties", title: "Events and celebrations", image: "/portfolio/imported/oatlandsestatesmallbusinessevent30-10-24137.jpg", description: "Event coverage shaped around the room, the people and the moments that matter.", category: "Events" },
+    { id: "food", title: "Venues and hospitality", image: "/portfolio/curated/food-lexus-live-service.jpg", description: "Food, service and setting photographed with attention to detail.", category: "Food & Hospitality" },
+    { id: "bands", title: "Live performance", image: "/portfolio/curated/music-teddyloid-smash-stage.webp", description: "Live music images that keep the atmosphere and movement of the room.", category: "Live Music" },
     { id: "cosplay", title: "Cosplay & Conventions", image: "/portfolio/curated/cosplay-smash-confetti.jpg", description: "Character portraits, stages and convention crowds photographed with colour and energy.", category: "Cosplay & Conventions" },
     { id: "sports", title: "Sport & Endurance", image: "/portfolio/curated/sports-hyrox-motion.jpg", description: "Fast, expressive race coverage from first light to the finish line.", category: "Sports" },
-    { id: "food", title: "Food & Hospitality", image: "/portfolio/curated/food-mcdonalds-live-cooking.jpg", description: "Food, chefs and service photographed with colour, texture and a sense of occasion.", category: "Food & Hospitality" },
+    { id: "weddings", title: "Engagements / Weddings", image: "/portfolio/curated/wedding-aa-exit.jpg", description: "Relaxed, honest coverage from the quiet moments to the dance floor.", category: "Weddings" },
   ],
   galleryImages: CURATED_PORTFOLIO_GALLERY,
   testimonials: [
@@ -3801,11 +3822,11 @@ const DEFAULT_PORTFOLIO = {
   linkedinUrl: "https://www.linkedin.com/in/zacmorgan1/",
   contactEmail: "zacmorganphotography@gmail.com",
   locationLabel: "Sydney, Australia",
-  bookingTitle: "Tell me what you're planning",
-  bookingBody: "Share the date, location and feeling you want captured. I'll reply with availability and the right coverage option.",
-  bookingButtonLabel: "Start an enquiry",
-  footerTitle: "Let's make it memorable.",
-  enquiryEventTypes: ["Wedding / engagement", "Corporate event", "Party", "Live music", "Sports / race coverage", "Convention / cosplay", "Brand / business shoot", "Other"],
+  bookingTitle: "Let's talk about your event.",
+  bookingBody: "Tell me the date, venue and what you'd like to capture. I'll reply with availability and a clear next step.",
+  bookingButtonLabel: "Discuss your event",
+  footerTitle: "Event photographs with people at the centre.",
+  enquiryEventTypes: ["Corporate event", "Brand / business shoot", "Party", "Live music", "Sports / race coverage", "Convention / cosplay", "Wedding / engagement", "Other"],
 };
 
 function publicPortfolioContent(value) {

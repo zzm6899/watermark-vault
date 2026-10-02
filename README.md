@@ -490,6 +490,8 @@ In Android Studio: Build → Build Bundle(s)/APK(s) → Build APK. Transfer to y
 
 **Data backup** — The primary database is `./data/photoflow.sqlite` (transactional SQLite/WAL). On first start after upgrading, PhotoFlow imports the existing `./data/db.json` automatically and then keeps that JSON file refreshed as a rollback shadow. Back up the entire `./data/` directory regularly, including uploads; the Admin backup download includes both the SQLite database and rollback JSON.
 
+**Photo index migration** — The indexed Photo Library is built from the existing album and library JSON rows inside a single SQLite transaction on the first server start with the indexed-library version. This backfill can add startup time, use extra disk space, and hold a SQLite write lock. Before upgrading a large installation, run `cd server && npm run photo-index:preflight -- /path/to/a-consistent-data-copy`. The command snapshots `photoflow.sqlite` with SQLite's backup API, runs the migration in a temporary directory, and reports elapsed time and database growth; it does not modify the supplied directory. If startup reports that the index migration rolled back, the app refuses to serve with a partial index. Keep the full `data/` backup, then repair malformed album/library metadata in the authoritative SQLite store or restore a consistent `photoflow.sqlite` and `db.json` backup before restarting. Do not delete the SQLite file on an initialized installation as a first recovery step.
+
 ---
 
 *PhotoFlow is built with React 18, TypeScript, Vite, Express, Sharp, and Tailwind CSS. Self-hosted. No external dependencies for core features.*
