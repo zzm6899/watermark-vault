@@ -1,5 +1,6 @@
 import { createRoot } from "react-dom/client";
 import App from "./App.tsx";
+import AppErrorBoundary from "./components/AppErrorBoundary";
 import "./index.css";
 import "./styles/studio.css";
 
@@ -26,4 +27,6 @@ if ("serviceWorker" in navigator) {
   });
 }
 
-createRoot(document.getElementById("root")!).render(<App />);
+createRoot(document.getElementById("root")!).render(
+  <AppErrorBoundary><App /></AppErrorBoundary>,
+);

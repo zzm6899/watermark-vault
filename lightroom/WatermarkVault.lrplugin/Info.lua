@@ -11,5 +11,5 @@ return {
     { title = "Watermark Vault: Sync client picks from folder", file = "SyncPicks.lua" },
     { title = "Watermark Vault: Upload selected finals", file = "UploadFinals.lua" },
   },
-  VERSION = { major = 0, minor = 2, revision = 0, build = 2 },
+  VERSION = { major = 0, minor = 3, revision = 0, build = 3 },
 }

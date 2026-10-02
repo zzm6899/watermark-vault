@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { applyAlbumPhotoRemovals, dedupeAlbumPhotos, markAlbumDelivered, mergeAlbumPhotos, proofingSubmission, preserveGalleryServerState, recoverablePurchase, repairDeliveredAlbumWorkflows, stripePurchaseIdentity, updateManualAlbumStatus } = require("../gallery-workflow");
+const { applyAlbumPhotoRemovals, albumPhotoSnapshot, sameAlbumPhotoSnapshot, emptyAlbumPhotos, albumDeliveryBlockers, albumDeliveryWarnings, sameDeliveryWarningSnapshot, dedupeAlbumPhotos, markAlbumDelivered, mergeAlbumPhotos, proofingSubmission, preserveGalleryServerState, recoverablePurchase, repairDeliveredAlbumWorkflows, stripePurchaseIdentity, updateManualAlbumStatus } = require("../gallery-workflow");
 
 test("a stale empty editor does not erase photos added by another device", () => {
   const phonePhotos = [{ id: "phone-1", src: "/uploads/phone-1.jpg" }, { id: "phone-2", src: "/uploads/phone-2.jpg" }];
@@ -341,6 +341,75 @@ test("recovery email validation rejects mail address syntax and oversized inputs
       assert.equal(normalize(value), '', value);
     }
   }
+});
+
+test("emptying an album keeps its identity and settings while resetting photo-bound delivery state", () => {
+  const source = {
+    id: "album-1", slug: "client-gallery", title: "Client gallery", bookingId: "booking-1",
+    photos: [{ id: "photo-1", src: "/uploads/one.jpg" }, { id: "photo-2", src: "/uploads/two.jpg" }],
+    photoCount: 2, coverImage: "/uploads/one.jpg", pricePerPhoto: 12, enabled: false,
+    clientEmail: "client@example.test", status: "delivered", proofingEnabled: true,
+    proofingStage: "selections-submitted", proofingExpiresAt: "2026-10-03T00:00:00Z",
+    proofingRounds: [{ selectedPhotoIds: ["photo-1"] }], isPublic: true, watermarkDisabled: true,
+  };
+  const result = emptyAlbumPhotos(source, albumPhotoSnapshot(source.photos), "2026-10-02T00:00:00Z", "revision-2");
+
+  assert.equal(result.error, undefined);
+  assert.equal(result.album.id, source.id);
+  assert.equal(result.album.slug, source.slug);
+  assert.equal(result.album.bookingId, source.bookingId);
+  assert.equal(result.album.clientEmail, source.clientEmail);
+  assert.equal(result.album.pricePerPhoto, source.pricePerPhoto);
+  assert.equal(result.album.enabled, false);
+  assert.equal(result.album.isPublic, true);
+  assert.equal(result.album.watermarkDisabled, true);
+  assert.deepEqual(result.album.photos, []);
+  assert.equal(result.album.photoCount, 0);
+  assert.equal(result.album.coverImage, "");
+  assert.equal(result.album.status, "editing");
+  assert.equal(result.album.proofingStage, "not-started");
+  assert.equal(result.album.proofingExpiresAt, undefined);
+  assert.equal(result.album.photoRevision, "revision-2");
+  assert.equal(result.removedPhotos.length, 2);
+});
+
+test("emptying rejects stale photo snapshots and treats photo order as non-semantic", () => {
+  const photos = [{ id: "photo-1", src: "/uploads/one.jpg" }, { id: "photo-2", src: "/uploads/two.jpg" }];
+  assert.equal(sameAlbumPhotoSnapshot(photos, [...photos].reverse()), true);
+  assert.equal(emptyAlbumPhotos({ photos }, [{ id: "photo-1", src: "/uploads/one.jpg" }]).status, 409);
+  assert.equal(emptyAlbumPhotos({ photos }, [{ id: "photo-1", src: "/uploads/replaced.jpg" }, photos[1]]).status, 409);
+  assert.equal(emptyAlbumPhotos({ photos }, [...photos].reverse()).removedPhotos.length, 2);
+});
+
+test("delivery blockers use the live photo array and reject incomplete Lightroom finals", () => {
+  assert.deepEqual(albumDeliveryBlockers({ slug: "client-gallery", photos: [], photoCount: 12 }), [
+    { id: "photos", message: "Add at least one photo before delivery" },
+  ]);
+  assert.deepEqual(albumDeliveryBlockers({ slug: "client-gallery", photos: [
+    { id: "one", src: "/uploads/one.jpg", finalSrc: "/uploads/one-final.jpg" },
+    { id: "two", src: "/uploads/two.jpg" },
+  ] }), [{ id: "finals", message: "1 photo is missing a final image" }]);
+  assert.deepEqual(albumDeliveryBlockers({ slug: "client-gallery", photos: [
+    { id: "one", src: "/uploads/one.jpg", finalSrc: "/uploads/one-final.jpg" },
+  ] }), []);
+  assert.deepEqual(albumDeliveryBlockers({ photos: [{ id: "one", src: "/uploads/one.jpg" }] }), [
+    { id: "gallery-link", message: "A gallery link is required before delivery" },
+  ]);
+});
+
+test("delivery warning acknowledgements cover current proofing, payment, email, downloads, and final state", () => {
+  const album = {
+    id: "album-1", clientEmail: "", proofingEnabled: true, proofingStage: "selections-submitted",
+    photos: [{ id: "one", src: "/uploads/one.jpg" }],
+    downloadRequests: [{ status: "pending" }],
+  };
+  const warnings = albumDeliveryWarnings(album, { paymentStatus: "deposit-paid" }, [{ status: "sent" }]);
+  assert.deepEqual(warnings.map(item => item.id).sort(), ["client-email", "downloads", "finals", "payment", "proofing"]);
+  assert.equal(warnings.find(item => item.id === "proofing").detail, "Current stage: selections submitted");
+  assert.equal(warnings.find(item => item.id === "payment").detail, "1 linked invoice still outstanding");
+  assert.equal(warnings.find(item => item.id === "downloads").detail, "1 pending request");
+  assert.equal(sameDeliveryWarningSnapshot(warnings, [...warnings].reverse()), true);
+  assert.equal(sameDeliveryWarningSnapshot(warnings, warnings.map(item => item.id === "payment" ? { ...item, detail: "Invoice paid" } : item)), false);
 });
 
 test("download requests reject invalid email before recording a payment request", () => {

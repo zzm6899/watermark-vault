@@ -1,17 +1,18 @@
 import { Edit, ExternalLink, Images } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import type { AlbumWorkflowSummary } from "@/lib/album-workflow";
 import type { Album } from "@/lib/types";
+import AlbumWorkflowProgress from "@/pages/admin/AlbumWorkflowProgress";
 
-export function AlbumListRow({ album, cover, onEdit, onView, onReview, selected, onSelect }: {
-  album: Album; cover?: string; onEdit: () => void; onView: () => void; onReview: () => void; selected?: boolean; onSelect?: () => void;
+export function AlbumListRow({ album, cover, workflow, onContinue, onEdit, onView, onReview, selected, onSelect }: {
+  album: Album; cover?: string; workflow: AlbumWorkflowSummary; onContinue: () => void; onEdit: () => void; onView: () => void; onReview: () => void; selected?: boolean; onSelect?: () => void;
 }) {
   const pending = (album.downloadRequests || []).filter(request => request.status === "pending");
-  return <article className={`glass-panel rounded-xl p-3 flex flex-wrap sm:flex-nowrap items-center gap-3 ${selected ? "ring-2 ring-primary" : ""}`}>
+  return <article className={`studio-album-row flex flex-wrap sm:flex-nowrap items-center gap-3 py-3 ${selected ? "ring-1 ring-primary" : ""}`}>
     {onSelect && <input type="checkbox" aria-label={`Select ${album.title}`} checked={selected} onChange={onSelect} className="size-4" />}
-    <div className="size-14 shrink-0 rounded-lg overflow-hidden bg-secondary flex items-center justify-center">{cover ? <img src={cover} alt="" loading="lazy" className="size-full object-cover" /> : <Images className="size-5 text-muted-foreground" />}</div>
-    <div className="min-w-0 flex-1 basis-40"><button onClick={onEdit} className="text-left font-medium text-sm hover:text-primary break-words">{album.title}</button><p className="text-xs text-muted-foreground">{album.clientName || "No linked client"} · {album._photosStripped ? album.photoCount || 0 : album.photos.length} photos · {album.date}</p></div>
-    <div className="min-w-0 sm:w-44"><p className="text-xs capitalize text-muted-foreground">{album.enabled === false ? "Hidden · " : ""}{(album.proofingEnabled ? album.proofingStage : album.status)?.replaceAll("-", " ") || "Editing"}</p>{pending.length > 0 && <button onClick={onReview} className="text-xs text-amber-500 hover:underline">{pending.length} download request{pending.length === 1 ? "" : "s"} · Review</button>}</div>
-    <div className="flex gap-2"><Button size="sm" onClick={onEdit}>Edit album</Button><Button size="sm" variant="outline" onClick={onView}>View gallery</Button></div>
+    <div className="size-14 shrink-0 overflow-hidden bg-secondary flex items-center justify-center">{cover ? <img src={cover} alt="" loading="lazy" className="size-full object-cover" /> : <Images className="size-5 text-muted-foreground" />}</div>
+    <div className="min-w-0 flex-1 basis-40"><button type="button" onClick={onEdit} className="text-left font-medium text-sm hover:text-primary break-words">{album.title}</button><p className="text-xs text-muted-foreground">{album.clientName || "No linked client"} · {album._photosStripped ? album.photoCount || 0 : album.photos.length} photos · {album.date}</p><div className="mt-2 max-w-xl"><AlbumWorkflowProgress summary={workflow} compact /></div>{pending.length > 0 && <button type="button" onClick={onReview} className="mt-1 text-xs text-primary hover:underline">{pending.length} download request{pending.length === 1 ? "" : "s"} · Review</button>}</div>
+    <div className="flex w-full items-center justify-between gap-3 sm:w-auto sm:shrink-0"><Button size="sm" variant="outline" onClick={onContinue} className="h-9 whitespace-normal border-border px-3 text-xs leading-tight hover:border-primary/50 hover:text-primary">{workflow.nextAction}</Button><Button size="sm" variant="ghost" onClick={onView} className="px-2 text-xs text-muted-foreground hover:text-foreground">{workflow.delivered ? "View gallery" : "Preview gallery"}</Button></div>
   </article>;
 }
 
@@ -25,15 +26,15 @@ export function AlbumCardCover({ src, title, enabled, onError, layout = "comfort
         <span className="text-[10px] font-body uppercase tracking-wider">No cover selected</span>
       </div>
     )}
-    <span className={`absolute left-3 top-3 rounded-full border px-2 py-1 text-[10px] font-body backdrop-blur-md ${enabled ? "border-emerald-400/30 bg-emerald-950/80 text-emerald-200" : "border-white/15 bg-black/65 text-white/70"}`}>
+    <span className="absolute left-2 top-2 bg-black/65 px-2 py-1 text-[9px] font-body uppercase tracking-wider text-white/80">
       {enabled ? "Live gallery" : "Hidden"}
     </span>
   </div>;
 }
 
-export function AlbumCardPrimaryActions({ onEdit, onView }: { onEdit: () => void; onView: () => void }) {
-  return <div className="grid grid-cols-2 gap-2 pt-3 mt-2 border-t border-white/10">
-    <Button size="sm" onClick={onEdit} className="gap-2 font-body text-xs"><Edit className="w-3.5 h-3.5" /> Edit album</Button>
-    <Button size="sm" variant="outline" onClick={onView} className="gap-2 font-body text-xs"><ExternalLink className="w-3.5 h-3.5" /> View gallery</Button>
+export function AlbumCardPrimaryActions({ workflow, onContinue, onEdit, onView }: { workflow: AlbumWorkflowSummary; onContinue: () => void; onEdit: () => void; onView: () => void }) {
+  return <div className="flex items-center justify-between gap-2 pt-2 mt-2 border-t border-border/70">
+    <Button size="sm" variant="outline" onClick={onContinue} className="h-8 gap-1.5 whitespace-normal border-border px-3 font-body text-xs leading-tight hover:border-primary/50 hover:text-primary"><Edit className="h-3.5 w-3.5 shrink-0" /><span>{workflow.nextAction}</span></Button>
+    <Button size="sm" variant="ghost" onClick={workflow.delivered ? onView : onEdit} className="h-8 gap-1 px-2 font-body text-xs text-muted-foreground hover:text-foreground"><ExternalLink className="w-3.5 h-3.5" /> {workflow.delivered ? "View gallery" : "Edit album"}</Button>
   </div>;
 }

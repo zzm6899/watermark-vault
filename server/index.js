@@ -1,6 +1,6 @@
 const express = require("express");
 const { validConventionDetails, snapshotConventionDetails } = require("./convention-details");
-const { applyAlbumPhotoRemovals, markAlbumDelivered, mergeAlbumPhotos, normalizeEmail, recoverablePurchase, preserveGalleryServerState, proofingSubmission, repairDeliveredAlbumWorkflows, updateManualAlbumStatus } = require("./gallery-workflow");
+const { applyAlbumPhotoRemovals, sameAlbumPhotoSnapshot, sameDeliveryWarningSnapshot, emptyAlbumPhotos, albumDeliveryBlockers, albumDeliveryWarnings, markAlbumDelivered, mergeAlbumPhotos, normalizeEmail, recoverablePurchase, preserveGalleryServerState, proofingSubmission, repairDeliveredAlbumWorkflows, updateManualAlbumStatus } = require("./gallery-workflow");
 const { upgradePortfolioPresentation, publicPortfolioFocus } = require("./portfolio-presentation.mjs");
 const multer = require("multer");
 const cors = require("cors");
@@ -1718,6 +1718,17 @@ app.put("/api/store/:key", requireAuth, authenticatedLargeJson, async (req, res)
     const existing = _parseAlbumsFromDb(db[key]);
     const byId = new Map(existing.map(album => [album.id, album]));
     const ids = new Set(incoming.map(album => album.id));
+    for (const album of incoming) {
+      const current = byId.get(album.id);
+      if (!current?.photoRevision || current.photoRevision === album.photoRevision) continue;
+      const incomingHasPhotoSnapshot = Array.isArray(album.photos) && album._photosStripped !== true;
+      if (incomingHasPhotoSnapshot && !sameAlbumPhotoSnapshot(current.photos, album.photos)) {
+        return res.status(409).json({ error: "Album photos changed in another session. Reload before saving." });
+      }
+      album.photos = current.photos || [];
+      album.photoCount = album.photos.length;
+      album.photoRevision = current.photoRevision;
+    }
     const merged = [...existing.filter(album => !ids.has(album.id)), ...incoming.map(album => preserveGalleryServerState(byId.get(album.id), album))];
     value = wasString ? JSON.stringify(merged) : merged;
   }
@@ -2240,6 +2251,12 @@ app.put("/api/albums/:albumId", requireAuth, authenticatedLargeJson, (req, res) 
   } else if (incoming.photos) {
     incoming.photos = _stripBakedFromPhotos(incoming.photos).map(_ensurePhotoProofIdentity);
   }
+  if (idx >= 0 && Array.isArray(incoming.photos) && albums[idx].photoRevision && incoming.photoRevision !== albums[idx].photoRevision) {
+    if (!sameAlbumPhotoSnapshot(albums[idx].photos, incoming.photos)) {
+      return res.status(409).json({ error: "Album photos changed in another session. Reload before saving." });
+    }
+    incoming.photoRevision = albums[idx].photoRevision;
+  }
   // Multiple photographers may save the same booking album concurrently.
   // Treat photo arrays as additive here so a stale full-album save cannot
   // erase photos uploaded by another device moments earlier.
@@ -2273,7 +2290,76 @@ app.put("/api/albums/:albumId", requireAuth, authenticatedLargeJson, (req, res) 
   res.json({ ok: true });
 });
 
-// PATCH /api/albums/:albumId/status — acknowledge a manual workflow change
+// Empty one album's photo collection without changing its identity or settings.
+// The exact snapshot/revision guards against stale confirmations; file cleanup
+// happens only after the durable album update and only for unreferenced uploads.
+app.post("/api/albums/:albumId/empty", requireAdminOrScopedTenant, authenticatedLargeJson, (req, res) => {
+  const tenantSlug = studioScope(req);
+  const storeKey = tenantSlug ? `t_${tenantSlug}_wv_albums` : ALBUMS_KEY;
+  const db = readDb();
+  const albums = _parseAlbumsFromDb(db[storeKey]);
+  const idx = albums.findIndex(album => album.id === req.params.albumId);
+  if (idx < 0) return res.status(404).json({ error: "Album not found" });
+
+  const current = albums[idx];
+  const expectedPhotos = req.body?.expectedPhotos;
+  if (!Array.isArray(expectedPhotos) || !Number.isInteger(req.body?.expectedPhotoCount) || req.body.expectedPhotoCount !== expectedPhotos.length || expectedPhotos.length > 10000) {
+    return res.status(400).json({ error: "A valid album photo snapshot is required" });
+  }
+  if (current.photoRevision && req.body?.photoRevision !== current.photoRevision) {
+    return res.status(409).json({ error: "Album changed in another session. Reload the photo list before emptying it.", photoRevision: current.photoRevision });
+  }
+  const result = emptyAlbumPhotos(current, expectedPhotos, new Date().toISOString(), crypto.randomUUID());
+  if (!result.album) return res.status(result.status || 400).json({ error: result.error, photoRevision: current.photoRevision });
+
+  const candidateNames = [...collectUploadFileNames({ coverImage: current.coverImage, photos: result.removedPhotos })];
+  albums[idx] = result.album;
+  db[storeKey] = JSON.stringify(albums);
+  try {
+    writeDb(db, { durable: true });
+  } catch (error) {
+    console.error("Empty album save failed:", error.message);
+    return res.status(503).json({ error: "Album photos could not be cleared. Reload and try again." });
+  }
+
+  const cleanup = { deleted: 0, alreadyMissing: 0, shared: 0, unsafe: 0, failed: 0 };
+  const owners = dbGet(db, "wv_upload_owners", {});
+  let ownersChanged = false;
+  for (const candidate of candidateNames) {
+    const filename = path.basename(String(candidate || ""));
+    if (!filename || safeUploadFilenameFromSrc(`/uploads/${filename}`) !== filename) { cleanup.unsafe++; continue; }
+    const references = uploadReferenceKeys(db, filename);
+    if (references.length) { cleanup.shared++; continue; }
+    const owner = owners[filename];
+    if (!uploadBelongsToScope(owner, references, tenantSlug)) { cleanup.unsafe++; continue; }
+    const filepath = resolveExistingUploadPath(filename);
+    try {
+      if (filepath) { fs.unlinkSync(filepath); cleanup.deleted++; }
+      else cleanup.alreadyMissing++;
+      purgeCacheVariantsForUpload(filename);
+      if (owners[filename]) { delete owners[filename]; ownersChanged = true; }
+    } catch {
+      cleanup.failed++;
+    }
+  }
+  if (ownersChanged) {
+    db["wv_upload_owners"] = owners;
+    try { writeDb(db, { durable: true }); } catch (error) {
+      cleanup.failed++;
+      console.error("Empty album upload-owner cleanup failed:", error.message);
+    }
+  }
+  const cleanupIssueCount = cleanup.shared + cleanup.unsafe + cleanup.failed;
+  res.json({
+    ok: true,
+    album: result.album,
+    removedPhotoCount: result.removedPhotos.length,
+    cleanup,
+    cleanupIncomplete: cleanupIssueCount > 0,
+  });
+});
+
+// PATCH /api/albums/:albumId/status - acknowledge a manual workflow change
 // without sending a stale photo/proofing snapshot back to the server.
 app.patch("/api/albums/:albumId/status", requireAuth, (req, res) => {
   const { albumId } = req.params;
@@ -9301,6 +9387,12 @@ app.put("/api/tenant/:slug/albums/:albumId", tenantLimiter, requireTenant, authe
   } else if (incoming.photos) {
     incoming.photos = _stripBakedFromPhotos(incoming.photos).map(_ensurePhotoProofIdentity);
   }
+  if (idx >= 0 && Array.isArray(incoming.photos) && albums[idx].photoRevision && incoming.photoRevision !== albums[idx].photoRevision) {
+    if (!sameAlbumPhotoSnapshot(albums[idx].photos, incoming.photos)) {
+      return res.status(409).json({ error: "Album photos changed in another session. Reload before saving." });
+    }
+    incoming.photoRevision = albums[idx].photoRevision;
+  }
   if (idx >= 0 && Array.isArray(incoming.photos)) {
     incoming.photos = mergeAlbumPhotos(albums[idx].photos || [], incoming.photos, { replacePhotos, basePhotoIds });
     incoming.photoCount = incoming.photos.length;
@@ -11866,6 +11958,28 @@ app.post("/api/albums/:id/deliver", requireAuth, async (req, res) => {
   if (idx === -1) return res.status(404).json({ error: "Album not found" });
 
   let album = albums[idx];
+  if (album.status === "delivered") return res.status(409).json({ error: "This gallery has already been delivered" });
+  const expectedPhotos = req.body?.expectedPhotos;
+  if (!Array.isArray(expectedPhotos) || !Number.isInteger(req.body?.expectedPhotoCount) || req.body.expectedPhotoCount !== expectedPhotos.length || expectedPhotos.length > 10000) {
+    return res.status(400).json({ error: "A valid photo snapshot is required to deliver this gallery" });
+  }
+  if ((album.photoRevision && req.body?.photoRevision !== album.photoRevision) || !sameAlbumPhotoSnapshot(album.photos, expectedPhotos)) {
+    return res.status(409).json({ error: "The album photo list changed since you reviewed delivery. Reload and review the current album." });
+  }
+  const blockers = albumDeliveryBlockers(album);
+  if (blockers.length) return res.status(409).json({ error: "Resolve delivery blockers before publishing this gallery", blockers });
+  const bookingRecords = dbGet(db, DB_KEYS.BOOKINGS, []);
+  const invoiceRecords = dbGet(db, DB_KEYS.INVOICES, []);
+  const linkedBooking = (Array.isArray(bookingRecords) ? bookingRecords : []).find(booking => booking.id === album.bookingId || booking.albumId === album.id);
+  const linkedInvoices = (Array.isArray(invoiceRecords) ? invoiceRecords : []).filter(invoice => invoice.albumId === album.id || (!!linkedBooking && invoice.bookingId === linkedBooking.id));
+  const currentWarnings = albumDeliveryWarnings(album, linkedBooking, linkedInvoices);
+  const acknowledgedWarnings = req.body?.acknowledgedWarnings;
+  if (!Array.isArray(acknowledgedWarnings) || acknowledgedWarnings.length > 12 || acknowledgedWarnings.some(item => !item || typeof item.id !== "string" || typeof item.detail !== "string")) {
+    return res.status(400).json({ error: "Review the current delivery warnings before confirming" });
+  }
+  if (!sameDeliveryWarningSnapshot(currentWarnings, acknowledgedWarnings)) {
+    return res.status(409).json({ error: "Delivery checks changed since you reviewed them. Reload the album and review again.", warnings: currentWarnings });
+  }
   const now = new Date().toISOString();
 
   // Delivery completes both the album lifecycle and any active proofing

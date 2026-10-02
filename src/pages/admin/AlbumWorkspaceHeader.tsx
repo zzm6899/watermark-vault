@@ -1,5 +1,7 @@
 import { Save, Star } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import AlbumWorkflowProgress from "@/pages/admin/AlbumWorkflowProgress";
+import type { AlbumWorkflowSummary } from "@/lib/album-workflow";
 import type { Album } from "@/lib/types";
 
 const sections = [
@@ -7,11 +9,11 @@ const sections = [
   ["album-editor-workflow", "Proofing"], ["album-editor-photos", "Photos"], ["album-editor-delivery", "Delivery"],
 ] as const;
 
-export default function AlbumWorkspaceHeader({ isNew, title, photoCount, clientName, status, saving, onClose, onSave }: {
+export default function AlbumWorkspaceHeader({ isNew, title, photoCount, clientName, status, saving, onClose, onSave, workflowSummary, onContinueWorkflow }: {
   isNew: boolean; title: string; photoCount: number; clientName: string; status: Album["status"];
-  saving: boolean; onClose: () => void; onSave: () => void;
+  saving: boolean; onClose: () => void; onSave: () => void; workflowSummary?: AlbumWorkflowSummary; onContinueWorkflow?: () => void;
 }) {
-  return <div className="sticky top-16 z-30 -mx-2 rounded-xl border border-border/70 bg-background/95 p-3 shadow-xl shadow-black/20 backdrop-blur-xl sm:-mx-3 sm:p-4">
+  return <div className="studio-album-workspace-header sticky top-16 z-30 -mx-2 border-b border-border bg-background/95 py-3 sm:-mx-3 sm:py-4">
     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
       <div className="min-w-0">
         <p className="text-[10px] font-body uppercase tracking-[0.2em] text-primary">{isNew ? "Create gallery" : "Album workspace"}</p>
@@ -19,7 +21,7 @@ export default function AlbumWorkspaceHeader({ isNew, title, photoCount, clientN
         <p className="text-[11px] font-body text-muted-foreground">{photoCount} photos · {clientName || "No client linked"} · {status}</p>
       </div>
       <div className="flex flex-wrap gap-2 shrink-0">
-        {!isNew && <Button variant="outline" size="sm" className="gap-2 text-yellow-400" onClick={() => document.getElementById("album-proofing-controls")?.scrollIntoView({ behavior: "smooth", block: "start" })}>
+        {!isNew && <Button variant="ghost" size="sm" className="gap-2 text-primary" onClick={() => document.getElementById("album-proofing-controls")?.scrollIntoView({ behavior: "smooth", block: "start" })}>
           <Star className="h-4 w-4" /> Send for Proofing
         </Button>}
         <Button variant="outline" size="sm" onClick={onClose}>Close</Button>
@@ -28,8 +30,11 @@ export default function AlbumWorkspaceHeader({ isNew, title, photoCount, clientN
         </Button>
       </div>
     </div>
-    <nav aria-label="Album editor sections" className="mt-3 flex gap-1.5 overflow-x-auto pb-0.5">
-      {sections.map(([target, label]) => <button key={target} type="button" onClick={() => document.getElementById(target)?.scrollIntoView({ behavior: "smooth", block: "start" })} className="whitespace-nowrap rounded-full border border-border/70 px-3 py-1 text-[10px] font-body text-muted-foreground hover:border-primary/40 hover:text-primary">{label}</button>)}
+    {workflowSummary && <div className="studio-album-workflow-summary mt-3 border-t border-border/70 pt-3">
+      <AlbumWorkflowProgress summary={workflowSummary} compact onContinue={onContinueWorkflow} />
+    </div>}
+    <nav aria-label="Album editor sections" className="studio-album-editor-nav mt-3 flex gap-1 overflow-x-auto border-b border-border pb-0.5">
+      {sections.map(([target, label]) => <button key={target} type="button" onClick={() => document.getElementById(target)?.scrollIntoView({ behavior: "smooth", block: "start" })} className="whitespace-nowrap border-b-2 border-transparent px-3 py-2 text-[10px] font-body text-muted-foreground hover:border-primary/50 hover:text-foreground">{label}</button>)}
     </nav>
   </div>;
 }

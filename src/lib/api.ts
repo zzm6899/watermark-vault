@@ -3296,6 +3296,48 @@ export async function fetchAlbumPhotos(albumId: string): Promise<import("./types
 
 // ─── iCal Feed ────────────────────────────────────────────────────────────────
 
+export type EmptyAlbumResult =
+  | {
+      ok: true;
+      album: import("./types").Album;
+      removedPhotoCount: number;
+      cleanup: { deleted: number; alreadyMissing: number; shared: number; unsafe: number; failed: number };
+      cleanupIncomplete: boolean;
+    }
+  | { ok: false; error: string; stale: boolean; photoRevision?: string };
+
+export async function emptyAlbumPhotosOnServer(
+  albumId: string,
+  photos: import("./types").Photo[],
+  photoRevision?: string,
+  tenantSlug?: string,
+): Promise<EmptyAlbumResult> {
+  if (!(await checkServer())) return { ok: false, error: "Server is unavailable. The album was not changed.", stale: false };
+  try {
+    const response = await fetch(studioApiUrl(`/api/albums/${encodeURIComponent(albumId)}/empty`, tenantSlug), {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
+      body: JSON.stringify({
+        expectedPhotoCount: photos.length,
+        expectedPhotos: photos.map(photo => ({ id: String(photo.id || ""), src: String(photo.src || "") })),
+        ...(photoRevision ? { photoRevision } : {}),
+      }),
+    });
+    const data = await response.json().catch(() => ({})) as Partial<Extract<EmptyAlbumResult, { ok: true }>> & { error?: string; photoRevision?: string };
+    if (!response.ok || data.ok !== true || !data.album) {
+      return {
+        ok: false,
+        error: data.error || `Could not empty album (${response.status})`,
+        stale: response.status === 409,
+        photoRevision: data.photoRevision,
+      };
+    }
+    return data as Extract<EmptyAlbumResult, { ok: true }>;
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : "Could not reach the server. The album may not have changed.", stale: false };
+  }
+}
+
 export async function generateIcalToken(): Promise<{ icalToken: string } | null> {
   try {
     const res = await fetch("/api/ical/generate", {
@@ -3690,11 +3732,26 @@ export async function setBookingSource(bookingId: string, source: import("./type
 
 // ─── One-Click Gallery Delivery ───────────────────────────────────────────────
 
-export async function deliverAlbum(albumId: string): Promise<{ ok: boolean; deliveredAt: string; emailSent?: boolean; emailError?: string } | null> {
+export async function deliverAlbum(
+  albumId: string,
+  photos: import("./types").Photo[],
+  acknowledgedWarnings: Array<{ id: string; detail: string }>,
+  photoRevision?: string,
+): Promise<{ ok: boolean; deliveredAt?: string; emailSent?: boolean; emailError?: string; error?: string; warnings?: Array<{ id: string; detail: string }> } | null> {
   try {
-    const res = await fetch(`/api/albums/${encodeURIComponent(albumId)}/deliver`, { method: "POST", headers: adminAuthHeaders() });
-    if (!res.ok) return null;
-    return res.json();
+    const res = await fetch(`/api/albums/${encodeURIComponent(albumId)}/deliver`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
+      body: JSON.stringify({
+        expectedPhotoCount: photos.length,
+        expectedPhotos: photos.map(photo => ({ id: String(photo.id || ""), src: String(photo.src || "") })),
+        acknowledgedWarnings,
+        ...(photoRevision ? { photoRevision } : {}),
+      }),
+    });
+    const data = await res.json().catch(() => ({})) as { ok?: boolean; deliveredAt?: string; emailSent?: boolean; emailError?: string; error?: string; warnings?: Array<{ id: string; detail: string }> };
+    if (!res.ok) return { ok: false, error: data.error || `Delivery failed (${res.status})`, warnings: data.warnings };
+    return { ok: data.ok === true, deliveredAt: data.deliveredAt, emailSent: data.emailSent, emailError: data.emailError, error: data.error, warnings: data.warnings };
   } catch { return null; }
 }
 

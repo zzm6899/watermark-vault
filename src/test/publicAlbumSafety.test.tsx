@@ -86,7 +86,7 @@ describe("public album safety", () => {
     const source = readFileSync(join(process.cwd(), "src/pages/Admin.tsx"), "utf8");
     const tenantSource = readFileSync(join(process.cwd(), "src/pages/TenantAdmin.tsx"), "utf8");
     expect(source).not.toMatch(/window\.open\(`\/gallery\//);
-    expect(source).toContain('navigate(`/admin/albums?album=${encodeURIComponent(activeCaptureAlbum.id)}`)');
+    expect(source).toContain('navigate(task.album ? `/admin/albums?album=${encodeURIComponent(task.album.id)}`');
     expect(source).toContain("window.open(publicGalleryUrl(album)");
     expect(source).toContain("window.open(publicGalleryUrl(matchingAlbum)");
     expect(tenantSource).toContain("href={tenantGalleryUrl(alb)}");
@@ -103,8 +103,8 @@ describe("public album safety", () => {
 
   it("confirms gallery publication before reporting an existing-album upload complete", () => {
     const source = readFileSync(join(process.cwd(), "src/pages/Admin.tsx"), "utf8");
-    const uploadStart = source.indexOf("const handlePhotoUpload = async");
-    const uploadEnd = source.indexOf("const handleBookingLink", uploadStart);
+    const uploadStart = source.indexOf("const handlePhotoFiles = async");
+    const uploadEnd = source.indexOf("const handlePhotoUpload", uploadStart);
     const uploadHandler = source.slice(uploadStart, uploadEnd);
 
     expect(uploadStart).toBeGreaterThan(-1);

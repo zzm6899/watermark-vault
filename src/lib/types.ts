@@ -354,6 +354,8 @@ export interface Album {
   proofingInstructions?: string | null;
   id: string;
   updatedAt?: string;
+  /** Server photo collection version; prevents stale saves restoring an emptied album. */
+  photoRevision?: string;
   slug: string;
   title: string;
   description: string;

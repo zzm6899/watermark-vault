@@ -170,6 +170,87 @@ function applyAlbumPhotoRemovals(album, removedPhotoIds) {
   return { ...album, photos, photoCount: photos.length, coverImage, proofingRounds };
 }
 
+function albumPhotoSnapshot(photos) {
+  return (Array.isArray(photos) ? photos : [])
+    .map(photo => ({ id: String(photo?.id || ""), src: String(photo?.src || "") }))
+    .sort((a, b) => a.id.localeCompare(b.id) || a.src.localeCompare(b.src));
+}
+
+function sameAlbumPhotoSnapshot(left, right) {
+  return JSON.stringify(albumPhotoSnapshot(left)) === JSON.stringify(albumPhotoSnapshot(right));
+}
+
+function emptyAlbumPhotos(album, expectedPhotos, emptiedAt = new Date().toISOString(), photoRevision = undefined) {
+  if (!album || !Array.isArray(album.photos)) return { error: "Album photos are not loaded", status: 409 };
+  if (!Array.isArray(expectedPhotos) || expectedPhotos.some(photo =>
+    !photo || typeof photo !== "object" || (!String(photo.id || "") && !String(photo.src || "")) ||
+    typeof (photo.id ?? "") !== "string" || typeof (photo.src ?? "") !== "string"
+  )) return { error: "A valid photo snapshot is required", status: 400 };
+  if (expectedPhotos.length !== album.photos.length || !sameAlbumPhotoSnapshot(album.photos, expectedPhotos)) {
+    return { error: "Album photos changed. Reload the current photo list before emptying it.", status: 409 };
+  }
+  if (album.photos.length === 0) return { error: "This album is already empty", status: 409 };
+
+  const emptied = {
+    ...album,
+    photos: [],
+    photoCount: 0,
+    coverImage: "",
+    _photosStripped: false,
+    status: album.status === "archived" ? "archived" : "editing",
+    proofingStage: "not-started",
+    proofingExpiresAt: undefined,
+    proofingRevision: undefined,
+    deliveredAt: undefined,
+    updatedAt: emptiedAt,
+    ...(photoRevision ? { photoRevision } : {}),
+  };
+  return { album: emptied, removedPhotos: album.photos };
+}
+
+function albumDeliveryBlockers(album = {}) {
+  const photos = Array.isArray(album.photos) ? album.photos : null;
+  const count = photos ? photos.length : Math.max(0, Number(album.photoCount) || 0);
+  const blockers = [];
+  if (count === 0) blockers.push({ id: "photos", message: "Add at least one photo before delivery" });
+  if (!String(album.slug || "").trim()) blockers.push({ id: "gallery-link", message: "A gallery link is required before delivery" });
+  if (photos) {
+    const hasFinalUpload = photos.some(photo => !!photo?.finalSrc);
+    const missing = photos.filter(photo => (photo?.proofSrc && !photo?.finalSrc) || (hasFinalUpload && !photo?.finalSrc));
+    if (missing.length) blockers.push({ id: "finals", message: `${missing.length} photo${missing.length === 1 ? " is" : "s are"} missing a final image` });
+  }
+  return blockers;
+}
+
+function albumDeliveryWarnings(album = {}, linkedBooking = undefined, linkedInvoices = []) {
+  const photos = Array.isArray(album.photos) ? album.photos : [];
+  const proofingStage = album.proofingStage || "not-started";
+  const proofingInProgress = !!album.proofingEnabled && ["proofing", "selections-submitted", "editing"].includes(proofingStage);
+  const outstandingInvoices = (Array.isArray(linkedInvoices) ? linkedInvoices : []).filter(invoice => !["paid", "cancelled"].includes(invoice.status));
+  const pendingRequests = (album.downloadRequests || []).filter(request => request.status === "pending").length;
+  const finalWorkflowActive = !!album.proofingEnabled && ["selections-submitted", "editing"].includes(proofingStage);
+  const hasLightroomFinals = photos.some(photo => !!photo?.finalSrc);
+  const warnings = [];
+
+  if (!album.clientEmail) warnings.push({ id: "client-email", detail: "Delivery can continue, but no email will be sent" });
+  if (proofingInProgress) warnings.push({ id: "proofing", detail: "Current stage: " + proofingStage.replaceAll("-", " ") });
+  if (outstandingInvoices.length) {
+    warnings.push({ id: "payment", detail: `${outstandingInvoices.length} linked invoice${outstandingInvoices.length === 1 ? "" : "s"} still outstanding` });
+  } else if (linkedBooking?.paymentStatus && !["paid", "cash"].includes(linkedBooking.paymentStatus)) {
+    warnings.push({ id: "payment", detail: "Booking payment is " + linkedBooking.paymentStatus.replaceAll("-", " ") });
+  }
+  if (pendingRequests) warnings.push({ id: "downloads", detail: `${pendingRequests} pending request${pendingRequests === 1 ? "" : "s"}` });
+  if (finalWorkflowActive && !hasLightroomFinals) warnings.push({ id: "finals", detail: "No Lightroom finals recorded; current photo versions will be delivered" });
+  return warnings;
+}
+
+function sameDeliveryWarningSnapshot(left, right) {
+  const normalize = rows => (Array.isArray(rows) ? rows : [])
+    .map(row => ({ id: String(row?.id || ""), detail: String(row?.detail || "") }))
+    .sort((a, b) => a.id.localeCompare(b.id) || a.detail.localeCompare(b.detail));
+  return JSON.stringify(normalize(left)) === JSON.stringify(normalize(right));
+}
+
 function proofingPolicy(album = {}, eventType = {}) {
   const mode = album.proofingPhotoSelection ?? eventType.proofingPhotoSelection;
   return { proofingPhotoSelection: ["off", "optional", "required"].includes(mode) ? mode : "required",
@@ -237,4 +318,4 @@ function proofingSubmission(album, { selectedPhotoIds, clientNote, submissionId,
     photos: (album.photos || []).map(photo => ({ ...photo, starred: selected.has(String(photo.id)) })) }, receipt, replayed: false };
 }
 
-module.exports = { proofingPolicy, validProofingPolicy, proofingAddonRequirements, applyAlbumPhotoRemovals, dedupeAlbumPhotos, markAlbumDelivered, mergeAlbumPhotos, normalizeEmail, recoverablePurchase, preserveGalleryServerState, proofingSubmission, repairDeliveredAlbumWorkflows, stripePurchaseIdentity, updateManualAlbumStatus };
+module.exports = { proofingPolicy, validProofingPolicy, proofingAddonRequirements, applyAlbumPhotoRemovals, albumPhotoSnapshot, sameAlbumPhotoSnapshot, emptyAlbumPhotos, albumDeliveryBlockers, albumDeliveryWarnings, sameDeliveryWarningSnapshot, dedupeAlbumPhotos, markAlbumDelivered, mergeAlbumPhotos, normalizeEmail, recoverablePurchase, preserveGalleryServerState, proofingSubmission, repairDeliveredAlbumWorkflows, stripePurchaseIdentity, updateManualAlbumStatus };

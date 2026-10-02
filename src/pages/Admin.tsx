@@ -59,6 +59,7 @@ import {
 import {
   uploadPhotosToServer, isSupportedUploadFile, isSupportedPhotoSource, isServerMode,
   deletePhotoFromServer, saveStoreKeyToServer, getGoogleCalendarStatus, startGoogleCalendarAuth,
+  emptyAlbumPhotosOnServer,
   disconnectGoogleCalendar, getGoogleCalendars, syncAllBookingsToCalendar, getServerStorageStats,
   downloadServerBackup, syncFromServer, sendEmail, publicGalleryUrl, getEmailStatus,
   getEmailAutomations, saveEmailAutomations, previewEmailAutomation, syncBookingsToSheet,
@@ -66,7 +67,7 @@ import {
   notifyWaitlistOnCancel, notifyDiscord, getCacheStats, warmCache, getAdminSession,
   getGlobalFtpSettings, saveGlobalFtpSettings, testFtpConnection, ftpUploadAlbum, ftpMoveToStarred,
   fetchAlbumStubs, fetchAlbumPhotos, generateIcalToken, deleteIcalToken, getTags, createTag,
-  deleteTag, deliverAlbum, updateBookingTasks, toggleBookingTask, aiEnhancePhoto, listXmpPresets,
+  deleteTag, updateBookingTasks, toggleBookingTask, aiEnhancePhoto, listXmpPresets,
   uploadXmpPresets, deleteXmpPreset, ensurePublicAlbumAvailable, saveAlbumToServer,
   saveAlbumStatusToServer, autoCullAlbum, adminLogout, adminAuthHeaders, setBookingArchiveState,
   deleteEventDescriptionImage,
@@ -93,6 +94,12 @@ import { generateCapabilityToken } from "@/lib/capability-token";
 import { buildAlbumPhotoSaveMarkers } from "@/lib/album-photo-save";
 import { albumIdFromPhotoSourceKey, albumPhotoSourceKey } from "@/lib/album-photo-source";
 import { drawServerAlignedWatermark } from "@/lib/watermark-render";
+import { filterAlbumsForAdmin, type AlbumListFilter } from "@/lib/album-list";
+import { buildDeliveryChecklist, summarizeAlbumWorkflow } from "@/lib/album-workflow";
+import AlbumWorkflowProgress from "@/pages/admin/AlbumWorkflowProgress";
+import DashboardCommandCenter, { type DashboardDeliveryTask } from "@/pages/admin/DashboardCommandCenter";
+import EmptyAlbumConfirmation, { type EmptyAlbumOutcome } from "@/pages/admin/EmptyAlbumConfirmation";
+import DeliveryReadiness from "@/pages/admin/DeliveryReadiness";
 import { Slider } from "@/components/ui/slider";
 
 const InvoicesView = React.lazy(() => import("@/pages/admin/InvoicesView"));
@@ -118,6 +125,9 @@ const PortfolioEditor = React.lazy(() => import("@/components/admin/PortfolioEdi
 const ZipOperationsPanel = React.lazy(() => import("@/components/admin/ZipOperationsPanel"));
 
 type Tab = "dashboard" | "shoot-day" | "bookings" | "payments" | "automations" | "events" | "albums" | "photos" | "finance" | "invoices" | "contacts" | "enquiries" | "website" | "profile" | "settings" | "storage" | "apk" | "platform";
+type DashboardSnapshot = { bookings: Booking[]; albums: Album[]; settings: AppSettings; invoices: Invoice[]; eventTypes: EventType[] };
+type DashboardSnapshotState = { status: "loading" } | { status: "error"; message: string } | { status: "ready"; data: DashboardSnapshot };
+const MOBILE_PRIMARY_TABS: Tab[] = ["dashboard", "bookings", "albums", "photos"];
 
 const TAB_ROUTE_MAP: Record<string, Tab> = {
   dashboard: "dashboard",
@@ -748,7 +758,7 @@ export default function Admin() {
     ...(superAdminFlag ? [{ id: "platform" as Tab, group: "Studio", label: "Platform", icon: Globe }] : []),
   ];
   return (
-    <div className="min-h-screen app-shell overflow-x-hidden">
+    <div className="min-h-screen app-shell overflow-x-clip">
       <div className="flex w-full">
         <aside className="w-60 fixed left-0 top-0 bottom-0 border-r border-white/10 admin-sidebar p-4 hidden lg:flex flex-col" style={{ paddingTop: "calc(env(safe-area-inset-top, 0px) + 1rem)" }}>
           <div className="flex items-center gap-3 px-2 mb-7 pt-2">
@@ -820,10 +830,12 @@ export default function Admin() {
         {/* ── Mobile: bottom tab bar ── */}
         <div className="lg:hidden fixed bottom-0 left-0 right-0 z-30 bg-card/95 backdrop-blur-xl border-t border-white/10" style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}>
           <div className="grid grid-cols-5">
-            {tabs.filter(tab => ["dashboard", "bookings", "albums", "finance"].includes(tab.id)).map((tab) => {
+            {tabs.filter(tab => MOBILE_PRIMARY_TABS.includes(tab.id)).map((tab) => {
               const isActive = activeTab === tab.id;
               const pendingBadge = tab.id === "albums" && settings.proofingEnabled
                 ? albums.filter(a => a.proofingEnabled && a.proofingStage === "selections-submitted").length
+                : tab.id === "bookings"
+                  ? getBookings().filter(b => b.archived !== true && b.status === "pending").length
                 : tab.id === "invoices"
                   ? getInvoices().filter(i => i.status === "overdue").length
                   : tab.id === "enquiries"
@@ -847,7 +859,7 @@ export default function Admin() {
                 </button>
               );
             })}
-            <button type="button" onClick={() => setMobileNavigationOpen(true)} aria-label="More studio pages" aria-expanded={mobileNavigationOpen} className={`flex min-h-[52px] flex-col items-center justify-center gap-0.5 ${["dashboard", "bookings", "albums", "finance"].includes(activeTab) ? "text-muted-foreground" : "text-primary"}`}><MoreHorizontal className="size-5" /><span className="text-[10px]">More</span></button>
+            <button type="button" onClick={() => setMobileNavigationOpen(true)} aria-label="More studio pages" aria-expanded={mobileNavigationOpen} className={`flex min-h-[52px] flex-col items-center justify-center gap-0.5 ${MOBILE_PRIMARY_TABS.includes(activeTab) ? "text-muted-foreground" : "text-primary"}`}><MoreHorizontal className="size-5" /><span className="text-[10px]">More</span></button>
           </div>
         </div>
         <Dialog open={mobileNavigationOpen} onOpenChange={setMobileNavigationOpen}>
@@ -858,7 +870,7 @@ export default function Admin() {
         </Dialog>
 
         <main
-          className="flex-1 min-w-0 overflow-x-hidden lg:ml-60 p-4 sm:p-6 lg:p-8 lg:pt-8"
+          className="flex-1 min-w-0 overflow-x-clip lg:ml-60 p-4 sm:p-6 lg:p-8 lg:pt-8"
           style={{ paddingTop: "calc(env(safe-area-inset-top, 0px) + 3.5rem)", paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 4rem)" }}
           id="admin-main"
         >
@@ -1679,13 +1691,41 @@ function ShootDayCommandCenterView() {
 // ─── Dashboard ───────────────────────────────────────
 function DashboardView() {
   const navigate = useNavigate();
-  const [, refreshDownloadRequests] = useState(0);
-  const [, refreshDelivery] = useState(0);
-  const [savingStatusId, setSavingStatusId] = useState<string | null>(null);
-  const bookings = getBookings();
-  const albums = getAlbums();
-  const settings = getSettings();
-  const invoices = getInvoices();
+  const [snapshot, setSnapshot] = useState<DashboardSnapshotState>({ status: "loading" });
+  const [calView, setCalView] = useState<"month" | "week">("month");
+  const [calDate, setCalDate] = useState(() => new Date());
+  const [calSelectedDay, setCalSelectedDay] = useState<string | null>(null);
+  const refreshSnapshot = useCallback((showLoading = false) => {
+    if (showLoading) setSnapshot({ status: "loading" });
+    try {
+      setSnapshot({ status: "ready", data: { bookings: getBookings(), albums: getAlbums(), settings: getSettings(), invoices: getInvoices(), eventTypes: getEventTypes() } });
+    } catch (error) {
+      console.error("Dashboard data could not be loaded:", error);
+      setSnapshot({ status: "error", message: "Dashboard data could not be read. Check storage or connection, then retry." });
+    }
+  }, []);
+  useEffect(() => {
+    refreshSnapshot(true);
+    const onStorageSynced = () => refreshSnapshot();
+    window.addEventListener("storage-synced", onStorageSynced);
+    window.addEventListener("storage", onStorageSynced);
+    return () => {
+      window.removeEventListener("storage-synced", onStorageSynced);
+      window.removeEventListener("storage", onStorageSynced);
+    };
+  }, [refreshSnapshot]);
+
+  if (snapshot.status !== "ready") {
+    const heading = <div className="admin-page-header">
+      <div><h2 className="font-display text-3xl leading-none text-foreground sm:text-4xl">Dashboard</h2><p className="mt-2 text-sm font-body text-muted-foreground">{new Date().toLocaleDateString("en-AU", { weekday: "long", day: "numeric", month: "long" })}</p></div>
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        <Button aria-label="New booking" variant="ghost" onClick={() => navigate("/admin/bookings")} className="gap-2 font-body text-sm h-9 px-2"><CalendarPlus className="w-4 h-4" />New booking</Button>
+      </div>
+    </div>;
+    return <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="studio-dashboard">{heading}<DashboardCommandCenter state={snapshot.status} errorMessage={snapshot.status === "error" ? snapshot.message : undefined} nextSession={null} deliveryTasks={[]} onRetry={() => refreshSnapshot(true)} onOpenSession={booking => navigate(`/admin/shoot-day?date=${encodeURIComponent(booking.date)}`)} onOpenBookings={() => navigate("/admin/bookings")} onOpenDeliveryTask={task => navigate(task.album ? `/admin/albums?album=${encodeURIComponent(task.album.id)}` : "/admin/bookings")} /></motion.div>;
+  }
+
+  const { bookings, albums, settings, invoices, eventTypes } = snapshot.data;
 
   let totalRevenue = 0;
   let unpaidIncome = 0;
@@ -1750,60 +1790,45 @@ function DashboardView() {
     { label: "Overdue",              value: invOverdue.length,               sub: invOverdue.length > 0 ? "requires attention" : "all on time",         icon: TrendingDown, color: invOverdue.length > 0 ? "text-red-400" : "text-muted-foreground", onClick: () => navigate("/admin/invoices") },
   ] : [];
   const nextBooking = upcomingBookings[0];
-  const deliveryQueue = bookings
+  const deliveryQueue: (DashboardDeliveryTask & { priority: number })[] = bookings
     .filter(booking => booking.archived !== true && ["confirmed", "completed"].includes(booking.status) && booking.date < todayDateStr)
     .map(booking => {
       const album = getBookingAlbum(booking, albums);
-      return { booking, album, stage: album ? getAlbumDeliveryStage(album) : "to-edit" };
+      const linkedInvoices = invoices.filter(invoice => invoice.albumId === album?.id || (!!album?.bookingId && invoice.bookingId === album.bookingId) || (!!booking && invoice.bookingId === booking.id));
+      const workflow = album ? summarizeAlbumWorkflow(album, booking, linkedInvoices) : null;
+      const pendingRequests = (album?.downloadRequests || []).filter(request => request.status === "pending").length;
+      const proofingExpired = !!album?.proofingEnabled && album.proofingStage === "proofing" && !!album.proofingExpiresAt && new Date(album.proofingExpiresAt).getTime() <= Date.now();
+      const bookingTimestamp = new Date(`${booking.date}T12:00:00`).getTime();
+      const elapsedDays = Number.isFinite(bookingTimestamp) ? Math.max(0, Math.floor((Date.now() - bookingTimestamp) / 86400000)) : null;
+      const ageLabel = elapsedDays === null ? "Date unavailable" : elapsedDays === 0 ? "Today" : `${elapsedDays}d since session`;
+      const stageLabel = pendingRequests > 0 ? "Download requests" : proofingExpired ? "Proofing expired" : workflow?.label || "Gallery needed";
+      const actionLabel = pendingRequests > 0 ? "Review downloads" : proofingExpired ? "Review proofing" : workflow?.nextAction || "Create gallery";
+      const detail = pendingRequests > 0
+        ? `${pendingRequests} request${pendingRequests === 1 ? "" : "s"} waiting`
+        : proofingExpired
+          ? "The client proofing window has closed"
+          : workflow?.detail || "No gallery is linked to this session yet";
+      const priority = pendingRequests > 0 || proofingExpired || !album || (workflow?.blockerCount || 0) > 0 ? 0
+        : workflow?.stage === "finals" || workflow?.stage === "delivery" ? 1
+          : workflow?.stage === "proofing" ? 2 : 3;
+      const tone: DashboardDeliveryTask["tone"] = pendingRequests > 0 || proofingExpired || !album || (workflow?.blockerCount || 0) > 0 ? "urgent"
+        : workflow?.stage === "proofing" ? "waiting" : "active";
+      return {
+        id: booking.id,
+        booking,
+        album,
+        stageLabel,
+        actionLabel,
+        detail,
+        ageLabel,
+        tone,
+        priority,
+      };
     })
-    .filter(item => item.stage !== "delivered" && item.stage !== "archived")
-    .sort((a, b) => a.booking.date.localeCompare(b.booking.date) || a.booking.time.localeCompare(b.booking.time));
-  const deliveryGroups = [
-    { id: "to-edit", label: "To edit", items: deliveryQueue.filter(item => item.stage === "to-edit"), tone: "text-amber-300" },
-    { id: "proofing", label: "With client", items: deliveryQueue.filter(item => item.stage === "proofing"), tone: "text-blue-300" },
-    { id: "editing", label: "Editing", items: deliveryQueue.filter(item => item.stage === "editing"), tone: "text-primary" },
-  ];
-
-  const changeDeliveryStatus = async (album: Album, booking: Booking, value: string) => {
-    if (savingStatusId) return;
-    const updated = { ...album };
-    if (album.proofingEnabled) {
-      updated.proofingStage = value as Album["proofingStage"];
-      updated.status = value === "finals-delivered" ? "delivered" : value === "proofing" ? "proofing" : "editing";
-    } else {
-      updated.status = value as Album["status"];
-    }
-    setSavingStatusId(album.id);
-    try {
-      if (isServerMode()) {
-        const result = await saveAlbumStatusToServer(album.id, updated.status || "editing", album.proofingEnabled ? updated.proofingStage : undefined);
-        if (!result.ok) {
-          toast.error(result.error || "Gallery status was not saved");
-          return;
-        }
-        cacheAlbumLocally({ ...updated, updatedAt: result.album?.updatedAt || updated.updatedAt });
-      } else {
-        updateAlbum(updated);
-      }
-      if (updated.status === "delivered" && booking.status !== "completed") {
-        await updateBooking({ ...booking, status: "completed", statusHistory: [...(booking.statusHistory || []), { status: "completed", changedAt: new Date().toISOString() }] });
-      }
-      refreshDelivery(version => version + 1);
-      toast.success("Gallery status updated");
-    } finally {
-      setSavingStatusId(null);
-    }
-  };
-
-  const activeCaptureAlbum = albums
-    .filter(album => albumPhotoTotal(album) > 0)
-    .sort((a, b) => (b.updatedAt || b.date).localeCompare(a.updatedAt || a.date))[0];
+    .filter(item => item.album?.status !== "delivered" && item.album?.status !== "archived" && item.album?.proofingStage !== "finals-delivered")
+    .sort((a, b) => a.priority - b.priority || a.booking.date.localeCompare(b.booking.date) || a.booking.time.localeCompare(b.booking.time));
 
   // ── Booking Calendar ────────────────────────────────────────
-  const [calView, setCalView] = useState<"month" | "week">("month");
-  const [calDate, setCalDate] = useState(() => new Date());
-  const [calSelectedDay, setCalSelectedDay] = useState<string | null>(null);
-  const eventTypes = getEventTypes();
   const etColorMap: Record<string, string> = {};
   for (const et of eventTypes) etColorMap[et.id] = et.color || "#7c3aed";
 
@@ -1899,79 +1924,44 @@ function DashboardView() {
   };
 
   return (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="studio-dashboard">
       <div className="admin-page-header">
         <div>
           <h2 className="font-display text-3xl sm:text-4xl leading-none text-foreground">Dashboard</h2>
-          <p className="mt-2 text-sm font-body text-muted-foreground">{new Date().toLocaleDateString("en-AU", { weekday: "long", day: "numeric", month: "long" })} · Your bookings and client deliveries at a glance.</p>
+          <p className="mt-2 text-sm font-body text-muted-foreground">{new Date().toLocaleDateString("en-AU", { weekday: "long", day: "numeric", month: "long" })}</p>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2">
-          <Button variant="outline" onClick={() => navigate("/admin/bookings")} className="gap-2 font-body text-sm h-10 px-3"><CalendarPlus className="w-4 h-4" /><span className="hidden sm:inline">New booking</span></Button>
-          <Button variant="outline" onClick={() => navigate("/admin/albums")} className="gap-2 font-body text-sm h-10 px-3"><ImagePlus className="w-4 h-4" /><span className="hidden sm:inline">New album</span></Button>
-          <Button onClick={() => window.location.href = "/capture"} className="gap-2 font-body text-sm h-10 px-4 shadow-lg shadow-primary/10"><Upload className="w-4 h-4" /><span className="hidden sm:inline">Upload Photos</span></Button>
+          <Button aria-label="New booking" variant="ghost" onClick={() => navigate("/admin/bookings")} className="gap-2 font-body text-sm h-9 px-2"><CalendarPlus className="w-4 h-4" />New booking</Button>
         </div>
       </div>
 
-      <div className="glass-panel mb-6 grid grid-cols-2 overflow-hidden rounded-xl xl:grid-cols-4">
-        {stats.map((stat, index) => (
+      <DashboardCommandCenter
+        state="ready"
+        nextSession={nextBooking || null}
+        nextSessionEventLabel={nextBooking ? eventTypes.find(eventType => eventType.id === nextBooking.eventTypeId)?.title || nextBooking.type : undefined}
+        deliveryTasks={deliveryQueue}
+        onOpenSession={booking => navigate(`/admin/shoot-day?date=${encodeURIComponent(booking.date)}`)}
+        onOpenBookings={() => navigate("/admin/bookings")}
+        onOpenDeliveryTask={task => task.album
+          ? navigate(`/admin/albums?album=${encodeURIComponent(task.album.id)}`)
+          : navigate(`/admin/bookings?search=${encodeURIComponent(bookingPaymentReference(task.booking))}`)}
+      />
+
+      <div className="studio-dashboard-stats mb-6 grid grid-cols-2 divide-x divide-y divide-border/70 border-y border-border/70 sm:grid-cols-4 sm:divide-y-0">
+        {stats.map((stat) => (
           <button key={stat.label} type="button" onClick={stat.onClick}
-            className={`min-w-0 px-4 py-4 text-left transition-colors hover:bg-white/[0.04] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary ${index % 2 === 0 ? "border-r border-border/70" : ""} ${index < 2 ? "border-b border-border/70 xl:border-b-0" : ""} ${index > 0 ? "xl:border-l xl:border-border/70" : ""} xl:border-r-0`}>
-            <p className="font-display text-2xl sm:text-3xl text-foreground">{stat.value}</p>
+            className="min-w-0 px-3 py-3 text-left transition-colors hover:bg-white/[0.025] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary sm:px-4">
+            <p className="text-xl font-medium tabular-nums text-foreground">{stat.value}</p>
             <p className="mt-1 text-xs font-body text-muted-foreground">{stat.label}</p>
           </button>
         ))}
       </div>
 
-      <div className="glass-panel mb-6 rounded-xl p-4 sm:p-5">
-        <div className="mb-4 flex items-center justify-between gap-3">
-          <div><h3 className="font-display text-xl text-foreground">Gallery delivery</h3><p className="text-xs font-body text-muted-foreground">Sessions waiting for editing or client review.</p></div>
-          <Button variant="outline" size="sm" onClick={() => navigate("/admin/albums")} className="shrink-0">All galleries</Button>
-        </div>
-        <div className="grid grid-cols-1 divide-y divide-border/70 border-t border-border/70 md:grid-cols-3 md:divide-x md:divide-y-0">
-          {deliveryGroups.map(group => (
-            <section key={group.id} className="min-w-0 py-3 md:px-4 md:first:pl-0 md:last:pr-0">
-              <div className="mb-2 flex items-center justify-between"><h4 className="text-sm font-body font-medium text-foreground">{group.label}</h4><span className="text-xs text-muted-foreground">{group.items.length}</span></div>
-              {group.items.length ? <div className="space-y-2">{group.items.slice(0, 3).map(item => <div key={item.booking.id} className="rounded border border-border/60 px-2 py-1.5">
-                <button type="button" onClick={() => item.album ? navigate(`/admin/albums?album=${encodeURIComponent(item.album.id)}`) : navigate(`/admin/bookings?search=${encodeURIComponent(bookingPaymentReference(item.booking))}`)} className="flex w-full items-center justify-between gap-2 rounded py-1 text-left hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"><span className="min-w-0"><span className="block truncate text-xs text-foreground">{item.booking.clientName}</span><span className="block truncate text-[11px] text-muted-foreground">{item.booking.date}{item.album ? ` · ${item.album.title}` : " · No gallery linked"}</span></span><ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /></button>
-                {item.album ? <div className="mt-1 flex items-center justify-between gap-2 border-t border-border/50 pt-1.5"><span className="text-[11px] text-muted-foreground">Status</span><React.Suspense fallback={null}><AlbumStatusControl proofing={!!item.album.proofingEnabled} value={item.album.proofingEnabled ? (item.album.proofingStage && item.album.proofingStage !== "not-started" ? item.album.proofingStage : "proofing") : (item.album.status || "editing")} disabled={savingStatusId === item.album.id} onChange={value => void changeDeliveryStatus(item.album!, item.booking, value)} /></React.Suspense></div> : <p className="py-1 text-[11px] text-muted-foreground">Create a gallery to set its status.</p>}
-              </div>)}{group.items.length > 3 && <p className="px-2 pt-1 text-xs text-muted-foreground">+{group.items.length - 3} more</p>}</div> : <p className="py-3 text-xs text-muted-foreground">Nothing waiting here.</p>}
-            </section>
-          ))}
-        </div>
-      </div>
-
-      <div className="glass-panel mb-6 overflow-hidden rounded-xl">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between p-4 sm:p-5">
-          <div>
-            <h3 className="font-display text-xl text-foreground">Photo workflow</h3>
-            <p className="mt-1 text-xs font-body text-muted-foreground">Upload a session and keep its gallery moving towards delivery.</p>
-          </div>
-          <Button onClick={() => window.location.href = "/capture"} className="gap-2 font-body self-start sm:self-auto">
-            <Upload className="w-4 h-4" /> Upload photos
-          </Button>
-        </div>
-        {activeCaptureAlbum ? (
-          <button type="button" onClick={() => navigate(`/admin/albums?album=${encodeURIComponent(activeCaptureAlbum.id)}`)} className="group flex w-full items-center gap-4 border-t border-border/70 bg-card/30 p-4 text-left transition-colors hover:bg-card/60 sm:px-5">
-            <div className="h-16 w-20 shrink-0 overflow-hidden rounded-md bg-secondary sm:h-20 sm:w-28">
-              {activeCaptureAlbum.coverImage && <img src={activeCaptureAlbum.coverImage} alt="" loading="lazy" className="h-full w-full object-cover" />}
-            </div>
-            <div className="min-w-0 flex-1">
-              <p className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Recently updated gallery</p>
-              <h4 className="mt-1 truncate font-display text-lg text-foreground">{activeCaptureAlbum.title}</h4>
-              <p className="mt-0.5 truncate text-xs font-body text-muted-foreground">{activeCaptureAlbum.clientName || activeCaptureAlbum.clientEmail || "No client assigned"} · {albumPhotoTotal(activeCaptureAlbum)} photos</p>
-            </div>
-            <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-primary" />
-          </button>
-        ) : (
-          <div className="border-t border-border/70 px-5 py-4 text-sm font-body text-muted-foreground">No galleries with photos yet.</div>
-        )}
-      </div>
-
       {invoiceStats.length > 0 && (
-        <section className="glass-panel mb-6 rounded-xl p-4 sm:p-5">
+        <section className="studio-dashboard-invoices mb-6 border-b border-border/70 pb-4">
           <div className="mb-3 flex items-center justify-between gap-3">
-            <h3 className="font-display text-xl text-foreground">Invoices</h3>
-            <Button variant="outline" size="sm" onClick={() => navigate("/admin/invoices")}>All invoices</Button>
+            <h3 className="text-sm font-medium text-foreground">Invoices</h3>
+            <Button variant="ghost" size="sm" onClick={() => navigate("/admin/invoices")}>View invoices</Button>
           </div>
           <div className="grid grid-cols-1 gap-x-6 sm:grid-cols-2 xl:grid-cols-3">
           {invoiceStats.map((stat) => (
@@ -1990,9 +1980,9 @@ function DashboardView() {
       )}
 
       {/* ── Booking Calendar + Today's Schedule ── */}
-      <div className="grid grid-cols-1 lg:grid-cols-[70%_1fr] gap-4 mb-6">
+      <div className="studio-dashboard-calendar grid grid-cols-1 lg:grid-cols-[70%_1fr] gap-4 mb-6">
         {/* Calendar */}
-        <div className="glass-panel rounded-xl p-4">
+        <div className="border-y border-border/70 py-3 sm:py-4">
           {/* Calendar header */}
           <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
             <div className="flex items-center gap-2">
@@ -2066,7 +2056,7 @@ function DashboardView() {
         </div>
 
         {/* Today's Schedule */}
-        <div className="glass-panel rounded-xl p-4 flex flex-col">
+        <div className="border-y border-border/70 py-3 sm:border-y-0 sm:border-l sm:pl-4 sm:pr-1 sm:py-4 flex flex-col">
           <h3 className="font-display text-sm text-foreground mb-3 flex items-center gap-2">
             <Clock className="w-4 h-4 text-primary" /> Today's Schedule
           </h3>
@@ -2099,7 +2089,7 @@ function DashboardView() {
         </div>
       </div>
 
-      {allPendingRequests.length > 0 && <div className="mb-6"><DownloadRequestInbox albums={albums} onUpdated={() => refreshDownloadRequests(value => value + 1)} /></div>}
+      {allPendingRequests.length > 0 && <div className="mb-6"><DownloadRequestInbox albums={albums} onUpdated={() => refreshSnapshot()} /></div>}
 
       {/* ── Album Download Stats — card list on mobile, table on md+ ── */}
       {albumDownloadStats.length > 0 && (
@@ -4449,9 +4439,9 @@ function EventTypeEditor({ eventType, onSave, onCancel }: { eventType: EventType
 function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: string | null; onClearPrefill?: () => void }) {
   const albumLocation = useLocation();
   const [albumLayout, setAlbumLayout] = useState<"compact" | "comfortable" | "list">(() => {
-    try { const saved = localStorage.getItem("wv_admin_album_layout"); return saved === "comfortable" || saved === "list" ? saved : "compact"; } catch { return "compact"; }
+    try { const saved = localStorage.getItem("wv_admin_album_layout"); return saved === "comfortable" || saved === "list" || saved === "compact" ? saved : "comfortable"; } catch { return "comfortable"; }
   });
-  const [albumFilter, setAlbumFilter] = useState("all");
+  const [albumFilter, setAlbumFilter] = useState<AlbumListFilter>("all");
   const [showRequests, setShowRequests] = useState(() => new URLSearchParams(albumLocation.search).get("panel") === "requests");
   const [albumPage, setAlbumPage] = useState(1);
   const albumPageSize = 24;
@@ -4459,6 +4449,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
 
   const [albums, setAlbumsState] = useState<Album[]>(() => dedupeAlbumsBySlug(getAlbums()));
   const bookings = getBookings();
+  const invoices = getInvoices();
   const settings = getSettings();
   const [showNew, setShowNew] = useState(false);
   const [editing, setEditing] = useState<Album | null>(null);
@@ -4685,11 +4676,10 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
   };
 
   return (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="studio-albums">
       <div className="admin-page-header">
         <div>
           <h2 className="font-display text-3xl sm:text-4xl leading-none text-foreground">Albums</h2>
-          <p className="mt-2 text-sm font-body text-muted-foreground">Manage galleries, proofing state, sharing, and client delivery.</p>
         </div>
         <div className="flex gap-2 flex-wrap">
           <Button variant="outline" size="sm" disabled={bulkProofingBusy} onClick={() => { setMergeMode(false); setProofingSelectMode(!proofingSelectMode); setMergeSelection(new Set()); }} className="gap-2"><CheckSquare className="w-4 h-4" />{proofingSelectMode ? "Cancel selection" : "Select albums"}</Button>
@@ -4698,15 +4688,14 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
               <Merge className="w-4 h-4" /> {mergeMode ? "Cancel Merge" : "Merge"}
             </Button>
           )}
-          <Button size="sm" onClick={() => setShowNew(true)} className="gap-2 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs tracking-wider uppercase">
+          <Button size="sm" variant="outline" onClick={() => setShowNew(true)} className="gap-2 border-border text-foreground hover:border-primary/50 font-body text-xs">
             <Plus className="w-4 h-4" /> New Album
           </Button>
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2 mb-4">
-        <Button variant={showRequests ? "default" : "outline"} onClick={() => setShowRequests(!showRequests)} aria-expanded={showRequests}><Download className="mr-2 size-4" /> Download requests · {albums.reduce((sum, album) => sum + (album.downloadRequests || []).filter(request => request.status === "pending").length, 0)} pending</Button>
-        <span className="text-sm text-muted-foreground">See who requested access, which photos, and the transfer amount.</span>
+      <div className="studio-album-requests flex flex-wrap items-center gap-2 mb-4">
+        <Button variant="ghost" onClick={() => setShowRequests(!showRequests)} aria-expanded={showRequests}><Download className="mr-2 size-4" /> Download requests · {albums.reduce((sum, album) => sum + (album.downloadRequests || []).filter(request => request.status === "pending").length, 0)} pending</Button>
       </div>
       {showRequests && <div className="mb-5"><DownloadRequestInbox albums={albums} onOpenAlbum={album => { setEditing(album); setShowNew(false); }} onUpdated={updated => { setAlbumsState(previous => previous.map(album => album.id === updated.id ? updated : album)); setEditing(previous => previous?.id === updated.id ? { ...previous, downloadRequests: updated.downloadRequests } : previous); }} /></div>}
 
@@ -4748,21 +4737,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
           if (albumSortKey === key) setAlbumSortDir(d => d === "asc" ? "desc" : "asc");
           else { setAlbumSortKey(key); setAlbumSortDir(key === "date" ? "desc" : "asc"); }
         };
-        const filteredAlbums = albums.filter(a => {
-          if (albumFilter === "requests" && !(a.downloadRequests || []).some(request => request.status === "pending")) return false;
-          if (albumFilter === "picks" && a.proofingStage !== "selections-submitted") return false;
-          if (albumFilter === "hidden" && a.enabled !== false) return false;
-          if (albumFilter === "delivered" && a.status !== "delivered" && a.proofingStage !== "finals-delivered") return false;
-          if (!albumSearch) return true;
-          const q = albumSearch.trim().toLowerCase();
-          const linkedInstagram = (a.instagramHandle || bookingMap.get(a.bookingId || "")?.instagramHandle || "").toLowerCase();
-          return a.title.toLowerCase().includes(q)
-            || (a.clientName || "").toLowerCase().includes(q)
-            || (a.clientEmail || "").toLowerCase().includes(q)
-            || (a.description || "").toLowerCase().includes(q)
-            || (a.slug || "").toLowerCase().includes(q)
-            || linkedInstagram.includes(q);
-        });
+        const filteredAlbums = filterAlbumsForAdmin(albums, bookings, albumFilter, albumSearch);
         const sortedAlbums = dedupeAlbumsBySlug(filteredAlbums).sort((a, b) => {
           const dir = albumSortDir === "asc" ? 1 : -1;
           switch (albumSortKey) {
@@ -4774,7 +4749,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
           }
         });
         const AlbumSortBtn = ({ k, label }: { k: AlbumSortKey; label: string }) => (
-          <button onClick={() => toggleAlbumSort(k)} className={`text-[10px] font-body tracking-wider uppercase px-2 py-1 rounded transition-colors ${albumSortKey === k ? "bg-primary/15 text-primary" : "text-muted-foreground hover:text-foreground"}`}>
+          <button onClick={() => toggleAlbumSort(k)} className={`text-[10px] font-body tracking-wider uppercase px-2 py-1 border-b transition-colors ${albumSortKey === k ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"}`}>
             {label} {albumSortKey === k ? (albumSortDir === "asc" ? "↑" : "↓") : ""}
           </button>
         );
@@ -4788,7 +4763,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
         </div>
       ) : (
         <>
-           <div className="glass-panel rounded-xl p-3 mb-4 flex flex-col sm:flex-row sm:items-center gap-3">
+           <div className="studio-album-search flex flex-col sm:flex-row sm:items-center gap-3">
             <div className="relative flex-1 sm:max-w-sm">
               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
               <Input value={albumSearch} onChange={e => setAlbumSearch(e.target.value)} aria-label="Search albums" placeholder="Search albums or clients…" className="soft-input pl-8 h-9 text-xs font-body" />
@@ -4806,9 +4781,9 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
             <Button size="sm" variant="outline" disabled={bulkProofingBusy} onClick={() => setMergeSelection(new Set(sortedAlbums.map(album => album.id)))}>Select all matching ({sortedAlbums.length})</Button>
             <Button size="sm" variant="ghost" disabled={bulkProofingBusy} onClick={() => setMergeSelection(new Set())}>Clear selection</Button>
           </div>}
-          <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-            <div className="flex flex-wrap items-center gap-3"><select aria-label="Filter albums" value={albumFilter} onChange={event => setAlbumFilter(event.target.value)} className="rounded-lg border border-border bg-background px-3 py-2 text-sm"><option value="all">All albums</option><option value="requests">Pending downloads</option><option value="picks">Picks submitted</option><option value="delivered">Delivered</option><option value="hidden">Hidden galleries</option></select><span role="status" className="text-sm text-muted-foreground">{sortedAlbums.length} of {albums.length} albums</span></div>
-            <div className="flex rounded-lg border border-border p-1" aria-label="Album display size">{(["compact", "comfortable", "list"] as const).map(layout => <Button key={layout} size="sm" variant={albumLayout === layout ? "default" : "ghost"} aria-pressed={albumLayout === layout} onClick={() => setAlbumLayout(layout)} className="capitalize">{layout}</Button>)}</div>
+          <div className="studio-album-controls flex flex-wrap items-center justify-between gap-3 mb-4">
+            <div className="flex flex-wrap items-center gap-3"><select aria-label="Filter albums" value={albumFilter} onChange={event => setAlbumFilter(event.target.value as AlbumListFilter)} className="rounded-none border-0 border-b border-border bg-transparent px-1 py-2 text-sm"><option value="all">All albums</option><option value="requests">Pending downloads</option><option value="picks">Picks submitted</option><option value="delivered">Delivered</option><option value="hidden">Hidden galleries</option></select><span role="status" className="text-sm text-muted-foreground">{sortedAlbums.length} of {albums.length} albums</span></div>
+            <div className="flex border-b border-border" aria-label="Album display size">{(["compact", "comfortable", "list"] as const).map(layout => <Button key={layout} size="sm" variant="ghost" aria-pressed={albumLayout === layout} onClick={() => setAlbumLayout(layout)} className={`capitalize rounded-none border-b-2 ${albumLayout === layout ? "border-primary text-foreground" : "border-transparent text-muted-foreground"}`}>{layout}</Button>)}</div>
           </div>
           {sortedAlbums.length === 0 && <div className="rounded-xl border border-border p-8 text-center"><p>No albums match this view.</p><Button variant="outline" className="mt-3" onClick={() => { setAlbumSearch(""); setAlbumFilter("all"); }}>Reset filters</Button></div>}
           <TooltipProvider delayDuration={300}>
@@ -4816,9 +4791,15 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
           {visibleAlbums.map((alb) => {
             const coverSrc = adminAlbumCoverSrc(alb);
             const coverKey = `${alb.id}:${coverSrc || ""}`;
-            if (albumLayout === "list") return <React.Suspense key={alb.id} fallback={<div className="h-20 rounded-xl bg-secondary animate-pulse" />}><AlbumListRow album={alb} cover={coverSrc} onEdit={() => { setEditing(alb); setShowNew(false); }} onView={() => openPublicGallery(alb)} onReview={() => { setShowRequests(true); setEditing(alb); }} selected={mergeSelection.has(alb.id)} onSelect={(mergeMode || proofingSelectMode) && !bulkProofingBusy ? () => setMergeSelection(previous => { const next = new Set(previous); if (next.has(alb.id)) next.delete(alb.id); else next.add(alb.id); return next; }) : undefined} /></React.Suspense>;
+            const linkedBooking = bookings.find(booking => booking.id === alb.bookingId || booking.albumId === alb.id);
+            const linkedInvoices = invoices.filter(invoice => invoice.albumId === alb.id || (!!linkedBooking && invoice.bookingId === linkedBooking.id));
+            const workflow = summarizeAlbumWorkflow(alb, linkedBooking, linkedInvoices);
+            const onEdit = () => { setEditing(alb); setShowNew(false); };
+            const onView = () => openPublicGallery(alb);
+            const onContinue = () => workflow.delivered ? onView() : onEdit();
+            if (albumLayout === "list") return <React.Suspense key={alb.id} fallback={<div className="h-20 rounded-xl bg-secondary animate-pulse" />}><AlbumListRow album={alb} cover={coverSrc} workflow={workflow} onContinue={onContinue} onEdit={onEdit} onView={onView} onReview={() => { setShowRequests(true); setEditing(alb); }} selected={mergeSelection.has(alb.id)} onSelect={(mergeMode || proofingSelectMode) && !bulkProofingBusy ? () => setMergeSelection(previous => { const next = new Set(previous); if (next.has(alb.id)) next.delete(alb.id); else next.add(alb.id); return next; }) : undefined} /></React.Suspense>;
             return (
-            <div key={alb.id} className={`glass-panel album-admin-card rounded-xl overflow-hidden transition-all hover:-translate-y-0.5 hover:border-primary/30 ${mergeMode ? "cursor-pointer" : ""} ${mergeSelection.has(alb.id) ? "ring-2 ring-primary" : ""} ${alb.enabled === false ? "opacity-50" : ""}`}
+            <div key={alb.id} className={`glass-panel album-admin-card studio-album-card overflow-hidden transition-colors hover:border-border ${mergeMode ? "cursor-pointer" : ""} ${mergeSelection.has(alb.id) ? "ring-1 ring-primary" : ""} ${alb.enabled === false ? "opacity-50" : ""}`}
               onClick={() => {
                 if (mergeMode) {
                   setMergeSelection(prev => {
@@ -4833,7 +4814,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
               <React.Suspense fallback={<div className="aspect-[16/9] bg-secondary animate-pulse" />}><AlbumCardCover layout={albumLayout} src={!brokenCovers.has(coverKey) ? coverSrc : undefined} title={alb.title} enabled={alb.enabled !== false} onError={() => setBrokenCovers(prev => { const n = new Set(prev); n.add(coverKey); return n; })} /></React.Suspense>
               <div className={`min-w-0 flex-1 space-y-2 ${albumLayout === "comfortable" ? "p-4" : "p-3"}`}>
                 <h3 title={alb.title} className={`font-display leading-tight text-foreground ${albumLayout === "comfortable" ? "text-xl" : "text-base"}`}>{alb.title}</h3>
-                {(alb.downloadRequests || []).some(request => request.status === "pending") && <button className="text-xs rounded-lg bg-amber-500/15 text-amber-500 px-2 py-1.5" onClick={event => { event.stopPropagation(); setShowRequests(true); setAlbumSearch(alb.title); setAlbumFilter("requests"); }}>{(alb.downloadRequests || []).filter(request => request.status === "pending").length} pending download request(s) · Review</button>}
+                {(alb.downloadRequests || []).some(request => request.status === "pending") && <button className="text-xs text-primary underline-offset-2 hover:underline" onClick={event => { event.stopPropagation(); setShowRequests(true); setAlbumSearch(alb.title); setAlbumFilter("requests"); }}>{(alb.downloadRequests || []).filter(request => request.status === "pending").length} pending download request(s) · Review</button>}
                 <p className="text-xs font-body text-muted-foreground">
                   {alb._photosStripped ? (alb.photoCount ?? 0) : alb.photos.length} photos · {alb.freeDownloads} free · ${alb.pricePerPhoto}/photo
                 </p>
@@ -4842,10 +4823,11 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                   const handle = alb.instagramHandle || bookingMap.get(alb.bookingId || "")?.instagramHandle;
                   return handle ? <p className="text-xs font-body text-muted-foreground">@{handle.replace("@", "")}</p> : null;
                 })()}
+                <AlbumWorkflowProgress summary={workflow} compact />
                 {/* ── Unified status dropdown — proofing stage when enabled, otherwise album status ── */}
                 {(() => {
                   const useProofing = alb.proofingEnabled;
-                  const linkedBooking = bookingMap.get(alb.bookingId || "");
+                  const linkedBooking = bookingMap.get(alb.bookingId || "") || bookings.find(booking => booking.albumId === alb.id);
 
                   const handleChange = async (val: string) => {
                     const updated = { ...alb };
@@ -4898,9 +4880,12 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                     : (alb.status || "editing");
 
                   return (
-                    <React.Suspense fallback={<div className="h-5 w-24 rounded bg-secondary/30 animate-pulse" />}>
-                      <AlbumStatusControl proofing={!!useProofing} value={currentVal} bookingStatus={linkedBooking?.status} onChange={handleChange} />
-                    </React.Suspense>
+                    <div className="flex items-center justify-between gap-2 border-t border-border/50 pt-2">
+                      <span className="text-[10px] font-body uppercase tracking-wider text-muted-foreground">Change stage</span>
+                      <React.Suspense fallback={<div className="h-5 w-24 rounded bg-secondary/30 animate-pulse" />}>
+                        <AlbumStatusControl proofing={!!useProofing} value={currentVal} bookingStatus={linkedBooking?.status} onChange={handleChange} />
+                      </React.Suspense>
+                    </div>
                   );
                 })()}
                 {/* Download expiry badge */}
@@ -4942,7 +4927,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
                 {alb.mergedFrom && <p className="text-[10px] font-body text-muted-foreground/50">Merged from {alb.mergedFrom.length} albums</p>}
                 {!mergeMode && (
                   <>
-                  <React.Suspense fallback={<div className="h-8 mt-3 rounded bg-secondary/30 animate-pulse" />}><AlbumCardPrimaryActions onEdit={() => setEditing(alb)} onView={() => openPublicGallery(alb)} /></React.Suspense>
+                  <React.Suspense fallback={<div className="h-10 mt-3 rounded bg-secondary/30 animate-pulse" />}><AlbumCardPrimaryActions workflow={workflow} onContinue={onContinue} onEdit={onEdit} onView={onView} /></React.Suspense>
                   <div className="flex items-center gap-1.5 pt-2">
                     <Tooltip>
                         <TooltipTrigger asChild>
@@ -5066,74 +5051,6 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
 }
 
 // ─── Album Editor ────────────────────────────────────
-type DeliveryChecklistItem = {
-  id: string;
-  label: string;
-  detail: string;
-  status: "ok" | "warning" | "blocker";
-};
-
-function buildDeliveryChecklist(album: Album, linkedBooking?: Booking, linkedInvoices: Invoice[] = []): DeliveryChecklistItem[] {
-  const photoCount = album.photos?.length || album.photoCount || 0;
-  const pendingRequests = (album.downloadRequests || []).filter((request) => request.status === "pending").length;
-  const outstandingInvoices = linkedInvoices.filter((invoice) => !["paid", "cancelled"].includes(invoice.status));
-  const proofingStage = album.proofingStage || "not-started";
-  const proofingInProgress = !!album.proofingEnabled && ["proofing", "selections-submitted", "editing"].includes(proofingStage);
-
-  return [
-    {
-      id: "photos",
-      label: "Photos ready",
-      detail: photoCount > 0 ? `${photoCount} photo${photoCount !== 1 ? "s" : ""} in this album` : "Add photos before delivery",
-      status: photoCount > 0 ? "ok" : "blocker",
-    },
-    {
-      id: "client-email",
-      label: "Client email",
-      detail: album.clientEmail ? album.clientEmail : "Delivery can continue, but no email will be sent",
-      status: album.clientEmail ? "ok" : "warning",
-    },
-    {
-      id: "proofing",
-      label: "Proofing state",
-      detail: !album.proofingEnabled
-        ? "Proofing is not enabled for this album"
-        : proofingStage === "finals-delivered"
-          ? "Finals already marked delivered"
-          : proofingInProgress
-            ? `Current stage: ${proofingStage.replace("-", " ")}`
-            : "No active proofing round",
-      status: proofingInProgress && proofingStage !== "finals-delivered" ? "warning" : "ok",
-    },
-    {
-      id: "payment",
-      label: "Payment",
-      detail: outstandingInvoices.length > 0
-        ? `${outstandingInvoices.length} linked invoice${outstandingInvoices.length !== 1 ? "s" : ""} still outstanding`
-        : linkedBooking?.paymentStatus && !["paid", "cash"].includes(linkedBooking.paymentStatus)
-          ? `Booking payment is ${linkedBooking.paymentStatus.replace("-", " ")}`
-          : "No outstanding linked payment found",
-      status: outstandingInvoices.length > 0 || (linkedBooking?.paymentStatus && !["paid", "cash"].includes(linkedBooking.paymentStatus)) ? "warning" : "ok",
-    },
-    {
-      id: "downloads",
-      label: "Download requests",
-      detail: pendingRequests > 0
-        ? `${pendingRequests} pending request${pendingRequests !== 1 ? "s" : ""}`
-        : album.lockDownloadsDuringProofing
-          ? "Downloads will unlock when finals are delivered"
-          : "No pending download requests",
-      status: pendingRequests > 0 ? "warning" : "ok",
-    },
-    {
-      id: "gallery-link",
-      label: "Gallery link",
-      detail: album.slug ? `/gallery/${album.slug}` : "A slug is required for a clean gallery link",
-      status: album.slug ? "ok" : "blocker",
-    },
-  ];
-}
-
 function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUpdate, onCancel }: {
   album: Album | null;
   bookings: Booking[];
@@ -5174,6 +5091,8 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
   const [purchasingDisabled, setPurchasingDisabled] = useState(album?.purchasingDisabled || false);
   const [downloadEmailCapture, setDownloadEmailCapture] = useState<"off" | "optional" | "required">(album?.downloadEmailCapture || "off");
   const [savingAlbum, setSavingAlbum] = useState(false);
+  const [emptyingAlbum, setEmptyingAlbum] = useState(false);
+  const emptyingAlbumRef = useRef(false);
   const [sendingProofing, setSendingProofing] = useState(false);
   const [albumProofingEnabled, setAlbumProofingEnabled] = useState(album?.proofingEnabled || false);
   const [albumProofingChoice, setAlbumProofingChoice] = useState<NonNullable<Album["proofingPhotoSelection"]> | "inherit">(album?.proofingPhotoSelection || "inherit");
@@ -5184,11 +5103,13 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
   // fetch the full photos array from the server on demand.
   const albumId = album?.id;
   const photosStripped = album?._photosStripped ?? false;
+  const [albumPhotosHydrated, setAlbumPhotosHydrated] = useState(!photosStripped);
   useEffect(() => {
     if (!albumId || !isServerMode() || !photosStripped) return;
     fetchAlbumPhotos(albumId).then(fetched => {
       if (fetched) {
         setPhotos(fetched);
+        setAlbumPhotosHydrated(true);
         setEditorBasePhotoIds(fetched.map(photo => photo.id));
         // Keep liveAlbum in sync so the picks export can look up photo titles.
         // Without this, liveAlbum.photos stays empty (stub) even after the photo
@@ -5241,6 +5162,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
   const [editorGridSize, setEditorGridSize] = useState<"small" | "medium" | "large">("medium");
   const [editorLightboxPhoto, setEditorLightboxPhoto] = useState<Photo | null>(null);
   const [photoSortDir, setPhotoSortDir] = useState<"asc" | "desc">("asc");
+  const [photoSortKey, setPhotoSortKey] = useState<"name" | "file-number" | "uploaded" | "captured">("name");
   const [cullView, setCullView] = useState<"all" | "pick" | "review" | "reject">("all");
   const [autoCulling, setAutoCulling] = useState(false);
   const existingAlbums = getAlbums();
@@ -5347,6 +5269,8 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
   }, [editorLightboxPhoto, photos]);
 
   const [uploadStats, setUploadStats] = useState<{ total: number; done: number; errors: number; savedBytes: number; speed?: number } | null>(null);
+  const [photoDropActive, setPhotoDropActive] = useState(false);
+  const photoFileInputRef = useRef<HTMLInputElement>(null);
   const [ftpUploadProgress, setFtpUploadProgress] = useState<{ done: number; total: number; failed: number } | null>(null);
   const [ftpUploading, setFtpUploading] = useState(false);
 
@@ -5362,6 +5286,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
     }
 
     setPhotos(fetched);
+    setAlbumPhotosHydrated(true);
     setLiveAlbum(prev => prev ? { ...prev, photos: fetched, _photosStripped: false } : prev);
     const hydrated = getAlbums().map(a =>
       a.id === album.id ? { ...a, photos: fetched, _photosStripped: false } : a
@@ -5396,14 +5321,99 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
     toast.success("Gallery link copied!");
   };
 
-  const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const input = e.currentTarget;
-    const files = input.files;
+  const handleEmptyAlbum = async (): Promise<EmptyAlbumOutcome> => {
+    if (!album?.id || emptyingAlbumRef.current || photos.length === 0) return "failed";
+    if (!albumPhotosHydrated) {
+      toast.error("Wait for this album's photos to finish loading, then try again.");
+      return "failed";
+    }
+    emptyingAlbumRef.current = true;
+    setEmptyingAlbum(true);
+    try {
+      const hasServerFiles = photos.some(photo => photo.src?.startsWith("/uploads/") || photo.finalSrc?.startsWith("/uploads/") || photo.proofSrc?.startsWith("/uploads/"));
+      let updated: Album;
+      if (isServerMode() || !!album.photoRevision || hasServerFiles) {
+        const result = await emptyAlbumPhotosOnServer(album.id, photos, album.photoRevision);
+        if (result.ok === false) {
+          if (result.stale) {
+            const currentPhotos = await fetchAlbumPhotos(album.id);
+            if (!currentPhotos) {
+              toast.error("The album changed, but the current photos could not be reloaded. Reconnect and reload before trying again.");
+              return "failed";
+            }
+            const refreshedCover = currentPhotos.some(photo => photo.src === album.coverImage)
+              ? album.coverImage
+              : (currentPhotos[0]?.src || "");
+            updated = {
+              ...album,
+              photos: currentPhotos,
+              photoCount: currentPhotos.length,
+              coverImage: refreshedCover,
+              _photosStripped: false,
+              ...(result.photoRevision ? { photoRevision: result.photoRevision } : {}),
+              _removedPhotoIds: undefined,
+              _replacePhotos: undefined,
+              _basePhotoIds: undefined,
+            };
+            setPhotos(currentPhotos);
+            setAlbumPhotosHydrated(true);
+            setEditorBasePhotoIds(currentPhotos.map(photo => photo.id));
+            setPendingRemovedPhotoIds([]);
+            setCoverImage(refreshedCover);
+            setLiveAlbum(updated);
+            cacheAlbumLocally(updated);
+            onUpdate?.(updated);
+            toast.warning("The album changed since confirmation. Review the refreshed photo count and confirm again.");
+            return "stale";
+          }
+          toast.error(result.error);
+          return "failed";
+        }
+        updated = result.album;
+        if (result.cleanupIncomplete) {
+          const remaining = result.cleanup.shared + result.cleanup.unsafe + result.cleanup.failed;
+          toast.warning(`Album emptied. ${result.cleanup.deleted} unshared file${result.cleanup.deleted === 1 ? " was" : "s were"} removed; ${remaining} file${remaining === 1 ? " was" : "s were"} kept or could not be cleaned up.`);
+        } else {
+          toast.success(`Removed ${result.removedPhotoCount} photo${result.removedPhotoCount === 1 ? "" : "s"} from ${album.title}.`);
+        }
+      } else {
+        const draft = buildAlbumDraft([]);
+        if (!draft) return "failed";
+        updated = {
+          ...draft,
+          photos: [], photoCount: 0, coverImage: "", _photosStripped: false,
+          status: album.status === "archived" ? "archived" : "editing",
+          proofingStage: "not-started", proofingExpiresAt: undefined, proofingRevision: undefined, deliveredAt: undefined,
+        };
+        toast.success(`Removed ${photos.length} photo${photos.length === 1 ? "" : "s"} from ${album.title}.`);
+      }
+
+      setPhotos([]);
+      setAlbumPhotosHydrated(true);
+      setEditorBasePhotoIds([]);
+      setPendingRemovedPhotoIds([]);
+      setCoverImage("");
+      setAlbumStatus(updated.status || "editing");
+      setLiveAlbum(updated);
+      cacheAlbumLocally(updated);
+      onUpdate?.(updated);
+      window.dispatchEvent(new CustomEvent("storage-synced"));
+      return "emptied";
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not empty this album. No photos were changed.");
+      return "failed";
+    } finally {
+      emptyingAlbumRef.current = false;
+      setEmptyingAlbum(false);
+    }
+  };
+
+  const handlePhotoFiles = async (files: FileList | File[], input?: HTMLInputElement) => {
     if (!files || files.length === 0) return;
     const fileArr = Array.from(files).filter(isSupportedUploadFile);
     if (fileArr.length === 0) {
       toast.error("No supported image files found");
-      input.value = "";
+      if (input) input.value = "";
       return;
     }
     if (fileArr.length < files.length) {
@@ -5522,8 +5532,12 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
       toast.error(error instanceof Error ? error.message : "Upload failed. Please try again.");
     } finally {
       setSavingAlbum(false);
-      input.value = "";
+      if (input) input.value = "";
     }
+  };
+
+  const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    await handlePhotoFiles(e.currentTarget.files || [], e.currentTarget);
   };
 
   const handleBookingLink = (bkId: string) => {
@@ -5593,8 +5607,9 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
     toast.success(`Photo review complete: ${result.counts?.pick || 0} selected, ${result.counts?.review || 0} to review, ${result.counts?.reject || 0} held back`);
   };
 
-  const sortPhotos = (mode: "name" | "file-number" | "uploaded" | "captured") => {
-    const dir = photoSortDir === "asc" ? 1 : -1;
+  const sortPhotos = (mode: "name" | "file-number" | "uploaded" | "captured", direction = photoSortDir) => {
+    setPhotoSortKey(mode);
+    const dir = direction === "asc" ? 1 : -1;
     const ordered = [...photos].sort((a, b) => {
       if (mode === "file-number") {
         const diff = photoNumber(a) - photoNumber(b);
@@ -5724,8 +5739,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
 
   const deliveryDraft = album ? buildAlbumDraft(photos) : null;
   const deliveryChecklist = deliveryDraft ? buildDeliveryChecklist(deliveryDraft, linkedBooking, linkedInvoices) : [];
-  const deliveryBlockers = deliveryChecklist.filter(item => item.status === "blocker");
-  const deliveryWarnings = deliveryChecklist.filter(item => item.status === "warning");
+  const albumWorkflowSummary = deliveryDraft ? summarizeAlbumWorkflow(deliveryDraft, linkedBooking, linkedInvoices) : undefined;
   const cullCounts = {
     pick: photos.filter(photo => photo.cull?.status === "pick" || photo.starred).length,
     review: photos.filter(photo => !photo.cull?.status || photo.cull.status === "review" || photo.cull.status === "unscored").length,
@@ -5740,9 +5754,9 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
         : photo.cull?.status === "reject");
 
   return (
-    <div className="glass-panel rounded-xl p-4 sm:p-6 mb-6 space-y-6 scroll-smooth">
+    <div className="studio-album-editor mb-6 space-y-5 scroll-smooth">
       <React.Suspense fallback={<div className="h-28 rounded-xl border border-border/50 bg-secondary/30 animate-pulse" />}>
-        <AlbumWorkspaceHeader isNew={isNew} title={title} photoCount={photos.length} clientName={clientName} status={albumStatus} saving={savingAlbum} onClose={onCancel} onSave={() => void handleSave()} />
+        <AlbumWorkspaceHeader isNew={isNew} title={title} photoCount={photos.length} clientName={clientName} status={albumStatus} saving={savingAlbum} onClose={onCancel} onSave={() => void handleSave()} workflowSummary={albumWorkflowSummary} onContinueWorkflow={albumWorkflowSummary?.targetId ? () => document.getElementById(albumWorkflowSummary.targetId!)?.scrollIntoView({ behavior: "smooth", block: "start" }) : undefined} />
       </React.Suspense>
 
       <React.Suspense fallback={null}><AlbumEditorSectionHeading id="album-editor-details" title="Gallery details" detail="Name the gallery, connect the client, and control its public link." /></React.Suspense>
@@ -6425,23 +6439,33 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
 
       {/* Photo Upload */}
       <div id="album-editor-photos" className="scroll-mt-40 border-t border-border/50 pt-5">
-        <React.Suspense fallback={null}><AlbumEditorSectionHeading id="album-editor-photos-heading" title={`Photos (${photos.length})`} detail="Upload, reorder, choose the cover, and mark photos for client delivery." className="mb-3" /></React.Suspense>
-        <div className="border-2 border-dashed border-border rounded-lg p-6 text-center hover:border-primary/30 transition-colors cursor-pointer relative mb-3">
-          <Upload className="w-6 h-6 text-muted-foreground/50 mx-auto mb-2" />
-          <p className="text-xs font-body text-muted-foreground">Click to upload photos or drag and drop</p>
-          <p className="text-[10px] font-body text-muted-foreground/50 mt-1">Multiple files supported</p>
-          <input type="file" accept="image/*" multiple className="absolute inset-0 opacity-0 cursor-pointer" onChange={handlePhotoUpload} />
+        <div className="mb-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+          <React.Suspense fallback={null}><AlbumEditorSectionHeading id="album-editor-photos-heading" title={`Photos (${photos.length})`} detail="Upload, sort, proof, and choose the cover." /></React.Suspense>
+          {album && <EmptyAlbumConfirmation albumTitle={title || album.title} photoCount={photos.length} disabled={!albumPhotosHydrated || emptyingAlbum || savingAlbum || !!uploadStats} onConfirm={handleEmptyAlbum} />}
         </div>
-        {/* Camera / gallery shortcuts — shown on touch/mobile devices only */}
-        <div className="mb-3 flex gap-2 sm:hidden">
-          <label className="flex-1 flex items-center justify-center gap-2 p-2.5 rounded-lg border border-border/50 text-xs font-body text-muted-foreground cursor-pointer hover:bg-secondary/50 transition-colors">
-            <Camera className="w-4 h-4" /> Take a photo
-            <input type="file" accept="image/*" capture="environment" className="sr-only" onChange={handlePhotoUpload} />
-          </label>
-          <label className="flex-1 flex items-center justify-center gap-2 p-2.5 rounded-lg border border-border/50 text-xs font-body text-muted-foreground cursor-pointer hover:bg-secondary/50 transition-colors">
-            <Upload className="w-4 h-4" /> Choose photos
-            <input type="file" accept="image/*" multiple className="sr-only" onChange={handlePhotoUpload} />
-          </label>
+        <div
+          onDragOver={event => { event.preventDefault(); setPhotoDropActive(true); }}
+          onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setPhotoDropActive(false); }}
+          onDrop={event => { event.preventDefault(); setPhotoDropActive(false); void handlePhotoFiles(event.dataTransfer.files); }}
+          className={`mb-2 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 rounded-md border border-dashed px-3 py-2.5 transition-colors ${photoDropActive ? "border-primary bg-primary/10" : "border-border hover:border-primary/40"}`}
+        >
+          <div className="flex items-center gap-2 min-w-0">
+            <Upload className="w-4 h-4 shrink-0 text-muted-foreground" />
+            <div className="min-w-0">
+              <p className="text-xs font-body text-foreground">Add photos</p>
+              <p className="text-[10px] font-body text-muted-foreground">Drop files here or browse to upload</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 sm:justify-end">
+            <input ref={photoFileInputRef} type="file" accept="image/*" multiple className="sr-only" aria-label="Choose photos to upload" onChange={handlePhotoUpload} />
+            <Button type="button" variant="outline" size="sm" className="min-h-9" disabled={!!uploadStats || savingAlbum || emptyingAlbum} onClick={() => photoFileInputRef.current?.click()}>
+              Browse photos
+            </Button>
+            <label className="sm:hidden inline-flex min-h-11 items-center justify-center gap-1.5 rounded-md border border-border px-3 text-xs font-body text-foreground cursor-pointer">
+              <Camera className="w-4 h-4" /> Take photo
+              <input type="file" accept="image/*" capture="environment" className="sr-only" disabled={!!uploadStats || savingAlbum || emptyingAlbum} onChange={handlePhotoUpload} />
+            </label>
+          </div>
         </div>
         {uploadStats && (
           <div className="mb-3 p-3 rounded-lg bg-secondary/50 border border-border">
@@ -6557,66 +6581,46 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
               </div>
             );
           })()}
-          <div className="rounded-xl border border-primary/20 bg-primary/5 p-3 mb-3">
-            <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
-              <div>
-                <p className="text-sm font-body font-medium text-foreground">Choose photos for {clientName || "this client"}</p>
-                <p className="text-[11px] font-body text-muted-foreground mt-1">All photos are sent to proofing by default, including mobile uploads. ★ marks a priority send, ? means send but review later, and − is the only option that keeps a photo out of the client gallery.</p>
-              </div>
-              {album && isServerMode() && (
-                <button type="button" onClick={runAutoCull} disabled={autoCulling} className="shrink-0 inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-body font-medium border border-primary/40 text-primary hover:bg-primary/10 disabled:opacity-50">
-                  <Sparkles className="w-3.5 h-3.5" /> {autoCulling ? "Checking photos…" : "Help me sort"}
-                </button>
-              )}
-            </div>
-          </div>
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-2">
-            <span className="text-xs font-body text-muted-foreground">Showing {visiblePhotos.length} of {photos.length} photo{photos.length !== 1 ? "s" : ""}</span>
-            <div className="flex items-center gap-2 flex-wrap sm:justify-end">
-              <div className="flex items-center gap-1 rounded-lg border border-border/50 bg-secondary px-1 py-1">
-                <button
-                  type="button"
-                  onClick={() => setPhotoSortDir(dir => dir === "asc" ? "desc" : "asc")}
-                  className="px-2 py-1 rounded-md text-[10px] font-body uppercase tracking-wider text-muted-foreground hover:text-foreground hover:bg-background transition-colors"
-                  title="Toggle sort direction"
-                >
-                  {photoSortDir === "asc" ? "Asc" : "Desc"}
-                </button>
-                <button type="button" onClick={() => sortPhotos("name")} className="px-2 py-1 rounded-md text-[10px] font-body uppercase tracking-wider text-muted-foreground hover:text-foreground hover:bg-background transition-colors">Name</button>
-                <button type="button" onClick={() => sortPhotos("file-number")} className="px-2 py-1 rounded-md text-[10px] font-body uppercase tracking-wider text-muted-foreground hover:text-foreground hover:bg-background transition-colors">File #</button>
-                <button type="button" onClick={() => sortPhotos("captured")} className="px-2 py-1 rounded-md text-[10px] font-body uppercase tracking-wider text-muted-foreground hover:text-foreground hover:bg-background transition-colors">Captured</button>
-                <button type="button" onClick={() => sortPhotos("uploaded")} className="px-2 py-1 rounded-md text-[10px] font-body uppercase tracking-wider text-muted-foreground hover:text-foreground hover:bg-background transition-colors">Uploaded</button>
-              </div>
-              <div className="flex items-center gap-0.5 p-0.5 bg-secondary rounded-lg border border-border/50">
-                {([
-                  { size: "small" as const, icon: <LayoutGrid className="w-3 h-3" />, label: "Small" },
-                  { size: "medium" as const, icon: <Grid className="w-3 h-3" />, label: "Medium" },
-                  { size: "large" as const, icon: <Image className="w-3 h-3" />, label: "Large" },
-                ]).map(({ size, icon, label }) => (
-                  <button
-                    key={size}
-                    onClick={() => setEditorGridSize(size)}
-                    title={label}
-                    className={`p-1 rounded-md transition-all ${editorGridSize === size ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
-                  >
-                    {icon}
-                  </button>
-                ))}
+          <div className="mb-3 rounded-md border border-border/70 bg-background/40 p-2.5 space-y-2">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+              <span role="status" className="text-xs font-body text-muted-foreground">Showing {visiblePhotos.length} of {photos.length} photos</span>
+              <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+                <label className="sr-only" htmlFor="album-photo-sort">Sort photos</label>
+                <select id="album-photo-sort" value={photoSortKey} onChange={event => sortPhotos(event.target.value as typeof photoSortKey)} className="min-h-9 rounded-md border border-border bg-secondary px-2 text-xs text-foreground">
+                  <option value="name">Name</option><option value="file-number">File #</option><option value="captured">Captured</option><option value="uploaded">Uploaded</option>
+                </select>
+                <Button type="button" variant="outline" size="sm" aria-label={"Sort " + (photoSortDir === "asc" ? "ascending" : "descending")} onClick={() => {
+                  const nextDirection = photoSortDir === "asc" ? "desc" : "asc";
+                  setPhotoSortDir(nextDirection);
+                  sortPhotos(photoSortKey, nextDirection);
+                }} className="min-h-9 min-w-9 px-2">{photoSortDir === "asc" ? "A–Z" : "Z–A"}</Button>
+                <div role="group" aria-label="Photo grid size" className="flex items-center gap-0.5 rounded-md border border-border bg-secondary p-0.5">
+                  {([
+                    { size: "small" as const, icon: <LayoutGrid className="w-3.5 h-3.5" />, label: "Small" },
+                    { size: "medium" as const, icon: <Grid className="w-3.5 h-3.5" />, label: "Medium" },
+                    { size: "large" as const, icon: <Image className="w-3.5 h-3.5" />, label: "Large" },
+                  ]).map(({ size, icon, label }) => (
+                    <button key={size} type="button" onClick={() => setEditorGridSize(size)} aria-label={label + " photo tiles"} aria-pressed={editorGridSize === size} className={editorGridSize === size ? "min-h-8 min-w-8 rounded bg-background text-foreground shadow-sm" : "min-h-8 min-w-8 rounded text-muted-foreground hover:text-foreground"}>
+                      {icon}
+                    </button>
+                  ))}
+                </div>
+                {album && isServerMode() && <Button type="button" variant="outline" size="sm" onClick={runAutoCull} disabled={autoCulling || emptyingAlbum} className="min-h-9 gap-1.5"><Sparkles className="h-3.5 w-3.5" />{autoCulling ? "Sorting…" : "Help me sort"}</Button>}
               </div>
             </div>
-          </div>
-          <div className="flex items-center gap-1.5 mb-2 overflow-x-auto pb-1">
-            {([
-              ["all", "All", photos.length],
-              ["pick", "Priority send", cullCounts.pick],
-              ["review", "Sending · review later", cullCounts.review],
-              ["reject", "Not sending", cullCounts.reject],
-            ] as const).map(([value, label, count]) => (
-              <button key={value} type="button" onClick={() => setCullView(value)} className={`whitespace-nowrap px-2 py-1 rounded-full text-[10px] font-body border transition-colors ${cullView === value ? "bg-primary text-primary-foreground border-primary" : "bg-secondary text-muted-foreground border-border hover:text-foreground"}`}>
-                {label} {count}
-              </button>
-            ))}
-            <span className="text-[10px] text-muted-foreground/70 ml-1">“Not sending” photos are hidden automatically when you start proofing.</span>
+            <div role="group" aria-label="Filter photos" aria-describedby="album-photo-filter-help" className="flex flex-wrap items-center gap-1.5 border-t border-border/60 pt-2">
+              {([
+                ["all", "All", photos.length],
+                ["pick", "Priority", cullCounts.pick],
+                ["review", "Review", cullCounts.review],
+                ["reject", "Not sending", cullCounts.reject],
+              ] as const).map(([value, label, count]) => (
+                <button key={value} type="button" onClick={() => setCullView(value)} aria-pressed={cullView === value} className={cullView === value ? "min-h-8 whitespace-nowrap rounded-md border border-primary bg-primary/10 px-2.5 text-[11px] font-body text-foreground" : "min-h-8 whitespace-nowrap rounded-md border border-transparent px-2.5 text-[11px] font-body text-muted-foreground hover:bg-secondary hover:text-foreground"}>
+                  {label} <span className="ml-1 tabular-nums">{count}</span>
+                </button>
+              ))}
+              <span id="album-photo-filter-help" className="sr-only">Priority photos are highlighted. Review photos are sent but need an edit decision. Not sending photos are hidden when proofing starts.</span>
+            </div>
           </div>
           <div className={`grid gap-2 max-h-[70vh] sm:max-h-64 overflow-y-auto pr-0.5 ${
             editorGridSize === "small"
@@ -6649,7 +6653,6 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
                 className={`relative group aspect-square rounded-md overflow-hidden bg-secondary cursor-grab active:cursor-grabbing ${coverImage === p.src ? "ring-2 ring-primary" : ""}`}>
                 <ProgressiveImg thumbSrc={adminThumbSrc(p.thumbnail) ?? p.thumbnail} fullSrc={adminThumbSrc(p.src) ?? p.src} alt={proofReference(p)} className="w-full h-full object-cover" loading="lazy" />
                 <div className="absolute left-1 bottom-1 max-w-[calc(100%-0.5rem)] rounded bg-black/70 px-1.5 py-0.5 text-[9px] font-mono text-white truncate" title={proofReference(p)}>{proofReference(p)}</div>
-                <div className={`absolute top-1 left-7 rounded px-1 py-0.5 text-[8px] uppercase font-body ${cullStatus === "pick" ? "bg-green-500/90 text-white" : cullStatus === "reject" ? "bg-red-500/90 text-white" : "bg-blue-500/90 text-white"}`}>{cullStatus === "pick" ? "Priority" : cullStatus === "reject" ? "Don't send" : "Sending"}</div>
                 <button onClick={() => {
                   const filtered = photos.filter(pp => pp.id !== p.id);
                   const newCover = coverImage === p.src ? (filtered[0]?.src || "") : coverImage;
@@ -6663,13 +6666,15 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
                     onUpdate({ ...album, photos: filtered, photoCount: filtered.length, coverImage: newCover, _removedPhotoIds: removedPhotoIds });
                   }
                 }}
-                  className="absolute top-1 right-1 w-5 h-5 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                  aria-label={`Remove ${photoLabel(p)} from album`}
+                  className="absolute top-1 right-1 min-h-8 min-w-8 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center opacity-100 sm:opacity-0 sm:group-hover:opacity-100 focus-visible:opacity-100 transition-opacity">
                   <X className="w-3 h-3" />
                 </button>
                 {/* Expand / lightbox button */}
                 <button
                   onClick={(e) => { e.stopPropagation(); setEditorLightboxPhoto(p); }}
-                  className="absolute top-1 left-1 w-5 h-5 rounded-full bg-black/50 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity"
+                  aria-label={`View ${photoLabel(p)} full size`}
+                  className="absolute top-1 left-1 min-h-8 min-w-8 rounded-full bg-black/65 text-white flex items-center justify-center opacity-100 sm:opacity-0 sm:group-hover:opacity-100 focus-visible:opacity-100 transition-opacity"
                   title="View full size"
                 >
                   <Maximize2 className="w-2.5 h-2.5" />
@@ -6685,13 +6690,15 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
                     toast.success("Cover photo updated");
                   }}
                   title={coverImage === p.src ? "Current cover photo" : "Set as album cover"}
-                  className={`absolute bottom-1 left-1 w-5 h-5 rounded-full flex items-center justify-center transition-opacity ${coverImage === p.src ? "opacity-100 bg-primary text-primary-foreground" : "opacity-0 group-hover:opacity-100 bg-black/60 text-white"}`}
+                  aria-label={coverImage === p.src ? `${photoLabel(p)} is the album cover` : `Set ${photoLabel(p)} as album cover`}
+                  aria-pressed={coverImage === p.src}
+                  className={`absolute bottom-1 left-1 min-h-8 min-w-8 rounded-full flex items-center justify-center transition-opacity ${coverImage === p.src ? "opacity-100 bg-primary text-primary-foreground" : "opacity-100 sm:opacity-0 sm:group-hover:opacity-100 focus-visible:opacity-100 bg-black/70 text-white"}`}
                 >
                   <Image className="w-3 h-3" />
                 </button>
                 <div className="absolute bottom-6 right-1 flex flex-col gap-0.5 opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity">
                   {(["pick", "review", "reject"] as const).map(status => (
-                    <button key={status} type="button" onClick={e => { e.stopPropagation(); setCullStatus(p.id, status); }} title={status === "pick" ? "Mark as a priority send" : status === "review" ? "Send to the client; review your edit decision later" : "Do not send this photo to the client"} aria-label={status === "pick" ? "Priority send" : status === "review" ? "Send and review later" : "Do not send"} className={`w-5 h-5 rounded text-[9px] font-bold ${cullStatus === status ? "bg-primary text-primary-foreground" : "bg-black/65 text-white hover:bg-black/85"}`}>
+                    <button key={status} type="button" onClick={e => { e.stopPropagation(); setCullStatus(p.id, status); }} title={status === "pick" ? "Mark as a priority send" : status === "review" ? "Send to the client; review your edit decision later" : "Do not send this photo to the client"} aria-label={status === "pick" ? "Priority send" : status === "review" ? "Send and review later" : "Do not send"} aria-pressed={cullStatus === status} className={`min-h-8 min-w-8 rounded-md text-[10px] font-bold ${cullStatus === status ? "bg-primary text-primary-foreground" : "bg-black/75 text-white hover:bg-black/90"}`}>
                       {status === "pick" ? "★" : status === "review" ? "?" : "–"}
                     </button>
                   ))}
@@ -6704,80 +6711,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
         )}
       </div>
 
-      {/* One-click delivery */}
-      {!isNew && album && album.status !== "delivered" && (
-        <div id="album-editor-delivery" className="scroll-mt-40 p-4 rounded-lg bg-green-500/5 border border-green-500/20 space-y-3">
-          <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
-            <div>
-              <div className="flex items-center gap-2">
-                <CheckCircle2 className="w-4 h-4 text-green-400" />
-                <p className="text-xs font-body text-green-400 font-medium">Smart Delivery Checklist</p>
-              </div>
-              <p className="text-[10px] font-body text-muted-foreground mt-1">Checks client, proofing, payment, downloads, and gallery link before one-click delivery.</p>
-            </div>
-            <span className={`text-[10px] font-body px-2 py-1 rounded-full border shrink-0 ${
-              deliveryBlockers.length > 0
-                ? "bg-destructive/10 text-destructive border-destructive/30"
-                : deliveryWarnings.length > 0
-                  ? "bg-orange-500/10 text-orange-300 border-orange-500/30"
-                  : "bg-green-500/10 text-green-400 border-green-500/30"
-            }`}>
-              {deliveryBlockers.length > 0
-                ? `${deliveryBlockers.length} blocker${deliveryBlockers.length !== 1 ? "s" : ""}`
-                : deliveryWarnings.length > 0
-                  ? `${deliveryWarnings.length} warning${deliveryWarnings.length !== 1 ? "s" : ""}`
-                  : "Ready"}
-            </span>
-          </div>
-          <div className="grid md:grid-cols-2 gap-2">
-            {deliveryChecklist.map((item) => (
-              <div key={item.id} className={`p-2.5 rounded-lg border flex gap-2 ${
-                item.status === "ok"
-                  ? "bg-secondary/30 border-border/40"
-                  : item.status === "warning"
-                    ? "bg-orange-500/5 border-orange-500/20"
-                    : "bg-destructive/5 border-destructive/25"
-              }`}>
-                {item.status === "ok" ? (
-                  <CheckCircle2 className="w-4 h-4 text-green-400 shrink-0 mt-0.5" />
-                ) : item.status === "warning" ? (
-                  <AlertTriangle className="w-4 h-4 text-orange-300 shrink-0 mt-0.5" />
-                ) : (
-                  <AlertCircle className="w-4 h-4 text-destructive shrink-0 mt-0.5" />
-                )}
-                <div className="min-w-0">
-                  <p className="text-xs font-body text-foreground">{item.label}</p>
-                  <p className="text-[10px] font-body text-muted-foreground truncate">{item.detail}</p>
-                </div>
-              </div>
-            ))}
-          </div>
-          <p className="text-[10px] font-body text-muted-foreground">Delivery removes watermarks, marks the album delivered, makes it public, and emails the client when an email is set.</p>
-          <button
-            onClick={async () => {
-              if (deliveryBlockers.length > 0) {
-                toast.error(`Resolve ${deliveryBlockers.length} delivery blocker${deliveryBlockers.length !== 1 ? "s" : ""} first`);
-                return;
-              }
-              const warningText = deliveryWarnings.length > 0
-                ? `\n\nWarnings:\n${deliveryWarnings.map(item => `- ${item.label}: ${item.detail}`).join("\n")}`
-                : "";
-              if (!confirm(`Deliver this gallery to the client? This will disable watermarks and make the album public.${warningText}`)) return;
-              const result = await deliverAlbum(album.id);
-              if (result?.ok) {
-                toast.success(`Gallery delivered!${result.emailSent ? " Client notified by email." : ""}`);
-                onCancel(); // close editor to refresh
-              } else {
-                toast.error("Delivery failed — check server connection");
-              }
-            }}
-            disabled={deliveryBlockers.length > 0}
-            className="inline-flex items-center gap-1.5 text-xs font-body px-3 py-1.5 rounded-lg bg-green-500/15 text-green-400 hover:bg-green-500/25 border border-green-500/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <Send className="w-3.5 h-3.5" /> Deliver Gallery Now
-          </button>
-        </div>
-      )}
+      {!isNew && album && album.status !== "delivered" && <DeliveryReadiness albumId={album.id} photos={photos} photoRevision={album.photoRevision} checks={deliveryChecklist} onDelivered={onCancel} />}
 
       <div className="flex gap-3 pt-2 border-t border-border/50">
         <Button variant="outline" onClick={onCancel} className="font-body text-xs border-border text-foreground">Cancel</Button>
@@ -7312,6 +7246,8 @@ function PhotosView() {
 
   // Keep ref in sync for keyboard navigation
   displayPhotosRef.current = displayPhotos;
+  const visiblePhotoIds = displayPhotos.map(photo => photo.id);
+  const allVisiblePhotosSelected = visiblePhotoIds.length > 0 && visiblePhotoIds.every(id => selectedIds.has(id));
 
   // Determine if we're viewing a specific album (for upload-to-album)
   const selectedAlbumId = albumIdFromPhotoSourceKey(viewSource);
@@ -7744,7 +7680,7 @@ function PhotosView() {
   const sources = ["all", "library", ...albums.map(a => a.title)];
 
   return (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="studio-photos">
       {/* Lightbox */}
       {lightboxPhoto && (() => {
         const lbIndex = displayPhotos.findIndex(p => p.id === lightboxPhoto.id);
@@ -8082,11 +8018,11 @@ function PhotosView() {
         );
       })()}
 
-      <div className="flex items-center justify-between gap-2 mb-4 flex-wrap">
+      <div className="studio-photo-toolbar flex items-center justify-between gap-2 mb-4 flex-wrap">
         <h2 className="font-display text-xl sm:text-2xl text-foreground shrink-0">Photo Library</h2>
         <div className="flex gap-1.5 items-center flex-wrap">
           {/* Grid size toggle */}
-          <div className="flex items-center gap-0.5 p-0.5 bg-secondary rounded-lg border border-border/50">
+          <div className="studio-photo-grid-toggle flex items-center gap-0.5 border-b border-border">
             {([
               { size: "small" as const, icon: <LayoutGrid className="w-3.5 h-3.5" />, label: "Small" },
               { size: "medium" as const, icon: <Grid className="w-3.5 h-3.5" />, label: "Medium" },
@@ -8095,6 +8031,9 @@ function PhotosView() {
               <button
                 key={size}
                 onClick={() => setPhotoGridSize(size)}
+                type="button"
+                aria-label={`${label} photo grid`}
+                aria-pressed={photoGridSize === size}
                 title={label}
                 className={`p-1.5 rounded-md transition-all ${photoGridSize === size ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
               >
@@ -8109,23 +8048,26 @@ function PhotosView() {
           <Button size="sm" variant="outline" onClick={handleSyncFromStorage} disabled={syncing} title={syncing ? "Syncing…" : "Sync Storage"} className="gap-1.5 font-body text-xs border-border text-foreground px-2 sm:px-3">
             <RefreshCw className={`w-4 h-4 shrink-0 ${syncing ? "animate-spin" : ""}`} /> <span className="hidden sm:inline">{syncing ? "Syncing…" : "Sync Storage"}</span>
           </Button>
-          <Button size="sm" variant={selectedIds.size > 0 ? "default" : "ghost"} onClick={() => {
-            if (selectedIds.size === displayPhotos.length && displayPhotos.length > 0) setSelectedIds(new Set());
-            else setSelectedIds(new Set(displayPhotos.map(p => p.id)));
+          <Button size="sm" variant={selectedIds.size > 0 ? "default" : "ghost"} aria-label={allVisiblePhotosSelected ? `Deselect all ${visiblePhotoIds.length} visible photos` : `Select all ${visiblePhotoIds.length} visible photos`} aria-pressed={allVisiblePhotosSelected} onClick={() => {
+            setSelectedIds(previous => {
+              const next = new Set(previous);
+              visiblePhotoIds.forEach(id => allVisiblePhotosSelected ? next.delete(id) : next.add(id));
+              return next;
+            });
           }} className={`gap-1 font-body text-xs px-2 sm:px-3 ${selectedIds.size > 0 ? "bg-primary/20 text-primary border border-primary/30 hover:bg-primary/30" : "text-muted-foreground"}`}>
-            <CheckSquare className="w-4 h-4 shrink-0" /> <span className="hidden xs:inline sm:inline">{selectedIds.size === displayPhotos.length && displayPhotos.length > 0 ? "Deselect All" : "Select All"}</span>
+            <CheckSquare className="w-4 h-4 shrink-0" /> <span className="hidden xs:inline sm:inline">{allVisiblePhotosSelected ? "Deselect All" : "Select All"}</span>
           </Button>
         </div>
       </div>
 
       {/* Selection action bar — appears when photos are selected */}
       {selectedIds.size > 0 && (
-        <div className="sticky top-0 z-20 mb-4 p-3 rounded-xl bg-primary/10 border border-primary/20 backdrop-blur-sm flex flex-wrap items-center gap-2">
+        <div className="studio-photo-selection sticky top-[calc(env(safe-area-inset-top,_0px)_+_3rem)] lg:top-0 z-20 mb-4 p-3 flex flex-wrap items-center gap-2">
           <span className="text-xs font-body font-semibold text-primary mr-1">{selectedIds.size} selected</span>
           <Button size="sm" variant="outline" onClick={handleMassDelete} className="gap-1.5 font-body text-xs border-destructive/40 text-destructive hover:bg-destructive/10 hover:border-destructive">
             <Trash2 className="w-3.5 h-3.5" /> Delete ({selectedIds.size})
           </Button>
-          <Button size="sm" onClick={handleCreateAlbumFromSelection} className="gap-1.5 bg-primary text-primary-foreground hover:bg-primary/90 font-body text-xs tracking-wider uppercase">
+          <Button size="sm" variant="outline" onClick={handleCreateAlbumFromSelection} className="gap-1.5 border-primary/40 text-primary hover:bg-primary/10 font-body text-xs">
             <Plus className="w-3.5 h-3.5" /> New Album
           </Button>
           <div className="relative">
@@ -8149,7 +8091,7 @@ function PhotosView() {
       )}
 
       {/* Search bar */}
-      <div className="relative mb-4">
+      <div className="studio-photo-search relative mb-4">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
         <Input
           placeholder="Search by filename…"
@@ -8165,7 +8107,7 @@ function PhotosView() {
       </div>
 
       {/* Source filter */}
-      <div className="flex flex-col gap-2 mb-4">
+      <div className="studio-photo-filters flex flex-col gap-2 mb-4">
         {/* Fixed pills: All / Library / No Album / Starred */}
         <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide w-full max-w-full cursor-grab active:cursor-grabbing select-none">
           <button onClick={() => setViewSource("all")} className={`text-xs font-body px-3 py-1.5 rounded-full whitespace-nowrap transition-all flex-shrink-0 ${viewSource === "all" ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground hover:text-foreground"}`}>
@@ -8213,7 +8155,7 @@ function PhotosView() {
 
       {/* Advanced filters */}
       {(filterDateFrom || filterDateTo || filterAlbum || filterSize) ? (
-        <div className="flex flex-wrap items-center gap-2 mb-4 p-3 rounded-xl bg-secondary/40 border border-border/40">
+        <div className="studio-photo-active-filters flex flex-wrap items-center gap-2 mb-4 p-3">
           <span className="text-[10px] font-body text-muted-foreground tracking-wider uppercase">Filters:</span>
           {filterDateFrom && <span className="text-xs font-body text-muted-foreground">From: {filterDateFrom}</span>}
           {filterDateTo && <span className="text-xs font-body text-muted-foreground">To: {filterDateTo}</span>}
@@ -8224,11 +8166,11 @@ function PhotosView() {
           </button>
         </div>
       ) : null}
-      <details className="mb-4 group">
+      <details className="studio-photo-advanced mb-4 group">
         <summary className="text-xs font-body text-muted-foreground cursor-pointer hover:text-foreground flex items-center gap-1.5 list-none select-none w-fit">
           <ChevronDown className="w-3.5 h-3.5 group-open:rotate-180 transition-transform" /> Filter Options
         </summary>
-        <div className="mt-2 p-3 rounded-xl bg-secondary/40 border border-border/40 flex flex-wrap gap-3 items-end">
+        <div className="mt-2 p-3 flex flex-wrap gap-3 items-end">
           <div className="flex flex-col gap-1">
             <label className="text-[10px] font-body text-muted-foreground tracking-wider uppercase">From Date</label>
             <input type="date" value={filterDateFrom} onChange={e => setFilterDateFrom(e.target.value)} className="h-8 rounded-md border border-border bg-secondary/50 text-xs font-body text-foreground px-2 focus:outline-none focus:ring-1 focus:ring-primary" />
@@ -8268,7 +8210,7 @@ function PhotosView() {
           </Button>
         </div>
       ) : (
-        <div className="glass-panel rounded-xl p-6 mb-6">
+        <div className="studio-photo-upload mb-6">
           <div className="flex justify-end mb-2">
             <button onClick={() => setUploadOpen(false)} className="text-muted-foreground hover:text-foreground transition-colors" title="Collapse upload zone">
               <X className="w-4 h-4" />
@@ -8336,7 +8278,7 @@ function PhotosView() {
         </div>
       ) : (
         <>
-        <div className={`grid gap-1 sm:gap-1.5 ${
+        <div className={`studio-photo-grid grid gap-1 sm:gap-1.5 ${
           photoGridSize === "small"
             ? "grid-cols-5 sm:grid-cols-6 md:grid-cols-8 lg:grid-cols-10 xl:grid-cols-12"
             : photoGridSize === "large"
@@ -8344,28 +8286,35 @@ function PhotosView() {
             : "grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-7 xl:grid-cols-9"
         }`}>
           {displayPhotos.slice(0, visibleCount).map(p => (
-            <div key={`${p.id}:${p.sourceAlbumId || p.source}`} className={`relative group aspect-square rounded-md overflow-hidden bg-secondary cursor-pointer border-2 transition-all ${selectedIds.has(p.id) ? "border-primary ring-2 ring-primary/20" : "border-transparent hover:border-border"}`}
-              onClick={() => toggleSelect(p.id)}>
+            <div key={`${p.id}:${p.sourceAlbumId || p.source}`} className={`studio-photo-tile relative group aspect-square overflow-hidden bg-secondary border transition-all ${selectedIds.has(p.id) ? "border-primary ring-1 ring-primary/25" : "border-transparent hover:border-border"}`}>
               <ProgressiveImg thumbSrc={adminThumbSrc(p.thumbnail) ?? p.thumbnail} fullSrc={adminThumbSrc(p.src) ?? p.src} alt={p.title} className="w-full h-full object-cover" loading="lazy" />
+              <button type="button" onClick={() => toggleSelect(p.id)} aria-pressed={selectedIds.has(p.id)} aria-label={`${selectedIds.has(p.id) ? "Deselect" : "Select"} ${p.title}`} className="absolute inset-0 z-[1] rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary" />
               <button
+                type="button"
                 onClick={(e) => { e.stopPropagation(); handleToggleStar(p); }}
-                className={`absolute top-1 left-1 w-6 h-6 rounded-full flex items-center justify-center transition-opacity ${(p as any).starred ? "opacity-100 bg-yellow-500/80" : "opacity-0 group-hover:opacity-100 bg-black/40"}`}
-                title={(p as any).starred ? "Unstar" : "Star"}
+                aria-label={`${(p as any).starred ? "Unstar" : "Star"} ${p.title}`}
+                aria-pressed={!!(p as any).starred}
+                className={`absolute top-1 left-1 z-[2] w-7 h-7 rounded-full flex items-center justify-center transition-opacity focus-visible:opacity-100 ${(p as any).starred ? "opacity-100 bg-yellow-500/80" : "opacity-100 sm:opacity-0 sm:group-hover:opacity-100 bg-black/60"}`}
+                title={(p as any).starred ? "Unstar photo" : "Star photo"}
               >
                 <span className="text-[10px] leading-none">{(p as any).starred ? "★" : "☆"}</span>
               </button>
               {/* Expand / lightbox button */}
               <button
+                type="button"
                 onClick={(e) => { e.stopPropagation(); setLightboxPhoto(p); }}
-                className="absolute top-1 right-1 w-6 h-6 rounded-full bg-black/50 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity"
+                aria-label={`View ${p.title} full size`}
+                className="absolute top-1 right-1 z-[2] w-7 h-7 rounded-full bg-black/60 text-white flex items-center justify-center opacity-100 sm:opacity-0 sm:group-hover:opacity-100 focus-visible:opacity-100 transition-opacity"
                 title="View full size"
               >
                 <Maximize2 className="w-3 h-3" />
               </button>
               {/* AI Enhance button */}
               <button
+                type="button"
                 onClick={(e) => { e.stopPropagation(); handleAIEnhance(p); }}
-                className="absolute top-1 right-8 w-6 h-6 rounded-full bg-black/50 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity disabled:opacity-40"
+                aria-label={`AI enhance ${p.title}`}
+                className="absolute top-1 right-9 z-[2] w-7 h-7 rounded-full bg-black/60 text-white flex items-center justify-center opacity-100 sm:opacity-0 sm:group-hover:opacity-100 focus-visible:opacity-100 transition-opacity disabled:opacity-40"
                 title="AI Enhance"
                 disabled={enhancingIds.has(p.id)}
               >
@@ -8374,15 +8323,15 @@ function PhotosView() {
                   : <Sparkles className="w-3 h-3" />
                 }
               </button>
-              <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-background/80 to-transparent p-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+              <div className="pointer-events-none absolute bottom-0 left-0 right-0 z-[2] bg-gradient-to-t from-background/80 to-transparent p-1.5 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
                 <p className="text-[9px] font-body text-foreground font-medium truncate">{p.title}</p>
                 <p className="text-[8px] font-body text-muted-foreground truncate">{p.source}</p>
               </div>
               {selectedIds.has(p.id) && (
-                <div className="absolute bottom-1 right-1 w-6 h-6 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-[10px] font-bold">✓</div>
+                <div aria-hidden="true" className="pointer-events-none absolute bottom-1 right-1 z-[2] w-6 h-6 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-[10px] font-bold">✓</div>
               )}
-              <button onClick={(e) => { e.stopPropagation(); void handleDeletePhoto(p.id, p.source, p.sourceAlbumId); }}
-                className="absolute bottom-1 left-1 w-6 h-6 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+              <button type="button" aria-label={`Remove ${p.title}`} title="Remove photo" onClick={(e) => { e.stopPropagation(); void handleDeletePhoto(p.id, p.source, p.sourceAlbumId); }}
+                className="absolute bottom-1 left-1 z-[2] w-7 h-7 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center opacity-0 group-hover:opacity-100 focus-visible:opacity-100 max-sm:hidden [@media(hover:none)]:hidden transition-opacity">
                 <X className="w-3.5 h-3.5" />
               </button>
             </div>

@@ -9,6 +9,7 @@ local LrFunctionContext = import "LrFunctionContext"
 local LrHttp = import "LrHttp"
 local LrPathUtils = import "LrPathUtils"
 local LrPrefs = import "LrPrefs"
+local LrProgressScope = import "LrProgressScope"
 local LrTasks = import "LrTasks"
 local LrView = import "LrView"
 
@@ -427,28 +428,184 @@ local function postMultipart(path, fields)
     error("Watermark Vault upload returned HTTP " .. tostring(headers.status) .. ": " .. tostring(body):sub(1, 240))
   end
   local result = jsonDecode(body)
-  if not result.ok and not result.files then error(result.error or "Upload failed") end
+  if type(result) ~= "table" or result.ok ~= true then
+    error(type(result) == "table" and result.error or "Upload did not return a success response")
+  end
   return result
+end
+
+local function photoLabel(photo)
+  local path = photo:getRawMetadata("path")
+  return (path and LrPathUtils.leafName(path)) or "Selected photo"
+end
+
+local function failRendition(rendition, reason)
+  local message = tostring(reason or "Unknown render or upload error")
+  pcall(function() rendition:uploadFailed(message) end)
+  return message
+end
+
+local function processPhotoUploads(photos, title, exportSettings, upload)
+  local result = { total = #photos, uploaded = 0, failures = {}, cancelled = 0, wasCancelled = false }
+  if #photos == 0 then return result end
+
+  LrFunctionContext.callWithContext("watermarkVaultPhotoUpload", function(context)
+    local progress = LrProgressScope { title = title }
+    progress:attachToFunctionContext(context)
+    progress:setCancelable(true)
+
+    local session = LrExportSession { photosToExport = photos, exportSettings = exportSettings }
+    local total = session:countRenditions()
+    result.total = total
+    local outcomes = 0
+    for _, rendition in session:renditions {
+      progressScope = progress,
+      renderProgressPortion = 0.25,
+      stopIfCanceled = true,
+    } do
+      local photo = rendition.photo
+      local label = photoLabel(photo)
+      local current = outcomes + result.cancelled + 1
+      progress:setCaption(string.format("Rendering %d of %d: %s", current, total, label))
+
+      local renderCallOk, rendered, renderedPath = LrTasks.pcall(function() return rendition:waitForRender() end)
+      if progress:isCanceled() then
+        result.cancelled = result.cancelled + 1
+        failRendition(rendition, "Canceled before upload")
+      elseif not renderCallOk or not rendered then
+        local reason = renderCallOk and renderedPath or rendered
+        table.insert(result.failures, { name = label, reason = failRendition(rendition, reason) })
+        outcomes = outcomes + 1
+      else
+        progress:setCaption(string.format("Uploading %d of %d: %s", current, total, label))
+        -- Keep each rendered file inside its rendition callback; Lightroom may
+        -- remove the temporary path as soon as iteration advances.
+        local uploadOk, uploadError = LrTasks.pcall(function() upload(rendition, renderedPath) end)
+        if uploadOk then
+          result.uploaded = result.uploaded + 1
+        else
+          table.insert(result.failures, { name = label, reason = failRendition(rendition, uploadError) })
+        end
+        outcomes = outcomes + 1
+      end
+
+      if total > 0 then progress:setPortionComplete(0.25 + 0.75 * (outcomes / total)) end
+    end
+    result.wasCancelled = progress:isCanceled() and (result.total - result.uploaded - #result.failures) > 0
+    result.cancelled = result.total - result.uploaded - #result.failures
+    result.notProcessed = not result.wasCancelled and result.cancelled or 0
+    if not result.wasCancelled then progress:setPortionComplete(1) end
+  end)
+
+  return result
+end
+
+local function appendNames(lines, label, records, limit)
+  if #records == 0 then return end
+  table.insert(lines, label .. ":")
+  for index = 1, math.min(#records, limit or 8) do
+    local record = records[index]
+    if type(record) == "table" then
+      table.insert(lines, "  " .. tostring(record.name) .. ": " .. tostring(record.reason))
+    else
+      table.insert(lines, "  " .. tostring(record))
+    end
+  end
+  if #records > (limit or 8) then table.insert(lines, "  ... and " .. tostring(#records - (limit or 8)) .. " more") end
+end
+
+local function uploadSummary(title, result)
+  local lines = { string.format("Uploaded %d of %d photo(s).", result.uploaded, result.total) }
+  if result.wasCancelled then table.insert(lines, string.format("Canceled; %d matched photo(s) were not uploaded.", result.cancelled)) end
+  if result.notProcessed and result.notProcessed > 0 then table.insert(lines, string.format("Lightroom returned without processing %d photo(s).", result.notProcessed)) end
+  appendNames(lines, "Failed photo(s)", result.failures)
+  local status = (#result.failures > 0 or result.wasCancelled or (result.notProcessed or 0) > 0) and "warning" or "info"
+  LrDialogs.message(title, table.concat(lines, "\n"), status)
+end
+
+local function finalUploadPlan(photos, assets)
+  local assetsByName, assetsById, photosByName = {}, {}, {}
+  for _, asset in ipairs(assets or {}) do
+    local key = baseName(asset.originalName)
+    if key ~= "" then
+      assetsByName[key] = assetsByName[key] or {}
+      table.insert(assetsByName[key], asset)
+    end
+    local assetId = trim(asset.assetId)
+    if assetId ~= "" then assetsById[assetId] = (assetsById[assetId] or 0) + 1 end
+  end
+  for _, photo in ipairs(photos) do
+    local key = baseName(photo:getRawMetadata("path"))
+    if key ~= "" then photosByName[key] = (photosByName[key] or 0) + 1 end
+  end
+
+  local plan = { matches = {}, assetsByPhotoPath = {}, unmatched = {}, ambiguous = {}, invalidTargets = {} }
+  for _, photo in ipairs(photos) do
+    local name = photoLabel(photo)
+    local key = baseName(photo:getRawMetadata("path"))
+    local candidates = assetsByName[key] or {}
+    if key == "" or #candidates == 0 then
+      table.insert(plan.unmatched, name)
+    elseif #candidates > 1 or photosByName[key] > 1 then
+      table.insert(plan.ambiguous, name)
+    elseif trim(candidates[1].assetId) == "" then
+      table.insert(plan.invalidTargets, name .. " (manifest asset is missing assetId)")
+    elseif assetsById[trim(candidates[1].assetId)] > 1 then
+      table.insert(plan.invalidTargets, name .. " (manifest assetId is duplicated)")
+    else
+      table.insert(plan.matches, { photo = photo, asset = candidates[1] })
+      plan.assetsByPhotoPath[normalisedPath(photo:getRawMetadata("path"))] = candidates[1]
+    end
+  end
+  return plan
+end
+
+local function finalPreflightText(plan)
+  local replaceCount = 0
+  for _, match in ipairs(plan.matches) do
+    if trim(match.asset.finalUrl) ~= "" then replaceCount = replaceCount + 1 end
+  end
+  local lines = {
+    string.format("Ready to upload %d uniquely matched final(s).", #plan.matches),
+    string.format("%d will replace an existing final; Watermark Vault keeps each proof source.", replaceCount),
+    "Targets (Lightroom photo -> Watermark Vault original name / asset ID):",
+  }
+  for index = 1, math.min(#plan.matches, 16) do
+    local match = plan.matches[index]
+    local suffix = trim(match.asset.finalUrl) ~= "" and " [REPLACE EXISTING FINAL]" or " [NEW FINAL]"
+    table.insert(lines, string.format("  %s -> %s / %s%s", photoLabel(match.photo), tostring(match.asset.originalName), tostring(match.asset.assetId), suffix))
+  end
+  if #plan.matches > 16 then table.insert(lines, "  ... and " .. tostring(#plan.matches - 16) .. " more target(s)") end
+  appendNames(lines, "Unmatched (will not upload)", plan.unmatched, 6)
+  appendNames(lines, "Ambiguous basename (will not upload)", plan.ambiguous, 6)
+  appendNames(lines, "Invalid manifest target (will not upload)", plan.invalidTargets, 6)
+  return table.concat(lines, "\n")
+end
+
+local function showFinalPreflightIssues(plan)
+  local lines = { "No safe final uploads are available." }
+  appendNames(lines, "Unmatched", plan.unmatched, 10)
+  appendNames(lines, "Ambiguous basename", plan.ambiguous, 10)
+  appendNames(lines, "Invalid manifest target", plan.invalidTargets, 10)
+  LrDialogs.message("Watermark Vault final upload", table.concat(lines, "\n"), "warning")
 end
 
 function M.publishProofs()
   if not requireConfig() then return end
-  local catalog, photos = LrApplication.activeCatalog(), LrApplication.activeCatalog():getTargetPhotos()
+  local photos = LrApplication.activeCatalog():getTargetPhotos()
   if #photos == 0 then LrDialogs.message("Watermark Vault", "Select photos first.", "warning"); return end
   LrTasks.startAsyncTask(function()
     local ok, message = LrTasks.pcall(function()
       local albumId = chooseAlbum("Publish selected proof JPEGs")
       if not albumId then return end
-      local session = LrExportSession { photosToExport = photos, exportSettings = { LR_format = "JPEG", LR_jpeg_quality = 75, LR_size_doConstrain = true, LR_size_maxWidth = 2000, LR_size_maxHeight = 2000, LR_export_destinationType = "specificFolder", LR_collisionHandling = "overwrite" } }
-      local uploaded = 0
-      for _, rendition in session:renditions { stopIfCanceled = true } do
-        local success, renderedPath = rendition:waitForRender()
-        if success then
-          postMultipart("/api/upload?albumId=" .. encodePathSegment(albumId), { { name = "photos", filePath = renderedPath } })
-          uploaded = uploaded + 1
-        end
-      end
-      LrDialogs.message("Watermark Vault", "Published " .. uploaded .. " proof JPEGs.")
+      local result = processPhotoUploads(photos, "Publishing proof JPEGs", {
+        LR_format = "JPEG", LR_jpeg_quality = 75, LR_size_doConstrain = true,
+        LR_size_maxWidth = 2000, LR_size_maxHeight = 2000,
+        LR_export_destinationType = "specificFolder", LR_collisionHandling = "overwrite",
+      }, function(_, renderedPath)
+        postMultipart("/api/upload?albumId=" .. encodePathSegment(albumId), { { name = "photos", filePath = renderedPath } })
+      end)
+      uploadSummary("Watermark Vault proof upload", result)
     end)
     if not ok then LrDialogs.message("Watermark Vault publish failed", tostring(message), "critical") end
   end)
@@ -456,32 +613,42 @@ end
 
 function M.uploadFinals()
   if not requireConfig() then return end
-  local catalog, photos = LrApplication.activeCatalog(), LrApplication.activeCatalog():getTargetPhotos()
+  local photos = LrApplication.activeCatalog():getTargetPhotos()
   if #photos == 0 then LrDialogs.message("Watermark Vault", "Select the edited photos to upload first.", "warning"); return end
   LrTasks.startAsyncTask(function()
     local ok, message = LrTasks.pcall(function()
       local albumId = chooseAlbum("Upload selected final JPEGs")
       if not albumId then return end
       local manifest = jsonGet("/api/lightroom/albums/" .. encodePathSegment(albumId) .. "/picks")
-      local assetsByName = {}
-      for _, asset in ipairs(manifest.assets or {}) do assetsByName[baseName(asset.originalName or asset.proofId)] = asset end
-      local session = LrExportSession { photosToExport = photos, exportSettings = { LR_format = "JPEG", LR_jpeg_quality = 90, LR_size_doConstrain = false, LR_export_destinationType = "specificFolder", LR_collisionHandling = "overwrite" } }
-      local uploaded, unmatched = 0, 0
-      for _, rendition in session:renditions { stopIfCanceled = true } do
+      local plan = finalUploadPlan(photos, manifest.assets)
+      if #plan.matches == 0 then showFinalPreflightIssues(plan); return end
+      local details = finalPreflightText(plan)
+      if LrDialogs.confirm("Confirm Watermark Vault final upload", details, "Upload matched finals") ~= "ok" then return end
+
+      local matchedPhotos = {}
+      for _, match in ipairs(plan.matches) do table.insert(matchedPhotos, match.photo) end
+      local result = processPhotoUploads(matchedPhotos, "Uploading final JPEGs", {
+        LR_format = "JPEG", LR_jpeg_quality = 90, LR_size_doConstrain = false,
+        LR_export_destinationType = "specificFolder", LR_collisionHandling = "overwrite",
+      }, function(rendition, renderedPath)
         local sourcePath = rendition.photo:getRawMetadata("path")
-        local asset = assetsByName[baseName(sourcePath)]
-        local success, renderedPath = rendition:waitForRender()
-        if success and asset then
-          postMultipart("/api/lightroom/albums/" .. encodePathSegment(albumId) .. "/finals", {
-            { name = "assetId", value = asset.assetId },
-            { name = "final", filePath = renderedPath },
-          })
-          uploaded = uploaded + 1
-        elseif success then
-          unmatched = unmatched + 1
-        end
-      end
-      LrDialogs.message("Watermark Vault", string.format("Uploaded %d finals. %d selected Lightroom photos did not match an album proof.", uploaded, unmatched))
+        local asset = plan.assetsByPhotoPath[normalisedPath(sourcePath)]
+        if not asset then error("Preflight target was lost for " .. photoLabel(rendition.photo)) end
+        -- No automatic retry: a lost response can leave the server outcome unknown.
+        postMultipart("/api/lightroom/albums/" .. encodePathSegment(albumId) .. "/finals", {
+          { name = "assetId", value = asset.assetId },
+          { name = "final", filePath = renderedPath },
+        })
+      end)
+      local lines = { string.format("Uploaded %d of %d uniquely matched final(s).", result.uploaded, result.total) }
+      if result.wasCancelled then table.insert(lines, string.format("Canceled; %d matched photo(s) were not uploaded.", result.cancelled)) end
+      if result.notProcessed and result.notProcessed > 0 then table.insert(lines, string.format("Lightroom returned without processing %d matched photo(s).", result.notProcessed)) end
+      appendNames(lines, "Failed photo(s)", result.failures)
+      appendNames(lines, "Unmatched (not uploaded)", plan.unmatched, 6)
+      appendNames(lines, "Ambiguous basename (not uploaded)", plan.ambiguous, 6)
+      appendNames(lines, "Invalid manifest target (not uploaded)", plan.invalidTargets, 6)
+      local status = (#result.failures > 0 or result.wasCancelled or (result.notProcessed or 0) > 0 or #plan.unmatched > 0 or #plan.ambiguous > 0 or #plan.invalidTargets > 0) and "warning" or "info"
+      LrDialogs.message("Watermark Vault final upload summary", table.concat(lines, "\n"), status)
     end)
     if not ok then LrDialogs.message("Watermark Vault final upload failed", tostring(message), "critical") end
   end)

@@ -24,3 +24,58 @@ h4, h5, h6 { font-family: Barlow, Arial, sans-serif; font-weight: 600; }
 .studio-navigation-dialog .admin-nav-group { margin-left: 0; }
 .studio-navigation-dialog > button:last-child { display: flex; align-items: center; justify-content: center; width: 44px; height: 44px; top: 2px; right: 2px; }
 .studio-eyebrow { font-family: Barlow, Arial, sans-serif; font-size: 11px; font-weight: 500; letter-spacing: .14em; text-transform: uppercase; color: hsl(var(--muted-foreground)); }
+
+/* Studio workspace pages use a quiet, content-first treatment. */
+.studio-dashboard > .admin-page-header h2 { font-family: Barlow, Arial, sans-serif !important; font-size: 1.75rem; font-weight: 500; letter-spacing: -.025em; }
+.studio-dashboard .glass-panel { background: transparent; border-color: transparent; border-radius: 0; box-shadow: none; backdrop-filter: none; }
+.studio-dashboard .studio-dashboard-stats button { min-height: 4.5rem; }
+.studio-dashboard .studio-dashboard-calendar > div:last-child { border-color: transparent; }
+.studio-dashboard .studio-dashboard-calendar [class*="rounded-lg"] { border-radius: 3px; }
+.studio-dashboard .studio-dashboard-calendar [class*="rounded-full"] { border-radius: 3px; }
+.studio-dashboard h3 { font-family: Barlow, Arial, sans-serif !important; font-weight: 500; }
+
+/* Albums and photos keep attention on the image and the current work. */
+.studio-albums > .admin-page-header,
+.studio-photos > .studio-photo-toolbar { border-bottom: 1px solid hsl(var(--border)); padding-bottom: .85rem; margin-bottom: 1rem; }
+.studio-albums .admin-page-header h2,
+.studio-photos .studio-photo-toolbar h2 { font-family: Barlow, Arial, sans-serif !important; font-size: 1.65rem; font-weight: 500; letter-spacing: -.025em; }
+.studio-albums .studio-album-requests { border-bottom: 1px solid hsl(var(--border)); padding-bottom: .75rem; }
+.studio-albums .studio-album-requests button { padding-left: 0; color: hsl(var(--muted-foreground)); }
+.studio-albums .studio-album-requests button:hover { color: hsl(var(--foreground)); background: transparent; }
+.studio-albums .studio-album-search { border-block: 1px solid hsl(var(--border)); padding-block: .75rem; margin-bottom: .75rem; }
+.studio-albums .studio-album-search input { background: transparent; border: 0; border-bottom: 1px solid hsl(var(--border)); border-radius: 0; }
+.studio-albums .studio-album-controls select { border-radius: 0; }
+.studio-albums .studio-album-card { background: transparent !important; border: 0 !important; border-bottom: 1px solid hsl(var(--border)); border-radius: 0; box-shadow: none; }
+.studio-albums .studio-album-card h3 { font-family: Barlow, Arial, sans-serif !important; font-weight: 500; }
+.studio-albums .studio-album-workspace-header h3 { font-family: Barlow, Arial, sans-serif !important; font-weight: 500; }
+.studio-albums .studio-album-editor { border-block: 1px solid hsl(var(--border)); padding-block: .75rem; }
+.studio-albums .studio-album-editor .studio-eyebrow { color: hsl(var(--muted-foreground)); }
+.studio-albums .studio-album-editor [class~="bg-secondary/50"][class~="border"] { background: transparent; border-color: hsl(var(--border)); border-radius: 2px; }
+.studio-albums .studio-album-editor select { border-radius: 2px; }
+.studio-albums .studio-album-card .studio-album-workflow { border-top: 1px solid hsl(var(--border) / .55); padding-top: .5rem; }
+.studio-albums .studio-album-card select,
+.studio-albums .studio-album-card [role="combobox"] { border-radius: 2px; }
+.studio-albums .studio-album-row { border-bottom: 1px solid hsl(var(--border)); }
+.studio-albums .studio-album-row [aria-label="Album workflow"] { max-width: 25rem; }
+
+.studio-photos .studio-photo-toolbar h2 { margin-right: auto; }
+.studio-photos .studio-photo-grid-toggle button { border-radius: 0; box-shadow: none; }
+.studio-photos .studio-photo-grid-toggle button[aria-pressed="true"] { color: hsl(var(--foreground)); border-bottom: 2px solid hsl(var(--primary)); }
+.studio-photos .studio-photo-selection { background: hsl(var(--card)); border: 0; border-left: 2px solid hsl(var(--primary)); border-radius: 0; backdrop-filter: none; }
+.studio-photos .studio-photo-search input { background: transparent; border: 0; border-bottom: 1px solid hsl(var(--border)); border-radius: 0; }
+.studio-photos .studio-photo-filters button[class*="bg-primary"],
+.studio-photos .studio-photo-filters button[class*="bg-orange-500"],
+.studio-photos .studio-photo-filters button[class*="bg-yellow-500"] { background: transparent !important; color: hsl(var(--foreground)) !important; border-radius: 0; border-bottom: 2px solid hsl(var(--primary)); }
+.studio-photos .studio-photo-filters button[class*="bg-secondary"] { background: transparent !important; border-radius: 0; border-bottom: 2px solid transparent; }
+.studio-photos .studio-photo-filters button[class*="text-orange"],
+.studio-photos .studio-photo-filters button[class*="text-yellow"] { color: hsl(var(--muted-foreground)) !important; }
+.studio-photos .studio-photo-active-filters,
+.studio-photos .studio-photo-advanced > div { background: transparent; border: 0; border-block: 1px solid hsl(var(--border)); border-radius: 0; }
+.studio-photos .studio-photo-advanced input,
+.studio-photos .studio-photo-advanced select { border-radius: 2px; }
+.studio-photos .studio-photo-upload { background: transparent; border-block: 1px solid hsl(var(--border)); padding-block: .75rem; }
+.studio-photos .studio-photo-upload > div:nth-child(2) { border-width: 1px; border-radius: 2px; }
+.studio-photos .studio-photo-tile { border-radius: 2px; }
+.studio-photos .studio-photo-tile [aria-pressed="true"]:not(.absolute.inset-0) { border-radius: 2px; }
+.studio-photos .studio-photo-tile .absolute.bottom-1.right-1 { border-radius: 2px; }
+.studio-photos > .glass-panel { background: transparent; border: 0; border-block: 1px solid hsl(var(--border)); border-radius: 0; box-shadow: none; }
