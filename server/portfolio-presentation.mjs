@@ -1,3 +1,5 @@
+import { upgradePortfolioSales, selectedPortfolioPhotos } from "./portfolio-sales.mjs";
+
 export const presentationDefaults = {
   presentationVersion: 2,
   featuredGalleryIds: ["brand-networking", "navarra-ballroom", "music-teddyloid-smash-stage"],
@@ -55,7 +57,7 @@ function sameArray(left, right) {
 
 export function upgradePortfolioPresentation(value) {
   const next = { ...presentationDefaults, ...value };
-  if ((Number(value.presentationVersion) || 0) >= 2) return next;
+  if ((Number(value.presentationVersion) || 0) >= 2) return upgradePortfolioSales(next);
   Object.assign(next, upgradeSeedCopy(next));
   if (legacyHeroImages.some(images => sameArray(next.heroImages, images))) next.heroImages = refreshedHeroImages;
   const legacyFeatured = [
@@ -110,20 +112,22 @@ export function upgradePortfolioPresentation(value) {
     return migrated;
   });
   next.presentationVersion = 2;
-  return next;
+  return upgradePortfolioSales(next);
 }
 
 // Public-only curation: keep the complete archive and booking history in the studio.
 export function publicPortfolioFocus(value) {
   if ((Number(value.focusVersion) || 0) >= 2) return value;
-  const next = upgradeSeedCopy({ ...value, focusVersion: 2 });
+  const needsLegacyCopy = (Number(value.presentationVersion) || 0) < 2;
+  const next = { ...value, focusVersion: 2 };
+  if (needsLegacyCopy) Object.assign(next, upgradeSeedCopy(next));
   const wedding = text => /wedding|engagement|newlywed|bridal/i.test(text || "");
   const hidden = (value.galleryImages || []).filter(image => wedding(image.category));
   const hiddenPaths = new Set(hidden.map(image => image.image));
   const isWeddingImage = image => hiddenPaths.has(image) || /\/wedding[^/]*\./i.test(image || "") || image === "/portfolio/imported/alexrosanna-010.jpg";
   const lead = "/portfolio/curated/cosplay-animaga-editorial.jpg";
   const portrait = "/portfolio/curated/cosplay-pax-portrait.jpg";
-  const cosplayPriority = ["cosplay-animaga-editorial", "cosplay-pax-portrait", "cosplay-animaga-steps", "cosplay-animaga-sunlight", "cosplay-pax-duo", "cosplay-pax-spiderman", "cosplay-pax-valkyries", "cosplay-animaga-harbour", "cosplay-animaga-armour"];
+  const cosplayPriority = [...selectedPortfolioPhotos.filter(image => image.category === "Cosplay & Conventions").map(image => image.id), "cosplay-animaga-editorial", "cosplay-pax-portrait", "cosplay-animaga-steps", "cosplay-animaga-sunlight", "cosplay-pax-duo", "cosplay-pax-spiderman", "cosplay-pax-valkyries", "cosplay-animaga-harbour", "cosplay-animaga-armour"];
   const publicCategoryOrder = ["Brand & Corporate", "Events", "Venues & Details", "Food & Hospitality", "Live Music", "Sports", "Cosplay & Conventions", "Portraits"];
   const categoryRank = new Map(publicCategoryOrder.map((category, index) => [category, index]));
   const gallery = (value.galleryImages || []).filter(image => !wedding(image.category));
@@ -178,7 +182,7 @@ export function publicPortfolioFocus(value) {
     aboutSupportingCaption: ["Working across Sydney weddings, events, venues and live productions.", "Working across Sydney corporate events, venues and live productions."],
   };
   for (const [key, [previous, replacement]] of Object.entries(seedCopyUpdates)) {
-    if (next[key] === previous) next[key] = replacement;
+    if (needsLegacyCopy && next[key] === previous) next[key] = replacement;
   }
   next.testimonials = (value.testimonials || []).filter(review => !wedding(`${review.context} ${review.quote}`));
   if (wedding(next.testimonial) && next.testimonials.length) {

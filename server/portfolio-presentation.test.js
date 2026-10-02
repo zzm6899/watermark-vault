@@ -6,11 +6,12 @@ test("presentation migration upgrades seed copy, preserves originals and is idem
   const galleryImages = [{ id: "mine", image: "/portfolio-media/mine.jpg" }];
   const original = { portfolioTitle: "Stories that still feel alive.", introTitle: "A custom introduction", projects: [{ id: "corporate", title: "My commercial work", image: "/portfolio-media/my-original.jpg" }], galleryImages };
   const migrated = upgradePortfolioPresentation(original);
-  assert.equal(migrated.portfolioTitle, "Corporate, event and live photography.");
-  assert.equal(migrated.presentationVersion, 2);
+  assert.equal(migrated.portfolioTitle, "Selected photographs");
+  assert.equal(migrated.presentationVersion, 5);
   assert.equal(migrated.introTitle, original.introTitle);
   assert.deepEqual(migrated.projects, original.projects);
-  assert.strictEqual(migrated.galleryImages, galleryImages);
+  assert.strictEqual(migrated.galleryImages.at(-1), galleryImages[0]);
+  assert.equal(galleryImages.length, 1);
   assert.equal(original.portfolioTitle, "Stories that still feel alive.");
   assert.equal(original.presentationVersion, undefined);
   assert.deepEqual(upgradePortfolioPresentation(migrated), migrated);
@@ -41,22 +42,23 @@ test("v1 seed presentation refreshes known copy and preserves custom content", (
   };
   const migrated = upgradePortfolioPresentation(legacy);
 
-  assert.equal(migrated.portfolioTitle, "Corporate, event and live photography.");
+  assert.equal(migrated.portfolioTitle, "Selected photographs");
   assert.equal(migrated.portfolioBody, "Client's custom description.");
   assert.equal(migrated.portfolioCtaEyebrow, "Have an event coming up?");
-  assert.equal(migrated.storyTitle, "Every room moves differently.");
+  assert.equal(migrated.storyTitle, "A clear brief.\nA considered eye.");
   assert.equal(migrated.introTitle, "Client's introduction.");
-  assert.deepEqual(migrated.heroImages, ["/portfolio/gallery/brand-event.jpg", "/portfolio/curated/navarra-ballroom.jpg", "/portfolio/curated/music-teddyloid-smash-crowd.webp"]);
+  assert.deepEqual(migrated.heroImages, ["/portfolio/selected/navarra-gala-dining-room.webp", "/portfolio/selected/navarra-cbhs-live-cooking.webp", "/portfolio/curated/music-teddyloid-smash-crowd.webp"]);
   assert.deepEqual(migrated.heroCaptions.map(({ title, category }) => [title, category]), [
-    ["Corporate events", "Brand & Corporate"],
-    ["Venues & hospitality", "Food & Hospitality"],
-    ["Live performance", "Live Music"],
+    ["Gala dinner", "Venues & Details"],
+    ["Event catering", "Food & Hospitality"],
+    ["TeddyLoid at SMASH!", "Live Music"],
   ]);
   assert.equal(migrated.projects[0].title, "Corporate events");
-  assert.equal(migrated.projects[0].image, "/portfolio/gallery/brand-event.jpg");
+  assert.equal(migrated.projects[0].image, "/portfolio/selected/navarra-gala-dining-room.webp");
   assert.equal(migrated.projects[0].description, "Client's custom project copy.");
   assert.strictEqual(migrated.projects[1], customProject);
-  assert.strictEqual(migrated.galleryImages, galleryImages);
+  assert.strictEqual(migrated.galleryImages.at(-1), galleryImages[0]);
+  assert.equal(galleryImages.length, 1);
   assert.equal(legacy.presentationVersion, 1);
   assert.equal(legacy.portfolioTitle, "Selected work");
   assert.deepEqual(upgradePortfolioPresentation(migrated), migrated);

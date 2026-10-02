@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { defaultPortfolioSite, importedPortfolioGalleryImages, portfolioCategoryOrder } from "@/lib/portfolio";
+import { selectedPortfolioPhotos } from "../../server/portfolio-sales.mjs";
 
 describe("portfolio archive import", () => {
   it("ships every unique image imported from the legacy portfolio pages", () => {
@@ -14,12 +15,12 @@ describe("portfolio archive import", () => {
       expect(existsSync(path.join(process.cwd(), "public", item.image.slice(1)))).toBe(true);
     }
 
-    expect(defaultPortfolioSite.galleryImages).toHaveLength(96);
+    expect(defaultPortfolioSite.galleryImages).toHaveLength(112);
     expect(defaultPortfolioSite.gallerySeedVersion).toBe(8);
-    expect(defaultPortfolioSite.galleryImages.filter(item => item.category === "Cosplay & Conventions")).toHaveLength(13);
+    expect(defaultPortfolioSite.galleryImages.filter(item => item.category === "Cosplay & Conventions")).toHaveLength(21);
     expect(defaultPortfolioSite.galleryImages.filter(item => item.category === "Sports")).toHaveLength(15);
     expect(defaultPortfolioSite.galleryImages.filter(item => item.category === "Live Music")).toHaveLength(12);
-    expect(defaultPortfolioSite.galleryImages.filter(item => item.category === "Food & Hospitality")).toHaveLength(18);
+    expect(defaultPortfolioSite.galleryImages.filter(item => item.category === "Food & Hospitality")).toHaveLength(21);
     expect(defaultPortfolioSite.galleryImages.some(item => item.alt.toLowerCase().includes("kissing"))).toBe(false);
     expect(new Set(defaultPortfolioSite.homeRibbonImages).size).toBe(defaultPortfolioSite.homeRibbonImages.length);
     expect(defaultPortfolioSite.homeRibbonImages).not.toContain("/portfolio/gallery/wedding-garden.jpg");
@@ -33,8 +34,11 @@ describe("portfolio archive import", () => {
     ];
     expect(new Set(originalResolutionImages).size).toBe(88);
     expect(defaultPortfolioSite.galleryImages.filter(item => originalResolutionImages.includes(item.image))).toHaveLength(88);
-    expect(defaultPortfolioSite.galleryImages.map(item => portfolioCategoryOrder.indexOf(item.category))).toEqual(
-      [...defaultPortfolioSite.galleryImages].map(item => portfolioCategoryOrder.indexOf(item.category)).sort((left, right) => left - right),
+    const selectedIds = new Set(selectedPortfolioPhotos.map(item => item.id));
+    expect(defaultPortfolioSite.galleryImages.filter(item => selectedIds.has(item.id))).toHaveLength(16);
+    const existingArchive = defaultPortfolioSite.galleryImages.filter(item => !selectedIds.has(item.id));
+    expect(existingArchive.map(item => portfolioCategoryOrder.indexOf(item.category))).toEqual(
+      existingArchive.map(item => portfolioCategoryOrder.indexOf(item.category)).sort((left, right) => left - right),
     );
     expect(defaultPortfolioSite.concertHeroImage).toBe("/portfolio/curated/music-teddyloid-smash-crowd.webp");
     expect(defaultPortfolioSite.galleryImages.filter(item => item.category === "Live Music").slice(0, 4).map(item => item.id)).toEqual([

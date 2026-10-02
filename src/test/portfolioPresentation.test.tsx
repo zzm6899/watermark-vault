@@ -34,30 +34,31 @@ describe("public portfolio presentation", () => {
   it("upgrades untouched copy without replacing custom content or gallery originals", () => {
     const galleryImages = [{ id: "custom", image: "/portfolio-media/original.jpg" }];
     const result = upgradePortfolioPresentation({ portfolioTitle: "Stories that still feel alive.", introTitle: "My own introduction", galleryImages, heroImages: ["/portfolio-media/custom.jpg"] });
-    expect(result.portfolioTitle).toBe("Corporate, event and live photography.");
+    expect(result.portfolioTitle).toBe("Selected photographs");
     expect(result.introTitle).toBe("My own introduction");
-    expect(result.galleryImages).toBe(galleryImages);
+    expect(result.galleryImages).toContain(galleryImages[0]);
+    expect(galleryImages).toHaveLength(1);
     expect(result.heroImages).toEqual(["/portfolio-media/custom.jpg"]);
     expect(upgradePortfolioPresentation(result)).toEqual(result);
   });
 
-  it("uses one hero with working slide controls", async () => {
+  it("opens with one intact photograph, a personal introduction and captioned assignments", () => {
     const { container } = open("/");
-    expect(container.querySelectorAll(".portfolio-hero")).toHaveLength(1);
-    fireEvent.click(screen.getByRole("button", { name: "Show slide 2" }));
-    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Venues & hospitality");
-    expect(container.querySelector(".portfolio-hero-media img.active")).toHaveAttribute("src", "/portfolio/curated/navarra-ballroom.jpg");
-    expect(container.querySelectorAll(".portfolio-hero-media img.active")).toHaveLength(1);
-    fireEvent.click(screen.getByRole("button", { name: "Show slide 3" }));
-    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Live performance");
-    expect(container.querySelector(".portfolio-hero-media img.active")).toHaveAttribute("src", "/portfolio/curated/music-teddyloid-smash-crowd.webp");
-    expect(screen.getByRole("button", { name: "Play slideshow" })).toBeInTheDocument();
+    expect(container.querySelectorAll(".portfolio-editorial-lead img")).toHaveLength(1);
+    expect(container.querySelector(".portfolio-editorial-lead img")).toHaveAttribute("src", "/portfolio/selected/navarra-gala-dining-room.webp");
+    expect(container.querySelector(".portfolio-editorial-lead img")).toHaveAttribute("width", "2000");
+    expect(container.querySelector(".portfolio-editorial-lead img")).toHaveAttribute("height", "1333");
+    expect(container.querySelector(".portfolio-editorial-lead figcaption")).toHaveTextContent("Gala dinner");
+    expect(screen.getByRole("heading", { name: "Hi, I'm Zac." })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "View Event catering" })).toHaveAttribute("href", "/portfolio-preview/portfolio?category=Food%20%26%20Hospitality");
+    expect(screen.getByRole("link", { name: "View Cosplay portraits" })).toHaveAttribute("href", "/portfolio-preview/cosplay");
+    expect(screen.getByRole("link", { name: "View TeddyLoid at SMASH!" })).toHaveAttribute("href", "/portfolio-preview/concerts");
+    expect(screen.queryByRole("button", { name: /slide/i })).not.toBeInTheDocument();
   });
 
   it("retains the full archive and restores focus after lightbox navigation", async () => {
     const { container } = open("/portfolio");
-    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Corporate, event and live photography.");
-    expect(container.querySelectorAll(".portfolio-cover figure")).toHaveLength(3);
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Selected photographs");
     fireEvent.click(screen.getByRole("button", { name: "All work" }));
     expect(container.querySelectorAll(".portfolio-gallery-item")).toHaveLength(publicPortfolioFocus(defaultPortfolioSite).galleryImages.length);
     const photo = container.querySelector<HTMLButtonElement>(".portfolio-gallery-item")!;
@@ -70,7 +71,7 @@ describe("public portfolio presentation", () => {
 
   it("opens the corporate and events page from navigation", async () => {
     open("/portfolio");
-    fireEvent.click(screen.getByRole("link", { name: "Corporate & events" }));
+    fireEvent.click(screen.getByRole("link", { name: "Events" }));
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Corporate events");
     expect(screen.getByRole("link", { name: "Discuss event coverage" })).toHaveAttribute("href", "/portfolio-preview/enquire");
   });
@@ -79,7 +80,7 @@ describe("public portfolio presentation", () => {
     const { container } = open("/portfolio?category=corporate");
     await waitFor(() => expect(screen.getByRole("button", { name: "Brand & Corporate" })).toHaveAttribute("aria-pressed", "true"));
     expect(container.querySelectorAll(".portfolio-gallery-item").length).toBeGreaterThan(0);
-    expect(Array.from(container.querySelectorAll(".portfolio-gallery-item > span")).every(item => item.textContent === "Brand & Corporate")).toBe(true);
+    expect(Array.from(container.querySelectorAll(".portfolio-gallery-item")).every(item => item.getAttribute("data-category") === "Brand & Corporate")).toBe(true);
   });
 
   it("resets the gallery filter and lightbox selection when the route changes", async () => {
@@ -155,8 +156,8 @@ describe("public portfolio presentation", () => {
     const focused = publicPortfolioFocus(defaultPortfolioSite);
     expect(focused.galleryImages.some(image => image.category === "Weddings")).toBe(false);
     expect(defaultPortfolioSite.galleryImages.some(image => image.category === "Weddings")).toBe(true);
-    expect(focused.heroCaptions[0].title).toBe("Corporate events");
-    expect(focused.featuredGalleryIds[0]).toBe("brand-networking");
+    expect(focused.heroCaptions[0].title).toBe("Gala dinner");
+    expect(focused.featuredGalleryIds[0]).toBe("navarra-cbhs-live-cooking");
     expect(focused.enquiryEventTypes.join(" ")).not.toMatch(/wedding/i);
     expect(focused.testimonials.some(review => /wedding/i.test(review.quote))).toBe(false);
     expect(publicPortfolioFocus(focused)).toEqual(focused);
@@ -189,8 +190,10 @@ describe("public portfolio presentation", () => {
   it("shows character portraits first on the dedicated cosplay page", () => {
     const { container } = open("/cosplay");
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Cosplay & character");
-    expect(container.querySelectorAll(".portfolio-gallery-item")).toHaveLength(13);
-    expect(container.querySelector(".portfolio-gallery-item img")).toHaveAttribute("src", "/portfolio/curated/cosplay-animaga-editorial.jpg");
+    expect(container.querySelectorAll(".portfolio-gallery-item")).toHaveLength(21);
+    expect(container.querySelector(".portfolio-gallery-item img")).toHaveAttribute("src", "/portfolio/selected/cosplay-sophy-glowing-book.webp");
+    expect(container.querySelector(".portfolio-collection-photo img")).toHaveAttribute("src", "/portfolio/selected/cosplay-sophy-glowing-book.webp");
+    expect(container.querySelector(".portfolio-collection-photo img")).toHaveAttribute("height", "1333");
     expect(container.textContent).not.toMatch(/wedding/i);
   });
 });
