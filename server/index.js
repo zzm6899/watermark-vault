@@ -243,7 +243,7 @@ const PORTFOLIO_ROUTE_ALIASES = new Map([
   ["/contact", "/enquire"],
   ["/index.html", "/"],
 ]);
-const PORTFOLIO_SOCIAL_IMAGE = `${CANONICAL_PORTFOLIO_ORIGIN}/portfolio/curated/sports-hyrox-leap.jpg`;
+const PORTFOLIO_SOCIAL_IMAGE = `${CANONICAL_PORTFOLIO_ORIGIN}/portfolio/curated/navarra-pinsent.jpg`;
 
 function normalizedRequestPath(value) {
   const pathname = String(value || "/");
@@ -335,12 +335,12 @@ function portfolioSeoBlock(routePath) {
     <meta property="og:image" content="${PORTFOLIO_SOCIAL_IMAGE}" />
     <meta property="og:image:width" content="3000" />
     <meta property="og:image:height" content="2004" />
-    <meta property="og:image:alt" content="Athletes in motion photographed by Zac Morgan" />
+    <meta property="og:image:alt" content="A speaker addresses guests at an event photographed by Zac Morgan" />
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content="${title}" />
     <meta name="twitter:description" content="${description}" />
     <meta name="twitter:image" content="${PORTFOLIO_SOCIAL_IMAGE}" />
-    <meta name="twitter:image:alt" content="Athletes in motion photographed by Zac Morgan" />
+    <meta name="twitter:image:alt" content="A speaker addresses guests at an event photographed by Zac Morgan" />
     <script type="application/ld+json">${portfolioStructuredData(routePath, meta.title)}</script>
     <!-- SEO:END -->`;
 }
