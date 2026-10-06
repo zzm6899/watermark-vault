@@ -2679,8 +2679,6 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
     if (!saved) { toast.error("Booking status could not be saved"); return; }
     setBookingsState(getBookings());
     toast.success(`Booking ${status}`);
-    // Discord notification
-    notifyDiscord({ type: "booking-update", booking: updated, oldStatus: bk.status, newStatus: status }).catch(() => {});
     // The canonical server mutation updates or removes the linked Google
     // Calendar event and queues retry state if Google is temporarily unavailable.
     // If cancelled, check waitlist and notify anyone waiting for this slot

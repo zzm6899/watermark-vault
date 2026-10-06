@@ -39,12 +39,8 @@ const statusEmoji = (s) => ({ confirmed: "✅", cancelled: "❌", completed: "�
 const statusColor = (s) => ({ confirmed: 0x22c55e, cancelled: 0xef4444, completed: 0xf59e0b, pending: 0x6b7280, rescheduled: 0x3b82f6 }[s] || 0x7c3aed);
 
 function bookingBaseFields(booking) {
-  let slot = booking.time || "—";
-  if (/^([01]\d|2[0-3]):[0-5]\d$/.test(booking.time) && Number.isInteger(booking.duration) && booking.duration > 0) {
-    const [hour, minute] = booking.time.split(":").map(Number);
-    const end = hour * 60 + minute + booking.duration;
-    slot += ` – ${String(Math.floor(end / 60) % 24).padStart(2, "0")}:${String(end % 60).padStart(2, "0")}${end >= 1440 ? ` (+${Math.floor(end / 1440)} day)` : ""}`;
-  }
+  const slot = bookingSlotLabel(booking);
+
   const fields = [
     { name: "👤 Client", value: booking.clientName || "Unknown", inline: true },
     { name: "📅 Session Date", value: booking.date || "—", inline: true },
@@ -71,6 +67,16 @@ function bookingBaseFields(booking) {
     const limit = field.name === "🛍 Additional Add-ons" ? 1024 : 250;
     return { ...field, value: value.length > limit ? `${value.slice(0, limit - 1)}…` : value || "—" };
   });
+}
+
+function bookingSlotLabel(booking) {
+  let slot = booking.time || "—";
+  if (/^([01]\d|2[0-3]):[0-5]\d$/.test(booking.time) && Number.isInteger(booking.duration) && booking.duration > 0) {
+    const [hour, minute] = booking.time.split(":").map(Number);
+    const end = hour * 60 + minute + booking.duration;
+    slot += ` – ${String(Math.floor(end / 60) % 24).padStart(2, "0")}:${String(end % 60).padStart(2, "0")}${end >= 1440 ? ` (+${Math.floor(end / 1440)} day)` : ""}`;
+  }
+  return slot;
 }
 
 function adminButton(label, url) {
@@ -133,6 +139,38 @@ async function notifyBookingUpdate(webhookUrl, booking, oldStatus, newStatus) {
     embeds: [{
       title: `${statusEmoji(newStatus)} Booking ${newStatus.charAt(0).toUpperCase() + newStatus.slice(1)}`,
       color: statusColor(newStatus),
+      fields,
+      footer: { text: `Booking ID: ${booking.id} · PhotoFlow` },
+      timestamp: new Date().toISOString(),
+    }],
+    ...(components.length ? { components } : {}),
+  });
+}
+
+async function notifyBookingMutation(webhookUrl, booking, previous) {
+  if (!webhookUrl || !previous) return;
+  const statusChanged = previous.status !== booking.status;
+  const scheduleChanged = ["date", "time", "duration"].some(key => previous[key] !== booking[key]);
+  if (!statusChanged && !scheduleChanged) return;
+
+  const cancelled = booking.status === "cancelled" && previous.status !== "cancelled";
+  const title = cancelled ? "❌ Booking Cancelled" : scheduleChanged ? "📅 Booking Rescheduled" : `📋 Booking ${booking.status}`;
+  const color = cancelled ? statusColor("cancelled") : scheduleChanged ? statusColor("rescheduled") : statusColor(booking.status);
+  const fields = bookingBaseFields(booking);
+  if (scheduleChanged) {
+    fields.push(
+      { name: "↩️ Previous appointment", value: `${previous.date || "—"} · ${bookingSlotLabel(previous)}`, inline: false },
+      { name: "➡️ New appointment", value: `${booking.date || "—"} · ${bookingSlotLabel(booking)}`, inline: false },
+    );
+  }
+  if (statusChanged) fields.push({ name: "🔄 Status Change", value: `${statusEmoji(previous.status)} ${previous.status || "pending"} → ${statusEmoji(booking.status)} ${booking.status || "pending"}`, inline: false });
+
+  const adminUrl = APP_URL ? `${APP_URL}/admin/bookings` : null;
+  const components = adminUrl ? [adminButton("View in Admin", adminUrl)] : [];
+  await sendDiscordEmbed(webhookUrl, {
+    embeds: [{
+      title,
+      color,
       fields,
       footer: { text: `Booking ID: ${booking.id} · PhotoFlow` },
       timestamp: new Date().toISOString(),
@@ -300,6 +338,7 @@ module.exports = {
   notifyNewEnquiry,
   notifyPayment,
   notifyBookingUpdate,
+  notifyBookingMutation,
   notifyAlbumPurchase,
   notifyProofingSubmission,
   notifyWaitlistNotified,

@@ -76,6 +76,7 @@ const {
   notifyNewEnquiry,
   notifyPayment,
   notifyBookingUpdate,
+  notifyBookingMutation,
   notifyAlbumPurchase,
   notifyProofingSubmission,
   notifyInvoice,
@@ -180,6 +181,18 @@ function dbGet(db, key, fallback = null) {
     try { return JSON.parse(raw); } catch { return fallback; }
   }
   return raw;
+}
+
+function queueDiscordBookingMutation(db, booking, previous) {
+  if (!previous) return;
+  const tenantSlug = booking.tenantSlug || previous.tenantSlug;
+  const settings = tenantSlug
+    ? dbGet(db, `t_${tenantSlug}_wv_tenant_settings`, {})
+    : dbGet(db, DB_KEYS.SETTINGS, {});
+  if (!settings.discordWebhookUrl || settings.discordNotifyBookings === false) return;
+  setImmediate(() => notifyBookingMutation(settings.discordWebhookUrl, booking, previous).catch(error => {
+    console.error(`Discord booking notification failed for ${booking.id}:`, error?.message || error);
+  }));
 }
 
 const app = express();
@@ -8312,6 +8325,7 @@ app.patch("/api/booking/:token", bookingLookupLimiter, async (req, res) => {
   commitBookings[commitIndex] = updatedBooking;
   commitDb[DB_KEYS.BOOKINGS] = JSON.stringify(commitBookings);
   writeDb(commitDb);
+  queueDiscordBookingMutation(commitDb, updatedBooking, current);
   if (calendarAction === "cancel") {
     try {
       const tenantSettings = updatedBooking.tenantSlug ? dbGet(commitDb, `t_${updatedBooking.tenantSlug}_wv_tenant_settings`, {}) : null;
@@ -8912,6 +8926,7 @@ app.patch("/api/admin/bookings/:id", superLimiter, requireAuth, async (req, res)
     bookings[index] = booking;
     db[DB_KEYS.BOOKINGS] = JSON.stringify(bookings);
     writeDb(db);
+    queueDiscordBookingMutation(db, booking, previous);
     queueMetaScheduleEvent(booking);
     const calendarAction = booking.status === "cancelled" || (!bookingReadyForCalendar(booking) && previous.gcalEventId)
       ? "cancel"
@@ -9450,6 +9465,7 @@ app.put("/api/tenant/:slug/bookings/:bookingId", tenantLimiter, requireTenant, a
   let db = readDb();
   let allBookings = getStoredArray(db, DB_KEYS.BOOKINGS);
   const idx = allBookings.findIndex(b => b.id === bookingId && b.tenantSlug === slug);
+  const previous = idx >= 0 ? allBookings[idx] : null;
   let calendarAction = null;
   const { id: _id, tenantSlug: _ts, ...updates } = req.body || {};
   if (idx < 0) {
@@ -9556,6 +9572,7 @@ app.put("/api/tenant/:slug/bookings/:bookingId", tenantLimiter, requireTenant, a
   }
   db[DB_KEYS.BOOKINGS] = JSON.stringify(allBookings);
   writeDb(db);
+  queueDiscordBookingMutation(db, allBookings[idx], previous);
   if (calendarAction) queueBookingCalendarSync(allBookings[idx], calendarAction);
   res.json({ ok: true, booking: publicBookingDto(allBookings[idx]) });
 });

@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { notifyNewBooking, notifyPayment, notifyBookingUpdate } = require("../discord");
+const { notifyNewBooking, notifyPayment, notifyBookingUpdate, notifyBookingMutation } = require("../discord");
 
 test("booking notifications include slots and saved add-on pricing within embed limits", async (t) => {
   const payloads = [];
@@ -43,4 +43,28 @@ test("booking notifications include slots and saved add-on pricing within embed 
   const sent = payloads.length;
   await notifyBookingUpdate(url, booking, "pending", "pending");
   assert.equal(payloads.length, sent);
+});
+
+test("booking mutation notifications show cancellations and old/new appointment times", async (t) => {
+  const payloads = [];
+  t.mock.method(global, "fetch", async (_url, options) => {
+    payloads.push(JSON.parse(options.body));
+    return { ok: true };
+  });
+  const url = "https://discord.com/api/webhooks/12345/test";
+  const previous = { id: "bk-change", clientName: "Test Client", date: "2030-01-10", time: "09:00", duration: 60, status: "confirmed" };
+
+  await notifyBookingMutation(url, { ...previous, status: "cancelled" }, previous);
+  const cancellation = payloads[0].embeds[0];
+  assert.equal(cancellation.title, "❌ Booking Cancelled");
+  assert.equal(cancellation.fields.find(field => field.name === "🔄 Status Change").value, "✅ confirmed → ❌ cancelled");
+
+  await notifyBookingMutation(url, { ...previous, date: "2030-01-11", time: "10:30" }, previous);
+  const reschedule = payloads[1].embeds[0];
+  assert.equal(reschedule.title, "📅 Booking Rescheduled");
+  assert.equal(reschedule.fields.find(field => field.name === "↩️ Previous appointment").value, "2030-01-10 · 09:00 – 10:00");
+  assert.equal(reschedule.fields.find(field => field.name === "➡️ New appointment").value, "2030-01-11 · 10:30 – 11:30");
+
+  await notifyBookingMutation(url, { ...previous, clientName: "Updated name" }, previous);
+  assert.equal(payloads.length, 2);
 });
