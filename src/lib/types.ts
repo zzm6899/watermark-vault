@@ -481,7 +481,7 @@ export interface AppSettings {
   discordNotifyInvoices: boolean;
   watermarkSize: number;
   proofingEnabled: boolean;
-  /** Default number of hours a proofing window stays open after being started. Default: 48. */
+  /** Default number of hours a proofing window stays open after being started. Default: 120. */
   proofingMessages?: Record<string, string>;
   defaultProofingExpiryHours?: number;
   invoiceFrom?: InvoiceParty;

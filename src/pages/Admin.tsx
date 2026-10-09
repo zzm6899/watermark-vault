@@ -1017,7 +1017,7 @@ function ShootDayCommandCenterView() {
       const fresh = (await fetchAlbumStubs())?.find(item => item.id === album.id);
       if (!fresh) throw new Error("Could not load the album. Refresh and try again.");
       const recipientAlbum = { ...fresh, clientEmail: fresh.clientEmail || booking.clientEmail, clientName: fresh.clientName || booking.clientName };
-      await sendAlbumProofingInvite(recipientAlbum, fresh.proofingExpiryHours ?? settings.defaultProofingExpiryHours ?? 48, "", booking.duration, configuredProofingMessage(recipientAlbum, booking));
+      await sendAlbumProofingInvite(recipientAlbum, fresh.proofingExpiryHours ?? settings.defaultProofingExpiryHours ?? 120, "", booking.duration, configuredProofingMessage(recipientAlbum, booking));
       toast.success(`Proofing invite sent to ${recipientAlbum.clientEmail}`);
     } catch (error) { toast.error(error instanceof Error ? error.message : "Could not send proofing invite"); }
     finally { setProofingBusy(null); setRefreshTick(tick => tick + 1); window.dispatchEvent(new CustomEvent("storage-synced")); }
@@ -4698,7 +4698,7 @@ function AlbumsView({ prefillBookingId, onClearPrefill }: { prefillBookingId?: s
       </div>
       {showRequests && <div className="mb-5"><DownloadRequestInbox albums={albums} onOpenAlbum={album => { setEditing(album); setShowNew(false); }} onUpdated={updated => { setAlbumsState(previous => previous.map(album => album.id === updated.id ? updated : album)); setEditing(previous => previous?.id === updated.id ? { ...previous, downloadRequests: updated.downloadRequests } : previous); }} /></div>}
 
-      {proofingSelectMode && <BulkProofingPanel albums={albums} bookings={bookings} selected={mergeSelection} defaultHours={settings.defaultProofingExpiryHours || 48} onBusy={setBulkProofingBusy} onSent={id => { setMergeSelection(previous => { const next = new Set(previous); next.delete(id); return next; }); refresh(); }} />}
+      {proofingSelectMode && <BulkProofingPanel albums={albums} bookings={bookings} selected={mergeSelection} defaultHours={settings.defaultProofingExpiryHours || 120} onBusy={setBulkProofingBusy} onSent={id => { setMergeSelection(previous => { const next = new Set(previous); next.delete(id); return next; }); refresh(); }} />}
 
       {mergeMode && (
         <div className="glass-panel rounded-xl p-4 mb-4 flex items-center justify-between">
@@ -6066,8 +6066,8 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
             const note = (document.getElementById("proofing-admin-note") as HTMLInputElement)?.value || "";
             const expiryInput = document.getElementById("proofing-expiry-hours") as HTMLInputElement;
             const expiryHours = expiryInput && expiryInput.value !== ""
-              ? Math.max(1, parseInt(expiryInput.value, 10) || 48)
-              : (liveAlbum!.proofingExpiryHours ?? settings.defaultProofingExpiryHours ?? 48);
+              ? Math.max(1, parseInt(expiryInput.value, 10) || 120)
+              : (liveAlbum!.proofingExpiryHours ?? settings.defaultProofingExpiryHours ?? 120);
             const proofingExpiresAt = new Date(Date.now() + expiryHours * 3600 * 1000).toISOString();
             const clientToken = liveAlbum!.clientToken || generateCapabilityToken("ct");
             const newRound = { roundNumber: rounds.length + 1, sentAt: new Date().toISOString(), selectedPhotoIds: [], adminNote: note || undefined };
@@ -6194,7 +6194,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
                     type="number"
                     min={1}
                     max={720}
-                    defaultValue={liveAlbum!.proofingExpiryHours ?? settings.defaultProofingExpiryHours ?? 48}
+                    defaultValue={liveAlbum!.proofingExpiryHours ?? settings.defaultProofingExpiryHours ?? 120}
                     className="w-20 bg-secondary border border-border rounded px-2 py-1 text-xs font-body text-foreground text-center focus:outline-none focus:ring-1 focus:ring-ring"
                   />
                   <label className="text-[11px] font-body text-muted-foreground">hours</label>
@@ -8996,8 +8996,8 @@ function SettingsView() {
                     type="number"
                     min={1}
                     max={720}
-                    value={settings.defaultProofingExpiryHours ?? 48}
-                    onChange={(e) => setSettingsState({ ...settings, defaultProofingExpiryHours: Math.max(1, parseInt(e.target.value) || 48) })}
+                    value={settings.defaultProofingExpiryHours ?? 120}
+                    onChange={(e) => setSettingsState({ ...settings, defaultProofingExpiryHours: Math.max(1, parseInt(e.target.value) || 120) })}
                     className="w-20 bg-secondary border border-border rounded-md px-2 py-1.5 text-sm font-body text-foreground text-center focus:outline-none focus:ring-2 focus:ring-ring"
                   />
                   <span className="text-xs font-body text-muted-foreground">hours</span>

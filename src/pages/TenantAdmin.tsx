@@ -2102,7 +2102,7 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
           const noteEl = document.getElementById("t-proofing-note") as HTMLTextAreaElement;
           const expiryEl = document.getElementById("t-proofing-expiry") as HTMLInputElement;
           const note = noteEl?.value || "";
-          const defaultExpiry = liveAlbum.proofingExpiryHours ?? settings.defaultProofingExpiryHours ?? 48;
+          const defaultExpiry = liveAlbum.proofingExpiryHours ?? settings.defaultProofingExpiryHours ?? 120;
           const parsedInput = expiryEl?.value !== "" ? parseInt(expiryEl?.value, 10) : NaN;
           const expiryHours = !isNaN(parsedInput) ? Math.max(1, parsedInput) : defaultExpiry;
           const proofingExpiresAt = new Date(Date.now() + expiryHours * 3600 * 1000).toISOString();
@@ -2203,7 +2203,7 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
                 <textarea id="t-proofing-note" placeholder="Optional message to client (e.g. 'Please pick your top 30')" rows={2} className="w-full bg-secondary border border-border rounded px-3 py-2 text-xs font-body text-foreground placeholder:text-muted-foreground/50 resize-none" />
                 <div className="flex items-center gap-2">
                   <label className="text-[11px] font-body text-muted-foreground shrink-0">Window open for</label>
-                  <input id="t-proofing-expiry" type="number" min={1} max={720} defaultValue={liveAlbum.proofingExpiryHours ?? settings.defaultProofingExpiryHours ?? 48} className="w-20 bg-secondary border border-border rounded px-2 py-1 text-xs font-body text-foreground text-center" />
+                  <input id="t-proofing-expiry" type="number" min={1} max={720} defaultValue={liveAlbum.proofingExpiryHours ?? settings.defaultProofingExpiryHours ?? 120} className="w-20 bg-secondary border border-border rounded px-2 py-1 text-xs font-body text-foreground text-center" />
                   <label className="text-[11px] font-body text-muted-foreground">hours</label>
                 </div>
                 <button onClick={startProofing} className="flex items-center gap-2 w-full justify-center bg-yellow-500/15 hover:bg-yellow-500/25 text-yellow-400 border border-yellow-500/30 rounded-lg px-4 py-2 text-xs font-body tracking-wider uppercase transition-colors">
@@ -4192,7 +4192,7 @@ function TenantSettingsView({ slug }: { slug: string }) {
                   <p className="text-[10px] font-body text-muted-foreground/70 mt-0.5">How long clients have to submit picks after a round is started. Can be overridden per album.</p>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
-                  <input type="number" min={1} max={720} value={settings.defaultProofingExpiryHours ?? 48} onChange={e => set({ defaultProofingExpiryHours: Math.min(720, Math.max(1, parseInt(e.target.value) || 48)) })} className="w-20 bg-background border border-border rounded-md px-2 py-1.5 text-sm font-body text-foreground text-center focus:outline-none focus:ring-2 focus:ring-ring" />
+                  <input type="number" min={1} max={720} value={settings.defaultProofingExpiryHours ?? 120} onChange={e => set({ defaultProofingExpiryHours: Math.min(720, Math.max(1, parseInt(e.target.value) || 120)) })} className="w-20 bg-background border border-border rounded-md px-2 py-1.5 text-sm font-body text-foreground text-center focus:outline-none focus:ring-2 focus:ring-ring" />
                   <span className="text-xs font-body text-muted-foreground">hours</span>
                 </div>
               </div>

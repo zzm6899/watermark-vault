@@ -12244,10 +12244,30 @@ app.get("*", (req, res) => {
 });
 
 bootstrapPromise.then(() => {
+  const db = readDb();
+  if (!db.wv_migration_proofing_five_days) {
+    const expiresAt = new Date(Date.now() + 120 * 60 * 60 * 1000).toISOString();
+    for (const key of Object.keys(db).filter(key => key === ALBUMS_KEY || /^t_.+_wv_albums$/.test(key))) {
+      const albums = _parseAlbumsFromDb(db[key]);
+      let changed = false;
+      for (const album of albums) {
+        if (album.proofingEnabled && album.proofingStage === "proofing") {
+          album.proofingExpiryHours = 120;
+          album.proofingExpiresAt = expiresAt;
+          changed = true;
+        }
+      }
+      if (changed) db[key] = JSON.stringify(albums);
+    }
+    for (const key of Object.keys(db).filter(key => key === "wv_settings" || /^t_.+_wv_tenant_settings$/.test(key))) {
+      db[key] = JSON.stringify({ ...dbGet(db, key, {}), defaultProofingExpiryHours: 120 });
+    }
+    db.wv_migration_proofing_five_days = "1";
+    writeDb(db);
+  }
   // Repair albums delivered by older builds that updated the album status but
   // left proofing active. Without this migration, existing client links remain
   // stuck on their selections receipt even after the fixed endpoint deploys.
-  const db = readDb();
   let repaired = 0;
   for (const key of Object.keys(db).filter(key => key === ALBUMS_KEY || /^t_.+_wv_albums$/.test(key))) {
     const result = repairDeliveredAlbumWorkflows(_parseAlbumsFromDb(db[key]));
