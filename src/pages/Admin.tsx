@@ -5,6 +5,7 @@ import PendingSaves from "@/components/admin/PendingSaves";
 import LinkedText from "@/components/LinkedText";
 import ProofingMessageEditor from "@/components/ProofingMessageEditor";
 import { configuredProofingMessage } from "@/lib/proofing-message-settings";
+import { formatProofingWindow } from "@/lib/format-proofing-window";
 import { canSendProofingInvite, proofingInviteAction, sendAlbumProofingInvite } from "@/lib/bulk-proofing";
 import ShootDayUploadButton from "@/components/ShootDayUploadButton";
 import BulkProofingPanel from "@/components/BulkProofingPanel";
@@ -1189,8 +1190,10 @@ function ShootDayCommandCenterView() {
     else toast.info("No clear album matches found");
   };
 
-  const wrapShootDaySession = async (booking: Booking, album: Album | null, eventType?: EventType) => {
-    const linkedAlbum = album || createShootDayAlbum(booking, eventType) || getBookingAlbum(booking, getAlbums());
+  const wrapShootDaySession = async (booking: Booking, album: Album | null, eventType?: EventType, candidateAlbum?: Album | null) => {
+    const existingAlbum = album || getBookingAlbum(booking, getAlbums()) || candidateAlbum || findShootDayAlbumCandidate(booking, getAlbums());
+    if (existingAlbum && !album) linkShootDayAlbum(booking, existingAlbum);
+    const linkedAlbum = existingAlbum || createShootDayAlbum(booking, eventType);
     const statusHistory = [
       ...(booking.statusHistory || []),
       { status: "completed" as const, changedAt: new Date().toISOString(), note: "Wrapped from Session Day" },
@@ -1478,7 +1481,7 @@ function ShootDayCommandCenterView() {
                             <CheckCircle2 className="w-3.5 h-3.5" /> Complete
                           </Button>
                         )}
-                        <Button size="sm" variant="outline" disabled={booking.status === "completed"} onClick={() => wrapShootDaySession(booking, album, eventType)} className="gap-1.5 text-xs font-body border-blue-500/40 text-blue-300">
+                        <Button size="sm" variant="outline" disabled={booking.status === "completed"} onClick={() => wrapShootDaySession(booking, album, eventType, candidateAlbum)} className="gap-1.5 text-xs font-body border-blue-500/40 text-blue-300">
                           <Check className="w-3.5 h-3.5" /> {booking.status === "completed" ? "Wrapped" : "Wrap"}
                         </Button>
                         {!album && candidateAlbum && (
@@ -1638,7 +1641,7 @@ function ShootDayCommandCenterView() {
                     <Copy className="w-4 h-4" /> Copy Gallery Link
                   </Button>
                 )}
-                <Button variant="outline" disabled={activeSession.booking.status === "completed"} onClick={() => wrapShootDaySession(activeSession.booking, activeSession.album, activeSession.eventType)} className="gap-2 font-body text-xs border-blue-500/40 text-blue-300">
+                <Button variant="outline" disabled={activeSession.booking.status === "completed"} onClick={() => wrapShootDaySession(activeSession.booking, activeSession.album, activeSession.eventType, findShootDayAlbumCandidate(activeSession.booking, albums))} className="gap-2 font-body text-xs border-blue-500/40 text-blue-300">
                   <Check className="w-4 h-4" /> {activeSession.booking.status === "completed" ? "Wrapped" : "Wrap Session"}
                 </Button>
               </div>
@@ -1943,6 +1946,7 @@ function DashboardView() {
         deliveryTasks={deliveryQueue}
         onOpenSession={booking => navigate(`/admin/shoot-day?date=${encodeURIComponent(booking.date)}`)}
         onOpenBookings={() => navigate("/admin/bookings")}
+        onOpenDeliveryQueue={() => navigate("/admin/bookings?focus=delivery")}
         onOpenDeliveryTask={task => task.album
           ? navigate(`/admin/albums?album=${encodeURIComponent(task.album.id)}`)
           : navigate(`/admin/bookings?search=${encodeURIComponent(bookingPaymentReference(task.booking))}`)}
@@ -2621,7 +2625,10 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
   const [archivingBookingIds, setArchivingBookingIds] = useState<Set<string>>(new Set());
   const [resolvingPaymentReviewId, setResolvingPaymentReviewId] = useState<string | null>(null);
   const [showCancelled, setShowCancelled] = useState(false);
-  const [bookingFocus, setBookingFocus] = useState<"all" | "pending" | "today" | "next7" | "payment" | "review">(() => new URLSearchParams(location.search).get("focus") === "payment" ? "payment" : "all");
+  const [bookingFocus, setBookingFocus] = useState<"all" | "pending" | "today" | "next7" | "payment" | "review" | "delivery">(() => {
+    const focus = new URLSearchParams(location.search).get("focus");
+    return focus === "payment" || focus === "delivery" ? focus : "all";
+  });
   const resetBookingFilters = () => {
     setBookingSearch("");
     setStatusFilter("all");
@@ -2633,6 +2640,12 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
     setSelectedBookingIds(new Set());
   };
   const albums = getAlbums();
+  const deliveryBookingIds = new Set(bookings
+    .filter(booking => booking.archived !== true && ["confirmed", "completed"].includes(booking.status) && booking.date < localDateString(new Date()))
+    .filter(booking => {
+      const album = getBookingAlbum(booking, albums);
+      return !album || (album.status !== "delivered" && album.status !== "archived" && album.proofingStage !== "finals-delivered");
+    }).map(booking => booking.id));
   const [emailLogs, setEmailLogs] = useState<Record<string, { id: string; type: string; sentAt: string; openedAt?: string; subject: string; to: string }[]>>({});
   const [sendingReminder, setSendingReminder] = useState<string | null>(null);
   const [customEmailTarget, setCustomEmailTarget] = useState<string | null>(null);
@@ -2879,6 +2892,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
     if (bookingFocus === "next7" && (bk.date < today || bk.date > nextWeekStr || bk.status === "cancelled")) return false;
     if (bookingFocus === "payment" && !bookingNeedsOutstandingPayment(bk)) return false;
     if (bookingFocus === "review" && !bookingNeedsManualPaymentReview(bk)) return false;
+    if (bookingFocus === "delivery" && !deliveryBookingIds.has(bk.id)) return false;
     if (archiveFilter === "active" && bk.archived === true) return false;
     if (archiveFilter === "archived" && bk.archived !== true) return false;
     if (statusFilter !== "all" && bk.status !== statusFilter) return false;
@@ -3088,13 +3102,14 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
         </div>
       </div>
 
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-5">
+      <div className="grid grid-cols-2 lg:grid-cols-6 gap-3 mb-5">
         {[
           { id: "pending", label: "Awaiting Confirmation", value: bookingSummary.pending, tone: "text-yellow-400" },
           { id: "today", label: "Today", value: bookingSummary.today, tone: "text-primary" },
           { id: "next7", label: "Next 7 Days", value: bookingSummary.next7, tone: "text-blue-400" },
           { id: "payment", label: "Needs Payment", value: bookingSummary.needsPayment, tone: "text-red-400" },
           { id: "review", label: "Manual Review", value: bookingSummary.paymentReview, tone: "text-red-300" },
+          { id: "delivery", label: "Needs Delivery", value: deliveryBookingIds.size, tone: "text-orange-300" },
         ].map(item => (
           <button key={item.label} aria-pressed={bookingFocus === item.id}
             onClick={() => {
@@ -3290,7 +3305,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
         <>
           <div className="glass-panel rounded-xl p-4 flex flex-col gap-3 mb-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <p role="status" className="text-sm font-body text-muted-foreground">Showing <span className="font-semibold text-foreground">{sortedBookings.length}</span> of {bookings.length} bookings{bookingFocus !== "all" ? ` · ${({ pending: "Awaiting confirmation", today: "Today", next7: "Next 7 days", payment: "Needs payment", review: "Manual review" })[bookingFocus]}` : ""}</p>
+            <p role="status" className="text-sm font-body text-muted-foreground">Showing <span className="font-semibold text-foreground">{sortedBookings.length}</span> of {bookings.length} bookings{bookingFocus !== "all" ? ` · ${({ pending: "Awaiting confirmation", today: "Today", next7: "Next 7 days", payment: "Needs payment", review: "Manual review", delivery: "Needs delivery" })[bookingFocus]}` : ""}</p>
               <Button variant="ghost" size="sm" onClick={resetBookingFilters}>Reset filters</Button>
             </div>
             <div className="relative w-full">
@@ -3597,8 +3612,8 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                       </div>
                     )}
                     {bk.answers && Object.keys(bk.answers).length > 0 && (
-                      <div>
-                        <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-2">Questionnaire Answers</p>
+                      <details>
+                        <summary className="cursor-pointer text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-2">Questionnaire Answers ({Object.keys(bk.answers).length})</summary>
                         <div className="space-y-2">
                           {Object.entries(bk.answers).map(([qId, answer]) => {
                             const question = et?.questions.find(q => q.id === qId);
@@ -3611,7 +3626,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                             );
                           })}
                         </div>
-                      </div>
+                      </details>
                     )}
                     {/* Status History Timeline */}
                     {(bk.statusHistory && bk.statusHistory.length > 0) && (
@@ -3663,10 +3678,8 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                     {(() => {
                       const logs = emailLogs[bk.id] || bk.emailLog || [];
                       return logs.length > 0 ? (
-                        <div>
-                          <p className="text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-2 flex items-center gap-1.5">
-                            <Mail className="w-3 h-3" /> Email History ({logs.length})
-                          </p>
+                        <details>
+                          <summary className="cursor-pointer text-[10px] font-body tracking-wider uppercase text-muted-foreground mb-2"><Mail className="mr-1 inline size-3" />Email History ({logs.length})</summary>
                           <div className="space-y-1.5">
                             {logs.map((log, i) => {
                               const typeLabel: Record<string, string> = {
@@ -3697,7 +3710,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                               );
                             })}
                           </div>
-                        </div>
+                        </details>
                       ) : (
                         <p className="text-[10px] font-body text-muted-foreground/50 flex items-center gap-1.5">
                           <Mail className="w-3 h-3" /> No emails sent yet
@@ -5127,6 +5140,7 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
   const [emptyingAlbum, setEmptyingAlbum] = useState(false);
   const emptyingAlbumRef = useRef(false);
   const [sendingProofing, setSendingProofing] = useState(false);
+  const [proofingExpiryHours, setProofingExpiryHours] = useState(album?.proofingExpiryHours ?? settings.defaultProofingExpiryHours ?? 120);
   const [albumProofingEnabled, setAlbumProofingEnabled] = useState(album?.proofingEnabled || false);
   const [albumProofingChoice, setAlbumProofingChoice] = useState<NonNullable<Album["proofingPhotoSelection"]> | "inherit">(album?.proofingPhotoSelection || "inherit");
   const [albumProofingInstructions, setAlbumProofingInstructions] = useState(album?.proofingInstructions || "");
@@ -6228,10 +6242,11 @@ function AlbumEditor({ album, bookings, settings, prefillBookingId, onSave, onUp
                     type="number"
                     min={1}
                     max={720}
-                    defaultValue={liveAlbum!.proofingExpiryHours ?? settings.defaultProofingExpiryHours ?? 120}
+                    value={proofingExpiryHours}
+                    onChange={event => setProofingExpiryHours(Math.min(720, Math.max(1, Number(event.target.value) || 120)))}
                     className="w-20 bg-secondary border border-border rounded px-2 py-1 text-xs font-body text-foreground text-center focus:outline-none focus:ring-1 focus:ring-ring"
                   />
-                  <label className="text-[11px] font-body text-muted-foreground">hours</label>
+                  <span className="text-[11px] font-body text-muted-foreground">{formatProofingWindow(proofingExpiryHours)} · {proofingExpiryHours} hrs</span>
                 </div>
                 <button onClick={startProofing} disabled={sendingProofing || savingAlbum || !photos.length} className="flex items-center gap-2 w-full justify-center bg-yellow-500/15 hover:bg-yellow-500/25 text-yellow-400 border border-yellow-500/30 rounded-lg px-4 py-2 text-xs font-body tracking-wider uppercase transition-colors">
                   <Star className="w-3.5 h-3.5" /> {sendingProofing ? "Sending…" : "Send for Proofing"}
@@ -9034,7 +9049,7 @@ function SettingsView() {
                     onChange={(e) => setSettingsState({ ...settings, defaultProofingExpiryHours: Math.max(1, parseInt(e.target.value) || 120) })}
                     className="w-20 bg-secondary border border-border rounded-md px-2 py-1.5 text-sm font-body text-foreground text-center focus:outline-none focus:ring-2 focus:ring-ring"
                   />
-                  <span className="text-xs font-body text-muted-foreground">hours</span>
+                  <span className="text-xs font-body text-muted-foreground">{formatProofingWindow(settings.defaultProofingExpiryHours ?? 120)} · {settings.defaultProofingExpiryHours ?? 120} hrs</span>
                 </div>
               </div>
             )}

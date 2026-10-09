@@ -1,4 +1,4 @@
-import { ArrowUpRight, CalendarDays, Clock3, RefreshCw } from "lucide-react";
+import { AlertTriangle, ArrowUpRight, CalendarDays, CircleDot, Clock3, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { Album, Booking } from "@/lib/types";
 
@@ -22,6 +22,7 @@ type DashboardCommandCenterProps = {
   onRetry?: () => void;
   onOpenSession: (booking: Booking) => void;
   onOpenBookings: () => void;
+  onOpenDeliveryQueue?: () => void;
   onOpenDeliveryTask: (task: DashboardDeliveryTask) => void;
 };
 
@@ -46,7 +47,7 @@ function LoadingPanel() {
 }
 
 export default function DashboardCommandCenter({
-  state, errorMessage, nextSession, nextSessionEventLabel, deliveryTasks, onRetry, onOpenSession, onOpenBookings, onOpenDeliveryTask,
+  state, errorMessage, nextSession, nextSessionEventLabel, deliveryTasks, onRetry, onOpenSession, onOpenBookings, onOpenDeliveryQueue, onOpenDeliveryTask,
 }: DashboardCommandCenterProps) {
   if (state === "loading") return <LoadingPanel />;
 
@@ -57,6 +58,7 @@ export default function DashboardCommandCenter({
 
   const sessionDate = nextSession ? formatSessionDate(nextSession.date) : null;
   const taskCount = deliveryTasks.length;
+  const visibleTasks = deliveryTasks.slice(0, 3);
 
   return <section aria-label="Your next work" className="dashboard-work mb-7 border-y border-border/70">
     <div className="grid min-w-0 grid-cols-1 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
@@ -88,23 +90,35 @@ export default function DashboardCommandCenter({
       <div className="min-w-0 py-4 sm:py-5 lg:pl-8">
         <div className="flex items-baseline justify-between gap-3">
           <h3 className="text-sm font-medium text-foreground">Delivery queue</h3>
-          <span className="text-xs tabular-nums text-muted-foreground">{taskCount} {taskCount === 1 ? "item" : "items"}</span>
+          <span className="rounded-full border border-border/70 bg-secondary/40 px-2.5 py-1 text-xs tabular-nums text-muted-foreground">{taskCount} {taskCount === 1 ? "item" : "items"}</span>
         </div>
-        {taskCount ? <ol className="mt-1 divide-y divide-border/70">
-          {deliveryTasks.slice(0, 3).map(task => <li key={task.id} className="grid min-w-0 gap-2 py-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
-            <div className="min-w-0">
-              <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
-                <p className="truncate text-sm font-medium text-foreground">{task.album?.title || task.booking.clientName || "Unassigned session"}</p>
-                <span className={`text-xs ${task.tone === "urgent" ? "text-primary" : "text-muted-foreground"}`}>{task.stageLabel}</span>
+        {taskCount ? <ol className="mt-3 space-y-2.5">
+          {visibleTasks.map(task => {
+            const ToneIcon = task.tone === "urgent" ? AlertTriangle : task.tone === "waiting" ? Clock3 : CircleDot;
+            return <li key={task.id} className={`grid min-w-0 gap-3 rounded-xl border p-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center ${task.tone === "urgent" ? "border-primary/35 bg-primary/[0.045]" : "border-border/70 bg-background/35"}`}>
+              <div className="min-w-0">
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                  <p className="min-w-0 flex-1 text-sm font-medium leading-5 text-foreground">{task.album?.title || task.booking.clientName || "Unassigned session"}</p>
+                  <span className={`inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2 py-1 text-[11px] leading-none ${task.tone === "urgent" ? "border-primary/30 bg-primary/10 text-primary" : "border-border/70 bg-secondary/50 text-muted-foreground"}`}>
+                    <ToneIcon aria-hidden="true" className="size-3" />{task.stageLabel}
+                  </span>
+                </div>
+                <div className="mt-1.5 flex flex-wrap items-baseline gap-x-2 gap-y-1 text-xs leading-4 text-muted-foreground">
+                  <span className="font-medium text-foreground/75">{task.ageLabel}</span>
+                  <span aria-hidden="true" className="text-border">·</span>
+                  <span className="min-w-0">{task.detail}</span>
+                </div>
               </div>
-              <p className="mt-0.5 truncate text-xs text-muted-foreground">{task.ageLabel} · {task.detail}</p>
-            </div>
-            <button type="button" onClick={() => onOpenDeliveryTask(task)} className="w-fit text-left text-xs text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
-              {task.actionLabel}<ArrowUpRight className="ml-1 inline size-3.5" />
-            </button>
-          </li>)}
+              <Button type="button" size="sm" variant={task.tone === "urgent" ? "default" : "outline"} onClick={() => onOpenDeliveryTask(task)} className="h-9 w-full justify-between gap-3 px-3 text-xs sm:w-auto sm:min-w-36">
+                {task.actionLabel}<ArrowUpRight aria-hidden="true" className="size-3.5 shrink-0" />
+              </Button>
+            </li>;
+          })}
         </ol> : <p className="mt-3 border-t border-border/70 pt-3 text-sm text-muted-foreground">No unfinished deliveries.</p>}
-        {taskCount > 3 && <p className="mt-2 text-xs text-muted-foreground">Showing 3 of {taskCount}</p>}
+        {taskCount > visibleTasks.length && <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-border/70 pt-3">
+          <p className="text-xs text-muted-foreground">Showing {visibleTasks.length} of {taskCount}</p>
+          <Button type="button" size="sm" variant="ghost" onClick={onOpenDeliveryQueue || onOpenBookings} className="h-8 px-2 text-xs">View full queue<ArrowUpRight aria-hidden="true" className="ml-1 size-3.5" /></Button>
+        </div>}
       </div>
     </div>
   </section>;

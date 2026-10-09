@@ -9,6 +9,7 @@ import { buildClientEmail, buildGalleryStatusEmail } from "@/lib/client-email";
 import { buildProofingEmail, proofingEmailSubject } from "@/lib/proofing-email";
 import DownloadRequestInbox from "@/components/DownloadRequestInbox";
 import ProofingReceipt from "@/components/ProofingReceipt";
+import { formatProofingWindow } from "@/lib/format-proofing-window";
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { usePageTitle } from "@/hooks/use-page-title";
@@ -1754,6 +1755,7 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
   const [cleanDownloadsOnly, setCleanDownloadsOnly] = useState(album?.cleanDownloadsOnly || false);
   const [purchasingDisabled, setPurchasingDisabled] = useState((album as any)?.purchasingDisabled || false);
   const [proofingEnabled, setProofingEnabled] = useState(album?.proofingEnabled || false);
+  const [proofingExpiryHours, setProofingExpiryHours] = useState(album?.proofingExpiryHours ?? settings.defaultProofingExpiryHours ?? 120);
   const [proofingPhotoSelection, setProofingPhotoSelection] = useState<"inherit" | "off" | "optional" | "required">(album?.proofingPhotoSelection || "inherit");
   const [proofingInstructions, setProofingInstructions] = useState(album?.proofingInstructions || "");
   const [lockDownloadsDuringProofing, setLockDownloadsDuringProofing] = useState(album?.lockDownloadsDuringProofing || false);
@@ -2203,8 +2205,8 @@ function TenantAlbumEditor({ slug, album, settings, onSave, onCancel }: {
                 <textarea id="t-proofing-note" placeholder="Optional message to client (e.g. 'Please pick your top 30')" rows={2} className="w-full bg-secondary border border-border rounded px-3 py-2 text-xs font-body text-foreground placeholder:text-muted-foreground/50 resize-none" />
                 <div className="flex items-center gap-2">
                   <label className="text-[11px] font-body text-muted-foreground shrink-0">Window open for</label>
-                  <input id="t-proofing-expiry" type="number" min={1} max={720} defaultValue={liveAlbum.proofingExpiryHours ?? settings.defaultProofingExpiryHours ?? 120} className="w-20 bg-secondary border border-border rounded px-2 py-1 text-xs font-body text-foreground text-center" />
-                  <label className="text-[11px] font-body text-muted-foreground">hours</label>
+                  <input id="t-proofing-expiry" type="number" min={1} max={720} value={proofingExpiryHours} onChange={e => setProofingExpiryHours(Math.min(720, Math.max(1, Number(e.target.value) || 120)))} className="w-20 bg-secondary border border-border rounded px-2 py-1 text-xs font-body text-foreground text-center" />
+                  <span className="text-[11px] font-body text-muted-foreground">{formatProofingWindow(proofingExpiryHours)} · {proofingExpiryHours} hrs</span>
                 </div>
                 <button onClick={startProofing} className="flex items-center gap-2 w-full justify-center bg-yellow-500/15 hover:bg-yellow-500/25 text-yellow-400 border border-yellow-500/30 rounded-lg px-4 py-2 text-xs font-body tracking-wider uppercase transition-colors">
                   <Star className="w-3.5 h-3.5" /> Start Proofing Round {rounds.length + 1}
@@ -4193,7 +4195,7 @@ function TenantSettingsView({ slug }: { slug: string }) {
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
                   <input type="number" min={1} max={720} value={settings.defaultProofingExpiryHours ?? 120} onChange={e => set({ defaultProofingExpiryHours: Math.min(720, Math.max(1, parseInt(e.target.value) || 120)) })} className="w-20 bg-background border border-border rounded-md px-2 py-1.5 text-sm font-body text-foreground text-center focus:outline-none focus:ring-2 focus:ring-ring" />
-                  <span className="text-xs font-body text-muted-foreground">hours</span>
+                  <span className="text-xs font-body text-muted-foreground">{formatProofingWindow(settings.defaultProofingExpiryHours ?? 120)} · {settings.defaultProofingExpiryHours ?? 120} hrs</span>
                 </div>
               </div>
             )}
