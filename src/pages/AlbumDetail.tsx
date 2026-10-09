@@ -1910,9 +1910,13 @@ export default function AlbumDetail() {
                         if (msLeft <= 0) return null;
                         const hoursLeft = Math.floor(msLeft / 3600000);
                         const minsLeft = Math.floor((msLeft % 3600000) / 60000);
-                        const timeLabel = hoursLeft > 0
-                          ? `${hoursLeft}h ${minsLeft}m`
-                          : `${Math.max(1, minsLeft)}m`;
+                        const daysLeft = Math.floor(hoursLeft / 24);
+                        const remainingHours = hoursLeft % 24;
+                        const timeLabel = daysLeft > 0
+                          ? `${daysLeft} day${daysLeft === 1 ? "" : "s"}${remainingHours ? ` ${remainingHours} hr${remainingHours === 1 ? "" : "s"}` : ""}${minsLeft ? ` ${minsLeft}m` : ""}`
+                          : hoursLeft > 0
+                            ? `${hoursLeft} hr${hoursLeft === 1 ? "" : "s"}${minsLeft ? ` ${minsLeft}m` : ""}`
+                            : `${Math.max(1, minsLeft)}m`;
                         const isUrgent = msLeft < 3 * 3600000; // < 3 hours
                         return (
                           <p className={`text-xs font-body mt-1.5 flex items-center gap-1 ${isUrgent ? "text-orange-400" : "text-yellow-400/70"}`}>

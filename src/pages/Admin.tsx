@@ -2593,6 +2593,9 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
 
   const [showCreateBooking, setShowCreateBooking] = useState(false);
   const [editingBooking, setEditingBooking] = useState<Booking | null>(null);
+  const [albumLinkBooking, setAlbumLinkBooking] = useState<Booking | null>(null);
+  const [albumLinkSearch, setAlbumLinkSearch] = useState("");
+  const [linkingAlbum, setLinkingAlbum] = useState(false);
 
   const handleSaveBooking = async (bk: Booking) => {
     if (editingBooking) {
@@ -2651,6 +2654,28 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
   const emailTemplates = getEmailTemplates();
   const settings = getSettings();
   const eventTypes = getEventTypes();
+  const linkableAlbums = albums.filter(album => !album.bookingId && !bookings.some(booking => booking.id !== albumLinkBooking?.id && booking.albumId === album.id))
+    .filter(album => {
+      const query = albumLinkSearch.trim().toLowerCase();
+      return !query || `${album.title} ${album.clientName || ""} ${album.clientEmail || ""} ${album.date || ""}`.toLowerCase().includes(query);
+    });
+  const linkExistingAlbum = async (album: Album) => {
+    if (!albumLinkBooking || linkingAlbum) return;
+    setLinkingAlbum(true);
+    updateAlbum({ ...album, bookingId: albumLinkBooking.id });
+    const saved = await updateBooking({ ...albumLinkBooking, albumId: album.id });
+    setLinkingAlbum(false);
+    if (!saved) {
+      updateAlbum(album);
+      toast.error("Could not link the album. Try again.");
+      return;
+    }
+    setBookingsState(getBookings());
+    setAlbumLinkBooking(null);
+    setAlbumLinkSearch("");
+    window.dispatchEvent(new CustomEvent("storage-synced"));
+    toast.success(`Linked ${album.title} to ${albumLinkBooking.clientName || "booking"}`);
+  };
 
   // Reset recipient navigator when selection changes
   useEffect(() => { setBulkPreviewIndex(0); }, [selectedBookingIds]);
@@ -2860,22 +2885,16 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
     if (archiveFilter === "active" && statusFilter === "all" && bk.status === "cancelled" && !showCancelled) return false;
     if (paymentFilter !== "all" && (bk.paymentStatus || "unpaid") !== paymentFilter) return false;
     if (paymentReviewOnly && !bookingNeedsManualPaymentReview(bk)) return false;
-    if (!bookingSearch) return true;
-    const q = bookingSearch.trim().toLowerCase();
-    const instagramQuery = q.replace(/^@+/, "");
-    const instagramHandle = (bk.instagramHandle || "").trim().toLowerCase().replace(/^@+/, "");
-    return (bk.clientName || "").toLowerCase().includes(q)
-      || (bk.clientEmail || "").toLowerCase().includes(q)
-      || bookingPaymentReference(bk).toLowerCase().includes(q)
-      || (bk.id || "").toLowerCase().includes(q)
-      || (!!instagramQuery && instagramHandle.includes(instagramQuery))
-      || (bk.type || "").toLowerCase().includes(q)
-      || (bk.status || "").toLowerCase().includes(q)
-      || (bk.paymentReviewReason || "").toLowerCase().includes(q)
-      || (bk.date || "").includes(q)
-      || (bk.notes || "").toLowerCase().includes(q)
-      || (bk.lineItems || []).some(item => `${item.name} ${item.description || ""}`.toLowerCase().includes(q))
-      || (bk.createdAt ? new Date(bk.createdAt).toLocaleDateString("en-AU") : "").includes(q);
+    const terms = bookingSearch.trim().toLowerCase().replace(/^@+/, "").split(/\s+/).filter(Boolean);
+    if (!terms.length) return true;
+    const searchable = [
+      bk.clientName, bk.clientEmail, bk.instagramHandle, bookingPaymentReference(bk), bk.id,
+      bk.type, eventTypes.find(event => event.id === bk.eventTypeId)?.title, bk.status, bk.paymentStatus,
+      bk.paymentReviewReason, bk.date, bk.notes, ...(Object.values(bk.answers || {})),
+      ...(bk.lineItems || []).flatMap(item => [item.name, item.description]),
+      bk.createdAt ? new Date(bk.createdAt).toLocaleDateString("en-AU") : "",
+    ].filter(Boolean).join(" ").toLowerCase();
+    return terms.every(term => searchable.includes(term));
   });
 
   const operationalBookings = bookings.filter(b => b.archived !== true);
@@ -3103,6 +3122,23 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
         />
       )}
 
+      <Dialog open={!!albumLinkBooking} onOpenChange={open => { if (!open && !linkingAlbum) setAlbumLinkBooking(null); }}>
+        <DialogContent className="max-h-[85dvh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Link an existing album</DialogTitle>
+            <DialogDescription>Choose an unlinked album for {albumLinkBooking?.clientName || "this booking"}.</DialogDescription>
+          </DialogHeader>
+          <Input autoFocus aria-label="Search albums to link" placeholder="Search album, client, email, or date…" value={albumLinkSearch} onChange={event => setAlbumLinkSearch(event.target.value)} />
+          <div className="max-h-[50dvh] space-y-2 overflow-y-auto">
+            {linkableAlbums.map(album => <button key={album.id} type="button" disabled={linkingAlbum} onClick={() => void linkExistingAlbum(album)} className="w-full rounded-lg border border-border p-3 text-left hover:bg-secondary/60 disabled:opacity-50">
+              <span className="block truncate text-sm font-medium text-foreground">{album.title || "Untitled album"}</span>
+              <span className="mt-1 block truncate text-xs text-muted-foreground">{album.clientName || "No client"} · {album.date || "No date"} · {album.photoCount ?? album.photos?.length ?? 0} photos</span>
+            </button>)}
+            {linkableAlbums.length === 0 && <p className="py-6 text-center text-sm text-muted-foreground">No unlinked albums match. You can create a new album instead.</p>}
+          </div>
+        </DialogContent>
+      </Dialog>
+
       {/* Bulk Email Panel */}
       {bulkEmailOpen && selectedEmailCount > 0 && (
         <div className="glass-panel rounded-xl p-4 mb-4 space-y-3">
@@ -3259,7 +3295,7 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
             </div>
             <div className="relative w-full">
               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
-              <Input aria-label="Search bookings by client, Instagram, email, reference, or date" value={bookingSearch} onChange={e => setBookingSearch(e.target.value)} placeholder="Client, @Instagram, email, reference or date…" className="pl-8 h-11 text-sm font-body" />
+              <Input aria-label="Search bookings by client, Instagram, email, reference, event, date, or answers" value={bookingSearch} onChange={e => setBookingSearch(e.target.value)} placeholder="Client, event, @Instagram, email, reference, date or answer…" className="pl-8 h-11 text-sm font-body" />
             </div>
             <div className="inline-flex items-center rounded-lg border border-border/60 bg-secondary/30 p-0.5" aria-label="Booking archive view">
               {([
@@ -3797,29 +3833,27 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
                         </AnimatePresence>
                       )}
 
-                      {bk.albumId ? (
+                      {linkedAlbum ? (
                         <Button
                           size="sm"
                           variant="outline"
                           className="gap-2 font-body text-xs border-border text-foreground"
                           onClick={async () => {
-                            const album = getAlbums().find(a => a.id === bk.albumId || a.slug === bk.albumId);
-                            if (!album) {
-                              toast.error("Album record not found on this device yet");
-                              return;
-                            }
-                            if (await ensurePublicShareReady(album, "open this gallery")) {
-                              window.open(publicGalleryUrl(album), "_blank", "noopener,noreferrer");
+                            if (await ensurePublicShareReady(linkedAlbum, "open this gallery")) {
+                              window.open(publicGalleryUrl(linkedAlbum), "_blank", "noopener,noreferrer");
                             }
                           }}
                         >
                           <ExternalLink className="w-3.5 h-3.5" /> View Album
                         </Button>
-                      ) : onCreateAlbum ? (
-                        <Button size="sm" variant="outline" onClick={() => onCreateAlbum(bk.id)} className="gap-2 font-body text-xs border-border text-foreground">
-                          <Image className="w-3.5 h-3.5" /> Create Album
+                      ) : <>
+                        <Button size="sm" variant="outline" onClick={() => { setAlbumLinkSearch(""); setAlbumLinkBooking(bk); }} className="gap-2 font-body text-xs border-border text-foreground">
+                          <Link2 className="w-3.5 h-3.5" /> Link Existing Album
                         </Button>
-                      ) : null}
+                        {onCreateAlbum && <Button size="sm" variant="outline" onClick={() => onCreateAlbum(bk.id)} className="gap-2 font-body text-xs border-border text-foreground">
+                          <Image className="w-3.5 h-3.5" /> Create Album
+                        </Button>}
+                      </>}
                       {/* Source badge */}
                       {bk.source && bk.source !== "direct" && (
                         <span className="inline-flex items-center gap-1 text-[10px] font-body px-2 py-0.5 rounded-full bg-secondary border border-border text-muted-foreground capitalize">

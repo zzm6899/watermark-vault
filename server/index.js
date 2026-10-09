@@ -325,11 +325,28 @@ function portfolioStructuredData(routePath, title) {
   return JSON.stringify({ "@context": "https://schema.org", "@graph": graph }).replace(/</g, "\\u003c");
 }
 
-function portfolioSeoBlock(routePath) {
+function portfolioSocialPreview(category) {
+  const photos = publicPortfolioFocus(publicPortfolioContent(
+    dbGet(readDb(), DB_KEYS.PORTFOLIO_PUBLISHED, DEFAULT_PORTFOLIO),
+  )).galleryImages.filter(photo =>
+    String(photo.category || "").trim().toLowerCase() === category.trim().toLowerCase()
+    && photo.image?.startsWith("/") && !photo.image.startsWith("//"),
+  );
+  if (!photos.length) return { image: PORTFOLIO_SOCIAL_IMAGE, alt: "A packed audience watches a live convention event photographed by Zac Morgan" };
+  const photo = photos[Math.floor(Math.random() * photos.length)];
+  return {
+    image: new URL(photo.image, CANONICAL_PORTFOLIO_ORIGIN).href,
+    alt: photo.alt || `${category} photography by Zac Morgan`,
+  };
+}
+
+function portfolioSeoBlock(routePath, socialPreview) {
   const meta = PORTFOLIO_SEO_ROUTES[routePath] || PORTFOLIO_SEO_ROUTES["/"];
   const canonicalUrl = portfolioCanonicalUrl(routePath);
   const title = escapeHtml(meta.title);
   const description = escapeHtml(meta.description);
+  const socialImage = escapeHtml(socialPreview.image);
+  const socialImageAlt = escapeHtml(socialPreview.alt);
   return `<!-- SEO:START -->
     <title>${title}</title>
     <meta name="description" content="${description}" />
@@ -345,15 +362,13 @@ function portfolioSeoBlock(routePath) {
     <meta property="og:type" content="website" />
     <meta property="og:locale" content="en_AU" />
     <meta property="og:url" content="${canonicalUrl}" />
-    <meta property="og:image" content="${PORTFOLIO_SOCIAL_IMAGE}" />
-    <meta property="og:image:width" content="3000" />
-    <meta property="og:image:height" content="1996" />
-    <meta property="og:image:alt" content="A packed audience watches a live convention event photographed by Zac Morgan" />
+    <meta property="og:image" content="${socialImage}" />
+    <meta property="og:image:alt" content="${socialImageAlt}" />
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content="${title}" />
     <meta name="twitter:description" content="${description}" />
-    <meta name="twitter:image" content="${PORTFOLIO_SOCIAL_IMAGE}" />
-    <meta name="twitter:image:alt" content="A packed audience watches a live convention event photographed by Zac Morgan" />
+    <meta name="twitter:image" content="${socialImage}" />
+    <meta name="twitter:image:alt" content="${socialImageAlt}" />
     <script type="application/ld+json">${portfolioStructuredData(routePath, meta.title)}</script>
     <!-- SEO:END -->`;
 }
@@ -10799,7 +10814,9 @@ const portfolioIndexHtml = fs.existsSync(portfolioIndexPath) ? fs.readFileSync(p
 app.get(Object.keys(PORTFOLIO_SEO_ROUTES), (req, res, next) => {
   if (!isPortfolioSiteHost(req.hostname) || !portfolioIndexHtml) return next();
   const routePath = normalizedRequestPath(req.path);
-  const html = portfolioIndexHtml.replace(/<!-- SEO:START -->[\s\S]*?<!-- SEO:END -->/, portfolioSeoBlock(routePath));
+  const category = routePath === "/concerts" ? "Live Music" : routePath === "/portfolio" ? String(req.query.category || "").trim() : "";
+  const socialPreview = category ? portfolioSocialPreview(category) : { image: PORTFOLIO_SOCIAL_IMAGE, alt: "A packed audience watches a live convention event photographed by Zac Morgan" };
+  const html = portfolioIndexHtml.replace(/<!-- SEO:START -->[\s\S]*?<!-- SEO:END -->/, portfolioSeoBlock(routePath, socialPreview));
   res.setHeader("Cache-Control", "public, max-age=0, must-revalidate");
   res.setHeader("Cloudflare-CDN-Cache-Control", "public, max-age=300, stale-while-revalidate=86400, stale-if-error=86400");
   res.type("html").send(html);
