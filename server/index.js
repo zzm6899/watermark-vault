@@ -7828,10 +7828,15 @@ function buildBookingCalendarEvent(booking, timezone) {
       booking.clientName ? `Client: ${booking.clientName}` : "",
       booking.clientEmail ? `Email: ${booking.clientEmail}` : "",
       booking.phone ? `Phone: ${booking.phone}` : "",
+      booking.instagramHandle ? `Instagram: @${String(booking.instagramHandle).replace(/^@+/, "")}` : "",
       `Duration: ${Math.max(1, Number(booking.duration) || 60)}min`,
+      booking.notes ? `Notes: ${booking.notes}` : "",
+      ...Object.entries(booking.answers || {}).map(([key, value]) => {
+        const answer = String(value || "").trim();
+        return answer ? `${booking.answerLabels?.[key] || key}: ${answer}` : "";
+      }),
       booking.status ? `Status: ${booking.status}` : "",
       booking.paymentStatus ? `Payment: ${booking.paymentStatus}` : "",
-      booking.notes ? `Notes: ${booking.notes}` : "",
       `Ref: ${booking.id}`,
     ].filter(Boolean).join("\n"),
     start: { dateTime: start.toISOString(), timeZone: timezone },

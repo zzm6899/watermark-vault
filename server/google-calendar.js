@@ -119,9 +119,14 @@ function buildEvent(booking) {
     description: [
       `Client: ${booking.clientName}`,
       booking.clientEmail     ? `Email: ${booking.clientEmail}`                              : "",
-      booking.instagramHandle ? `Instagram: @${booking.instagramHandle.replace("@", "")}`   : "",
+      booking.phone            ? `Phone: ${booking.phone}`                                    : "",
+      booking.instagramHandle ? `Instagram: @${booking.instagramHandle.replace(/^@+/, "")}` : "",
       `Duration: ${booking.duration || 60}min`,
       booking.notes           ? `Notes: ${booking.notes}`                                    : "",
+      ...Object.entries(booking.answers || {}).map(([key, value]) => {
+        const answer = String(value || "").trim();
+        return answer ? `${booking.answerLabels?.[key] || key}: ${answer}` : "";
+      }),
       `Status: ${booking.status}`,
       booking.paymentAmount   ? `Amount: $${booking.paymentAmount}`                          : "",
       `\nRef: ${booking.id}`,

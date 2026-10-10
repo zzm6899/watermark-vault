@@ -1364,7 +1364,7 @@ export async function syncBookingToCalendar(booking: unknown, calendarId?: strin
   }
 }
 
-export async function syncAllBookingsToCalendar(bookings: unknown[], calendarId = "primary"): Promise<{ ok: boolean; created?: number; errors?: number }> {
+export async function syncAllBookingsToCalendar(bookings: unknown[], calendarId = "primary"): Promise<{ ok: boolean; created?: number; updated?: number; errors?: number }> {
   try {
     const res = await fetch("/api/integrations/googlecalendar/sync-all", {
       method: "POST",

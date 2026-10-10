@@ -10028,7 +10028,7 @@ function GoogleCalendarSection() {
     const result = await syncAllBookingsToCalendar(bookings, selectedCalendar);
     setSyncing(false);
     if (result.ok) {
-      toast.success(`Synced ${result.created} bookings to Google Calendar${result.errors ? ` (${result.errors} failed)` : ""}`);
+      toast.success(`Google Calendar: ${result.created || 0} created, ${result.updated || 0} existing bookings updated${result.errors ? `, ${result.errors} failed` : ""}`);
     } else {
       toast.error("Failed to sync bookings");
     }
