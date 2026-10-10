@@ -973,6 +973,13 @@ function findShootDayAlbumCandidate(booking: Booking, albums: Album[]): Album | 
   return candidates.length === 1 ? candidates[0] : null;
 }
 
+function bookingNotesWithAnswers(booking: Booking): string {
+  return [booking.notes?.trim(), ...Object.entries(booking.answers || {}).map(([key, value]) => {
+    const answer = String(value || "").trim();
+    return answer ? `${booking.answerLabels?.[key] || key}: ${answer}` : "";
+  })].filter(Boolean).join("\n");
+}
+
 function shootDayProofingLabel(album: Album | null) {
   if (!album) return "No album linked";
   const stage = album.proofingStage || "not-started";
@@ -1273,7 +1280,7 @@ function ShootDayCommandCenterView() {
       review: session.stats.review,
       tasks: taskTotal > 0 ? `${taskDone}/${taskTotal}` : "No checklist",
       warnings: [...session.readiness.blockers, ...session.readiness.warnings].join("; "),
-      notes: session.booking.notes || "",
+      notes: bookingNotesWithAnswers(session.booking),
     };
   });
 
@@ -1520,7 +1527,7 @@ function ShootDayCommandCenterView() {
                       </div>
                       <div className="rounded-lg bg-background/40 border border-border/40 p-2 min-w-0">
                         <p className="text-[10px] font-body text-muted-foreground">Notes</p>
-                        <p className="text-xs font-body text-foreground truncate">{booking.notes || "No notes"}</p>
+                        <p className="text-xs font-body text-foreground whitespace-pre-line break-words">{bookingNotesWithAnswers(booking) || "No notes"}</p>
                       </div>
                     </div>
 
