@@ -84,6 +84,78 @@ test("bank settlement requires canonical bank-pending state under the booking lo
   assert.match(section, /manual-bank-payment-confirmed/);
 });
 
+test("manual offline payment records only an eligible unpaid booking and preserves booking status", async () => {
+  const start = source.indexOf('app.patch("/api/admin/bookings/:id/manual-payment"');
+  const end = source.indexOf("// Record an externally completed refund", start);
+  assert.ok(start >= 0 && end > start);
+  const section = source.slice(start, end);
+  let handler;
+  let writes = 0;
+  const base = { id: "b1", status: "pending", requiresConfirmation: true, paymentStatus: "unpaid", paymentAmount: 200, holdExpiresAt: "hold", paymentHistory: [] };
+  const db = { bookings: JSON.stringify([base]) };
+  new Function(
+    "app", "superLimiter", "requireAuth", "withCheckoutResourceLock", "bookingCheckoutResourceLockKey",
+    "readDb", "getStoredArray", "DB_KEYS", "writeDb", "bookingNeedsPaymentReview", section,
+  )(
+    { patch: (...args) => { handler = args.at(-1); } },
+    null,
+    null,
+    async (_key, task) => task(),
+    () => "main:b1",
+    () => db,
+    (value, key) => JSON.parse(value[key]),
+    { BOOKINGS: "bookings" },
+    () => { writes++; },
+    booking => booking.paymentNeedsReview === true || (booking.paymentReviewStatus && booking.paymentReviewStatus !== "resolved"),
+  );
+  const call = async body => {
+    let status = 200;
+    let result;
+    const res = {
+      setHeader() { return this; },
+      status(code) { status = code; return this; },
+      json(value) { result = value; return this; },
+    };
+    await handler({ params: { id: "b1" }, body, authContext: { username: "admin" } }, res);
+    return { status, result };
+  };
+
+  const settled = await call({ method: "bank" });
+  assert.equal(settled.status, 200);
+  assert.equal(settled.result.booking.paymentStatus, "paid");
+  assert.equal(settled.result.booking.paymentMethod, "bank");
+  assert.equal(settled.result.booking.status, "pending");
+  assert.equal(settled.result.booking.holdExpiresAt, undefined);
+  assert.equal(settled.result.booking.paymentHistory.at(-1).action, "manual-payment-confirmed");
+  assert.equal(settled.result.booking.paymentHistory.at(-1).recordedBy, "admin");
+  assert.equal(settled.result.booking.paymentHistory.at(-1).amount, 200);
+  assert.equal(settled.result.booking.paymentHistory.at(-1).currency, "AUD");
+  assert.equal((await call({ method: "bank" })).status, 409);
+  assert.equal(writes, 1);
+
+  db.bookings = JSON.stringify([base]);
+  const cash = await call({ method: "cash", amount: 1, paymentStatus: "paid" });
+  assert.equal(cash.status, 200);
+  assert.equal(cash.result.booking.paymentStatus, "cash");
+  assert.equal(cash.result.booking.paymentMethod, "cash");
+  assert.equal(cash.result.booking.paymentHistory.at(-1).amount, 200);
+  assert.equal(writes, 2);
+  assert.equal((await call({ method: "other" })).status, 400);
+  for (const changes of [
+    { paymentStatus: "pending-confirmation" },
+    { bankTransferPendingAt: "pending" },
+    { paymentNeedsReview: true },
+    { paymentMethod: "stripe" },
+    { archived: true },
+    { status: "cancelled" },
+    { instalmentPlanActive: true },
+  ]) {
+    db.bookings = JSON.stringify([{ ...base, ...changes }]);
+    assert.equal((await call({ method: "bank" })).status, 409);
+  }
+  assert.equal(writes, 2);
+});
+
 test("a verified deposit can be completed without losing its audit trail", () => {
   const section = source.slice(source.indexOf('app.patch("/api/admin/bookings/:id/complete-balance"'), source.indexOf("// Archive/unarchive"));
   assert.match(section, /current\.paymentStatus !== "deposit-paid"/);

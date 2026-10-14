@@ -88,6 +88,7 @@ const {
   bookingAllowsCapabilityMutation,
   bookingBlocksAvailability,
   bookingConflicts,
+  bookingNeedsPaymentReview,
   collectUploadFileNames,
   evaluatePublicBookingAttempt,
   galleryPhotoDownloadEntitlement,
@@ -9087,6 +9088,50 @@ app.patch("/api/admin/bookings/:id/bank-payment", superLimiter, requireAuth, asy
     console.error(`Bank payment confirmation failed for ${bookingId}:`, error?.message || error);
     return res.status(500).json({ ok: false, error: "Bank payment confirmation failed" });
   }
+});
+
+// Record a manually verified offline payment for an eligible unpaid booking.
+app.patch("/api/admin/bookings/:id/manual-payment", superLimiter, requireAuth, async (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  const bookingId = String(req.params.id || "").trim();
+  const method = String(req.body?.method || "").trim().toLowerCase();
+  if (!bookingId || bookingId.length > 128) return res.status(404).json({ ok: false, code: "BOOKING_NOT_FOUND", error: "Booking not found" });
+  if (!["bank", "cash"].includes(method)) return res.status(400).json({ ok: false, code: "INVALID_MANUAL_PAYMENT_METHOD", error: "Payment method must be bank or cash" });
+  return withCheckoutResourceLock(bookingCheckoutResourceLockKey("main", bookingId), async () => {
+    const db = readDb();
+    const bookings = getStoredArray(db, DB_KEYS.BOOKINGS);
+    const index = bookings.findIndex(booking => !booking?.tenantSlug && booking.id === bookingId);
+    if (index < 0) return res.status(404).json({ ok: false, code: "BOOKING_NOT_FOUND", error: "Booking not found" });
+    const current = bookings[index];
+    if (bookingNeedsPaymentReview(current)) return res.status(409).json({ ok: false, code: "PAYMENT_REVIEW_REQUIRED", error: "Resolve the active payment review before recording a manual payment" });
+    if (current.instalmentPlanActive) return res.status(409).json({ ok: false, code: "INSTALMENT_PAYMENT_REQUIRED", error: "Record payments against the active instalment schedule" });
+    if (current.bankTransferPendingAt) return res.status(409).json({ ok: false, code: "BANK_PAYMENT_PENDING", error: "Confirm the pending bank transfer through its payment operation" });
+    if (current.archived || ["cancelled", "completed"].includes(current.status)) return res.status(409).json({ ok: false, code: "BOOKING_NOT_PAYABLE", error: "This booking cannot accept a manual payment" });
+    if (current.paymentStatus && current.paymentStatus !== "unpaid") return res.status(409).json({ ok: false, code: "PAYMENT_OPERATION_REQUIRED", error: "Use the matching payment operation for this booking's current payment status" });
+    if (current.paymentMethod === "stripe" || current.depositMethod === "stripe" || current.stripeCheckoutSessionId || current.stripeSessionId || current.stripePaymentIntentId) {
+      return res.status(409).json({ ok: false, code: "STRIPE_RECONCILIATION_REQUIRED", error: "Check Stripe before recording an offline payment" });
+    }
+    const amount = Number(current.paymentAmount);
+    if (!Number.isFinite(amount) || amount <= 0) return res.status(409).json({ ok: false, code: "PAYMENT_AMOUNT_REQUIRED", error: "A positive booking amount is required" });
+    const changedAt = new Date().toISOString();
+    const paymentStatus = method === "cash" ? "cash" : "paid";
+    const history = Array.isArray(current.paymentHistory) ? current.paymentHistory.slice(-99) : [];
+    const updated = {
+      ...current,
+      paymentStatus,
+      paymentMethod: method,
+      paidAt: changedAt,
+      holdExpiresAt: undefined,
+      lastPaymentKind: "full",
+      lastPaymentAmount: amount,
+      lastPaymentAt: changedAt,
+      paymentHistory: [...history, { action: "manual-payment-confirmed", changedAt, source: "admin", recordedBy: req.authContext?.username || "admin", method, paymentStatus, amount, currency: "AUD" }],
+    };
+    bookings[index] = updated;
+    db[DB_KEYS.BOOKINGS] = JSON.stringify(bookings);
+    writeDb(db);
+    return res.json({ ok: true, booking: updated });
+  });
 });
 
 // Record an externally completed refund; this endpoint never moves funds.

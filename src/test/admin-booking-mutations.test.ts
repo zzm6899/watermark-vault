@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { confirmAdminBankPayment, createAdminBooking, deleteAdminBooking, deleteBookingReferenceImage, getAdminPaymentHealth, patchAdminBooking, reconcileAdminStripePayment, uploadBookingReferenceImages } from "@/lib/api";
+import { confirmAdminBankPayment, confirmAdminManualBookingPayment, createAdminBooking, deleteAdminBooking, deleteBookingReferenceImage, getAdminPaymentHealth, patchAdminBooking, reconcileAdminStripePayment, uploadBookingReferenceImages } from "@/lib/api";
 import type { Booking } from "@/lib/types";
 
 const booking: Booking = {
@@ -55,6 +55,17 @@ describe("atomic admin booking contracts", () => {
     const result = await confirmAdminBankPayment(booking.id);
     expect(result.booking?.paymentStatus).toBe("paid");
     expect(fetchMock).toHaveBeenCalledWith("/api/admin/bookings/booking-atomic/bank-payment", expect.objectContaining({ method: "PATCH" }));
+  });
+
+  it("records a manually verified offline payment through its dedicated endpoint", async () => {
+    const fetchMock = vi.fn(async () => response({ ok: true, booking: { ...booking, paymentStatus: "paid", paymentMethod: "bank" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await confirmAdminManualBookingPayment(booking.id, "bank");
+    expect(result.booking?.paymentStatus).toBe("paid");
+    expect(fetchMock).toHaveBeenCalledWith("/api/admin/bookings/booking-atomic/manual-payment", expect.objectContaining({
+      method: "PATCH",
+      body: JSON.stringify({ method: "bank" }),
+    }));
   });
 
   it("reconciles one canonical card payment through Stripe", async () => {

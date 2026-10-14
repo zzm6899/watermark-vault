@@ -72,7 +72,7 @@ import {
   uploadXmpPresets, deleteXmpPreset, ensurePublicAlbumAvailable, saveAlbumToServer,
   saveAlbumStatusToServer, autoCullAlbum, adminLogout, adminAuthHeaders, setBookingArchiveState,
   deleteEventDescriptionImage,
-  resolveBookingPaymentReview, confirmAdminBankPayment, completeAdminBookingBalance,
+  resolveBookingPaymentReview, confirmAdminBankPayment, confirmAdminManualBookingPayment, completeAdminBookingBalance,
   reconcileAdminStripePayment,
 } from "@/lib/api";
 import type {
@@ -2839,6 +2839,19 @@ function BookingsView({ onCreateAlbum }: { onCreateAlbum?: (bookingId: string) =
       cacheBookingLocally(result.booking);
       if (result.booking.paymentNeedsReview) toast.warning("Stripe found the payment, but it needs review in Payments");
       else toast.success(`Stripe payment verified as ${paymentStatusLabel(result.booking.paymentStatus || "paid")}`);
+      return;
+    }
+    if ((!bk.paymentStatus || bk.paymentStatus === "unpaid") && ["paid", "cash"].includes(paymentStatus) && !isBankPending && !isCardCheckout) {
+      const method = paymentStatus === "cash" ? "cash" : "bank";
+      const paymentMethodLabel = method === "cash" ? "cash" : "offline";
+      if (!window.confirm("Record " + bk.clientName + "'s " + paymentMethodLabel + " payment as received in full? Only continue after verifying the funds were received.")) return;
+      setResolvingPaymentReviewId(bk.id);
+      const result = await confirmAdminManualBookingPayment(bk.id, method);
+      setResolvingPaymentReviewId(null);
+      if (!result.ok || !result.booking) { toast.error(result.error || "Unable to record manual payment"); return; }
+      setBookingsState(previous => previous.map(booking => booking.id === result.booking!.id ? result.booking! : booking));
+      cacheBookingLocally(result.booking);
+      toast.success(method === "cash" ? "Cash payment confirmed" : "Payment marked paid in full");
       return;
     }
     toast.error("Review this card or bank payment from Payments.");

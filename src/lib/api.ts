@@ -2363,6 +2363,16 @@ export async function confirmAdminBankPayment(bookingId: string): Promise<AdminB
   } catch { return { ok: false, error: "Network error while confirming bank payment" }; }
 }
 
+export async function confirmAdminManualBookingPayment(bookingId: string, method: "bank" | "cash"): Promise<AdminBookingMutationResult> {
+  try {
+    return await parseAdminBookingMutation(await fetch("/api/admin/bookings/" + encodeURIComponent(bookingId) + "/manual-payment", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
+      body: JSON.stringify({ method }),
+    }));
+  } catch { return { ok: false, error: "Network error while recording manual payment" }; }
+}
+
 export async function completeAdminBookingBalance(bookingId: string, method: "bank" | "cash" = "bank"): Promise<AdminBookingMutationResult> {
   try {
     return await parseAdminBookingMutation(await fetch(`/api/admin/bookings/${encodeURIComponent(bookingId)}/complete-balance`, {

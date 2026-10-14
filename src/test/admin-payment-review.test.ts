@@ -231,6 +231,56 @@ describe("admin payment review visibility", () => {
     expect(cached[0].paymentReviews[0].stripeSessionId).toBe("must-not-render");
   });
 
+  it("records an offline payment for a normal unpaid booking", async () => {
+    const booking = {
+      ...JSON.parse(localStorage.getItem("wv_bookings") || "[]")[0],
+      paymentStatus: "unpaid",
+      paymentNeedsReview: false,
+      paymentReviewStatus: "resolved",
+      paymentReviewReason: undefined,
+      paymentMethod: undefined,
+      paymentAmount: 150,
+    };
+    localStorage.setItem("wv_bookings", JSON.stringify([booking]));
+    const updated = { ...booking, paymentStatus: "paid", paymentMethod: "bank" };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, request?: RequestInit) => {
+      const url = String(input);
+      const body = url === "/api/admin/bookings/booking-review/manual-payment"
+        ? { ok: true, booking: updated }
+        : url === "/api/auth/session"
+          ? { ok: true, username: "admin" }
+          : url === "/api/waitlist"
+            ? { entries: [] }
+            : {};
+      return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("confirm", vi.fn(() => true));
+
+    render(
+      React.createElement(
+        MemoryRouter,
+        { initialEntries: ["/admin/bookings"] },
+        React.createElement(
+          Routes,
+          null,
+          React.createElement(Route, { path: "/admin/:tab", element: React.createElement(Admin) }),
+        ),
+      ),
+    );
+    fireEvent.change(await screen.findByLabelText("Payment status"), { target: { value: "paid" } });
+
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.some(([url, request]) =>
+        String(url) === "/api/admin/bookings/booking-review/manual-payment"
+        && request?.method === "PATCH",
+      )).toBe(true);
+    });
+    const request = fetchMock.mock.calls.find(([url]) => String(url) === "/api/admin/bookings/booking-review/manual-payment")?.[1];
+    expect(JSON.parse(String(request?.body))).toEqual({ method: "bank" });
+    expect(JSON.parse(localStorage.getItem("wv_bookings") || "[]")[0].paymentStatus).toBe("paid");
+  });
+
   it("contains no client-side review reconciliation or full-array write in the flagged path", () => {
     const adminSource = source("src/pages/Admin.tsx");
     const start = adminSource.indexOf("const handlePaymentChange = async");
