@@ -87,7 +87,7 @@ describe("public album safety", () => {
     const tenantSource = readFileSync(join(process.cwd(), "src/pages/TenantAdmin.tsx"), "utf8");
     expect(source).not.toMatch(/window\.open\(`\/gallery\//);
     expect(source).toContain('navigate(task.album ? `/admin/albums?album=${encodeURIComponent(task.album.id)}`');
-    expect(source).toContain("window.open(publicGalleryUrl(album)");
+    expect(source).toContain("window.open(publicGalleryUrl(linkedAlbum)");
     expect(source).toContain("window.open(publicGalleryUrl(matchingAlbum)");
     expect(tenantSource).toContain("href={tenantGalleryUrl(alb)}");
     expect(tenantSource).toContain("publicGalleryUrl({ ...album, slug: album.id })");
